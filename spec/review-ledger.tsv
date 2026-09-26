@@ -535,8 +535,8 @@ law	2	T3	deferred	-	-	-	-	-	-
 law	20	T3	deferred	-	-	-	-	-	-
 law	21	T3	deferred	-	-	-	-	-	-
 law	22	T3	deferred	-	-	-	-	-	-
-law	23	T3	deferred	-	-	-	-	-	-
-law	24	T3	deferred	-	-	-	-	-	-
+law	23	T1	cleared	deep	-	-	rspace/src/trace/event.rs:apply	-	mutation sweep: removing Comm::apply's produce sort made this witness FAIL, so it catches the mechanism its own law is about — unlike law 8's witness, which covers the same function but is filed under the selection. The candidate rotation is the test's own construction and was not varied
+law	24	T1	cleared	deep	-	-	rspace/src/concurrent/channel_queue.rs:channel_queue	-	mutation sweep: disabling the validation gate outright made this witness FAIL. The single gate was mutated; the record-layer half of the law was not independently deleted
 law	25	T3	deferred	-	-	-	-	-	-
 law	26a	T3	deferred	-	-	-	-	-	-
 law	26b	T3	deferred	-	-	-	-	-	-
