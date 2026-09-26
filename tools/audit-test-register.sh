@@ -67,6 +67,20 @@
 #      written for, because row 47's cell contained `proved-model` after its `open` (found by re-planting
 #      the defect and reading `audit rc=0`). Later qualifiers stay allowed: a proved row's tie *is* a
 #      `boundary`, and one of its forms *is* `owed`, and both are true sentences about part of a law.
+#  14. **The register's pointers resolve** — every `Cnn`, `§N` and `.lean:N` the record uses to refer to
+#      *itself* must resolve: a C-number against the allocator (`tools/next-audit-number.sh`), a section
+#      against `spec/AUDIT.md`'s headings, a line range against the sentence that cites it, and a
+#      doc-comment citation against the identifier it names. Three live instances when it was written,
+#      all of them a number that moved rather than a line.
+#  15. **The review ledger is the denominator it claims to be** — `spec/review-ledger.tsv` is the
+#      audit's coverage record, and it carries ten clauses (a)-(j): rows against the roster in both
+#      directions, the emitter as the site of the join, a closed vocabulary with conditional cells, the
+#      tier floor that makes a T1 claim a `deep` read, a `sampled` fraction that equals the roster's own
+#      count, ceilings committed against derived, the tier word agreeing with the register's tier table,
+#      the finding numbers resolving against the allocator, **this header naming every check the body
+#      runs**, and an `unhousedCeiling` so unregistered findings are a number that must move. The last
+#      two are about the linter and the audit rather than the tree, which is the point: the instrument
+#      is inside its own remit.
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
@@ -1109,6 +1123,204 @@ done < <(cd "$ROOT" && grep -rnE '///.*[A-Za-z0-9_/]*\.lean:[0-9A-Za-z_]' --incl
 (( pointer_doc > 0 )) || fail "no \`.lean\` citations found in Rust doc comments — this family is vacuous (the doc-comment shape moved?)"
 if (( failures == pointer_bad_before )); then
   ok "$pointer_checked pointer(s) resolve, $pointer_doc of them doc-comment citations; $pointer_subject decided by subject, $pointer_gap_refs naming a gap the allocator lists, $pointer_undecided outside what this check reads"
+fi
+
+# --- 15. the review ledger is the denominator it claims to be ------------------
+#
+# The audit that produced this check had a rating and no denominator: readings recorded, coverage not.
+# `spec/review-ledger.tsv` is the coverage, and the failure mode of a ledger is worse than having none —
+# a ledger that *looks* complete is the same false green as an `OK` from a scan that stopped looking.
+# So the clauses below are written against that failure, in the order they can catch it:
+#
+#   (a) rows and roster agree in **both** directions — one direction alone is C80's defect. A ledger
+#       missing a row and a ledger inventing one are different bugs and both are fatal to a denominator.
+#   (b) the emitter is the site of the join, so `spec/REVIEW-LEDGER.md` is provably derived (check 11's
+#       precedent: the ledger half is checked by re-emitting it).
+#   (c) the vocabulary is closed and the cells are conditional on the verdict, so a reason cannot be
+#       invented per-row and no cell is silently blank.
+#   (d) a `finding` row names an allocated C-number that shares a distinctive token with that finding —
+#       the number is checked against the allocator, and the *subject* against the row, exactly as
+#       check 14 does for a prose pointer.
+#   (e) the tier floor: a review claim at T1 must be `deep`. Without this clause the ledger records
+#       tiers and pays nothing for them.
+#   (f) a `sampled` row's fraction is the roster's own count, so "I read some of them" is a number.
+#   (g) ceilings, committed against derived — a roster cannot outrun the tree quietly.
+#   (h) the tier word agrees with the register's own tier table, so 48 of these rows inherit a judgement
+#       the register already made instead of inventing one.
+#   (i) **the linter's own header names every check its body runs.** That drift was live when this check
+#       was written: the header listed 13, the body ran 14, and `C91`'s rule — a check's exit code must
+#       reflect the work that ran — applies to the check roster as much as to a gate.
+#   (j) every allocated C-number is either named by a row or counted against `unhousedCeiling`, so
+#       "the findings are not registered yet" is a number that has to move rather than a sentence.
+printf '\n== review ledger (the audit denominator) ==\n'
+ledger_bad_before=$failures
+LEDGER="$ROOT/spec/review-ledger.tsv"
+LEDGER_MD="$ROOT/spec/REVIEW-LEDGER.md"
+EMITTER="$ROOT/tools/emit-review-ledger.sh"
+
+ledger_checked=0
+if [[ ! -f "$LEDGER" ]]; then
+  fail "spec/review-ledger.tsv is missing — the audit has no denominator, which is the state this check exists to end"
+else
+  # --- (c) vocabulary and conditional cells -------------------------------------------------------
+  VERDICTS="cleared finding sampled exempt deferred unreachable"
+  TIERS="T1 T2 T3"
+  DEPTHS="shallow medium deep -"
+  EXEMPT_REASONS="data generated dev-tool legacy axiomatized"
+  UNREACH_REASONS="peer-bound harness-bound"
+  malformed=0
+  while IFS=$'\t' read -r kind id tier verdict depth sample reason evidence registers note; do
+    ledger_checked=$((ledger_checked + 1))
+    where="$kind/$id"
+    case " $VERDICTS " in *" $verdict "*) ;; *) fail "ledger $where: verdict '$verdict' is not one of the six ($VERDICTS)"; malformed=$((malformed+1)); continue ;; esac
+    case " $TIERS " in *" $tier "*) ;; *) fail "ledger $where: tier '$tier' is not T1|T2|T3"; malformed=$((malformed+1)); continue ;; esac
+    case " $DEPTHS " in *" $depth "*) ;; *) fail "ledger $where: depth '$depth' is not shallow|medium|deep|-"; malformed=$((malformed+1)); continue ;; esac
+    # A blank cell is never a verdict — the whole point is that "nobody looked" cannot be silent.
+    local_i=""
+    for c in "$kind" "$id" "$tier" "$verdict" "$depth" "$sample" "$reason" "$evidence" "$registers" "$note"; do
+      if [[ -z "$c" ]]; then local_i=1; fi
+    done
+    (( local_i )) && { fail "ledger $where: a cell is empty — an empty cell is not a verdict, and 'nobody looked' must be written as 'deferred'"; malformed=$((malformed+1)); continue; }
+    case "$verdict" in
+      exempt)
+        case " $EXEMPT_REASONS " in *" $reason "*) ;; *) fail "ledger $where: exempt reason '$reason' is not one of ($EXEMPT_REASONS)"; malformed=$((malformed+1)) ;; esac ;;
+      unreachable)
+        case " $UNREACH_REASONS " in *" $reason "*) ;; *) fail "ledger $where: unreachable reason '$reason' is not one of ($UNREACH_REASONS)"; malformed=$((malformed+1)) ;; esac ;;
+      *) [[ "$reason" == "-" ]] || { fail "ledger $where: verdict '$verdict' carries a reason ('$reason') — reasons belong to exempt and unreachable rows"; malformed=$((malformed+1)); } ;;
+    esac
+    # --- (f) a sample is the roster's own count ---------------------------------------------------
+    if [[ "$verdict" == "sampled" ]]; then
+      if [[ ! "$sample" =~ ^([0-9]+)/([0-9]+)$ ]]; then
+        fail "ledger $where: a sampled row must carry sample as N/M, not '$sample'"
+        malformed=$((malformed+1))
+      else
+        want_n="$(bash "$EMITTER" --rosters 2>/dev/null | grep -c "^$kind	" || true)"
+        [[ "$kind" == "site" || "$kind" == "roster" ]] && want_n="$(grep -c "^$kind	" "$LEDGER" || true)"
+        if [[ "${BASH_REMATCH[2]}" != "$want_n" ]]; then
+          fail "ledger $where: sample is ${BASH_REMATCH[1]}/${BASH_REMATCH[2]} but kind '$kind' holds $want_n row(s) — the denominator of a sample is the roster's, not a remembered one"
+        fi
+        [[ "${BASH_REMATCH[1]}" -le "${BASH_REMATCH[2]}" ]] || fail "ledger $where: sample ${BASH_REMATCH[1]}/${BASH_REMATCH[2]} is more reviewed than there are rows"
+      fi
+    else
+      [[ "$sample" == "-" ]] || { fail "ledger $where: sample is '$sample' on a '$verdict' row — only a sampled row carries a fraction"; malformed=$((malformed+1)); }
+    fi
+    # --- (e) the tier floor ----------------------------------------------------------------------
+    reviewing=0
+    case "$verdict" in cleared|finding|sampled) reviewing=1 ;; esac
+    if (( reviewing )); then
+      case "$tier" in
+        T1) [[ "$depth" == "deep" ]] || fail "ledger $where: a reviewed T1 row is '$depth' — a defect here can fork the chain or lose funds, so a T1 claim is a deep read or it is not a claim" ;;
+        T2) case "$depth" in medium|deep) ;; *) fail "ledger $where: a reviewed T2 row is '$depth' — T2 takes medium or deep" ;; esac ;;
+        T3) [[ "$depth" != "-" ]] || fail "ledger $where: a reviewed T3 row has no depth — even a shallow read is a depth" ;;
+      esac
+      # `deep` is defined by what it leaves behind, not by the adjective.
+      if [[ "$depth" == "deep" ]]; then
+        [[ "$evidence" != "-" ]] || fail "ledger $where: depth 'deep' with no evidence — deep requires a resolving path:symbol and a falsifier or a C-number"
+        [[ "$note" != "-" ]] || fail "ledger $where: depth 'deep' with no note — a deep read states what it did *not* read"
+      fi
+    else
+      [[ "$depth" == "-" ]] || fail "ledger $where: verdict '$verdict' carries depth '$depth' — an unreviewed row has no depth to report"
+    fi
+    # --- (d) a finding names an allocated C-number that shares its subject ------------------------
+    if [[ "$verdict" == "finding" ]]; then
+      cnum="$(printf '%s' "$evidence" | grep -oE '(^|[^A-Za-z0-9_])C[0-9]+' | sed 's/^[^C]*//' | head -1 || true)"
+      if [[ -z "$cnum" ]]; then
+        fail "ledger $where: a finding row's evidence names no C-number — the register is where a finding lives, and the row must point at it"
+      elif [[ "$in_use" != *" ${cnum#C} "* ]]; then
+        fail "ledger $where: names \`$cnum\`, which no finding claims (tools/next-audit-number.sh is the oracle)"
+      elif ! pointer_subject_ok "${cnum#C}" "$(printf '%s %s %s' "$id" "$evidence" "$note")"; then
+        fail "ledger $where: says it is $cnum, and C${cnum#C}'s own text shares nothing distinctive with that row — the ledger points at a finding about something else"
+      fi
+    fi
+  done < <(grep -v '^#' "$LEDGER")
+
+  (( ledger_checked > 0 )) || fail "spec/review-ledger.tsv has no data rows — a ledger with a roster and no rows is the absence of a denominator dressed as one"
+
+  # --- (a) rows and roster agree in both directions ----------------------------------------------
+  # The derived kinds only: `site` and `roster` have no derivation by construction.
+  roster_out="$(bash "$EMITTER" --rosters 2>/dev/null || true)"
+  if [[ -z "$roster_out" ]]; then
+    fail "tools/emit-review-ledger.sh --rosters printed nothing — this clause would be vacuous, and a roster of zero is not a measurement"
+  else
+    ledger_rows="$(mktemp)"; printf '%s\n' "$roster_out" | sort -u > "$ledger_rows.roster"
+    grep -v '^#' "$LEDGER" | cut -f1,2 | grep -v '^site	' | grep -v '^roster	' | sort -u > "$ledger_rows.actual"
+    while IFS= read -r missing; do
+      [[ -z "$missing" ]] && continue
+      fail "ledger: the tree derives '${missing%%	*}' item '${missing#*	}' and no row names it — an item nobody looked at must say 'deferred', not be absent"
+    done < <(comm -23 "$ledger_rows.roster" "$ledger_rows.actual")
+    while IFS= read -r extra; do
+      [[ -z "$extra" ]] && continue
+      fail "ledger: row '${extra%%	*}/${extra#*	}' is on no roster in the tree — a row about nothing is a denominator about nothing"
+    done < <(comm -13 "$ledger_rows.roster" "$ledger_rows.actual")
+    rm -f "$ledger_rows" "$ledger_rows.roster" "$ledger_rows.actual"
+  fi
+
+  # --- (g) ceilings, committed against derived ----------------------------------------------------
+  for k in ingress process config tool; do
+    committed="$(awk -v k="$k" '$1 == "#" && $2 == "ceiling" && $3 == k { print $4 }' "$LEDGER")"
+    derived="$(printf '%s\n' "$roster_out" | grep -c "^$k	" || true)"
+    if [[ -z "$committed" ]]; then
+      fail "ledger: kind '$k' has no ceiling in the header — an authored roster with no ceiling can outrun its derivation unnoticed"
+    elif (( committed < derived )); then
+      fail "ledger: the ceiling for '$k' is $committed and the tree derives $derived — rows are missing"
+    fi
+  done
+
+  # --- (h) the tier word agrees with the register's own tier table --------------------------------
+  #
+  # **The field order, and it is the whole clause.** A tier row is `| Tier | Module | Test |`, so under
+  # `IFS='|'` the empty field before the first bar makes the module **field 3**, not field 4. The first
+  # version of this clause read field 4 — the test name — looked each test up as if it were a path,
+  # found nothing, and `continue`d. It counted 48 rows and compared **zero**, and reported green while
+  # a planted tier contradiction stood in the ledger. The counter below is what makes that state
+  # impossible to report again: the clause now fails if it compared fewer rows than it read, which is
+  # the same rule this whole file applies to every other check and which this one had exempted itself
+  # from. Found by falsifying the clause rather than by reading it — the falsifier was the only thing
+  # that could tell "green" from "not looking".
+  tier_rows=0
+  tier_compared=0
+  while IFS='|' read -r _ rt rp _test _; do
+    rt="$(printf '%s' "$rt" | tr -d ' ')"; rp="$(printf '%s' "$rp" | tr -d ' `')"
+    [[ "$rt" == T[123] ]] || continue
+    [[ -n "$rp" ]] || continue
+    tier_rows=$((tier_rows + 1))
+    ledger_tier="$(awk -F'\t' -v p="$rp" '$1 == "file" && $2 == p { print $3 }' "$LEDGER")"
+    [[ -z "$ledger_tier" ]] && continue
+    tier_compared=$((tier_compared + 1))
+    [[ "$ledger_tier" == "$rt" ]] || fail "ledger: $rp is $ledger_tier here and $rt in spec/TEST-COVERAGE.md's tier table — the ledger inherits that judgement or it contradicts it"
+  done < <(awk '/^## Risk tiers \(per-module\)/,/^## [^R]/' "$REGISTER")
+  (( tier_rows > 0 )) || fail "ledger: the register's tier table yielded no rows — clause (h) read nothing"
+  (( tier_compared > 0 )) || fail "ledger: clause (h) read $tier_rows tier row(s) from the register and compared none against the ledger — a clause that matched nothing is not evidence"
+
+  # --- (j) every allocated C-number is named by a row, or counted --------------------------------
+  housed="$(grep -v '^#' "$LEDGER" | awk -F'\t' '$4 == "finding" { print $8 }' \
+    | grep -oE '(^|[^A-Za-z0-9_])C[0-9]+' | sed 's/^[^C]*//; s/^C//' | sort -u || true)"
+  unhoused_actual="$(printf '%s\n' "$in_use" | tr ' ' '\n' | grep -v '^$' | sort -u | comm -23 - <(printf '%s\n' "$housed") | grep -c . || true)"
+  unhoused_ceiling="$(awk '$1 == "#" && $2 == "unhousedCeiling" { print $3 }' "$LEDGER")"
+  if [[ -z "$unhoused_ceiling" ]]; then
+    fail "ledger: the header carries no unhousedCeiling — unregistered findings would be invisible"
+  elif (( unhoused_actual > unhoused_ceiling )); then
+    fail "ledger: $unhoused_actual allocated C-number(s) are named by no finding row and the ceiling is $unhoused_ceiling — register them, or raise the ceiling deliberately"
+  fi
+
+  # --- (b) the emitter is the site of the join ----------------------------------------------------
+  if ! bash "$EMITTER" --check >/dev/null 2>&1; then
+    fail "tools/emit-review-ledger.sh --check refuses — spec/REVIEW-LEDGER.md is not what the TSV and the rosters emit (re-emit it)"
+  fi
+fi
+
+# --- (i) the linter's own header names every check its body runs --------------------------------
+# The drift this closes was live: the list below the usage line named thirteen checks while the body ran
+# fourteen, so the roster a reader consults described a different file from the one that ran. C91's rule
+# one level up — a check's exit code must reflect the work that ran — and a check roster is work.
+header_nums="$(grep -oE '^# +[0-9]+\. \*\*' "$ROOT/tools/audit-test-register.sh" | grep -oE '[0-9]+' | sort -n | tr '\n' ' ')"
+body_nums="$(grep -oE '^# --- [0-9]+\.' "$ROOT/tools/audit-test-register.sh" | grep -oE '[0-9]+' | sort -n | tr '\n' ' ')"
+if [[ "$header_nums" != "$body_nums" ]]; then
+  fail "the linter's header list is ($header_nums) and its body runs ($body_nums) — the roster describes a different file from the one that runs"
+fi
+
+if (( failures == ledger_bad_before )); then
+  ok "review ledger: $ledger_checked row(s) checked, roster and rows agree in both directions, $tier_rows tier(s) inherited from the register, $unhoused_actual of ${unhoused_ceiling:-0} unregistered finding(s) against the ceiling"
 fi
 
 # --- summary -----------------------------------------------------------------
