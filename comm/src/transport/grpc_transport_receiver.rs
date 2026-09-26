@@ -218,6 +218,34 @@ const STREAM_BUDGET_UNIT: usize = 1024 * 1024;
 /// figure, so a compressed buffer cannot be a loophole around the decompressed budget. A single
 /// max-size stream fits inside it several times over, so legitimate traffic is unaffected and only the
 /// aggregate is capped.
+/// Charge `len` bytes against the aggregate budget, holding the permits in `held` until the caller
+/// drops them. `Err(())` means the budget cannot cover it (AUDIT C113).
+///
+/// Extracted from the `stream` handler so the *decision* — not only the arithmetic that sizes the
+/// budget — is testable without a socket: as an inline `try_acquire_many_owned` the only way to
+/// observe exhaustion was to open enough real streams to spend the budget, which is a test that
+/// costs more than the bound it pins.
+///
+/// A partial unit costs a whole one, so the budget cannot be nibbled away one byte at a time; and
+/// the permits live in the caller's `Vec`, so they return when the stream ends on **every** exit
+/// path, including the error returns.
+fn charge_stream_budget(
+    budget: &Arc<tokio::sync::Semaphore>,
+    held: &mut Vec<tokio::sync::OwnedSemaphorePermit>,
+    len: usize,
+) -> Result<(), ()> {
+    let units = u32::try_from(len.div_ceil(STREAM_BUDGET_UNIT))
+        .unwrap_or(u32::MAX)
+        .max(1);
+    match budget.clone().try_acquire_many_owned(units) {
+        Ok(permit) => {
+            held.push(permit);
+            Ok(())
+        }
+        Err(_) => Err(()),
+    }
+}
+
 fn stream_byte_budget(blobs: usize, max_stream_message_size: i64) -> usize {
     // Written as an explicit match rather than as a fallible conversion with a zero default — the
     // *silent* class `tools/audit-type-system.sh` refuses, and it refused the first draft of this
@@ -435,16 +463,16 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
                 }
                 // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this
                 // bounds the sum over all of them, which is the number that multiplies.
-                let units = u32::try_from(d.content_data.len().div_ceil(STREAM_BUDGET_UNIT))
-                    .unwrap_or(u32::MAX)
-                    .max(1);
-                match self.stream_bytes.clone().try_acquire_many_owned(units) {
-                    Ok(p) => byte_permits.push(p),
-                    Err(_) => {
-                        return Ok(Response::new(internal_server_error(&stream_error_message(
-                            &StreamError::MaxSizeReached,
-                        ))));
-                    }
+                if charge_stream_budget(
+                    &self.stream_bytes,
+                    &mut byte_permits,
+                    d.content_data.len(),
+                )
+                .is_err()
+                {
+                    return Ok(Response::new(internal_server_error(&stream_error_message(
+                        &StreamError::MaxSizeReached,
+                    ))));
                 }
             }
             chunks.push(chunk);
@@ -600,6 +628,55 @@ pub async fn serve_with_limits(
 
 #[cfg(test)]
 mod tests {
+    /// **The regression test for AUDIT C113's mechanism**, and the one the arithmetic test above
+    /// cannot make: that the aggregate budget *binds* and *returns*.
+    ///
+    /// `the_aggregate_stream_budget_bounds_what_the_stream_cap_multiplies` pins the numbers; this
+    /// pins the behaviour. A budget computed correctly and never charged would pass that one and
+    /// bound nothing — which is the failure mode of every bound that is only arithmetic.
+    ///
+    /// **What this does not cover, stated rather than left for a reader to assume**: it drives
+    /// [`super::charge_stream_budget`] directly, so it would still pass if the `stream` handler
+    /// stopped *calling* it. That the handler charges on every inbound data chunk is verified by
+    /// reading the handler, not by this test. Closing the gap means driving `stream` with a real
+    /// `Streaming<Chunk>`, which tonic does not expose a constructor for from outside — so the
+    /// honest statement is that the mechanism is pinned and its wiring is reviewed.
+    #[test]
+    fn the_aggregate_budget_refuses_once_it_is_spent_and_returns_when_released() {
+        // Three units of budget, metered in STREAM_BUDGET_UNIT.
+        let budget = Arc::new(tokio::sync::Semaphore::new(3));
+        let mut held = Vec::new();
+
+        for _ in 0..3 {
+            assert!(
+                super::charge_stream_budget(&budget, &mut held, super::STREAM_BUDGET_UNIT).is_ok(),
+                "each of the three units fits exactly"
+            );
+        }
+        assert!(
+            super::charge_stream_budget(&budget, &mut held, super::STREAM_BUDGET_UNIT).is_err(),
+            "the fourth must be refused — a per-stream cap could not express this, because each \
+             stream individually is well inside its own limit"
+        );
+
+        // Releasing returns the budget: it is charged per in-flight stream, not consumed.
+        held.clear();
+        assert!(
+            super::charge_stream_budget(&budget, &mut held, super::STREAM_BUDGET_UNIT * 3).is_ok(),
+            "the budget must return when the streams that held it end"
+        );
+
+        // A partial unit costs a whole one, so the budget cannot be nibbled away one byte at a time.
+        held.clear();
+        let tiny = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut held_tiny = Vec::new();
+        assert!(super::charge_stream_budget(&tiny, &mut held_tiny, 1).is_ok());
+        assert!(
+            super::charge_stream_budget(&tiny, &mut held_tiny, 1).is_err(),
+            "a single byte still costs a unit, or a peer could spend the budget in 1-byte steps"
+        );
+    }
+
     /// **The regression test for AUDIT C113.** The per-stream byte cap was never the bound it read
     /// as: `MAX_CONCURRENT_STREAMS` multiplies it, so the aggregate a single peer could hold resident
     /// was the *product*. These assertions pin the numbers and the relationship rather than restating

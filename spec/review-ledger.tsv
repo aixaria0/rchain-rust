@@ -214,7 +214,7 @@ file	comm/src/transport/chunker.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/communication_response.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/generate_certificate_if_absent.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/grpc_transport_client.rs	T2	deferred	-	-	-	-	-	-
-file	comm/src/transport/grpc_transport_receiver.rs	T2	finding	deep	-	-	comm/src/transport/grpc_transport_receiver.rs:stream_byte_budget C113 comm/src/transport/grpc_transport_receiver.rs:peer_id_of_tls C115	-	the stream handler's only byte cap was per-stream while the stream count multiplied it; the aggregate budget and the unary transport decode cap both land in this receiver
+file	comm/src/transport/grpc_transport_receiver.rs	T2	finding	deep	-	-	comm/src/transport/grpc_transport_receiver.rs:stream_byte_budget C113 comm/src/transport/grpc_transport_receiver.rs:charge_stream_budget C113 comm/src/transport/grpc_transport_receiver.rs:peer_id_of_tls C115	-	the stream handler's only byte cap was per-stream while the stream count multiplied it; the aggregate budget and the unary transport decode cap both land in this receiver
 file	comm/src/transport/grpc_transport.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/grpc_transport_server.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/hostname_trust_manager.rs	T3	deferred	-	-	-	-	-	-
