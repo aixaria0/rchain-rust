@@ -168,7 +168,7 @@ file	casper/src/genesis/contracts.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/genesis/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/genesis/rgov.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/genesis/standard_deploys.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/interpreter_util.rs	T3	deferred	-	-	-	-	-	-
+file	casper/src/interpreter_util.rs	T1	finding	deep	-	-	casper/src/interpreter_util.rs:slash_is_unjustified C110	-	the checkpoint replay is where the slash set is checked against this node's own DAG metadata, because the justification hashes carry no slashable flag
 file	casper/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/merging.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/multi_parent_casper.rs	T1	deferred	-	-	-	-	-	-
@@ -187,7 +187,7 @@ file	casper/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/system_deploy.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/tools.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/txn_coordinator.rs	T1	deferred	-	-	-	-	-	-
-file	casper/src/validate.rs	T3	deferred	-	-	-	-	-	-
+file	casper/src/validate.rs	T1	finding	deep	-	-	casper/src/validate.rs:slashable_senders C110	-	block validation replayed a peer's Slash without re-deriving who the block's justifications hold responsible; the rule is shared with the proposer here
 file	casper/src/validator_identity.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/vault_parser.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/discovery/grpc_kademlia_rpc.rs	T2	deferred	-	-	-	-	-	-
@@ -214,7 +214,7 @@ file	comm/src/transport/chunker.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/communication_response.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/generate_certificate_if_absent.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/grpc_transport_client.rs	T2	deferred	-	-	-	-	-	-
-file	comm/src/transport/grpc_transport_receiver.rs	T2	deferred	-	-	-	-	-	-
+file	comm/src/transport/grpc_transport_receiver.rs	T2	finding	deep	-	-	comm/src/transport/grpc_transport_receiver.rs:stream_byte_budget C113	-	the stream handler's only byte cap was per-stream while the stream count multiplied it; the aggregate budget and the unary transport decode cap both land in this receiver
 file	comm/src/transport/grpc_transport.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/grpc_transport_server.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/transport/hostname_trust_manager.rs	T3	deferred	-	-	-	-	-	-
@@ -262,7 +262,7 @@ file	models/src/block_version.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/casper/mod.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/casper/pretty_printer.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/casper/protocol/casper_message_protocol.rs	T3	deferred	-	-	-	-	-	-
-file	models/src/casper/protocol/casper_message.rs	T3	deferred	-	-	-	-	-	-
+file	models/src/casper/protocol/casper_message.rs	T1	finding	deep	-	-	models/src/casper/protocol/casper_message.rs:total_phlo_charge C109	-	the charge and the refund are computed here from wire-supplied phlo fields; both returned a bare i64 whose sign was unchecked, so a negative limit produced a usable amount
 file	models/src/casper/protocol/deploy_service.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/casper/protocol/mod.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/casper/protocol/packet_type_tag.rs	T3	deferred	-	-	-	-	-	-
@@ -329,7 +329,7 @@ file	node/src/runtime/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_call_ctx.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_environment.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_main.rs	T2	deferred	-	-	-	-	-	-
-file	node/src/runtime/node_runtime.rs	T3	deferred	-	-	-	-	-	-
+file	node/src/runtime/node_runtime.rs	T1	finding	deep	-	-	node/src/runtime/node_runtime.rs:admin_bind_host C112	-	the admin HTTP server bound api-server.host with an unauthenticated propose endpoint behind it; the bind is now loopback unless the operator opts in
 file	node/src/runtime/repl_runtime.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/instances.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/mod.rs	T3	deferred	-	-	-	-	-	-
@@ -355,7 +355,7 @@ file	rholang/src/matcher/par_count.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/matcher/par_spatial_matcher_utils.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/matcher/spatial_matcher.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/merging.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/native_state.rs	T3	deferred	-	-	-	-	-	-
+file	rholang/src/native_state.rs	T1	finding	deep	-	-	rholang/src/native_state.rs:pre_charge C109 rholang/src/native_state.rs:untrust C111	-	a negative phlo_limit credited the deployer's vault: the charge is a debit and the subtraction inverted. Read as part of the C109 fix; the vault arithmetic, the staking credit and the untrust revocation in this file were reviewed, the rest of the file's native surface was not
 file	rholang/src/normalizer.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/parser.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/pretty_printer.rs	T3	deferred	-	-	-	-	-	-
@@ -368,7 +368,7 @@ file	rholang/src/scheduler.rs	T1	deferred	-	-	-	-	-	-
 file	rholang/src/storage_printer.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/substitute.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/system_processes.rs	T3	deferred	-	-	-	-	-	-
+file	rholang/src/system_processes.rs	T1	finding	deep	-	-	rholang/src/system_processes.rs:multi_sig_rev_vault C114	-	the multi-signature vault name was wired to the single-signer rev_vault handler; it now refuses rather than silently providing weaker custody
 file	rholang/src/tree_proc.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/util/base58.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/util/mod.rs	T3	deferred	-	-	-	-	-	-
