@@ -336,13 +336,27 @@ else
   done < <(printf '%s\n' "$exempt_section" | grep -E '^\| `' || true)
 
   # The census. `*/src/*` rather than a crate list, so a new crate is covered the day it appears.
+  #
+  # **`-not -path '*/target/*'` was not enough, and the gap was measured rather than imagined.** Two
+  # locked git worktrees from an earlier workflow run were sitting under `.claude/worktrees/`, each a
+  # complete copy of the repository, and this census walked them: **150 files** that are not part of
+  # this tree were reported as untested source, and the check failed on a tree where every real file
+  # is accounted for. The instrument was reading a subject nobody intended — the class C80 names, and
+  # the third time in this register's history that the fix was to what was being scanned rather than
+  # to what was found.
+  #
+  # The exclusion is by path rather than by "contains a `.git`", which would be the general rule: a
+  # `find` for nested repositories per file is not worth its cost here, and `.claude/worktrees/` is
+  # where the harness puts them by construction. A worktree created anywhere else would be walked
+  # again, so this is a fix for the instance and a note for the class.
   bare=()
   while IFS= read -r f; do
     rel="${f#"$ROOT"/}"
     grep -qE '(^|[[:space:]{};])#\[(tokio::)?test' "$f" && continue
     [[ -n "${exempt[$rel]:-}" ]] && continue
     bare+=("$rel")
-  done < <(find "$ROOT" -path "$ROOT/*/src/*" -name '*.rs' -not -path '*/target/*' | sort)
+  done < <(find "$ROOT" -path "$ROOT/*/src/*" -name '*.rs' -not -path '*/target/*' \
+    -not -path '*/.claude/*' | sort)
 
   if (( ${#bare[@]} > 0 )); then
     if (( DEFERRED_OK )); then

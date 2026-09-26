@@ -9,6 +9,7 @@
 //! stays content-addressed, replayable, and queryable at an arbitrary state hash.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
@@ -74,6 +75,9 @@ pub struct InMemNativeStore {
     overlay: Mutex<BTreeMap<(u8, Blake2b256Hash), Option<Vec<u8>>>>,
     /// The base reader for keys not present in the overlay (updated on checkpoint/reset).
     reader: RwLock<Arc<dyn NativeHistoryReader>>,
+    /// Set once a non-noop reader is installed, so [`InMemNativeStore::live_entries`] can report that
+    /// it is no longer looking at the whole state.
+    has_history: AtomicBool,
 }
 
 impl InMemNativeStore {
@@ -81,6 +85,7 @@ impl InMemNativeStore {
         InMemNativeStore {
             overlay: Mutex::new(BTreeMap::new()),
             reader: RwLock::new(reader),
+            has_history: AtomicBool::new(false),
         }
     }
 
@@ -159,6 +164,36 @@ impl InMemNativeStore {
     /// Point the store at a new history root (called on checkpoint/reset).
     pub fn set_reader(&self, reader: Arc<dyn NativeHistoryReader>) {
         *self.reader.write().unwrap_or_else(|p| p.into_inner()) = reader;
+        self.has_history.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a backing history reader has been installed (AUDIT C109's invariant).
+    ///
+    /// [`Self::live_entries`] can enumerate the **overlay** and nothing else: `NativeHistoryReader`
+    /// exposes `get_native` and no iteration, so a store with a history root holds values this cannot
+    /// see. That is not a detail to paper over — a total that silently omits part of its subject is
+    /// the failure this repository keeps finding — so [`Self::live_entries`]' only caller refuses to
+    /// run when this is true. A store that cannot be enumerated is reported as such rather than
+    /// summed as though it had been.
+    pub fn has_base_history(&self) -> bool {
+        self.has_history.load(Ordering::SeqCst)
+    }
+
+    /// Every live `(key, value)` in the overlay under `prefix`, tombstones excluded.
+    ///
+    /// The overlay is the whole state for a store that never took a checkpoint
+    /// ([`Self::empty`]), which is the store the conservation tests build. See
+    /// [`Self::has_base_history`] for what this cannot see and why its caller must check.
+    pub fn live_entries(&self, prefix: u8) -> Vec<(Blake2b256Hash, Vec<u8>)> {
+        self.overlay
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter_map(|(&(p, key), value)| match value {
+                Some(v) if p == prefix => Some((key, v.clone())),
+                _ => None,
+            })
+            .collect()
     }
 }
 

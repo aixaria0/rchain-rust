@@ -855,6 +855,54 @@ impl NativeSystemState {
         self.write_balance(PREFIX_POS, &pos_vault_key(), balance);
     }
 
+    /// **The total REV this node's state holds, over every address it can see** (AUDIT C109).
+    ///
+    /// This is the invariant whose absence let the negative-`phlo_limit` mint live: the existing
+    /// `total_rev` is a *test helper* that sums a caller-supplied list of addresses plus the two named
+    /// vaults, so a credit to an address nobody listed is invisible to it. A conservation check that
+    /// only sees what the caller thought to name cannot see a mint into a name nobody thought of —
+    /// which is exactly what a mint looks like.
+    ///
+    /// It sums the Coop vault, the staking vault, and **every leaf under `PREFIX_VAULT`** — so a
+    /// balance created at an address the test never mentions is counted, and a charge that credits one
+    /// vault without debiting another shows up as a change in the total rather than as two numbers
+    /// that quietly disagree.
+    ///
+    /// **Errors when the store has a base history**, because then it cannot see the whole state:
+    /// `NativeHistoryReader` exposes a keyed read and no iteration, so after a checkpoint the trie
+    /// holds balances this enumeration does not reach. Returning a partial total would be the same
+    /// class of defect as the bug it exists to catch — an instrument reporting a number it cannot
+    /// support — so it refuses instead. The conservation tests build a store that never checkpoints,
+    /// where the overlay is the whole state and the total is complete.
+    pub async fn total_value(&self) -> Result<i64, String> {
+        if self.store.has_base_history() {
+            return Err(
+                "total_value: this store has a base history, whose balances cannot be enumerated \
+                 (NativeHistoryReader is keyed-read only), so a total over it would silently omit \
+                 part of the state"
+                    .to_string(),
+            );
+        }
+        let mut total: i64 = i64::from(self.coop_balance().await?)
+            .checked_add(i64::from(self.pos_vault_balance().await?))
+            .ok_or_else(|| "total_value: overflow summing the named vaults".to_string())?;
+        for (key, value) in self.store.live_entries(PREFIX_VAULT) {
+            let arr: [u8; 8] = value.as_slice().try_into().map_err(|_| {
+                format!(
+                    "total_value: vault leaf {} is {} bytes, expected 8",
+                    key.to_hex(),
+                    value.len()
+                )
+            })?;
+            let balance = NonNegI64::try_from(i64::from_le_bytes(arr))
+                .map_err(|_| format!("total_value: vault leaf {} is negative", key.to_hex()))?;
+            total = total
+                .checked_add(i64::from(balance))
+                .ok_or_else(|| "total_value: overflow summing vault balances".to_string())?;
+        }
+        Ok(total)
+    }
+
     /// Read a leaf holding a single little-endian `NonNegI64` — a balance. An absent leaf is zero,
     /// which is how the store distinguishes "never written" from "written as zero".
     async fn read_balance(
@@ -1649,6 +1697,100 @@ mod tests {
                 .unwrap_or(0);
         }
         total
+    }
+
+    /// **The conservation invariant behind AUDIT C109, and why it had to be built rather than
+    /// asserted.**
+    ///
+    /// `total_rev` above sums a list the *test* supplies. That is right for the transfers those tests
+    /// make between named accounts, and it is **blind by construction** to a credit at an address
+    /// nobody named — which is exactly what a mint is. So this test never enumerates the address it
+    /// checks: it compares [`NativeSystemState::total_value`] before and after, and an address that
+    /// appears out of nowhere moves the total.
+    #[tokio::test]
+    async fn total_value_sees_a_balance_at_an_address_no_test_named() {
+        let native = native_with(&[validator(1)], PosParams::default(), &[(validator(1), 10)]).await;
+        let before = native.total_value().await.unwrap();
+
+        // An address this test never mentions, credited straight into the store — from the
+        // invariant's point of view, exactly the shape a credit to an unlisted account has.
+        let ghost = "1111111111111111111111111111111111111111111111111111";
+        native
+            .store
+            .put(PREFIX_VAULT, vault_key(ghost), 500i64.to_le_bytes().to_vec());
+
+        assert_eq!(
+            native.total_value().await.unwrap(),
+            before + 500,
+            "a credit at an address nobody named must move the total. This is the assertion \
+             `total_rev` could not make, and its absence is why the negative-phlo_limit mint \
+             survived: the deployer's vault went up while every check looked at names it had listed"
+        );
+    }
+
+    /// Every operation that moves value is a **transfer**, so the total is invariant across all of
+    /// them: fund, bond, charge, refund, untrust, slash (AUDIT C109, C111).
+    ///
+    /// Each step asserts rather than only the endpoints, because a defect that both mints and burns
+    /// in equal measure nets to zero and would pass an end-to-end check — it is the step that did it
+    /// which has to be caught.
+    #[tokio::test]
+    async fn every_value_moving_operation_conserves_the_total() {
+        let native = native_with(
+            &[validator(1), validator(2)],
+            PosParams::default(),
+            &[(validator(1), 10)],
+        )
+        .await;
+        let v2 = validator(2);
+        fund(&native, &v2, 100).await;
+
+        // The deployer whose vault will be charged, funded through the store.
+        let deployer = PublicKey::new(vec![7u8; 65]);
+        let payer = RevAddress::from_public_key(&deployer).unwrap().to_base58();
+        native.set_vault_balance(&payer, NonNegI64::try_from(60).unwrap());
+
+        let mut total = native.total_value().await.unwrap();
+        macro_rules! conserved {
+            ($what:expr) => {{
+                let after = native.total_value().await.unwrap();
+                assert_eq!(
+                    after, total,
+                    "{} moved value — every one of these is a transfer, so the total is invariant",
+                    $what
+                );
+                total = after;
+            }};
+        }
+
+        native
+            .bond(&v2, NonNegI64::try_from(40).unwrap(), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        conserved!("bond");
+
+        native
+            .pre_charge(&deployer, NonNegI64::try_from(25).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        conserved!("pre_charge");
+
+        native
+            .refund(&deployer, NonNegI64::try_from(10).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        conserved!("refund");
+
+        // Revoking trust must move **nothing**: it used to confiscate the target's bond (C111).
+        native.untrust(&validator(1), &v2).await.unwrap().unwrap();
+        conserved!("untrust");
+
+        // A slash leaves the staking vault for the Coop vault.
+        native.slash(&v2).await.unwrap().unwrap();
+        conserved!("slash");
     }
 
     #[test]
