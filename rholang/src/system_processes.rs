@@ -1234,6 +1234,24 @@ impl SystemProcesses {
         })
     }
 
+    /// `sys:authToken:ops` — the system auth token's `check`.
+    ///
+    /// **This is vestigial, and it is recorded here so it is not mistaken for a live control.** In the
+    /// Scala this was load-bearing: `Pos.rhox`'s `slash` took a `sysAuthToken` and refused without
+    /// one, so the *system* could slash and an arbitrary deploy could not. In this port no production
+    /// code mints the token — `RhoSysAuthToken::apply` appears only in this file's tests — so `check`
+    /// answers `false` for every argument a program can construct, and nothing is gated on it.
+    ///
+    /// That is why **it is not a finding**, checked rather than assumed before it was dismissed: the
+    /// answer fails closed (a token nobody can hold is never accepted), and the rholang surface
+    /// grammar cannot write a `GSysAuthToken` unforgeable at all, so a deploy cannot present one. The
+    /// privilege it used to guard moved rather than vanished — `slash` is now a block-level system
+    /// deploy, and what stops a proposer abusing it is AUDIT C110's justification check on every
+    /// validating node, not a capability a contract holds.
+    ///
+    /// Left in place rather than removed because the urn is part of the oracle's surface and a deploy
+    /// that looks it up should find what the Scala has. A future reader who sees an untokened
+    /// capability check should read this paragraph before treating it as a hole.
     fn sys_auth_token_ops(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
