@@ -220,6 +220,85 @@ mod tests {
         }
     }
 
+    /// **The end-to-end test C116 was missing.** The handler-seam tests above pin the guard's
+    /// *decision*; only this pins that a real TLS handshake admits an honest peer and that the
+    /// identity read at the accept is the one the client certificate actually carries — the part
+    /// that cannot be observed without a socket. It is the Kademlia mirror of
+    /// `transport::grpc_transport::tests:send_round_trips_over_socket`.
+    ///
+    /// **The client announces a public host on purpose.** Its `Ping` names `local`, and the SSRF
+    /// guard rejects a loopback host — correctly, as C117 tightened. So the client's *announced*
+    /// address is a documentation-range literal while the *dialled* address is loopback, which is the
+    /// only arrangement in which the round trip exercises the identity check rather than the SSRF one.
+    #[tokio::test]
+    async fn a_ping_round_trips_over_mutual_tls() {
+        use crate::discovery::grpc_kademlia_rpc::GrpcKademliaRpc;
+        use crate::discovery::KademliaRpc;
+        use crate::transport::generate_certificate_if_absent::generate_certificate;
+        use crate::transport::hostname_trust_manager::{public_address_of_cert, server_config};
+        use rchain_shared::refined::Port;
+        use rustls::pki_types::CertificateDer;
+        use std::time::Duration;
+
+        fn node_id_of(cert_pem: &str) -> String {
+            let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes()).unwrap();
+            rchain_shared::base16::encode(
+                &public_address_of_cert(&CertificateDer::from(pem.contents)).unwrap(),
+            )
+        }
+
+        let (server_cert, server_key) = generate_certificate().expect("a server certificate");
+        let (client_cert, client_key) = generate_certificate().expect("a client certificate");
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+
+        let peer_at = |cert: &str, host: &str| {
+            PeerNode::from(
+                crate::peer_node::NodeIdentifier::new(
+                    rchain_shared::base16::unsafe_decode(&node_id_of(cert)),
+                ),
+                host.to_string(),
+                Port::new(port),
+                Port::new(port),
+            )
+        };
+        // Dialled over loopback; announced as public. See the test's doc comment.
+        let server_peer = peer_at(&server_cert, "127.0.0.1");
+        let client_peer = peer_at(&client_cert, "203.0.113.7");
+
+        let h = Arc::new(Handlers::default());
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let tls = server_config(&server_cert, &server_key).expect("a server TLS config");
+        let srv = server(h.clone());
+        tokio::spawn(async move {
+            let _ = serve(addr, srv, tls).await;
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let rpc = GrpcKademliaRpc::new(
+            client_peer,
+            "testnet".to_string(),
+            Duration::from_secs(5),
+            &client_cert,
+            &client_key,
+        )
+        .expect("a client TLS config");
+
+        assert!(
+            rpc.ping(&server_peer).await,
+            "an honest peer must complete the mutual-TLS handshake and be answered"
+        );
+        assert_eq!(
+            h.pinged.lock().unwrap().len(),
+            1,
+            "and its ping must reach the handler — a handshake that succeeds but a guard that \
+             refuses everything would answer false, and this asserts both halves"
+        );
+    }
+
     fn peer(byte: u8) -> PeerNode {
         PeerNode::from(
             crate::peer_node::NodeIdentifier::new(vec![byte; 4]),
