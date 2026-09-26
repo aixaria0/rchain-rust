@@ -27,14 +27,14 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 
 | kind | roster | rows | reviewed | finding | sampled | cleared | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `file` | 350 | 350 | 8 | 8 | 0 | 0 | 342 | 0 | 0 |
-| `ingress` | 44 | 44 | 0 | 0 | 0 | 0 | 44 | 0 | 0 |
-| `law` | 60 | 60 | 0 | 0 | 0 | 0 | 60 | 0 | 0 |
+| `file` | 350 | 350 | 17 | 17 | 0 | 0 | 333 | 0 | 0 |
+| `ingress` | 44 | 44 | 4 | 4 | 0 | 0 | 40 | 0 | 0 |
+| `law` | 60 | 60 | 6 | 2 | 0 | 4 | 54 | 0 | 0 |
 | `site` | — | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `class` | 6 | 6 | 0 | 0 | 0 | 0 | 6 | 0 | 0 |
 | `process` | 30 | 30 | 0 | 0 | 0 | 0 | 30 | 0 | 0 |
 | `config` | 104 | 104 | 0 | 0 | 0 | 0 | 104 | 0 | 0 |
-| `tool` | 21 | 21 | 0 | 0 | 0 | 0 | 21 | 0 | 0 |
+| `tool` | 21 | 21 | 3 | 3 | 0 | 0 | 18 | 0 | 0 |
 | `roster` | — | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 
 **What the columns mean, so the table is read the way it was written.** The first column is the derived
@@ -55,18 +55,18 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 
 | tier | rows | reviewed | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|
-| T1 | 28 | 6 | 22 | 0 | 0 |
+| T1 | 34 | 14 | 20 | 0 | 0 |
 | T2 | 21 | 2 | 19 | 0 | 0 |
-| T3 | 567 | 0 | 567 | 0 | 0 |
+| T3 | 561 | 14 | 547 | 0 | 0 |
 
-**567 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
+**561 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
 files the register has already tiered, the tier above is *derived* from that table — a judgement
 inherited, not invented. For every other item the seed writes T3 because it is the lowest tier, and that
 is the consequence to read with it: **a T3 row is not a file that was judged presentational, it is a file
 nobody has classified.** Raising one is a review act, and the cross-tab is what makes the backlog of
 those acts visible instead of lost in a total.
 
-**The 28 T1 rows are the ones that matter, and they are all `deferred`.** That is the honest state of
+**The 34 T1 rows are the ones that matter, and they are all `deferred`.** That is the honest state of
 this audit at the moment it was emitted, and it is the sentence a reader should carry away: the modules
 that can fork the chain or lose funds are *named* here and unreviewed. A T1 row that cannot be read
 deeply is `deferred` or `unreachable`, never `cleared shallow` — clause (e) of check 15 refuses that
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at 2d0a660b2.*
+*Emitted from a tree at a7de9efe1.*

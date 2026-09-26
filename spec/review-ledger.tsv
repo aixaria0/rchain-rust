@@ -134,7 +134,7 @@ file	block-storage/src/errors.rs	T3	deferred	-	-	-	-	-	-
 file	block-storage/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	block-storage/src/syntax.rs	T3	deferred	-	-	-	-	-	-
 file	block-storage/src/test_support.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/api/block_api_impl.rs	T3	deferred	-	-	-	-	-	-
+file	casper/src/api/block_api_impl.rs	T3	finding	deep	-	-	casper/src/api/block_api_impl.rs:exploratory_deploy C129	-	exploratory_deploy reads the highest-height block and an arbitrary hash from that height, so the no-hash default is the non-finalized chain tip; commit 63c535c6d reverted the fix R19 records as landed and never touched the register, so the row is false of this tree and nothing tracks the defect
 file	casper/src/api/block_api.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/api/block_report_api.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/api/graph_generator.rs	T3	deferred	-	-	-	-	-	-
@@ -146,7 +146,7 @@ file	casper/src/blocks/block_processor.rs	T1	deferred	-	-	-	-	-	-
 file	casper/src/blocks/block_receiver.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/block_retriever.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/mod.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/blocks/proposer/block_creator.rs	T3	deferred	-	-	-	-	-	-
+file	casper/src/blocks/proposer/block_creator.rs	T3	finding	deep	-	-	casper/src/blocks/proposer/block_creator.rs:create_block C123	-	create_block selects every valid pooled deploy and turns the count into a u8 for the randomness seed, so a pool of 256 makes the seed conversion fail before any state work and the proposer can never produce a block; the pool cap of 10_000 and the per-block capacity of 255 are set in different places
 file	casper/src/blocks/proposer/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/proposer/propose_result.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/proposer/proposer.rs	T3	deferred	-	-	-	-	-	-
@@ -162,8 +162,8 @@ file	casper/src/engine/node_launch.rs	T2	deferred	-	-	-	-	-	-
 file	casper/src/engine/node_running.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/engine/node_syncing.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/event_converter.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/gateway/ledger.rs	T1	deferred	-	-	-	-	-	-
-file	casper/src/gateway/mod.rs	T1	deferred	-	-	-	-	-	-
+file	casper/src/gateway/ledger.rs	T1	finding	deep	-	-	casper/src/gateway/ledger.rs:TxnLedger C125	-	the ledger is a bare KeyValueTypedStore keyed by hash(txn_id) with plain get and put, which is the store the non-atomic check-then-act above runs on; it also has no cap and no expiry, so a scanner walks it in full
+file	casper/src/gateway/mod.rs	T1	finding	deep	-	-	casper/src/gateway/mod.rs:GatewayTxn C125	-	run() reads the coordinator ledger, decides there is no record, then writes one, with no lock, no per-txn_id serialization and no compare-and-set on the durable store, so two concurrent calls for one txn_id both open the transaction and the record can describe effects that were never applied
 file	casper/src/genesis/contracts.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/genesis/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/genesis/rgov.rs	T3	deferred	-	-	-	-	-	-
@@ -187,7 +187,7 @@ file	casper/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/system_deploy.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/tools.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/txn_coordinator.rs	T1	deferred	-	-	-	-	-	-
-file	casper/src/validate.rs	T1	finding	deep	-	-	casper/src/validate.rs:slashable_senders C110	-	block validation replayed a peer's Slash without re-deriving who the block's justifications hold responsible; the rule is shared with the proposer here
+file	casper/src/validate.rs	T1	finding	deep	-	-	casper/src/validate.rs:slashable_senders C110 casper/src/validate.rs:block_summary C120	-	block validation replayed a peer's Slash without re-deriving who the block's justifications hold responsible; the rule is shared with the proposer here
 file	casper/src/validator_identity.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/vault_parser.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/discovery/grpc_kademlia_rpc.rs	T2	deferred	-	-	-	-	-	-
@@ -202,7 +202,7 @@ file	comm/src/discovery/peer_table.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/errors.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/peer_node.rs	T3	deferred	-	-	-	-	-	-
-file	comm/src/rp/connect.rs	T3	deferred	-	-	-	-	-	-
+file	comm/src/rp/connect.rs	T3	finding	deep	-	-	comm/src/rp/connect.rs:find_and_connect C136	-	find_and_connect awaits connect() for every peer in the routing table serially with no cap, and MAX_CONNECTIONS is applied to the result rather than inside the loop, so one peer's fabricated table stalls the RP loop for hours; the verifier assessed this as a faithful port of the Scala shape, so it may belong in the deviation register rather than as a defect
 file	comm/src/rp/handle_messages.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/rp/mod.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/rp/protocol_helper.rs	T3	deferred	-	-	-	-	-	-
@@ -244,7 +244,7 @@ file	crypto/src/public_key.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/signatures/ed25519.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/signatures/mod.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/signatures/secp256k1_eth.rs	T3	deferred	-	-	-	-	-	-
-file	crypto/src/signatures/secp256k1.rs	T3	deferred	-	-	-	-	-	-
+file	crypto/src/signatures/secp256k1.rs	T3	finding	deep	-	-	crypto/src/signatures/secp256k1.rs:verify_bytes C134	-	verify_bytes hands the caller's data to verify_prehash, which truncates anything longer than 32 bytes to its leftmost 32, so the rho secp256k1Verify contract returns a verdict over the message's prefix rather than the message; demonstrated by verifying msg32 concatenated with an unsigned suffix
 file	crypto/src/signatures/signatures_alg.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/signatures/signed.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/certificate_helper.rs	T3	deferred	-	-	-	-	-	-
@@ -255,7 +255,7 @@ file	crypto/src/util/sorting.rs	T3	deferred	-	-	-	-	-	-
 file	graphz/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/ast.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/block_hash.rs	T3	deferred	-	-	-	-	-	-
-file	models/src/block_metadata.rs	T3	deferred	-	-	-	-	-	-
+file	models/src/block_metadata.rs	T3	finding	deep	-	-	models/src/block_metadata.rs:slashable C122	-	BlockMetadata::from_proto hard-codes slashable:false and the proto has no such field, so every metadata a validator can read loses the flag on the store round-trip and the C110 slash rule has no reachable input; the whole justified-confiscation mechanism is inert
 file	models/src/block/mod.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/block/state_hash.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/block_version.rs	T3	deferred	-	-	-	-	-	-
@@ -329,11 +329,11 @@ file	node/src/runtime/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_call_ctx.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_environment.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_main.rs	T2	deferred	-	-	-	-	-	-
-file	node/src/runtime/node_runtime.rs	T1	finding	deep	-	-	node/src/runtime/node_runtime.rs:admin_bind_host C112	-	the admin HTTP server bound api-server.host with an unauthenticated propose endpoint behind it; the bind is now loopback unless the operator opts in
+file	node/src/runtime/node_runtime.rs	T1	finding	deep	-	-	node/src/runtime/node_runtime.rs:admin_bind_host C112 node/src/runtime/node_runtime.rs:admin_bind_host C132	-	the admin HTTP server bound api-server.host with an unauthenticated propose endpoint behind it; the bind is now loopback unless the operator opts in
 file	node/src/runtime/repl_runtime.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/instances.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/mod.rs	T3	deferred	-	-	-	-	-	-
-file	node/src/web/http.rs	T3	deferred	-	-	-	-	-	-
+file	node/src/web/http.rs	T3	finding	deep	-	-	node/src/web/http.rs:gateway_or_not_found C121 node/src/web/http.rs:admin_router C133	-	the public API router mounts the fund-moving POST /api/txn with no authentication, no rate limiter and no bound on the leg vector, while every sibling state-mutating route consults the limiter; the admin router's own CORS comment promises a protection a simple cross-origin POST never has to ask for
 file	node/src/web/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/reporting.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/status_info.rs	T3	deferred	-	-	-	-	-	-
@@ -352,10 +352,10 @@ file	rholang/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/matcher/maximum_bipartite_match.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/matcher/mod.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/matcher/par_count.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/matcher/par_spatial_matcher_utils.rs	T3	deferred	-	-	-	-	-	-
+file	rholang/src/matcher/par_spatial_matcher_utils.rs	T3	finding	deep	-	-	rholang/src/matcher/par_spatial_matcher_utils.rs:min_max_subsets C124	-	the subset enumeration materializes 2^n pairs before the product check that is supposed to refuse it can run, and 2^20 already exceeds MAX_SPLIT_COMBINATIONS, so the bound can never prevent the work it names; measured at 15.9 GB RSS and 38 s of uncharged CPU from a 217-byte deploy
 file	rholang/src/matcher/spatial_matcher.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/merging.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/native_state.rs	T1	finding	deep	-	-	rholang/src/native_state.rs:pre_charge C109 rholang/src/native_state.rs:untrust C111	-	a negative phlo_limit credited the deployer's vault: the charge is a debit and the subtraction inverted. Read as part of the C109 fix; the vault arithmetic, the staking credit and the untrust revocation in this file were reviewed, the rest of the file's native surface was not
+file	rholang/src/native_state.rs	T1	finding	deep	-	-	rholang/src/native_state.rs:pre_charge C109 rholang/src/native_state.rs:untrust C111 rholang/src/native_state.rs:withdraw C135	-	a negative phlo_limit credited the deployer's vault: the charge is a debit and the subtraction inverted. Read as part of the C109 fix; the vault arithmetic, the staking credit and the untrust revocation in this file were reviewed, the rest of the file's native surface was not
 file	rholang/src/normalizer.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/parser.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/pretty_printer.rs	T3	deferred	-	-	-	-	-	-
@@ -482,7 +482,7 @@ ingress	http:/api/data-at-name	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/deploy	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/deploy/{deploy_id}	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/deploys	T3	deferred	-	-	-	-	-	-
-ingress	http:/api/explore-deploy	T3	deferred	-	-	-	-	-	-
+ingress	http:/api/explore-deploy	T3	finding	deep	-	-	casper/src/api/block_api_impl.rs:exploratory_deploy C129	-	the no-hash default reads the non-finalized chain tip, so an unauthenticated caller's reads are anchored to a block a byzantine proposer can pick; R19 records this as fixed and it is not
 ingress	http:/api/faucet	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/is-finalized/{hash}	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/last-finalized-block	T3	deferred	-	-	-	-	-	-
@@ -491,20 +491,20 @@ ingress	http:/api/shards	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/status	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/trace	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/transactions/{hash}	T3	deferred	-	-	-	-	-	-
-ingress	http:/api/txn	T3	deferred	-	-	-	-	-	-
+ingress	http:/api/txn	T3	finding	deep	-	-	node/src/web/http.rs:gateway_or_not_found C121	-	unauthenticated and unrated POST that spends the node's own validator REV to a caller-chosen address, on the wildcard-bound public server; every sibling capability path was hardened and this one was left
 ingress	http:/api/txn/{txn_id}	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/block/{hash}	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/blocks	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/capabilities	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/deploy	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/deploys	T3	deferred	-	-	-	-	-	-
-ingress	http:/api/v1/explore-deploy	T3	deferred	-	-	-	-	-	-
+ingress	http:/api/v1/explore-deploy	T3	finding	deep	-	-	casper/src/api/block_api_impl.rs:exploratory_deploy C129	-	the versioned twin of the same tip read on the same unauthenticated route
 ingress	http:/api/v1/faucet	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/openapi.json	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/propose	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/shards	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/status	T3	deferred	-	-	-	-	-	-
-ingress	http:/api/v1/txn	T3	deferred	-	-	-	-	-	-
+ingress	http:/api/v1/txn	T3	finding	deep	-	-	node/src/web/http.rs:gateway_or_not_found C121	-	the versioned twin of the same unauthenticated fund-moving route, mounted from the same handler on the same wildcard-bound public router
 ingress	http:/api/v1/txn/{txn_id}	T3	deferred	-	-	-	-	-	-
 ingress	http:/metrics	T3	deferred	-	-	-	-	-	-
 ingress	http:/reporting/trace	T3	deferred	-	-	-	-	-	-
@@ -514,7 +514,7 @@ ingress	p2p:grpc_kademlia_rpc_server:send_lookup	T3	deferred	-	-	-	-	-	-
 ingress	p2p:grpc_kademlia_rpc_server:send_ping	T3	deferred	-	-	-	-	-	-
 ingress	p2p:grpc_transport_receiver:send	T3	deferred	-	-	-	-	-	-
 ingress	p2p:grpc_transport_receiver:stream	T3	deferred	-	-	-	-	-	-
-law	10	T3	deferred	-	-	-	-	-	-
+law	10	T1	cleared	deep	-	-	rspace/src/history/radix_tree.rs:hash_node	-	mutation sweep: making every node hash alike made this witness FAIL (loudly, at the tree's own internal assertion), so it catches a degenerate mechanism and not merely a structural property. The tree's child maps are BTreeMaps, so order-independence is also structural; the mutation shows the test is not resting on that alone
 law	11	T3	deferred	-	-	-	-	-	-
 law	12	T3	deferred	-	-	-	-	-	-
 law	13	T3	deferred	-	-	-	-	-	-
@@ -527,10 +527,10 @@ law	16c	T3	deferred	-	-	-	-	-	-
 law	16d	T3	deferred	-	-	-	-	-	-
 law	17a	T3	deferred	-	-	-	-	-	-
 law	17b	T3	deferred	-	-	-	-	-	-
-law	18	T3	deferred	-	-	-	-	-	-
+law	18	T1	cleared	deep	-	-	block-storage/src/dag/metadata_store.rs:validate_dag_state	-	mutation sweep: deleting the contiguity check made the two negative witnesses FAIL and left the positive ones green, which is the correct split. The empty-DAG and missing-lowest-height cases were not separately mutated
 law	19	T3	deferred	-	-	-	-	-	-
-law	1a	T3	deferred	-	-	-	-	-	-
-law	1b	T3	deferred	-	-	-	-	-	-
+law	1a	T1	finding	deep	-	-	models/src/property_tests.rs:law1_sorting_is_idempotent C118	-	the row's first named witness cannot fail if sorting is deleted, because idempotence is what identity has; the row is still covered by its sibling witness, which does fail
+law	1b	T1	cleared	deep	-	-	models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike	-	mutation sweep: replacing sort_pars with its input made this witness FAIL, so it is a real falsifier. Only the collection sort was mutated; the arithmetic of the comparison itself was not
 law	2	T3	deferred	-	-	-	-	-	-
 law	20	T3	deferred	-	-	-	-	-	-
 law	21	T3	deferred	-	-	-	-	-	-
@@ -571,8 +571,8 @@ law	5	T3	deferred	-	-	-	-	-	-
 law	50a	T3	deferred	-	-	-	-	-	-
 law	50b	T3	deferred	-	-	-	-	-	-
 law	6	T3	deferred	-	-	-	-	-	-
-law	7	T3	deferred	-	-	-	-	-	-
-law	8	T3	deferred	-	-	-	-	-	-
+law	7	T1	cleared	deep	-	-	rspace/src/hashing/stable_hash_provider.rs:hash_channels	-	mutation sweep: removing the sort in hash_hashes left the witness GREEN and that is correct — hash_seq sorts the same hashes upstream, so the mutation removed a redundant duplicate rather than the mechanism. A mutation masked by a second implementation is not a deletion
+law	8	T1	finding	deep	-	-	rspace/src/property_tests.rs:law8_comm_sorts_produces C119	-	the registered witness covers Comm::apply's produce sort but not the content-addressed selection; the selector is covered by space_matcher's own test, which no law row names
 law	9	T3	deferred	-	-	-	-	-	-
 process	rho:block:data	T3	deferred	-	-	-	-	-	-
 process	rho:crypto:blake2b256Hash	T3	deferred	-	-	-	-	-	-
@@ -607,15 +607,15 @@ process	sys:authToken:ops	T3	deferred	-	-	-	-	-	-
 roster	self	T3	deferred	-	-	-	-	spec/REVIEW-LEDGER.md	the ledger's own machinery. No adversarial review of the ledger itself yet; check 15 is the mechanical half only, and it is this unit's own output — the pass that reviews the instruments has not run against it.
 tool	.github/workflows/build-rnode.yml	T3	deferred	-	-	-	-	-	-
 tool	.github/workflows/ci.yml	T3	deferred	-	-	-	-	-	-
-tool	.github/workflows/coverage.yml	T3	deferred	-	-	-	-	-	-
+tool	.github/workflows/coverage.yml	T3	finding	deep	-	-	.github/workflows/coverage.yml:permissions C137	-	coverage.yml declares no permissions block, so it runs with the repository default token scope, and resolves five floating action refs of which dtolnay/rust-toolchain@stable is a moving branch; it triggers on every push to dev and main, and the hardening the other workflows got is half-applied
 tool	.github/workflows/devnet-fuzz.yml	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-instruments.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-partiality.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-test-register.sh	T3	deferred	-	-	-	-	-	-
-tool	tools/audit-type-system.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/audit-type-system.sh	T3	finding	deep	-	-	tools/audit-type-system.sh:PAT_SILENT C126 tools/audit-type-system.sh:REFINEMENT_FILES C127 tools/audit-type-system.sh:unsafe C130 tools/audit-type-system.sh:ESCAPE_ROSTER_AWK C131	-	four holes in the partiality gate, each demonstrated with a probe in an isolated worktree: the silent class is line-anchored so a rustfmt-wrapped try_from().unwrap_or(0) is invisible, the escape class reads only eleven files so a Deref impl in a sibling file is green, the unsafe class matches only an unsafe block, and G1's exclusion of public-field newtypes is unbacked for any name not already rostered
 tool	tools/audit-vendored-sources.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/check-lean-conformance.sh	T3	deferred	-	-	-	-	-	-
-tool	tools/check-rust-witnesses.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/check-rust-witnesses.sh	T3	finding	deep	-	-	tools/check-rust-witnesses.sh:witness C128	-	the witness verdict matches 'test <name> ...' without requiring '... ok', so libtest's '... ignored' line counts as a pass and an #[ignore]d test satisfies the law register's Rust half; demonstrated live with a witness that panics if it ever runs
 tool	tools/devnet-fuzz.py	T3	deferred	-	-	-	-	-	-
 tool	tools/devnet.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/devnet-test.sh	T3	deferred	-	-	-	-	-	-
