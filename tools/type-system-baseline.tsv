@@ -54,10 +54,18 @@
 # written `saturating_add`, so it adds no site — a ratchet is for sites someone reviewed, and that one
 # needs no review.
 #
+# div 50 -> 53 (AUDIT C113), raised deliberately. The three are the aggregate stream budget's own
+# arithmetic in `comm/src/transport/grpc_transport_receiver.rs`: `content_data.len().div_ceil(unit)`
+# and its two companions `stream_byte_budget(..) / STREAM_BUDGET_UNIT` in the test and production
+# constructors. Each divisor is a non-zero `const`, so the class the gate cannot judge (a variable
+# divisor that might be zero) does not arise at any of them; they are the metering arithmetic that
+# makes the budget divide into `u32` permits, and they are new because the bound is new.
+# `cast`/`index`/`overflow` are unmoved.
+#
 # class	count
 cast	336
 lax	10
 get	0
 index	313
-div	50
+div	53
 overflow	41

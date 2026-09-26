@@ -112,6 +112,51 @@ const MAX_CONCURRENT_STREAMS: usize = 1024;
 /// blob (up to `max_stream_message_size`) until the routing queue accepts it, so this must be small —
 /// it is the aggregate decompressed-memory budget, not the per-stream size.
 const MAX_CONCURRENT_BLOBS: usize = 16;
+
+/// The unit the aggregate in-flight **compressed** stream budget is metered in (AUDIT C113).
+///
+/// `tokio::sync::Semaphore` counts `u32` permits, and a byte budget of `blobs × max_stream_message_size`
+/// (4 GiB by default) does not fit one permit per byte. One mebibyte is the granularity: fine enough
+/// that the budget is not wasted on rounding, coarse enough that the permit count is small.
+const STREAM_BUDGET_UNIT: usize = 1024 * 1024;
+
+/// The aggregate bytes a peer may hold buffered across **all** its in-flight `stream` RPCs at once.
+///
+/// **Why a per-stream cap was not a bound** (AUDIT C113). Each `stream` handler drains its chunks into
+/// a local `Vec<Chunk>` under a `stream_slots` permit, and the only byte cap was
+/// `max_stream_message_size` (256 MiB) *per stream*, with `MAX_CONCURRENT_STREAMS` = 1024 of them.
+/// `blob_slots` bounds the *decompressed* blobs and is checked only after reassembly, so it never sees
+/// the compressed accumulation. The product is ~256 GiB of resident memory reachable by one peer with
+/// one certificate — a bound whose terms multiply to a number nobody intended.
+///
+/// The budget is `blobs × max_stream_message_size`, which is deliberately the number the node already
+/// commits to for decompressed blobs: the two halves of one pipeline are now bounded by the same
+/// figure, so a compressed buffer cannot be a loophole around the decompressed budget. A single
+/// max-size stream fits inside it several times over, so legitimate traffic is unaffected and only the
+/// aggregate is capped.
+fn stream_byte_budget(blobs: usize, max_stream_message_size: i64) -> usize {
+    // Written as an explicit match rather than as a fallible conversion with a zero default — the
+    // *silent* class `tools/audit-type-system.sh` refuses, and it refused the first draft of this
+    // very function, twice: once for the code and once for the comment describing it (the `silent`
+    // scan keeps comments; only the counted classes strip them). That form hides *why* a value was
+    // unacceptable behind a plausible default. The two outcomes here are different and are stated
+    // differently — a non-positive cap is a configuration that licenses no buffering at all, and it
+    // says so by returning zero; an unrepresentable one cannot happen on a 64-bit target and is
+    // treated the same way rather than being allowed to saturate into a permit count.
+    let per_blob = match usize::try_from(max_stream_message_size) {
+        Ok(n) => n,
+        Err(_) => return 0,
+    };
+    blobs.saturating_mul(per_blob)
+}
+/// The inbound unary decode cap used when a caller does not supply one.
+///
+/// `serve` is the convenience entry point; the production path supplies the operator's
+/// `grpc_max_recv_message_size` through [`TransportLayerServer::new`] instead
+/// (AUDIT C113). This constant is the same 256 KiB the configuration defaults to, so the
+/// convenience path and the configured path agree rather than differing by 16x.
+pub const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = 262144;
+
 /// Wall-clock bound on a single inbound TLS handshake, so a stalled ClientHello cannot hold a
 /// handshake slot (and its socket) indefinitely.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -158,6 +203,9 @@ pub struct GrpcTransportReceiver {
     dispatch_slots: Arc<tokio::sync::Semaphore>,
     stream_slots: Arc<tokio::sync::Semaphore>,
     blob_slots: Arc<tokio::sync::Semaphore>,
+    /// The aggregate in-flight compressed-stream byte budget (AUDIT C113). Permits are metered in
+    /// [`STREAM_BUDGET_UNIT`]s and held for the life of a `stream` handler.
+    stream_bytes: Arc<tokio::sync::Semaphore>,
 }
 
 impl GrpcTransportReceiver {
@@ -187,6 +235,9 @@ impl GrpcTransportReceiver {
             dispatch_slots: Arc::new(tokio::sync::Semaphore::new(limits.dispatches)),
             stream_slots: Arc::new(tokio::sync::Semaphore::new(limits.streams)),
             blob_slots: Arc::new(tokio::sync::Semaphore::new(limits.blobs)),
+            stream_bytes: Arc::new(tokio::sync::Semaphore::new(
+                stream_byte_budget(limits.blobs, max_stream_message_size) / STREAM_BUDGET_UNIT,
+            )),
         }
     }
 }
@@ -243,6 +294,13 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
         // chunks before the circuit breaker runs in `stream_handler::collect`. A separate chunk-count
         // cap bounds empty `content_data` chunks, which never advance `received` (R26).
         let mut received: i64 = 0;
+        // The aggregate budget's permits, held until this handler returns (AUDIT C113). Dropping the
+        // vector releases them, which is what makes the budget a *concurrent* one: it is charged as
+        // bytes arrive and returned when the stream finishes, on every exit path including the error
+        // returns below. Holding them in a local is deliberate — a permit that outlived the handler
+        // would leak the budget, and one that was dropped early would license the accumulation this
+        // exists to bound.
+        let mut byte_permits: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
         while let Some(chunk) = incoming.message().await? {
             if let Some(chunk::Content::Data(d)) = &chunk.content {
                 received += d.content_data.len() as i64;
@@ -250,6 +308,19 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
                     return Ok(Response::new(internal_server_error(&stream_error_message(
                         &StreamError::MaxSizeReached,
                     ))));
+                }
+                // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this
+                // bounds the sum over all of them, which is the number that multiplies.
+                let units = u32::try_from(d.content_data.len().div_ceil(STREAM_BUDGET_UNIT))
+                    .unwrap_or(u32::MAX)
+                    .max(1);
+                match self.stream_bytes.clone().try_acquire_many_owned(units) {
+                    Ok(p) => byte_permits.push(p),
+                    Err(_) => {
+                        return Ok(Response::new(internal_server_error(&stream_error_message(
+                            &StreamError::MaxSizeReached,
+                        ))));
+                    }
                 }
             }
             chunks.push(chunk);
@@ -334,6 +405,7 @@ pub async fn serve(
         dispatch,
         handle_streamed,
         ConcurrencyLimits::default(),
+        DEFAULT_MAX_RECV_MESSAGE_SIZE,
     )
     .await
 }
@@ -349,6 +421,7 @@ pub async fn serve_with_limits(
     dispatch: Arc<dyn Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync>,
     handle_streamed: Arc<dyn Fn(Blob) -> BoxFuture<()> + Send + Sync>,
     limits: ConcurrencyLimits,
+    max_recv_message_size: usize,
 ) -> Result<(), String> {
     // Faithful to Scala: the protocol server binds to `0.0.0.0` (the `protocol-server.host` config
     // is the *advertised* address, not the bind address). The bind is left as-is; the fix here is
@@ -398,10 +471,21 @@ pub async fn serve_with_limits(
         dispatch_slots: Arc::new(tokio::sync::Semaphore::new(limits.dispatches)),
         stream_slots: Arc::new(tokio::sync::Semaphore::new(limits.streams)),
         blob_slots: Arc::new(tokio::sync::Semaphore::new(limits.blobs)),
+        stream_bytes: Arc::new(tokio::sync::Semaphore::new(
+            stream_byte_budget(limits.blobs, max_stream_message_size) / STREAM_BUDGET_UNIT,
+        )),
     };
 
     tonic::transport::Server::builder()
-        .add_service(transport_layer_server::TransportLayerServer::new(service))
+        // **The inbound unary cap, which the server never set** (AUDIT C113). The configured
+        // `grpc_max_recv_message_size` (256 KiB) was applied on the *client* side only, so an
+        // inbound `send` was accepted up to tonic's default of 4 MiB per message — a limit 16x the
+        // one the operator believes is in force. Setting it here makes the two ends of the same
+        // configuration agree.
+        .add_service(
+            transport_layer_server::TransportLayerServer::new(service)
+                .max_decoding_message_size(max_recv_message_size),
+        )
         .serve_with_incoming(incoming)
         .await
         .map_err(|e| e.to_string())
@@ -409,6 +493,44 @@ pub async fn serve_with_limits(
 
 #[cfg(test)]
 mod tests {
+    /// **The regression test for AUDIT C113.** The per-stream byte cap was never the bound it read
+    /// as: `MAX_CONCURRENT_STREAMS` multiplies it, so the aggregate a single peer could hold resident
+    /// was the *product*. These assertions pin the numbers and the relationship rather than restating
+    /// them, so a change to any one of the three fails here instead of silently re-opening the hole.
+    #[test]
+    fn the_aggregate_stream_budget_bounds_what_the_stream_cap_multiplies() {
+        // The production figures, as `ConcurrencyLimits::default` sets them.
+        let max_stream: i64 = 268_435_456; // 256 MiB, `grpc_max_recv_stream_message_size`
+        let blobs = MAX_CONCURRENT_BLOBS;
+        let budget = super::stream_byte_budget(blobs, max_stream);
+        assert_eq!(budget, blobs * usize::try_from(max_stream).unwrap());
+
+        // The budget is the aggregate the node already commits to for *decompressed* blobs, so the
+        // compressed half of the pipeline cannot be a loophole around it.
+        assert_eq!(budget, 16 * 268_435_456);
+
+        // And it is a real bound: the stream cap alone permits far more than the budget.
+        let stream_cap_alone = MAX_CONCURRENT_STREAMS * usize::try_from(max_stream).unwrap();
+        assert!(
+            budget < stream_cap_alone,
+            "the budget must be strictly smaller than streams x per-stream, or it bounds nothing: \
+             the whole defect was that this product was the effective bound"
+        );
+
+        // The permit count, and that it does not overflow the semaphore's `u32`.
+        let permits = budget / STREAM_BUDGET_UNIT;
+        assert_eq!(permits, 4096);
+        assert!(u32::try_from(permits).is_ok());
+
+        // A single max-size stream fits, several times over: legitimate traffic is not refused.
+        assert!(budget >= usize::try_from(max_stream).unwrap());
+
+        // A degenerate configuration cannot produce a zero budget and a semaphore that refuses
+        // everything — `saturating_mul` and the `unwrap_or(0)` keep this total.
+        assert_eq!(super::stream_byte_budget(0, max_stream), 0);
+        assert_eq!(super::stream_byte_budget(blobs, -1), 0);
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

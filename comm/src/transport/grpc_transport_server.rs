@@ -19,6 +19,9 @@ pub struct TransportLayerServer {
     port: u16,
     tls: Arc<rustls::ServerConfig>,
     max_stream_message_size: i64,
+    /// The inbound unary decode cap (AUDIT C113). Defaults to the configured value's own default so
+    /// a caller that does not set it is not silently looser than the operator's configuration.
+    max_recv_message_size: usize,
 }
 
 impl TransportLayerServer {
@@ -37,7 +40,14 @@ impl TransportLayerServer {
             port,
             tls,
             max_stream_message_size,
+            max_recv_message_size: crate::transport::grpc_transport_receiver::DEFAULT_MAX_RECV_MESSAGE_SIZE,
         })
+    }
+
+    /// Set the inbound unary decode cap (AUDIT C113), from the operator's `grpc_max_recv_message_size`.
+    pub fn with_max_recv_message_size(mut self, n: usize) -> Self {
+        self.max_recv_message_size = n;
+        self
     }
 
     /// Serve the transport, dispatching inbound protocol messages to `dispatch` and reassembled
@@ -72,6 +82,7 @@ impl TransportLayerServer {
             Arc::new(dispatch),
             Arc::new(handle_streamed),
             limits,
+            self.max_recv_message_size,
         )
         .await
     }

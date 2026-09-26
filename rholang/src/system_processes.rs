@@ -538,7 +538,10 @@ impl SystemProcesses {
                 arity: 1,
                 remainder: true,
                 body_ref: BodyRefs::MULTI_SIG_REV_VAULT,
-                handler: self.rev_vault(),
+                // **Not `self.rev_vault()`** (AUDIT C114). Sharing the single-signer handler made
+                // this name a silent downgrade: a caller asking for multi-signature custody received
+                // single-key custody with no indication. See `multi_sig_rev_vault`.
+                handler: self.multi_sig_rev_vault(),
             },
             Definition {
                 urn: "rho:crypto:secp256k1Verify".to_string(),
@@ -1684,6 +1687,48 @@ impl SystemProcesses {
     // --- native vault ----------------------------------------------------
 
     /// `rho:rchain:revVault` — native method dispatch over the vault balance map.
+    /// The `rho:rchain:multiSigRevVault` handler.
+    ///
+    /// **It refuses, and the refusal is the fix** (AUDIT C114). This channel used to be wired to
+    /// [`Self::rev_vault`] — the *single-signer* handler — so a deploy that put funds behind the
+    /// multi-signature name got single-key custody: no quorum, no co-signers, no confirmation step,
+    /// and nothing said so. The multi-sig contract does exist
+    /// (`casper/src/genesis/resources/MultiSigRevVault.rho`, with `create`/`confirm`/quorum and a
+    /// sealer-unsealer) and is deliberately **not installed** — `casper/src/genesis/mod.rs` records
+    /// that the vendored sources are "a checklist and are not installed".
+    ///
+    /// Two honest options existed: install the contract, or stop answering to its name. The first is a
+    /// consensus change on a minted-asset path and does not belong in a remediation pass. The second
+    /// costs nothing here, because nothing in the port reaches this channel — only the uninstalled
+    /// `.rho` sources and the legacy tree name it. What it buys is that a caller **cannot be misled**:
+    /// the channel previously provided a silently weaker guarantee than its name promised, which is
+    /// exactly what makes a custody bug invisible until funds are gone.
+    fn multi_sig_rev_vault(&self) -> ScalaBodyFn {
+        let cc = self.contract_call.clone();
+        Box::new(move |args: Vec<ListParWithRandom>, _path: DfsPath| {
+            let cc = cc.clone();
+            Box::pin(async move {
+                let (pars, _rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("multiSigRevVault expects a method and arguments")
+                })?;
+                let [op, _rest] = pars.as_slice() else {
+                    return Err(illegal_arg(
+                        "multiSigRevVault expects a method and arguments",
+                    ));
+                };
+                let op = RhoString::unapply(op).ok_or_else(|| {
+                    illegal_arg("multiSigRevVault method must be a string")
+                })?;
+                Err(illegal_arg(&format!(
+                    "multiSigRevVault: '{op}' is not available — this node does not install the \
+                     multi-signature vault contract (casper/src/genesis/resources/MultiSigRevVault.rho), \
+                     so there is no quorum, no co-signers and no confirmation step. Use \
+                     `rho:rchain:revVault`, which is single-key custody and is named for it."
+                )))
+            })
+        })
+    }
+
     fn rev_vault(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();

@@ -817,7 +817,13 @@ fn build_protocol_server(
         &cert,
         &key,
         conf.protocol_server.grpc_max_recv_stream_message_size,
-    )?;
+    )?
+    // The inbound unary decode cap (AUDIT C113). This configuration key was read on the *client*
+    // side only, so an inbound `send` was accepted up to tonic's 4 MiB default while the operator's
+    // 256 KiB sat unused — a limit 16x looser than the one the config names.
+    .with_max_recv_message_size(
+        usize::try_from(conf.protocol_server.grpc_max_recv_message_size).unwrap_or(262144),
+    );
 
     let dispatch: Box<dyn Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync> = {
         let transport = comm_state.transport.clone();
