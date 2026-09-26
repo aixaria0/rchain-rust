@@ -32,12 +32,42 @@ use crate::transport::stream_handler::{self, Circuit, StreamError, Streamed};
 /// A boxed `Send` future (helper alias for handler closures).
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// The node id **proven by the client certificate** on an inbound connection (AUDIT C115).
+///
+/// This is what turns mutual TLS into authentication. Before it, the handshake proved only that the
+/// peer held *some* valid P-256 key — `NodeIdClientVerifier` accepts any self-signed certificate whose
+/// public key is a well-formed point — and the node id used for routing was taken from the protocol
+/// header, which the peer chooses. So any host could connect and assert any node id: impersonate a
+/// validator, occupy its entry in a peer's connection table, and be believed. `Option` because a
+/// connection that reached the service without a certificate yields `None`, and a missing proof must
+/// not read as a valid one.
+#[derive(Clone, Debug)]
+pub struct PeerId(pub Option<String>);
+
+/// The node id a completed TLS session proved, as the same hex string a `PeerNode`'s id renders as.
+///
+/// `None` when the session carries no peer certificate or the certificate's key is not a P-256 point.
+/// The client side has always made the mirror of this check — `NodeIdServerVerifier` requires the
+/// *server's* certificate address to equal the peer id it dialled — so this is the other half of an
+/// asymmetry the code had half-implemented, not a new policy.
+fn peer_id_of_tls(tls: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>) -> Option<String> {
+    let (_, connection) = tls.get_ref();
+    let leaf = connection.peer_certificates()?.first()?;
+    let address = crate::transport::hostname_trust_manager::public_address_of_cert(leaf)?;
+    Some(rchain_shared::base16::encode(&address))
+}
+
 /// An incoming TLS connection, implementing tonic's `Connected`.
-struct TlsIo(tokio_rustls::server::TlsStream<tokio::net::TcpStream>);
+struct TlsIo {
+    stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    peer_id: Option<String>,
+}
 
 impl tonic::transport::server::Connected for TlsIo {
-    type ConnectInfo = ();
-    fn connect_info(&self) -> Self::ConnectInfo {}
+    type ConnectInfo = PeerId;
+    fn connect_info(&self) -> Self::ConnectInfo {
+        PeerId(self.peer_id.clone())
+    }
 }
 
 impl AsyncRead for TlsIo {
@@ -46,7 +76,7 @@ impl AsyncRead for TlsIo {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(cx, buf)
+        Pin::new(&mut self.stream).poll_read(cx, buf)
     }
 }
 
@@ -56,13 +86,13 @@ impl AsyncWrite for TlsIo {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(cx, buf)
+        Pin::new(&mut self.stream).poll_write(cx, buf)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_flush(cx)
+        Pin::new(&mut self.stream).poll_flush(cx)
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.0).poll_shutdown(cx)
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 
@@ -92,6 +122,10 @@ fn stream_error_message(error: &StreamError) -> String {
             format!("Received not full stream message, will not process. {s}")
         }
         StreamError::Unexpected(t) => format!("Could not receive stream! {t}"),
+        StreamError::SenderNotVerified => {
+            "Could not receive stream! The sender is not the identity its certificate proves."
+                .to_string()
+        }
     }
 }
 
@@ -245,6 +279,12 @@ impl GrpcTransportReceiver {
 #[async_trait]
 impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
     async fn send(&self, request: Request<TlRequest>) -> Result<Response<TlResponse>, Status> {
+        // The identity the TLS session proved, read before the request is consumed (AUDIT C115).
+        let proven = request
+            .extensions()
+            .get::<PeerId>()
+            .cloned()
+            .unwrap_or(PeerId(None));
         let protocol = request
             .into_inner()
             .protocol
@@ -265,6 +305,33 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
             }
         }
 
+        // **The claimed sender must be the identity the certificate proves** (AUDIT C115). Everything
+        // downstream — the connection table, equivocation detection, the DAG's per-sender rules —
+        // keys on this field, and until now it was simply what the peer wrote: the handshake proved
+        // possession of *some* P-256 key, not of *this* node's. A peer could therefore assert any node
+        // id and be routed, tracked and compared as that node.
+        //
+        // Refused rather than dropped, and refused on `None` too: a connection that presents no
+        // certificate is not one whose identity is unknown-but-probably-fine, it is one that proved
+        // nothing. Client auth is mandatory, so `None` here means the invariant broke, and treating a
+        // missing proof as valid is the one reading that cannot be defended.
+        if let Ok(sender) = protocol_helper::sender(&protocol) {
+            match &proven.0 {
+                Some(id) if *id == sender.id.to_string() => {}
+                Some(id) => {
+                    return Err(Status::permission_denied(format!(
+                        "Sender '{}' does not match the identity its certificate proves ('{id}')",
+                        sender.id
+                    )));
+                }
+                None => {
+                    return Err(Status::permission_denied(
+                        "No client certificate on this connection, so the sender cannot be verified",
+                    ));
+                }
+            }
+        }
+
         let permit = match self.dispatch_slots.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => return Err(Status::resource_exhausted("dispatch queue full")),
@@ -281,6 +348,13 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
         &self,
         request: Request<Streaming<Chunk>>,
     ) -> Result<Response<TlResponse>, Status> {
+        // The proven identity, read before the request is consumed (AUDIT C115): the streamed header
+        // carries a sender of its own, and the routing layer trusts it as it trusts the unary path's.
+        let proven = request
+            .extensions()
+            .get::<PeerId>()
+            .cloned()
+            .unwrap_or(PeerId(None));
         // Bound concurrent stream RPCs (the unary `send` analog of `dispatch_slots`). The permit is
         // held across the whole handler (including the chunk drain), so a peer cannot accumulate an
         // unbounded number of in-flight streams.
@@ -337,10 +411,18 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
 
         let network_id = self.network_id.clone();
         let max_stream_message_size = self.max_stream_message_size;
+        // The streamed path carries its own header, and therefore its own claimed sender, which the
+        // routing layer trusts exactly as it trusts the unary path's — so it needs the same binding or
+        // the fix has a door beside it (AUDIT C115). `proven` is moved in because the breaker is the
+        // one place the reassembled header is examined before the blob is handed on.
+        let proven_id = proven.0.clone();
         let breaker = move |streamed: &Streamed| {
             if let Some(header) = &streamed.header {
                 if header.network_id != network_id {
                     return Circuit::Opened(StreamError::WrongNetworkId);
+                }
+                if proven_id.as_deref() != Some(header.sender.s_key().as_str()) {
+                    return Circuit::Opened(StreamError::SenderNotVerified);
                 }
             }
             if streamed.read_so_far > max_stream_message_size {
@@ -455,7 +537,11 @@ pub async fn serve_with_limits(
                 let mut tx = tx;
                 let accepted = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await;
                 if let Ok(Ok(tls)) = accepted {
-                    let _ = tx.send(Ok(TlsIo(tls))).await;
+                    // The identity is read here, once, while the session is in hand: the certificate
+                    // is not reachable from the request handler, and this is the only place the
+                    // handshake's own state is still available (AUDIT C115).
+                    let peer_id = peer_id_of_tls(&tls);
+                    let _ = tx.send(Ok(TlsIo { stream: tls, peer_id })).await;
                 }
             });
         }
@@ -572,14 +658,25 @@ mod tests {
         )
     }
 
-    /// A protocol with a header naming `network_id`.
-    fn request(network_id: &str) -> Request<TlRequest> {
-        Request::new(TlRequest {
+    /// A protocol with a header naming `network_id`, carrying the identity its certificate proves.
+    ///
+    /// The extension is not decoration: without it the sender check refuses every request, which is
+    /// how these tests found it (AUDIT C115). `proven_id` is what the TLS session would have
+    /// established.
+    fn request_from(network_id: &str, proven_id: Option<String>) -> Request<TlRequest> {
+        let mut r = Request::new(TlRequest {
             protocol: Some(Protocol {
                 header: Some(protocol_helper::header(&local(), network_id)),
                 message: None,
             }),
-        })
+        });
+        r.extensions_mut().insert(PeerId(proven_id));
+        r
+    }
+
+    /// The honest case: the certificate proves the id the header claims.
+    fn request(network_id: &str) -> Request<TlRequest> {
+        request_from(network_id, Some(local().id.to_string()))
     }
 
     /// **The network-id guard.** A sender on another network is refused with `PermissionDenied`
@@ -662,6 +759,66 @@ mod tests {
             .await
             .expect_err("a request without a protocol is malformed");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// **The regression test for AUDIT C115.** The sender in a protocol header is what every
+    /// downstream decision keys on — the connection table, equivocation detection, the DAG's
+    /// per-sender rules — and until this check existed it was simply what the peer wrote. Mutual TLS
+    /// proved possession of *some* P-256 key, not of *this* node's, so any host could assert any node
+    /// id and be routed, tracked and compared as that node.
+    ///
+    /// Three arms, because two of them are the ones that make the third meaningful: the honest
+    /// request is dispatched, a request whose proven identity *differs* from its claimed sender is
+    /// refused, and a connection that proved **nothing** is refused too — a missing proof must not
+    /// read as a valid one.
+    #[tokio::test]
+    async fn a_sender_must_be_the_identity_its_certificate_proves() {
+        let d = Arc::new(Dispatch::default());
+        let service = receiver(d.clone(), 8);
+
+        // The honest case: certificate and header agree, and the message is dispatched.
+        service
+            .send(request("testnet"))
+            .await
+            .expect("a sender matching its certificate must be accepted");
+        // The dispatch happens on a spawned task, so give it a turn before asserting.
+        for _ in 0..50 {
+            if d.calls.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            d.calls.load(Ordering::SeqCst),
+            1,
+            "the honest request must reach the dispatcher, or the check refuses everything"
+        );
+
+        // The spoof: the certificate proves some other node, and the header claims `local()`.
+        let other = crate::peer_node::NodeIdentifier::new(vec![0x22; 20]).to_string();
+        let status = service
+            .send(request_from("testnet", Some(other)))
+            .await
+            .expect_err("a sender its certificate does not prove must be refused");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(
+            d.calls.load(Ordering::SeqCst),
+            1,
+            "a spoofed sender must never reach the dispatcher — this is the whole finding"
+        );
+
+        // No proof at all: client auth is mandatory, so `None` means the invariant broke, and it is
+        // refused rather than read as "unverified but probably fine".
+        let status = service
+            .send(request_from("testnet", None))
+            .await
+            .expect_err("a connection with no proven identity must be refused");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(
+            d.calls.load(Ordering::SeqCst),
+            1,
+            "an unproven sender must not reach the dispatcher"
+        );
     }
 
     /// **The dispatch bound.** With one slot and a handler that has not finished, a second inbound

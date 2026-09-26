@@ -30,6 +30,10 @@ pub enum StreamError {
     MaxSizeReached,
     NotFullMessage(String),
     Unexpected(String),
+    /// The streamed header's sender is not the identity its certificate proves (AUDIT C115). A
+    /// distinct variant from `WrongNetworkId`: both refuse the same way, and an operator reading a log
+    /// needs to know which of the two the node rejected.
+    SenderNotVerified,
 }
 
 /// The stream circuit state (port of `Circuit`).

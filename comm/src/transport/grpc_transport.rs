@@ -218,6 +218,18 @@ mod tests {
         // Give the server a moment to bind before the client connects.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
+        // The sender must be the identity the client's certificate proves (AUDIT C115). This test
+        // used to send a heartbeat whose header named the *server* — the certificate was the
+        // client's — which is exactly the assertion the check now refuses, and it passed because
+        // nothing compared the two.
+        let client_id = cert_node_id(&client_cert);
+        let client_peer = PeerNode::from(
+            NodeIdentifier::from_hex(&client_id).unwrap(),
+            "127.0.0.1".to_string(),
+            rchain_shared::refined::Port::new(port),
+            rchain_shared::refined::Port::new(port),
+        );
+
         let client = GrpcTransportClient::new(
             "testnet".to_string(),
             &client_cert,
@@ -228,7 +240,7 @@ mod tests {
         )
         .unwrap();
 
-        let heartbeat = protocol_helper::heartbeat(&server_peer, "testnet");
+        let heartbeat = protocol_helper::heartbeat(&client_peer, "testnet");
         client.send(&server_peer, heartbeat.clone()).await.unwrap();
 
         let received = tokio::time::timeout(Duration::from_secs(5), rx)
@@ -326,6 +338,16 @@ mod dispatch_bound_tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
+        // The sender must be the identity the client's certificate proves (AUDIT C115); this test
+        // used to name the *server* while presenting the client's certificate.
+        let client_id = cert_node_id(&client_cert);
+        let client_peer = PeerNode::from(
+            NodeIdentifier::from_hex(&client_id).unwrap(),
+            "127.0.0.1".to_string(),
+            rchain_shared::refined::Port::new(port),
+            rchain_shared::refined::Port::new(port),
+        );
+
         let client = GrpcTransportClient::new(
             "testnet".to_string(),
             &client_cert,
@@ -335,7 +357,7 @@ mod dispatch_bound_tests {
             100,
         )
         .unwrap();
-        let heartbeat = protocol_helper::heartbeat(&server_peer, "testnet");
+        let heartbeat = protocol_helper::heartbeat(&client_peer, "testnet");
 
         // The first message occupies the only slot.
         client

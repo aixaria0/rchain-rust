@@ -60,10 +60,14 @@ pub fn check_peer_on_same_network(conf: &RPConf, peer: &PeerNode) -> bool {
 /// The connections cell is an `RwLock` rather than `&mut Vec` so the write lock is held only for the
 /// brief mutation, never across the outbound `send` in the handshake path (H3).
 ///
-/// Residual (documented, not fixed): the protocol `sender` (taken from the message header) is not
-/// cryptographically bound to the TLS peer certificate. A peer presenting a self-signed certificate
-/// may assert an arbitrary node id. The `MAX_CONNECTIONS` bound mitigates the resulting unbounded
-/// growth of the connection table, but does not eliminate the identity-spoofing vector.
+/// **The spoofing residual that used to be recorded here is closed** (AUDIT C115). The protocol
+/// `sender` was taken from the message header and never compared to the TLS peer certificate, so a
+/// peer presenting any self-signed certificate could assert an arbitrary node id. The receiver now
+/// carries the identity the client certificate proves into the request
+/// (`grpc_transport_receiver::PeerId`) and refuses a message whose header claims a different one, on
+/// the unary and streamed paths alike. This function still reads the sender from the header — that is
+/// what the field is for — but the value has been checked against the certificate by the time it
+/// arrives, so what it names is what connected.
 pub async fn handle<T: TransportLayer + ?Sized>(
     proto: Protocol,
     conf: &RPConf,
