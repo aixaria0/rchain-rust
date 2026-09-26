@@ -526,7 +526,7 @@ law	16b	T3	deferred	-	-	-	-	-	-
 law	16c	T3	deferred	-	-	-	-	-	-
 law	16d	T3	deferred	-	-	-	-	-	-
 law	17a	T3	deferred	-	-	-	-	-	-
-law	17b	T3	deferred	-	-	-	-	-	-
+law	17b	T1	cleared	deep	-	-	rholang/src/merging.rs:calculate_num_channel_diff	-	mutation sweep: wrapping_sub in place of the checked subtraction turned 2 witnesses red. The row's note records that the Scala oracle wraps and this is a deliberate deviation, so the witness is what keeps the deviation honest
 law	18	T1	cleared	deep	-	-	block-storage/src/dag/metadata_store.rs:validate_dag_state	-	mutation sweep: deleting the contiguity check made the two negative witnesses FAIL and left the positive ones green, which is the correct split. The empty-DAG and missing-lowest-height cases were not separately mutated
 law	19	T3	deferred	-	-	-	-	-	-
 law	1a	T1	finding	deep	-	-	models/src/property_tests.rs:law1_sorting_is_idempotent C118	-	the row's first named witness cannot fail if sorting is deleted, because idempotence is what identity has; the row is still covered by its sibling witness, which does fail
@@ -542,7 +542,7 @@ law	26a	T3	deferred	-	-	-	-	-	-
 law	26b	T3	deferred	-	-	-	-	-	-
 law	26c	T3	deferred	-	-	-	-	-	-
 law	27	T3	deferred	-	-	-	-	-	-
-law	28	T3	deferred	-	-	-	-	-	-
+law	28	T1	cleared	deep	-	-	rholang/src/native_state.rs:txn_prepare	-	mutation sweep: the row has TWO independent guards — an explicit balance comparison and the NonNegI64 refinement — and removing either alone leaves the witness GREEN because the other still refuses. Removing both makes it FAIL. Single-site mutation cannot fail this witness and that is correct behaviour, not weakness: the overdraw is genuinely still rejected. Verified by removing both
 law	29	T3	deferred	-	-	-	-	-	-
 law	3	T1	finding	deep	-	-	rholang/src/property_tests.rs:law3_substituting_a_closed_value_keeps_the_term_closed C138	-	both named witnesses survive a substitution that does nothing, so the row's evidence is vacuous; four tests it does not name catch the mutation, and none of them is named by any law row
 law	30	T3	deferred	-	-	-	-	-	-
@@ -559,7 +559,7 @@ law	40	T3	deferred	-	-	-	-	-	-
 law	41	T3	deferred	-	-	-	-	-	-
 law	42	T3	deferred	-	-	-	-	-	-
 law	43	T3	deferred	-	-	-	-	-	-
-law	44	T3	deferred	-	-	-	-	-	-
+law	44	T1	cleared	deep	-	-	rholang/src/native_state.rs:is_epoch_boundary	-	mutation sweep: making every block an epoch boundary turned 2 of the row's 3 witnesses red. The off-boundary arm is the one that carries it; the reward-split witnesses were not independently mutated
 law	45	T3	deferred	-	-	-	-	-	-
 law	46	T3	deferred	-	-	-	-	-	-
 law	47	T3	deferred	-	-	-	-	-	-
@@ -569,7 +569,7 @@ law	4a	T3	deferred	-	-	-	-	-	-
 law	4b	T3	deferred	-	-	-	-	-	-
 law	5	T3	deferred	-	-	-	-	-	-
 law	50a	T3	deferred	-	-	-	-	-	-
-law	50b	T3	deferred	-	-	-	-	-	-
+law	50b	T1	cleared	deep	-	-	models/src/types.rs:exceeds_value_depth	-	mutation sweep: a walk that never exceeds anything made this witness FAIL, caught by its one-past-the-limit arm. A first attempt that neutered the ASSERTION rather than the mechanism proved nothing and is recorded here as the trap it is: weakening a test's own claim is not a mutation of the code
 law	6	T3	deferred	-	-	-	-	-	-
 law	7	T1	cleared	deep	-	-	rspace/src/hashing/stable_hash_provider.rs:hash_channels	-	mutation sweep: removing the sort in hash_hashes left the witness GREEN and that is correct — hash_seq sorts the same hashes upstream, so the mutation removed a redundant duplicate rather than the mechanism. A mutation masked by a second implementation is not a deletion
 law	8	T1	finding	deep	-	-	rspace/src/property_tests.rs:law8_comm_sorts_produces C119	-	the registered witness covers Comm::apply's produce sort but not the content-addressed selection; the selector is covered by space_matcher's own test, which no law row names
