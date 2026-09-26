@@ -18,7 +18,7 @@ use tonic::{Request, Response, Status};
 use crate::discovery::{to_node, to_peer_node};
 use crate::transport::grpc_transport_receiver::PeerId;
 use crate::peer_node::PeerNode;
-use crate::rp::handle_messages::is_local_address;
+use crate::rp::handle_messages::is_local_address_resolved;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -89,8 +89,9 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
             if let Some(sender) = ping.sender.as_ref() {
                 if let Ok(peer) = to_peer_node(sender) {
                     // Reject attacker-chosen private/loopback/link-local/unspecified hosts before
-                    // they reach the routing table (SSRF guard; see FIX 5).
-                    if !is_local_address(&peer.endpoint.host) {
+                    // they reach the routing table (SSRF guard; see FIX 5). Resolved first: a
+                    // hostname is a way of aiming the node at its own network too (AUDIT C117).
+                    if !is_local_address_resolved(&peer.endpoint.host).await {
                         if let Some(error) = sender_not_proven(&proven.0, &peer.id.to_string()) {
                             return Err(error);
                         }
@@ -120,8 +121,9 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
         let nodes = if lookup.network_id == self.network_id {
             match lookup.sender.as_ref().and_then(|s| to_peer_node(s).ok()) {
                 // Reject attacker-chosen private/loopback/link-local/unspecified hosts before they
-                // reach the routing table (SSRF guard; see FIX 5).
-                Some(sender) if !is_local_address(&sender.endpoint.host) => {
+                // reach the routing table (SSRF guard; see FIX 5); resolved, for the same reason
+                // (AUDIT C117).
+                Some(sender) if !is_local_address_resolved(&sender.endpoint.host).await => {
                     if let Some(error) = sender_not_proven(&proven.0, &sender.id.to_string()) {
                         return Err(error);
                     }
@@ -345,6 +347,13 @@ mod tests {
     /// **The SSRF guard.** An attacker-chosen private/loopback/link-local/unspecified host must
     /// never reach the routing table, because the table is what the node later *dials*: accepting
     /// one would let a peer point the node at its own internal network.
+    ///
+    /// **The last three entries are AUDIT C117 and they are the point of this test now.** The guard
+    /// classified IP literals and nothing else, so `localhost` — and any DNS name whose A record
+    /// points inward — passed it and was dialled. A name is a way of aiming the node at its own
+    /// network exactly as a literal is. The unresolvable one is the other half of the rule: a name
+    /// that resolves to nothing is not a place to dial, and "could not find out" must not read as
+    /// "probably fine".
     #[tokio::test]
     async fn a_ping_claiming_a_local_host_never_reaches_the_handler() {
         for host in [
@@ -357,6 +366,10 @@ mod tests {
             "224.0.0.1",
             "::1",
             "fe80::1",
+            // C117: names, not literals.
+            "localhost",
+            "localhost.localdomain",
+            "this-host-does-not-exist.invalid",
         ] {
             let h = Arc::new(Handlers::default());
             server(h.clone())

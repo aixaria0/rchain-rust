@@ -43,9 +43,48 @@ pub fn is_local_address(host: &str) -> bool {
                 || ip.is_unique_local() // fc00::/7
                 || ip.is_unicast_link_local() // fe80::/10
         }
-        // Residual: a hostname that resolves to a private/loopback address is not classified here
-        // (resolution is async and DNS-rebinding-prone). The IPv6-literal bypass is closed.
+        // A hostname is not an address, so this cannot classify it. Callers that accept a host from
+        // a peer must use [`is_local_address_resolved`], which is the same rule with the name
+        // resolved first (AUDIT C117).
         Err(_) => false,
+    }
+}
+
+/// Whether a host is local/private, **resolving a hostname first** (AUDIT C117).
+///
+/// [`is_local_address`] classifies IP literals and nothing else, and that was the whole guard on the
+/// Kademlia ingress — so a peer could supply `localhost`, or any DNS name whose A record points at
+/// `127.0.0.1` or `10.0.0.5`, and the routing table would take it and the node would later **dial it**.
+/// The residual was recorded honestly ("a hostname that resolves to a private/loopback address is not
+/// classified here") and the risk was real all the same: the guard's job is to stop a peer aiming the
+/// node at its own network, and a name is a way of aiming.
+///
+/// **Fail-closed at both ends.** Any resolved address being local/private refuses the host — a name
+/// with one public and one private record is not mostly safe, it is a name that reaches a private
+/// address. And a name that does not resolve at all is refused too: it is not a place to dial, and
+/// treating "could not find out" as "probably fine" is the reading that cannot be defended.
+///
+/// **What this does not close, stated rather than implied**: the check and the dial are separate
+/// resolutions, so an attacker controlling a name with a short TTL can answer public here and private
+/// there. Closing that means pinning the resolved address into the routing table and dialling *that*,
+/// which is a change to what a `PeerNode` carries rather than to this function. The window is
+/// narrowed from "any name works, always" to "the name must lie at exactly the right moment".
+pub async fn is_local_address_resolved(host: &str) -> bool {
+    if host.parse::<IpAddr>().is_ok() {
+        return is_local_address(host);
+    }
+    match tokio::net::lookup_host((host, 0)).await {
+        Ok(addrs) => {
+            let mut seen = false;
+            for addr in addrs {
+                seen = true;
+                if is_local_address(&addr.ip().to_string()) {
+                    return true;
+                }
+            }
+            !seen
+        }
+        Err(_) => true,
     }
 }
 
