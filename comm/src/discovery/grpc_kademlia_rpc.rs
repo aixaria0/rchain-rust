@@ -1,13 +1,20 @@
-//! gRPC Kademlia RPC client (plaintext).
+//! gRPC Kademlia RPC client (mutual TLS; AUDIT C116).
 //!
 //! Mirrors `comm/src/main/scala/coop/rchain/comm/discovery/GrpcKademliaRPC.scala`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use http::Uri;
+use hyper_util::rt::TokioIo;
 use rchain_models::comm::discovery::kademlia_rpc_service_client::KademliaRpcServiceClient;
 use rchain_models::comm::discovery::{Lookup, Ping};
+use rustls::pki_types::ServerName;
+use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tonic::transport::{Channel, Endpoint};
+use tower::service_fn;
 
 use crate::discovery::{to_node, to_peer_node, KademliaRpc};
 use crate::peer_node::PeerNode;
@@ -17,25 +24,60 @@ pub struct GrpcKademliaRpc {
     local: PeerNode,
     network_id: String,
     timeout: Duration,
+    /// The mutual-TLS configuration, built from the node's own certificate (AUDIT C116). The same one
+    /// the transport client dials with, so discovery and transport agree on what a peer is.
+    tls: Arc<rustls::ClientConfig>,
 }
 
 impl GrpcKademliaRpc {
-    pub fn new(local: PeerNode, network_id: String, timeout: Duration) -> Self {
-        GrpcKademliaRpc {
+    pub fn new(
+        local: PeerNode,
+        network_id: String,
+        timeout: Duration,
+        cert_pem: &str,
+        key_pem: &str,
+    ) -> Result<Self, String> {
+        Ok(GrpcKademliaRpc {
             local,
             network_id,
             timeout,
-        }
+            tls: crate::transport::hostname_trust_manager::client_config(cert_pem, key_pem)?,
+        })
     }
 
+    /// A mutual-TLS channel to `peer`, verifying the server certificate against the peer's node id.
+    ///
+    /// This was `http://` with a bare `connect()` — plaintext, with no check that the host answering
+    /// is the peer it was dialled as. The connector mirrors [`crate::transport::grpc_transport_client`]
+    /// exactly, including the `ServerName` derived from the peer id, which is what the server-side
+    /// verifier compares the certificate against.
     async fn client(&self, peer: &PeerNode) -> Result<KademliaRpcServiceClient<Channel>, String> {
         let endpoint = Endpoint::from_shared(format!(
-            "http://{}:{}",
+            "https://{}:{}",
             peer.endpoint.host,
             u16::from(peer.endpoint.udp_port)
         ))
         .map_err(|e| e.to_string())?;
-        let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
+
+        let connector = TlsConnector::from(self.tls.clone());
+        let server_name =
+            ServerName::try_from(peer.id.to_string()).map_err(|e| e.to_string())?;
+        let host = peer.endpoint.host.clone();
+        let port = peer.endpoint.udp_port;
+
+        let channel = endpoint
+            .connect_with_connector(service_fn(move |_: Uri| {
+                let connector = connector.clone();
+                let server_name = server_name.clone();
+                let host = host.clone();
+                async move {
+                    let tcp = TcpStream::connect((host.as_str(), u16::from(port))).await?;
+                    let tls = connector.connect(server_name, tcp).await?;
+                    Ok::<_, std::io::Error>(TokioIo::new(tls))
+                }
+            }))
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(KademliaRpcServiceClient::new(channel))
     }
 }
@@ -101,19 +143,41 @@ mod tests {
         )
     }
 
-    /// The client dials `udp_port` for the plaintext Kademlia service, so a peer is built with both
-    /// ports set to the address under test.
-    fn peer_at(host: &str, port: u16) -> PeerNode {
+    /// The client dials `udp_port` for the Kademlia service, so a peer is built with both ports set
+    /// to the address under test.
+    /// The peer's id must be the identity its certificate proves (AUDIT C116), so it is derived from
+    /// the certificate rather than made up — a made-up id would be refused by the server's own check
+    /// before the test could observe what it is about.
+    fn peer_at_from_cert(cert_pem: &str, host: &str, port: u16) -> PeerNode {
+        use crate::transport::hostname_trust_manager::public_address_of_cert;
+        use rustls::pki_types::CertificateDer;
+        let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes()).unwrap();
+        let id = rchain_shared::base16::encode(
+            &public_address_of_cert(&CertificateDer::from(pem.contents)).unwrap(),
+        );
         PeerNode::from(
-            crate::peer_node::NodeIdentifier::new(b"peer".to_vec()),
+            crate::peer_node::NodeIdentifier::new(
+                rchain_shared::base16::unsafe_decode(&id),
+            ),
             host.to_string(),
             Port::new(port),
             Port::new(port),
         )
     }
 
+    /// A peer at `host:port` whose id is a real certificate's address.
+    fn peer_at(host: &str, port: u16) -> PeerNode {
+        let (cert, _key) =
+            crate::transport::generate_certificate_if_absent::generate_certificate()
+                .expect("a test certificate");
+        peer_at_from_cert(&cert, host, port)
+    }
+
     fn rpc(timeout: Duration) -> GrpcKademliaRpc {
-        GrpcKademliaRpc::new(local(), "testnet".to_string(), timeout)
+        let (cert, key) = crate::transport::generate_certificate_if_absent::generate_certificate()
+            .expect("a test certificate");
+        GrpcKademliaRpc::new(local(), "testnet".to_string(), timeout, &cert, &key)
+            .expect("the test certificate builds a client config")
     }
 
     /// A peer whose port has nothing listening is not a peer: `ping` is `false` and `lookup` is

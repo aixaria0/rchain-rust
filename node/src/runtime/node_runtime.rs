@@ -253,11 +253,18 @@ pub async fn create_comm_state(
 
     // Kademlia discovery: routing-table store + gRPC RPC client + RPC server + iterative loop.
     let kademlia_store = kademlia_table(id);
-    let kademlia_rpc: Arc<dyn KademliaRpc> = Arc::new(GrpcKademliaRpc::new(
-        local_peer.clone(),
-        conf.protocol_client.network_id.clone(),
-        conf.protocol_client.network_timeout,
-    ));
+    // Kademlia runs over the same mutual TLS as the transport (AUDIT C116): the certificate is the
+    // node's identity on both, so discovery cannot be a way in that the transport is not.
+    let kademlia_rpc: Arc<dyn KademliaRpc> = Arc::new(
+        GrpcKademliaRpc::new(
+            local_peer.clone(),
+            conf.protocol_client.network_id.clone(),
+            conf.protocol_client.network_timeout,
+            &cert,
+            &key,
+        )
+        .map_err(|e| format!("kademlia client TLS: {e}"))?,
+    );
 
     let discovery_addr: std::net::SocketAddr = format!("0.0.0.0:{}", u16::from(discovery_port))
         .parse::<std::net::SocketAddr>()
@@ -278,8 +285,11 @@ pub async fn create_comm_state(
             ping_handler,
             lookup_handler,
         );
+        let kademlia_tls =
+            rchain_comm::transport::hostname_trust_manager::server_config(&cert, &key)
+                .map_err(|e| format!("kademlia server TLS: {e}"))?;
         tokio::spawn(async move {
-            if let Err(e) = kademlia_serve(discovery_addr, server).await {
+            if let Err(e) = kademlia_serve(discovery_addr, server, kademlia_tls).await {
                 log.error(source, &format!("Kademlia RPC server failed: {e}"));
             }
         });

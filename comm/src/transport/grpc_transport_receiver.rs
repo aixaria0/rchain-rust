@@ -50,7 +50,9 @@ pub struct PeerId(pub Option<String>);
 /// The client side has always made the mirror of this check — `NodeIdServerVerifier` requires the
 /// *server's* certificate address to equal the peer id it dialled — so this is the other half of an
 /// asymmetry the code had half-implemented, not a new policy.
-fn peer_id_of_tls(tls: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>) -> Option<String> {
+pub fn peer_id_of_tls(
+    tls: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+) -> Option<String> {
     let (_, connection) = tls.get_ref();
     let leaf = connection.peer_certificates()?.first()?;
     let address = crate::transport::hostname_trust_manager::public_address_of_cert(leaf)?;
@@ -58,7 +60,10 @@ fn peer_id_of_tls(tls: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>) 
 }
 
 /// An incoming TLS connection, implementing tonic's `Connected`.
-struct TlsIo {
+///
+/// Shared with the Kademlia RPC server (`discovery::grpc_kademlia_rpc_server`), which serves over the
+/// same certificate configuration and needs the same proven identity — see [`accept_tls`].
+pub struct TlsIo {
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     peer_id: Option<String>,
 }
@@ -68,6 +73,51 @@ impl tonic::transport::server::Connected for TlsIo {
     fn connect_info(&self) -> Self::ConnectInfo {
         PeerId(self.peer_id.clone())
     }
+}
+
+/// Accept TLS connections on `listener` and yield them for `serve_with_incoming`.
+///
+/// Extracted from `serve_with_limits` so the Kademlia RPC server can be wrapped in the *same* mutual
+/// TLS the transport uses rather than a second, separately-configured accept path (AUDIT C116). The
+/// two services differ in their protocol; they must not differ in who they let in.
+///
+/// Handshakes are spawned, so a stalled `ClientHello` cannot serialize the accept loop, and each is
+/// bounded by [`HANDSHAKE_TIMEOUT`]. `capacity` bounds **in-flight** handshakes as well as the channel
+/// depth — a slot is acquired before spawning, so a peer opening thousands of idle connections cannot
+/// spawn that many handshake tasks each holding a socket and rustls state until the TCP timeout (R14).
+pub fn accept_tls(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    capacity: usize,
+) -> futures::channel::mpsc::Receiver<Result<TlsIo, std::io::Error>> {
+    let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(capacity);
+    let handshake_slots = Arc::new(tokio::sync::Semaphore::new(capacity));
+    tokio::spawn(async move {
+        let mut tx = tx;
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else {
+                continue;
+            };
+            let Ok(permit) = handshake_slots.clone().try_acquire_owned() else {
+                continue;
+            };
+            let acceptor = acceptor.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let mut tx = tx;
+                let accepted = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await;
+                if let Ok(Ok(tls)) = accepted {
+                    // The identity is read here, once, while the session is in hand: the certificate
+                    // is not reachable from a request handler, and this is the only place the
+                    // handshake's own state is still available (AUDIT C115).
+                    let peer_id = peer_id_of_tls(&tls);
+                    let _ = tx.send(Ok(TlsIo { stream: tls, peer_id })).await;
+                }
+            });
+        }
+    });
+    rx
 }
 
 impl AsyncRead for TlsIo {
@@ -136,7 +186,7 @@ const MAX_CONCURRENT_DISPATCH: usize = 1024;
 /// Bound on concurrent inbound TLS handshakes (M1). A stalled client handshake must not serialize
 /// every subsequent inbound connection, so each handshake is spawned and its result fed through a
 /// bounded channel.
-const MAX_CONCURRENT_HANDSHAKES: usize = 128;
+pub const MAX_CONCURRENT_HANDSHAKES: usize = 128;
 /// Bound on concurrent inbound `stream` RPCs. The unary `send` path is bounded by
 /// `MAX_CONCURRENT_DISPATCH`; the streaming path was unbounded, so a peer could open arbitrarily
 /// many concurrent streams (each buffering chunks up to `max_stream_message_size`). Exhaustion
@@ -515,38 +565,9 @@ pub async fn serve_with_limits(
 
     // Concurrent TLS handshakes (M1): accept connections in a tight loop, hand off each handshake to
     // a spawned task, and feed the accepted TLS streams to tonic through a bounded channel. A slow
-    // handshake no longer blocks the accept loop.
-    let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(limits.handshakes);
-    // Bound *in-flight* handshakes (not just the completed ones the channel bounds): acquire a slot
-    // before spawning, so a peer opening thousands of idle connections cannot spawn that many
-    // handshake tasks each holding a socket + rustls state until the TCP timeout (R14).
-    let handshake_slots = Arc::new(tokio::sync::Semaphore::new(limits.handshakes));
-    tokio::spawn(async move {
-        loop {
-            let tcp = match listener.accept().await {
-                Ok((tcp, _)) => tcp,
-                Err(_) => break,
-            };
-            let Ok(permit) = handshake_slots.clone().try_acquire_owned() else {
-                continue;
-            };
-            let acceptor = acceptor.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                let mut tx = tx;
-                let accepted = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await;
-                if let Ok(Ok(tls)) = accepted {
-                    // The identity is read here, once, while the session is in hand: the certificate
-                    // is not reachable from the request handler, and this is the only place the
-                    // handshake's own state is still available (AUDIT C115).
-                    let peer_id = peer_id_of_tls(&tls);
-                    let _ = tx.send(Ok(TlsIo { stream: tls, peer_id })).await;
-                }
-            });
-        }
-    });
-    let incoming = rx;
+    // handshake no longer blocks the accept loop. Shared with the Kademlia RPC server since AUDIT
+    // C116, so the two services cannot drift apart in *who they let in*.
+    let incoming = accept_tls(listener, acceptor, limits.handshakes);
 
     let service = GrpcTransportReceiver {
         local,

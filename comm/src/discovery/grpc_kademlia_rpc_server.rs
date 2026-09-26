@@ -1,4 +1,4 @@
-//! gRPC Kademlia RPC server (plaintext).
+//! gRPC Kademlia RPC server (mutual TLS; AUDIT C116).
 //!
 //! Mirrors `comm/src/main/scala/coop/rchain/comm/discovery/GrpcKademliaRPCServer.scala`.
 
@@ -16,14 +16,35 @@ use rchain_shared::rate_limiter::RateLimiter;
 use tonic::{Request, Response, Status};
 
 use crate::discovery::{to_node, to_peer_node};
+use crate::transport::grpc_transport_receiver::PeerId;
 use crate::peer_node::PeerNode;
 use crate::rp::handle_messages::is_local_address;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// Rate limit (requests/second) on the plaintext Kademlia RPC (documented Scala deviation: Scala
-/// has no limit). Bounds sybil/routing-table pollution and peer-enumeration amplification from the
-/// unauthenticated `0.0.0.0:40404` surface.
+/// Refuse when the claimed sender is not the identity the client certificate proved (AUDIT C116).
+///
+/// The mirror of C115's check one service over. Discovery messages name their sender and the routing
+/// table is keyed on it, so an unbound sender lets a peer enter the table under an id it does not
+/// hold — the difference from the transport path is only *what* gets poisoned. `None` (no proof) is
+/// refused for the same reason it is there: client auth is mandatory, so a missing proof means the
+/// invariant broke rather than that the sender is merely unverified.
+fn sender_not_proven(proven: &Option<String>, claimed: &str) -> Option<Status> {
+    match proven {
+        Some(id) if id == claimed => None,
+        Some(id) => Some(Status::permission_denied(format!(
+            "Sender '{claimed}' does not match the identity its certificate proves ('{id}')"
+        ))),
+        None => Some(Status::permission_denied(
+            "No client certificate on this connection, so the sender cannot be verified",
+        )),
+    }
+}
+
+/// Rate limit (requests/second) on the Kademlia RPC (documented Scala deviation: Scala has no
+/// limit). Bounds request amplification from the `0.0.0.0:40404` surface. It is no longer the only
+/// thing in front of that surface: since AUDIT C116 the service is behind the same mutual TLS as the
+/// transport, so a caller is an authenticated peer rather than any host that can reach the port.
 const DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC: u64 = 100;
 
 /// The Kademlia RPC service (port of `GrpcKademliaRPCServer`).
@@ -55,6 +76,14 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
         if !self.rate_limiter.allow() {
             return Err(Status::resource_exhausted("kademlia rate limit exceeded"));
         }
+        // The identity the client certificate proves, read before the request is consumed
+        // (AUDIT C116). Without it the `sender` below is whatever the peer wrote — the same spoof
+        // C115 closed on the transport, one service over.
+        let proven = request
+            .extensions()
+            .get::<PeerId>()
+            .cloned()
+            .unwrap_or(PeerId(None));
         let ping = request.into_inner();
         if ping.network_id == self.network_id {
             if let Some(sender) = ping.sender.as_ref() {
@@ -62,6 +91,9 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
                     // Reject attacker-chosen private/loopback/link-local/unspecified hosts before
                     // they reach the routing table (SSRF guard; see FIX 5).
                     if !is_local_address(&peer.endpoint.host) {
+                        if let Some(error) = sender_not_proven(&proven.0, &peer.id.to_string()) {
+                            return Err(error);
+                        }
                         (self.ping_handler)(peer).await;
                     }
                 }
@@ -79,12 +111,20 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
         if !self.rate_limiter.allow() {
             return Err(Status::resource_exhausted("kademlia rate limit exceeded"));
         }
+        let proven = request
+            .extensions()
+            .get::<PeerId>()
+            .cloned()
+            .unwrap_or(PeerId(None));
         let lookup = request.into_inner();
         let nodes = if lookup.network_id == self.network_id {
             match lookup.sender.as_ref().and_then(|s| to_peer_node(s).ok()) {
                 // Reject attacker-chosen private/loopback/link-local/unspecified hosts before they
                 // reach the routing table (SSRF guard; see FIX 5).
                 Some(sender) if !is_local_address(&sender.endpoint.host) => {
+                    if let Some(error) = sender_not_proven(&proven.0, &sender.id.to_string()) {
+                        return Err(error);
+                    }
                     let peers = (self.lookup_handler)(sender, lookup.id).await;
                     peers.iter().map(to_node).collect()
                 }
@@ -100,15 +140,37 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
     }
 }
 
-/// Serve the Kademlia RPC on the given port (plaintext).
+/// Serve the Kademlia RPC over **mutual TLS**, the same configuration the transport uses.
 ///
-/// Residual (documented, not fixed): the discovery service remains plaintext on `0.0.0.0`. The
-/// SSRF guard above rejects private/loopback/link-local/unspecified inbound peer hosts, but the
-/// transport itself is still unauthenticated and unencrypted.
-pub async fn serve(addr: SocketAddr, service: GrpcKademliaRpcServer) -> Result<(), String> {
+/// **The residual this closes** (AUDIT C116): the discovery service was plaintext and
+/// unauthenticated on `0.0.0.0:40404`, with only a rate limit and the `is_local_address` SSRF guard in
+/// front of it. Those bound *how much* a peer can do; neither established *who* it was, so a routing
+/// table could be populated by a host asserting an id it did not hold. The handshake is the same
+/// `hostname_trust_manager::server_config` the transport serves with — a client certificate is
+/// mandatory, and the identity it proves is carried into the request as [`PeerId`] and checked
+/// against the claimed sender, exactly as on the transport path.
+///
+/// Served through [`accept_tls`] rather than `Server::tls_config` because the node's trust model is
+/// "any self-signed P-256 certificate, with the address checked separately", which tonic's
+/// `ServerTlsConfig` (identity + CA root) cannot express. One accept path for both services means they
+/// cannot drift in who they let in.
+pub async fn serve(
+    addr: SocketAddr,
+    service: GrpcKademliaRpcServer,
+    tls: Arc<rustls::ServerConfig>,
+) -> Result<(), String> {
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| e.to_string())?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls);
+    let incoming = crate::transport::grpc_transport_receiver::accept_tls(
+        listener,
+        acceptor,
+        crate::transport::grpc_transport_receiver::MAX_CONCURRENT_HANDSHAKES,
+    );
     tonic::transport::Server::builder()
         .add_service(KademliaRpcServiceServer::new(service))
-        .serve(addr)
+        .serve_with_incoming(incoming)
         .await
         .map_err(|e| e.to_string())
 }
@@ -165,11 +227,103 @@ mod tests {
         )
     }
 
-    fn ping(network: &str, sender: Option<Node>) -> Request<Ping> {
-        Request::new(Ping {
+    /// A ping carrying the identity its certificate would have proved (AUDIT C116).
+    ///
+    /// The extension is not decoration: without it the sender check refuses every request, which is
+    /// how these tests found it. `proven` defaults to what the header claims, so an existing test
+    /// keeps testing what it was written to test rather than accidentally testing the new guard.
+    fn ping_from(network: &str, sender: Option<Node>, proven: Option<String>) -> Request<Ping> {
+        let mut r = Request::new(Ping {
             network_id: network.to_string(),
             sender,
-        })
+        });
+        r.extensions_mut().insert(PeerId(proven));
+        r
+    }
+
+    /// A lookup carrying the identity its certificate would have proved; see [`ping_from`].
+    fn lookup(network: &str, sender: Option<Node>) -> Request<Lookup> {
+        let proven = sender
+            .as_ref()
+            .map(|n| rchain_shared::base16::encode(&n.id));
+        lookup_from(network, sender, proven)
+    }
+
+    /// A lookup with an explicitly chosen proof, so the spoof arm can state what the certificate
+    /// proved rather than what the header claims.
+    fn lookup_from(network: &str, sender: Option<Node>, proven: Option<String>) -> Request<Lookup> {
+        let mut r = Request::new(Lookup {
+            network_id: network.to_string(),
+            sender,
+            id: b"key".to_vec(),
+        });
+        r.extensions_mut().insert(PeerId(proven));
+        r
+    }
+
+    fn ping(network: &str, sender: Option<Node>) -> Request<Ping> {
+        let proven = sender
+            .as_ref()
+            .map(|n| rchain_shared::base16::encode(&n.id));
+        ping_from(network, sender, proven)
+    }
+
+    /// **The regression test for AUDIT C116.** `is_local_address` bounds *where* a peer may point the
+    /// routing table; it says nothing about *who* the peer is, and the entry's key is the sender id
+    /// from the message. Without this check a host could enter the table under an id it does not hold,
+    /// and be dialled, and be gossiped onward, as that node.
+    ///
+    /// All three arms, because the first is what makes the others mean anything: an honest sender
+    /// reaches the handler, a sender whose certificate proves a different node is refused **and does
+    /// not reach it**, and a connection that proved nothing is refused as well.
+    #[tokio::test]
+    async fn a_sender_must_be_the_identity_its_certificate_proves() {
+        let h = Arc::new(Handlers::default());
+        let s = server(h.clone());
+        let sender = node(b"abcd", "203.0.113.7", 40400);
+
+        // The certificate proves what the header claims: the handler runs.
+        s.send_ping(ping("testnet", Some(sender.clone())))
+            .await
+            .expect("a sender matching its certificate is answered");
+        assert_eq!(
+            h.pinged.lock().unwrap().len(),
+            1,
+            "the honest ping must reach the handler"
+        );
+
+        // The spoof: the certificate proves some other node.
+        let other = rchain_shared::base16::encode(b"someone-else");
+        let status = s
+            .send_ping(ping_from("testnet", Some(sender.clone()), Some(other)))
+            .await
+            .expect_err("a sender its certificate does not prove must be refused");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(
+            h.pinged.lock().unwrap().len(),
+            1,
+            "a spoofed sender must never enter the routing table — this is the whole finding"
+        );
+
+        // No proof at all: client auth is mandatory, so `None` means the invariant broke.
+        let status = s
+            .send_ping(ping_from("testnet", Some(sender), None))
+            .await
+            .expect_err("a connection with no proven identity must be refused");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(h.pinged.lock().unwrap().len(), 1);
+
+        // The lookup path carries the same check, and answers the same way.
+        let status = s
+            .send_lookup(lookup_from(
+                "testnet",
+                Some(node(b"id", "203.0.113.7", 40400)),
+                Some(rchain_shared::base16::encode(b"someone-else")),
+            ))
+            .await
+            .expect_err("a lookup sender its certificate does not prove must be refused");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(h.looked_up.lock().unwrap().is_empty());
     }
 
     /// A ping on another network is ignored — the handler is not called — but still answered with
@@ -259,11 +413,7 @@ mod tests {
 
         // A private sender: empty answer, handler untouched.
         let leaked = server(h.clone())
-            .send_lookup(Request::new(Lookup {
-                network_id: "testnet".to_string(),
-                sender: Some(node(b"id", "127.0.0.1", 40400)),
-                id: b"key".to_vec(),
-            }))
+            .send_lookup(lookup("testnet", Some(node(b"id", "127.0.0.1", 40400))))
             .await
             .expect("answered");
         assert!(leaked.into_inner().nodes.is_empty());
@@ -271,11 +421,7 @@ mod tests {
 
         // A public sender: the handler runs and its peers come back as proto nodes.
         let answered = server(h.clone())
-            .send_lookup(Request::new(Lookup {
-                network_id: "testnet".to_string(),
-                sender: Some(node(b"id", "203.0.113.7", 40400)),
-                id: b"key".to_vec(),
-            }))
+            .send_lookup(lookup("testnet", Some(node(b"id", "203.0.113.7", 40400))))
             .await
             .expect("answered");
         let nodes = answered.into_inner().nodes;

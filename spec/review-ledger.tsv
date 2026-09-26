@@ -191,7 +191,7 @@ file	casper/src/validate.rs	T1	finding	deep	-	-	casper/src/validate.rs:slashable
 file	casper/src/validator_identity.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/vault_parser.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/discovery/grpc_kademlia_rpc.rs	T2	deferred	-	-	-	-	-	-
-file	comm/src/discovery/grpc_kademlia_rpc_server.rs	T2	deferred	-	-	-	-	-	-
+file	comm/src/discovery/grpc_kademlia_rpc_server.rs	T2	finding	deep	-	-	comm/src/discovery/grpc_kademlia_rpc_server.rs:sender_not_proven C116	-	discovery was plaintext and unauthenticated on a public port, and its messages named a sender nothing checked; it now serves over the transport's mutual TLS and binds the sender to the certificate
 file	comm/src/discovery/kademlia_handle_rpc.rs	T3	deferred	-	-	-	-	-	-
 file	comm/src/discovery/kademlia_node_discovery.rs	T2	deferred	-	-	-	-	-	-
 file	comm/src/discovery/kademlia_rpc.rs	T3	deferred	-	-	-	-	-	-
