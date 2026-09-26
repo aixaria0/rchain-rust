@@ -334,6 +334,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "api-server.enable-devnet-cors",
             run.api_enable_devnet_cors,
         );
+        flag(
+            &mut e,
+            "api-server.enable-devnet-admin-public",
+            run.api_enable_devnet_admin_public,
+        );
         opt_i32(
             &mut e,
             "api-server.max-blocks-limit",

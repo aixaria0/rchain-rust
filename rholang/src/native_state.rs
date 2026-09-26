@@ -1275,7 +1275,26 @@ impl NativeSystemState {
     }
 
     /// Revoke `target`'s trust. Only an existing trusted stakeholder may revoke, and a stakeholder
-    /// cannot revoke itself. If `target` is bonded it is removed and its stake confiscated.
+    /// cannot revoke itself.
+    ///
+    /// **It does not confiscate the target's bond, and that is the fix rather than an omission**
+    /// (AUDIT C111). This used to call `slash(target)` whenever the target was bonded, so any single
+    /// trusted stakeholder could — with no evidence, no second signature and no delay — move any other
+    /// validator's entire stake into the Coop vault. One signature, one deploy, and a peer's bond is
+    /// gone; the only gate was "is the caller trusted", which the caller already was by definition.
+    ///
+    /// Trust is an admission list; a bond is property. Severing the first should not transfer the
+    /// second, and confiscation belongs where it is **justified**: a block whose own justifications
+    /// hold that validator responsible for an attributable failure, which is now checked on every
+    /// validator rather than taken from the proposer (`casper::validate::slashable_senders`,
+    /// AUDIT C110). An untrusted-but-bonded validator keeps its stake and can withdraw it, which is
+    /// what makes revocation a governance act rather than a robbery. Quorum and delay were the other
+    /// candidates; both still end with one actor deciding another's property, just more slowly.
+    ///
+    /// The `let _ = self.slash(target).await?` this replaces discarded the inner `Result` as well, so a
+    /// slash that *failed* — a staking vault that could not cover the transfer — was silently ignored
+    /// while the caller was told the revocation had succeeded. Removing the call removes that hazard
+    /// with it rather than leaving a second one to fix.
     pub async fn untrust(
         &self,
         caller: &Validator,
@@ -1292,10 +1311,6 @@ impl NativeSystemState {
         }
         trusted.remove(target);
         self.set_trusted(&trusted);
-        let bonded = self.bonds().await?.contains_key(target);
-        if bonded {
-            let _ = self.slash(target).await?;
-        }
         Ok(Ok(()))
     }
 
@@ -2251,7 +2266,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn untrust_removes_and_confiscates() {
+    async fn untrust_removes_trust_and_leaves_the_bond_alone() {
+        // This test used to be `untrust_removes_and_confiscates` and asserted the opposite of its
+        // last two lines: that the bond was gone and the Coop vault was up by the stake. It passed
+        // for as long as the behaviour did, which is the point — the test was written from the code
+        // rather than from the rule, so it could not see that one trusted stakeholder had been given
+        // a one-signature power to take any peer's stake (AUDIT C111). The assertions below are the
+        // rule: trust is admission, a bond is property, and revocation moves only the first.
         let native = native_with(
             &[validator(1), validator(2)],
             PosParams::default(),
@@ -2266,11 +2287,35 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        let coop_before = i64::from(native.coop_balance().await.unwrap());
+        let vault_before = i64::from(native.pos_vault_balance().await.unwrap());
+
         native.untrust(&validator(1), &v).await.unwrap().unwrap();
 
-        assert!(!native.trusted().await.unwrap().contains(&v));
-        assert!(!native.bonds().await.unwrap().contains_key(&v));
-        assert_eq!(i64::from(native.coop_balance().await.unwrap()), 40);
+        assert!(
+            !native.trusted().await.unwrap().contains(&v),
+            "untrust must remove the target from the trusted set"
+        );
+        assert!(
+            native.bonds().await.unwrap().contains_key(&v),
+            "untrust must NOT confiscate the target's bond — the stake is the validator's property, \
+             and taking it was a one-signature robbery available to any single trusted stakeholder"
+        );
+        assert_eq!(
+            i64::from(native.coop_balance().await.unwrap()),
+            coop_before,
+            "the Coop vault must not be enriched by a revocation"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            vault_before,
+            "and no value may move out of the staking vault: a revocation is not a transfer"
+        );
+        assert_eq!(
+            i64::from(native.vault_balance(&native.vault_address(&v).unwrap()).await.unwrap().unwrap()),
+            60,
+            "the validator keeps what it did not bond, so it can still withdraw the stake"
+        );
     }
 
     #[tokio::test]

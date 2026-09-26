@@ -234,6 +234,7 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         enable_reporting: to_bool(get(h, "enable-reporting")?)?,
         enable_txn_api: to_bool(get(h, "enable-txn-api")?)?,
         enable_devnet_cors: to_bool(get(h, "enable-devnet-cors")?)?,
+        enable_devnet_admin_public: to_bool(get(h, "enable-devnet-admin-public")?)?,
         keep_alive_time: to_duration(get(h, "keep-alive-time")?)?,
         keep_alive_timeout: to_duration(get(h, "keep-alive-timeout")?)?,
         permit_keep_alive_time: to_duration(get(h, "permit-keep-alive-time")?)?,

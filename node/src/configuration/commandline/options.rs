@@ -401,6 +401,14 @@ pub struct Run {
     #[arg(long = "api-enable-devnet-cors")]
     pub api_enable_devnet_cors: bool,
 
+    /// Publish the admin HTTP API (`/api/propose`) on `--api-host` instead of loopback.
+    ///
+    /// Off by default: that API has no authentication and triggers block production, so binding it
+    /// to a published interface is a deliberate act (AUDIT C112). Devnet and browser-wallet setups
+    /// that need to reach it from off-host set this.
+    #[arg(long = "api-enable-devnet-admin-public")]
+    pub api_enable_devnet_admin_public: bool,
+
     /// Custom keepalive time.
     #[arg(long = "api-keep-alive-time", value_parser = parse_duration_arg)]
     pub api_keep_alive_time: Option<Duration>,

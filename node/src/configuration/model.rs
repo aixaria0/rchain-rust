@@ -84,6 +84,20 @@ pub struct ApiServer {
     /// a gateway answers 404 either way.
     pub enable_txn_api: bool,
     pub enable_devnet_cors: bool,
+    /// Bind the **admin** HTTP server (`/api/propose`, port `port_admin_http`) to `api_server.host`
+    /// instead of loopback (AUDIT C112).
+    ///
+    /// Off by default, and that default is the fix: the admin server carries an **unauthenticated**
+    /// `POST /api/propose` that triggers block production, and it used to bind `api_server.host` —
+    /// `0.0.0.0` — unconditionally. CORS is not authentication (a non-browser client ignores it), so on
+    /// a published port any host on the network could make the node propose. The internal gRPC propose
+    /// service (`port_grpc_internal`, 40402) was already loopback-bound; this makes the admin HTTP
+    /// server agree with it rather than the public one.
+    ///
+    /// The opt-in exists because the public bind was deliberate: a browser wallet reaches the admin
+    /// server through a published port. It is now something an operator asks for, in the same shape as
+    /// `enable_devnet_cors` beside it, instead of something every node does.
+    pub enable_devnet_admin_public: bool,
     pub keep_alive_time: Duration,
     pub keep_alive_timeout: Duration,
     pub permit_keep_alive_time: Duration,

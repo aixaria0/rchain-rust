@@ -125,6 +125,26 @@ const AUTOPROPOSE_INTERVAL: Duration = Duration::from_secs(2);
 /// inconsistent state accounting stops producing blocks instead of silently spinning on `BugError`.
 const AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES: u64 = 3;
 
+/// Where the **admin** HTTP server binds (AUDIT C112).
+///
+/// Loopback unless the operator opted in. That server carries an unauthenticated `POST /api/propose`
+/// — it triggers block production — and it used to bind `api-server.host` unconditionally, which
+/// defaults to `0.0.0.0`. CORS was the only thing in front of it and CORS is not authentication: a
+/// non-browser client ignores it, so on a published port any host on the network could make the node
+/// propose. The internal gRPC propose service was already loopback-bound, so this makes the two
+/// propose surfaces agree.
+///
+/// Extracted from the spawn so the choice is testable: as an inline `if` inside an `async move` block
+/// the only way to observe it was to start a server and connect to it, which is why the public bind
+/// survived as long as it did.
+fn admin_bind_host(public_host: &str, enable_devnet_admin_public: bool) -> String {
+    if enable_devnet_admin_public {
+        public_host.to_string()
+    } else {
+        "127.0.0.1".to_string()
+    }
+}
+
 /// Build the real block-reporting casper: each `trace` constructs a fresh, isolated reporting
 /// `ReplayRSpace` over the persistent store (the factory clones the store manager, which shares the
 /// underlying LMDB environments).
@@ -362,6 +382,7 @@ pub struct NodeProgram {
     enable_reporting: bool,
     enable_txn_api: bool,
     enable_devnet_cors: bool,
+    enable_devnet_admin_public: bool,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
 }
@@ -387,6 +408,7 @@ impl NodeProgram {
             enable_reporting,
             enable_txn_api,
             enable_devnet_cors,
+            enable_devnet_admin_public,
             protocol_server,
             status_provider,
             gateway,
@@ -446,12 +468,21 @@ impl NodeProgram {
         let admin = tokio::spawn({
             let host = host.clone();
             async move {
-                // The admin HTTP server hosts the unauthenticated `/api/propose`. Bind it to the same
-                // `api-server.host` as the public server (matching Scala) so a browser wallet can
-                // reach it through a published port; `--api-enable-devnet-cors` gates cross-origin
-                // access. In the devnet `--api-host 0.0.0.0` makes it host-reachable.
+                // The admin HTTP server hosts the **unauthenticated** `/api/propose`, which triggers
+                // block production. It used to bind `api-server.host` — `0.0.0.0` — unconditionally,
+                // "so a browser wallet can reach it through a published port"; CORS was the only
+                // thing in front of it, and CORS is not authentication (a non-browser client ignores
+                // it entirely). Any host on the network could make the node propose (AUDIT C112).
+                //
+                // So the default is loopback, which is where the *other* propose surface already
+                // lives: the internal gRPC service binds `127.0.0.1:{port_grpc_internal}`
+                // (`grpc/mod.rs::serve_internal`). A wallet that genuinely needs a published admin
+                // port asks for it with `api-server.enable-devnet-admin-public`, the same
+                // ask-for-it shape as `enable_devnet_cors` above — the capability is preserved, the
+                // default is not.
+                let admin_host = admin_bind_host(&host, enable_devnet_admin_public);
                 acquire_admin_http_server(
-                    &host,
+                    &admin_host,
                     port_admin_http,
                     admin_web_api,
                     enable_devnet_cors,
@@ -972,6 +1003,7 @@ pub async fn setup_node_program(
         enable_reporting: conf.api_server.enable_reporting,
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
+        enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
         protocol_server: Some(build_protocol_server(conf, &comm_state, routing_tx)?),
         status_provider: Some(StatusProvider {
             connections: comm_state.connections.clone(),
@@ -2333,5 +2365,36 @@ mod attest_warranted_tests {
         assert!(!attest_warranted(&me, &other, 6, Some(7)));
         // A strictly newer height still is.
         assert!(attest_warranted(&me, &other, 8, Some(7)));
+    }
+}
+
+#[cfg(test)]
+mod admin_bind_tests {
+    use super::admin_bind_host;
+
+    /// **The regression test for AUDIT C112.** The admin HTTP server carries an unauthenticated
+    /// `POST /api/propose`, so its bind address is a security property and not a preference: with the
+    /// default configuration every node in the network used to publish it.
+    ///
+    /// Both arms are asserted. Only testing the default would leave the opt-in free to become a no-op
+    /// — an operator who sets the flag and still gets loopback has lost the browser-wallet access the
+    /// flag promises, and that failure is silent.
+    #[test]
+    fn the_admin_server_binds_loopback_unless_the_operator_asks_otherwise() {
+        assert_eq!(
+            admin_bind_host("0.0.0.0", false),
+            "127.0.0.1",
+            "the default must not publish the unauthenticated propose endpoint on a wildcard address"
+        );
+        assert_eq!(
+            admin_bind_host("0.0.0.0", true),
+            "0.0.0.0",
+            "the opt-in must actually publish, or the browser-wallet path it exists for is broken"
+        );
+        // A host that is already loopback stays where it is either way.
+        assert_eq!(admin_bind_host("127.0.0.1", false), "127.0.0.1");
+        assert_eq!(admin_bind_host("127.0.0.1", true), "127.0.0.1");
+        // A specific interface is preserved under the opt-in, not widened to the wildcard.
+        assert_eq!(admin_bind_host("10.0.0.5", true), "10.0.0.5");
     }
 }
