@@ -9,6 +9,7 @@ use rchain_models::ast::Par;
 use rchain_models::casper::protocol::casper_message::Event;
 use rchain_models::rholang::RhoType::{RhoBoolean, RhoString, RhoTupleN};
 use rchain_models::validator::Validator;
+use rchain_shared::refined::NonNegI64;
 
 /// A user-level system-deploy error (port of `SystemDeployUserError`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,16 +77,22 @@ pub struct SystemDeploy {
 /// system-deploy sources; the Scala sources are a checklist only).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeSystemDeployOp {
+    /// **`amount` is `NonNegI64`, and that is the fix for AUDIT C109, not decoration.** A charge is a
+    /// debit subtracted from the deployer's vault, so a *negative* amount inverts it into a credit —
+    /// `balance - (-n) == balance + n` — while `credit_pos_vault` no-ops on the negative, leaving the
+    /// staking vault untouched. The deployer is simply up by `n`, from nothing. The ingress guard
+    /// caught the deploy path; this type is what makes the block-validation and replay paths
+    /// (which read a *peer's* `ProcessedSystemDeploy` off the wire) structurally unable to carry one.
     PreCharge {
         deployer: PublicKey,
-        amount: i64,
+        amount: NonNegI64,
     },
     /// `Pos.rhox`'s `refundDeploy` is called with only the amount and reads the deployer back out of
     /// the `currentDeployerData` cell that `chargeDeploy` filled. This port carries the deployer in
     /// the deploy instead — same rule, stated in the type rather than in a mutable cell.
     Refund {
         deployer: PublicKey,
-        amount: i64,
+        amount: NonNegI64,
     },
     CloseBlock {
         block_number: i64,
@@ -96,7 +103,7 @@ pub enum NativeSystemDeployOp {
 }
 
 impl SystemDeploy {
-    pub fn pre_charge(amount: i64, pk: &PublicKey, rand: Blake2b512Random) -> SystemDeploy {
+    pub fn pre_charge(amount: NonNegI64, pk: &PublicKey, rand: Blake2b512Random) -> SystemDeploy {
         SystemDeploy {
             source: "",
             normalizer_env: BTreeMap::new(),
@@ -109,7 +116,11 @@ impl SystemDeploy {
         }
     }
 
-    pub fn refund(deployer: &PublicKey, amount: i64, rand: Blake2b512Random) -> SystemDeploy {
+    pub fn refund(
+        deployer: &PublicKey,
+        amount: NonNegI64,
+        rand: Blake2b512Random,
+    ) -> SystemDeploy {
         SystemDeploy {
             source: "",
             normalizer_env: BTreeMap::new(),
@@ -173,16 +184,21 @@ pub fn process_bool_result(output: &Par) -> Result<(), SystemDeployUserError> {
 mod tests {
     use super::*;
 
+    /// A `NonNegI64` for test amounts — the charge path takes the refinement since AUDIT C109.
+    fn nn(v: i64) -> NonNegI64 {
+        NonNegI64::try_from(v).expect("a test amount is non-negative")
+    }
+
     #[test]
     fn pre_charge_is_native() {
         let pk = PublicKey::new(vec![1u8; 65]);
         let rand = Blake2b512Random::new_random(128);
-        let d = SystemDeploy::pre_charge(100, &pk, rand);
+        let d = SystemDeploy::pre_charge(nn(100), &pk, rand);
         assert_eq!(
             d.op,
             Some(NativeSystemDeployOp::PreCharge {
                 deployer: pk,
-                amount: 100
+                amount: nn(100)
             })
         );
     }
@@ -195,12 +211,12 @@ mod tests {
     fn refund_carries_its_payer() {
         let pk = PublicKey::new(vec![2u8; 65]);
         let rand = Blake2b512Random::new_random(128);
-        let d = SystemDeploy::refund(&pk, 70, rand);
+        let d = SystemDeploy::refund(&pk, nn(70), rand);
         assert_eq!(
             d.op,
             Some(NativeSystemDeployOp::Refund {
                 deployer: pk,
-                amount: 70
+                amount: nn(70)
             })
         );
     }

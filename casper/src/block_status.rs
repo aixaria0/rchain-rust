@@ -16,6 +16,20 @@ pub enum BlockStatus {
     ContainsExpiredDeploy,
     ContainsFutureDeploy,
     ContainsLowCostDeploy,
+    /// A deploy's phlo limit is negative (AUDIT C109). Its own status rather than folding into
+    /// `ContainsLowCostDeploy`: a negative *limit* is not a cheap deploy, it is a malformed one whose
+    /// charge would be a credit, and a validator that reports the two as the same thing cannot say
+    /// which it rejected.
+    InvalidPhloLimit,
+    /// The block slashes a validator that none of its justifications holds responsible (AUDIT C110).
+    ///
+    /// A `Slash` is a *system* deploy: it is not signed by its victim, it moves that victim's entire
+    /// bond to the Coop vault, and every validator re-executes it during replay. Until this status
+    /// existed, a block was accepted on the strength of its post-state hash alone — a proposer could
+    /// name any bonded validator and, provided it computed the resulting state honestly, every other
+    /// validator would help it confiscate the stake. The rule is now re-derived on the receiving side
+    /// from the node's own block metadata, not taken from the proposer.
+    UnjustifiedSlash,
 }
 
 impl BlockStatus {
@@ -44,6 +58,8 @@ impl std::fmt::Display for BlockStatus {
             BlockStatus::ContainsExpiredDeploy => "a deploy has expired",
             BlockStatus::ContainsFutureDeploy => "a deploy has a future validity window",
             BlockStatus::ContainsLowCostDeploy => "a deploy's phlo price is below the minimum",
+            BlockStatus::InvalidPhloLimit => "a deploy has a negative phlo limit",
+            BlockStatus::UnjustifiedSlash => "the block slashes a validator none of its justifications holds responsible",
         };
         write!(f, "{s}")
     }
@@ -54,7 +70,7 @@ mod tests {
     use super::*;
 
     /// Every status, so a variant added without a message (or with a copy-pasted one) fails here.
-    const ALL: [BlockStatus; 13] = [
+    const ALL: [BlockStatus; 15] = [
         BlockStatus::Valid,
         BlockStatus::InvalidBlockNumber,
         BlockStatus::InvalidRepeatDeploy,
@@ -68,6 +84,8 @@ mod tests {
         BlockStatus::ContainsExpiredDeploy,
         BlockStatus::ContainsFutureDeploy,
         BlockStatus::ContainsLowCostDeploy,
+        BlockStatus::InvalidPhloLimit,
+        BlockStatus::UnjustifiedSlash,
     ];
 
     /// `Valid` is the **only** status that is valid: `is_valid` is the one predicate the block
@@ -129,7 +147,7 @@ mod tests {
         assert_eq!(copied, BlockStatus::Valid);
 
         let set: HashSet<BlockStatus> = ALL.into_iter().collect();
-        assert_eq!(set.len(), ALL.len(), "all thirteen are distinct");
+        assert_eq!(set.len(), ALL.len(), "all of them are distinct");
 
         // A rejected block's status is never equal to `Valid`, which is what the caller tests.
         assert_ne!(BlockStatus::InvalidBondsCache, BlockStatus::Valid);

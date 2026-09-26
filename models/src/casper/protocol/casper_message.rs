@@ -95,9 +95,25 @@ impl DeployData {
     /// The total phlo charge (`phlo_limit * phlo_price`). Returns `None` on overflow rather than
     /// wrapping (a wrapped charge would bypass cost accounting). Computed in `i128` so the product
     /// cannot overflow before the `i64` range check.
-    pub fn total_phlo_charge(&self) -> Option<i64> {
+    ///
+    /// **The sign is checked here, and this is the only place it can enter** (AUDIT C109). `phlo_limit`
+    /// is `int64` on the wire (`casper.proto`, `DeployDataProto.phlo_limit`), and the charge is a
+    /// *debit*: the amount flows to `native.pre_charge`, which subtracts it from the deployer's vault.
+    /// A negative limit made that subtraction an **addition** — `balance - (-n) == balance + n` — so a
+    /// deploy with `phlo_limit = -100, phlo_price = 1` credited its own deployer 100 REV out of
+    /// nothing, while `credit_pos_vault` no-opped on the negative amount and left the staking vault
+    /// untouched. The ingress guard at `casper::api::block_api_impl` caught the deploy path, but this
+    /// function is what **block validation and replay** call, so a *peer's* block carried the negative
+    /// limit straight through to the charge.
+    ///
+    /// Returning `Option<NonNegI64>` is the fix rather than adding a guard at each caller: the callers
+    /// already treat `None` as a hard error ("phlo charge overflow"), the type carries the invariant to
+    /// `pre_charge` and on into the vault arithmetic, and a negative limit is now unrepresentable one
+    /// step after the wire instead of representable all the way to the balance.
+    pub fn total_phlo_charge(&self) -> Option<NonNegI64> {
         let product = (self.phlo_limit as i128).checked_mul(self.phlo_price as i128)?;
-        i64::try_from(product).ok()
+        let charge = i64::try_from(product).ok()?;
+        NonNegI64::try_from(charge).ok()
     }
 
     fn from_proto_data(p: &DeployDataProto) -> Self {
@@ -529,9 +545,16 @@ impl ProcessedDeploy {
 
     /// The phlo refunded after this deploy: `max(0, phlo_limit − cost) × phlo_price` (port of
     /// `ProcessedDeploy.refundAmount`). Computed in `i128` and clamped to `i64::MAX` so the refund
-    /// cannot wrap (it is non-negative by construction). Shared by play and replay so the two paths
-    /// cannot drift (S3).
-    pub fn refund_amount(&self) -> i64 {
+    /// cannot wrap. Shared by play and replay so the two paths cannot drift (S3).
+    ///
+    /// **The clamp is at both ends, and `NonNegI64` is why that matters** (AUDIT C109). The doc here
+    /// used to say the result was "non-negative by construction", and that was true only while every
+    /// input was: `remaining` is clamped to `>= 0` above, but `phlo_price` is a bare `i64` from the
+    /// wire, so a negative price made the product negative, `i64::try_from` accepted it, and the
+    /// function returned a negative refund — precisely the value `native.refund` guards against. The
+    /// guard is the backstop; the type is the fix. Clamping the product at zero as well means the
+    /// returned value is non-negative for *every* input, which is what the sentence now claims.
+    pub fn refund_amount(&self) -> NonNegI64 {
         let remaining = self
             .deploy
             .data
@@ -539,7 +562,8 @@ impl ProcessedDeploy {
             .saturating_sub_unsigned(self.cost.cost)
             .max(0) as i128;
         let product = remaining * (self.deploy.data.phlo_price as i128);
-        i64::try_from(product).unwrap_or(i64::MAX)
+        let clamped = i64::try_from(product).unwrap_or(i64::MAX);
+        NonNegI64::saturating(clamped)
     }
 }
 
@@ -1574,9 +1598,60 @@ mod tests {
         assert_eq!(d.total_phlo_charge(), None);
 
         d.phlo_limit = 1;
-        assert_eq!(d.total_phlo_charge(), Some(i64::MAX));
+        assert_eq!(d.total_phlo_charge(), Some(NonNegI64::try_from(i64::MAX).unwrap()));
 
         d.phlo_limit = 0;
-        assert_eq!(d.total_phlo_charge(), Some(0));
+        assert_eq!(d.total_phlo_charge(), Some(NonNegI64::zero()));
+
+        // The sign, which this test did not cover until AUDIT C109: an overflow is not the only way a
+        // charge can be unusable. A negative limit (or a negative price) is a *mint* if it reaches the
+        // charge path, so it must be refused here, at the boundary, rather than at each caller.
+        d.phlo_price = 1;
+        d.phlo_limit = -100;
+        assert_eq!(d.total_phlo_charge(), None, "a negative charge must not be representable");
+
+        d.phlo_price = -1;
+        d.phlo_limit = 100;
+        assert_eq!(d.total_phlo_charge(), None, "a negative price must not yield a usable charge");
+    }
+
+    /// The refund's clamp, at the end the old code did not have (AUDIT C109). `refund_amount`'s doc
+    /// claimed the result was "non-negative by construction" while `phlo_price` came straight off the
+    /// wire; a negative price made a negative refund. Pinned at both ends now, because the claim is
+    /// only worth making if a failing input can reach it.
+    #[test]
+    fn refund_amount_is_non_negative_for_every_input() {
+        let mut d = DeployData {
+            attachments: Vec::new(),
+            term: "Nil".to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 100,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+        };
+        let mut processed = ProcessedDeploy {
+            deploy: SignedDeployData {
+                data: d.clone(),
+                deployer: Vec::new(),
+                sig: Vec::new(),
+                sig_algorithm: String::new(),
+            },
+            cost: PCost { cost: 40 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        };
+        assert_eq!(i64::from(processed.refund_amount()), 60);
+
+        // A negative price can no longer produce a negative refund.
+        d.phlo_price = -1;
+        processed.deploy.data = d;
+        assert_eq!(i64::from(processed.refund_amount()), 0);
+
+        // A negative limit cannot either, and must not borrow from the remaining-cost clamp.
+        processed.deploy.data.phlo_price = 1;
+        processed.deploy.data.phlo_limit = -100;
+        assert_eq!(i64::from(processed.refund_amount()), 0);
     }
 }

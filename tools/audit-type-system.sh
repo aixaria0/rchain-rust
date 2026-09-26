@@ -41,6 +41,8 @@
 #              and one in `shared/src/refined.rs` is a refinement leaving its own domain.
 #
 # Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|cast|lax|get|index|div|overflow]
+#        tools/audit-type-system.sh --sites   # with a counted class, list its sites (checked against the count)
+#        tools/audit-type-system.sh --files   # print the production-file roster every class scans, then exit
 #        (default: all)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -884,6 +886,12 @@ ESCAPE_CTOR_ALLOW=(
   # --- shared/src/refined.rs -------------------------------------------------------------------
   'shared/src/refined.rs|NonNegI64\(1\)|total: .1. is non-negative|the literal 1 is in the domain; the doc states the totality argument'
   'shared/src/refined.rs|NonNegI64\(0\)|total: .0. is non-negative|the literal 0 is in the domain'
+  # `saturating` is a *validated* constructor in the same sense `TryFrom` is, and it is here rather
+  # than unchecked because the alternative at its call site was `try_from(..).expect(..)` — a panic in
+  # production code, which this gate refuses (AUDIT C109). The guard is the branch that selects the
+  # construction, not a comment about it: the `NonNegI64(v)` arm is only reached when `v < 0` is false,
+  # so `v` is in the domain by the test that chose it.
+  'shared/src/refined.rs|NonNegI64\(v\)|v < 0|the clamp. `NonNegI64(v)` is the else arm of `if v < 0`, so v is non-negative by the branch that selected it'
   'shared/src/refined.rs|BlockHeight\(0\)|total: .0. is non-negative|genesis height: the literal 0 is in the domain'
   'shared/src/refined.rs|BlockHeight\(self\.0\.saturating_add\(i64::from\(rhs\)\)\)|Add<NonNegI64> for BlockHeight|sum of a non-negative height and a NonNegI64; saturating, so a hypothetical overflow stays in the domain rather than wrapping negative'
   'shared/src/refined.rs|SeqNum\(0\)|total: .0. is non-negative|the literal 0 is in the domain'
@@ -1197,13 +1205,50 @@ run_class() {
 # Filtering it out here (rather than teaching `run_class` about it) keeps the class list — and so the
 # completeness guard below — exactly what it was.
 SITES_MODE=0
+FILES_MODE=0
 _cls_args=()
 for _a in "$@"; do
   case "$_a" in
     --sites) SITES_MODE=1 ;;
+    --files) FILES_MODE=1 ;;
     *) _cls_args+=("$_a") ;;
   esac
 done
+
+# `--files` prints the **roster every class in this file scans** — the non-test `.rs` of `CRATES`'s
+# `src/` — one relative path per line, and exits. It is the `--sites` idiom one level out: `--sites`
+# answers "which sites does the ratchet count", this answers "which files does any of it read".
+#
+# Why it exists. `spec/REVIEW-LEDGER.md` is an audit instrument whose `file` kind is a denominator —
+# "N of the M production files have been reviewed" — and the plan that built it carried **358** for M.
+# That number had no derivation: measured 2026-09-26, *no* definition of "production file" in this tree
+# yields 358 (the walk below gives 350; every `.rs` outside `legacy/` and `target/` gives 402). A
+# denominator that nothing recomputes is the defect this ledger exists to close, so the ledger must not
+# carry a second definition of the set this file already walks — two definitions can disagree, and the
+# one a reviewer works from would then not be the one the gate moves. That is the argument
+# `counted_scan_sites` makes for `--sites`, applied to the file roster.
+print_file_roster() {
+  local c dir f n=0
+  for c in "${CRATES[@]}"; do
+    dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      printf '%s\n' "${f#"$ROOT/"}"
+      n=$((n + 1))
+    done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE" | sort)
+  done
+  # A roster walk that finds nothing is not evidence, and it is the failure that would look like a
+  # clean ledger: every class above would report 0 sites and the summary would print OK.
+  if (( n == 0 )); then
+    echo "FAIL: the file roster is empty — CRATES/TEST_ONLY_FILE_RE no longer describe this tree, and a denominator of zero is not a measurement." >&2
+    exit 1
+  fi
+}
+
+if (( FILES_MODE )); then
+  print_file_roster
+  exit 0
+fi
 
 if [ "${#_cls_args[@]}" -eq 0 ]; then
   classes=(panic unsafe silent escape cast lax get index div overflow)

@@ -883,12 +883,18 @@ impl NativeSystemState {
     }
 
     /// Credit `amount` to the staking vault (a bond's stake, or a deploy's phlo charge).
-    pub async fn credit_pos_vault(&self, amount: i64) -> Result<(), String> {
-        if amount <= 0 {
+    ///
+    /// `amount: NonNegI64` rather than the `if amount <= 0 { return Ok(()) }` guard this used to
+    /// carry: a silent no-op on an out-of-range amount is how the negative-`phlo_limit` mint stayed
+    /// invisible (AUDIT C109) — the charge credited the deployer's vault and this function quietly
+    /// declined to move the staking vault, so the two halves of one transfer disagreed and nothing
+    /// failed. The type now refuses the value instead of absorbing it.
+    pub async fn credit_pos_vault(&self, amount: NonNegI64) -> Result<(), String> {
+        if amount == NonNegI64::zero() {
             return Ok(());
         }
         let balance = self.pos_vault_balance().await?;
-        self.set_pos_vault_balance(balance_plus(balance, amount, "pos vault credit")?);
+        self.set_pos_vault_balance(balance_plus(balance, i64::from(amount), "pos vault credit")?);
         Ok(())
     }
 
@@ -901,12 +907,12 @@ impl NativeSystemState {
     /// loudly is the only honest response — the Scala's `payWithdrawer` has a
     /// `// FIXME fix transfer in failure case` here and removes the withdrawer from the maps even
     /// when the transfer failed, which loses the bond. This port refuses instead.
-    pub async fn debit_pos_vault(&self, amount: i64) -> Result<(), String> {
-        if amount <= 0 {
+    pub async fn debit_pos_vault(&self, amount: NonNegI64) -> Result<(), String> {
+        if amount == NonNegI64::zero() {
             return Ok(());
         }
         let balance = self.pos_vault_balance().await?;
-        self.set_pos_vault_balance(balance_plus(balance, -amount, "pos vault debit")?);
+        self.set_pos_vault_balance(balance_plus(balance, -i64::from(amount), "pos vault debit")?);
         Ok(())
     }
 
@@ -1010,7 +1016,8 @@ impl NativeSystemState {
         // `deposit!(deployerId, amount, posVaultAddr)`). Crediting the destination is what makes the
         // later reward and refund transfers possible at all: without it the vault would hold nothing
         // to pay out of, and the epoch would distribute a pot that does not exist.
-        self.credit_pos_vault(stake).await?;
+        self.credit_pos_vault(NonNegI64::try_from(stake).map_err(|e| format!("bond: {e}"))?)
+            .await?;
         pool.insert(*validator, amount);
         // The pool only. Activation is the epoch boundary's (`close_block`'s
         // `pickActiveValidators`, `Pos.rhox:546`), which is why this does not touch `pos:active`:
@@ -1149,7 +1156,7 @@ impl NativeSystemState {
             };
             let reward = committed.remove(&validator).unwrap_or(NonNegI64::zero());
             let payable = balance_plus(claim.bond, i64::from(reward), "withdrawal payment")?;
-            self.debit_pos_vault(i64::from(payable)).await?;
+            self.debit_pos_vault(payable).await?;
             let address = self.vault_address(&validator)?;
             let balance = self
                 .vault_balance(&address)
@@ -1234,7 +1241,7 @@ impl NativeSystemState {
             // `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey)`). Debiting the source
             // is what makes this a *transfer*: crediting the Coop vault on its own — which is what
             // this did before the staking vault existed — mints the slashed bond out of nothing.
-            self.debit_pos_vault(i64::from(stake)).await?;
+            self.debit_pos_vault(stake).await?;
             let coop = self.coop_balance().await?;
             self.set_coop_balance(balance_plus(coop, i64::from(stake), "slash coop")?);
         }
@@ -1466,14 +1473,26 @@ impl NativeSystemState {
 
     /// Charge `amount` to the deployer's REV vault (port of the PoS `chargeDeploy` behavior). The
     /// outer `Result` is a platform failure; the inner is the `(Bool, Either)` user result.
+    ///
+    /// **`amount: NonNegI64` is the load-bearing half of AUDIT C109.** This used to take `i64` and
+    /// guard `amount == 0`, so a negative amount walked past every check: the insufficient-funds test
+    /// (`balance < amount`) is false for any `NonNegI64` balance against a negative `amount`, and the
+    /// subtraction below (`balance - amount`) *adds*, so `NonNegI64::try_from` succeeded and the
+    /// deployer's vault was **credited**. `credit_pos_vault` then no-opped on the negative
+    /// (`amount <= 0` at its own guard), so the staking vault was untouched: REV minted from nothing.
+    /// The sibling [`Self::refund`] guarded `amount <= 0` all along — the asymmetry is what the fix
+    /// removes, by making the negative unrepresentable instead of guarded against.
     pub async fn pre_charge(
         &self,
         deployer: &PublicKey,
-        amount: i64,
+        amount: NonNegI64,
     ) -> Result<Result<(), String>, String> {
-        if amount == 0 {
+        if amount == NonNegI64::zero() {
             return Ok(Ok(()));
         }
+        // Discharged once, into the raw value the balance arithmetic needs. Every use below reads
+        // this binding, so there is no second place a sign could enter.
+        let raw = i64::from(amount);
         let address = RevAddress::from_public_key(deployer)
             .ok_or_else(|| "preCharge: invalid deployer public key".to_string())?
             .to_base58();
@@ -1481,14 +1500,14 @@ impl NativeSystemState {
             Some(b) => b,
             None => NonNegI64::try_from(0).map_err(|e| e.to_string())?,
         };
-        if i64::from(balance) < amount {
+        if i64::from(balance) < raw {
             return Ok(Err(format!(
-                "preCharge: insufficient funds ({} < {amount})",
+                "preCharge: insufficient funds ({} < {raw})",
                 i64::from(balance)
             )));
         }
-        let new_balance = NonNegI64::try_from(i64::from(balance) - amount)
-            .map_err(|e| format!("preCharge: {e}"))?;
+        let new_balance =
+            NonNegI64::try_from(i64::from(balance) - raw).map_err(|e| format!("preCharge: {e}"))?;
         self.set_vault_balance(&address, new_balance);
         // The charge is deposited into the staking vault (`Pos.rhox:397-404`:
         // `deposit!(deployerId, amount, posVaultAddr)`), which is where an epoch's reward pot comes
@@ -1516,9 +1535,9 @@ impl NativeSystemState {
     pub async fn refund(
         &self,
         deployer: &PublicKey,
-        amount: i64,
+        amount: NonNegI64,
     ) -> Result<Result<(), String>, String> {
-        if amount <= 0 {
+        if amount == NonNegI64::zero() {
             return Ok(Ok(()));
         }
         let address = RevAddress::from_public_key(deployer)
@@ -1529,7 +1548,7 @@ impl NativeSystemState {
             .vault_balance(&address)
             .await?
             .unwrap_or(NonNegI64::zero());
-        self.set_vault_balance(&address, balance_plus(balance, amount, "refund")?);
+        self.set_vault_balance(&address, balance_plus(balance, i64::from(amount), "refund")?);
         Ok(Ok(()))
     }
 
@@ -1544,6 +1563,13 @@ impl NativeSystemState {
 
 #[cfg(test)]
 mod tests {
+    /// A `NonNegI64` for test amounts. The charge path takes the refinement since AUDIT C109, so a
+    /// test that wants an amount spells it as one — which is the point of the change: there is no way
+    /// to write the negative that used to mint.
+    fn nn(v: i64) -> NonNegI64 {
+        NonNegI64::try_from(v).expect("a test amount is non-negative")
+    }
+
     use super::*;
 
     fn validator(byte: u8) -> Validator {
@@ -1891,7 +1917,7 @@ mod tests {
         let payer = PublicKey::new(vec![9u8; 65]);
         let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(10).unwrap());
-        native.pre_charge(&payer, 10).await.unwrap().unwrap();
+        native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
         native.withdraw(&v, 3).await.unwrap().unwrap();
         let before = (
             native.pending_withdrawers().await.unwrap(),
@@ -1990,7 +2016,7 @@ mod tests {
         let payer = PublicKey::new(vec![9u8; 65]);
         let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(10).unwrap());
-        native.pre_charge(&payer, 10).await.unwrap().unwrap();
+        native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.pos_vault_balance().await.unwrap()),
             9 + 10,
@@ -2051,7 +2077,7 @@ mod tests {
         let payer = PublicKey::new(vec![9u8; 65]);
         let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
-        native.pre_charge(&payer, 5).await.unwrap().unwrap();
+        native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
 
         // Stage the request, then close the block: the boundary pays the epoch's reward into the
         // committed map *and* moves the validator out of the pool, in that order.
@@ -2118,7 +2144,7 @@ mod tests {
         let payer = PublicKey::new(vec![9u8; 65]);
         let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
-        native.pre_charge(&payer, 5).await.unwrap().unwrap();
+        native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
 
         native.close_block(1).await.unwrap().unwrap();
         assert_eq!(
@@ -2145,7 +2171,7 @@ mod tests {
         .await;
         let native = native;
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
-        native.pre_charge(&payer, 5).await.unwrap().unwrap();
+        native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
         native.close_block(1).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
@@ -2171,7 +2197,7 @@ mod tests {
         )
         .await;
         // Drain the vault below the bonded pool: a ledger that has already diverged.
-        native.debit_pos_vault(35).await.unwrap();
+        native.debit_pos_vault(nn(35)).await.unwrap();
         assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 5);
 
         native.close_block(1).await.unwrap().unwrap();
@@ -2296,14 +2322,14 @@ mod tests {
         native.set_vault_balance(&addr, NonNegI64::try_from(100).unwrap());
 
         // Deduct 40 -> 60.
-        native.pre_charge(&pk, 40).await.unwrap().unwrap();
+        native.pre_charge(&pk, nn(40)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
             60
         );
 
         // Deducting more than the balance fails via the user-error branch.
-        let result = native.pre_charge(&pk, 100).await.unwrap();
+        let result = native.pre_charge(&pk, nn(100)).await.unwrap();
         assert!(result.is_err(), "insufficient funds must be rejected");
     }
 
@@ -2559,13 +2585,13 @@ mod tests {
         let before = total_rev(&native, &addresses).await;
 
         // Pre-charge the maximum phlo, then return all but 30 of it.
-        native.pre_charge(&pk, 100).await.unwrap().unwrap();
+        native.pre_charge(&pk, nn(100)).await.unwrap().unwrap();
         assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 100);
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
             0
         );
-        native.refund(&pk, 70).await.unwrap().unwrap();
+        native.refund(&pk, nn(70)).await.unwrap().unwrap();
 
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
@@ -2583,9 +2609,14 @@ mod tests {
             "charging and refunding is a transfer, not a mint"
         );
 
-        // A non-positive refund succeeds without moving anything (`Pos.rhox:426`'s guard).
-        native.refund(&pk, 0).await.unwrap().unwrap();
-        native.refund(&pk, -5).await.unwrap().unwrap();
+        // A zero refund succeeds without moving anything (`Pos.rhox:426`'s guard).
+        native.refund(&pk, nn(0)).await.unwrap().unwrap();
+        // **The negative case is gone, and its absence is the fix** (AUDIT C109). This line used to
+        // read `native.refund(&pk, -5)` and assert the no-op — which was the sibling of the very bug
+        // that minted: `refund` happened to guard `amount <= 0` while `pre_charge` guarded only
+        // `amount == 0`, and the asymmetry was invisible because both were tested only for the
+        // behaviour they already had. A negative amount is now unrepresentable, so there is no
+        // runtime assertion to write; the compile-time one is that `nn` cannot produce it.
         assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 30);
     }
 
@@ -2602,10 +2633,10 @@ mod tests {
 
         // No charge has happened, so the vault holds nothing to refund out of.
         assert!(
-            native.refund(&pk, 1).await.is_err(),
+            native.refund(&pk, nn(1)).await.is_err(),
             "a refund cannot come out of an empty vault"
         );
-        assert!(native.debit_pos_vault(1).await.is_err());
+        assert!(native.debit_pos_vault(nn(1)).await.is_err());
         assert_eq!(
             i64::from(native.pos_vault_balance().await.unwrap()),
             0,

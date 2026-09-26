@@ -130,6 +130,39 @@ pub fn is_genesis_pre_state(pre_state_hash: &Blake2b256Hash) -> bool {
     *pre_state_hash == empty_state_hash_fixed()
 }
 
+/// Does this block slash anyone its own justifications do not hold responsible (AUDIT C110)?
+///
+/// **Why the check lives here and not in the pure-check list.** The pure checks read the block and
+/// nothing else, and the *evidence* for a slash is not in the block: `BlockMessage.justifications` is
+/// a list of `BlockHash`, and the `slashable` flag is `BlockMetadata`'s — in memory only, explicitly
+/// "neither [] carried in the protobuf" (see its doc). So a validator can only ask the question
+/// against **its own DAG view**, which means the answer depends on what *this node* observed about
+/// those justifications, and that is exactly the property wanted: the proposer's opinion of the victim
+/// carries no weight, and a node that never saw the offending block cannot be made to rubber-stamp
+/// the punishment.
+///
+/// A block with no slashes short-circuits before any lookup, so the cost is paid only by blocks that
+/// take someone's stake. A justification this node does not have is simply absent from the metadata
+/// list — it then contributes no offender, so an unknown justification cannot license a slash, which
+/// is the safe direction.
+async fn slash_is_unjustified(
+    dag: &dyn BlockDagStorage,
+    block: &BlockMessage,
+) -> Result<bool, String> {
+    let slashed = crate::validate::slashed_validators(block);
+    if slashed.is_empty() {
+        return Ok(false);
+    }
+    let mut metadata = Vec::with_capacity(block.justifications.len());
+    for j in &block.justifications {
+        if let Some(meta) = dag.lookup(j).await? {
+            metadata.push(meta);
+        }
+    }
+    let justified = crate::validate::slashable_senders(&metadata);
+    Ok(!slashed.is_subset(&justified))
+}
+
 /// Validate a block by recomputing its pre-state and replaying its deploys (port of
 /// `validateBlockCheckpoint`). Returns the block metadata plus a `bool` (valid) / `BlockStatus`
 /// (rejectable) outcome.
@@ -178,6 +211,8 @@ where
         Ok(false)
     } else if pre_state.fringe_rejected_deploys != block.rejected_deploys {
         Err(BlockStatus::InvalidRejectedDeploy)
+    } else if slash_is_unjustified(dag, block).await? {
+        Err(BlockStatus::UnjustifiedSlash)
     } else {
         let rand = BlockRandomSeed::random_generator_from_block(block);
         let post_state_hash = Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes());

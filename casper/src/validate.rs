@@ -97,6 +97,78 @@ pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> BlockStatus {
     }
 }
 
+/// Validate that no deploy carries a negative phlo limit (AUDIT C109).
+///
+/// **Why this check has to exist on this path.** The charge is `phlo_limit × phlo_price`, and it is a
+/// debit: it reaches `native.pre_charge`, which subtracts it from the deployer's vault. A negative
+/// limit made that subtraction an addition — `balance - (-n) == balance + n` — crediting the deployer
+/// out of nothing while the staking-vault side of the transfer silently no-opped. The deploy-ingress
+/// path checked for it (`BlockApiImpl::deploy`), so a *local* deploy could not carry one; but this
+/// function's callers are the checks a validator runs on **another node's block**, where the deploy
+/// data comes off the wire and nothing had looked at the sign. That asymmetry is exactly the shape
+/// that let the bug be reachable only by a peer.
+///
+/// `total_phlo_charge` now refuses a negative product at the type level, so the replay path cannot
+/// mint even without this check. This one is here because a validator should *reject the block*, not
+/// fail somewhere downstream: a `BlockStatus` says which rule was broken, and "the charge could not
+/// be computed" during replay does not.
+pub fn phlo_limit(b: &BlockMessage) -> BlockStatus {
+    if b.state.deploys.iter().all(|d| d.deploy.data.phlo_limit >= 0) {
+        BlockStatus::Valid
+    } else {
+        BlockStatus::InvalidPhloLimit
+    }
+}
+
+/// The validators a block's own justifications hold responsible for an attributable failure
+/// (AUDIT C110). This is the *rule*; the proposer narrows it further (see
+/// [`crate::blocks::proposer::proposer`], which additionally requires the offender to be bonded — a
+/// proposer's choice about who is worth slashing, not part of what makes a slash justified).
+///
+/// **Why this is one function and not two.** The proposer decided who to slash from this rule, and
+/// the receiving validators used to take that decision on trust: they replayed the `Slash`, recomputed
+/// the state, saw the hash agree, and accepted. A proposer could therefore name any bonded validator
+/// and have every other validator confiscate that stake, honestly and deterministically, without a
+/// single node asking whether the victim had done anything. The rule lived only on the producing side,
+/// so the consuming side had nothing to check against it. Now both call this.
+///
+/// `BlockMetadata::slashable` — not `validation_failed` — is the signal, for the reason recorded on
+/// that field: it is set only for a failure attributable to the *block*, so a node that merely could
+/// not replay something locally does not thereby condemn its sender.
+pub fn slashable_senders(
+    justifications: &[rchain_models::block_metadata::BlockMetadata],
+) -> BTreeSet<rchain_models::validator::Validator> {
+    justifications
+        .iter()
+        .filter(|m| m.slashable)
+        .map(|m| m.sender)
+        .collect()
+}
+
+/// The validators a block slashes, read off its system deploys. A slash that *failed* during the
+/// proposer's run carries no `SystemDeployData::Slash` (`ProcessedSystemDeploy::Failed` holds only an
+/// error message), so this reads exactly the slashes that took effect.
+pub fn slashed_validators(b: &BlockMessage) -> BTreeSet<rchain_models::validator::Validator> {
+    b.state
+        .system_deploys
+        .iter()
+        .filter_map(|sd| match sd {
+            rchain_models::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
+                system_deploy,
+                ..
+            } => match system_deploy {
+                rchain_models::casper::protocol::casper_message::SystemDeployData::Slash(v) => {
+                    Some(*v)
+                }
+                _ => None,
+            },
+            rchain_models::casper::protocol::casper_message::ProcessedSystemDeploy::Failed {
+                ..
+            } => None,
+        })
+        .collect()
+}
+
 // --- Effectful checks (depend on the block DAG) ------------------------------------------------
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -378,6 +450,11 @@ pub async fn block_summary(
         future_transaction(block),
         transaction_expiration(block, expiration_threshold),
         phlo_price(block, min_phlo_price),
+        // `phlo_limit` belongs in this list for the reason `phlo_price` is here at all: both are
+        // cheap tests on wire-supplied deploy data that must reject a block *before* the expensive
+        // replay. For `phlo_limit` the stakes are higher — without it a peer's block reaches the
+        // charge path with a negative limit (AUDIT C109).
+        phlo_limit(block),
     ];
     for status in pure {
         if !status.is_valid() {
@@ -494,6 +571,111 @@ mod tests {
 
         b.state.deploys = vec![deploy(5, 1, "root")];
         assert_eq!(phlo_price(&b, 10), BlockStatus::ContainsLowCostDeploy);
+    }
+
+    /// **The regression test for AUDIT C109**, and it is written against the *block* path on purpose.
+    ///
+    /// The mint was reachable two ways. A local deploy could not carry a negative limit — the ingress
+    /// at `BlockApiImpl::deploy` checked for it — so a test placed there would have passed while the
+    /// bug was live, which is the shape of a test that proves nothing. What *was* open is this path:
+    /// a peer's block arrives, and the checks a validator runs on it (`deploys_shard_identifier`,
+    /// `future_transaction`, `transaction_expiration`, `phlo_price`) all read the deploy data and none
+    /// of them looked at the limit's sign. The block was accepted, replayed, and the negative charge
+    /// credited its own author.
+    ///
+    /// Three assertions, because one is not enough to call it closed: the pure check rejects the
+    /// block, the charge cannot be computed at all, and the arithmetic that used to invert is gone.
+    #[test]
+    fn a_negative_phlo_limit_cannot_reach_the_charge() {
+        let mut negative = deploy(5, 10, "root");
+        negative.deploy.data.phlo_limit = -100;
+        assert_eq!(
+            negative.deploy.data.total_phlo_charge(),
+            None,
+            "a negative limit must not produce a charge — this is the value that used to be \
+             subtracted from the deployer's vault, i.e. added to it"
+        );
+
+        let mut b = block();
+        b.state.deploys = vec![negative];
+        assert_eq!(
+            phlo_limit(&b),
+            BlockStatus::InvalidPhloLimit,
+            "a peer's block carrying a negative phlo limit must be refused by name, before replay"
+        );
+        assert_eq!(
+            phlo_price(&b, 10),
+            BlockStatus::Valid,
+            "the rejection is the limit's, not the price's — the two checks must not be the same check"
+        );
+
+        // The control: the same deploy with a non-negative limit is valid, so the test above is
+        // failing for the sign and not because the block builder produces something invalid anyway.
+        let mut positive = deploy(5, 10, "root");
+        positive.deploy.data.phlo_limit = 0;
+        b.state.deploys = vec![positive];
+        assert_eq!(phlo_limit(&b), BlockStatus::Valid);
+    }
+
+    /// **The regression test for AUDIT C110.** A `Slash` is a system deploy: unsigned by its victim,
+    /// it moves that victim's whole bond to the Coop vault, and every validator re-executes it during
+    /// replay. The rule that makes one justified — the victim is the sender of a `slashable`
+    /// justification of the block — used to exist only on the proposer's side, so the validators that
+    /// *executed* the punishment had nothing to check it against.
+    ///
+    /// This pins the two halves that make the receiver's check possible: which validators a block
+    /// actually slashes (read off its system deploys), and which its evidence holds responsible (read
+    /// off this node's own metadata). The subset test between them is the check itself.
+    #[test]
+    fn a_slash_is_justified_only_by_a_slashable_justification_from_its_victim() {
+        use rchain_models::block_metadata::BlockMetadata;
+        use rchain_models::casper::protocol::casper_message::{
+            ProcessedSystemDeploy, SystemDeployData,
+        };
+
+        let offender = Validator::new([0x22; 65]);
+        let innocent = Validator::new([0x33; 65]);
+
+        let mut b = block();
+        b.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash(offender),
+        }];
+        assert_eq!(slashed_validators(&b), BTreeSet::from([offender]));
+
+        // Evidence that holds `offender` responsible: the slash is covered.
+        let mut meta = BlockMetadata::from_block(&b);
+        meta.sender = offender;
+        meta.slashable = true;
+        let justified = slashable_senders(&[meta.clone()]);
+        assert!(
+            slashed_validators(&b).is_subset(&justified),
+            "a slash of the validator its evidence condemns must be covered"
+        );
+
+        // The attack this check exists for: the block slashes `innocent`, and nothing in the
+        // justifications holds `innocent` responsible. Before this check, the block was accepted on
+        // the strength of its post-state hash alone.
+        b.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash(innocent),
+        }];
+        assert!(
+            !slashed_validators(&b).is_subset(&justified),
+            "slashing a validator no justification holds responsible must be refused — this is the \
+             stake-confiscation path a proposer could take against any bonded peer"
+        );
+
+        // `validation_failed` alone does not authorize: a node that could not replay a block locally
+        // says nothing about its sender, so that flag must not make a slash justified.
+        let mut merely_failed = BlockMetadata::from_block(&b);
+        merely_failed.sender = innocent;
+        merely_failed.validation_failed = true;
+        merely_failed.slashable = false;
+        assert!(
+            !slashed_validators(&b).is_subset(&slashable_senders(&[merely_failed])),
+            "an unattributable local failure must not license a slash"
+        );
     }
 }
 

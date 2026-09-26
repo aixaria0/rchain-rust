@@ -73,6 +73,21 @@ impl NonNegI64 {
     pub const fn zero() -> Self {
         NonNegI64(0)
     }
+
+    /// `v` clamped into the invariant: a negative `v` saturates to zero.
+    ///
+    /// The alternative at a call site that has a value it *believes* is in range is
+    /// `try_from(v).expect(…)`, and that is a panic in production code — a hard failure under
+    /// `tools/audit-type-system.sh`, correctly, because a belief about a range is not a proof of one.
+    /// Where the caller genuinely wants "never below zero" rather than "this cannot be below zero",
+    /// this says so in the type and cannot fault. Added for AUDIT C109's refund clamp.
+    pub const fn saturating(v: i64) -> Self {
+        if v < 0 {
+            NonNegI64(0)
+        } else {
+            NonNegI64(v)
+        }
+    }
 }
 
 /// A block height (non-negative). Used for `block_number`/`block_num`/`height` across the DAG and

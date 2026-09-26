@@ -835,15 +835,20 @@ mod attestation_guard_tests {
 ///
 /// `validation_failed` alone is too broad - it is also set when this node cannot run the replay at all,
 /// which says nothing about the sender (#70). `BlockMetadata::slashable` is the narrower, attributable
-/// signal, and this is the only place that decides who pays.
+/// signal.
+///
+/// **The rule itself is not defined here** (AUDIT C110). It is
+/// [`crate::validate::slashable_senders`], and it is shared with the validators who *check* the slash
+/// — which is the point: while the rule existed only on this side, a proposer could name any bonded
+/// validator and the receiving nodes had nothing to compare the name against. What stays local to the
+/// proposer is the `bonded` filter, because "only take stake from someone who has some" is a policy
+/// about who is worth slashing, not part of what makes a slash justified.
 fn slashable_offenders(
     justifications: &[rchain_models::block_metadata::BlockMetadata],
     bonded: &BTreeSet<Validator>,
 ) -> BTreeSet<Validator> {
-    justifications
-        .iter()
-        .filter(|m| m.slashable)
-        .map(|m| m.sender)
+    crate::validate::slashable_senders(justifications)
+        .into_iter()
         .filter(|sender| bonded.contains(sender))
         .collect()
 }
