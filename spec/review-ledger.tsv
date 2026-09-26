@@ -544,7 +544,7 @@ law	26c	T3	deferred	-	-	-	-	-	-
 law	27	T3	deferred	-	-	-	-	-	-
 law	28	T3	deferred	-	-	-	-	-	-
 law	29	T3	deferred	-	-	-	-	-	-
-law	3	T3	deferred	-	-	-	-	-	-
+law	3	T1	finding	deep	-	-	rholang/src/property_tests.rs:law3_substituting_a_closed_value_keeps_the_term_closed C138	-	both named witnesses survive a substitution that does nothing, so the row's evidence is vacuous; four tests it does not name catch the mutation, and none of them is named by any law row
 law	30	T3	deferred	-	-	-	-	-	-
 law	31	T3	deferred	-	-	-	-	-	-
 law	32	T3	deferred	-	-	-	-	-	-
@@ -573,7 +573,7 @@ law	50b	T3	deferred	-	-	-	-	-	-
 law	6	T3	deferred	-	-	-	-	-	-
 law	7	T1	cleared	deep	-	-	rspace/src/hashing/stable_hash_provider.rs:hash_channels	-	mutation sweep: removing the sort in hash_hashes left the witness GREEN and that is correct — hash_seq sorts the same hashes upstream, so the mutation removed a redundant duplicate rather than the mechanism. A mutation masked by a second implementation is not a deletion
 law	8	T1	finding	deep	-	-	rspace/src/property_tests.rs:law8_comm_sorts_produces C119	-	the registered witness covers Comm::apply's produce sort but not the content-addressed selection; the selector is covered by space_matcher's own test, which no law row names
-law	9	T3	deferred	-	-	-	-	-	-
+law	9	T1	cleared	deep	-	-	rspace/src/merger/channel_change.rs:combine	-	mutation sweep: a left-projection combine made the monoid witness FAIL, so it is a real falsifier — the two identity assertions are what catch it. The row's other two witnesses are about StateChange::combine and were not mutated
 process	rho:block:data	T3	deferred	-	-	-	-	-	-
 process	rho:crypto:blake2b256Hash	T3	deferred	-	-	-	-	-	-
 process	rho:crypto:ed25519Verify	T3	deferred	-	-	-	-	-	-
