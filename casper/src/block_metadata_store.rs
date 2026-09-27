@@ -139,6 +139,48 @@ mod tests {
         assert!(store.get_unchecked(&hash(9)).await.is_err());
     }
 
+    /// **The regression test for AUDIT C122**, written against the *store* because that is the path C110's
+    /// slash rule actually reads, and it asserts both halves of the finding: the flag survives, and the
+    /// rule can therefore see it.
+    ///
+    /// `slashable` is what `validate::slashable_senders` consults to decide which validators a block's
+    /// evidence holds responsible. Every read of a stored metadata goes `get` → codec `decode` →
+    /// `BlockMetadata::from_proto`, and that conversion hard-coded `false` — so the flag was false for
+    /// *every* metadata any caller could see, not only after a restart as the field's doc claimed, and
+    /// the slash rule was unreachable: the proposer's `to_slash` was always empty and `slash_is_unjustified`
+    /// treated every `Slash` as unjustified.
+    ///
+    /// The existing round-trip test above cannot see it: its fixture is built with `slashable: false`, so
+    /// `false` round-trips to `false`. This one sets the flag — the only difference — and then hands the
+    /// read-back metadata to the rule, because "the flag survives" is only interesting as "the rule is
+    /// reachable".
+    #[tokio::test]
+    async fn the_slashable_flag_survives_the_store_round_trip_and_reaches_the_slash_rule() {
+        let store = BlockMetadataStore::create(metadata_store()).await.unwrap();
+        let mut attributable = meta(hash(0), &[], 0);
+        attributable.validation_failed = true;
+        attributable.slashable = true;
+        store.add(attributable.clone()).await.unwrap();
+
+        let read_back = store.get(&hash(0)).await.unwrap().expect("stored");
+        assert!(
+            read_back.slashable,
+            "the flag the slash rule reads must survive the store — without it nothing in this tree can \
+             take a bonded validator's stake (AUDIT C122)"
+        );
+        assert_eq!(
+            read_back, attributable,
+            "the whole metadata round-trips, not only the flag"
+        );
+
+        // The consequence, which is the finding: a stored attributable failure is evidence.
+        assert_eq!(
+            crate::validate::slashable_senders(&[read_back]),
+            BTreeSet::from([attributable.sender]),
+            "a validator that stored an attributable failure must be whom the slash rule names"
+        );
+    }
+
     #[tokio::test]
     async fn dag_state_tracks_child_and_height_maps() {
         let store = BlockMetadataStore::create(metadata_store()).await.unwrap();

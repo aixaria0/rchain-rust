@@ -199,6 +199,7 @@ message BlockMetadataProto {
   repeated BondProto bonds      = 6;
   bool validated                = 20;
   bool validationFailed         = 21;
+  bool slashable                = 22;
   repeated bytes fringe         = 30;
   bytes fringeStateHash         = 31;
   bytes memberOfFringe          = 40;

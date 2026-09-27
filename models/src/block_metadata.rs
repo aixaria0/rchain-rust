@@ -38,8 +38,16 @@ pub struct BlockMetadata {
     /// honest validator its stake for a local problem (#70). Only a *completed* validation that disagrees
     /// (a state mismatch, or a rejectable status) is attributable to the block.
     ///
-    /// In memory only, as `validation_failed` is: neither is carried in the protobuf, so a restart forgets
-    /// both. That is a pre-existing property of the metadata store, not something this flag introduces.
+    /// **Carried in the protobuf as `slashable = 22` (AUDIT C122) — and it was not, in a way worse than
+    /// "a restart forgets it".** This field is the input to C110's slash rule (`validate::slashable_senders`
+    /// over the metadata `dag.lookup` returns), and until C122 that rule was unreachable: `from_proto`
+    /// hard-coded `false`, and every read of a stored metadata goes back through this codec, so the flag was
+    /// false for *every* metadata any caller could see — not merely after a restart, as this comment used to
+    /// claim, and not only for the round trip the in-memory writers took. The writers
+    /// (`validate_block_checkpoint`, `mark_failed_attributable`) set it before `dag.insert` and nothing ever
+    /// read back a `true`, so a proposer's `to_slash` was always empty and `slash_is_unjustified` treated
+    /// every `Slash` as unjustified. The comment was also wrong that `validation_failed` is not carried: it
+    /// is, at `casper.proto:201`.
     pub slashable: bool,
     pub fringe: BTreeSet<BlockHash>,
     pub fringe_state_hash: StateHash,
@@ -79,7 +87,7 @@ impl BlockMetadata {
                 .collect::<Result<_, crate::errors::ModelsError>>()?,
             validated: b.validated,
             validation_failed: b.validation_failed,
-            slashable: false,
+            slashable: b.slashable,
             fringe: b
                 .fringe
                 .iter()
@@ -122,6 +130,7 @@ impl BlockMetadata {
                 .collect(),
             validated: self.validated,
             validation_failed: self.validation_failed,
+            slashable: self.slashable,
             fringe: self.fringe.iter().map(|f| f.as_bytes().to_vec()).collect(),
             fringe_state_hash: self.fringe_state_hash.as_bytes().to_vec(),
             member_of_fringe: self
