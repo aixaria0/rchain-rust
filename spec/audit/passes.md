@@ -3413,6 +3413,23 @@ port against the **reference document** rather than against itself.
      walk as the Scala does needs a way to satisfy `dag.insert` without the full ancestry, i.e. a
      design change, not a cutoff) and the **per-generation latency** (item 3). This unit fixes
      neither; it names both, so the next one starts from the measurement rather than the symptom.
+  **Re-examined 2026-09-27, and the row is left `todo` deliberately — this is the one finding on the
+  check-off that a guard cannot close.** Three things were established, so the next unit starts from
+  the answer rather than the question. (1) **The latency lever is not a defect.** Against a transport
+  answering every request, a 6-block walk takes 3.85 ms with the production 30 s timeout, pinned by
+  `the_walk_advances_on_responses_not_on_the_idle_timeout`; what makes the walk long is the *extent*,
+  so the `owes` cell's second half is discharged. (2) **The premise for not adopting the oracle's
+  cutoff is real, and was verified rather than inherited:** `CasperDag::insert` refuses a block whose
+  justification is absent from the message map — `casper/src/dag.rs:298`, `.ok_or_else(||
+  "justification not present in message map")` — so bounding the walk leaves the DAG without the
+  ancestry the insert demands, and every block below the bound fails to insert rather than arriving
+  late. (3) **The rule to adopt is the oracle's own**, which is what would make this a fidelity fix
+  rather than an invention: `blockIsAccepted = isReceivedLatest || blockNumber >= minimumHeight` with
+  `blockHeightsBeforeFringe = deployLifespan` (`LfsBlockRequester.ST`) — ~50 blocks below the fringe,
+  where the port walks 5,844. **So closing this means changing what `dag.insert` requires:** a
+  contract on the consensus path, behind the finalizer and the fork choice. Doing that badly, late in
+  a session that has already moved five crates, is worse than naming it, and the `owes` cell now
+  carries that so the row stays open for the right reason rather than being closed for a tidy one.
 
 
 - **C65 — the block store's side of LFS sync swallowed two failures the oracle propagates, so a

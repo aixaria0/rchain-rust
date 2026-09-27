@@ -34,7 +34,7 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C60` | the tie's domain was still too wide, and the port's matcher is not the clauses at all: the | a modelling decision on what the matcher's route actually is | §19 |
-| `C64` | a fresh validator cannot catch up, and it is a registered deviation multiplied by a | bound the genesis walk's extent and its per-generation latency | §19 |
+| `C64` | a fresh validator cannot catch up, and it is a registered deviation multiplied by a | adopt the Scala's lowerBound cutoff (isReceivedLatest || blockNumber >= minimumHeight), which needs CasperDag::insert to stop requiring every justification present (casper/src/dag.rs:298) — a consensus-path design change, not a guard | §19 |
 | `C70` | the gate could not see a nested comment, and the widened token set is the only check that | the end-to-end run of the modified conformance gate | §19 |
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
