@@ -143,7 +143,7 @@ file	casper/src/api/machine_verifiable_dag.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/api/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/block_metadata_store.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/block_random_seed.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/blocks/block_processor.rs	T1	deferred	-	-	-	-	-	-
+file	casper/src/blocks/block_processor.rs	T1	cleared	deep	-	-	casper/src/blocks/block_processor.rs:validate_and_add_to_dag	-	read in full (177 lines) against BlockProcessor.scala. Batching, per-block tokio::spawn, ordered collection with a panicked task logged and skipped rather than killing the loop, insert errors logged and the block dropped, and only validated blocks forwarded and broadcast. One divergence from the oracle, checked and assessed as deliberate rather than reported as a defect: the Scala is inputBlocks.parEvalMapUnorderedProcBounded, so it processes each block the moment its validation finishes, while this port awaits the batch's handles in drained order and inserts serially. That is required, not incidental — dag.insert refuses a block whose justification is absent (casper/src/dag.rs:298), so the inserts must follow the drain order the receiver guarantees (parents before children), and the comment says so. The cost is throughput, not correctness: a batch completes no faster than its first-listed element, bounded by the available_parallelism cap. Not registered as a deviation because the observable outcome is the same set of validated blocks in the same order; recorded here so the next reader does not have to re-derive why an Unordered in the oracle became an ordered loop. Nothing found.
 file	casper/src/blocks/block_receiver.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/block_retriever.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/mod.rs	T3	deferred	-	-	-	-	-	-
@@ -286,7 +286,7 @@ file	models/src/sorted.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/sorter.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/string_syntax.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/types.rs	T3	deferred	-	-	-	-	-	-
-file	models/src/validator.rs	T1	deferred	-	-	-	-	-	-
+file	models/src/validator.rs	T1	cleared	deep	-	-	models/src/validator.rs:Validator::try_from	-	read in full (151 lines) against Validator.scala: a 65-byte identity whose field is private, so the length is carried structurally; a checked TryFrom<&[u8]> returning a typed error naming both lengths, an unchecked from_slice that asserts, and serde as lowercase hex that refuses both non-hex and a wrong length. Four tests, all two-sided. Checked the one risk rather than assuming it: from_slice is the unchecked path and would panic on a short slice, so I traced every non-test caller — there is exactly one, models/src/casper/pretty_printer.rs:124, passing a fixed [0xcd; 65] literal (the other apparent caller, validator_identity.rs:85, is inside a #[test]). So the doc's claim that callers carry the invariant structurally holds today. One thing recorded without calling it a defect, because nothing reaches it: PublicKey is a bare Vec<u8> with an unchecked new(), so from_slice(&public_key.bytes()) would be a panic rather than an error — a footgun for the next caller, not a live defect.
 file	models/src/wire.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/api/admin_web_api_impl.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/api/admin_web_api.rs	T3	deferred	-	-	-	-	-	-
@@ -367,7 +367,7 @@ file	rholang/src/reduce.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/registry.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/reporting_runtime.rs	T2	deferred	-	-	-	-	-	-
 file	rholang/src/runtime.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/scheduler.rs	T1	deferred	-	-	-	-	-	-
+file	rholang/src/scheduler.rs	T1	cleared	deep	-	-	rholang/src/scheduler.rs:EffectMode::from_str	-	read in full (138 lines): DfsPath and EffectMode, pure data with no I/O and no partiality. Three things checked rather than assumed. (1) The configured vocabulary and the parser agree exactly: defaults.conf:356 documents 'dfs | gate | relaxed | relaxed-validated' and FromStr accepts precisely those four, rejecting everything else by naming the alternatives — and the test also refuses a silent fallback to the default, which is the failure mode a mode string exists to prevent. (2) ForkJoin is deliberately not name-addressable, pinned by its own test so giving it a configured name would be a deliberate act. (3) DfsPath's tuple field is public, and that is not an escape: it is not a refinement and carries no invariant it could surrender — the u16 note is about how paths are built by child(), not a predicate the constructors enforce. Nothing found.
 file	rholang/src/storage_printer.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/substitute.rs	T3	deferred	-	-	-	-	-	-
