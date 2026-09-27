@@ -22,20 +22,17 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 14 · IN PROGRESS 0 · DONE 184** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  20 of 89 T1 modules unread**
+**Findings  TODO 11 · IN PROGRESS 0 · DONE 187** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  20 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 184 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 187 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
-### TODO — findings (14)
+### TODO — findings (11)
 
 | id | what | what closes it | account |
 |---|---|---|---|
-| `C40` | law 38's tie was stated as an `iff` that is false, and the relation was missing the clause | two Lean proofs: the rule, and the search that reconstructs the redex | §19 |
-| `C50` | the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's | the `fuel_saturation` proof | §19 |
-| `C58` | law 1a's remaining gap is a *re-tagging of `cmpExpr`*, not eight more arms: the model cannot | the comparator block law 1a's gap costs, or a decision that the model need not hold it | §19 |
 | `C60` | the tie's domain was still too wide, and the port's matcher is not the clauses at all: the | a modelling decision on what the matcher's route actually is | §19 |
 | `C64` | a fresh validator cannot catch up, and it is a registered deviation multiplied by a | bound the genesis walk's extent and its per-generation latency | §19 |
 | `C70` | the gate could not see a nested comment, and the widened token set is the only check that | the end-to-end run of the modified conformance gate | §19 |
@@ -82,7 +79,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (184)
+### DONE (187)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -125,6 +122,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `C37` | `rho_examples` was measuring the stack, not the parse | — | §18 |
 | `C38` | every rho value in every reply was wrapped wrongly, and the schema file rationalised it | the_wire_shape_is_the_reference_documents | §19 |
 | `C39` | an exploratory deploy's reply was read from one channel, and a reply anywhere else was | genesis_boot_exposes_block_over_http | §19 |
+| `C40` | law 38's tie was stated as an `iff` that is false, and the relation was missing the clause | takesStep_sound/takesStep_complete | §19 |
 | `C41` | the numeric-channel diff accumulator can overflow, and the merge beside it cannot | calculate_number_channel_merge/calculate_num_channel_diff/numeric_channels_nonneg | §19 |
 | `C42` | law 5's linearity is enforced by the normalizer, not by the matcher, and the model had it | handle_proc_var/spatial_match_core/spatial_match_result | §19 |
 | `C43` | the merge's associativity was untested, under a test that looks like it tests the | combine_is_associative/combine_has_an_identity_and_agrees_on_sorted_multisets/law9_state_change_combine_is_associative | §19 |
@@ -134,6 +132,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `C47` | the matcher's fuel was short on a shape the node matches, because the measure it was derived | the_walk_past_empty_pars_is_paid_for | §19 |
 | `C48` | the spec over-claimed a match: the *searcher* was wired into the list arm (found | a_list_pattern_cannot_skip_a_target_element | §19 |
 | `C49` | the replay property test fails on its own recording, roughly three runs in ten (found | law11_a_replayed_script_matches_its_recording/check_replay_data/comms_for_produce | §19 |
+| `C50` | the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's | fuel_saturation | §19 |
 | `C51` | the tie's domain predicate admitted a shape the clauses reject, so the tie was false | concrete_matches_iff_eq/a_two_expression_pattern_refutes_the_modelled_tie | §19 |
 | `C52` | a peer's `BindPattern` could carry a negative `free_count`, and the count is not inert | bind_pattern_from_proto/receive_bind_from_proto/match_case_from_proto | §19 |
 | `C53` | a store error read as an absent radix node (found 2026-09-24, Programme F; fixed at the | RadixTreeImpl::load_node_from_store/RSpaceImporter::get_history_item | §19 |
@@ -141,6 +140,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `C55` | the devnet bootstrap never starts: restoring a stored chain folded the message state once per | create_comm_state/insert_msg_mut/insert_msg_without_latest_mut | §19 |
 | `C56` | the per-block merge scope copied every message it looked at (found 2026-09-24, while | between_is_the_id_set_difference_restricted_to_the_map/dag_message_state/reading_the_dag_representation_does_not_copy_the_message_state | §19 |
 | `C57` | law 16c's remaining tie is not a plumbing job: the model's encoder and `prost` disagree in | — | §19 |
+| `C58` | law 1a's remaining gap is a *re-tagging of `cmpExpr`*, not eight more arms: the model cannot | cmpExpr/ebigint | §19 |
 | `C59` | the set/map matcher over-claimed, and C54's reverted guard was the fix: what the reversion's | a_permuted_pattern_is_refused/an_unaligned_variable_pattern_is_refused | §19 |
 | `C61` | a peer-supplied resume prefix of 128 bytes was one byte over the segment invariant, and the | a_128_byte_resume_prefix_is_refused | §19 |
 | `C62` | the sync path multiplied the page it served, and the node's own metrics surface had no | chunking_a_page_does_not_copy_it_whole/report_period_snapshot/the_metrics_route_serves_the_registrys_own_numbers | §19 |

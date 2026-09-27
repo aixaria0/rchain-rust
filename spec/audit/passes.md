@@ -787,8 +787,8 @@ reuses §11's P0–P3 model. Findings are deduplicated across clusters.
 
 ### Low (P3)
 
-- **R31 (F6)** — attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136`.
-- **R32 (F7)** — attacker-controlled large `sender.host` retained in the connections table. `comm/src/rp/handle_messages.rs:70-93`.
+- **R31 (F6)** — attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:135-152`, the bypass at `:150` (`Err(_) => false, // hostname, not an IP-based SSRF target`); the advertised host is handed out unvalidated at `comm/src/upnp/mod.rs:170`.
+- **R32 (F7)** — attacker-controlled large `sender.host` retained in the connections table. `comm/src/rp/handle_messages.rs:110-129` (the retention) and `comm/src/rp/connect.rs:20,50-51` (`MAX_CONNECTIONS`, which bounds the entry *count* and not the string).
 - **R33 (A4)** — faucet to the deployer's own address is a no-op that still consumes the rate budget and submits a deploy.
 - **R34 (A5)** — `/api/faucet` routes are mounted unconditionally on the public router; the dev-mode gate is only inside the handler.
 - **R35 (A6)** — a faucet drip is silently dropped once the tip passes `height+50` (`DEPLOY_LIFESPAN`), after `200` was already returned.
@@ -802,6 +802,15 @@ reuses §11's P0–P3 model. Findings are deduplicated across clusters.
 The GitHub issues #18–#25 were triaged; the highest-severity bugs were fixed in this pass: one
 reducer RNG invariant (#19), one RSpace join invariant (#21/#22), and one runtime ownership
 invariant (#18/#23).
+
+
+**All seven were re-verified against the tree on 2026-09-27, having been written in pass 4 and never
+given a disposition.** Six are still unaddressed; R35 is not, and had been fixed and
+never recorded. The re-verification also found the two citations above had moved — R31's range
+by sixteen lines, R32's entirely, onto unrelated SSRF code — which nothing would have caught,
+because the check that resolved `path:line` citations was deleted the same day with the gate it
+lived in. A one-line bullet has no test behind it; if it is going to carry a citation, the
+citation has to be re-read by hand.
 
 ### Fixed
 
@@ -2126,6 +2135,13 @@ port against the **reference document** rather than against itself.
   Both statements are now true and precisely scoped; both proofs remain owed, and the second is the
   smaller job (a structural induction reconstructing the redex the search found, with the head-peeling
   congruence chain). Recorded here rather than discovered later by someone proving a falsehood.
+  **Closed 2026-09-27, and this row was wrong for as long as the tree was right.** Both proofs
+  are in the tree: `takesStep_sound` (`Silence.lean:235`) and `takesStep_complete` (`:372`),
+  with `grep -c sorry` at **0** over the file and `spec/laws.tsv` law 38 reading `proved-tied`.
+  What the row kept saying was owed — "both proofs remain owed" — had been discharged and
+  nothing flipped the state. That is the defect class this register exists to catch, committed
+  by the register itself, and it is the reason Wave 0 of the close-out re-derives every open
+  row against the tree rather than trusting the list.
 
 - **C41 — the numeric-channel diff accumulator can overflow, and the merge beside it cannot.** Found by
   the consolidation pass that re-modelled law 17: it read the *arithmetic* instead of the law, and the
@@ -2665,6 +2681,10 @@ port against the **reference document** rather than against itself.
   be false for a reason no test *of the law* sees, because the corpus only disagrees with the Rust on
   the shapes it happens to contain. The measure is now adequate on every shape the search tried; that
   is *evidence*, not a proof, and the proof is `fuel_saturation`.
+  **Closed 2026-09-27.** `fuel_saturation` is at `Match.lean:1029`, beside the two shape pins
+  the fix added (`a_nested_tuple_is_paid_for` at `:806`, `a_tuple_pays_for_its_own_contents` at
+  `:817`), and the file has **0** `sorry`. The row's `owes` cell still asked for the proof. The
+  same finding as C40: the work landed and the state was never moved.
 
 - **C51 — the tie's domain predicate admitted a shape the clauses reject, so the tie was false**
   (found 2026-09-24, by asking what the statement says on a *value the model admits* rather than on a
@@ -3073,6 +3093,12 @@ port against the **reference document** rather than against itself.
   (2) **The corpus cannot pin any of this**: a `sort.tsv` verdict is `decide`d against the model, so a
   shape the model cannot *hold* cannot be a row. The gap is therefore a register fact and has to be
   findable in the register — which is what this entry is for, and why law 1a's row now cites it.
+  **Closed 2026-09-27 — the comparator block was built.** Every constructor this row names as one
+  the model "cannot hold" is now in `Rchain/Par.lean` (`ebigint`, `emethod`, `ematches`,
+  `epercentPercent`, `eplusPlus`, `eminusMinus`, `eshortand`, `eshortor`), each with the node's
+  own `exprTag` in `Rchain/Sort.lean` and its arms in `cmpExpr`. The row's own cost estimate —
+  "the remaining gap is structural, and its cost is the comparator block" — was right, and the
+  block was paid for on 2026-09-25 without this row being told.
 
 - **C59 — the set/map matcher over-claimed, and C54's reverted guard was the fix: what the reversion's
   corpus row could not see** (found, fixed and measured 2026-09-24, Programme F/the Lean pass;

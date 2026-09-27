@@ -138,7 +138,7 @@ C36		18	done	two lexical forms were accepted by accident and one crashed		-
 C37		18	done	`rho_examples` was measuring the stack, not the parse		-
 C38		19	done	every rho value in every reply was wrapped wrongly, and the schema file rationalised it	the_wire_shape_is_the_reference_documents	-
 C39		19	done	an exploratory deploy's reply was read from one channel, and a reply anywhere else was	genesis_boot_exposes_block_over_http	-
-C40		19	todo	law 38's tie was stated as an `iff` that is false, and the relation was missing the clause		two Lean proofs: the rule, and the search that reconstructs the redex
+C40		19	done	law 38's tie was stated as an `iff` that is false, and the relation was missing the clause	takesStep_sound/takesStep_complete	-
 C41		19	done	the numeric-channel diff accumulator can overflow, and the merge beside it cannot	calculate_number_channel_merge/calculate_num_channel_diff/numeric_channels_nonneg	-
 C42		19	done	law 5's linearity is enforced by the normalizer, not by the matcher, and the model had it	handle_proc_var/spatial_match_core/spatial_match_result	-
 C43		19	done	the merge's associativity was untested, under a test that looks like it tests the	combine_is_associative/combine_has_an_identity_and_agrees_on_sorted_multisets/law9_state_change_combine_is_associative	-
@@ -148,7 +148,7 @@ C46		19	done	a validator cannot index the genesis, because the sidecar-regenerat
 C47		19	done	the matcher's fuel was short on a shape the node matches, because the measure it was derived	the_walk_past_empty_pars_is_paid_for	-
 C48		19	done	the spec over-claimed a match: the *searcher* was wired into the list arm (found	a_list_pattern_cannot_skip_a_target_element	-
 C49		19	done	the replay property test fails on its own recording, roughly three runs in ten (found	law11_a_replayed_script_matches_its_recording/check_replay_data/comms_for_produce	-
-C50		19	todo	the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's	a_nested_tuple_is_paid_for/a_tuple_pays_for_its_own_contents/concrete_matches_iff_eq	the `fuel_saturation` proof
+C50		19	done	the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's	fuel_saturation	-
 C51		19	done	the tie's domain predicate admitted a shape the clauses reject, so the tie was false	concrete_matches_iff_eq/a_two_expression_pattern_refutes_the_modelled_tie	-
 C52		19	done	a peer's `BindPattern` could carry a negative `free_count`, and the count is not inert	bind_pattern_from_proto/receive_bind_from_proto/match_case_from_proto	-
 C53		19	done	a store error read as an absent radix node (found 2026-09-24, Programme F; fixed at the	RadixTreeImpl::load_node_from_store/RSpaceImporter::get_history_item	-
@@ -156,7 +156,7 @@ C54		19	done	a wrong fix, caught by the corpus in one run: what the "set pattern
 C55		19	done	the devnet bootstrap never starts: restoring a stored chain folded the message state once per	create_comm_state/insert_msg_mut/insert_msg_without_latest_mut	-
 C56		19	done	the per-block merge scope copied every message it looked at (found 2026-09-24, while	between_is_the_id_set_difference_restricted_to_the_map/dag_message_state/reading_the_dag_representation_does_not_copy_the_message_state	-
 C57		19	done	law 16c's remaining tie is not a plumbing job: the model's encoder and `prost` disagree in		-
-C58		19	todo	law 1a's remaining gap is a *re-tagging of `cmpExpr`*, not eight more arms: the model cannot		the comparator block law 1a's gap costs, or a decision that the model need not hold it
+C58		19	done	law 1a's remaining gap is a *re-tagging of `cmpExpr`*, not eight more arms: the model cannot	cmpExpr/ebigint	-
 C59		19	done	the set/map matcher over-claimed, and C54's reverted guard was the fix: what the reversion's	a_permuted_pattern_is_refused/an_unaligned_variable_pattern_is_refused	-
 C60		19	todo	the tie's domain was still too wide, and the port's matcher is not the clauses at all: the	a_nested_multi_expression_par_is_outside_the_path_domain/a_single_expression_par_is_in_the_path_domain/spatial_match_core	a modelling decision on what the matcher's route actually is
 C61		19	done	a peer-supplied resume prefix of 128 bytes was one byte over the segment invariant, and the	a_128_byte_resume_prefix_is_refused	-
