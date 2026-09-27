@@ -2,7 +2,6 @@
 
 use serde::Serialize;
 
-use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::report::BlockEventInfo;
 
 /// The reporting HTTP response (port of `ReportingRoutes.ReportResponse`, with the circe
@@ -30,6 +29,7 @@ pub fn transform_result(result: Result<BlockEventInfo, String>) -> ReportRespons
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_models::block::state_hash::StateHash;
     use rchain_models::casper::protocol::deploy_service::LightBlockInfo;
 
     fn empty_block_event_info() -> BlockEventInfo {

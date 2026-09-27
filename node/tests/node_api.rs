@@ -113,6 +113,10 @@ fn genesis_boot_exposes_block_over_http() {
         // block receiver and the deploy API all use the full id, so a genesis block stamped with
         // "root" would carry an id no later block or deploy shares.
         assert_eq!(genesis["shardId"], "/root");
+        let genesis_hash = genesis["blockHash"]
+            .as_str()
+            .expect("a light block info carries its hash")
+            .to_string();
 
         // `GET /api/v1/shards` reports the node's memberships. A single-shard node has exactly one,
         // and it is the primary — the same shard `/api/status` and the genesis block report. (The
@@ -129,8 +133,36 @@ fn genesis_boot_exposes_block_over_http() {
         assert_eq!(shards["shards"][0]["shardId"], "/root");
         assert_eq!(shards["shards"][0]["primary"], true);
 
-        // `POST /api/v1/explore-deploy` runs a term and returns what it produced (AUDIT C38/C39).
-        // Three things are asserted at once, and each was wrong before:
+        // `POST /api/v1/explore-deploy` with **no block hash** reads the *last finalized block*
+        // (AUDIT C129; it used to read the chain tip, so two honest nodes could answer the same
+        // unauthenticated request from different blocks). A node that has produced only its genesis
+        // has no finalized fringe, so the route **refuses** — and refusing is the behaviour, not an
+        // error: presenting an arbitrary block as the answer is what the finding was. The sibling
+        // route agrees (`api_surface.rs` asserts the same 400 with the same reason), and
+        // `tools/devnet-test.sh:125` polls for exactly this on a fresh node. This assertion was a
+        // `200` until C129's change reached it; the *term-running* half below is driven by hash so
+        // that it still is, without waiting for a finalizer.
+        let unrouted = client
+            .post(format!("{base}/api/v1/explore-deploy"))
+            .json(&"@\"out\"!(42)".to_string())
+            .send()
+            .await
+            .expect("POST /api/v1/explore-deploy");
+        assert_eq!(
+            unrouted.status(),
+            400,
+            "with no finalized fringe the no-hash default refuses rather than naming a block"
+        );
+        let unrouted_json: Value = unrouted.json().await.expect("refusal json");
+        assert_eq!(
+            unrouted_json.as_str(),
+            Some("Finalized fringe is not available."),
+            "and it names the same reason the finalized-block route does: {unrouted_json}"
+        );
+
+        // The term-running half, against the genesis block **by hash**: deterministic on a chain
+        // this young, so it needs no finalizer and cannot flake. Three things are asserted at once,
+        // and each was wrong before:
         //   * the reply is read from `@"out"` — the channel every corpus, example and client writes
         //     to — and not only from the term's first `new`-bound name;
         //   * the response *says* which channel answered (`replySource`), so an empty `expr` is a
@@ -138,11 +170,15 @@ fn genesis_boot_exposes_block_over_http() {
         //   * the value is the reference document's shape — `{"ExprInt":{"data":42}}` — rather than
         //     the `{"ExprInt":42}` the port used to write, which no client could read.
         let explore = client
-            .post(format!("{base}/api/v1/explore-deploy"))
-            .json(&"@\"out\"!(42)".to_string())
+            .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
+            .json(&serde_json::json!({
+                "term": "@\"out\"!(42)",
+                "blockHash": genesis_hash,
+                "usePreStateHash": false
+            }))
             .send()
             .await
-            .expect("POST /api/v1/explore-deploy");
+            .expect("POST /api/v1/explore-deploy-by-block-hash");
         assert_eq!(explore.status(), 200);
         let body: Value = explore.json().await.expect("explore json");
         assert_eq!(
@@ -157,11 +193,15 @@ fn genesis_boot_exposes_block_over_http() {
         // The first `new`-bound name keeps working — a client following the reference node's own
         // convention sees no change.
         let named = client
-            .post(format!("{base}/api/v1/explore-deploy"))
-            .json(&"new result in { result!(7) }".to_string())
+            .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
+            .json(&serde_json::json!({
+                "term": "new result in { result!(7) }",
+                "blockHash": genesis_hash,
+                "usePreStateHash": false
+            }))
             .send()
             .await
-            .expect("POST /api/v1/explore-deploy (first private name)");
+            .expect("POST /api/v1/explore-deploy-by-block-hash (first private name)");
         assert_eq!(named.status(), 200);
         let body: Value = named
             .json()

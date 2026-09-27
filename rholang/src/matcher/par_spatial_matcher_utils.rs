@@ -302,17 +302,21 @@ mod tests {
     /// what one dimension may hold; `MAX_SPLIT_COMBINATIONS` is what the product may reach. If the
     /// first permits more than the second, the product check can only reject work that has already
     /// been materialized — which is exactly the 16 GB, and why the constant is 19 rather than 20.
+    /// With `MAX_SPLIT_COMBINATIONS = {MAX_SPLIT_COMBINATIONS}`, one dimension at `MAX_SUBSET_ITEMS`
+    /// would enumerate `2^19 = 524288` splits.
     ///
     /// This is the row's own named proof, red on the tree before the fix.
     #[test]
     fn a_single_dimension_cannot_outgrow_the_product_cap() {
-        assert!(
-            (1u64 << MAX_SUBSET_ITEMS) <= MAX_SPLIT_COMBINATIONS,
-            "one dimension at MAX_SUBSET_ITEMS enumerates 2^{MAX_SUBSET_ITEMS} = {} splits, which \
-             exceeds MAX_SPLIT_COMBINATIONS = {MAX_SPLIT_COMBINATIONS}: the per-dimension guard \
-             would admit work the product guard must then refuse, after it was built",
-            1u64 << MAX_SUBSET_ITEMS
-        );
+        // Written as a `const` block so the compiler checks it rather than the test run — which is
+        // also what Clippy's `assertions_on_constants` asks for. The message cannot be interpolated
+        // inside a const block, so the numbers it used to carry live in the doc comment above.
+        const {
+            assert!(
+                (1u64 << MAX_SUBSET_ITEMS) <= MAX_SPLIT_COMBINATIONS,
+                "one dimension at MAX_SUBSET_ITEMS would outgrow MAX_SPLIT_COMBINATIONS"
+            );
+        }
     }
 
     /// `subset_count` is the arithmetic the refusal now rests on, so it is checked against the
