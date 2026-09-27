@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `block-storage` module (the CBC-Casper DAG finalizer /
 //! estimator and the block metadata store).
 //!

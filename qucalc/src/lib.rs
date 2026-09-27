@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! QuCalc closure superposition over `census_inventory.json`.
 //!
 //! The single invariant this crate enforces structurally: **`ways` is a coefficient, never

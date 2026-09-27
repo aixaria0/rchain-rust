@@ -400,6 +400,41 @@ panic_guard() {
   fi
 }
 
+# **A pattern that must match across line breaks** (AUDIT C126). `scan` feeds the stripped file through
+# `grep -E` one line at a time, so a chain rustfmt wrapped — `try_from(..)` ending a line, `.unwrap_or(0)`
+# starting the next — could not match, and the `silent` class went green over a live violation while
+# catching its single-line twin three lines away in the same file. The same stripped text is read whole
+# here, the pattern may span whitespace *including newlines*, and the note keeps the line the match
+# *starts* on, so the reported site is still the site a reader would open.
+#
+# `PAT=` in the environment rather than an interpolated argument: the patterns carry `(`, `)` and `|`,
+# and the environment is what keeps the shell from re-interpreting them. The `grep -vE` filter is the
+# same one `scan` applies, so the two scans cannot disagree about what they skip.
+scan_spanning() {
+  local kind="$1" pattern="$2"
+  local c f
+  for c in "${CRATES[@]}"; do
+    local dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      awk "$STRIP_AWK_N" "$f" | PAT="$pattern" perl -0777 -ne '
+        my $pat = $ENV{PAT};
+        while (/$pat/g) {
+          my $pre = substr($_, 0, $-[0]);
+          my $line = 1 + ($pre =~ tr/\n//);
+          my $text = $&;
+          $text =~ s/\s+/ /g;
+          print "$line\t$text\n";
+        }' \
+        | grep -vE 'self\.expect\(|\.expect\(Tok::' \
+        | while IFS=$'\t' read -r line text; do
+            [ -n "$line" ] || continue
+            note "$kind" "$f" "$line" "$text"
+          done
+    done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
+  done
+}
+
 scan() {
   # $1 = kind; $2 = grep -E pattern.
   local kind="$1" pattern="$2"
@@ -1125,28 +1160,43 @@ scan_ctor_guard() {
 }
 
 scan_escapes() {
-  local rel f name pattern line text
-  # Any `Deref` impl in a refinement home, whatever it is on.
+  local f name pattern line text c dir
+  # **Every crate, not the eleven refinement homes** (AUDIT C127). Rust's coherence rule requires a
+  # `Deref` impl's type to be local to the *crate*, not to the module that defines it — so
+  # `impl Deref for Hash32` in a sibling file surrenders exactly the invariant this class exists to
+  # protect, and iterating `REFINEMENT_FILES` could not see it. Measured with a control pair: the
+  # byte-identical impl in a sibling file printed `OK … rc=0`, while the copy appended to
+  # `shared/src/refined.rs` printed `FAIL: 1 hard violation(s)`. The `.get()` form moves with it for the
+  # same reason: `ESCAPE_GET_AWK` scopes by the *type name* in scope, and a file boundary changes
+  # nothing about which names are in scope.
+  #
+  # The public-field alternative stays name-scoped, and that is deliberate rather than an oversight:
+  # a `pub` field is an escape only on a type whose invariant the private field carries, and this
+  # workspace has **27** public-field newtypes that are not refinements (`ParsingError(pub String)`,
+  # `PeerId(pub Option<String>)`, `Base16(pub Vec<u8>)`, `AlwaysEqual<T>(pub T)`, …) — a syntactic
+  # rule cannot tell them from a refinement, which is AUDIT C131's open question rather than its fix.
   pattern='impl[^;{]*Deref[^;{]*for'
   for name in "${REFINEMENT_TYPES[@]}"; do
     pattern="$pattern|pub struct ${name}\(pub "
   done
   local types
   types="$(IFS=,; echo "${REFINEMENT_TYPES[*]}")"
-  for rel in "${REFINEMENT_FILES[@]}"; do
-    f="$ROOT/$rel"
-    [ -f "$f" ] || continue
-    # `grep -n` on the file directly, so the reported line is the file's: filtering through more
-    # pipes first (as the `scan` classes do with their comment stripper) renumbers the stream.
-    while IFS=: read -r line text; do
-      [ -n "$line" ] || continue
-      note escape "$f" "$line" "$text"
-    done < <(awk "$STRIP_AWK" "$f" | grep -nE "$pattern")
-    # The public `.get()` form, scope-tracked (see `ESCAPE_GET_AWK`).
-    while IFS=: read -r line text; do
-      [ -n "$line" ] || continue
-      note escape "$f" "$line" "$text"
-    done < <(awk -v TYPES="$types" "$ESCAPE_GET_AWK" "$f")
+  for c in "${CRATES[@]}"; do
+    dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      # `grep -n` on the stripped file, so the reported line is the file's own: filtering through more
+      # pipes first (as the `scan` classes do with their comment stripper) renumbers the stream.
+      while IFS=: read -r line text; do
+        [ -n "$line" ] || continue
+        note escape "$f" "$line" "$text"
+      done < <(awk "$STRIP_AWK" "$f" | grep -nE "$pattern")
+      # The public `.get()` form, scope-tracked (see `ESCAPE_GET_AWK`).
+      while IFS=: read -r line text; do
+        [ -n "$line" ] || continue
+        note escape "$f" "$line" "$text"
+      done < <(awk -v TYPES="$types" "$ESCAPE_GET_AWK" "$f")
+    done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
   done
   scan_ctor_escapes
   scan_ctor_guard
@@ -1164,8 +1214,23 @@ run_class() {
     # extension to it (grep accepts it, mawk does not) — a site matched by grep and missed by awk
     # would be a check that went quiet on one implementation.
     panic)   scan_panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|(^|[^[:alnum:]_])(debug_)?assert(_eq|_ne)?!\(|unwrap_or_else\([[:space:]]*\|\|[[:space:]]*panic!' ;;
-    unsafe)  scan unsafe 'unsafe[[:space:]]*\{' ;;
-    silent)  scan silent 'try_into\(\)\.(unwrap|expect)\(|try_(into\(\)|from\(.*\))\.unwrap_or(\(0\)|_default\(\))|\.parse(::<[^>]+>)?\(\)\.unwrap_or(\(0\)|_default\(\))' ;;
+    # **Every `unsafe` form, not only the block** (AUDIT C130): `unsafe[[:space:]]*\{` matched
+    # `unsafe { … }` and nothing else, so an `unsafe fn`/`unsafe impl`/`unsafe trait`/`unsafe extern`
+    # was green — and in edition 2021 `unsafe_op_in_unsafe_fn` is allow-by-default, so an `unsafe fn`
+    # body may dereference raw pointers with no block at all. `unsafe_code` (the lint name, in an
+    # attribute) does not match: the alternation requires the keyword to be followed by whitespace and
+    # a block or a declaration keyword. The classes' other half is the compiler: `#![forbid(unsafe_code)]`
+    # sits at the root of every crate in this workspace, so the pattern is now the *belt* and the lint
+    # is the structural check.
+    unsafe)  scan unsafe 'unsafe[[:space:]]*(\{|fn|impl|trait|extern)' ;;
+    # **Read whole, not line by line** (AUDIT C126): `grep -E` sees one line at a time, so a chain
+    # rustfmt wrapped — `try_from(..)` ending a line, `.unwrap_or(0)` starting the next — could not
+    # match, and the class went green over a live violation while catching its single-line twin three
+    # lines away in the same file. Reachable by ordinary formatting, not by an attacker. `\s*` between
+    # the call and its method is what closes it; `from\(([^()]|\([^()]*\))*\)` allows the one level of
+    # nesting `try_from(DeployDataProto::decode(bytes))` needs, and perl's `.` does not cross newlines
+    # without `/s`, so nothing here can match further than it should.
+    silent)  scan_spanning silent 'try_into\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*(unwrap|expect)\(|try_(into\(\)|from\(([^()]|\([^()]*\))*\))(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))|\.parse(::<[^>]+>)?\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))' ;;
     # The counted classes list through `counted_scan_sites`, so **the listing is exactly the set the
     # ratchet measures** — always, not only under `--sites`. They used to list through `scan`, which
     # keeps comments (the count strips them) and reported stripped-stream line numbers (see

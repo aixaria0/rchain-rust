@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain rholang interpreter core.
 //!
 //! Mirrors `rholang/src/main/scala/coop/rchain/rholang/interpreter/`. This crate ports the

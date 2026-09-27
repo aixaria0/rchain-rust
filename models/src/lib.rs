@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `models` module (the rholang term structure and its
 //! canonicalizing sorter).
 //!

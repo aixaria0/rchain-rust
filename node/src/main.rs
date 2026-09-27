@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! The node entry point (port of `Main.scala` + `NodeMain.startNode`).
 
 use std::sync::Arc;

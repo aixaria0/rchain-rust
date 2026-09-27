@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `shared` module.
 //!
 //! Mirrors `shared/src/main/scala/coop/rchain/`. This crate is *near-leaf* (the Scala version

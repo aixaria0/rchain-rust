@@ -137,7 +137,14 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   # The clause that makes the rest evidence: the run must have *run* something. Counted from the
   # harness's own per-test lines, and the symbol's own name must be among them (a substring filter
   # may match a family, which is fine — a witness that matches only others is not).
-  matched="$(grep -cE "^test (.*::)?${symbol} \.\.\." "$log" || true)"
+  # `ok$` and not a bare ` \.\.\.` (AUDIT C128): libtest prints `test <name> ... ignored` for a
+  # filtered-in `#[ignore]`d test, which matched the looser pattern and made an ignored witness read as
+  # a passing one — and `cargo test` exits 0 when the filter selects only ignored tests, so nothing
+  # else noticed. A probe witness `#[test] #[ignore] fn lawZZ_probe_ignored_witness() { panic!("never
+  # runs") }` printed `all 1 Rust witness(es) ran and passed`, exit 0, before this line; it now matches
+  # nothing and fails here. The file's own header promises exactly that ("a registry of renamed,
+  # deleted or `#[ignore]`d tests would run green while checking nothing").
+  matched="$(grep -cE "^test (.*::)?${symbol} \.\.\. ok$" "$log" || true)"
   if (( matched == 0 )); then
     printf 'FAIL  %s:%s — matched no test (`cargo test` exits 0 on an empty filter)\n' "$path" "$symbol"
     failures=$((failures + 1))

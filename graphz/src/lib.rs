@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `graphz` module (a Graphviz DOT string builder).
 //!
 //! Mirrors `graphz/src/main/scala/coop/rchain/graphz/Graphz.scala`. The cats-effect `F[_]`

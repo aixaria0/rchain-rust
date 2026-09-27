@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Example: load the real census, show the `ways` distribution, fold a closure, and prove the
 //! "ways as a coefficient" invariant.
 //!

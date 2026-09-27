@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `comm` module (peer-to-peer networking).
 //!
 //! Mirrors `comm/src/main/scala/coop/rchain/comm/`. This crate ports the full networking stack:

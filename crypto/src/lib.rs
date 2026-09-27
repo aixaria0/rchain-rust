@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `crypto` module.
 //!
 //! Mirrors `crypto/src/main/scala/coop/rchain/crypto/`. Implements Law 19 (axiomatized

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `sdk` module.
 //!
 //! Mirrors `sdk/src/main/scala/coop/rchain/sdk/`. This crate is a *leaf* in the dependency graph

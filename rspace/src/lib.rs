@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faithful Rust port of the RChain `rspace` module (the concurrent tuple space and its
 //! content-addressed radix history).
 //!
