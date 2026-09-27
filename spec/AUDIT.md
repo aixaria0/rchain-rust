@@ -24,15 +24,16 @@ on this page, which costs 2.5 seconds.
 
 **Findings  TODO 0 · IN PROGRESS 0 · DONE 201** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 201 findings name no evidence**, which is a column here rather than an
-implication: a `done` row says the fix is in the tree, not that it is correct.
+**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it where there is evidence to
+name. What that does *not* mean is stated under each half below.
 
-### TODO — findings (0)
+### Findings — closed
 
-| id | what | what closes it | account |
-|---|---|---|---|
+All 201 are settled: **137 name the evidence that holds them** and **64 do not** — the
+second number is the honest residual, and a column rather than an implication. A `done`
+row says the fix is in the tree or that the decision was taken; it does not say either is
+right. Read a row that matters at the § its account cites.
 
 ### T1 coverage — closed
 
@@ -41,10 +42,10 @@ verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason cl
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
-### IN PROGRESS (0)
+### In progress — none
 
-| id | what | what closes it | account |
-|---|---|---|---|
+Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
+that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
 ### DONE (201)
 

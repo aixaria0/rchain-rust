@@ -153,14 +153,34 @@ panel="$(mktemp)"
   printf '## Check-off\n\n'
   printf '**Findings  TODO %s · IN PROGRESS %s · DONE %s** &nbsp;&nbsp;·&nbsp;&nbsp; %s\n\n' \
     "$(count_of todo)" "$(count_of 'in progress')" "$(count_of done)" "$t1_line"
-  printf 'Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a\n'
-  printf 'deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would\n'
-  printf 'close it. **%s of the %s findings name no evidence**, which is a column here rather than an\n' \
-    "$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "done" && ($6 == "" || $6 == "-")' | wc -l)" "$(count_of done)"
-  printf 'implication: a `done` row says the fix is in the tree, not that it is correct.\n\n'
+  # **The line a reader takes away says which state the audit is in**, not what a closed one would
+  # mean — the same reason the coverage half is phrased by which way it reads.
+  if (( $(count_of todo) == 0 && t1_deferred == 0 )); then
+    printf '**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a\n'
+    printf 'deliberate deviation, or refuted -- and names what holds it where there is evidence to\n'
+    printf 'name. What that does *not* mean is stated under each half below.\n\n'
+  else
+    printf 'Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a\n'
+    printf 'deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would\n'
+    printf 'close it.\n\n'
+  fi
 
-  printf '### TODO — findings (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of todo)"
-  tbl_todo; printf '\n'
+  # Same rule as the coverage half below: **an empty section is not printed as a zero-row table.**
+  # `### TODO — findings (0)` over a bare header is the same fact as "nothing is open" and reads like
+  # a section that failed to render.
+  if (( $(count_of todo) > 0 )); then
+    printf '### TODO — findings (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of todo)"
+    tbl_todo; printf '\n'
+  else
+    printf '### Findings — closed\n\n'
+    printf 'All %s are settled: **%s name the evidence that holds them** and **%s do not** — the\n' \
+      "$n_total" \
+      "$(printf '%s\n' "$rows" | awk -F'\t' '$6 != "" && $6 != "-"' | wc -l)" \
+      "$(printf '%s\n' "$rows" | awk -F'\t' '$6 == "" || $6 == "-"' | wc -l)"
+    printf 'second number is the honest residual, and a column rather than an implication. A `done`\n'
+    printf 'row says the fix is in the tree or that the decision was taken; it does not say either is\n'
+    printf 'right. Read a row that matters at the § its account cites.\n\n'
+  fi
   # **An empty section is not printed as a zero-row table.** Until 2026-09-27 this always emitted
   # `### TODO — unread T1 modules (0)` over a header with no rows, which reads like a section that
   # failed to render rather than one that has nothing left in it. A closed half says so.
@@ -181,8 +201,16 @@ panel="$(mktemp)"
     printf 'The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found\n'
     printf 'defects this register had not recorded (C164, C165).\n\n'
   fi
-  printf '### IN PROGRESS (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of 'in progress')"
-  tbl_prog; printf '\n'
+  # The same rule again: `### IN PROGRESS (0)` over a bare header is the third place the closed
+  # state was printed as the shape of an open one.
+  if (( $(count_of 'in progress') > 0 )); then
+    printf '### IN PROGRESS (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of 'in progress')"
+    tbl_prog; printf '\n'
+  else
+    printf '### In progress — none\n\n'
+    printf 'Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;\n'
+    printf 'that it is empty is the fact, and it is said rather than shown as a table with no rows.\n\n'
+  fi
   printf '### DONE (%s)\n\n| id | what | evidence | account |\n|---|---|---|---|\n' "$(count_of done)"
   tbl_done; printf '\n'
 } > "$panel"

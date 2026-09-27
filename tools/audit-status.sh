@@ -43,8 +43,18 @@ t1_total=$(awk -F'\t' '$3 == "T1"' "$LEDGER" 2>/dev/null | wc -l)
 t1_unread=$(awk -F'\t' '$3 == "T1" && $4 == "deferred"' "$LEDGER" 2>/dev/null | wc -l)
 
 # The counts first, because that is the answer; the gate's verdict second, because it is the caveat.
-printf 'Findings  TODO %s · IN PROGRESS %s · DONE %s   ·   Coverage  %s of %s T1 modules unread\n' \
-  "$todo" "$prog" "$done_" "$t1_unread" "$t1_total"
+#
+# **A closed half is phrased by which way it reads.** `Coverage 0 of 89 T1 modules unread` is the same
+# fact as a completed pass and reads like a count that failed to populate -- and this is the line a
+# person takes away, so the zero is the one thing it must not print. The same rule is in the emitter,
+# which is why the check-off and this agree.
+if (( t1_unread == 0 )); then
+  printf 'Findings  TODO %s · IN PROGRESS %s · DONE %s   ·   Coverage  all %s T1 modules read\n' \
+    "$todo" "$prog" "$done_" "$t1_total"
+else
+  printf 'Findings  TODO %s · IN PROGRESS %s · DONE %s   ·   Coverage  %s of %s T1 modules unread\n' \
+    "$todo" "$prog" "$done_" "$t1_unread" "$t1_total"
+fi
 
 if [[ "$quiet" == "0" ]]; then
   if (( todo > 0 )); then
