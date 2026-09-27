@@ -243,7 +243,10 @@ PY
     none*)  die "law $LAW declares no Rust witness in spec/laws.tsv column 14 — it cannot be falsified this way"
             ;;
     miss*)  if [[ "$verdict" == "red" ]]; then verdict="red-undeclared"; else verdict="green"; fi
-            printf '\n  declared witness(es) for law %s: %s\n' "$LAW" "${declared_result#*\t}"
+            # `$'\t'`, not `\t`: in a glob pattern a backslash-t is a literal `t`, so `#*\t` stripped
+            # through the first `t` of the witness name and printed `he_gate_scheduler_...` for
+            # `law21_the_gate_scheduler_...`. The verdict was right and the name it blamed was not.
+            printf '\n  declared witness(es) for law %s: %s\n' "$LAW" "${declared_result#*$'\t'}"
             printf '  none of them failed — a red elsewhere in the filter is not this row'"'"'s evidence\n'
             ;;
   esac

@@ -365,7 +365,15 @@ async fn runtime_in_mode(mode: EffectMode) -> crate::runtime::RhoRuntime {
 fn compare_mode(program: &str, mode: EffectMode, cases: u32) -> Result<(), TestCaseError> {
     use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // **Multi-threaded on purpose, and it is load-bearing (AUDIT C150).** The gated and the
+    // validated-relaxed schedulers are compared against the sequential fold here, and on a
+    // `new_current_thread` runtime that comparison *cannot fail*: an ungated set of `tokio::spawn`ed
+    // tasks is still polled in spawn order, which is DFS order, so deleting the gate's
+    // predecessor-await chain outright left `law21_...` green (observed). Measured with four worker
+    // threads: the same deletion turns it red, 3 of 3 runs, while the runtime change alone — gate
+    // intact — passes, so what the gate guarantees is real and was merely unobservable. Four rather
+    // than the default because one worker still serialises; the point is two effects in flight at once.
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4)
         .enable_all()
         .build()
         .expect("a runtime");
