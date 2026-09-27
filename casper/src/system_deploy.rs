@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::Par;
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::casper_message::Event;
 use rchain_models::rholang::RhoType::{RhoBoolean, RhoString, RhoTupleN};
 use rchain_models::validator::Validator;
@@ -48,7 +49,10 @@ impl EvalCollector {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SystemDeployResult<A> {
     PlaySucceeded {
-        state_hash: Vec<u8>,
+        /// The post-state the deploy produced — typed (deferred item 1b) so the one thing every
+        /// caller does with it (hand it to the next step as a state to open) cannot be given 31
+        /// bytes.
+        state_hash: StateHash,
         event_log: Vec<Event>,
         mergeable_channels: BTreeMap<rchain_crypto::hash::blake2b256_hash::Blake2b256Hash, i64>,
         result: A,

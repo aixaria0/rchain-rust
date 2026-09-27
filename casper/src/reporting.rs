@@ -8,6 +8,7 @@ use async_trait::async_trait;
 
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, Peek, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
@@ -49,7 +50,9 @@ pub struct SystemDeployReportResult {
 pub struct ReplayResult {
     pub deploy_report_result: Vec<DeployReportResult>,
     pub system_deploy_report_result: Vec<SystemDeployReportResult>,
-    pub post_state_hash: Vec<u8>,
+    /// Typed (deferred item 1b): a replay's post-state hash is compared against the block's, and the
+    /// comparison is the only thing standing between a report and a wrong-chain report.
+    pub post_state_hash: StateHash,
 }
 
 /// Replays a block and collects a human-readable report (port of `ReportingCasper`).
@@ -71,7 +74,10 @@ impl ReportingCasper for NoopReportingCasper {
         Ok(ReplayResult {
             deploy_report_result: Vec::new(),
             system_deploy_report_result: Vec::new(),
-            post_state_hash: b"empty".to_vec(),
+            // The zero hash, not a five-byte placeholder: the field is a `StateHash` now, and the
+            // noop report used to carry `b"empty"` — a value no block could ever have (deferred item
+            // 1b). A caller that compared this against a block's hash was comparing against nothing.
+            post_state_hash: StateHash::new([0u8; 32]),
         })
     }
 }
@@ -252,7 +258,7 @@ async fn replay_deploys(
     Ok(ReplayResult {
         deploy_report_result: deploy_results,
         system_deploy_report_result: system_results,
-        post_state_hash: checkpoint.root.as_bytes().to_vec(),
+        post_state_hash: checkpoint.root.into(),
     })
 }
 
@@ -292,7 +298,7 @@ mod tests {
         let result = reporter.trace(block()).await.unwrap();
         assert!(result.deploy_report_result.is_empty());
         assert!(result.system_deploy_report_result.is_empty());
-        assert_eq!(result.post_state_hash, b"empty".to_vec());
+        assert_eq!(result.post_state_hash, StateHash::new([0u8; 32]));
     }
 }
 

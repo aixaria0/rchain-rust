@@ -9,6 +9,7 @@ use std::pin::Pin;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::casper_message::{Peek, SignedDeployData, SystemDeployData};
 use rchain_models::casper::protocol::deploy_service::{
     deploy_info_from_wire, light_block_info_from_wire, BlockInfo, BlockQuery, BlocksQuery,
@@ -330,7 +331,7 @@ pub fn block_event_info_to_wire(b: &BlockEventInfo) -> wire::BlockEventInfo {
             .iter()
             .map(system_deploy_info_with_event_data_to_wire)
             .collect(),
-        post_state_hash: b.post_state_hash.clone(),
+        post_state_hash: b.post_state_hash.as_bytes().to_vec(),
     }
 }
 
@@ -439,7 +440,10 @@ pub fn block_event_info_from_wire(b: &wire::BlockEventInfo) -> Result<BlockEvent
         block_info: light_block_info_from_wire(block_info),
         deploys,
         system_deploys,
-        post_state_hash: b.post_state_hash.clone(),
+        // `try_from`, not `from_slice`: this is an ingress from the wire, so a wrong-length hash is
+        // an error that names the field rather than a panic (deferred item 1b).
+        post_state_hash: StateHash::try_from(b.post_state_hash.as_slice())
+            .map_err(|e| format!("post_state_hash: {e}"))?,
     })
 }
 
@@ -1923,13 +1927,13 @@ mod tests {
                     },
                 ],
                 system_deploys: Vec::new(),
-                post_state_hash: b"POST-STATE".to_vec(),
+                post_state_hash: StateHash::new([0xAB; 32]),
             };
 
             let wire_info = block_event_info_to_wire(&info);
             assert_eq!(
                 wire_info.post_state_hash,
-                b"POST-STATE".to_vec(),
+                StateHash::new([0xAB; 32]).as_bytes().to_vec(),
                 "post-state hash is carried"
             );
             assert_eq!(wire_info.deploys.len(), 1);
@@ -1945,7 +1949,7 @@ mod tests {
             );
 
             let back = block_event_info_from_wire(&wire_info).expect("round trip");
-            assert_eq!(back.post_state_hash, b"POST-STATE".to_vec());
+            assert_eq!(back.post_state_hash, StateHash::new([0xAB; 32]));
             assert_eq!(back.deploys.len(), 1);
             assert_eq!(back.deploys[0].deploy_info.term, "term");
             assert_eq!(back.deploys[0].report[0].events.len(), 1);

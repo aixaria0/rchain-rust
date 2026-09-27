@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::report::BlockEventInfo;
 
 /// The reporting HTTP response (port of `ReportingRoutes.ReportResponse`, with the circe
@@ -53,7 +54,7 @@ mod tests {
             },
             deploys: vec![],
             system_deploys: vec![],
-            post_state_hash: vec![],
+            post_state_hash: StateHash::new([0u8; 32]),
         }
     }
 

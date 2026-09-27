@@ -241,8 +241,7 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
         .expect("the reporter replays the block");
 
     assert_eq!(
-        result.post_state_hash,
-        block.post_state_hash.as_bytes().to_vec(),
+        result.post_state_hash, block.post_state_hash,
         "the reporting replay must reach the block's own post-state"
     );
     assert_eq!(

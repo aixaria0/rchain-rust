@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ast::Par;
+use crate::block::state_hash::StateHash;
 use crate::casper::protocol::casper_message::{Peek, SystemDeployData};
 use crate::casper::protocol::deploy_service::{DeployInfo, LightBlockInfo};
 use crate::runtime::{BindPattern, ListParWithRandom};
@@ -72,6 +73,8 @@ pub struct BlockEventInfo {
     pub block_info: LightBlockInfo,
     pub deploys: Vec<DeployInfoWithEventData>,
     pub system_deploys: Vec<SystemDeployInfoWithEventData>,
-    #[serde(with = "crate::ast::hex_serde")]
-    pub post_state_hash: Vec<u8>,
+    /// `StateHash`, not a hex-serde'd `Vec<u8>` (deferred item 1b). The JSON is unchanged — this
+    /// type serializes as the same lowercase base16 — but the field now refuses a wrong-length value
+    /// where the `Vec<u8>` accepted one.
+    pub post_state_hash: StateHash,
 }
