@@ -29,7 +29,7 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `file` | 350 | 350 | 22 | 21 | 0 | 1 | 328 | 0 | 0 |
 | `ingress` | 44 | 44 | 4 | 4 | 0 | 0 | 40 | 0 | 0 |
-| `law` | 60 | 60 | 52 | 13 | 0 | 39 | 8 | 0 | 0 |
+| `law` | 60 | 60 | 53 | 13 | 0 | 40 | 3 | 4 | 0 |
 | `site` | — | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `class` | 6 | 6 | 0 | 0 | 0 | 0 | 6 | 0 | 0 |
 | `process` | 30 | 30 | 0 | 0 | 0 | 0 | 30 | 0 | 0 |
@@ -55,18 +55,18 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 
 | tier | rows | reviewed | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|
-| T1 | 81 | 60 | 21 | 0 | 0 |
+| T1 | 86 | 61 | 21 | 4 | 0 |
 | T2 | 21 | 3 | 18 | 0 | 0 |
-| T3 | 515 | 21 | 494 | 0 | 0 |
+| T3 | 510 | 21 | 489 | 0 | 0 |
 
-**515 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
+**510 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
 files the register has already tiered, the tier above is *derived* from that table — a judgement
 inherited, not invented. For every other item the seed writes T3 because it is the lowest tier, and that
 is the consequence to read with it: **a T3 row is not a file that was judged presentational, it is a file
 nobody has classified.** Raising one is a review act, and the cross-tab is what makes the backlog of
 those acts visible instead of lost in a total.
 
-**The 81 T1 rows are the ones that matter, and they are all `deferred`.** That is the honest state of
+**The 86 T1 rows are the ones that matter, and they are all `deferred`.** That is the honest state of
 this audit at the moment it was emitted, and it is the sentence a reader should carry away: the modules
 that can fork the chain or lose funds are *named* here and unreviewed. A T1 row that cannot be read
 deeply is `deferred` or `unreachable`, never `cleared shallow` — clause (e) of check 15 refuses that
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at c6f89fb44.*
+*Emitted from a tree at e447a692d.*
