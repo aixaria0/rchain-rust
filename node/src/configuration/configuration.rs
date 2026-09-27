@@ -110,6 +110,10 @@ impl Configuration {
         check_shard_config_exclusivity(&file_config, "the config file")?;
 
         let default_config = parse_defaults(&data_dir.to_string_lossy())?;
+        // The defaults' own `NodeConf`, taken *before* the merge consumes the `Hocon`: this is what
+        // `check_inert_config` compares against, so the comparison cannot drift from `defaults.conf`
+        // (AUDIT C143).
+        let defaults_conf = node_conf_from_hocon(&default_config)?;
 
         let merged = merge(merge(options_config, file_config), default_config);
         let mut node_conf = node_conf_from_hocon(&merged)?;
@@ -125,6 +129,11 @@ impl Configuration {
                 ));
             }
         }
+
+        // AUDIT C143: the keys this port parses into `NodeConf` and enforces nowhere. Checked here,
+        // with the other operator-facing configuration errors, against the defaults' own `NodeConf`
+        // taken above.
+        check_inert_config(&node_conf, &defaults_conf)?;
 
         // AUDIT §6: the Kamon reporter switches. Checked here, where the operator-facing
         // configuration errors already live (`check_shard_config_exclusivity`, the shard quorum
@@ -208,6 +217,83 @@ fn check_metrics_config(metrics: &super::model::Metrics) -> Result<Option<String
          does not disable it either)."
             .to_string()
     }))
+}
+
+/// The config keys this port parses into `NodeConf` and **enforces nowhere** (AUDIT C143).
+///
+/// **Refused when they differ from the shipped default, rather than accepted and ignored** — the
+/// disposition this register already chose for the metrics reporters above and for
+/// `disable-state-exporter`: a knob that does nothing is worse than no knob, because the operator
+/// believes it did something and nothing in the node ever contradicts them.
+///
+/// The nine are the ones a grep over every crate finds read by nothing outside
+/// `node/src/configuration`:
+///
+/// - `protocol-server.max-message-consumers` — documented in the file's longest comment as the bound
+///   to raise for a busier node ("the very minimum should be {number of nodes} * {synchrony
+///   constraint}"); the effective bound is the hardcoded `MAX_CONCURRENT_DISPATCH = 1024`.
+/// - `protocol-server.use-random-ports` — the node still fails to start when its port is taken.
+/// - `protocol-server.dynamic-ip` — read by nothing.
+/// - `peers-discovery.init-wait-loop-interval` — read by nothing.
+/// - the gRPC keepalive group (`api-server.keep-alive-time`, `keep-alive-timeout`,
+///   `permit-keep-alive-time`, `max-connection-age`, `max-connection-age-grace`) — no HTTP/2 or TCP
+///   keepalive is set anywhere in the tree, so the only mechanism the oracle had for retiring a
+///   half-open peer connection is inert and a dead peer stays "connected" until discovery's 20-minute
+///   cleanup.
+///
+/// **The comparison is derived, not tabulated.** Each field is compared against the `NodeConf` that
+/// `defaults.conf` alone produces, so a default cannot drift out from under the refusal — a
+/// hand-written table of the nine defaults would be a second definition of them, which is this
+/// register's own recurring defect class. An operator who changed none of them — the common case, and
+/// every existing test — is unaffected, which is what makes this safe to add to a running series.
+pub fn check_inert_config(node_conf: &NodeConf, defaults: &NodeConf) -> Result<(), String> {
+    let mut set: Vec<&str> = Vec::new();
+    if node_conf.protocol_server.max_message_consumers
+        != defaults.protocol_server.max_message_consumers
+    {
+        set.push("protocol-server.max-message-consumers");
+    }
+    if node_conf.protocol_server.use_random_ports != defaults.protocol_server.use_random_ports {
+        set.push("protocol-server.use-random-ports");
+    }
+    if node_conf.protocol_server.dynamic_ip != defaults.protocol_server.dynamic_ip {
+        set.push("protocol-server.dynamic-ip");
+    }
+    if node_conf.peers_discovery.init_wait_loop_interval
+        != defaults.peers_discovery.init_wait_loop_interval
+    {
+        set.push("peers-discovery.init-wait-loop-interval");
+    }
+    if node_conf.api_server.keep_alive_time != defaults.api_server.keep_alive_time {
+        set.push("api-server.keep-alive-time");
+    }
+    if node_conf.api_server.keep_alive_timeout != defaults.api_server.keep_alive_timeout {
+        set.push("api-server.keep-alive-timeout");
+    }
+    if node_conf.api_server.permit_keep_alive_time != defaults.api_server.permit_keep_alive_time {
+        set.push("api-server.permit-keep-alive-time");
+    }
+    if node_conf.api_server.max_connection_age != defaults.api_server.max_connection_age {
+        set.push("api-server.max-connection-age");
+    }
+    if node_conf.api_server.max_connection_age_grace != defaults.api_server.max_connection_age_grace
+    {
+        set.push("api-server.max-connection-age-grace");
+    }
+
+    if !set.is_empty() {
+        return Err(format!(
+            "unimplemented setting(s) changed: {}. This port parses these and enforces none of them \
+             — `max-message-consumers` leaves the inbound dispatch bound at its hardcoded 1024, \
+             `use-random-ports`/`dynamic-ip` do not change how a port is chosen, and no HTTP/2 or TCP \
+             keepalive is set anywhere, so the keepalive group would retire no half-open peer \
+             connection. Refused rather than accepted and ignored, which is the disposition this \
+             register chose for the metrics reporters and for `disable-state-exporter`: a setting that \
+             does nothing must not look as though it did. Remove the setting(s) to start.",
+            set.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// If not in dev mode, strip the deployer private key (port of `Configuration.checkDevMode`).
@@ -613,6 +699,70 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The regression test for AUDIT C143.** Nine keys are parsed into `NodeConf` and read by
+    /// nothing: `max-message-consumers` — whose documented purpose is the inbound dispatch bound, which
+    /// is the hardcoded 1024 — `use-random-ports`, `dynamic-ip`, `init-wait-loop-interval`, and the five
+    /// keepalive knobs, where no HTTP/2 or TCP keepalive exists anywhere in the tree. The disposition is
+    /// the one this register already chose twice (the metrics reporters, `disable-state-exporter`):
+    /// refused rather than accepted and ignored.
+    ///
+    /// The **control** matters as much as the refusals and is here explicitly: a setting this port *does*
+    /// enforce must still build, so the check is value-sensitive rather than "the key appeared in a
+    /// file". (The other forty-one tests in this module are the same control at larger scale — none of
+    /// them changes one of the nine, and all of them still build.)
+    #[test]
+    fn a_setting_this_port_does_not_enforce_is_refused() {
+        // `max-message-consumers` is reachable both ways, and the CLI is checked first because it is
+        // the layer that wins: the file spelling below it is then the same refusal through the same
+        // function.
+        let err = build_run(
+            "inert_cli",
+            &["--protocol-max-message-consumers", "5000"],
+            None,
+        )
+        .expect_err("a setting this port does not enforce must be refused (AUDIT C143)");
+        assert!(
+            err.contains("unimplemented setting"),
+            "the refusal must say what it is about: {err}"
+        );
+
+        // Collected rather than asserted in the loop: the first failure would hide the rest, and which
+        // of the nine are reachable *through a config file* is the thing worth knowing.
+        let mut not_refused: Vec<&str> = Vec::new();
+        let mut wrongly: Vec<(String, String)> = Vec::new();
+        for body in [
+            "protocol-server { max-message-consumers = 5000 }",
+            "protocol-server { use-random-ports = true }",
+            "protocol-server { dynamic-ip = true }",
+            // `2 seconds`, not `1 second`: the default *is* `1s`, and a fixture set to its own default
+            // is a change that did not happen — the comparison sees no difference and is right not to
+            // refuse. That mistake is why this test collects its failures instead of asserting in the
+            // loop: the whole list in one run is what showed it.
+            "peers-discovery { init-wait-loop-interval = 2 seconds }",
+            "api-server { keep-alive-time = 5 seconds }",
+            "api-server { keep-alive-timeout = 5 seconds }",
+            "api-server { permit-keep-alive-time = 5 seconds }",
+            "api-server { max-connection-age = 5 seconds }",
+            "api-server { max-connection-age-grace = 5 seconds }",
+        ] {
+            match build_run("inert", &[], Some(body)) {
+                Err(e) if e.contains("unimplemented setting") => {}
+                Err(e) => wrongly.push((body.to_string(), e)),
+                Ok(_) => not_refused.push(body),
+            }
+        }
+        assert!(
+            not_refused.is_empty() && wrongly.is_empty(),
+            "every one of these must be refused, and for its own reason (AUDIT C143).\n  accepted: \
+             {not_refused:#?}\n  refused for some other reason: {wrongly:#?}"
+        );
+
+        assert!(
+            build_run("enforced", &[], Some("api-server { port-http = 40403 }")).is_ok(),
+            "the control: a setting this port does enforce must still build"
+        );
     }
 
     /// **The regression test for AUDIT C141.** A config file whose first line is valid and whose second
