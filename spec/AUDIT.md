@@ -22,14 +22,14 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 7 · IN PROGRESS 0 · DONE 191** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  20 of 89 T1 modules unread**
+**Findings  TODO 6 · IN PROGRESS 0 · DONE 192** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  20 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 191 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 192 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
-### TODO — findings (7)
+### TODO — findings (6)
 
 | id | what | what closes it | account |
 |---|---|---|---|
@@ -39,7 +39,6 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
 | `R31` | attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136` | a disposition: validate the host the UPnP path advertises, or record why a hostname is safe there | §13 |
-| `R34` | `/api/faucet` routes are mounted unconditionally on the public router; the dev-mode gate is only inside the handler | gate the route at the mount, or record that the handler's refusal is the boundary | §13 |
 
 ### TODO — unread T1 modules (20)
 
@@ -75,7 +74,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (191)
+### DONE (192)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -236,6 +235,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `R30` | `PeerRateLimiter` never evicts. `casper/src/engine/node_running.rs:106` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn | — | §13 |
 | `R32` | attacker-controlled large `sender.host` retained in the connections table. `comm/src/rp/handle_messages.rs:70-93` | a_host_over_the_bound_is_refused_at_the_wire | §13 |
 | `R33` | faucet to the deployer's own address is a no-op that still consumes the rate budget and submits a deploy | the_faucet_refuses_a_drip_to_the_deployers_own_address | §13 |
+| `R34` | `/api/faucet` routes are mounted unconditionally on the public router; the dev-mode gate is only inside the handler | a_node_without_the_faucet_does_not_mount_the_route | §13 |
 | `R35` | a faucet drip is silently dropped once the tip passes `height+50` (`DEPLOY_LIFESPAN`), after `200` was already returned | — | §13 |
 | `R36` | the single `deploy_rate_limiter` is shared by deploy + explore-deploy, so explore floods starve deploys | an_explore_flood_does_not_spend_the_deploy_budget | §13 |
 | `R37` | play sorts channel data by `Datum.source` but replay keeps store order; correct today, but an undocumented play-vs-replay fragility | run_matcher_consume | §13 |

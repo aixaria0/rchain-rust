@@ -125,6 +125,10 @@ pub struct HttpState {
     pub explore_rate_limiter: Arc<RateLimiter>,
     /// Rate limiter for the devnet faucet endpoint.
     pub faucet_rate_limiter: Arc<RateLimiter>,
+    /// Whether the faucet routes are mounted at all — dev mode **and** a deployer key, which is the
+    /// handler's own condition, carried here so the mount and the handler cannot disagree (AUDIT
+    /// R34). When false the routes do not exist and the documented **404** is what a caller gets.
+    pub faucet_enabled: bool,
 }
 
 /// State shared by the admin HTTP server (port of the `adminWebApiRoutes` argument of
@@ -1001,7 +1005,8 @@ async fn admin_propose(State(state): State<AdminState>) -> Response {
 /// `/status`, the `/api` JSON routes, `/reporting` + `/api/trace`, the `/api/v1` routes, and the
 /// `/api/v1/openapi.json` OpenAPI document).
 pub fn router(state: HttpState) -> Router {
-    Router::new()
+    let faucet_enabled = state.faucet_enabled;
+    let mut routes = Router::new()
         .route("/version", get(version))
         .route("/metrics", get(metrics))
         .route("/status", get(status))
@@ -1012,7 +1017,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/shards", get(api_shards))
         .route("/api/deploys", get(api_deploys))
         .route("/api/deploy", post(api_deploy))
-        .route("/api/faucet", post(api_faucet))
         .route("/api/explore-deploy", post(api_explore_deploy))
         .route(
             "/api/explore-deploy-by-block-hash",
@@ -1037,7 +1041,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/pos", get(api_pos_status))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
-        .route("/api/v1/faucet", post(api_faucet))
         .route(
             "/api/v1/deploy-status/{deploy_signature}",
             get(api_v1_deploy_status),
@@ -1053,9 +1056,28 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/v1/blocks", get(api_get_blocks))
         .route("/api/v1/block/{hash}", get(api_get_block))
-        .route("/api/v1/openapi.json", get(api_v1_openapi))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .route("/api/v1/openapi.json", get(api_v1_openapi));
+
+    // **The faucet is mounted only when it is switched on** (AUDIT R34).
+    //
+    // It used to be mounted unconditionally with the gate inside the handler, and that made the
+    // published contract wrong: `GET /api/v1/openapi.json` documents this route's refusal as
+    // **404** ("The faucet is disabled on this node"), while `json_result` maps every
+    // `BlockApiException` to 400 — so a client reading the schema and a client reading the wire
+    // disagreed about the same event. Mounting it only when enabled makes the documented 404 the
+    // actual answer, and takes a funded route off a production node's surface rather than leaving it
+    // there to say no.
+    //
+    // The condition is the handler's own — dev mode plus a deployer key — carried here by
+    // `acquire_http_server` rather than re-derived, so the two cannot disagree about when the faucet
+    // is on.
+    if faucet_enabled {
+        routes = routes
+            .route("/api/faucet", post(api_faucet))
+            .route("/api/v1/faucet", post(api_faucet));
+    }
+
+    routes.layer(CorsLayer::permissive()).with_state(state)
 }
 
 /// Build the admin HTTP routes (port of `acquireAdminHttpServer`'s `/api` + `/api/v1` admin routes).
@@ -1119,6 +1141,9 @@ pub async fn acquire_http_server(
     pos: Arc<dyn PosReadApi>,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    // Whether to mount the faucet routes (AUDIT R34): dev mode **and** a deployer key, resolved by
+    // the caller because that is where both are known.
+    faucet_enabled: bool,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
@@ -1140,6 +1165,7 @@ pub async fn acquire_http_server(
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
         explore_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
         faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
+        faucet_enabled,
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -1314,7 +1340,10 @@ mod tests {
         }
 
         async fn faucet(&self, _: &str) -> Result<FaucetResponse, BlockApiException> {
-            unimplemented!()
+            // Not `unimplemented!()`, for the same reason `deploy` is not (AUDIT R34/R36): a mock that
+            // can only panic tests that a route was *not* reached, and the mount test needs both
+            // arms — absent, and present-and-answering.
+            Err(BlockApiException("stub faucet".to_string()))
         }
 
         async fn listen_for_data_at_name(
@@ -1397,6 +1426,9 @@ mod tests {
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
             explore_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
             faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
+            // On by default in the tests, because the router tests drive the faucet route; the
+            // off case is pinned by its own test below.
+            faucet_enabled: true,
         }
     }
 
@@ -1638,6 +1670,50 @@ mod tests {
         .expect("deploy request");
         let response = api_deploy(State(s), Json(request)).await;
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// **A node without the faucet does not mount the route, so the documented 404 is the answer**
+    /// (AUDIT R34).
+    ///
+    /// This one drives the *router* rather than a handler, because the thing under test is the mount
+    /// — and the reason it matters is the schema: `GET /api/v1/openapi.json` documents this route's
+    /// refusal as **404** ("The faucet is disabled on this node"), while the handler's
+    /// `BlockApiException` maps to **400**. A client reading the schema and a client reading the wire
+    /// disagreed about the same event, which is what "the gate is only inside the handler" cost.
+    ///
+    /// Two arms: disabled is a 404, and enabled is not — so the mount condition cannot be a router
+    /// that drops everything.
+    #[tokio::test]
+    async fn a_node_without_the_faucet_does_not_mount_the_route() {
+        use tower::ServiceExt;
+
+        let request = || {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/faucet")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"address":"rBdXnotARealAddress"}"#,
+                ))
+                .expect("a request")
+        };
+
+        let mut off = state();
+        off.faucet_enabled = false;
+        let resp = router(off).oneshot(request()).await.expect("a response");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "the route is not mounted, so the schema's 404 is what a caller gets"
+        );
+
+        let on = state();
+        let resp = router(on).oneshot(request()).await.expect("a response");
+        assert_ne!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "with the faucet on the route exists and answers (here, refusing a bad address)"
+        );
     }
 
     /// **The explore routes have their own budget, and exhausting it leaves deploy's alone** (AUDIT
