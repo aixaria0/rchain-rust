@@ -1,0 +1,140 @@
+# The deep gates, moved off the push path.
+#
+# Every one of these is a cross-check whose cost is measured in tens of minutes, and none of them is
+# evidence for a Rust change:
+#
+#   * `check-lean-conformance.sh` is **~104 serial `cargo test` invocations** (15 corpus layers + 89
+#     witness entries) behind a Lean build that is 16 minutes cold and a Coq `make`;
+#   * `cargo llvm-cov` recompiles the whole workspace with source-based instrumentation — a codegen
+#     profile of its own, so none of the warm `test` cache is reused — and then runs the full suite;
+#   * `audit-instruments.sh` plants a defect per gate and runs the whole gate 24 times, and each probe
+#     is itself a cascade (`audit-test-register.sh` re-emits two ledgers and the type-system scan).
+#
+# They move here rather than disappearing. Nothing is dropped from the evidence; it stops gating every
+# push and starts being measured on a schedule. What stays per-push is what finishes in minutes and can
+# actually fail: `cargo fmt --check`, clippy, `cargo test --workspace` *uninstrumented*, and the two
+# static audit gates — all of which are steps of the existing workflows, not of this one.
+name: Nightly deep gates
+
+on:
+  schedule:
+    # An off-the-hour minute deliberately: scheduled jobs across GitHub land on :00, and the queue is
+    # why a nightly started on the hour can finish long after it.
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  # Least privilege, stated rather than defaulted (AUDIT C137).
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  formal:
+    # The oracle is the mathematical specification (`AGENTS.md:55-57`), and until this job existed
+    # nothing built it: no workflow touched `spec/`, so a theorem that stopped holding, a module that
+    # fell out of the library, or a Coq file that never compiled was noticed by no one. This is the
+    # gate that makes the specification *checked* rather than *cited*.
+    #
+    # `tools/check-lean-conformance.sh` is the single entry point: it builds the Lean library, refuses
+    # a `sorry`, requires `Rchain.lean` to import every module, builds the Coq, re-emits the
+    # conformance corpora from the Lean definitions and refuses a stale one, runs the Rust consumers
+    # 1:1 against them, and runs the static protocol/channel-balance audits.
+    name: Formal specification (Lean, Coq, conformance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Coq
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y coq
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+
+      - name: Install elan (the Lean toolchain comes from spec/lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the mathlib cache
+        working-directory: spec
+        run: lake exe cache get
+
+      - name: Formal gate
+        run: tools/check-lean-conformance.sh
+
+  coverage:
+    name: Coverage measurement and floor
+    runs-on: ubuntu-latest
+    # **This job had no ceiling at all** until now. `llvm-cov` over the whole workspace is the single
+    # longest thing this repository runs, and an unbounded job is one that can hold a runner for hours
+    # without anyone being told. 90 minutes is roughly the measured cost plus headroom for a cold
+    # cache; a run that exceeds it is a regression worth seeing rather than a run worth waiting for.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6db3a280da9eee4283c045c7431ab5116f1a0089 # cargo-llvm-cov
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Coverage
+        # The measurement, the per-file ranking and the floor are emitted to `spec/COVERAGE-LEDGER.md`
+        # by `tools/emit-coverage-ledger.sh`, and check 11 of `tools/audit-test-register.sh` recomputes
+        # `floor = floor(measured) - 2` from the committed lcov, so this line and the ledger cannot
+        # drift. The floor is a regression tripwire, not a target: it is raised only *after* measuring.
+        #
+        # The line and function floors, and why the second is a *function* floor (AUDIT C107): the
+        # audit's item asked for `--branch`, and the toolchain refuses it (`-Z coverage-options=branch`
+        # on the pinned 1.95.0), so the closest instrument available is function coverage.
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
+  instruments:
+    name: Instrument harness (each gate against its own defect)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+
+      - name: Instrument harness
+        # **`--shared-tree-ok` because CI's checkout *is* the primary one.** The flag exists for a tree
+        # nobody else is writing, which is exactly what a CI runner is; in a working tree shared with
+        # another session it must not be passed, and the harness refuses without it (`C159`'s guard).
+        #
+        # This gate is the one that found C159 — a hard class that listed every violation it found and
+        # counted none — so it is not decoration. It is also 23 whole-gate runs, serially, which is why
+        # it is here and not on the push path.
+        run: tools/audit-instruments.sh --shared-tree-ok

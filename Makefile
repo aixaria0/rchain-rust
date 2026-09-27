@@ -13,7 +13,7 @@
 # `shared/src/lmdb.rs` and `rspace/src/state/exporters.rs` are silently skipped without it, which is
 # how they escaped local runs while CI (`--all-features`) still exercised them.
 
-.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec
+.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec deep
 
 test: test-all
 
@@ -44,6 +44,20 @@ check-register:
 # runs, and what a change to `spec/` must satisfy before it is a change to the specification.
 check-lean:
 	tools/check-lean-conformance.sh
+
+# The deep gates, on demand — the same three the nightly runs, in the same order of cost.
+#
+# **Do not run this per change.** `check-lean` is ~104 serial `cargo test` invocations behind a Lean
+# build that is 16 minutes cold; `coverage` moves the whole workspace through an instrumented codegen
+# profile, so it reuses none of the warm `test` cache; and the instrument harness plants a defect per
+# gate and runs the whole gate 24 times. Each is a thing to run at the end of a body of work, or to
+# leave to `.github/workflows/nightly.yml`.
+#
+# What *is* per change: `cargo test -p <crate> <filter>` (0.2–2 s warm), `cargo fmt --all --check`,
+# and the two static gates — `tools/audit-type-system.sh` (31 s) and `tools/audit-test-register.sh`
+# (70 s, mostly the lcov parse). See `docs/src/contributor/laws-to-rust.md:119-128`.
+deep: check-lean coverage
+	tools/audit-instruments.sh --shared-tree-ok
 
 # Coverage. CI (`.github/workflows/coverage.yml`) has always run the whole workspace with
 # `--all-features` and no exclusions, and is green on every PR — so the crypto crate is *not* flaky

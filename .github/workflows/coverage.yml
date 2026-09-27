@@ -17,19 +17,18 @@ permissions:
   contents: read
 
 jobs:
-  test-and-coverage:
+  test-and-audit:
     runs-on: ubuntu-latest
+    # A ceiling, because this job had none: an unbounded job is one that can hold a runner for hours
+    # without anyone being told. The heavy measurement is the nightly's now, and 45 minutes is the
+    # suite plus the two static gates with headroom for a cold cache.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@6db3a280da9eee4283c045c7431ab5116f1a0089 # cargo-llvm-cov
 
       - name: Type-system audit gate
         run: tools/audit-type-system.sh
@@ -60,39 +59,11 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
-      - name: Coverage
-        # llvm-cov executes the complete workspace test suite while collecting coverage, so this
-        # is both the test gate and the coverage gate. Keep one test execution path to avoid
-        # spending CI time running the same suite twice.
-        # The floor is a regression tripwire, not a target: it is raised only *after* measuring, to
-        # two points below the measured value, so it can never become a schedule. The number below
-        # is no longer remembered here -- the measurement, the per-file ranking and this floor are
-        # emitted to `spec/COVERAGE-LEDGER.md` by `tools/emit-coverage-ledger.sh`, and check 11 of
-        # `tools/audit-test-register.sh` recomputes `floor = floor(measured) - 2` from the committed
-        # lcov, so this line and the ledger cannot drift apart.
-        # Measurement history, written without the sign as a record: 73.68 => 71 (Stages 0-2),
-        # 79.69 => 77 (Stages 3-4), 81.30 => 79 (the low-coverage sweep), 84.07 => 82 (the census
-        # sweep), 86.77 => 84 (the coverage pass: the emitted ledger, and the node's read surface
-        # pinned route by route), 87.22 => 85 (the same pass, after its first batches: the
-        # `eval_method` arms and refusal tables, the http system process, the gateway carrier),
-        # 87.60 => 85 (autopropose, the message variants, the number-channel refusals),
-        # 87.95 => 85 (the merge's entry point, the deploy service's delegations),
-        # 88.02 => 86 (the export traversal's second level, proposeResult's arms),
-        # 88.62 => 86 (the merge's block index, NodeRunning's dispatch),
-        # 88.87 => 86 (the codecs' decode halves, the UPnP device report, the normalizer refusals),
-        # 89.14 => 87 (the reporting replay and its system deploy, the OpenAPI document).
-        #
-        # **The function floor, and why it is a function floor** (AUDIT C107). The audit's item asked
-        # for `--branch`; the measurement says the toolchain refuses it (`-Z coverage-options=branch`
-        # on the pinned 1.95.0 stable), so the closest instrument available is function coverage — 7249
-        # of 8809 functions hit, 82.29%, measured from the lcov's own `FNF:`/`FNH:` records and emitted
-        # to `spec/COVERAGE-LEDGER.md` by the same script and the same rule as the line floor. It is
-        # here rather than in the ledger's prose for the same reason the line floor is: check 11
-        # recomputes it from the committed measurement, so this number and the ledger cannot drift.
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
+      - name: Test
+        # The suite, **uninstrumented**. `cargo llvm-cov` is how coverage is *measured*, and it moves
+        # the whole workspace through a codegen profile of its own to do it — so running it per push
+        # meant every push paid for a full instrumented rebuild to learn what a plain `cargo test`
+        # already answers. Correctness is a per-push gate; coverage is a nightly measurement, and the
+        # floors it enforces live with the nightly job.
+        run: cargo test --workspace --all-features
