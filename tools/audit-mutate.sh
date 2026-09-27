@@ -210,6 +210,17 @@ else
   verdict="red"
 fi
 
+# `--test` is a *filter on test names*, not a target selector — `--test lean_parse_corpus` selects
+# nothing, because the tests in that target are named `the_node_parser_agrees_with_the_lean_model` and
+# `the_printers_output_round_trips_through_the_node`. The run then reports `ok. 0 passed; 0 failed; N
+# filtered out` and the verdict is a green over zero tests, which is the failure this whole audit keeps
+# finding and the one I hit myself: every corpus row I probed this way came back "green" for the wrong
+# reason. A run where nothing ran is not evidence, so it is refused rather than reported.
+if ! printf '%s' "$out" | grep -E '^test result:' | grep -qvE '0 passed; 0 failed'; then
+  printf '%s\n' "$out" | grep -E '^test result:' | head -3 | sed 's/^/    /'
+  die "the filter '$TEST' matched no test in any target — nothing ran, so there is no verdict"
+fi
+
 # The pass criterion, and it is not "a witness went red". It is "**the row's own declared witness** went
 # red". A module-wide run that reddens some other row's witness is not evidence for this row, and the
 # loose criterion records the opposite of the truth: C149 is the demonstration — law 46's declared
@@ -290,6 +301,10 @@ if [[ "$verdict" == "red" ]]; then
 else
   printf '%s\n' "$out" | grep -E '^(test .* FAILED|failures:|assertion|thread .* panicked|error)' | head -8 | sed 's/^/    /'
 fi
+# Always show every target's run summary. A green is only evidence if tests ran, and "0 passed;
+# 0 failed; 12 filtered out" is a green that means the filter matched nothing — the failure this whole
+# audit keeps finding, and the one a verdict line cannot show.
+printf '%s\n' "$out" | grep -E '^test result:' | sed 's/^/    ran: /'
 printf '  restored: %s file(s) at their pre-plant sha256\n' "${#pl_shas[@]}"
 
 [[ "$verdict" == "red" ]] && exit 0
