@@ -101,9 +101,9 @@ uses for its own boundary.
 * **It does not measure the depth of a review beyond the tier floor.** `deep` requires a resolving
   `path:symbol` and an evidence cell naming a falsifier or a C-number; it cannot tell a careful read from
   a fast one.
-* **The site roster is authored, not derived.** Of the 753 counted type-system sites the gate ratchets, a `site` row exists only where someone read one. The *class*
+* **The site roster is authored, not derived.** Of the 754 counted type-system sites the gate ratchets, a `site` row exists only where someone read one. The *class*
   rows carry the totals; a cleared class is only honest when every site in it has a site row.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at 18935492d.*
+*Emitted from a tree at 98d4a63f4.*

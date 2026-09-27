@@ -54,6 +54,21 @@
 # written `saturating_add`, so it adds no site — a ratchet is for sites someone reviewed, and that one
 # needs no review.
 #
+# div 53 -> 54 (AUDIT C143's message, reviewed and raised 2026-09-27). The site is
+# `node/src/configuration/configuration.rs:288`, and it is **not a division at all**: it is the
+# substring `HTTP/2` inside the multi-line `format!` that refuses the nine settings this port parses
+# and enforces nowhere. The pattern is `[a-zA-Z0-9_)]+[[:space:]]*[/%][[:space:]]*[a-zA-Z0-9_(]`, so
+# `P/2` in a protocol name reads as one — the class the gate cannot judge, exactly as the
+# `stats.calls % 250` throttle above does. **Raise rather than fix**: the honest fixes are to respell
+# the protocol ("HTTP 2") in operator-facing text, which makes the message worse, or to teach the
+# pattern that `HTTP/` is a name, which is a rule about prose and not about arithmetic. The stripper
+# is why this arrives here rather than being filtered: it empties *single-line* string literals
+# (`gsub(/"[^"]*"/, "")`, and its own comment records the approximation), so a `\`-continued literal
+# spanning five lines keeps the lines that hold no closing quote. Measured: this commit's C142 change
+# moves nothing, and the count was re-measured at `a3f850747^` (53, green) and `a3f850747` (54), which
+# is where the site arrived — the rise was carried by a commit that touched no arithmetic and did not
+# re-run the gate, the failure mode the paragraph above about PR #67 records twice already.
+#
 # div 50 -> 53 (AUDIT C113), raised deliberately. The three are the aggregate stream budget's own
 # arithmetic in `comm/src/transport/grpc_transport_receiver.rs`: `content_data.len().div_ceil(unit)`
 # and its two companions `stream_byte_budget(..) / STREAM_BUDGET_UNIT` in the test and production
@@ -67,5 +82,5 @@ cast	336
 lax	10
 get	0
 index	313
-div	53
+div	54
 overflow	41

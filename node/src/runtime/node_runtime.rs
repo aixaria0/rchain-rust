@@ -442,19 +442,19 @@ impl NodeProgram {
                 .parse::<std::net::SocketAddr>()
                 .map_err(|e| e.to_string())?;
 
-        let grpc_external = tokio::spawn(serve_deploy(
+        let mut grpc_external = tokio::spawn(serve_deploy(
             deploy,
             grpc_external_addr,
             grpc_max_recv_message_size,
         ));
-        let grpc_internal = tokio::spawn(serve_internal(
+        let mut grpc_internal = tokio::spawn(serve_internal(
             propose,
             repl,
             grpc_internal_addr,
             grpc_max_recv_message_size,
         ));
 
-        let http = tokio::spawn({
+        let mut http = tokio::spawn({
             let host = host.clone();
             async move {
                 // No gateway here: the cross-shard transaction routes are on the admin listener, which
@@ -475,7 +475,7 @@ impl NodeProgram {
             }
         });
 
-        let admin = tokio::spawn({
+        let mut admin = tokio::spawn({
             let host = host.clone();
             async move {
                 // The admin HTTP server hosts the **unauthenticated** `/api/propose`, which triggers
@@ -504,28 +504,34 @@ impl NodeProgram {
             }
         });
 
+        // Every one of these is an accept loop: it returns only when something has already gone
+        // wrong (a failed bind, a panicking task, a listener closing), so the **first** completion is
+        // the fact the operator needs. `join!` waited for all five instead, and since four of them
+        // never return, a listener whose bind failed — its task ending with `Err` at once — left the
+        // join pending forever while the node ran with a dead component and logged nothing at all
+        // (AUDIT C142). `select!` reports the first exit, and `listener_stopped` names it.
         if let Some(protocol) = protocol_server {
-            let protocol = tokio::spawn(async move {
+            let mut protocol = tokio::spawn(async move {
                 protocol
                     .server
                     .serve(protocol.dispatch, protocol.handle_streamed)
                     .await
             });
-            let (ge, gi, h, a, p) =
-                tokio::join!(grpc_external, grpc_internal, http, admin, protocol);
-            ge.map_err(|e| e.to_string())??;
-            gi.map_err(|e| e.to_string())??;
-            h.map_err(|e| e.to_string())??;
-            a.map_err(|e| e.to_string())??;
-            p.map_err(|e| e.to_string())??;
+            tokio::select! {
+                r = &mut grpc_external => listener_stopped("deploy gRPC listener", r),
+                r = &mut grpc_internal => listener_stopped("internal gRPC listener", r),
+                r = &mut http => listener_stopped("HTTP listener", r),
+                r = &mut admin => listener_stopped("admin HTTP listener", r),
+                r = &mut protocol => listener_stopped("protocol listener", r),
+            }
         } else {
-            let (ge, gi, h, a) = tokio::join!(grpc_external, grpc_internal, http, admin);
-            ge.map_err(|e| e.to_string())??;
-            gi.map_err(|e| e.to_string())??;
-            h.map_err(|e| e.to_string())??;
-            a.map_err(|e| e.to_string())??;
+            tokio::select! {
+                r = &mut grpc_external => listener_stopped("deploy gRPC listener", r),
+                r = &mut grpc_internal => listener_stopped("internal gRPC listener", r),
+                r = &mut http => listener_stopped("HTTP listener", r),
+                r = &mut admin => listener_stopped("admin HTTP listener", r),
+            }
         }
-        Ok(())
     }
 }
 
@@ -1117,6 +1123,30 @@ async fn build_gateway(
     });
 
     Ok(Some(gateway))
+}
+
+/// The first of the node's listeners to stop, named for the operator — [`NodeProgram::serve`].
+///
+/// Every listener is an accept loop, so *any* completion is fatal: an `Ok(())` means a loop that was
+/// supposed to run forever has returned, and an `Err` is the failed bind this exists for. The name is
+/// the point. A node that loses a listener has to say *which* one, because "the node is up but not
+/// answering on the API port" is exactly the failure an operator cannot diagnose from silence
+/// (AUDIT C142: the running node answered its health check from the *other* node on the port, and its
+/// own log ended at `Making a transition to Running state.` with no error, panic or bind line).
+///
+/// `JoinError` is separated from the listener's own `Err` on purpose: a task that panicked and a bind
+/// that was refused are different faults, and reporting the second as the first hides the panic.
+fn listener_stopped(
+    name: &str,
+    joined: Result<Result<(), String>, tokio::task::JoinError>,
+) -> Result<(), String> {
+    match joined {
+        Ok(Ok(())) => Err(format!(
+            "the {name} stopped serving — an accept loop returned, so this node is not answering there"
+        )),
+        Ok(Err(e)) => Err(format!("the {name} failed: {e}")),
+        Err(e) => Err(format!("the {name} task ended: {e}")),
+    }
 }
 
 /// One member shard's assembled state: its handles plus the channel the peer-message router feeds.
