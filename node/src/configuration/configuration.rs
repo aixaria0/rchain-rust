@@ -49,11 +49,31 @@ impl Configuration {
     /// 4th return value in Scala) is not carried: the reporter switches are checked here instead —
     /// refused or noted, never left as settings nothing reads (`check_metrics_config`, AUDIT §6).
     pub fn build(options: &Options) -> Result<(NodeConf, Profile, Option<PathBuf>), String> {
+        // **An unrecognised `--profile` is refused, not silently replaced by the default** (AUDIT C147).
+        // The profile is the whole of the decision about where a node's data lives, and the default's
+        // directory is `$HOME/.rnode` — so the docs' own command (`--profile docker`, one keystroke from
+        // `docer`) typo'd starts the node on a *fresh, empty* data directory: a restart that looks like
+        // data loss or an unexpected re-genesis, with nothing naming the profile. A refusal names both
+        // the name it did not recognise and the ones it has, which is the whole of the fix. (Whether the
+        // oracle falls back here is not established — typesafe-config's `--profile` selects a *file*, and
+        // the Scala's behaviour on a name with no file is unrecorded — so this refuses on the port's own
+        // ground: a silent change of data directory is the class this register exists for.)
         let profile = match &options.profile {
             Some(name) => profiles()
                 .into_iter()
                 .find(|p| &p.name == name)
-                .unwrap_or_else(default_profile),
+                .ok_or_else(|| {
+                    let known: Vec<String> = profiles()
+                        .iter()
+                        .map(|p| format!("'{}' ({})", p.name, p.data_dir.display()))
+                        .collect();
+                    format!(
+                        "unknown profile '{name}': this port has {}. Refusing rather than falling back \
+                         to '{}', whose data directory is different",
+                        known.join(", "),
+                        default_profile().name
+                    )
+                })?,
             None => default_profile(),
         };
 
@@ -219,11 +239,14 @@ fn escape_hocon_string(s: &str) -> String {
 
 /// Parse the bundled `defaults.conf` with `default-data-dir` injected (port of the
 /// `ConfigSource.resources("defaults.conf").withFallback(...)` default source).
+///
+/// **`strict()` is load-bearing** (AUDIT C141) — see [`parse_file`] for what it prevents.
 pub fn parse_defaults(data_dir: &str) -> Result<Hocon, String> {
     let defaults = include_str!("defaults.conf");
     let escaped = escape_hocon_string(data_dir);
     let combined = format!("default-data-dir = \"{escaped}\"\n{defaults}");
     hocon::HoconLoader::new()
+        .strict()
         .load_str(&combined)
         .map_err(|e| e.to_string())?
         .hocon()
@@ -231,8 +254,24 @@ pub fn parse_defaults(data_dir: &str) -> Result<Hocon, String> {
 }
 
 /// Parse a user HOCON config file.
+///
+/// **`strict()` is load-bearing, and this is the operator-facing half of AUDIT C141.** hocon 0.9's
+/// loader is **non-strict by default**: its parser stops at the first syntax error and returns `Ok` with
+/// everything after that point *discarded* — no error, no warning, not even a log line. So an operator
+/// who leaves an unbalanced brace, or who edits the exported `shards = [...]` array and drops a line,
+/// gets a node running on **defaults for every key below the error**, and the keys most likely to be
+/// below it are the ones the file exists for: `casper.shards` and the per-shard genesis data cannot be
+/// addressed from the command line at all (`docs/src/node/operating.md` — "File-configured"), so
+/// reverting them means an ordinary single-shard `/root` node with default genesis parameters — a
+/// *different chain*, and on a fresh data dir there is no shard-id mismatch to catch it. The asymmetry
+/// is the tell: a *type* error in the same file is reported legibly by the same pipeline, so the error
+/// path reads as exercised while the syntax path is not.
+///
+/// With `strict()`, hocon returns `Err("file could not be parsed completely")` instead, which the caller
+/// reports as a configuration error.
 pub fn parse_file(path: &PathBuf) -> Result<Hocon, String> {
     hocon::HoconLoader::new()
+        .strict()
         .load_file(path)
         .map_err(|e| e.to_string())?
         .hocon()
@@ -528,6 +567,102 @@ mod tests {
     }
 
     /// Parse a HOCON fragment, for the shard-membership tests below.
+    /// **The regression test for AUDIT C147.** A `--profile` is the only thing that decides where a
+    /// node's data directory lives, and an unrecognised name used to be replaced by the default profile
+    /// in silence — whose directory is `$HOME/.rnode`. The docs' own command is `--profile docker`, one
+    /// keystroke from `docer`, so an operator's typo started the node on a *fresh, empty* data
+    /// directory: what looks like data loss or an unexpected re-genesis, with nothing naming the
+    /// profile. The control keeps the refusal honest — both names this port has must still build, so
+    /// this is a refusal about the *name* and not about profiles in general.
+    #[test]
+    fn an_unknown_profile_is_refused_rather_than_replaced_by_the_default() {
+        use crate::configuration::commandline::options::Options;
+        use clap::Parser as _;
+
+        // `--profile` is a *global* option, so it precedes the subcommand — which is how the docs spell
+        // it (`rnode --profile docker run -s …`), and why this test builds its argv rather than using
+        // `build_run` (whose flags land after `run`).
+        let dir = std::env::temp_dir().join(format!("rnode-c147-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let build = |profile: &str| {
+            let options = Options::parse_from([
+                "rchain",
+                "--profile",
+                profile,
+                "run",
+                "--data-dir",
+                &dir.to_string_lossy(),
+            ]);
+            Configuration::build(&options).map(|(conf, _, _)| conf)
+        };
+
+        let err = build("docer").expect_err(
+            "an unknown profile must be refused — the fallback moves the node's data directory",
+        );
+        assert!(
+            err.contains("unknown profile") && err.contains("docer"),
+            "the refusal must name the profile it did not recognise: {err}"
+        );
+
+        for name in ["default", "docker"] {
+            assert!(
+                build(name).is_ok(),
+                "the profile '{name}' must still build, so the refusal is about the name and not \
+                 about profiles in general"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The regression test for AUDIT C141.** A config file whose first line is valid and whose second
+    /// is not must be **refused**, not parsed up to the error: the loader is non-strict by default and
+    /// answers `Ok` with everything after the syntax error discarded, so the keys below it silently
+    /// revert to their defaults — and for `casper.shards` and the per-shard genesis data, addressable
+    /// only from this file, "reverts to the default" means a node on a different chain.
+    ///
+    /// Three cases, because the *shape* of the failure is what the row demonstrated: junk first (the
+    /// valid key after it was dropped and the node came up on defaults), junk last (the same defect seen
+    /// from the other end, and the one an operator creates by dropping a line from an array), and the
+    /// control — so a refusal below cannot be the loader refusing everything.
+    #[test]
+    fn a_config_file_with_a_syntax_error_is_refused_not_truncated() {
+        let dir = std::env::temp_dir().join(format!("rnode-c141-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let write = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).expect("write config");
+            p
+        };
+
+        let good = write("good.conf", "api-server { port-http = 40403 }\n");
+        assert!(
+            parse_file(&good).is_ok(),
+            "the control: a valid config file must still parse"
+        );
+
+        let junk_first = write(
+            "junk-first.conf",
+            "this is = = not hocon [[[\napi-server { port-http = 1 }\n",
+        );
+        let err = parse_file(&junk_first).expect_err(
+            "a file that is not entirely HOCON must be refused — everything after the syntax error \
+             would otherwise be dropped without a word (AUDIT C141)",
+        );
+        assert!(!err.is_empty(), "and the refusal must say something: {err}");
+
+        let junk_last = write(
+            "junk-last.conf",
+            "api-server { port-http = 1 }\nshards = [\n",
+        );
+        assert!(
+            parse_file(&junk_last).is_err(),
+            "an unterminated array must be refused, not cut off at the bracket"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn parse_hocon_str(s: &str) -> Hocon {
         hocon::HoconLoader::new()
             .load_str(s)

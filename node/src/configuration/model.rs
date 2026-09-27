@@ -113,7 +113,9 @@ pub struct Storage {
     pub data_dir: PathBuf,
 }
 
-/// The Kamon reporter switches (`metrics.*`, AUDIT C315), kept so a Scala-shaped config still parses.
+/// The Kamon reporter switches (`metrics.*`, AUDIT §6's metrics row), kept so a Scala-shaped config
+/// still parses — the reporters it cannot honour are refused at startup and `prometheus` is accepted
+/// with a note, which is what that row records.
 ///
 /// Kamon is not part of this port: `GET /metrics` always serves Prometheus text, and there is no
 /// InfluxDB or UDP sender, no Zipkin span reporter and no Sigar collector. `Configuration::build`

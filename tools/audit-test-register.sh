@@ -969,11 +969,30 @@ pointer_subject_ok() {
   [[ -n "$shared" ]]
 }
 
-# The sources: `spec/`'s prose and the Lean modules — not the two emitted renderings.
+# The sources: `spec/`'s prose and the Lean modules — not the two emitted renderings — **plus the source
+# tree that cites them** (AUDIT C146). Two files an operator reads, `node/src/configuration/model.rs` and
+# `defaults.conf`, cited a `C315` that was never allocated, while this check printed OK: a citation in
+# `node/src/**` was outside its subject, so the register's cross-reference discipline was unenforced
+# outside `spec/` and the tree could accumulate pointers to findings that do not exist.
+#
+# Widening it was measured before it was made: `grep -rn 'AUDIT (C|§)' node/src` returns `C121`, `C112`,
+# `C141`, `C147`, `C38`, `C81`, `C61`, `C67`, `C46` and the two §8 references — every one allocated — so
+# the widened check passes on this tree and fails the moment a new dangling pointer lands. The `*` glob
+# does not match `.claude/`, so a worktree inside the repo is not scanned.
+#
+# One consequence, found by widening it: **a row that *describes* a dangling pointer has to contain
+# one**, so C146's row — whose whole subject is a `C 315` that resolves to nothing — is itself a
+# citation to a number the allocator does not list. The register's convention is a space after the `C`
+# (this check requires the digits to follow it immediately), which is how that row and `defaults.conf`
+# already spell it, and the C146 note says so in as many words rather than leaving the reader to
+# wonder why the number looks like that.
 pointer_sources=()
 while IFS= read -r f; do pointer_sources+=("$f"); done < <(
-  { ls "$ROOT"/spec/*.md 2>/dev/null; find "$ROOT/spec/Rchain" -name '*.lean' 2>/dev/null; } \
-    | grep -vE '/(LAWS\.md|COVERAGE-LEDGER\.md)$' | sort -u
+  { ls "$ROOT"/spec/*.md 2>/dev/null
+    find "$ROOT/spec/Rchain" -name '*.lean' 2>/dev/null
+    find "$ROOT"/*/src -name '*.rs' 2>/dev/null
+    ls "$ROOT"/node/src/configuration/defaults.conf 2>/dev/null
+  } | grep -vE '/(LAWS\.md|COVERAGE-LEDGER\.md)$' | sort -u
 )
 
 # --- family A, tiers 1 and 2: C-number references in prose ------------------------
