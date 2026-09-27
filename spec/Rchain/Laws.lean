@@ -1249,6 +1249,7 @@ def laws : List Law := [
       `Rchain.the_pool_derived_map_moves_where_the_states_does_not],
     rust := ["casper/src/multi_parent_casper.rs", "casper/src/runtime_manager.rs",
       "rholang/src/native_state.rs"],
+    rustWitness := ["casper/tests/consensus.rs:the_bond_cache_is_the_active_pos_state_and_a_differing_one_is_refused"],
     witness := [`Rchain.a_bond_change_between_justifications_is_refused,
       `Rchain.a_bond_does_not_move_the_map_the_gates_read],
     falsifiable := some "the two sources of the bonds map disagree exactly when the bond set moves across \
@@ -1955,6 +1956,7 @@ def laws : List Law := [
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
     status := .provedModel,
     rust := ["rholang/src/normalizer.rs"],
+    rustWitness := ["rholang/src/normalizer.rs:law36_normalization_preserves_closedness"],
     declarations := [`Rchain.ScopedIn, `Rchain.an_unscoped_name_occurrence_is_open,
       `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult, `Rchain.closed_normalizeAt,
       `Rchain.closed_procsPar, `Rchain.closed_namesPar, `Rchain.closed_namePar,
