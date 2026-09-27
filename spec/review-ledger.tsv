@@ -552,7 +552,7 @@ law	33	T3	deferred	-	-	-	-	-	-
 law	34	T3	deferred	-	-	-	-	-	-
 law	35	T3	deferred	-	-	-	-	-	-
 law	36	T3	deferred	-	-	-	-	-	-
-law	37	T3	deferred	-	-	-	-	-	-
+law	37	T1	cleared	deep	-	-	rholang/src/matcher/spatial_matcher.rs:spatial_match_core	-	mutation sweep: making the ground-pattern short-circuit answer every target turned the row's declared Rust witness `law5_a_ground_pattern_matches_only_itself` FAILED, so the port-side evidence is real. Scope: only the short-circuit was mutated — the set/map length guard and the remainder arms, which the Lean side names, were not independently deleted
 law	38	T3	deferred	-	-	-	-	-	-
 law	39	T3	deferred	-	-	-	-	-	-
 law	40	T3	deferred	-	-	-	-	-	-
@@ -561,13 +561,13 @@ law	42	T3	deferred	-	-	-	-	-	-
 law	43	T3	deferred	-	-	-	-	-	-
 law	44	T1	cleared	deep	-	-	rholang/src/native_state.rs:is_epoch_boundary	-	mutation sweep: making every block an epoch boundary turned 2 of the row's 3 witnesses red. The off-boundary arm is the one that carries it; the reward-split witnesses were not independently mutated
 law	45	T1	cleared	deep	-	-	rholang/src/native_state.rs:epoch_divisor	-	mutation sweep: forcing the epoch divisor to 1 (every block a boundary) turned 2 witnesses red. Law 46 shares the pot-split witness and was not separately mutated
-law	46	T3	deferred	-	-	-	-	-	-
+law	46	T1	finding	deep	-	-	rholang/src/native_state.rs:epoch_reward C149	-	the row's declared witness is vacuous: the fixture bonds two validators at 4 and 5 against `minimum_bond: 3`, so `bond / minimum_bond` is 1 for both and the proportionality factor under test is the identity — deleting it (`scaled = i128::from(pot)`) leaves `an_epoch_splits_the_pot_and_keeps_the_dust` GREEN. `a_released_withdrawal_pays_the_bond_plus_the_committed_rewards`, which is law 47's witness, catches the mutation (`34 passed; 1 failed` in the module), so the mechanism is covered and the pointer is what is wrong. Unlike C118/C138/C139/C140 the assertion here is two-sided and exact; the fixture's parameters are what collapse the term
 law	47	T1	cleared	deep	-	-	rholang/src/native_state.rs:withdraw	-	mutation sweep: both an immediate deadline and an unstaged withdrawal turned 3 witnesses red, so the row is falsified from two directions
 law	48	T3	deferred	-	-	-	-	-	-
 law	49	T1	cleared	deep	-	-	rholang/src/storage.rs:refund_storage	-	mutation sweep: disabling the consume-storage refund made this witness FAIL. The produce-removal refund in the same function was not separately mutated
 law	4a	T3	deferred	-	-	-	-	-	-
 law	4b	T3	deferred	-	-	-	-	-	-
-law	5	T3	deferred	-	-	-	-	-	-
+law	5	T1	cleared	deep	-	-	rholang/src/matcher/spatial_matcher.rs:spatial_match	-	mutation sweep: turning the linearity refusal into a fall-through turned `law5_a_pattern_that_binds_a_variable_twice_never_matches` FAILED while its sibling `law5_a_pattern_that_binds_distinct_variables_matches` stayed green — so the negative arm carries the law and the positive control is not collaterally broken. Scope: only the refusal was mutated; `par_set` canonicalisation and the `.._` remainder arms were not
 law	50a	T1	cleared	deep	-	-	rholang/src/parser.rs:with_depth	-	mutation sweep: removing the parser's recursion guard alone fails only rejects_excessive_nesting_depth, which no law row names — and that is CORRECT, because the row's own witness is named for the composition: with BOTH guards off, rejects_a_deep_ast_that_stays_inside_both_component_guards fails as its name says. A two-guard row where neither half alone is sufficient, like law 28
 law	50b	T1	cleared	deep	-	-	models/src/types.rs:exceeds_value_depth	-	mutation sweep: a walk that never exceeds anything made this witness FAIL, caught by its one-past-the-limit arm. A first attempt that neutered the ASSERTION rather than the mechanism proved nothing and is recorded here as the trap it is: weakening a test's own claim is not a mutation of the code
 law	6	T1	cleared	deep	-	-	models/src/types.rs:is_closed	-	mutation sweep: an is_closed that answers true for everything turned 2 witnesses red, caught by the row's negative arm (an open term must NOT be closed). A predicate with only its positive arm would have been vacuous
