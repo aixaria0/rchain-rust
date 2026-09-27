@@ -203,9 +203,11 @@ port keys balances by address and takes the caller's own `deployerId`:
   *deterministic and replayable* — in the contract it is a `new` name, i.e. drawn from the deploy's
   RNG — so the native call would have to thread the deploy's random seed and persist
   `address → unforgeable` alongside `unforgeable → balance`, and `transfer`/`getBalance` would change
-  shape for every client. The reply-shape deviation is already recorded where a client would meet it:
-  `spec/API-SCHEMA.md`'s `rho:rchain:revVault` row is marked ❌ open for exactly this reason, and law
-  39's doc tie keeps that row honest.
+  shape for every client. The reply-shape deviation was recorded where a client would meet it:
+  `spec/API-SCHEMA.md`'s `rho:rchain:revVault` row — **❌ open when this paragraph was written, and ✅
+  since 2026-09-27**, because the capability landed: `findOrCreate` returns a minted handle and a handle
+  spends, while the classic shapes are unchanged so no client moves. Law 39's doc tie keeps that row
+  honest.
 
 **Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
 (`legacy/node/src/main/scala/coop/rchain/node/revvaultexport/`, seven files — the rho-trie traverser, the

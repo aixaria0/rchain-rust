@@ -1872,22 +1872,29 @@ impl SystemProcesses {
     // --- native vault ----------------------------------------------------
 
     /// `rho:rchain:revVault` — native method dispatch over the vault balance map.
-    /// The `rho:rchain:multiSigRevVault` handler.
+    /// The `rho:rchain:multiSigRevVault` **native fixed channel** handler.
     ///
     /// **It refuses, and the refusal is the fix** (AUDIT C114). This channel used to be wired to
     /// [`Self::rev_vault`] — the *single-signer* handler — so a deploy that put funds behind the
     /// multi-signature name got single-key custody: no quorum, no co-signers, no confirmation step,
-    /// and nothing said so. The multi-sig contract does exist
-    /// (`casper/src/genesis/resources/MultiSigRevVault.rho`, with `create`/`confirm`/quorum and a
-    /// sealer-unsealer) and is deliberately **not installed** — `casper/src/genesis/mod.rs` records
-    /// that the vendored sources are "a checklist and are not installed".
+    /// and nothing said so.
     ///
-    /// Two honest options existed: install the contract, or stop answering to its name. The first is a
-    /// consensus change on a minted-asset path and does not belong in a remediation pass. The second
-    /// costs nothing here, because nothing in the port reaches this channel — only the uninstalled
-    /// `.rho` sources and the legacy tree name it. What it buys is that a caller **cannot be misled**:
-    /// the channel previously provided a silently weaker guarantee than its name promised, which is
-    /// exactly what makes a custody bug invisible until funds are gone.
+    /// **The urn is served by the installed contract, and this handler is not that path** (AUDIT
+    /// C114's alternative, taken 2026-09-27). Two honest options existed — install the contract, or
+    /// stop answering to its name — and the first was taken once the remediation pass closed and
+    /// there was no genesis block to break: `casper/src/genesis/mod.rs:248` installs
+    /// `MultiSigRevVault.rho` (adapted), and `GENESIS_ALIASES` maps this shorthand to
+    /// `GenesisAliasSource::Contract`, so **`rho:registry:lookup` on this urn returns the
+    /// multi-signature contract**. What still refuses is the *native fixed channel* of the same name,
+    /// reached by binding the urn directly as a name rather than looking it up.
+    ///
+    /// Keeping that refusal is deliberate: the fixed channel answers no method directly, because
+    /// binding a name to it is exactly the shape that used to yield silently weaker custody. The
+    /// message below therefore names the path that *does* work, rather than claiming the capability is
+    /// absent — the earlier wording said "this node does not install the multi-signature vault
+    /// contract", which stopped being true when the contract was installed, and a refusal that
+    /// misdirects a caller is the same class of defect as the one this handler exists to fix.
+    /// `the_fixed_channel_refusal_points_at_the_installed_contract` pins that.
     fn multi_sig_rev_vault(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         Box::new(move |args: Vec<ListParWithRandom>, _path: DfsPath| {
@@ -1904,10 +1911,14 @@ impl SystemProcesses {
                 let op = RhoString::unapply(op)
                     .ok_or_else(|| illegal_arg("multiSigRevVault method must be a string"))?;
                 Err(illegal_arg(&format!(
-                    "multiSigRevVault: '{op}' is not available — this node does not install the \
-                     multi-signature vault contract (casper/src/genesis/resources/MultiSigRevVault.rho), \
-                     so there is no quorum, no co-signers and no confirmation step. Use \
-                     `rho:rchain:revVault`, which is single-key custody and is named for it."
+                    "multiSigRevVault: '{op}' is not available on the native fixed channel. The \
+                     multi-signature vault contract (casper/src/genesis/resources/MultiSigRevVault.rho) \
+                     **is** installed at genesis and this urn's registry alias resolves to it — reach \
+                     it with `rho:registry:lookup!(`rho:rchain:multiSigRevVault`, *ch)` and call the \
+                     contract you get back, which has the quorum, the co-signers and the confirmation \
+                     step. Binding this urn as a name gets the fixed channel, which answers no method: \
+                     that binding used to return single-key custody under a multi-signature name. For \
+                     single-key custody, `rho:rchain:revVault` is named for it."
                 )))
             })
         })
@@ -2430,6 +2441,52 @@ mod tests {
         let bad = arity_mismatches(&unknown, &defs);
         assert_eq!(bad.len(), 1, "{bad:?}");
         assert!(bad[0].contains("no `Definition` installs it"), "{}", bad[0]);
+    }
+
+    /// **The fixed channel's refusal must point at the installed contract, not deny it exists**
+    /// (AUDIT C114).
+    ///
+    /// `rho:rchain:multiSigRevVault` is served two ways, and only one of them answers: the
+    /// **fixed channel** this handler owns (which refuses, deliberately), and the **registry alias**,
+    /// which `GENESIS_ALIASES` maps to the installed `MultiSigRevVault.rho` contract. The refusal's
+    /// old wording — "this node does not install the multi-signature vault contract … so there is no
+    /// quorum, no co-signers and no confirmation step" — became false the moment the contract was
+    /// installed, and it told a caller to give up on a capability the node has. This pins the
+    /// correction: the message must name the lookup path that works.
+    ///
+    /// It is a *string* assertion on purpose. The defect was a message that asserted something untrue
+    /// about the tree, and nothing else in the crate can catch that — the handler's behaviour (a
+    /// refusal) was right the whole time.
+    #[tokio::test]
+    async fn the_fixed_channel_refusal_points_at_the_installed_contract() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+        let multi_sig = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::MULTI_SIG_REV_VAULT)
+            .expect("the multi-sig fixed channel has a definition");
+
+        let err = (multi_sig.handler)(
+            vec![lpw(vec![
+                RhoString::apply("create".to_string()),
+                RhoList::apply(vec![]),
+            ])],
+            DfsPath::root(),
+        )
+        .await
+        .expect_err("the fixed channel answers no method directly");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("registry:lookup"),
+            "the refusal must name the path that reaches the contract: {msg}"
+        );
+        assert!(
+            !msg.contains("does not install"),
+            "the contract is installed at genesis, so the refusal must not say otherwise: {msg}"
+        );
     }
 
     fn lpw(pars: Vec<Par>) -> ListParWithRandom {
