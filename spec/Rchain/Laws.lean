@@ -767,7 +767,9 @@ def laws : List Law := [
       stream ending in empty slots. So the hash path's canonicity no longer rests on an assumption: the \
       only axioms left under `root_collision_free` are Law 19's hash idealization" },
   { number := 11, layer := "RSpace",
-    rustWitness := ["rspace/src/property_tests.rs:law11_a_replayed_script_matches_its_recording"],
+    rustWitness := ["rspace/src/property_tests.rs:law11_a_replayed_script_matches_its_recording",
+      "rspace/src/replay_rspace.rs:a_rigged_replay_matches_its_recorded_trace",
+      "rspace/src/replay_rspace.rs:a_rig_whose_comm_never_happens_is_reported"],
     statement := "Replay determinism: the port's replay check — every recomputed COMM has a recorded \
       occurrence **and** no recorded COMM is left unconsumed — holds exactly when the recomputation and \
       the recorded trace have the same COMM occurrences",
@@ -1390,6 +1392,9 @@ def laws : List Law := [
   { number := 19, layer := "Crypto",
     rustWitness := [
       "crypto/src/hash/blake2b512_random.rs:empty_gives_a_predictable_result",
+      "crypto/src/hash/blake2b512_random.rs:merge_with_two_children",
+      "crypto/src/hash/blake2b512_random.rs:merge_with_many_children",
+      "crypto/src/hash/blake2b512_random.rs:merge_is_order_sensitive",
       "crypto/src/signatures/secp256k1.rs:creates_known_ecdsa_signature",
       "crypto/src/signatures/secp256k1.rs:verifies_known_signature",
       "crypto/src/encryption/curve25519.rs:decrypts"],
@@ -1670,6 +1675,9 @@ def laws : List Law := [
       derivation *plus* a two-shard non-collision theorem — a design decision shared with the Scala" },
   { number := 27, layer := "Cross-shard",
     rustWitness := [
+      "casper/src/property_tests.rs:law27_a_legless_record_cannot_commit",
+      "casper/src/property_tests.rs:law27_an_abort_vote_prevents_a_later_commit",
+      "casper/src/property_tests.rs:law27_and_law29_the_state_agrees_with_the_votes",
       "casper/tests/cross_shard_txn.rs:two_shard_2pc_commits_all",
       "casper/tests/cross_shard_txn.rs:two_shard_2pc_aborts_all_when_a_leg_fails"],
     statement := "Cross-shard atomicity (2PC): every leg that *prepared* reaches the one decision the \
