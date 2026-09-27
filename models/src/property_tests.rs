@@ -126,6 +126,27 @@ proptest! {
         prop_assert_eq!(hash_of(&a), hash_of(&b), "equal canonical forms hash alike");
     }
 
+    /// **AUDIT C139 — the converse, without which law 2's hash half is not a falsifier.**
+    ///
+    /// The witness above asserts `equal ⇒ same hash`, which a **constant** `Hash` satisfies: replacing
+    /// `impl<S: Sort> Hash for Sorted<S>` with an empty body left both of law 2's witnesses green and
+    /// the whole `rchain-models` suite green — all 168 tests (measured). What a degenerate hash
+    /// violates is the other direction, so this is the property that has to be stated for the hash
+    /// half of the law to be falsifiable at all: canonical forms that are **not** equal must not hash
+    /// alike. `prop_assume!` drops the pairs whose *canonical* forms coincide (a par and its
+    /// unsorted spelling are the same value here), which is exactly the hypothesis the law carries.
+    #[test]
+    fn law2_unequal_canonical_forms_do_not_hash_alike(p in arb_proc_par(3), q in arb_proc_par(3)) {
+        let a = Sorted::new(p);
+        let b = Sorted::new(q);
+        prop_assume!(a != b);
+        prop_assert_ne!(
+            hash_of(&a),
+            hash_of(&b),
+            "unequal canonical forms must hash differently — otherwise the hash carries no information"
+        );
+    }
+
     /// Sorting a *sequence* of pars is order-insensitive in the same way: the sorted list of a
     /// permutation's elements is the same list. (The sequences are permuted by reversing, and the
     /// elements are the same set either way.)

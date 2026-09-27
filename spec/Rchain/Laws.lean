@@ -345,7 +345,9 @@ def laws : List Law := [
       none. `lt_trans` needed the tags rather than 9261 cases, and the arm machinery made \
       `eq_iff`/`swap` ordinary case analyses" },
   { number := 2, layer := "Rholang",
-    rustWitness := ["models/src/property_tests.rs:law2_canonical_equality_agrees_with_canonical_hashing"],
+    rustWitness := [
+      "models/src/property_tests.rs:law2_unequal_canonical_forms_do_not_hash_alike",
+      "models/src/property_tests.rs:law2_canonical_equality_agrees_with_canonical_hashing"],
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",
     status := .provedModel,
@@ -364,10 +366,10 @@ def laws : List Law := [
       with `refl`/`symm`/`trans` as **constructors** rather than axioms, a weight invariant \
       (`alpha_equiv_weight`) and a non-vacuity witness (`a_send_is_not_alpha_equiv_to_nil`). The note \
       this replaces said the deep-α half was Coq's obligation; no track can deliver it and none needs it" },
-  { number := 3, layer := "Rholang",
+  { number := 3, layer := "Rholang **A witness was added on 2026-09-27 (AUDIT C139): the converse, without which the hash half of this law was not falsifiable.** The equality-facing witness asserts `equal => same hash`, which a *constant* `Hash` satisfies — measured: an empty `Hash for Sorted` body left both of law 2's witnesses green and the whole `rchain-models` suite green (168 tests). `law2_unequal_canonical_forms_do_not_hash_alike` states the other direction, and it is the one that fails under that mutation.",
     rustWitness := [
-      "rholang/src/property_tests.rs:law3_substituting_a_closed_value_keeps_the_term_closed",
-      "rholang/src/property_tests.rs:law3_substitution_and_sorting_commute"],
+      "rholang/src/substitute.rs:substitutes_bound_var",
+      "rholang/src/property_tests.rs:an_open_value_at_the_variable_leaves_a_free_variable"],
     statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`, and \
       substitution preserves closedness **given a closed image**",
     status := .provedModel,
@@ -440,7 +442,7 @@ def laws : List Law := [
       the head's element law and the tail's theorem, are subterms. This row has **no axioms of its \
       own**: `sort_subst` was the last one, and what the row's theorems still rest on is `cmpExpr`'s \
       three, which law 1's row owns and counts" },
-  { number := 4, clause := "a", layer := "Rholang",
+  { number := 4, clause := "a", layer := "Rholang **The witness column changed on 2026-09-27 (AUDIT C138), because both names it carried were vacuous.** `law3_substituting_a_closed_value_keeps_the_term_closed` asserts closedness before and after the substitution — which the *identity* substitution satisfies — and `law3_substitution_and_sorting_commute` reduces to `sort p = sort p` under the same mutation. Measured: `substitute_par` returning its input leaves both green, while the two now named go red. The right pointer was already in this row's `falsifiable` cell (`an_open_value_at_the_variable_leaves_a_free_variable`); the witness column is where a reader looks to ask whether the law is falsified, so it is the column that had to move.",
     rustWitness := [
       "rholang/tests/execution.rs:peek_and_persistent_work",
       "rholang/tests/execution.rs:list_channel_matches"],
@@ -1103,7 +1105,7 @@ def laws : List Law := [
       **property test** (`block-storage/src/property_tests.rs:law15_adding_blocks_only_grows_the_state`): \
       this row's statement is the derivation-level fact, and the tie to the state it is tested against is \
       the port's own guard, which the fold above is now the model of rather than an approximation to" },
-  { number := 16, clause := "a", layer := "Casper",
+  { number := 16, clause := "a", layer := "Casper **This witness was strengthened on 2026-09-27 (AUDIT C140).** It asserted only that the seen set does not shrink and that the counts do not fall, and a DAG state that never changes satisfies both: making `add_block_to_dag_state` return its input left it green (measured), while five of law 18's tests and `add_block_to_dag_state_builds_child_map` went red. It now requires the block that was added to be *in* the new seen set and its height to be *in* the index — the growth the law is about, rather than its direction.",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
       number is not one more than the maximum of its non-failed justifications (`0` when there is none \

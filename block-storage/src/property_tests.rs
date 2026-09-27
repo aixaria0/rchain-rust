@@ -122,6 +122,21 @@ proptest! {
                 next.dag_set.is_superset(seen.as_ref()),
                 "the seen set must not shrink"
             );
+            // **The growth itself, not only its direction (AUDIT C140).** `is_superset` and the `>=`
+            // counts below are satisfied by a state that never changes at all: making
+            // `add_block_to_dag_state` return its input unchanged leaves every assertion here green
+            // (measured, and the whole `rchain-block-storage` suite with it), while five of law 18's
+            // tests and `dag::metadata_store::tests::add_block_to_dag_state_builds_child_map` go red —
+            // so the DAG's growth *was* covered, by another law's witnesses, and this row's own
+            // could not tell. What a no-op violates is that the block **arrives**.
+            prop_assert!(
+                next.dag_set.contains(&block.hash),
+                "the block that was just added is in the seen set"
+            );
+            prop_assert!(
+                next.height_map.contains_key(&block.block_num),
+                "and the index gained the height it names"
+            );
             prop_assert!(next.child_map.len() >= state.child_map.len());
             let next_top = next
                 .height_map
