@@ -4224,3 +4224,23 @@ full against its oracle with nothing found; a `finding` row names the C-number i
   Its second arm is the control: a well-formed value still reads, so the guard is a length check and
   not a read that refuses everything.
 
+### C165 — the private key was written *before* its file was narrowed
+
+- **C165 — `write_with_mode` wrote the secret, and only then chmodded the file.** `crypto/src/util/key_util.rs`'s
+  `write_with_mode` opened with `OpenOptions::mode(0o600)`, wrote, and called `fs::set_permissions`
+  **after** the write — with a comment saying that order "so the content is never briefly readable
+  under the wider mode". It is exactly the reverse. `OpenOptions::mode` applies **only when the file
+  is created**, so a pre-existing `0644` `rnode.key` (copied in by hand, or written by this code
+  before R6 narrowed the mode) was **truncated and then written while still world-readable**, and
+  narrowed only afterwards. **This is C8's fix, in the wrong place** — C8 found that the
+  `set_permissions` call was *missing* and added it; the ordering was never examined, and the comment
+  asserts the opposite of what the code does, which is the class of claim this register exists to
+  catch. **Fixed by inverting the order**, and the open-and-narrow step is split into
+  `create_owner_only` so the order is *testable*: a test can call it on a wide file and assert the
+  mode is already narrow with nothing written. **Falsified both ways, and the falsification is the
+  finding:** with the order put back, exactly one test reddens —
+  `the_mode_is_narrowed_before_anything_is_written` — **and `the_private_key_file_is_owner_only`,
+  C8's own test, still passes.** That is the whole point: C8's test asserts the mode the file *ends*
+  at, and both orders satisfy it, so the instrument could not see the defect it was written for. Its
+  comment said so too.
+

@@ -249,7 +249,7 @@ file	crypto/src/signatures/secp256k1.rs	T3	finding	deep	-	-	crypto/src/signature
 file	crypto/src/signatures/signatures_alg.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/signatures/signed.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/certificate_helper.rs	T3	deferred	-	-	-	-	-	-
-file	crypto/src/util/key_util.rs	T1	deferred	-	-	-	-	-	-
+file	crypto/src/util/key_util.rs	T1	finding	deep	-	-	crypto/src/util/key_util.rs:create_owner_only C165	C165	the read's finding, and it is fixed: write_with_mode wrote the secret first and called set_permissions afterwards, so a pre-existing 0644 rnode.key held the key world-readable for the length of the write. C8 found that the set_permissions call was missing and added it — after the write, with a comment claiming that is what keeps the content from being briefly readable. Exactly the reverse. The order is inverted, and the open-then-narrow step is split out so the order is testable: the new test asserts the mode is already narrow before anything is written, and C8's own test cannot see it because it asserts the final mode, which both orders satisfy.
 file	crypto/src/util/mod.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/secure_random_util.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/sorting.rs	T3	deferred	-	-	-	-	-	-
