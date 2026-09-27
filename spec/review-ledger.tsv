@@ -8,8 +8,8 @@
 # ceiling	ingress	45
 # ceiling	process	30
 # ceiling	config	105
-# ceiling	tool	23
-# unhousedCeiling	111
+# ceiling	tool	24
+# unhousedCeiling	112
 class	cast	T3	deferred	-	-	-	-	-	-
 class	div	T3	deferred	-	-	-	-	-	-
 class	get	T3	deferred	-	-	-	-	-	-
@@ -611,8 +611,9 @@ process	sys:authToken:ops	T3	deferred	-	-	-	-	-	-
 roster	self	T3	deferred	-	-	-	-	spec/REVIEW-LEDGER.md	the ledger's own machinery. No adversarial review of the ledger itself yet; check 15 is the mechanical half only, and it is this unit's own output — the pass that reviews the instruments has not run against it.
 tool	.github/workflows/build-rnode.yml	T3	deferred	-	-	-	-	-	-
 tool	.github/workflows/ci.yml	T3	deferred	-	-	-	-	-	-
-tool	.github/workflows/coverage.yml	T3	finding	deep	-	-	.github/workflows/coverage.yml:permissions C137	-	coverage.yml declares no permissions block, so it runs with the repository default token scope, and resolves five floating action refs of which dtolnay/rust-toolchain@stable is a moving branch; it triggers on every push to dev and main, and the hardening the other workflows got is half-applied
+tool	.github/workflows/coverage.yml	T3	cleared	deep	-	-	.github/workflows/coverage.yml:permissions C137	-	C137: fixed in `7d13ea1ae` — the workflow states `permissions: contents: read` and all five of its action refs are pinned to commits with the tag in a trailing comment. The floors and the raise history that used to live in its `Coverage` step moved to `.github/workflows/nightly.yml` when the deep gates left the push path, and check 11 reads them there now
 tool	.github/workflows/devnet-fuzz.yml	T3	deferred	-	-	-	-	-	-
+tool	.github/workflows/nightly.yml	T3	deferred	-	-	-	-	-	authored when the deep gates left the push path: `check-lean-conformance.sh`, `cargo llvm-cov` with its floors, and `tools/audit-instruments.sh --shared-tree-ok`. Named here because the ledger derives the tool roster from the tree, and because check 11 of `tools/audit-test-register.sh` now reads the coverage floors from this file — the rows for `coverage.yml` and this one are a pair
 tool	tools/audit-instruments.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-mutate.sh	T3	finding	deep	-	-	tools/audit-mutate.sh:run C157	-	C157: reported `green` for runs in which no test ran — `cargo test`'s positional argument is a filter on test names, not a target selector, so three law-30 probes were empty runs read as evidence. Fixed: the harness refuses when every `test result:` line reads `0 passed; 0 failed`, and prints the per-target summaries on every run. Otherwise read end to end because I wrote it; the restore/journal/HEAD-anchor paths have not been falsified by planting defects in the harness itself
 tool	tools/audit-partiality.sh	T3	deferred	-	-	-	-	-	-

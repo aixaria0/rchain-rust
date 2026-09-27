@@ -722,7 +722,7 @@ fi
 #   * **the ledger is the emission** — its rows must be what the emitter produces from the committed
 #     `lcov.info` right now, refused with a diff otherwise (the same discipline `emit-lean-laws.sh` and
 #     `emit-lean-counts.sh` use for their emissions); and
-#   * **the floor is derived, not remembered** — `.github/workflows/coverage.yml`'s
+#   * **the floor is derived, not remembered** — `.github/workflows/nightly.yml`'s
 #     `--fail-under-lines` must equal `floor(measured) − 2`. Too high is a tripwire the measurement does
 #     not support; too low is a raise that was owed. The emitter owns that comparison, so there is one
 #     implementation of the rule and not two that can disagree.
@@ -737,7 +737,11 @@ printf '\n== coverage ledger (the ranking and the floor are emitted, not remembe
 ledger_bad_before=$failures
 LEDGER="$ROOT/spec/COVERAGE-LEDGER.md"
 EMITTER="$ROOT/tools/emit-coverage-ledger.sh"
-FLOOR_SITE="$ROOT/.github/workflows/coverage.yml"
+# **The floors live in the nightly now**, not in `coverage.yml`: `cargo llvm-cov` is a measurement
+# whose instrumented rebuild reuses none of the warm test cache, so it moved off the push path
+# with the rest of the deep gates. This constant is the site the ledger's own numbers are
+# checked against, and it has to name the file that actually holds them.
+FLOOR_SITE="$ROOT/.github/workflows/nightly.yml"
 
 if [[ ! -f "$EMITTER" ]]; then
   fail "tools/emit-coverage-ledger.sh is missing — nothing owns the measurement, so this register's coverage claims are unbacked"
@@ -785,7 +789,7 @@ else
     # (b) CI's floor is that floor.
     ci_floor="$(grep -oE 'fail-under-lines [0-9]+' "$FLOOR_SITE" 2>/dev/null | grep -oE '[0-9]+' || true)"
     if [[ -z "$ci_floor" ]]; then
-      fail "no --fail-under-lines in .github/workflows/coverage.yml — the floor this ledger implies has no site"
+      fail "no --fail-under-lines in .github/workflows/nightly.yml — the floor this ledger implies has no site"
     elif (( ci_floor != want_floor )); then
       fail "CI's floor is $ci_floor; the committed measurement ($l_pct%) implies $want_floor"
     fi
@@ -803,7 +807,7 @@ else
     fi
     fn_ci_floor="$(grep -oE 'fail-under-functions [0-9]+' "$FLOOR_SITE" 2>/dev/null | grep -oE '[0-9]+' || true)"
     if [[ -z "$fn_ci_floor" ]]; then
-      fail "no --fail-under-functions in .github/workflows/coverage.yml — the function floor this ledger implies has no site"
+      fail "no --fail-under-functions in .github/workflows/nightly.yml — the function floor this ledger implies has no site"
     elif (( fn_ci_floor != f_want_floor )); then
       fail "CI's function floor is $fn_ci_floor; the committed measurement ($f_pct) implies $f_want_floor"
     fi
@@ -815,7 +819,7 @@ else
     ledger_raises="$(grep -oE '[0-9]+\.[0-9]+⇒[0-9]+' "$LEDGER" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)"
     site_raises="$(grep -oE '[0-9]+\.[0-9]+ *=> *[0-9]+' "$FLOOR_SITE" 2>/dev/null | sed 's/ *=* *> */⇒/' | tr '\n' ' ' | sed 's/ $//' || true)"
     if [[ -z "$site_raises" ]]; then
-      fail "no raise history in .github/workflows/coverage.yml — the ledger's own history sentence has no site to be checked against"
+      fail "no raise history in .github/workflows/nightly.yml — the ledger's own history sentence has no site to be checked against"
     elif [[ "$ledger_raises" != "$site_raises" ]]; then
       fail "the ledger's raise history is '$ledger_raises'; the floor's site records '$site_raises' — the ledger is stale, or the site moved without it"
     fi

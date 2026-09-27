@@ -17,7 +17,7 @@
 #
 #   * the per-file rows and the totals — from `lcov.info`, which is **gitignored** (a build artifact
 #     the size of the workspace): the ledger is the durable half, the lcov is the input to emitting it;
-#   * the floor — `--fail-under-lines` in `.github/workflows/coverage.yml`, checked here as a *derived*
+#   * the floor — `--fail-under-lines` in `.github/workflows/nightly.yml`, checked here as a *derived*
 #     value rather than a remembered one. The register states the rule ("two points below the measured
 #     value, never to a number the plan hopes to reach") and the four raisings it has had
 #     (73.68⇒71, 79.69⇒77, 81.30⇒79, 84.07⇒82) all satisfy `floor = floor(measured) − 2`. That is what
@@ -115,10 +115,10 @@ missed="${tot%%$'\t'*}"; rest="${tot#*$'\t'}"; hit="${rest%%$'\t'*}"; found="${r
 pct100=$(( hit * 10000 / found ))
 max_floor=$(( (pct100 - 200) / 100 ))
 
-floor_line="$(grep -nE '^\s*run: .*--fail-under-lines' "$ROOT/.github/workflows/coverage.yml" || true)"
+floor_line="$(grep -nE '^\s*run: .*--fail-under-lines' "$ROOT/.github/workflows/nightly.yml" || true)"
 floor="$(printf '%s' "$floor_line" | grep -oE 'fail-under-lines [0-9]+' | grep -oE '[0-9]+' || true)"
 if [[ -z "$floor" ]]; then
-  echo "FAIL  no --fail-under-lines in .github/workflows/coverage.yml — the floor this ledger names has no site" >&2
+  echo "FAIL  no --fail-under-lines in .github/workflows/nightly.yml — the floor this ledger names has no site" >&2
   exit 1
 fi
 
@@ -146,10 +146,10 @@ fi
 fn_pct100=$(( fn_hit * 10000 / fn_found ))
 fn_max_floor=$(( (fn_pct100 - 200) / 100 ))
 
-fn_floor_line="$(grep -nE '^\s*run: .*--fail-under-functions' "$ROOT/.github/workflows/coverage.yml" || true)"
+fn_floor_line="$(grep -nE '^\s*run: .*--fail-under-functions' "$ROOT/.github/workflows/nightly.yml" || true)"
 fn_floor="$(printf '%s' "$fn_floor_line" | grep -oE 'fail-under-functions [0-9]+' | grep -oE '[0-9]+' || true)"
 if [[ -z "$fn_floor" ]]; then
-  echo "FAIL  no --fail-under-functions in .github/workflows/coverage.yml — the function floor this ledger names has no site" >&2
+  echo "FAIL  no --fail-under-functions in .github/workflows/nightly.yml — the function floor this ledger names has no site" >&2
   exit 1
 fi
 fn_floor_verdict="ok"
@@ -167,15 +167,15 @@ measured_on="$(date -r "$LCOV" -u +%Y-%m-%d 2>/dev/null || echo unknown)"
 head_short="$(git -C "$ROOT" rev-parse --short=9 HEAD 2>/dev/null || echo '-')"
 
 # The raise history is **derived from its own site**, not restated. The pairs live in the comment above
-# the floor in `.github/workflows/coverage.yml` — which is where a raising is made — so the sentence below
+# the floor in `.github/workflows/nightly.yml` — which is where a raising is made — so the sentence below
 # cannot disagree with the record. It did: this template said "the four times it has been raised" while
 # the site held **six** (found 2026-09-25 by counting one against the other, which nothing was doing).
 # That is a hand-written count sitting among machine-checked numbers, the shape check 10 exists for in the
 # register's corpus counts.
-raise_list="$(grep -oE '[0-9]+\.[0-9]+ *=> *[0-9]+' "$ROOT/.github/workflows/coverage.yml" | sed 's/ *=* *> */⇒/')"
+raise_list="$(grep -oE '[0-9]+\.[0-9]+ *=> *[0-9]+' "$ROOT/.github/workflows/nightly.yml" | sed 's/ *=* *> */⇒/')"
 raise_pairs="$(printf '%s\n' "$raise_list" | paste -sd, - | sed 's/,/, /g')"
 if [[ -z "$raise_list" ]]; then
-  echo "FAIL  no raise history in .github/workflows/coverage.yml — the ledger's history sentence would be vacuous" >&2
+  echo "FAIL  no raise history in .github/workflows/nightly.yml — the ledger's history sentence would be vacuous" >&2
   exit 1
 fi
 
