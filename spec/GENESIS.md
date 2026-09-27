@@ -17,6 +17,8 @@ consumers as their own bug (and why the rgov family returned `[]` with no diagno
 | 1 | `ListOps.rho` | blessed deploy (`LIST_OPS_PK`) | `rho:lang:listOps` | `rho:id:6fzorimqngeedepkrizgiqms6zjt76zjeciktt1eifequy4osz3o` | rgov `rholang/core/CrowdFund.rho:8` — `lookup!` then `@(_, *ListOps)` then `ListOps!("fold", …)` |
 | 2 | `NonNegativeNumber.rho` | blessed deploy (`NON_NEGATIVE_NUMBER_PK`) | `rho:lang:nonNegativeNumber` | `rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcyo` | `MakeMint.rho:27` looks this up *during its own deploy*, so it must be seeded for makeMint to install at all |
 | 3 | `MakeMint.rho` (adapted, below) | blessed deploy (`MAKE_MINT_PK`) | `rho:rchain:makeMint` | `rho:id:asysrwfgzf8bf7sxkiowp4b3tcsy4f8ombi3w96ysox4u3qdmn1o` | rgov `src/actions/makeMint.rho:13` and wallet `snippets.ts:751` — `lookup!` then `@(nonce, *MakeMint)` then `MakeMint!(*ch)` |
+| 4 | `AuthKey.rho` (adapted) | blessed deploy (`AUTH_KEY_PK`) | `rho:rchain:authKey` | — | `MultiSigRevVault.rho:35` looks it up before it can install, and every `deployerAuthKey` is made through it |
+| 5 | `MultiSigRevVault.rho` (adapted) | blessed deploy (`MULTI_SIG_REV_VAULT_PK`) | `rho:rchain:multiSigRevVault` | — | multi-signature custody: `lookup!` then `@(_, MultiSigRevVault)` then its `create` / `makeSealerUnsealer` / `deployerAuthKey` methods. **This is AUDIT C114's alternative taken**: the channel used to answer with the single-signer handler and then to refuse, and is now answered by the contract |
 
 Note on the URIs: they are this port's own zbase32 encoding of `blake2b256(deployer public key)`
 (`rholang/src/registry.rs:43`), which deliberately does not reproduce the Scala's CRC14+ZBase32 bit

@@ -175,6 +175,13 @@ The `bond` (trust + min/max + vault-funds + `(validator, stake)` into the pool a
 admission/revocation), `slash` (confiscation to the Coop vault) and vault `findOrCreate` methods are
 implemented natively, returning the `(Bool, Either)` result the PoS/vault contracts expect.
 
+**Superseded in part (2026-09-27): the capability *is* modelled now — `findOrCreate` returns a minted
+handle and a handle spends.** The same B2 reasoning still keeps the classic shape (a balance map keyed
+by REV address, `transfer` from the caller's own `deployerId`), which is why nothing below is deleted:
+it is the record of why the classic half is what it is, and of what the delegation half cost. The
+missing pieces it names — "thread the deploy's random seed and persist `address → unforgeable`" — are
+`ContractCall::unapply`'s carried RNG and `PREFIX_VAULT_NAME`.
+
 **Decided (2026-09-23, Programme B item B2): the vault stays a balance map keyed by REV address — the
 unforgeable-name capability is *not* modelled, and that is a decision rather than a gap.** The oracle
 mints a **purse** capability per vault (`RevVault.rho:103-140`'s `findOrCreate` → `_makeVault`, whose
