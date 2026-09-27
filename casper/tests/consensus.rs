@@ -4,13 +4,16 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use rchain_casper::block_status::BlockStatus;
 use rchain_casper::genesis::contracts::Vault;
 use rchain_casper::system_deploy::SystemDeploy;
+use rchain_casper::validate::bonds_cache;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::block::state_hash::StateHash;
+use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    DeployData, ProcessedDeploy, ProcessedSystemDeploy, SignedDeployData,
+    BlockMessage, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
 };
 use rchain_models::validator::Validator;
 use rchain_rholang::native_state::{PosGenesis, PosParams};
@@ -368,5 +371,109 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             .unwrap()
             .contains_key(&newcomer),
         "the admitted newcomer is now an active validator"
+    );
+}
+
+/// **Law 16d — the bond cache a block carries is the PoS state, and it is the *active* set it is.**
+///
+/// Two arms, because the row's statement is an equality and an equality can fail in two places.
+///
+/// **The first arm is which leaf the state is read from.** `RuntimeManager::compute_bonds` must read
+/// `pos:active` — the consensus set — and not `pos:bonds`, the full pool. The two differ exactly when
+/// `number_of_active_validators` caps the pool, so the fixture caps it and the maps have different
+/// sizes: a `compute_bonds` reading the pool returns three entries where the active set has two.
+/// This is the mutation the row's own note describes, and nothing pinned it before this test — the
+/// existing bond tests here only assert `contains_key`, which a pool reading satisfies too.
+///
+/// **The second arm is the equality itself**, which the validator side runs in `validate::bonds_cache`:
+/// the carried map must equal the one the state produces, **and a map that differs must be refused**.
+/// The refusal half is what makes this able to fail — an assertion that only says "the agreeing case is
+/// accepted" is satisfied by a comparison that accepts everything, which is the defect this sweep found
+/// in a dozen other rows.
+#[tokio::test]
+async fn the_bond_cache_is_the_active_pos_state_and_a_differing_one_is_refused() {
+    let rm = build_runtime_manager().await;
+    let rand = fixed_rand();
+    let (v1, v2, v3) = (
+        Validator::new([1u8; 65]),
+        Validator::new([2u8; 65]),
+        Validator::new([3u8; 65]),
+    );
+    let pos_genesis = PosGenesis {
+        bonds: [(v1, 10i64), (v2, 20), (v3, 30)]
+            .into_iter()
+            .map(|(v, stake)| (v, NonNegI64::try_from(stake).expect("positive")))
+            .collect(),
+        trusted: BTreeSet::new(),
+        params: PosParams {
+            minimum_bond: 1,
+            number_of_active_validators: 2,
+            ..PosParams::default()
+        },
+    };
+    let (_pre, post, _) = rm
+        .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &[])
+        .await
+        .expect("compute_genesis");
+    let post_state_hash = StateHash::from_slice(post.as_bytes());
+
+    // Arm 1 — the state side: the active set, and not the pool.
+    let cache = rm
+        .compute_bonds(&post_state_hash)
+        .await
+        .expect("compute_bonds at the post state");
+    assert_eq!(
+        cache,
+        pos_genesis.active_bonds(),
+        "the bonds a block carries are the state's *active* set"
+    );
+    assert_eq!(cache.len(), 2, "the cap selects two of the three bonded");
+    assert_ne!(
+        cache,
+        pos_genesis.bonds,
+        "…which is a different map from the pool, and that difference is the whole distinction"
+    );
+
+    // Arm 2 — the cache side: an agreeing map is accepted, a differing one is refused.
+    let mut block = BlockMessage {
+        version: 1,
+        shard_id: "root".to_string(),
+        block_hash: BlockHash::new([0xab; 32]),
+        block_number: 10.try_into().unwrap(),
+        sender: Validator::new([0x11; 65]),
+        seq_num: 0.try_into().unwrap(),
+        pre_state_hash: post_state_hash.clone(),
+        post_state_hash,
+        justifications: vec![],
+        bonds: cache,
+        rejected_deploys: BTreeSet::new(),
+        rejected_blocks: BTreeSet::new(),
+        rejected_senders: BTreeSet::new(),
+        state: RholangState {
+            deploys: vec![],
+            system_deploys: vec![],
+        },
+        sig_algorithm: "secp256k1".to_string(),
+        sig: vec![1],
+        timestamp: 0,
+    };
+    assert!(
+        matches!(
+            bonds_cache(&rm, &block).await.expect("bonds_cache runs"),
+            Ok(())
+        ),
+        "a block whose bond cache is the state's active set is accepted"
+    );
+
+    block.bonds.insert(
+        Validator::new([9u8; 65]),
+        NonNegI64::try_from(1).expect("positive"),
+    );
+    assert!(
+        matches!(
+            bonds_cache(&rm, &block).await.expect("bonds_cache runs"),
+            Err(BlockStatus::InvalidBondsCache)
+        ),
+        "a bond cache that differs from the state is refused rather than accepted"
     );
 }
