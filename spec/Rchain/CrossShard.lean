@@ -674,7 +674,7 @@ theorem an_aborted_reply_moves_the_decision :
 
 The decision half of law 29 is `coordinator_decision_committed_iff`. The **durability** half is the
 property that makes a recorded decision stick: a participant's `committed`/`aborted` is terminal, so a
-late vote cannot resurrect it. That is not a hypothetical — AUDIT §15 C1 records the port writing a
+late vote cannot resurrect it. That is not a hypothetical — AUDIT C160 records the port writing a
 terminal record's state from a later vote, *resurrecting* a transaction whose compensation had already
 run, and the guard below is the fix (`casper/src/gateway/ledger.rs:158-178`). This section mirrors
 `record_vote`, so the row's second half is a theorem rather than a sentence. -/
@@ -689,7 +689,7 @@ instance (s : TxnState) : Decidable s.IsTerminal := by
   cases s <;> unfold TxnState.IsTerminal <;> infer_instance
 
 /-- **`record_vote`** (`ledger.rs:158-178`): a terminal record ignores every later vote — that guard is
-    the C1 fix — and otherwise the vote is recorded (replacing a repeated shard's) and the state
+    the C160 fix — and otherwise the vote is recorded (replacing a repeated shard's) and the state
     recomputed: `aborted` on an abort vote, `committed` when the votes are one per leg and all ready,
     `prepared` in between. -/
 def CoordRecord.recordVote (r : CoordRecord) (shard : ShardId) (v : Vote) : CoordRecord :=
@@ -703,7 +703,7 @@ def CoordRecord.recordVote (r : CoordRecord) (shard : ShardId) (v : Vote) : Coor
       { r with votes := votes, state := TxnState.committed }
     else { r with votes := votes, state := TxnState.prepared }
 
-/-- **A recorded abort is absorbing** — the C1 property, and the Rust test of the same name
+/-- **A recorded abort is absorbing** — the C160 property, and the Rust test of the same name
     (`an_abort_is_absorbing`). A compensation that has run cannot be undone by a vote that arrives
     later, which is exactly what the unguarded version of this function got wrong. -/
 theorem an_abort_is_absorbing (r : CoordRecord) (h : r.state = TxnState.aborted) (shard : ShardId)

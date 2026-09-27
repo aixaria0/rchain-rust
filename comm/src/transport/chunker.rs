@@ -112,7 +112,7 @@ mod tests {
     ///
     /// This is the rule this pass paid for twice: the first two tripwires of the pass passed *with
     /// their defect restored* because they had been calibrated against a tree that no longer existed
-    /// (`spec/AUDIT.md` §H6, C56's §20 row). The two ratio figures above are both from this tree —
+    /// (`spec/audit/passes.md` §H6, C56's §20 row). The two ratio figures above are both from this tree —
     /// the 3.8–4.0× was produced by restoring `blob.packet.content.clone()` and the second clone, not
     /// quoted from a previous shape.
     #[test]

@@ -254,7 +254,7 @@ mod tests {
     }
 
     /// The channel cache is **bounded** (an unbounded per-peer channel map was a DoS finding in the
-    /// security pass, `spec/AUDIT.md` §12): the bound is what makes eviction reachable at all. It is
+    /// security pass, `spec/audit/passes.md` §12): the bound is what makes eviction reachable at all. It is
     /// asserted at *compile* time, so a change to the constant is a build failure rather than a test
     /// failure nobody runs — and so this module needs no test to police a number.
     const _: () = assert!(MAX_CACHED_CHANNELS > 0 && MAX_CACHED_CHANNELS <= 4096);

@@ -302,21 +302,25 @@ mod tests {
     /// what one dimension may hold; `MAX_SPLIT_COMBINATIONS` is what the product may reach. If the
     /// first permits more than the second, the product check can only reject work that has already
     /// been materialized — which is exactly the 16 GB, and why the constant is 19 rather than 20.
-    /// With `MAX_SPLIT_COMBINATIONS = {MAX_SPLIT_COMBINATIONS}`, one dimension at `MAX_SUBSET_ITEMS`
-    /// would enumerate `2^19 = 524288` splits.
     ///
     /// This is the row's own named proof, red on the tree before the fix.
+    ///
+    /// **`assertions_on_constants` is allowed here, and the lint is wrong about this one.** It exists
+    /// to catch `assert!(true)` — an assertion that can never fail because it is folded away. This
+    /// assertion is the opposite: *both sides being constants is the property under test*, and the
+    /// test is the only thing that fails when someone raises one constant without the other. That is
+    /// exactly what happened (the per-dimension guard was 20 while the product cap was 1,000,000), and
+    /// a foldable comparison is what makes it checkable at all.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn a_single_dimension_cannot_outgrow_the_product_cap() {
-        // Written as a `const` block so the compiler checks it rather than the test run — which is
-        // also what Clippy's `assertions_on_constants` asks for. The message cannot be interpolated
-        // inside a const block, so the numbers it used to carry live in the doc comment above.
-        const {
-            assert!(
-                (1u64 << MAX_SUBSET_ITEMS) <= MAX_SPLIT_COMBINATIONS,
-                "one dimension at MAX_SUBSET_ITEMS would outgrow MAX_SPLIT_COMBINATIONS"
-            );
-        }
+        assert!(
+            (1u64 << MAX_SUBSET_ITEMS) <= MAX_SPLIT_COMBINATIONS,
+            "one dimension at MAX_SUBSET_ITEMS enumerates 2^{MAX_SUBSET_ITEMS} = {} splits, which \
+             exceeds MAX_SPLIT_COMBINATIONS = {MAX_SPLIT_COMBINATIONS}: the per-dimension guard \
+             would admit work the product guard must then refuse, after it was built",
+            1u64 << MAX_SUBSET_ITEMS
+        );
     }
 
     /// `subset_count` is the arithmetic the refusal now rests on, so it is checked against the

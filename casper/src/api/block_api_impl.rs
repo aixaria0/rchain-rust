@@ -426,7 +426,7 @@ impl BlockApi for BlockApiImpl {
             // The Scala's fourth `NotProcessed` reason, `"Running"`, is absent by construction: it came
             // from a per-node `BlockExecutionTracker` this port does not have, and the nearest
             // derivation ("in neither the DAG nor the pool") is also true of a deploy whose block was
-            // just proposed. Registered in `spec/AUDIT.md` §6.
+            // just proposed. Registered in `spec/audit/passes.md` §6.
             Ok(DeployExecStatus::NotProcessed {
                 status: "Unknown".to_string(),
             })

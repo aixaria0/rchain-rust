@@ -227,7 +227,7 @@ fn get_validator_password(console: &mut dyn ConsoleIo) -> String {
 /// Generate a validator key pair and write it to `path` (port of `NodeMain.generateKey`).
 ///
 /// An empty or mismatched password re-prompts by recursing, with no attempt limit — faithful to
-/// Scala, and bounded in practice by the operator at the terminal (`spec/AUDIT.md` §15 C7).
+/// Scala, and bounded in practice by the operator at the terminal (`spec/AUDIT.md` C7).
 fn generate_key(console: &mut dyn ConsoleIo, path: &Path) -> Result<(), Vec<String>> {
     let password = console.read_password("Enter password for keyfile: ");
     let password_repeat = console.read_password("Repeat password: ");
@@ -437,7 +437,7 @@ mod tests {
     /// retry is `generate_key` calling itself with no attempt counter (Scala's `NodeMain.generateKey`
     /// does the same). Deliberately **not** a test — a stack-overflow probe aborts the test process
     /// and would pin nothing a reader could not see from the code; the shape is recorded in
-    /// `spec/AUDIT.md` §15 C7 instead. Interactively the retry is bounded by the operator, which is
+    /// `spec/AUDIT.md` C7 instead. Interactively the retry is bounded by the operator, which is
     /// why the port keeps it.
     #[test]
     fn a_mismatch_message_names_the_retry_rather_than_the_mismatch_alone() {

@@ -5,8 +5,8 @@
 Generated, never written: `tools/emit-coverage-ledger.sh` reads `lcov.info` — the committed measurement,
 `cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info` — and emits the per-file
 ranking that `spec/TEST-COVERAGE.md`'s Definition-of-done item 11 is worked from. Check 11 of
-`tools/audit-test-register.sh` refuses a ledger that disagrees with the lcov it names, and refuses a CI
-floor that is not the one this measurement implies.
+`tools/audit-test-register.sh` refused a ledger that disagreed with the lcov it names; that gate was
+deleted on 2026-09-27, so this file is reconciled by re-running `make coverage` rather than by a check.
 
 **Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at ae2f888df.
 

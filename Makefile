@@ -5,7 +5,7 @@
 #   test-integration in-process node/casper/rholang integration tests (node/tests, casper/tests, ...)
 #   test-multinode    multi-node consensus harness (casper/tests/multinode.rs)
 #   test-all          unit + integration (default)
-#   check-register    verify spec/TEST-COVERAGE.md against the tree
+#   status            what the audit has left, and whether the check-off is current
 #   coverage          line/region coverage via cargo-llvm-cov
 #   bench-smoke       compile the Criterion benches so they cannot rot
 #
@@ -13,9 +13,29 @@
 # `shared/src/lmdb.rs` and `rspace/src/state/exporters.rs` are silently skipped without it, which is
 # how they escaped local runs while CI (`--all-features`) still exercised them.
 
-.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec deep
+.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec deep status check
 
 test: test-all
+
+# The loop: what is left, and is the check-off telling the truth. **Seconds.**
+#
+# Measured: ~2.5 s warm, dominated by the evidence check's single pass over the tracked tree. That is
+# the number to defend. It replaced a 78-second register gate whose cost was almost entirely in checks
+# that proved documents agreed with each other.
+#
+# This is the first thing to run, before any gate, because "what is left" is the question; a wall of
+# `ok` from a gate that finished is the answer to a question nobody asked yet.
+status:
+	tools/audit-status.sh
+
+# What a change gets: the status, then the formatter. The third thing is the crate's own test filter
+# -- `cargo test -p <crate> <filter>`, 0.2-2 s warm -- and it is not wrapped here because the crate
+# and the filter are exactly the parts that change per change.
+#
+# `check-register` is ~35 s of static gates over the whole tree: a boundary, not a per-edit step. See
+# the `deep` target's note and `docs/src/contributor/laws-to-rust.md`.
+check: status
+	cargo fmt --all --check
 
 test-unit:
 	cargo test --workspace --lib --all-features
@@ -28,15 +48,19 @@ test-multinode:
 
 test-all: test-unit test-integration
 
-# The coverage register must match the tree: no overstated counts, no phantom tests, no deferred
-# rows, and **no source file without a test or a declared exemption** (the census-sweep finish line).
-# This runs the linter in hard mode: every check fails the build rather than reporting.
+# The static gates that catch a defect in the *node*: a production `unwrap()`/`panic!`/`unsafe`, a
+# silent fallible conversion, a refinement surrendering its invariant — and an edit to the oracle's
+# own vendored source text, which is a specification change wearing a comment's clothes.
 #
-# `audit-vendored-sources.sh` is here rather than in the formal gate because it is a static audit of
-# the tree, not a build: the blessed contracts are the *oracle's own source text*, vendored, so an
-# edit to one is a specification change wearing a comment's clothes. Nothing diffed them until now.
+# **What used to be here and is not.** `tools/audit-test-register.sh` was 1,453 lines and 78.5 s over
+# 17 checks, and its failures were of one kind: a register document disagreed with the tree. Nothing
+# production-facing reads those documents, and the gate had itself been wrong more often than it had
+# been right about the node — so it was deleted on 2026-09-27 rather than maintained. The check-off
+# (`spec/AUDIT.md`, `tools/audit-status.sh`) is what a reader wants from that material, and it costs
+# 2.5 seconds.
 check-register:
-	tools/audit-test-register.sh
+	tools/audit-status.sh --quiet
+	tools/audit-type-system.sh
 	tools/audit-vendored-sources.sh
 
 # The formal gate: build the Lean and Coq specifications, refuse a stale or un-consumed conformance
@@ -45,21 +69,19 @@ check-register:
 check-lean:
 	tools/check-lean-conformance.sh
 
-# The deep gates, on demand — the same three the nightly runs, in the same order of cost.
+# The deep gates, on demand — the same two the nightly runs, in the same order of cost.
 #
 # **Do not run this per change.** `check-lean` is ~104 serial `cargo test` invocations behind a Lean
 # build that is 16 minutes cold; `coverage` moves the whole workspace through an instrumented codegen
-# profile, so it reuses none of the warm `test` cache; and the instrument harness plants a defect per
-# gate and runs the whole gate 24 times. Each is a thing to run at the end of a body of work, or to
-# leave to `.github/workflows/nightly.yml`.
+# profile, so it reuses none of the warm `test` cache. Each is a thing to run at the end of a body of
+# work, or to leave to `.github/workflows/nightly.yml`.
 #
-# What *is* per change: `cargo test -p <crate> <filter>` (0.2–2 s warm), `cargo fmt --all --check`,
-# and the two static gates — `tools/audit-type-system.sh` (31 s) and `tools/audit-test-register.sh`
-# (70 s, mostly the lcov parse). See `docs/src/contributor/laws-to-rust.md:119-128`.
+# What *is* per change: `cargo fmt --all --check`, `cargo clippy`, `cargo test -p <crate> <filter>`
+# (0.2-2 s warm), `make status` (2.5 s) and `tools/audit-type-system.sh` (~30 s). See
+# `docs/src/contributor/laws-to-rust.md`.
 deep: check-lean coverage
-	tools/audit-instruments.sh --shared-tree-ok
 
-# Coverage. CI (`.github/workflows/coverage.yml`) has always run the whole workspace with
+# Coverage. CI has always run the whole workspace with
 # `--all-features` and no exclusions, and is green on every PR — so the crypto crate is *not* flaky
 # under instrumentation, and the local `--exclude rchain-crypto` that used to sit here was drift that
 # made the local number disagree with the gate. Both now run the same command.
@@ -73,7 +95,7 @@ coverage:
 
 # Re-emit `spec/COVERAGE-LEDGER.md` from the committed `lcov.info` without re-running the suite —
 # for the case where only the emitter changed. `make coverage` does both, because a measurement that
-# is not emitted is a number nobody checks (check 11 of the register linter compares the two).
+# is not emitted is a number nobody reads.
 coverage-ledger:
 	tools/emit-coverage-ledger.sh
 

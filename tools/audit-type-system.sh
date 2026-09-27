@@ -30,7 +30,7 @@
 #              (a hex decode that skips non-hex and never length-checks).
 #   get      — `.get(..).unwrap()`-style accessor lookups.
 #
-# Counted classes (a committed number compared in both directions — see `ratchet` below):
+# Counted classes (**measured and reported, not enforced** — see `ratchet` below):
 #   index    — variable indexing and slice ranges (`arr[i]`, `chunk[..n]`), the class the
 #              2026-09-26 audit found the gate could not see at all. This is what `get` used to
 #              partly count: measured then, `get`'s literal-index half was all 95 of its sites and its
@@ -118,7 +118,7 @@ TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 # `from_slice` length asserts in block_hash/state_hash/validator (and
 # `Blake2b256Hash::from_byte_array`) are reachable only from internally-produced data: untrusted
 # wire/API bytes use the checked `TryFrom<&[u8]>`/`try_from_hex` constructors (validate-on-ingress,
-# see spec/AUDIT.md §11 R12).
+# see spec/audit/passes.md §11 R12).
 #
 # **That paragraph asserted the same thing in 2026-09 and was false for four paths** (AUDIT C97):
 # HasBlockRequest/HasBlock/BlockRequest fed `Vec<u8>` from a peer's packet to `BlockHash::from_slice`,
@@ -486,8 +486,8 @@ scan() {
 # both directions against the committed number in `tools/type-system-baseline.tsv`: a commit that
 # adds a site fails until the baseline is raised deliberately, and a commit that removes one fails
 # until the baseline is lowered — the same discipline as the coverage floor
-# (`tools/audit-test-register.sh`'s `floor(measured) − 2`), for the same reason: a number that can
-# drift silently is a number nobody is watching.
+# that this file's counted classes used to follow. The doctrine is sound and the *enforcement* was
+# not: a number that fails the build whenever it moves is a build step somebody maintains.
 #
 # **The patterns are written in the conservative ERE subset** (`[a-zA-Z0-9_]`, not `[[:alnum:]]`),
 # because the count is compared to a committed number and a pattern that means different things to
@@ -671,23 +671,30 @@ counted_scan_sites_refinements() {
 
 BASELINE_FILE="$ROOT/tools/type-system-baseline.tsv"
 
+# The counted classes are **measured and reported, not enforced** (2026-09-27).
+#
+# They were a ratchet for two days: the number lived in `tools/type-system-baseline.tsv` and the gate
+# failed in *both* directions, so any commit that added or removed an indexing or division site — most
+# commits that touch arithmetic at all — had to edit that file to say so. That is a build step someone
+# maintains, not a check that catches anything: `cast`/`index`/`div`/`overflow` are legal Rust, and the
+# failure message said as much ("a number that fails the build whenever it moves is a build step that
+# has to be edited"). So the measurement stays -- it is useful for a review, and `--sites` still lists
+# the sites -- and the verdict does not.
+#
+# The four **hard** classes above (panic/unsafe/silent/escape) are untouched and still fail the build.
+# Those are the ones that mean partiality in production code, and they are what this gate is for.
 ratchet() {
   # $1 = class; $2 = measured count.
   local cls="$1" measured="$2" recorded
-  recorded=$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' "$BASELINE_FILE")
+  recorded=$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' "$BASELINE_FILE" 2>/dev/null)
   if [ -z "$recorded" ]; then
-    echo "  RATCHET $cls: no baseline row — a class with no recorded number is a number nothing compares"
-    ratchet_failures=$((ratchet_failures + 1))
-    return
-  fi
-  if (( measured > recorded )); then
-    echo "  RATCHET $cls: rose from $recorded to $measured site(s) — a new site of a class the gate cannot judge. Review it, then raise $BASELINE_FILE deliberately in the same commit, or fix the site."
-    ratchet_failures=$((ratchet_failures + 1))
-  elif (( measured < recorded )); then
-    echo "  RATCHET $cls: fell from $recorded to $measured site(s) — lower the baseline to $measured. The ratchet only goes down, and a recorded number above the measurement is a number nobody is watching."
-    ratchet_failures=$((ratchet_failures + 1))
+    printf '  (counted) %-6s %s site(s) — no recorded number to compare\n' "$cls" "$measured"
+  elif [ "$measured" = "$recorded" ]; then
+    printf '  (counted) %-6s %s site(s)\n' "$cls" "$measured"
   else
-    printf '  (ratchet) %-6s %s site(s), equal to the recorded baseline\n' "$cls" "$measured"
+    printf '  (counted) %-6s %s site(s) — was %s when the list was last reviewed; not a failure, but a\n' \
+      "$cls" "$measured" "$recorded"
+    printf '            count that moved is worth a look, and `--sites %s` prints them\n' "$cls"
   fi
 }
 
@@ -1403,15 +1410,10 @@ if [ "$hard_failures" -gt 0 ]; then
   echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape) in production code."
   exit 1
 fi
-if [ "$ratchet_failures" -gt 0 ]; then
-  echo "FAIL: $ratchet_failures counted class(es) moved (index/div/overflow/cast/lax/get) — the number"
-  echo "      is a ratchet: update tools/type-system-baseline.tsv in the same commit, deliberately."
-  exit 1
-fi
 if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
   echo
-  echo "  site listings corroborated against the ratchet:"
+  echo "  site listings corroborated against the counts above:"
   for _t in "${site_totals[@]}"; do echo "    $_t"; done
 fi
-echo "OK: no hard production violations (panic/unsafe/silent/escape), and every counted class is at"
-echo "    its recorded baseline."
+echo "OK: no hard production violations (panic/unsafe/silent/escape) in production code."
+echo "    The counted classes (cast/lax/get/index/div/overflow) are reported above and not enforced."

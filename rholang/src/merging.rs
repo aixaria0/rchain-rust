@@ -377,7 +377,7 @@ impl Codec<Vec<NativeStoreAction>> for NativeStoreActionsCodec {
 ///
 /// The subtraction is **checked**: a difference outside `i64` is an error, not a silent wraparound.
 /// Wrapping here would corrupt the merged state — the same bug class as RCHIP #51 (and the Scala
-/// oracle wraps, so this is a deliberate deviation, recorded in `spec/AUDIT.md` §6).
+/// oracle wraps, so this is a deliberate deviation, recorded in `spec/audit/passes.md` §6).
 pub fn calculate_num_channel_diff(
     channel_values: &[BTreeMap<Blake2b256Hash, i64>],
     init_values: &BTreeMap<Blake2b256Hash, i64>,
@@ -704,7 +704,7 @@ mod codec_tests {
     /// `bytes[bit_pos / 8]` unchecked). Latent, not live: the bytes come from the node's own
     /// mergeable store, which the node wrote from its own replay — so the exposure is a corrupted or
     /// truncated *local* entry aborting the merge instead of reporting a decode error. Recorded as
-    /// AUDIT §16 C15 and pinned here, so giving the reader a `Result` fails this test and is a
+    /// AUDIT C15 and pinned here, so giving the reader a `Result` fails this test and is a
     /// deliberate change.
     #[test]
     #[should_panic(expected = "index out of bounds")]

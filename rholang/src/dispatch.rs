@@ -318,7 +318,7 @@ mod tests {
         );
     }
 
-    /// **Recorded, not endorsed** (AUDIT.md §15 C5): a `ParBody` continuation dispatched with **no
+    /// **Recorded, not endorsed** (AUDIT.md C5): a `ParBody` continuation dispatched with **no
     /// matched data** panics inside `Blake2b512Random::merge`, which asserts at least two inputs —
     /// the dispatcher always prepends the continuation's own random, so zero data means one input.
     /// The reducer does not currently dispatch a `ParBody` with zero data (a receive always matches

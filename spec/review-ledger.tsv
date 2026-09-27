@@ -8,8 +8,8 @@
 # ceiling	ingress	45
 # ceiling	process	30
 # ceiling	config	105
-# ceiling	tool	24
-# unhousedCeiling	112
+# ceiling	tool	27
+# unhousedCeiling	116
 class	cast	T3	deferred	-	-	-	-	-	-
 class	div	T3	deferred	-	-	-	-	-	-
 class	get	T3	deferred	-	-	-	-	-	-
@@ -143,7 +143,7 @@ file	casper/src/api/machine_verifiable_dag.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/api/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/block_metadata_store.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/block_random_seed.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/blocks/block_processor.rs	T1	deferred	-	-	-	-	-	-
+file	casper/src/blocks/block_processor.rs	T1	cleared	deep	-	-	casper/src/blocks/block_processor.rs:validate_and_add_to_dag	-	read in full (177 lines) against BlockProcessor.scala. Batching, per-block tokio::spawn, ordered collection with a panicked task logged and skipped rather than killing the loop, insert errors logged and the block dropped, and only validated blocks forwarded and broadcast. One divergence from the oracle, checked and assessed as deliberate rather than reported as a defect: the Scala is inputBlocks.parEvalMapUnorderedProcBounded, so it processes each block the moment its validation finishes, while this port awaits the batch's handles in drained order and inserts serially. That is required, not incidental — dag.insert refuses a block whose justification is absent (casper/src/dag.rs:298), so the inserts must follow the drain order the receiver guarantees (parents before children), and the comment says so. The cost is throughput, not correctness: a batch completes no faster than its first-listed element, bounded by the available_parallelism cap. Not registered as a deviation because the observable outcome is the same set of validated blocks in the same order; recorded here so the next reader does not have to re-derive why an Unordered in the oracle became an ordered loop. Nothing found.
 file	casper/src/blocks/block_receiver.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/block_retriever.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/mod.rs	T3	deferred	-	-	-	-	-	-
@@ -153,7 +153,7 @@ file	casper/src/blocks/proposer/propose_result.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/proposer/proposer.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/block_status.rs	T3	cleared	deep	-	-	casper/src/block_status.rs:BlockStatus::InvalidDeploySignature C120 casper/src/block_status.rs:every_status_renders_a_distinct_message	-	read in full — the enum, is_valid, Display, and the ALL ratchet with its three tests — while adding C120's status variant, and it holds no defect. Basis for clearing rather than deferring: the module is a closed vocabulary whose completeness is enforced by construction (ALL's length is checked by the type system and its test forces every variant to render a distinct message), so "a variant with no message" cannot survive a compile. Not read: the callers that turn a status into a refusal are separate rows (casper/src/multi_parent_casper.rs, casper/src/blocks/block_processor.rs)
 file	casper/src/bonds_parser.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/conf.rs	T1	deferred	-	-	-	-	-	-
+file	casper/src/conf.rs	T1	cleared	deep	-	-	casper/src/conf.rs:ShardSpec::new	-	read in full (281 lines) against CasperConf.scala. The load-bearing part is the shard resolution and its non-emptiness. ShardSpec::new resolves (parent-shard-id, shard-name) into the validated full id through ShardId::child, so one predicate lives in one place — the type's own — and the pre-check that used to be duplicated here is gone, which is C78's shape applied correctly. ShardMemberships carries its fields private with primary always present, so non-emptiness is structural rather than re-checked at each use and primary() is total; the hardcoded is_empty() -> false says in its own comment that it exists for clippy and is total by construction, which is honest rather than a stub. new() rejects an empty list and duplicate ids, and duplicates matter for the stated reason: two memberships with one id would share a state hash and a data directory. Six tests, covering the illegal name or parent, the hierarchy resolution, non-emptiness with primary first, order plus duplicate rejection, get for a member and a non-member, and primary_mut. Nothing found.
 file	casper/src/construct_deploy.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/dag.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/engine/lfs_block_requester.rs	T1	deferred	-	-	-	-	-	-
@@ -249,7 +249,7 @@ file	crypto/src/signatures/secp256k1.rs	T3	finding	deep	-	-	crypto/src/signature
 file	crypto/src/signatures/signatures_alg.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/signatures/signed.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/certificate_helper.rs	T3	deferred	-	-	-	-	-	-
-file	crypto/src/util/key_util.rs	T1	deferred	-	-	-	-	-	-
+file	crypto/src/util/key_util.rs	T1	finding	deep	-	-	crypto/src/util/key_util.rs:create_owner_only C165	C165	the read's finding, and it is fixed: write_with_mode wrote the secret first and called set_permissions afterwards, so a pre-existing 0644 rnode.key held the key world-readable for the length of the write. C8 found that the set_permissions call was missing and added it — after the write, with a comment claiming that is what keeps the content from being briefly readable. Exactly the reverse. The order is inverted, and the open-then-narrow step is split out so the order is testable: the new test asserts the mode is already narrow before anything is written, and C8's own test cannot see it because it asserts the final mode, which both orders satisfy.
 file	crypto/src/util/mod.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/secure_random_util.rs	T3	deferred	-	-	-	-	-	-
 file	crypto/src/util/sorting.rs	T3	deferred	-	-	-	-	-	-
@@ -277,7 +277,7 @@ file	models/src/fringe_data.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/murmur_hash3.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/normalizer_env.rs	T3	deferred	-	-	-	-	-	-
-file	models/src/par_ops.rs	T1	deferred	-	-	-	-	-	-
+file	models/src/par_ops.rs	T1	cleared	deep	-	-	models/src/par_ops.rs:locally_free_of_expr	-	read in full (447 lines) plus the call graph, against implicits.scala. The interesting question here is depth, because getting it backwards would corrupt free-variable analysis everywhere, and the answer is that the port computes the same thing by a different mechanism. In the Scala, depth is threaded through the HasLocallyFree instances and incremented at exactly two sites, both in the MatchCase instance (implicits.scala:509 and :523, locallyFree(pat, depth + 1)); locallyFree(Var) is BitSet(index) at depth 0 and empty above it, so depth counts match-case bindings and a pattern's own binder is not free. This port does not thread depth: it applies the Scala's own from_free(levels, n) — keep levels >= n and shift down by n, normalizer.rs:643, documented as the Scala BitSet.from(n).map(x => x - n) — at the two normalizer sites that correspond (normalize_new at :701 with the bound count, and the match case at :768). Same semantics, fewer parameters. The depth argument on locally_free_of_var/of_expr is therefore only exercised at 0 today: both callers pass 0 (spatial_matcher.rs:70 asks whether an expression is locally closed, reduce.rs:73 unions into the free set), and the non-zero arm is reachable but unused, which is the Scala's arm kept rather than dropped. Expr coverage is exhaustive by construction — no wildcard arm, so a new variant is a compile error rather than a silent omission. Nothing found.
 file	models/src/pretty.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/proto.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/rholang.rs	T2	deferred	-	-	-	-	-	-
@@ -286,7 +286,7 @@ file	models/src/sorted.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/sorter.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/string_syntax.rs	T3	deferred	-	-	-	-	-	-
 file	models/src/types.rs	T3	deferred	-	-	-	-	-	-
-file	models/src/validator.rs	T1	deferred	-	-	-	-	-	-
+file	models/src/validator.rs	T1	cleared	deep	-	-	models/src/validator.rs:Validator::try_from	-	read in full (151 lines) against Validator.scala: a 65-byte identity whose field is private, so the length is carried structurally; a checked TryFrom<&[u8]> returning a typed error naming both lengths, an unchecked from_slice that asserts, and serde as lowercase hex that refuses both non-hex and a wrong length. Four tests, all two-sided. Checked the one risk rather than assuming it: from_slice is the unchecked path and would panic on a short slice, so I traced every non-test caller — there is exactly one, models/src/casper/pretty_printer.rs:124, passing a fixed [0xcd; 65] literal (the other apparent caller, validator_identity.rs:85, is inside a #[test]). So the doc's claim that callers carry the invariant structurally holds today. One thing recorded without calling it a defect, because nothing reaches it: PublicKey is a bare Vec<u8> with an unchecked new(), so from_slice(&public_key.bytes()) would be a panic rather than an error — a footgun for the next caller, not a live defect.
 file	models/src/wire.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/api/admin_web_api_impl.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/api/admin_web_api.rs	T3	deferred	-	-	-	-	-	-
@@ -346,8 +346,8 @@ file	qucalc/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	qucalc/src/main.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/accounting.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/compiler.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/contract_call.rs	T1	deferred	-	-	-	-	-	-
-file	rholang/src/dispatch.rs	T1	deferred	-	-	-	-	-	-
+file	rholang/src/contract_call.rs	T1	cleared	deep	-	-	rholang/src/contract_call.rs:native_body_ref	-	read in full (402 lines) against ContractCall.scala, plus the caller. The load-bearing part is native_body_ref, which derives a continuation id from (name_bytes, arity) and forces it negative with | i64::MIN so it cannot collide with a small non-negative BodyRefs constant. Checked the two things that could be wrong. (1) The derivation is a function of the name and the arity and not of a counter, and the doc says why that matters here: a counter would depend on how many handles this dispatcher has installed, and replay builds a fresh dispatcher, so the continuation would dispatch nowhere on the second run — a real replay-determinism trap avoided. (2) The id is negative by construction, and a channel can carry several arities under one name, which is exactly the oracle vault's shape (balance at 2, transfer at 5), so the arity has to be part of the id. The one risk I looked for is a non-positive arity, since install_native builds (0..arity) patterns and sets free_count from it: the single caller (system_processes.rs:433) passes integer literals 2 and 5 in a loop, so it is unreachable. install_native also registers before installing, deliberately, so a failure leaves a handler nobody can reach rather than a continuation that dispatches into an empty table. Nothing found.
+file	rholang/src/dispatch.rs	T1	cleared	deep	-	-	rholang/src/dispatch.rs:RholangAndScalaDispatcher::dispatch	-	read in full (447 lines) against dispatch.scala, plus its tests. The thing I looked for is the one this crate's clippy debt list would hide: await_holding_lock is in the allow-list, so a lock held across an await here would never be reported. It is not — both dispatch arms take the table's lock in an inner block, call the handler to produce a future, drop the guard at the end of that block, and await outside it. That is the correct pattern and it is deliberate rather than lucky. Three further properties, each checked rather than assumed. (1) register_handler is idempotent per id and says why that is required rather than lazy: the install path re-runs on replay and a deploy may legitimately call findOrCreate twice for one address in a block, so the second call must reach the same handler rather than swap a new closure under a continuation the space already holds; the check-then-insert is under the table's own lock, so two concurrent installs cannot both win. (2) The ParBody arm does not sort its random states, with a comment saying so and why: the order is continuation-first then matched data in receive-bind order, matching dispatch.scala:33, and data_list is already canonical — sorting here would break the determinism it looks like it protects. (3) A missing evaluator is BugFoundError rather than a silent no-op, which is the shape this register keeps asking for. Eight tests, including that an unregistered ref is refused by name and that a dropped dispatcher is reported through the Weak handle. Nothing found.
 file	rholang/src/env.rs	T2	deferred	-	-	-	-	-	-
 file	rholang/src/errors.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/evaluate_result.rs	T3	deferred	-	-	-	-	-	-
@@ -367,7 +367,7 @@ file	rholang/src/reduce.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/registry.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/reporting_runtime.rs	T2	deferred	-	-	-	-	-	-
 file	rholang/src/runtime.rs	T3	deferred	-	-	-	-	-	-
-file	rholang/src/scheduler.rs	T1	deferred	-	-	-	-	-	-
+file	rholang/src/scheduler.rs	T1	cleared	deep	-	-	rholang/src/scheduler.rs:EffectMode::from_str	-	read in full (138 lines): DfsPath and EffectMode, pure data with no I/O and no partiality. Three things checked rather than assumed. (1) The configured vocabulary and the parser agree exactly: defaults.conf:356 documents 'dfs | gate | relaxed | relaxed-validated' and FromStr accepts precisely those four, rejecting everything else by naming the alternatives — and the test also refuses a silent fallback to the default, which is the failure mode a mode string exists to prevent. (2) ForkJoin is deliberately not name-addressable, pinned by its own test so giving it a configured name would be a deliberate act. (3) DfsPath's tuple field is public, and that is not an escape: it is not a refinement and carries no invariant it could surrender — the u16 note is about how paths are built by child(), not a predicate the constructors enforce. Nothing found.
 file	rholang/src/storage_printer.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/substitute.rs	T3	deferred	-	-	-	-	-	-
@@ -386,10 +386,10 @@ file	rspace/src/errors.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/factory.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hashing/mod.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hashing/stable_hash_provider.rs	T3	deferred	-	-	-	-	-	-
-file	rspace/src/history/codecs.rs	T1	deferred	-	-	-	-	-	-
+file	rspace/src/history/codecs.rs	T1	cleared	deep	-	-	rspace/src/history/codecs.rs:Blake2b256HashCodec::decode	-	read in full (57 lines) against its oracle while closing R32's wave. The codec is 32 bytes fixed, decode refuses any other length by name before constructing a hash, and both halves are pinned by a round trip that asserts the exact bytes and a four-length refusal arm. One interface difference from the Scala and it is the safer direction: scodec's codec is stream-based, so bytes(size = length) decodes a 32-byte prefix and leaves the remainder, while this Codec::decode is whole-value and refuses a 33-byte input that scodec would have accepted; a store handing back the wrong value length is a corruption, and refusing it is what a key codec should do.
 file	rspace/src/history/cold_store.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/history/export.rs	T3	deferred	-	-	-	-	-	-
-file	rspace/src/history/history_action.rs	T1	deferred	-	-	-	-	-	-
+file	rspace/src/history/history_action.rs	T1	cleared	deep	-	-	rspace/src/history/history_action.rs:HistoryAction::trim	-	read in full (103 lines) against HistoryAction.scala: two variants, a key() accessor and a trim() that drops one byte for both, with three tests. **The one thing worth naming is already registered, and that is the finding:** trim() on an empty key panics, because KeySegment::tail indexes value[1..], and a #[should_panic] test pins it rather than a guard preventing it. That is not new here and it is not a defect this read found, it is C61's recorded residual: the tree never trims past a leaf, the panic is latent, and C61's account says in as many words that the pass leaves it there because carrying the invariant would be the ~30-site rewrite its plan calls option 7. Recorded as read-and-already-registered rather than re-reported, because a reader of this row should be able to tell a new defect from a known one.
 file	rspace/src/history/history_reader.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/history/history_repository.rs	T1	deferred	-	-	-	-	-	-
 file	rspace/src/history/history.rs	T3	deferred	-	-	-	-	-	-
@@ -399,8 +399,8 @@ file	rspace/src/history/instances/rspace_history_reader_impl.rs	T3	deferred	-	-	
 file	rspace/src/history/key_segment.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/history/mod.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/history/radix_tree.rs	T3	deferred	-	-	-	-	-	-
-file	rspace/src/history/root_repository.rs	T1	deferred	-	-	-	-	-	-
-file	rspace/src/history/roots_store.rs	T1	deferred	-	-	-	-	-	-
+file	rspace/src/history/root_repository.rs	T1	cleared	deep	-	-	rspace/src/history/root_repository.rs:RootRepository::validate_and_set_current_root	-	read in full (93 lines) against RootRepository.scala, and it is line-for-line faithful: commit delegates to recordRoot, current_root records and returns the empty root on a first read (the Scala's None arm), and validate_and_set_current_root turns the store's refusal into an error. The one difference is the error's shape, not its meaning: the Scala raises RuntimeException("unknown root") and the port returns Err("unknown root"), which is this tree's error convention on every trait it converted (Result<_, String>). Both behaviours are pinned two-sidedly: an empty store yields and records the empty root AND the validated setter then accepts it, and a refused root leaves the current root where it was rather than moving to a root that does not exist.
+file	rspace/src/history/roots_store.rs	T1	finding	deep	-	-	rspace/src/history/roots_store.rs:RootsStore::current_root C164	C164	the read's finding, and it is fixed: current_root handed the store's value straight to Blake2b256Hash::from_byte_array, which asserts a 32-byte length, so a truncated current-root panicked the node on the path every state read goes through. One file over, codecs.rs performs the identical conversion and does guard it — the discipline existed and was not applied where the same bytes are read. Guarded now, falsified both ways.
 file	rspace/src/hot_store_action.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hot_store.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hot_store_trie_action.rs	T3	deferred	-	-	-	-	-	-
@@ -459,7 +459,7 @@ file	shared/src/metrics.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/monixable.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/path_ops.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/printer.rs	T3	deferred	-	-	-	-	-	-
-file	shared/src/rate_limiter.rs	T1	deferred	-	-	-	-	-	-
+file	shared/src/rate_limiter.rs	T1	cleared	deep	-	-	shared/src/rate_limiter.rs:RateLimiter::allow	-	read in full (76 lines): a fixed window with a Mutex-guarded window_start and an AtomicU64 count. Three things checked, since this is the DoS bound several unauthenticated surfaces rest on. (1) The bound holds, and the atomic read-modify-write is what makes it hold: allow() returns count.fetch_add(1) < max_per_sec, so at most max_per_sec callers can ever observe a value below the cap within a window — a plain load-then-store would admit an unbounded number under contention. (2) The counts reset per window and a refused request still increments, which cannot admit more than the cap and cannot overflow a u64 in a one-second window. (3) The one real limitation is already registered and is not this module's: the limiter is per-surface and not per-client, so one caller can spend the whole budget for everyone — that is R17's finding, recorded against the faucet and the ingress class, and it is a property of where the limiters are installed rather than of this type. Window rollover can lose an increment when a reset races another thread's fetch_add; the effect is to admit a couple more across a boundary, which is the shape of a fixed window and not a defect. Three tests, including that zero closes the surface rather than making it unlimited. Nothing found.
 file	shared/src/refined.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/seq_ops.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/serialize.rs	T3	deferred	-	-	-	-	-	-
@@ -633,3 +633,6 @@ tool	tools/emit-lean-laws.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/emit-review-ledger.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/next-audit-number.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/run-integration-tests.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/emit-findings-register.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/audit-status.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/todo.sh	T3	deferred	-	-	-	-	-	-

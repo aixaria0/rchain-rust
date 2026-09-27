@@ -395,6 +395,9 @@ pub struct NodeProgram {
     grpc_max_recv_message_size: usize,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    // Whether the faucet routes are mounted (AUDIT R34): dev mode and a deployer key, resolved where
+    // both are known and passed through to `acquire_http_server`.
+    faucet_enabled: bool,
     enable_txn_api: bool,
     enable_devnet_cors: bool,
     enable_devnet_admin_public: bool,
@@ -414,6 +417,7 @@ impl NodeProgram {
             web_api,
             pos_read,
             admin_web_api,
+            faucet_enabled,
             shards,
             block_report_api,
             reporter,
@@ -484,6 +488,7 @@ impl NodeProgram {
                     pos_read,
                     max_connection_idle,
                     enable_reporting,
+                    faucet_enabled,
                     stop,
                 )
                 .await
@@ -1021,6 +1026,11 @@ pub async fn setup_node_program(
         .as_deref()
         .and_then(|hex| base16::decode(hex))
         .map(PrivateKey::new);
+    // **Resolved before the key is moved into the API**, because this is the one place both halves
+    // are in hand (AUDIT R34). `WebApiImpl::capabilities` derives the same predicate from the block
+    // API's `dev_mode` and its own key, asynchronously, which a synchronously-built router cannot
+    // consult; the two values are the same pair the faucet handler refuses without.
+    let faucet_enabled = conf.dev_mode && faucet_deployer_key.is_some();
     let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
         routing.clone(),
         primary_parts.transaction_api.clone(),
@@ -1078,6 +1088,7 @@ pub async fn setup_node_program(
             .map_err(|e| e.to_string())?,
         max_connection_idle: conf.api_server.max_connection_idle,
         enable_reporting: conf.api_server.enable_reporting,
+        faucet_enabled,
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,

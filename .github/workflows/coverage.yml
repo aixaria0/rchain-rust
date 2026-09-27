@@ -1,69 +1,67 @@
-# Test + audit gate + coverage gate.
+# The coverage measurement, on demand.
 #
-# Runs the full test suite, the type-system audit gate, the coverage-register gate, and
-# cargo-llvm-cov with a minimum line-coverage threshold. The threshold is raised only after
-# measuring, to two points below the measured value -- never to a number the plan hopes to reach.
+# **What this file used to be.** It triggered on every push to `dev` and `main` and on every pull
+# request, and it ran the whole test suite plus three audit gates — so every commit paid for a 45-minute
+# job, and the largest of those gates was a 1,453-line linter whose failures all meant "a document
+# disagrees with the tree". It is now on demand, for one measurement, and the per-push work lives in
+# `ci.yml` where it belongs.
+#
+# **Why it still exists rather than being deleted.** `nightly.yml` measures coverage on a schedule; this
+# measures it when someone asks, which is the case that matters after a change to the test surface — you
+# want the number before the next night, not after it. Deleting it would leave `make coverage` as the
+# only way to get it, and that needs a local toolchain.
+#
+# The floors are a regression tripwire, not a target: raise them only *after* measuring.
 
-name: test & coverage
+name: coverage
 
 on:
-  push:
-    branches: [dev, main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
-  # Least privilege, stated rather than defaulted (AUDIT C137). The default token is
-  # read/write in older repositories and the default is not a decision anyone made here.
+  # Least privilege, stated rather than defaulted (AUDIT C137). The default token is read/write in
+  # older repositories and the default is not a decision anyone made here.
   contents: read
 
 jobs:
-  test-and-audit:
+  coverage:
     runs-on: ubuntu-latest
-    # A ceiling, because this job had none: an unbounded job is one that can hold a runner for hours
-    # without anyone being told. The heavy measurement is the nightly's now, and 45 minutes is the
-    # suite plus the two static gates with headroom for a cold cache.
-    timeout-minutes: 45
+    # `llvm-cov` over the whole workspace is the longest thing this repository runs: an unbounded job
+    # is one that can hold a runner for hours without anyone being told. 90 minutes is the measured
+    # cost plus headroom for a cold cache.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
-      - name: Type-system audit gate
-        run: tools/audit-type-system.sh
-
-      - name: Test-coverage register gate
-        # `spec/TEST-COVERAGE.md` must match the tree: no overstated counts, no named test that does
-        # not exist, no phantom `#[ignore]` section, and no source file that is neither tested nor
-        # an exemption row with a reason class. Hard mode: every check fails the build. (The flag
-        # this used to carry — `--deferred-ok` — was dropped when the census sweep closed, so that
-        # moment is a visible diff rather than somebody's memory.)
-        run: tools/audit-test-register.sh
-
-      - name: Vendored-source gate
-        # The blessed contracts under `casper/src/genesis/resources/` are the **oracle's own source
-        # text**, vendored and compiled in with `include_str!`, so an edit to one is a specification
-        # change wearing a comment's clothes: the contract still parses, still installs, still passes
-        # its tests, and nothing records that the text is no longer the oracle's. Two such edits had
-        # already happened and both were found by hand — by diffing the tree against `legacy/` while
-        # reading for something else — which is why this is a script.
-        #
-        # It lives here rather than in `check-lean` because it is a static audit of the tree and not a
-        # build of the specification. Until now it was invoked only by the `Makefile`'s
-        # `check-register` target, and **CI never runs the Makefile** — so the gate existed, passed,
-        # and could not fail anyone. `tools/audit-instruments.sh` reported exactly that, and its
-        # check is the reason this step is here rather than in a note.
-        run: tools/audit-vendored-sources.sh
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6db3a280da9eee4283c045c7431ab5116f1a0089 # cargo-llvm-cov
 
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
+      - name: Coverage
+        # The line and function floors, and why the second is a *function* floor (AUDIT C107): the
+        # audit's item asked for `--branch`, and the toolchain refuses it (`-Z coverage-options=branch`
+        # on the pinned 1.95.0), so the closest instrument available is function coverage.
+        #
+        # `floor = floor(measured) - 2`. That rule was machine-checked by check 11 of
+        # `tools/audit-test-register.sh` until 2026-09-27, when the gate was deleted; the rule still
+        # describes how these numbers were arrived at, and re-running this job is what reconciles them.
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
-      - name: Test
-        # The suite, **uninstrumented**. `cargo llvm-cov` is how coverage is *measured*, and it moves
-        # the whole workspace through a codegen profile of its own to do it — so running it per push
-        # meant every push paid for a full instrumented rebuild to learn what a plain `cargo test`
-        # already answers. Correctness is a per-push gate; coverage is a nightly measurement, and the
-        # floors it enforces live with the nightly job.
-        run: cargo test --workspace --all-features
+      - name: Emit the ledger
+        # `spec/COVERAGE-LEDGER.md` is the per-file ranking and the floor, emitted from the lcov this
+        # job just produced. A measurement that is not emitted is a number nobody reads.
+        run: tools/emit-coverage-ledger.sh
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
+        with:
+          files: lcov.info
+          fail_ci_if_error: false

@@ -164,12 +164,12 @@ to `rholang/src/native_state.rs`, the native replacement for `legacy/casper/src/
 The Scala contract is the **differential reference** — the port must satisfy the law, and where the
 contract's behaviour is the law, the row cites its line. The design decisions are in
 [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) (`## The staking vault`, `## The epoch`) and the
-epoch-boundary deviations in `spec/AUDIT.md` §6.
+epoch-boundary deviations in `spec/audit/passes.md` §6.
 
 | # | Law | Where it lives |
 |---|---|---|
 | 44 | membership takes effect at an **epoch boundary**: the sequence runs only when `blockNumber % epochLength = 0`; a bond is pooled but not activated, a withdrawal is staged but not moved, a claim is not paid | `rholang/src/native_state.rs`'s `close_block` gate (`is_epoch_boundary`); the machine is `Rchain/Pos.lean` (`isBoundary`, `epochStep`, `closeBlock`: commit → move → pay → reselect, in `close_block`'s order, with the gate *outside* the transition), witnessed by `closeBlock_off_a_boundary`, `a_bond_pools_but_does_not_activate` and `a_boundary_activates_the_pool` |
-| 45 | the split: `pot * (bondᵢ / minimumBond) / (activeBonds / minimumBond)` per active validator, out of `pot = posBalance − totalBond − totalWithdraw − committedRewards`, committed per validator and paid only when the validator leaves | `Rchain/Pos.lean` (`rewardPot`, `reward`) — the formula is the Scala's `getCurrentEpochRewards` (`Pos.rhox:241-256`) and the tie to the Rust is named (`an_epoch_splits_the_pot_and_keeps_the_dust`). Where the contract is undefined — `minimumBond` 0, or a normaliser of 0 — it divides by zero and faults; the port pays zero, registered in `spec/AUDIT.md` §6 |
+| 45 | the split: `pot * (bondᵢ / minimumBond) / (activeBonds / minimumBond)` per active validator, out of `pot = posBalance − totalBond − totalWithdraw − committedRewards`, committed per validator and paid only when the validator leaves | `Rchain/Pos.lean` (`rewardPot`, `reward`) — the formula is the Scala's `getCurrentEpochRewards` (`Pos.rhox:241-256`) and the tie to the Rust is named (`an_epoch_splits_the_pot_and_keeps_the_dust`). Where the contract is undefined — `minimumBond` 0, or a normaliser of 0 — it divides by zero and faults; the port pays zero, registered in `spec/audit/passes.md` §6 |
 | 46 | the split **does not conserve**: `Σ rewards ≤ pot`, the difference being the dust of two integer divisions — which stays in the pot for the next epoch | `Rchain/Pos.lean` (`sum_rewards_le_pot`, `list_sum_div_le`, `div_add_div_le`, `the_dust_is_real`), with a strict instance `decide`d: minimum bond 3, bonds `[4, 5]`, pot 10 — **six distributed of ten** |
 | 47 | a withdrawal is **staged**: the request records `quarantineLength + epochLength * (1 + blockNumber / epochLength)` and changes nothing else; the validator leaves the pool at the next boundary and is paid `bond + committed rewards` at the first boundary past its quarantine | `rholang/src/native_state.rs` (`withdraw`, `close_block`'s move and pay steps); `Rchain/Pos.lean`'s `stage`, `movePending`, `dueClaims`, `payoutOf`, with the three stages witnessed separately (`a_staged_withdrawal_moves_no_coins`, `the_move_escrows_the_bond_and_pays_nothing`, `a_due_claim_is_paid_its_bond_plus_its_committed`, `a_claim_before_its_deadline_is_not_paid`) and the ordering by `the_reward_is_committed_before_the_leave` |
 
@@ -219,7 +219,7 @@ transfer rather than a mint. The row that found this the hard way is the port's 
 the Coop vault without debiting anything: the staking vault (law 45's pot source, `pos:vault`) is what
 turned that into a transfer, and `total_rev` in the Rust tests is what holds it.
 
-Two deviations from the contract are recorded in `spec/AUDIT.md` §6 and matter here: the active set is
+Two deviations from the contract are recorded in `spec/audit/passes.md` §6 and matter here: the active set is
 chosen **top-N by descending stake** (the contract takes the first N entries of the bonds map in key
 order, under a `TODO` for a random selection), and a slashed validator with a staged withdrawal is
 removed from the pending map rather than left as a permanent zero-claim tombstone.
@@ -236,7 +236,7 @@ ported.
 
 Law 49 is also a **hard fork**: the refund changes the recorded `PCost` of every deploy that matches, so a
 chain that accepted such a block under the old (over-charging) rule diverges on it. Registered in
-`spec/AUDIT.md` §6 with the reason the old value was already wrong.
+`spec/audit/passes.md` §6 with the reason the old value was already wrong.
 
 ---
 
@@ -259,12 +259,18 @@ chain that accepted such a block under the old (over-charging) rule diverges on 
 
 | Command | What it refuses |
 |---|---|
-| `tools/check-lean-conformance.sh` | a failed Lean or Coq build, a `sorry`/`admit`, a module `Rchain.lean` does not import, a **stale or untracked corpus**, a corpus with no consumer, a consumer that disagrees with its corpus, and a law-39 catalog urn with no row in `spec/API-SCHEMA.md`. It is the `formal` job in CI. |
+| `tools/check-lean-conformance.sh` | a failed Lean or Coq build, a `sorry`/`admit`, a module `Rchain.lean` does not import, a **stale or untracked corpus**, a corpus with no consumer, a consumer that disagrees with its corpus, and a law-39 catalog urn with no row in `spec/API-SCHEMA.md`. It is the `formal` job in the nightly. |
 | `tools/audit-type-system.sh` | production `panic!`/`unsafe`/silent conversion — the no-silent-partiality discipline |
-| `tools/audit-test-register.sh` | a register that overstates the tree, a named test that does not exist, **a law row claiming coverage without naming a Lean module, a corpus and a consumer that exist** |
+| `tools/audit-status.sh` | a check-off that disagrees with `spec/findings.tsv`, a `todo` that names nothing, a `done` row whose evidence resolves to nothing |
 
-The third of those is the one that answers "which law would have caught the eleventh failure?":
-`spec/AUDIT.md` §20 maps every incident to its law and its case.
+**A third gate used to be here** — `tools/audit-test-register.sh`, which refused a register that
+overstated the tree, a named test that did not exist, and a law row claiming coverage without naming a
+Lean module, a corpus and a consumer that exist. It was deleted on 2026-09-27: 1,453 lines, 78.5
+seconds, and every failure meant a document disagreed with another document.
+
+The gates answer "would this have been caught?"; the question *"which law would have caught the
+eleventh failure?"* is answered by `spec/audit/passes.md` §20, which maps every incident to its law
+and its case.
 
 Per-law status, source-of-truth pointers, and Rust realization are in
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); the machine-readable rows are

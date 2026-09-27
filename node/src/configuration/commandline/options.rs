@@ -579,7 +579,7 @@ pub struct Run {
     /// multisig vault that receives slashed stake (`Pos.rhox:122-128`); this port's native model has no
     /// multisig vault, so they are read as the initial *trusted stakeholder* set instead — the keys
     /// allowed to admit validators (`casper/src/genesis/mod.rs::build_pos_genesis`, and see
-    /// `spec/AUDIT.md` §6). An operator setting them for slashing-vault control is also granting
+    /// `spec/audit/passes.md` §6). An operator setting them for slashing-vault control is also granting
     /// admission rights.
     #[arg(long = "pos-multi-sig-public-keys", num_args = 1..)]
     pub pos_multi_sig_public_keys: Option<Vec<String>>,

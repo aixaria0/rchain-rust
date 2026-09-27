@@ -102,6 +102,50 @@ jobs:
         # peaks at ~6.5 GiB and is deliberately not a CI job (AUDIT C107).
         run: cargo bench -p rspace-bench --no-run
 
+  test:
+    name: Tests and the node's static gates
+    runs-on: ubuntu-24.04
+    # 45 minutes is the suite plus the two static gates with headroom for a cold cache.
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$(cat rust-toolchain.toml | grep channel | cut -d'"' -f2)" --profile minimal
+          rustup component add rustfmt clippy
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Audit status
+        # **First, before any gate.** The status is the answer to "what is left"; a run that prints a
+        # wall of `ok` without it answers a question nobody had. `--quiet` keeps it to one line, and it
+        # is also a check: it refuses a check-off that disagrees with the authored TSV.
+        run: tools/audit-status.sh --quiet
+
+      - name: Type-system gate
+        # The four **hard** classes only -- production `unwrap()`/`panic!`/`unsafe`, a silent fallible
+        # conversion, a refinement surrendering its invariant. This is the one gate here that catches a
+        # defect in the *node*, and it costs ~30 s. The counted classes were ratcheted against a
+        # baseline file until 2026-09-27 and are not enforced any more: a number that fails the build
+        # whenever it moves is a build step that has to be edited, not a check.
+        run: tools/audit-type-system.sh
+
+      - name: Vendored-source gate
+        # The blessed contracts under `casper/src/genesis/resources/` are the **oracle's own source
+        # text**, vendored and compiled in with `include_str!`, so an edit to one is a specification
+        # change wearing a comment's clothes. Seconds, and it guards the spec rather than a document
+        # about the spec.
+        run: tools/audit-vendored-sources.sh
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
   dependencies:
     name: Dependency audit
     runs-on: ubuntu-24.04

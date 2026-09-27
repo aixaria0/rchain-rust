@@ -619,7 +619,7 @@ mod tests {
     /// both. Its *positive* cases cannot be written here at all: a binary element is a bit-packed
     /// scodec layout whose only producer is the typed writer (the merge path, covered by
     /// `rspace.rs`'s tests), so a hand-written leaf is not merely awkward to produce — it panics,
-    /// which is the AUDIT §16 C15 behaviour pinned immediately below.
+    /// which is the AUDIT C15 behaviour pinned immediately below.
     #[tokio::test]
     async fn the_binary_reader_reads_the_same_trie_as_the_typed_one() {
         let rig = Rig::new().await;
@@ -668,7 +668,7 @@ mod tests {
     }
 
     /// A binary leaf whose bytes are not a valid element for its kind **panics** rather than
-    /// returning an error — AUDIT §16 C15, reached through this reader. The bytes come from this
+    /// returning an error — AUDIT C15, reached through this reader. The bytes come from this
     /// test's own store, which is exactly the C15 situation (a corrupted or truncated *local* entry
     /// aborts the merge); a peer-supplied one cannot reach this path, because inbound packets go
     /// through prost. These two tests exist so that giving `BitReader` a `Result` fails them, which

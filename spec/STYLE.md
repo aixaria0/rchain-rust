@@ -37,9 +37,10 @@ The reason it is a rule rather than a preference: **the register's own checks ve
 file exists, and nothing read the lines**, so five rows had drifted silently by 2026-09-24 — law 28
 whole (its section moved ~450 lines), law 14a's finalizer cites, law 44's `debit_pos_vault` (cited at
 a *call site*), law 9's concatenation (moved to another file), law 3's `par_concat` (imported, not
-defined in the cited file). `tools/audit-test-register.sh`'s check 9 now enforces this: every
-`path:line` a row carries must resolve, be inside the file, and — the clause that catches the rot —
-its ±8-line window must contain an identifier the row itself names. The model's names are snake_case
+defined in the cited file). A check enforced this from 2026-09-24 to 2026-09-27 — every `path:line` a
+row carried had to resolve, be inside the file, and hold an identifier the row itself named — and it
+was deleted with its gate on 2026-09-27, so **this is a rule a reader holds now**, which is the weaker
+thing the check existed to replace. The model's names are snake_case
 and the oracle's are camelCase, so the check compares both spellings (`check_min_messages` against
 `checkMinMessages`).
 

@@ -188,7 +188,7 @@ async fn run_resumes_an_existing_non_terminal_record() {
 
     // Seed leg A as already prepared, so only leg B is left for the resume to collect. (The vote is
     // hand-written, so A has no real escrow: its later commit is rejected by the participant and the
-    // coordinator ignores that by design — AUDIT.md §15 C2 — which is why A's deploy list is only
+    // coordinator ignores that by design — spec/audit/passes.md §15 C2 — which is why A's deploy list is only
     // asserted to contain no *prepare*.)
     let mut record = seeded_record(b"resume", "dest");
     record.record_vote(shard("/root"), Vote::Ready, None);
@@ -287,7 +287,7 @@ async fn recover_in_flight_propagates_a_ledger_error() {
     assert!(err.contains("store"), "{err}");
 }
 
-/// A phase-two failure does not undo the decision — the documented residual (AUDIT.md §15, C2).
+/// A phase-two failure does not undo the decision — the documented residual (spec/audit/passes.md §15, C2).
 ///
 /// Both legs prepare, the decision is written, and then leg B's **commit** deploy is rejected. The
 /// record stays `Committed`: the commit point is the durable decision, not its delivery, and phase

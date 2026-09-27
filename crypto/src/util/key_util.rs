@@ -38,18 +38,35 @@ pub fn write_private_key(path: &Path, bytes: impl AsRef<[u8]>) -> Result<(), Str
     write_with_mode(path, bytes.as_ref(), 0o600)
 }
 
+/// Open (creating or truncating) `path` and leave it at `mode` — **narrowed before any content is
+/// written, which is the whole point of splitting this out** (AUDIT C165).
+///
+/// `OpenOptions::mode` applies only when the file is *created*, so a write over a pre-existing file
+/// keeps whatever permissions it had. C8 found that and added a `set_permissions` call — **after the
+/// write**, with a comment saying that is what keeps the content from being briefly readable under
+/// the wider mode. It is the reverse: the secret was written into the still-wide file and only then
+/// narrowed, so a pre-existing `0644` `rnode.key` was world-readable for the length of the write. The
+/// order is inverted here, and the split exists so the order is testable: a test can call this on a
+/// wide file and assert the mode is already narrow, with nothing written yet.
+#[cfg(unix)]
+fn create_owner_only(path: &Path, mode: u32) -> Result<fs::File, String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(mode)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
 #[cfg(unix)]
 fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true).mode(mode);
-    let mut file = opts.open(path).map_err(|e| e.to_string())?;
-    file.write_all(bytes).map_err(|e| e.to_string())?;
-    // `OpenOptions::mode` only applies when the file is *created*, so a write over a pre-existing
-    // file (an `rnode.key` copied in by hand, or one this code wrote before R6 narrowed the mode)
-    // would keep whatever permissions it had. Narrow it explicitly, after the write so the content
-    // is never briefly readable under the wider mode.
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())
+    create_owner_only(path, mode)?
+        .write_all(bytes)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(not(unix))]
@@ -231,7 +248,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The private key file must be owner-only (R6 in `spec/AUDIT.md` §11: it was written with the
+    /// The private key file must be owner-only (R6 in `spec/audit/passes.md` §11: it was written with the
     /// process umask, so on a default `0022` it landed world-readable). The public key files are
     /// deliberately not restricted — they are meant to be shared — so the two modes are asserted
     /// together, and a `write` swapped back in for `write_private_key` fails this test.
@@ -271,6 +288,44 @@ mod tests {
         .unwrap();
         let mode = fs::metadata(&private_path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "re-write left mode {mode:o}");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// **The mode is narrowed *before* the secret is written, not after** (AUDIT C165).
+    ///
+    /// The test above asserts the mode the file *ends* at, and **both orders satisfy it** — which is
+    /// why C8's fix passed while leaving the window open. C8 was about the `set_permissions` call
+    /// being *missing*; it was added **after** the write, with a comment claiming that is what keeps
+    /// the content from being briefly readable under the wider mode. It is the reverse: a
+    /// pre-existing `0644` `rnode.key` had the secret written into it while still world-readable and
+    /// was narrowed only afterwards.
+    ///
+    /// This asserts the property the *order* carries, at the one point where it is observable: after
+    /// the file is opened and **before** any content is written. Falsified by moving the
+    /// `set_permissions` call back below `write_all`, and it is the only test that can see it.
+    #[test]
+    fn the_mode_is_narrowed_before_anything_is_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir_named("mode-order");
+        let path = dir.join("pre-existing.key");
+        fs::write(&path, b"an old key").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let file = create_owner_only(&path, 0o600).expect("open a wide file");
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the file must be narrow *before* the write, not after it: {mode:o}"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            0,
+            "and truncated, so nothing is sitting there under the wide mode"
+        );
+        drop(file);
 
         fs::remove_dir_all(&dir).unwrap();
     }

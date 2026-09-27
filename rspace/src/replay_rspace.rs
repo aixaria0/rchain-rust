@@ -176,6 +176,26 @@ where
         patterns: &[P],
         comm: &Comm,
     ) -> std::result::Result<Option<Vec<ConsumeCandidate<C, A>>>, crate::errors::RSpaceError> {
+        // **Why this does not sort, where play does** (AUDIT R37, and this is the written
+        // disposition the row asked for).
+        //
+        // `RSpace::run_matcher_consume` reads a channel's data and then sorts it by `Datum::source`,
+        // "so the sorted-first matching datum is chosen regardless of insertion order". This side
+        // leaves store order alone, and it is correct because the two are not choosing among the same
+        // set: `matches` above keeps only the data the *recorded* COMM names — `comm.produces` holds
+        // the sources, and `times_repeated` the count — so what survives the filter is the recording's
+        // choice, not the store's. Play has to sort because it picks among everything on the channel;
+        // replay has already been told which datum it is.
+        //
+        // The order that remains cannot change the answer, and the reason is worth stating because it
+        // is the whole argument: **two data with the same `source` are the same datum.**
+        // `Produce::apply` (`trace/event.rs:24-36`) hashes `(channel, datum, persistent)`, so the
+        // source is a content hash over everything that distinguishes one datum from another — if the
+        // filter above admits more than one, they are the same bytes and swapping them is swapping
+        // nothing. If that ever stops being true — if `matches` were widened to a predicate admitting
+        // *distinct* content — this side would silently pick by store order while play picked by hash,
+        // and a replay would diverge from the play it is replaying. That is the fragility R37 names,
+        // and it is a property of the filter rather than of this loop.
         let store = self.space.current_store();
         let matcher = self.space.matcher();
         let mut channel_to_indexed_data: BTreeMap<C, Vec<(Datum<A>, i64)>> = BTreeMap::new();

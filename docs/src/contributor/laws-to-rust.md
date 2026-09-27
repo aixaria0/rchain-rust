@@ -127,6 +127,26 @@ The whole model — and the soundness theorems it must satisfy — is specified 
 - **Run the machine gate**: `tools/audit-type-system.sh` confirms zero production
   `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies every law.
 
+## Working the audit
+
+`spec/AUDIT.md` is a **check-off**: every finding the adversarial audit records, in three states
+(`todo` · `in progress` · `done`), with the count of T1 modules nobody has read beside them. That last
+number is the one to carry: a `done` row says the fix is in the tree and names its evidence, not that
+the fix is correct.
+
+The loop is one command, and it is seconds:
+
+```sh
+make status                       # what is left, and whether the check-off is current
+tools/todo.sh start <id>          # todo -> in progress
+tools/todo.sh done  <id> <evidence>   # -> done, with the test or path that holds it
+```
+
+`make check` adds `cargo fmt --all --check`. The rest — the whole-tree pointer scan, the review-ledger
+join, the Lean and Coq gates, the instrumented coverage run — are **boundaries**, not per-edit steps:
+`make check-register` at the end of a unit of work, `make deep` (or the nightly) at the end of a body
+of it. See the `deep` target's own note for the measured costs.
+
 The canonical (terse) version of this mapping, with per-law Scala source-of-truth and Lean targets, is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The formal type discipline is
 [`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md).

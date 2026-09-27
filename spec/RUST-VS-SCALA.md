@@ -5,7 +5,7 @@ changed *how we reason about* the code's fragile patterns, bugs, and exploits �
 node can now **surpass** the Scala original for production readiness, on top of the JVM's garbage
 collection and memory problems.
 
-It is the companion to [`AUDIT.md`](AUDIT.md) (the findings register) and
+It is the companion to [`AUDIT.md`](AUDIT.md) (the findings check-off) and
 [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md) (the type discipline). Where Scala and the specification
 disagree, the specification is the oracle; the Scala code is reference material whose latent bugs are
 **documented, not reproduced**.
@@ -102,7 +102,7 @@ invariants.
   slashing to the Coop vault (documented in `spec/RUST-FIRST.md`, modelled in `spec/Rchain/Pos.lean`).
   Still deferred: the vault **unforgeable-name capability** (the vault stays a balance map keyed by
   REV address) and the `revvaultexport` tooling.
-- **Accepted-faithful residuals** (by design, not defects — see `AUDIT.md` §5/§11): plaintext
+- **Accepted-faithful residuals** (by design, not defects — see `spec/audit/passes.md` §5/§11): plaintext
   external-IP discovery (M7), the DAG `seen`-cache Θ(N²) *residency* (H6 — its per-clone cost is no
   longer paid: `seen` is shared behind `Arc`, and neither reading nor extending the DAG copies it,
   per the 2026-09-24 pass; the residual *size* is now reported rather than estimated, by the DAG's own
@@ -113,7 +113,7 @@ invariants.
 
 The earlier "deferred/unwired" surface (Kademlia, the HTTP transaction API, block reporting, the
 rholang parser's genesis gaps, peer store-items ingress) is now **wired and fixed** (see
-`AUDIT.md` §8/§11); the `rho:regex` system process never existed in the Scala oracle (the `regex`
+`spec/audit/passes.md` §8/§11); the `rho:regex` system process never existed in the Scala oracle (the `regex`
 crate was orphaned and has been removed). The audit gate (`tools/audit-type-system.sh`) is **clean** — zero production
 `panic`/`unsafe`/silent-conversion, with the remaining `assert!` sites whitelisted as documented
 internal invariants; equivocation rejection and finalizer fringe advancement now have regression tests
@@ -123,7 +123,7 @@ internal invariants; equivocation rejection and finalizer fringe advancement now
 
 ## 5. Cross-links
 
-- [`AUDIT.md`](AUDIT.md) — the adversarial findings register and Scala-deviation log.
+- [`AUDIT.md`](AUDIT.md) — the check-off; [`audit/passes.md`](audit/passes.md) — the pass record and the Scala-deviation log (§6).
 - [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md) — the ρ→CoC type discipline and refinement types.
 - [`RHO-CALCULUS.md`](RHO-CALCULUS.md) — the ρ-calculus grammar, sorts, and operations.
 - [`INVENTORY.md`](INVENTORY.md) — the invariant catalog.

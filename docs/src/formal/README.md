@@ -23,7 +23,7 @@ its Rust realization. These pages point at those rather than restating them.
 ## What the set is, and what it is not
 
 - **It is a rendering, not the authority.** Every claim about a status belongs to the register; every
-  claim about what the *code* does belongs to `spec/AUDIT.md`; the per-row catalog of invariants, sources
+  claim about what the *code* does belongs to `spec/AUDIT.md` (the check-off) and `spec/audit/passes.md` (the evidence); the per-row catalog of invariants, sources
   and Rust types is `spec/INVENTORY.md`. These pages exist to be read by a person.
 - **Two relations run through all of it.** The **corpus** (`spec/conformance/*.tsv`, emitted from the
   Lean definitions and read back from the node by a Rust consumer) is what ties a model to the code; and

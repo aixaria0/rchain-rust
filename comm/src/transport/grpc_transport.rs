@@ -376,7 +376,7 @@ mod dispatch_bound_tests {
             .expect_err("a full dispatch queue must refuse");
         // The refusal arrives as `MessageTooLarge`: `process_error` maps `ResourceExhausted` to it
         // (the ported `processError`), so a saturated *queue* is reported to callers as a *size*
-        // problem. Pinned as the observable contract, and recorded as AUDIT.md §15 C4 — the two
+        // problem. Pinned as the observable contract, and recorded as AUDIT.md C4 — the two
         // causes are indistinguishable to an operator, though both fail closed.
         assert!(
             matches!(err, crate::errors::CommError::MessageTooLarge(_)),

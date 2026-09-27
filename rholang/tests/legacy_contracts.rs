@@ -100,7 +100,7 @@ impl SkipReason {
 /// The remaining **70 reduce cleanly**. Getting there fixed four real defects in the port — a
 /// parenthesised expression was parsed as a one-element tuple (`Registry.rho` could not be reduced
 /// at all), the two logical connectives were swapped at the lexer and disjunction was unparseable,
-/// `++` was missing its Map/Set arms, and `+`/`-` were missing theirs. See `spec/AUDIT.md` §16.
+/// `++` was missing its Map/Set arms, and `+`/`-` were missing theirs. See `spec/audit/passes.md` §16.
 const SKIPS: &[(&str, SkipReason)] = &[
     // --- a dialect the grammar does not have (57) ---
     ("legacy/rholang/examples/linking/v0.1/LinkedArrayAndMapExample.rho", SkipReason::SupersededSyntax),
@@ -313,7 +313,7 @@ fn every_skip_entry_names_a_real_corpus_file() {
 /// The stack the corpus runs on. The parser and reducer recurse over the term, and the guard in
 /// `rholang/src/parser.rs` bounds *nesting* (`MAX_PARSE_DEPTH = 128`), not stack: each level enters
 /// ~16 nested parse functions, so the guard's limit costs ~3 MiB of stack in a debug build (and
-/// under 2 MiB in release — measured, see `spec/AUDIT.md` §16). `MakeMint.rho`, one of the node's
+/// under 2 MiB in release — measured, see `spec/audit/passes.md` §16). `MakeMint.rho`, one of the node's
 /// own genesis contracts, reaches parse depth 64. An explicit stack here beats a `RUST_MIN_STACK`
 /// invocation nobody will remember, and it documents the requirement where it is needed.
 const STACK: usize = 8 << 20;

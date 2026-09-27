@@ -108,7 +108,7 @@ proptest! {
     /// every participant".
     ///
     /// The abort goes in **first**, and that ordering is the law's shape, not a convenience: a
-    /// `Committed` record is terminal (C1's absorbing rule), so an abort arriving *after* the commit
+    /// `Committed` record is terminal (C160's absorbing rule), so an abort arriving *after* the commit
     /// point is correctly ignored — an abort prevents a commit only while the decision is still open.
     /// The absorbing half is pinned by `law29_a_terminal_record_never_changes_again` and by
     /// `a_commit_is_absorbing` in `gateway/ledger.rs`.

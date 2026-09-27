@@ -259,6 +259,17 @@ mod tests {
         (sk, address.to_base58())
     }
 
+    /// A REV address that is **not** the deployer's own.
+    ///
+    /// `key_and_address` derives both halves from one key, so its address *is* the deployer's — and
+    /// every faucet test in this module was dripping to it. That is AUDIT R33 exactly: the drip is a
+    /// transfer from the node's account to the node's account, which moves nothing, and nothing
+    /// refused it. With the refusal in place those tests would all fail for the wrong reason, so a
+    /// test that wants to exercise a real drip names somebody else.
+    fn faucet_target() -> String {
+        key_and_address().1
+    }
+
     fn api(block_api: StubBlockApi, deployer_key: Option<PrivateKey>) -> WebApiImpl {
         WebApiImpl::new(
             Arc::new(block_api),
@@ -365,11 +376,45 @@ mod tests {
         );
     }
 
+    /// **A drip to the deployer's own address is refused** (AUDIT R33).
+    ///
+    /// `build_transfer_term` signs a transfer from the deployer's account to whatever address is
+    /// asked for, and the genesis faucet's deployer **is** the funded account — so asking for the
+    /// deployer's own address builds a transfer that moves nothing between two accounts the node
+    /// already holds. It still spent one of that address's drips and submitted a deploy that pays
+    /// phlo to do it, and nothing refused it. Every test in this module was dripping to exactly that
+    /// address without noticing, which is what R33 means by a no-op that is not free.
+    ///
+    /// Two arms, so a refusal cannot pass for a fix on a faucet that refuses everything: the
+    /// self-drip is refused **by name and reason**, and a drip to anybody else still succeeds.
+    #[tokio::test]
+    async fn the_faucet_refuses_a_drip_to_the_deployers_own_address() {
+        let (sk, own) = key_and_address();
+        let web = api(StubBlockApi::default(), Some(sk));
+
+        let err = web
+            .faucet(&own)
+            .await
+            .expect_err("the deployer's own address is not a target");
+        assert!(
+            err.0.contains(&own) && err.0.contains("deployer's own address"),
+            "the refusal names the address and what is wrong with it: {}",
+            err.0
+        );
+
+        let target = faucet_target();
+        assert!(target != own, "the two keys differ");
+        web.faucet(&target)
+            .await
+            .expect("somebody else is a target");
+    }
+
     /// The faucet's per-address budget (R17) is enforced: ten drips for one address, the eleventh
     /// refused by name — the fix for a single caller draining the dev wallet.
     #[tokio::test]
     async fn the_faucet_enforces_its_per_address_budget() {
-        let (sk, address) = key_and_address();
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
         let web = api(StubBlockApi::default(), Some(sk));
 
         for i in 0..FAUCET_MAX_DRIPS_PER_ADDRESS {
@@ -393,11 +438,13 @@ mod tests {
         web.faucet(&other).await.expect("another address drips");
     }
 
-    /// With no deployer key the faucet refuses — but **after** charging the drip, because the
-    /// budget is taken before the key is checked. Pinned as behaviour (the message is the one an
-    /// operator needs: which flags to pass), with the ordering noted so it is a deliberate choice
-    /// rather than a surprise: a dev node without `--deployer-private-key` burns its drips without
-    /// serving any.
+    /// With no deployer key the faucet refuses, naming the flags an operator needs — and it refuses
+    /// **before charging the drip**, which is a change (AUDIT R33).
+    ///
+    /// This test used to pin the opposite as deliberate: the budget was taken before the key was
+    /// checked, so a dev node started without `--deployer-private-key` burned ten drips per address
+    /// serving nothing. That is the same defect as R33 one step over — a no-op that spends the budget
+    /// — and R33's fix needs the key *earlier* than the charge, so both went at once.
     #[tokio::test]
     async fn the_faucet_without_a_key_names_the_flags_it_needs() {
         let (_, address) = key_and_address();
@@ -410,13 +457,18 @@ mod tests {
             BlockApiException("faucet requires --dev-mode --deployer-private-key".to_string())
         );
 
-        // The drip was charged, so wiring a key afterwards still leaves one fewer.
+        // **The budget was not touched.** Wiring a key afterwards leaves the address its full
+        // allowance — the whole point of moving the check, and the arm that fails if the key is
+        // resolved after the charge again.
         let (sk, _) = key_and_address();
         let web = api(StubBlockApi::default(), Some(sk));
         for _ in 0..FAUCET_MAX_DRIPS_PER_ADDRESS {
             web.faucet(&address).await.expect("a drip");
         }
-        assert!(web.faucet(&address).await.is_err(), "the budget is spent");
+        assert!(
+            web.faucet(&address).await.is_err(),
+            "the budget is spent — ten, not nine"
+        );
     }
 
     /// A successful drip signs a transfer and hands it to the block API. The deploy the API
@@ -425,7 +477,8 @@ mod tests {
     /// non-empty signature — so the receipt's deploy id is the signature's hex.
     #[tokio::test]
     async fn a_drip_signs_a_transfer_and_pools_it() {
-        let (sk, address) = key_and_address();
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
         let stub = StubBlockApi::default();
         let deployed = stub.deployed.clone();
         let web = api(stub, Some(sk.clone()));
@@ -526,6 +579,24 @@ impl WebApi for WebApiImpl {
         if !RevAddress::is_valid(address) {
             return Err(BlockApiException(format!("Invalid REV address: {address}")));
         }
+        // **The key is resolved before anything is charged, and that ordering is two findings'
+        // fix.** AUDIT R33: a drip to the deployer's *own* address moves nothing — `build_transfer_term`
+        // signs a transfer from the deployer's account to the deployer's account — and it still spent
+        // one of the address's drips and submitted a deploy that pays a phlo cost to do nothing.
+        // Catching that needs the key, so the key has to come first; and once it does, a node started
+        // without `--deployer-private-key` stops burning its whole drip budget on refusals, which this
+        // module's own test used to pin as deliberate ("a dev node without a key burns its drips
+        // without serving any"). Both are the same shape: a no-op that spends the budget.
+        let sk = self.deployer_key.as_ref().ok_or_else(|| {
+            BlockApiException("faucet requires --dev-mode --deployer-private-key".to_string())
+        })?;
+        let own = faucet::deployer_rev_address(sk).map_err(BlockApiException)?;
+        if address == own {
+            return Err(BlockApiException(format!(
+                "faucet: {address} is the deployer's own address — the drip would move nothing between \
+                 two accounts the node already holds, and would still spend the budget"
+            )));
+        }
         // Per-address drip budget (R17): bound how much REV one address can pull, so a single caller
         // cannot monopolize the rate limit and drain the genesis dev wallet.
         {
@@ -538,9 +609,6 @@ impl WebApi for WebApiImpl {
             }
             *count += 1;
         }
-        let sk = self.deployer_key.as_ref().ok_or_else(|| {
-            BlockApiException("faucet requires --dev-mode --deployer-private-key".to_string())
-        })?;
         // Valid-from-now: a deploy with `valid_after_block_number = -1` is treated as expired once
         // the node is past `DEPLOY_LIFESPAN` (50) blocks, so anchor it to the current height.
         let vabn = self.block_api.status().await.latest_block_number;

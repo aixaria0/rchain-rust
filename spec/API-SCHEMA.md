@@ -89,7 +89,7 @@ Scala oracle (a documented extension) and this file is its definition.
 | `rho:registry:lookup` | 2 | **the stored value alone**; `Nil` when unknown | genesis `Registry.rho:397-401` + `legacy/rholang/examples/tut-registry.rho:8,42-47` | **fixed (C18)** — was `(uri, value)` |
 | `rho:registry:insertArbitrary` | 2 | a `rho:id:` uri | `Registry.rho:409-426` | ✅ |
 | `rho:registry:insertSigned:secp256k1` | 3 | a `rho:id:` uri, or `Nil` | `Registry.rho:433-469` | ✅ (stores `(nonce, data)` as the value) |
-| `rho:registry:ops` | 3 | a uri | `SystemProcesses.scala:308-320` | ⚠️ shape ✅, URI encoding differs (z-base-32 vs CRC14) — deliberate, see AUDIT §337-343 |
+| `rho:registry:ops` | 3 | a uri | `SystemProcesses.scala:308-320` | ⚠️ shape ✅, URI encoding differs (z-base-32 vs CRC14) — deliberate, see AUDIT F5 |
 | `rho:io:stdout` / `stderr` | 1 | none (prints) | `SystemProcesses.scala:206-222` | ✅ |
 | `rho:io:stdoutAck` / `stderrAck` | 2 | `Nil` | `SystemProcesses.scala:211-230` | ✅ |
 | `rho:crypto:{sha256,keccak256,blake2b256}Hash` | 2 | `ByteArray` | `SystemProcesses.scala:182-192` | ✅ |
@@ -131,4 +131,4 @@ Scala oracle (a documented extension) and this file is its definition.
 - **Consumer**: `r-wallet/scripts/test-output-json.ts` asserts the shapes it depends on from the
   other side (`check_process_api_schema`), naming the register entry when one drifts.
 - **Register**: every change to this file that alters a row is a breaking change to a published
-  contract and gets an entry in `spec/AUDIT.md`.
+  contract and gets an entry in the `spec/AUDIT.md` check-off.

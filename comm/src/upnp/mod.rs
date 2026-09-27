@@ -141,7 +141,16 @@ fn try_open_ports(
             gateway.external_ip_address()
         )),
         Some(_) => log("Gateway's external IP address is from a public address block.".to_string()),
-        None => log("Can't parse gateway's external IP address. It's maybe IPv6.".to_string()),
+        // **`None` means "not an IP literal", which is not the same as "maybe IPv6"** (AUDIT R31).
+        // The gateway may answer with a hostname, and the old wording would have sent an operator
+        // looking for an addressing problem that is not there. Nothing refuses it here, and the
+        // deliberate reason is recorded on R31: this value is *published* with `who_am_i`, never
+        // dialled, so it is not an SSRF target — and whoever can answer `GetExternalIPAddress` is
+        // already the operator's own NAT and can redirect this node outright.
+        None => log(
+            "Can't parse gateway's external IP address as an IP literal — it is IPv6 or a hostname."
+                .to_string(),
+        ),
     }
 
     let mappings: Vec<PortMappingEntry> = get_port_mappings(gateway.as_ref())
@@ -617,7 +626,7 @@ mod port_forwarding_tests {
             ("10.0.0.1", "behind more than one NAT"),
             ("192.168.1.1", "behind more than one NAT"),
             ("203.0.113.7", "public address block"),
-            ("2001:db8::1", "maybe IPv6"),
+            ("2001:db8::1", "IPv6 or a hostname"),
         ] {
             let gateway = Arc::new(FakeGateway {
                 name: "gw".to_string(),
@@ -632,6 +641,40 @@ mod port_forwarding_tests {
                 "for {external} expected a message containing {expected:?}: {logs:?}"
             );
         }
+    }
+
+    /// **A gateway that answers with a hostname is published as it stands, and the log says so**
+    /// (AUDIT R31).
+    ///
+    /// The row is that a hostname slips past `is_ssrf_unsafe_host` (which parses IP literals) and so
+    /// reaches the advertised external address unvalidated. **That is deliberate**, and this is where
+    /// the reason is pinned: the value is *published* with `who_am_i`, never dialled — the only read
+    /// in this file is the classification log — so it is not an SSRF target. `is_ssrf_unsafe_host`
+    /// answers a different question, which is whether this node may *connect* to an address a peer
+    /// supplied. And whoever can answer `GetExternalIPAddress` is already the operator's own gateway:
+    /// they can redirect this node's traffic outright, so a bogus hostname moves nothing.
+    ///
+    /// Two arms, because the interesting half is that it is not refused: the address comes back
+    /// unchanged, and the log names a hostname rather than sending an operator after an IPv6 problem
+    /// that is not there.
+    #[test]
+    fn a_hostname_external_address_is_published_and_named_as_one() {
+        let gateway = Arc::new(FakeGateway {
+            name: "gw".to_string(),
+            external_ip: "gateway.local".to_string(),
+            ..Default::default()
+        });
+        let mut logs = Vec::new();
+        let advertised = try_open_ports(&[40400], &devices(gateway, true), &mut |m| logs.push(m))
+            .expect("a gateway");
+        assert_eq!(
+            advertised, "gateway.local",
+            "a hostname is published unvalidated, deliberately — it is never dialled"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("hostname")),
+            "and the classification names it rather than calling it IPv6: {logs:?}"
+        );
     }
 
     /// A port the gateway refuses produces the manual-opened warning; the ports that succeeded are

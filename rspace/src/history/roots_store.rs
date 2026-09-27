@@ -28,11 +28,23 @@ impl RootsStore {
     }
 
     /// The current root, if set (port of `currentRoot`).
+    ///
+    /// **The length is checked before the hash is built, and that is the guard** (AUDIT C164).
+    /// `Blake2b256Hash::from_byte_array` *asserts* its length (`crypto/src/hash/blake2b256_hash.rs:49-56`),
+    /// so a truncated or corrupted `current-root` value was a **panic on the read path** — the path
+    /// every state read goes through — rather than an error saying what was wrong. `codecs.rs`, the
+    /// key codec for this same store, already refuses a wrong length by name, and its own test says
+    /// why: "a corrupted or truncated store value must be an error naming the length, not a hash built
+    /// from whatever bytes arrived". This is that discipline one file over, where it was missing.
     pub async fn current_root(&self) -> Result<Option<Blake2b256Hash>, String> {
-        Ok(self
-            .get(CURRENT_ROOT)
-            .await?
-            .map(|b| Blake2b256Hash::from_byte_array(&b)))
+        match self.get(CURRENT_ROOT).await? {
+            None => Ok(None),
+            Some(b) if b.len() == 32 => Ok(Some(Blake2b256Hash::from_byte_array(&b))),
+            Some(b) => Err(format!(
+                "current-root holds {} bytes, not the 32 a Blake2b256Hash is",
+                b.len()
+            )),
+        }
     }
 
     /// Set the current root if `key` is a known root (port of `validateAndSetCurrentRoot`).
@@ -73,6 +85,42 @@ mod tests {
     #[tokio::test]
     async fn current_root_is_none_before_anything_is_recorded() {
         assert_eq!(store().current_root().await.expect("read"), None);
+    }
+
+    /// **A `current-root` that is not 32 bytes is an error, not a panic** (AUDIT C164).
+    ///
+    /// `Blake2b256Hash::from_byte_array` asserts its length, and this read used to hand it whatever
+    /// the store returned — so a truncated or corrupted value panicked the node on the path every
+    /// state read goes through, instead of saying what was wrong.
+    ///
+    /// Two arms, because which way it fails is the point: the wrong length is refused **naming both
+    /// lengths**, as `Blake2b256HashCodec::decode` does, and a well-formed value still reads — so
+    /// this is a length check and not a read that refuses everything.
+    #[tokio::test]
+    async fn a_truncated_current_root_is_refused_rather_than_panicking() {
+        let roots = store();
+        // Written through the same store the port writes through: the node's own writes are always
+        // 32 bytes, so this is the corrupt-or-truncated case, which is the one that panicked.
+        roots
+            .put(CURRENT_ROOT.to_vec(), vec![0u8; 31])
+            .await
+            .expect("a corrupt store");
+
+        let err = roots
+            .current_root()
+            .await
+            .expect_err("31 bytes is not a Blake2b256Hash");
+        assert!(
+            err.contains("31") && err.contains("32"),
+            "the refusal names both lengths, as the codec's does: {err}"
+        );
+
+        let good = Blake2b256Hash::from_bytes([0x11; 32]);
+        roots
+            .put(CURRENT_ROOT.to_vec(), good.to_byte_array().to_vec())
+            .await
+            .expect("a good store");
+        assert_eq!(roots.current_root().await.expect("read"), Some(good));
     }
 
     /// The guard: a root the store has never seen is **refused**, and refusing it leaves the current

@@ -325,7 +325,7 @@ round-trip tests were excluded). The typed fix is either a proven-total refineme
 > clean). The full adversarial-audit findings — the fixed type-system violations, the *faithful*
 > casts (Scala `Int`/`Long`/`Byte` fixed-width ports that must **not** be "fixed"), the ρ-calculus
 > mirroring notes, the red-team register, and the Scala-deviation register — are recorded in
-> [`AUDIT.md`](AUDIT.md).
+> [`AUDIT.md`](AUDIT.md) and the pass record [`audit/passes.md`](audit/passes.md).
 
 ---
 

@@ -2,7 +2,7 @@
 #
 # emit-coverage-ledger.sh — turn the coverage measurement into checked data.
 #
-# `spec/TEST-COVERAGE.md` is *governed*, not counted: `tools/audit-test-register.sh` recomputes its
+# `spec/TEST-COVERAGE.md` is *worked from*, not counted: until 2026-09-27 `tools/audit-test-register.sh` recomputed its
 # per-crate test counts from the tree and fails on an overstatement, its corpora counts are checked
 # against the emitted `.tsv` files, and its law claims are checked against `spec/laws.tsv`. Coverage —
 # the one number in the register that no gate could recompute — was the exception. Its own
@@ -33,7 +33,7 @@
 # `.rs` the compiler attributes them to). A file the compiler reports that this filter drops is not
 # coverage debt; a file it *keeps* is.
 #
-# `--check` (what check 11 of `tools/audit-test-register.sh` runs) re-emits into a scratch copy and
+# `--check` re-emits into a scratch copy and
 # refuses a diff, the same discipline `tools/emit-lean-laws.sh` and `tools/emit-lean-counts.sh` use for
 # their own emissions. It also refuses a *missing* input: an empty ledger beside a missing `lcov.info`
 # would make every check below it vacuous.
@@ -188,9 +188,8 @@ emit() {
 
 Generated, never written: \`tools/emit-coverage-ledger.sh\` reads \`lcov.info\` — the committed measurement,
 \`cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info\` — and emits the per-file
-ranking that \`spec/TEST-COVERAGE.md\`'s Definition-of-done item 11 is worked from. Check 11 of
-\`tools/audit-test-register.sh\` refuses a ledger that disagrees with the lcov it names, and refuses a CI
-floor that is not the one this measurement implies.
+ranking that \`spec/TEST-COVERAGE.md\`'s Definition-of-done item 11 is worked from. Run it with
+\`--check\` to refuse a ledger that disagrees with the lcov it names.
 
 **Measurement**: $measured_on (the lcov's own date); emitted from a tree at $head_short.
 
