@@ -30,6 +30,21 @@ pub enum BlockStatus {
     /// validator would help it confiscate the stake. The rule is now re-derived on the receiving side
     /// from the node's own block metadata, not taken from the proposer.
     UnjustifiedSlash,
+    /// A deploy in the block is not signed by the key its `deployer` field names (AUDIT C120).
+    ///
+    /// **Why this is a separate status and not a reuse of `InvalidRepeatDeploy`.** The replay reads the
+    /// deployer out of this field to build the pre-charge, the refund and the `rho:rchain:deployerId`
+    /// binding, so an unverified field is an *authorization* claim rather than a malformed one: a
+    /// proposer could name any account, put arbitrary bytes in `sig`, and have every other validator
+    /// debit that account and pay the proposer's term — with a post-state hash they computed honestly,
+    /// so the block was valid and nothing was attributable. `verify_signature` existed and was correct;
+    /// it was called only at the deploy *ingress*, never on the path a peer's block takes. A validator
+    /// that reports this must be able to say that is what it rejected.
+    ///
+    /// `system_deploys` are exempt by construction and are not inspected: a `Slash` is unsigned by its
+    /// victim (see `UnjustifiedSlash` above), and the rule that makes one legitimate is a different
+    /// check entirely.
+    InvalidDeploySignature,
 }
 
 impl BlockStatus {
@@ -60,6 +75,11 @@ impl std::fmt::Display for BlockStatus {
             BlockStatus::ContainsLowCostDeploy => "a deploy's phlo price is below the minimum",
             BlockStatus::InvalidPhloLimit => "a deploy has a negative phlo limit",
             BlockStatus::UnjustifiedSlash => "the block slashes a validator none of its justifications holds responsible",
+            BlockStatus::InvalidDeploySignature => {
+                "a deploy is not signed by the key its `deployer` field names, so the account this \
+                 block charges — and pays — was chosen by the block's author rather than proven by a \
+                 signature"
+            }
         };
         write!(f, "{s}")
     }
@@ -70,7 +90,7 @@ mod tests {
     use super::*;
 
     /// Every status, so a variant added without a message (or with a copy-pasted one) fails here.
-    const ALL: [BlockStatus; 15] = [
+    const ALL: [BlockStatus; 16] = [
         BlockStatus::Valid,
         BlockStatus::InvalidBlockNumber,
         BlockStatus::InvalidRepeatDeploy,
@@ -86,6 +106,7 @@ mod tests {
         BlockStatus::ContainsLowCostDeploy,
         BlockStatus::InvalidPhloLimit,
         BlockStatus::UnjustifiedSlash,
+        BlockStatus::InvalidDeploySignature,
     ];
 
     /// `Valid` is the **only** status that is valid: `is_valid` is the one predicate the block

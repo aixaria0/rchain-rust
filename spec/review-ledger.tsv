@@ -150,7 +150,7 @@ file	casper/src/blocks/proposer/block_creator.rs	T3	finding	deep	-	-	casper/src/
 file	casper/src/blocks/proposer/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/proposer/propose_result.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/blocks/proposer/proposer.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/block_status.rs	T3	deferred	-	-	-	-	-	-
+file	casper/src/block_status.rs	T3	cleared	deep	-	-	casper/src/block_status.rs:BlockStatus::InvalidDeploySignature C120 casper/src/block_status.rs:every_status_renders_a_distinct_message	-	read in full — the enum, is_valid, Display, and the ALL ratchet with its three tests — while adding C120's status variant, and it holds no defect. Basis for clearing rather than deferring: the module is a closed vocabulary whose completeness is enforced by construction (ALL's length is checked by the type system and its test forces every variant to render a distinct message), so "a variant with no message" cannot survive a compile. Not read: the callers that turn a status into a refusal are separate rows (casper/src/multi_parent_casper.rs, casper/src/blocks/block_processor.rs)
 file	casper/src/bonds_parser.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/conf.rs	T1	deferred	-	-	-	-	-	-
 file	casper/src/construct_deploy.rs	T3	deferred	-	-	-	-	-	-

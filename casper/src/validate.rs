@@ -455,6 +455,11 @@ pub async fn block_summary(
         // replay. For `phlo_limit` the stakes are higher — without it a peer's block reaches the
         // charge path with a negative limit (AUDIT C109).
         phlo_limit(block),
+        // `deploy_signatures` is here for that same reason, and it is the check that decides *whose*
+        // account the replay is about to debit: every check above reads the deploy's fields as data,
+        // and this is the only one that asks whether the key those fields name actually authored them
+        // (AUDIT C120).
+        deploy_signatures(block),
     ];
     for status in pure {
         if !status.is_valid() {
@@ -462,6 +467,50 @@ pub async fn block_summary(
         }
     }
     repeat_deploy(dag, block_store, block, expiration_threshold).await
+}
+
+/// Validate that every deploy in the block is signed by the key its `deployer` field names
+/// (AUDIT C120).
+///
+/// **Why this check has to exist on this path, and not only at the ingress.** The replay reads
+/// `deploy.deployer` to build the pre-charge, the refund and the `rho:rchain:deployerId` binding the
+/// term can spend from, so that field is an authorization claim. `SignedDeployData::verify_signature`
+/// existed and was correct, but its only production caller was `BlockApiImpl::deploy` — the path a
+/// *local* deploy takes. A block arriving from a peer carries its deploys as `ProcessedDeploy`s whose
+/// `deployer` and `sig` are copied verbatim off the wire, and the checks a validator ran on them
+/// (shard id, validity window, phlo price, phlo limit, signature *deduplication*) all read those
+/// fields without ever asking who signed them. So a bonded proposer could name any account, put
+/// arbitrary bytes in `sig`, and have every other validator debit that account and pay the proposer's
+/// term — with a post-state hash the proposer computed honestly, so `block_signature`,
+/// `validate_block_checkpoint` and `bonds_cache` all agreed, the block was valid, and nothing was
+/// attributable. That asymmetry between the ingress and the block path is the same one C109 records
+/// one field over, which is why the check is one of `block_summary`'s pure checks.
+///
+/// `verify_signature` is over the whole deploy data (the term included), so this is a check on the
+/// message and not merely on the key: a term altered after signing fails it. A *valid* signature made
+/// by a key other than the named deployer also fails it, because the key it verifies against is the
+/// one the field names.
+///
+/// `system_deploys` are deliberately not inspected: a `Slash` is a system deploy and is unsigned by
+/// its victim, and the rule that makes one legitimate is `slashable_senders`/`slashed_validators`,
+/// which `validate_block_checkpoint` applies (C110).
+///
+/// **Why it is declared here and not among the pure checks above.** It belongs beside `phlo_limit` for
+/// the reason that check's own comment gives, and the first version of it was written there — which
+/// moved every line below it, and with them **six citations in `spec/laws.tsv` and seven in
+/// `spec/AUDIT.md`** (measured, not feared: the register checks those anchors by line). Declaring it
+/// after the one function that consumes it costs nothing and shifts no anchor, so a later pass reading
+/// the law register's citations finds them where they were written.
+pub fn deploy_signatures(b: &BlockMessage) -> BlockStatus {
+    if b.state
+        .deploys
+        .iter()
+        .all(|d| d.deploy.verify_signature())
+    {
+        BlockStatus::Valid
+    } else {
+        BlockStatus::InvalidDeploySignature
+    }
 }
 
 #[cfg(test)]
@@ -677,6 +726,46 @@ mod tests {
             "an unattributable local failure must not license a slash"
         );
     }
+    /// The deploy-signature check (AUDIT C120), pinned at the pure level as well as through
+    /// `block_summary` below.
+    ///
+    /// The `deploy(...)` fixture is unsigned by construction — an empty `deployer` with `sig =
+    /// vec![1]`, the same shape `casper/tests/consensus.rs` builds — so it *is* the forged deploy the
+    /// check exists to refuse; the control is the same fixture signed by a real key.
+    ///
+    /// The last case is the boundary, and it is the reason this check reads `state.deploys` and never
+    /// `state.system_deploys`: a `Slash` is a system deploy, unsigned by its victim by design, and
+    /// widening the check to "every deploy" would make every block carrying a legitimate slash
+    /// unrefusable-or-not on a signature it was never supposed to have. What makes a slash legitimate
+    /// is `slashed_validators`/`slashable_senders`, applied in `validate_block_checkpoint` (C110).
+    #[test]
+    fn a_deploy_that_its_named_key_did_not_sign_is_refused() {
+        use rchain_models::casper::protocol::casper_message::{
+            ProcessedSystemDeploy, SystemDeployData,
+        };
+
+        let mut b = block();
+        b.state.deploys = vec![deploy(5, 10, "root")];
+        assert_eq!(
+            deploy_signatures(&b),
+            BlockStatus::InvalidDeploySignature,
+            "the unsigned fixture is the forged deploy: a block must not charge the key it names"
+        );
+
+        b.state.deploys = vec![super::effectful_tests::signed_deploy("Nil")];
+        assert_eq!(deploy_signatures(&b), BlockStatus::Valid);
+
+        b.state.deploys = vec![];
+        b.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash(Validator::new([0x44; 65])),
+        }];
+        assert_eq!(
+            deploy_signatures(&b),
+            BlockStatus::Valid,
+            "a slash is a system deploy and is unsigned by its victim; this check must not read it"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -874,6 +963,138 @@ mod effectful_tests {
             blocks.into_iter().map(|b| (b.block_hash, b)).collect();
         store.put(&pairs).await.unwrap();
         store
+    }
+
+    /// A deploy signed by a real key, so its `deployer` field and its signature agree (AUDIT C120).
+    ///
+    /// The forged twins in the test below are built from this by changing *one* side of that
+    /// agreement, because that is the whole attack surface: the signature an attacker can produce, and
+    /// the identity it wants to spend from.
+    pub(super) fn signed_deploy(term: &str) -> ProcessedDeploy {
+        use rchain_crypto::signatures::secp256k1::Secp256k1;
+        use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        use rchain_crypto::signatures::signed::Signed;
+
+        let (sec, _pk) = Secp256k1.new_key_pair();
+        let data = DeployData {
+            attachments: Vec::new(),
+            term: term.to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+        };
+        let signed = Signed::new(data, &Secp256k1, &sec).expect("signing a well-formed deploy");
+        ProcessedDeploy {
+            deploy: SignedDeployData {
+                data: signed.data,
+                deployer: signed.pk.bytes().to_vec(),
+                sig: signed.sig,
+                sig_algorithm: signed.sig_algorithm.name().to_string(),
+            },
+            cost: PCost { cost: 0 },
+            deploy_log: vec![],
+            is_failed: false,
+            system_deploy_error: None,
+        }
+    }
+
+    /// A second, independent public key — the "victim" whose identity a proposer wants to borrow.
+    pub(super) fn another_public_key() -> Vec<u8> {
+        use rchain_crypto::signatures::secp256k1::Secp256k1;
+        use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        Secp256k1.new_key_pair().1.bytes().to_vec()
+    }
+
+    /// **The regression test for AUDIT C120**, and it is written against the *block* path because that
+    /// is where the gap was.
+    ///
+    /// `SignedDeployData::verify_signature` was correct in itself and had exactly one production
+    /// caller: the deploy *ingress* (`BlockApiImpl::deploy`). A block arriving from a peer carries its
+    /// deploys as `ProcessedDeploy`s whose `deployer` and `sig` are copied off the wire
+    /// (`ProcessedDeploy::from_proto`), and every check a validator ran on them — shard id, validity
+    /// window, phlo price, phlo limit, signature *deduplication* — read those fields without ever
+    /// asking whether the key they name had signed the data. So a bonded proposer could name a
+    /// victim's key, put arbitrary bytes in `sig`, and have every other validator debit that victim,
+    /// pay the attacker's term, and arrive at a post-state hash they computed honestly: `block_signature`
+    /// passes (the proposer signed its own block), the summary passed, the bonds cache agreed, and
+    /// nothing was attributable.
+    ///
+    /// The assertion is on `block_summary` rather than on the check alone on purpose. The defect was
+    /// never "a check is missing from this file" — it was "the check is missing from this *path*", and
+    /// a test of the check by itself would have passed while the bug was live.
+    ///
+    /// Four cases: an honest deploy (the control), an impersonation that carries a *valid* signature
+    /// made by a different key, the register's own `sig = vec![1]` under a victim's key, and a term
+    /// changed after signing. The control is first so a refusal below cannot be a refusal for some
+    /// unrelated reason, and the third and fourth are separated deliberately: a check reading only the
+    /// signature's validity would catch the fourth and miss the second.
+    #[tokio::test]
+    async fn a_block_whose_deploy_is_not_signed_by_its_named_deployer_is_refused() {
+        let dag = mock(BTreeMap::new());
+        let store = block_store(vec![]).await;
+        let block_at = |deploys: Vec<ProcessedDeploy>| {
+            let mut b = block(2, 0, 0, vec![]);
+            b.state.deploys = deploys;
+            b
+        };
+
+        let honest = signed_deploy("Nil");
+        assert!(
+            honest.deploy.verify_signature(),
+            "the honest fixture must satisfy the check the block path is about to run"
+        );
+        assert_eq!(
+            block_summary(&dag, &store, &block_at(vec![honest]), "root", 100, 1)
+                .await
+                .unwrap(),
+            Ok(()),
+            "an honestly signed deploy must still reach the end of the pure checks — the control that \
+             makes the refusals below about the signature and not about the fixture"
+        );
+
+        // The strongest form of the attack: the signature is *real*, made by the attacker's own key,
+        // and only the `deployer` field names someone else. A check that asked "is this a valid
+        // signature?" rather than "is it *this key's* signature?" would pass this.
+        let mut impersonation = signed_deploy("Nil");
+        impersonation.deploy.deployer = another_public_key();
+        assert!(
+            !impersonation.deploy.verify_signature(),
+            "a deploy whose deployer names a key that did not sign it must not verify"
+        );
+        assert_eq!(
+            block_summary(&dag, &store, &block_at(vec![impersonation]), "root", 100, 1)
+                .await
+                .unwrap(),
+            Err(BlockStatus::InvalidDeploySignature),
+            "a block whose deploy names a key that did not sign it must be refused before replay — \
+             this is the block that debits a victim's vault and pays the proposer's term"
+        );
+
+        // The register's own trigger, as written: a victim's key with `sig = vec![1]`.
+        let mut garbage = signed_deploy("Nil");
+        garbage.deploy.sig = vec![1];
+        assert_eq!(
+            block_summary(&dag, &store, &block_at(vec![garbage]), "root", 100, 1)
+                .await
+                .unwrap(),
+            Err(BlockStatus::InvalidDeploySignature),
+            "a block carrying a deploy whose signature is arbitrary bytes must be refused"
+        );
+
+        // The signature is over the *message*, not only over the key: a term changed after signing
+        // must not verify. This is the assertion that would fail if the check ever hashed a prefix of
+        // the deploy data instead of the whole of it (the sibling defect in AUDIT C134).
+        let mut tampered = signed_deploy("Nil");
+        tampered.deploy.data.term = "Nil | Nil".to_string();
+        assert_eq!(
+            block_summary(&dag, &store, &block_at(vec![tampered]), "root", 100, 1)
+                .await
+                .unwrap(),
+            Err(BlockStatus::InvalidDeploySignature),
+            "a deploy whose term does not match what was signed must be refused"
+        );
     }
 
     #[tokio::test]

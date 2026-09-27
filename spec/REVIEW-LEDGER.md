@@ -27,7 +27,7 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 
 | kind | roster | rows | reviewed | finding | sampled | cleared | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `file` | 350 | 350 | 21 | 21 | 0 | 0 | 329 | 0 | 0 |
+| `file` | 350 | 350 | 22 | 21 | 0 | 1 | 328 | 0 | 0 |
 | `ingress` | 44 | 44 | 4 | 4 | 0 | 0 | 40 | 0 | 0 |
 | `law` | 60 | 60 | 23 | 5 | 0 | 18 | 37 | 0 | 0 |
 | `site` | — | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -57,7 +57,7 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 |---|---:|---:|---:|---:|---:|
 | T1 | 51 | 31 | 20 | 0 | 0 |
 | T2 | 21 | 3 | 18 | 0 | 0 |
-| T3 | 544 | 18 | 526 | 0 | 0 |
+| T3 | 544 | 19 | 525 | 0 | 0 |
 
 **544 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
 files the register has already tiered, the tier above is *derived* from that table — a judgement
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at 1e1d82b28.*
+*Emitted from a tree at 188044f27.*
