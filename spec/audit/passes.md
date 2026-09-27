@@ -4291,3 +4291,39 @@ full against its oracle with nothing found; a `finding` row names the C-number i
   at, and both orders satisfy it, so the instrument could not see the defect it was written for. Its
   comment said so too.
 
+### The miss, recorded because the pass that reads must be read
+
+**One of this pass's twenty reads is wrong, and another session caught it the same day.** This pass
+read `casper/src/txn_coordinator.rs` and returned **"Nothing found"** — the ledger row it wrote said
+so in those words. The other session read the same file and filed **C166**: `run_2pc` anchored every
+phase deploy at block 0, because it called the 0-hardcoded `run_phase` wrapper rather than
+`run_phase_at`, so on any chain past `DEPLOY_LIFESPAN = 50` every prepare and every commit was born
+expired — the participant never saw it, nothing reported an error, and the transaction silently did
+not happen.
+
+**And the warning was in the text this pass read.** `run_phase`'s whole body is
+`self.run_phase_at(…, 0).await`, and the doc comment on `run_phase_at` — six lines below, in the same
+screen — reads: "`valid_after_block_number` must be the *target shard's* current height: a deploy
+anchored at 0 is born expired once that chain is more than `DEPLOY_LIFESPAN` blocks past genesis, and
+the participant would never see the phase at all." This pass quoted that sentence back in its own
+note, while reporting that it had found nothing, and did not connect it to the `0` two lines above it.
+There was even a test named `run_phase_anchors_at_zero` pinning the defect as intended, which this
+pass read as pinning behaviour rather than as pinning the bug.
+
+**Four things this pass did right do not excuse it.** It verified the module's 2PC phase-two loop,
+`vote_from_reply`'s three-way reading, and the `?`-on-prepare recovery path — all still correct. It
+established that the module is a test harness rather than the shipped coordinator, which is true and
+is *why* the defect was low-consequence rather than absent: `GatewayTxn` has the durable ledger and
+does anchor correctly. And it is the same class **three times over in one section** — this pass's own
+§22 records two other reads whose "finding" was already registered and already fixed, and its whole
+argument is that reading finds what the register missed.
+
+**What the miss says is not that reading is worthless but that a clean read is a claim like any
+other.** This pass's other nineteen rows stand on the same footing as this one did: a person read the
+file and said nothing was there. One of them was wrong, it was wrong in a way the file itself
+warned about in the next paragraph, and the only reason it was caught is that a second reader
+existed. The pass's own doctrine applies to itself: **an independent read is evidence and a
+self-reported clean is not**, which is why §21's method ran seven lenses and handed every finding to
+a second agent instructed to refute it. This pass had one reader per file and no refuter, and the
+one file where that mattered is this one.
+

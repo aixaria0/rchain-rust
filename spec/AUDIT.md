@@ -22,11 +22,11 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 2 · IN PROGRESS 0 · DONE 198** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 2 · IN PROGRESS 0 · DONE 199** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 198 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 199 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
 ### TODO — findings (2)
@@ -38,8 +38,8 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 
 ### T1 coverage — closed
 
-All 89 rows for the modules that can fork the chain or lose funds have been read: 61 carry a
-verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason class.
+All 89 rows for the modules that can fork the chain or lose funds have been read: 60 carry a
+verdict of `cleared`, 25 produced a finding, and 4 are `exempt` with a reason class.
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
@@ -48,7 +48,7 @@ defects this register had not recorded (C164, C165).
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (198)
+### DONE (199)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -164,6 +164,7 @@ defects this register had not recorded (C164, C165).
 | `C163` | C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file | genesis_boot_exposes_block_over_http | §21 |
 | `C164` | a truncated `current-root` panicked the node on the state-read path: `RootsStore::current_root` built the hash from whatever the store returned, and `Blake2b256Hash::from_byte_array` asserts its length | a_truncated_current_root_is_refused_rather_than_panicking | §22 |
 | `C165` | the private key is written *before* its file is narrowed, so a pre-existing 0644 `rnode.key` held the secret world-readable for the length of the write — and the comment says the opposite | the_mode_is_narrowed_before_anything_is_written | §22 |
+| `C166` | `TxnCoordinator::run_2pc` anchored **every** phase deploy at block 0 -- it called the 0-hardcoded `run_phase` wrapper -- so on any chain taller than `DEPLOY_LIFESPAN` (50) every prepare and commit was *born expired*: the participant never saw it, nothing reported an error, and the transaction silently did not happen. `run_phase_at` had been added to fix exactly this trap, and `protocol/client.rs`'s `resolve_valid_after_block_number` doc names it as one of the sites that anchor correctly -- but the whole-transaction driver kept calling the wrapper, and `run_phase_anchors_at_zero` pinned that as "kept for the client path". The anchor is a required `TxnLeg` field now, `run_2pc` forwards each leg's own height, and the wrapper is deleted. Found reading `casper/src/txn_coordinator.rs` (T1) | run_2pc_anchors_each_phase_at_its_legs_height | §22 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
