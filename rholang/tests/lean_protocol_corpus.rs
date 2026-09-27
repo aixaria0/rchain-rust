@@ -58,6 +58,12 @@ async fn every_urn_replies_in_the_shape_the_lean_catalog_says() {
         // the tie between the declaration and the node was held only *indirectly*, by requiring a
         // reply, and an entry that sends nothing back had no tie at all: for a non-replying urn a
         // wrong arity is silence, not an error.
+        //
+        // This reads the column and checks it against the probe below. The other half of C158 — the tie
+        // to the **node's** own arity, which is the one a non-replying urn has no reply to expose — is
+        // `rholang/src/system_processes.rs`'s
+        // `every_catalog_urn_arity_matches_the_definition_the_node_installs`, which compares this same
+        // column against the installed `Definition.arity` for all nine rows.
         let declared_arity: usize = columns
             .next()
             .expect("the arity column")

@@ -12,9 +12,10 @@ loudly** — nothing errors when a pattern does not match a shape.
 
 This module makes the catalog *data* with decidable consistency checks, and the corpus emitted from it
 (`Rchain/Corpus.lean`'s `replyCatalog`, `spec/conformance/protocol.tsv`) carries each row's **call
-arguments** as rholang, so the Rust consumer can call the urn the way the law's row says and classify
-what comes back. The checks here are on the table itself — they catch a row that drifted, not a reply
-that did; the node disagreeing with a row is what the corpus reports.
+arguments** as rholang and its **`callArity`**, so the Rust consumer can call the urn the way the law's
+row says, classify what comes back, and check the arity on the rows that reply *nothing*. The checks
+here are on the table itself — they catch a row that drifted, not a reply that did; the node
+disagreeing with a row is what the corpus reports.
 
 The one check with real teeth on the *table* is `callArity` against the arguments: a row that passes
 three arguments and declares an arity of two is exactly C22 item 2 (`write!(key, value)` against a

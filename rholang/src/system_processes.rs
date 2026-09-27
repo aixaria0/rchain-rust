@@ -2328,6 +2328,110 @@ mod tests {
         (sp, defs)
     }
 
+    /// The `(urn, callArity)` pairs `spec/conformance/protocol.tsv` declares, read from the emitted
+    /// corpus. The path is relative to this crate, like the one
+    /// `rholang/tests/lean_protocol_corpus.rs` reads.
+    fn catalog_arities() -> Vec<(String, i32)> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../spec/conformance/protocol.tsv");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "read {}: {e}\n(run tools/emit-lean-corpus.sh)",
+                path.display()
+            )
+        });
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| {
+                let mut c = line.split('\t');
+                assert_eq!(c.next(), Some("protocol"), "layer column: {line}");
+                let urn = c.next().expect("urn").to_string();
+                let _args = c.next().expect("args");
+                let arity: i32 = c
+                    .next()
+                    .expect("callArity")
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{urn}: callArity: {e}"));
+                (urn, arity)
+            })
+            .collect()
+    }
+
+    /// Which catalog rows disagree with the installed table — the comparison as a *function*, so the
+    /// drift it exists to catch can be shown to be caught without breaking the tree.
+    fn arity_mismatches(catalog: &[(String, i32)], defs: &[Definition]) -> Vec<String> {
+        let mut bad = Vec::new();
+        for (urn, call_arity) in catalog {
+            match defs.iter().find(|d| d.urn == *urn) {
+                Some(d) if d.arity == *call_arity => {}
+                Some(d) => bad.push(format!(
+                    "{urn}: the catalog declares arity {call_arity}, the node installs {}",
+                    d.arity
+                )),
+                None => bad.push(format!(
+                    "{urn}: in the Lean catalog, but no `Definition` installs it"
+                )),
+            }
+        }
+        bad
+    }
+
+    /// **Every urn the Lean catalog declares an arity for agrees with the `Definition.arity` this
+    /// node installs** (AUDIT C158).
+    ///
+    /// `spec/conformance/protocol.tsv` is emitted from `Rchain/Protocol.lean`'s `replyCatalog`, whose
+    /// doc says the `callArity` it records *is* the node's `Definition.arity` — counting the reply
+    /// channel where a row has one. Nothing compared the two tables until this test. The corpus
+    /// consumer classifies **replies**, so a drifted arity on a replying row makes the receive wait
+    /// and is caught; a `kind = none` row (`rho:io:stdout`, `rho:io:stderr`) replies nothing, so the
+    /// same drift there was silence on silence — the defect C158 recorded, and the reason `callArity`
+    /// was emitted into the corpus at all.
+    #[tokio::test]
+    async fn every_catalog_urn_arity_matches_the_definition_the_node_installs() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+
+        let catalog = catalog_arities();
+        assert!(
+            !catalog.is_empty(),
+            "the emitted catalog has no rows — the corpus or the emitter is broken"
+        );
+        let bad = arity_mismatches(&catalog, &defs);
+        assert!(
+            bad.is_empty(),
+            "the Lean catalog and the node's installed arities disagree:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// The falsifier for the test above: the comparison reports a drift, so a green there is
+    /// evidence rather than the absence of a check. The catalog is hand-built against the **real**
+    /// installed table, so this needs no fabricated `Definition`.
+    #[tokio::test]
+    async fn a_drifted_catalog_arity_is_reported() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+
+        let drifted = vec![("rho:io:stdout".to_string(), 99i32)];
+        let bad = arity_mismatches(&drifted, &defs);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(
+            bad[0].contains("rho:io:stdout") && bad[0].contains("99"),
+            "the report names the urn and the declared arity: {}",
+            bad[0]
+        );
+
+        // And a urn the node does not install is reported rather than skipped.
+        let unknown = vec![("rho:not:a:urn".to_string(), 1i32)];
+        let bad = arity_mismatches(&unknown, &defs);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].contains("no `Definition` installs it"), "{}", bad[0]);
+    }
+
     fn lpw(pars: Vec<Par>) -> ListParWithRandom {
         ListParWithRandom {
             pars: pars.into_iter().map(SortedProc::new).collect(),

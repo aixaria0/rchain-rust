@@ -687,7 +687,13 @@ Rust consumer's own header both say the corpus line carries "the call's arity", 
 did not emit it — so `spec/conformance/protocol.tsv` had five columns and the tie between the
 declared arity and the node was held only *indirectly*, by requiring a reply. For an entry that
 sends nothing back there is no reply to lose, so a wrong arity there was silence with nothing to
-report it. -/
+report it.
+
+Carried here, the column is read twice on the Rust side: the consumer checks it against the arity of
+the probe it builds (`lean_protocol_corpus.rs`), and
+`system_processes.rs`'s `every_catalog_urn_arity_matches_the_definition_the_node_installs` checks it
+against the **node's** installed `Definition.arity` for every row — which is the half a non-replying
+urn has no reply to expose. -/
 def protocolLine (r : ReplyRow) : String :=
   "protocol\t" ++ r.urn ++ "\t" ++ (if r.args.isEmpty then "-" else r.args) ++ "\t"
     ++ toString r.callArity ++ "\t"
