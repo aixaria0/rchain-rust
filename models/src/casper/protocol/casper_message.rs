@@ -1598,7 +1598,10 @@ mod tests {
         assert_eq!(d.total_phlo_charge(), None);
 
         d.phlo_limit = 1;
-        assert_eq!(d.total_phlo_charge(), Some(NonNegI64::try_from(i64::MAX).unwrap()));
+        assert_eq!(
+            d.total_phlo_charge(),
+            Some(NonNegI64::try_from(i64::MAX).unwrap())
+        );
 
         d.phlo_limit = 0;
         assert_eq!(d.total_phlo_charge(), Some(NonNegI64::zero()));
@@ -1608,11 +1611,19 @@ mod tests {
         // charge path, so it must be refused here, at the boundary, rather than at each caller.
         d.phlo_price = 1;
         d.phlo_limit = -100;
-        assert_eq!(d.total_phlo_charge(), None, "a negative charge must not be representable");
+        assert_eq!(
+            d.total_phlo_charge(),
+            None,
+            "a negative charge must not be representable"
+        );
 
         d.phlo_price = -1;
         d.phlo_limit = 100;
-        assert_eq!(d.total_phlo_charge(), None, "a negative price must not yield a usable charge");
+        assert_eq!(
+            d.total_phlo_charge(),
+            None,
+            "a negative price must not yield a usable charge"
+        );
     }
 
     /// The refund's clamp, at the end the old code did not have (AUDIT C109). `refund_amount`'s doc

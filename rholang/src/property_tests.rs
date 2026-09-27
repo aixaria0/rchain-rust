@@ -373,7 +373,8 @@ fn compare_mode(program: &str, mode: EffectMode, cases: u32) -> Result<(), TestC
     // threads: the same deletion turns it red, 3 of 3 runs, while the runtime change alone — gate
     // intact — passes, so what the gate guarantees is real and was merely unobservable. Four rather
     // than the default because one worker still serialises; the point is two effects in flight at once.
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4)
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
         .enable_all()
         .build()
         .expect("a runtime");

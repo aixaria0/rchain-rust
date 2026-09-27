@@ -40,7 +40,8 @@ impl TransportLayerServer {
             port,
             tls,
             max_stream_message_size,
-            max_recv_message_size: crate::transport::grpc_transport_receiver::DEFAULT_MAX_RECV_MESSAGE_SIZE,
+            max_recv_message_size:
+                crate::transport::grpc_transport_receiver::DEFAULT_MAX_RECV_MESSAGE_SIZE,
         })
     }
 

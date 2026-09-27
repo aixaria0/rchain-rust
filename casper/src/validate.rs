@@ -113,7 +113,11 @@ pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> BlockStatus {
 /// fail somewhere downstream: a `BlockStatus` says which rule was broken, and "the charge could not
 /// be computed" during replay does not.
 pub fn phlo_limit(b: &BlockMessage) -> BlockStatus {
-    if b.state.deploys.iter().all(|d| d.deploy.data.phlo_limit >= 0) {
+    if b.state
+        .deploys
+        .iter()
+        .all(|d| d.deploy.data.phlo_limit >= 0)
+    {
         BlockStatus::Valid
     } else {
         BlockStatus::InvalidPhloLimit

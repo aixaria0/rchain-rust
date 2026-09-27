@@ -60,8 +60,7 @@ impl GrpcKademliaRpc {
         .map_err(|e| e.to_string())?;
 
         let connector = TlsConnector::from(self.tls.clone());
-        let server_name =
-            ServerName::try_from(peer.id.to_string()).map_err(|e| e.to_string())?;
+        let server_name = ServerName::try_from(peer.id.to_string()).map_err(|e| e.to_string())?;
         let host = peer.endpoint.host.clone();
         let port = peer.endpoint.udp_port;
 
@@ -156,9 +155,7 @@ mod tests {
             &public_address_of_cert(&CertificateDer::from(pem.contents)).unwrap(),
         );
         PeerNode::from(
-            crate::peer_node::NodeIdentifier::new(
-                rchain_shared::base16::unsafe_decode(&id),
-            ),
+            crate::peer_node::NodeIdentifier::new(rchain_shared::base16::unsafe_decode(&id)),
             host.to_string(),
             Port::new(port),
             Port::new(port),
@@ -167,9 +164,8 @@ mod tests {
 
     /// A peer at `host:port` whose id is a real certificate's address.
     fn peer_at(host: &str, port: u16) -> PeerNode {
-        let (cert, _key) =
-            crate::transport::generate_certificate_if_absent::generate_certificate()
-                .expect("a test certificate");
+        let (cert, _key) = crate::transport::generate_certificate_if_absent::generate_certificate()
+            .expect("a test certificate");
         peer_at_from_cert(&cert, host, port)
     }
 

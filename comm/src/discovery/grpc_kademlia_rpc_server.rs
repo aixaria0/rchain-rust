@@ -16,9 +16,9 @@ use rchain_shared::rate_limiter::RateLimiter;
 use tonic::{Request, Response, Status};
 
 use crate::discovery::{to_node, to_peer_node};
-use crate::transport::grpc_transport_receiver::PeerId;
 use crate::peer_node::PeerNode;
 use crate::rp::handle_messages::is_local_address_resolved;
+use crate::transport::grpc_transport_receiver::PeerId;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -257,9 +257,9 @@ mod tests {
 
         let peer_at = |cert: &str, host: &str| {
             PeerNode::from(
-                crate::peer_node::NodeIdentifier::new(
-                    rchain_shared::base16::unsafe_decode(&node_id_of(cert)),
-                ),
+                crate::peer_node::NodeIdentifier::new(rchain_shared::base16::unsafe_decode(
+                    &node_id_of(cert),
+                )),
                 host.to_string(),
                 Port::new(port),
                 Port::new(port),

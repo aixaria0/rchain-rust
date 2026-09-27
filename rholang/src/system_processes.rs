@@ -1734,9 +1734,8 @@ impl SystemProcesses {
                         "multiSigRevVault expects a method and arguments",
                     ));
                 };
-                let op = RhoString::unapply(op).ok_or_else(|| {
-                    illegal_arg("multiSigRevVault method must be a string")
-                })?;
+                let op = RhoString::unapply(op)
+                    .ok_or_else(|| illegal_arg("multiSigRevVault method must be a string"))?;
                 Err(illegal_arg(&format!(
                     "multiSigRevVault: '{op}' is not available — this node does not install the \
                      multi-signature vault contract (casper/src/genesis/resources/MultiSigRevVault.rho), \

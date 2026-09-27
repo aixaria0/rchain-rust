@@ -93,7 +93,7 @@ pub fn accept_tls(
     let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(capacity);
     let handshake_slots = Arc::new(tokio::sync::Semaphore::new(capacity));
     tokio::spawn(async move {
-        let mut tx = tx;
+        let tx = tx;
         loop {
             let Ok((tcp, _)) = listener.accept().await else {
                 continue;
@@ -112,7 +112,12 @@ pub fn accept_tls(
                     // is not reachable from a request handler, and this is the only place the
                     // handshake's own state is still available (AUDIT C115).
                     let peer_id = peer_id_of_tls(&tls);
-                    let _ = tx.send(Ok(TlsIo { stream: tls, peer_id })).await;
+                    let _ = tx
+                        .send(Ok(TlsIo {
+                            stream: tls,
+                            peer_id,
+                        }))
+                        .await;
                 }
             });
         }
@@ -463,12 +468,8 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
                 }
                 // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this
                 // bounds the sum over all of them, which is the number that multiplies.
-                if charge_stream_budget(
-                    &self.stream_bytes,
-                    &mut byte_permits,
-                    d.content_data.len(),
-                )
-                .is_err()
+                if charge_stream_budget(&self.stream_bytes, &mut byte_permits, d.content_data.len())
+                    .is_err()
                 {
                     return Ok(Response::new(internal_server_error(&stream_error_message(
                         &StreamError::MaxSizeReached,

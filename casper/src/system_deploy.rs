@@ -116,11 +116,7 @@ impl SystemDeploy {
         }
     }
 
-    pub fn refund(
-        deployer: &PublicKey,
-        amount: NonNegI64,
-        rand: Blake2b512Random,
-    ) -> SystemDeploy {
+    pub fn refund(deployer: &PublicKey, amount: NonNegI64, rand: Blake2b512Random) -> SystemDeploy {
         SystemDeploy {
             source: "",
             normalizer_env: BTreeMap::new(),

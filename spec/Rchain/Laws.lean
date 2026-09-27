@@ -993,7 +993,7 @@ def laws : List Law := [
       rather than axioms**, because resolving an id back to a value needs uniqueness and a finite \
       descent. **And the descent is *enforced* rather than assumed** (H1b, `46c35b545`): `blockNumber` \
       refuses a block that names a resolved parent at or above its own number, the **failed** ones \
-      included (`casper/src/validate.rs:222-226`), so `Descends` holds of **every state the port \
+      included (`casper/src/validate.rs:226-230`), so `Descends` holds of **every state the port \
       admits** — where the reference validator, which filters failed parents out of its own \
       `blockNumber`, admits the violating block, the §6 deviation AUDIT C83 carries. The earlier plan \
       to weaken this to *unfailed* parents is therefore **superseded**: a weakened `Descends` forces \
@@ -1022,9 +1022,9 @@ def laws : List Law := [
       second distinct block by one sender reusing a `seq_num`, **before any partial write** \
       (`casper/src/dag.rs:244-252`, test `insert_rejects_equivocation_same_seq_num` at `:568`); \
       `sequence_number` requires a block to justify a same-sender block exactly one `seq_num` lower \
-      (`casper/src/validate.rs:241-258`, test `sequence_number_must_be_creator_latest_plus_one` at \
+      (`casper/src/validate.rs:245-262`, test `sequence_number_must_be_creator_latest_plus_one` at \
       `:813`); and `check_justification_regression` admits at most one justification per sender and \
-      demands that it be the latest (`casper/src/validate.rs:263-275`). **Why the port refuses it, and \
+      demands that it be the latest (`casper/src/validate.rs:267-279`). **Why the port refuses it, and \
       why that refusal is a deviation the oracle does not share, is AUDIT C84** — the Scala has no \
       equivocation gate anywhere and its `validateDagState` checks only height contiguity, so the \
       premise this proof needs is **guaranteed here and only observed there**. H-1 landed **2026-08-20** \
@@ -1115,7 +1115,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.block_number_rejects, `Rchain.block_number_universal_is_false],
     falsifiable := some "`block_number_rejects` is the case the port returns `InvalidBlockNumber` for \
-      (`validate.rs:232-236`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
+      (`validate.rs:236-240`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
       falsifiable on its own: a block with no live justification must be numbered `0`, so a model that \
       folded a maximum from `0` would demand `1` and reject the genesis-shaped case. And \
       `block_number_universal_is_false` exhibits the refutation of the axiom that stood here — which \
@@ -1123,7 +1123,7 @@ def laws : List Law := [
     note := "**the axiom was false, not merely unproven**: it quantified over every `Block`, and a \
       `Block` is freely constructed, so one line refutes it (`block_number_universal_is_false`). The law \
       is re-scoped to the check the code has — a fold over the block's justifications, skipping the \
-      failed ones and seeded `-1` (`validate.rs:218-230`) — and the proof is that predicate's \
+      failed ones and seeded `-1` (`validate.rs:222-234`) — and the proof is that predicate's \
       elimination, which is the honest shape: the port enforces this by *refusing blocks*, not by \
       maintaining an invariant it states. The model's `Block` carries `justifications` because the check \
       reads them; the `parents : List Nat` field this row's model used does not exist in the port" },
@@ -1140,7 +1140,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.seq_num_universal_is_false, `Rchain.seq_num_strictly_increases],
     falsifiable := some "a block whose `seqNum` skips or repeats the sender's latest justification is \
-      rejected (`InvalidSequenceNumber`, `validate.rs:255-258`), and the `-1` seed is a case of its own: \
+      rejected (`InvalidSequenceNumber`, `validate.rs:259-262`), and the `-1` seed is a case of its own: \
       a sender's first block must be `0`. `seq_num_universal_is_false` is the published refutation of \
       the axiom this replaces — and it refutes it **for a single sender**, which is why the re-scoping \
       is the justification relation and not the sender relation",
@@ -1148,7 +1148,7 @@ def laws : List Law := [
       the diagnosis in the row it replaces — \"the sender relation is missing\" — was wrong: a same-sender \
       pair with a non-consecutive `seqNum` refutes it just as well \
       (`seq_num_universal_is_false`). What the check folds over is the block's justifications **whose \
-      sender matches**, against their maximum (`validate.rs:241-258`); the law is re-scoped to that, and \
+      sender matches**, against their maximum (`validate.rs:245-262`); the law is re-scoped to that, and \
       the proof is the predicate's elimination. The old model also carried a `seqNum`-ordering axiom over \
       any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
@@ -1715,23 +1715,23 @@ def laws : List Law := [
     witness := [`Rchain.commit_after_abort_is_an_error, `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft, `Rchain.txnPrepare_idempotent],
     falsifiable := some "the negatives are the witnesses: a second `prepare` that re-escrowed would fail \
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
-      `txn_prepare`/`txn_commit` (`native_state.rs:1421-1510`, `txn_prepare` at `:1421` and \
+      `txn_prepare`/`txn_commit` (`native_state.rs:1429-1518`, `txn_prepare` at `:1421` and \
       `txn_commit` at `:1454`; the test is \
       `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2628`); dropping the \
       early return \
       would let a retry fail on insufficient balance *after* the first call had already succeeded, which \
-      the port's ordering (`native_state.rs:1429-1431`, before the balance check) forbids. \
+      the port's ordering (`native_state.rs:1437-1439`, before the balance check) forbids. \
       `commit_after_abort_is_an_error` \
       fails for a verb that allowed the transition — the port returns \
-      `Err(\"txn commit: already aborted\")` (`native_state.rs:1460`), and `abort_after_commit_is_an_error` the mirror \
-      (`native_state.rs:1429`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1434`)",
+      `Err(\"txn commit: already aborted\")` (`native_state.rs:1468`), and `abort_after_commit_is_an_error` the mirror \
+      (`native_state.rs:1437`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1442`)",
     note := "`leg_idempotent` is **proved now** — `funext` on a pointwise update, which is all it ever \
       needed — but it is the per-*shard-state* view, and the port's verbs are not pointwise updates: \
       they read a record, decide, and write a vault balance *and* a record. So the law is re-modelled on \
       the ledger the port keeps, where idempotence is the **early return on an existing record** \
-      (`native_state.rs:1429-1431`) rather than a coincidence of the arithmetic, and where the **fences** \
+      (`native_state.rs:1437-1439`) rather than a coincidence of the arithmetic, and where the **fences** \
       are stated too — commit after abort is an error and abort after commit is an error \
-      (`native_state.rs:1460`, `:1492`), which idempotence alone would permit. A fidelity note: the \
+      (`native_state.rs:1468`, `:1492`), which idempotence alone would permit. A fidelity note: the \
       model's `TxnState` carried a \
       fourth constructor (`proposed`) that the code does not have (`native_state.rs:140`); a transaction with no \
       record is `none`, which is how the verbs spell it" },
@@ -2223,8 +2223,8 @@ def laws : List Law := [
       (`epochStep_conserves`, from `payDue_conserves` plus the observation that the other three steps \
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
-      `debit_pos_vault` *fails* the transfer (`native_state.rs:958`, its refusal at `:963`) and \
-      `close_block` (`native_state.rs:1138`) writes nothing on that path — the debit's `?` at `:1207` \
+      `debit_pos_vault` *fails* the transfer (`native_state.rs:962`, its refusal at `:963`) and \
+      `close_block` (`native_state.rs:1146`) writes nothing on that path — the debit's `?` at `:1207` \
       returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \

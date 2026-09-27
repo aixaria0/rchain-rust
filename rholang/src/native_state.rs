@@ -942,7 +942,11 @@ impl NativeSystemState {
             return Ok(());
         }
         let balance = self.pos_vault_balance().await?;
-        self.set_pos_vault_balance(balance_plus(balance, i64::from(amount), "pos vault credit")?);
+        self.set_pos_vault_balance(balance_plus(
+            balance,
+            i64::from(amount),
+            "pos vault credit",
+        )?);
         Ok(())
     }
 
@@ -960,7 +964,11 @@ impl NativeSystemState {
             return Ok(());
         }
         let balance = self.pos_vault_balance().await?;
-        self.set_pos_vault_balance(balance_plus(balance, -i64::from(amount), "pos vault debit")?);
+        self.set_pos_vault_balance(balance_plus(
+            balance,
+            -i64::from(amount),
+            "pos vault debit",
+        )?);
         Ok(())
     }
 
@@ -1611,7 +1619,10 @@ impl NativeSystemState {
             .vault_balance(&address)
             .await?
             .unwrap_or(NonNegI64::zero());
-        self.set_vault_balance(&address, balance_plus(balance, i64::from(amount), "refund")?);
+        self.set_vault_balance(
+            &address,
+            balance_plus(balance, i64::from(amount), "refund")?,
+        );
         Ok(Ok(()))
     }
 
@@ -1709,15 +1720,18 @@ mod tests {
     /// appears out of nowhere moves the total.
     #[tokio::test]
     async fn total_value_sees_a_balance_at_an_address_no_test_named() {
-        let native = native_with(&[validator(1)], PosParams::default(), &[(validator(1), 10)]).await;
+        let native =
+            native_with(&[validator(1)], PosParams::default(), &[(validator(1), 10)]).await;
         let before = native.total_value().await.unwrap();
 
         // An address this test never mentions, credited straight into the store — from the
         // invariant's point of view, exactly the shape a credit to an unlisted account has.
         let ghost = "1111111111111111111111111111111111111111111111111111";
-        native
-            .store
-            .put(PREFIX_VAULT, vault_key(ghost), 500i64.to_le_bytes().to_vec());
+        native.store.put(
+            PREFIX_VAULT,
+            vault_key(ghost),
+            500i64.to_le_bytes().to_vec(),
+        );
 
         assert_eq!(
             native.total_value().await.unwrap(),
@@ -1750,16 +1764,19 @@ mod tests {
         let payer = RevAddress::from_public_key(&deployer).unwrap().to_base58();
         native.set_vault_balance(&payer, NonNegI64::try_from(60).unwrap());
 
-        let mut total = native.total_value().await.unwrap();
+        let total = native.total_value().await.unwrap();
         macro_rules! conserved {
             ($what:expr) => {{
+                // No `total = after`: the assertion below requires `after == total`, so the
+                // reassignment was a no-op — and on this macro's last expansion `clippy::
+                // unused_assignments` reads it as dead, which is what removed it. The total is the
+                // *same* quantity throughout, and that is the whole content of the test.
                 let after = native.total_value().await.unwrap();
                 assert_eq!(
                     after, total,
                     "{} moved value — every one of these is a transfer, so the total is invariant",
                     $what
                 );
-                total = after;
             }};
         }
 
@@ -2465,7 +2482,13 @@ mod tests {
             "and no value may move out of the staking vault: a revocation is not a transfer"
         );
         assert_eq!(
-            i64::from(native.vault_balance(&native.vault_address(&v).unwrap()).await.unwrap().unwrap()),
+            i64::from(
+                native
+                    .vault_balance(&native.vault_address(&v).unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            ),
             60,
             "the validator keeps what it did not bond, so it can still withdraw the stake"
         );
