@@ -2152,10 +2152,21 @@ mod tests {
 
     /// **Laws 45 and 46 — the split, checked against the model rather than a remembered number.**
     /// `Rchain/Pos.lean`'s `the_dust_is_real` is the `decide`d case `minimumBond = 3`, bonds
-    /// `[4, 5]`, pot `10`: the normaliser is `9 / 3 = 3`, each scaled share is `4 / 3 = 5 / 3 = 1`,
-    /// and each validator is paid `10 * 1 / 3 = 3` — **6 distributed of 10**, the rest being the dust
-    /// of two integer divisions. This test builds exactly that state and reads the split back, so the
-    /// implementation is checked against the arithmetic the Lean proves rather than against itself.
+    /// `[4, 8]`, pot `10`: the normaliser is `12 / 3 = 4`, the scaled shares are `4 / 3 = 1` and
+    /// `8 / 3 = 2`, and the validators are paid `10 * 1 / 4 = 2` and `10 * 2 / 4 = 5` — **7
+    /// distributed of 10**, the rest being the dust of two integer divisions. This test builds exactly
+    /// that state and reads the split back, so the implementation is checked against the arithmetic the
+    /// Lean proves rather than against itself.
+    ///
+    /// **Why these bonds and not a smaller pair (AUDIT C149).** Bonds `[4, 5]` were the fixture until
+    /// this was measured: both are `1` after the integer division by `minimum_bond = 3`, so the
+    /// proportionality factor `bond / minimum_bond` was the *identity* for every validator the test
+    /// built, and deleting it from `epoch_reward` left this test green — two deliberately different
+    /// bonds producing the same share by construction. `4` and `8` straddle the divisor, so the factor
+    /// is `1` for one validator and `2` for the other, and a split that ignores the bond is visible.
+    /// `the_dust_is_real` carried the identical degeneracy over the same instance; it was moved to
+    /// this one in the same pass, because a row certified on one side and unobservable on the other is
+    /// not certified at all.
     #[tokio::test]
     async fn an_epoch_splits_the_pot_and_keeps_the_dust() {
         let params = PosParams {
@@ -2166,7 +2177,7 @@ mod tests {
         let native = native_with(
             &[validator(1), validator(2)],
             params,
-            &[(validator(1), 4), (validator(2), 5)],
+            &[(validator(1), 4), (validator(2), 8)],
         )
         .await;
         // Fill the pot with exactly 10 the way a deploy's phlo does.
@@ -2176,7 +2187,7 @@ mod tests {
         native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.pos_vault_balance().await.unwrap()),
-            9 + 10,
+            12 + 10,
             "the vault holds the bonds plus the phlo"
         );
 
@@ -2185,13 +2196,13 @@ mod tests {
         let committed = native.committed_rewards().await.unwrap();
         assert_eq!(
             i64::from(committed[&validator(1)]),
-            3,
-            "10 * (4 / 3) / (9 / 3) = 3"
+            2,
+            "10 * (4 / 3) / (12 / 3) = 2"
         );
         assert_eq!(
             i64::from(committed[&validator(2)]),
-            3,
-            "10 * (5 / 3) / (9 / 3) = 3"
+            5,
+            "10 * (8 / 3) / (12 / 3) = 5"
         );
         assert!(
             i64::from(committed[&validator(1)]) + i64::from(committed[&validator(2)]) < 10,
@@ -2199,7 +2210,7 @@ mod tests {
         );
         assert_eq!(
             i64::from(native.pos_vault_balance().await.unwrap()),
-            19,
+            22,
             "the vault is not debited by a commitment: the reward is paid when the validator leaves"
         );
         assert_eq!(
@@ -2210,8 +2221,8 @@ mod tests {
                 &native.committed_rewards().await.unwrap(),
             )
             .unwrap(),
-            4,
-            "the four units of dust stay in the pot, and the next epoch distributes them"
+            3,
+            "the three units of dust stay in the pot, and the next epoch distributes them"
         );
     }
 

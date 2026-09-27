@@ -242,7 +242,14 @@ PY
   case "$declared_result" in
     none*)  die "law $LAW declares no Rust witness in spec/laws.tsv column 14 — it cannot be falsified this way"
             ;;
-    miss*)  if [[ "$verdict" == "red" ]]; then verdict="red-undeclared"; else verdict="green"; fi
+    miss*)  # `no-build` survives: the crate refusing the plant is a fact about the plant, and the
+            # criterion has nothing to say about it. Writing this as a plain `else green` turned a
+            # compile failure into a finding — a false one, and the worst kind for this tool.
+            case "$verdict" in
+              red)     verdict="red-undeclared" ;;
+              no-build) : ;;
+              *)       verdict="green" ;;
+            esac
             # `$'\t'`, not `\t`: in a glob pattern a backslash-t is a literal `t`, so `#*\t` stripped
             # through the first `t` of the witness name and printed `he_gate_scheduler_...` for
             # `law21_the_gate_scheduler_...`. The verdict was right and the name it blamed was not.
