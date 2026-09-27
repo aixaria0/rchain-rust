@@ -228,8 +228,15 @@ fi
 # filtered out` and the verdict is a green over zero tests, which is the failure this whole audit keeps
 # finding and the one I hit myself: every corpus row I probed this way came back "green" for the wrong
 # reason. A run where nothing ran is not evidence, so it is refused rather than reported.
-if ! printf '%s' "$out" | grep -E '^test result:' | grep -qvE '0 passed; 0 failed'; then
-  printf '%s\n' "$out" | grep -E '^test result:' | head -3 | sed 's/^/    /'
+# No `test result:` line at all is a *different* fact from a line reading zero: it means cargo never got
+# as far as running anything — a build failure, already caught above, or a crash. Conflating the two
+# would report a compile error as a filter mistake, which is the same class of error this guard exists
+# to prevent, one level up.
+results="$(printf '%s' "$out" | grep -E '^test result:' || true)"
+if [[ -z "$results" ]]; then
+  [[ "$verdict" == "no-build" ]] || die "cargo produced no test result at all and did not report a build failure — read the output before trusting any verdict"
+elif ! printf '%s' "$results" | grep -qvE '0 passed; 0 failed'; then
+  printf '%s\n' "$results" | head -3 | sed 's/^/    /'
   die "the filter '$TEST' matched no test in any target — nothing ran, so there is no verdict"
 fi
 
