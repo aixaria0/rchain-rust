@@ -22,7 +22,7 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 4 · IN PROGRESS 0 · DONE 196** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  0 of 89 T1 modules unread**
+**Findings  TODO 4 · IN PROGRESS 0 · DONE 196** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
@@ -38,14 +38,12 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
 
-### TODO — unread T1 modules (0)
+### T1 coverage — closed
 
-The modules that can fork the chain or lose funds, and that nobody has read. In remit and not
-yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its
-rendering and the gate that checked it were deleted on 2026-09-27; the data is the file.
-
-| module |
-|---|
+All 89 rows for the modules that can fork the chain or lose funds have been read: 61 carry a
+verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason class.
+The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
+defects this register had not recorded (C164, C165).
 
 ### IN PROGRESS (0)
 

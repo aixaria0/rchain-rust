@@ -139,11 +139,20 @@ tbl_unread() {
   awk -F'\t' '$3 == "T1" && $4 == "deferred" { printf "| `%s` |\n", $2 }' "$LEDGER" 2>/dev/null | sort
 }
 
+# **A closed half says so.** "0 of 89 T1 modules unread" is the same fact as "89 of 89 read" and
+# reads like a bug rather than a result; the line is the one a reader takes away, so it is phrased by
+# which way it is.
+if (( t1_deferred == 0 )); then
+  t1_line="**Coverage  all $t1_total T1 modules read**"
+else
+  t1_line="**Coverage  $t1_deferred of $t1_total T1 modules unread**"
+fi
+
 panel="$(mktemp)"
 {
   printf '## Check-off\n\n'
-  printf '**Findings  TODO %s · IN PROGRESS %s · DONE %s** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  %s of %s T1 modules unread**\n\n' \
-    "$(count_of todo)" "$(count_of 'in progress')" "$(count_of done)" "$t1_deferred" "$t1_total"
+  printf '**Findings  TODO %s · IN PROGRESS %s · DONE %s** &nbsp;&nbsp;·&nbsp;&nbsp; %s\n\n' \
+    "$(count_of todo)" "$(count_of 'in progress')" "$(count_of done)" "$t1_line"
   printf 'Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a\n'
   printf 'deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would\n'
   printf 'close it. **%s of the %s findings name no evidence**, which is a column here rather than an\n' \
@@ -152,12 +161,26 @@ panel="$(mktemp)"
 
   printf '### TODO — findings (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of todo)"
   tbl_todo; printf '\n'
-  printf '### TODO — unread T1 modules (%s)\n\n' "$t1_deferred"
-  printf 'The modules that can fork the chain or lose funds, and that nobody has read. In remit and not\n'
-  printf 'yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its\n'
-  printf 'rendering and the gate that checked it were deleted on 2026-09-27; the data is the file.\n\n'
-  printf '| module |\n|---|\n'
-  tbl_unread; printf '\n'
+  # **An empty section is not printed as a zero-row table.** Until 2026-09-27 this always emitted
+  # `### TODO — unread T1 modules (0)` over a header with no rows, which reads like a section that
+  # failed to render rather than one that has nothing left in it. A closed half says so.
+  if (( t1_deferred > 0 )); then
+    printf '### TODO — unread T1 modules (%s)\n\n' "$t1_deferred"
+    printf 'The modules that can fork the chain or lose funds, and that nobody has read. In remit and not\n'
+    printf 'yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its\n'
+    printf 'rendering and the gate that checked it were deleted on 2026-09-27; the data is the file.\n\n'
+    printf '| module |\n|---|\n'
+    tbl_unread; printf '\n'
+  else
+    printf '### T1 coverage — closed\n\n'
+    printf 'All %s rows for the modules that can fork the chain or lose funds have been read: %s carry a\n' \
+      "$t1_total" "$(awk -F'\t' '$3 == "T1" && $4 == "cleared"' "$LEDGER" 2>/dev/null | wc -l)"
+    printf 'verdict of `cleared`, %s produced a finding, and %s are `exempt` with a reason class.\n' \
+      "$(awk -F'\t' '$3 == "T1" && $4 == "finding"' "$LEDGER" 2>/dev/null | wc -l)" \
+      "$(awk -F'\t' '$3 == "T1" && $4 == "exempt"' "$LEDGER" 2>/dev/null | wc -l)"
+    printf 'The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found\n'
+    printf 'defects this register had not recorded (C164, C165).\n\n'
+  fi
   printf '### IN PROGRESS (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of 'in progress')"
   tbl_prog; printf '\n'
   printf '### DONE (%s)\n\n| id | what | evidence | account |\n|---|---|---|---|\n' "$(count_of done)"
