@@ -29,7 +29,7 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `file` | 350 | 350 | 22 | 21 | 0 | 1 | 328 | 0 | 0 |
 | `ingress` | 44 | 44 | 4 | 4 | 0 | 0 | 40 | 0 | 0 |
-| `law` | 60 | 60 | 54 | 13 | 0 | 41 | 2 | 4 | 0 |
+| `law` | 60 | 60 | 55 | 13 | 0 | 42 | 1 | 4 | 0 |
 | `site` | — | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `class` | 6 | 6 | 0 | 0 | 0 | 0 | 6 | 0 | 0 |
 | `process` | 30 | 30 | 0 | 0 | 0 | 0 | 30 | 0 | 0 |
@@ -55,7 +55,7 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 
 | tier | rows | reviewed | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|
-| T1 | 87 | 62 | 21 | 4 | 0 |
+| T1 | 87 | 63 | 20 | 4 | 0 |
 | T2 | 21 | 3 | 18 | 0 | 0 |
 | T3 | 509 | 21 | 488 | 0 | 0 |
 
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at 9a928c99b.*
+*Emitted from a tree at 03cafa506.*
