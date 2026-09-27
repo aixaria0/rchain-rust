@@ -222,7 +222,15 @@ if [[ -n "$LAW" ]]; then
   declared_result="$(python3 - <<'PY'
 import os, subprocess, re, sys
 law = os.environ["MUT_LAW"]
-field = subprocess.run(["awk", "-F\t", "-v", f"n={law}", '$1==n {print $14}', "spec/laws.tsv"],
+# A law row is (number, clause): 16 has four clauses a–d, each its own laws.tsv row with its own
+# witnesses. Matching on the number alone unions all four, so `--law 16` would accept clause c's
+# witness as evidence for clause d — the criterion would still be the wrong one, just less obviously.
+m = re.match(r"^(\d+)([a-z]?)$", law)
+if not m:
+    print(f"none\t"); sys.exit(0)
+num, clause = m.group(1), m.group(2)
+prog = '$1==n && $2==c {print $14}' if clause else '$1==n && $2=="" {print $14}'
+field = subprocess.run(["awk", "-F\t", "-v", f"n={num}", "-v", f"c={clause}", prog, "spec/laws.tsv"],
                        capture_output=True, text=True).stdout.strip()
 if not field or field == "-":
     print("none\t"); sys.exit(0)
