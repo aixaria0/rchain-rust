@@ -4185,3 +4185,42 @@ remotely.
   fix is pinned by the test itself (`genesis_boot_exposes_block_over_http`, green) and the whole
   suite is green behind it — the first time in this tree's recent history.
 
+## 22. The coverage pass: reading the T1 roster
+
+`spec/AUDIT.md`'s check-off carries two halves, and this is the second: the **89 T1 rows** — the
+modules that can fork the chain or lose funds — of which 20 carried `deferred` when the pass opened.
+The check-off's front page has read `Coverage 20 of 89 T1 modules unread` since it was built, and
+until this pass `tools/todo.sh` could not tick one: it resolved ids against `spec/findings.tsv`, so
+the larger half of the check-off was listed by a tool that refused to close it. Two verbs fixed that
+(`read` and `found`), and every row below is recorded through them.
+
+**The base rate is why this is worth doing.** Eight T1 files had been read before this pass and **all
+eight produced a finding** — not one had ever been read and cleared. §21 said the same about the
+roster as a whole in its own closing words: "17 of 350 file rows carry a verdict and **not one is
+`cleared`**" — *not one is `cleared`*, written by the eight findings.
+
+Each row below names the symbol read and what the read produced. A `cleared` row is a module read in
+full against its oracle with nothing found; a `finding` row names the C-number it became.
+
+### C164 — a truncated `current-root` panicked the node on the state-read path
+
+- **C164 — `RootsStore::current_root` built a hash from whatever the store returned, and the
+  constructor asserts its length.** `rspace/src/history/roots_store.rs`'s `current_root` read the
+  `current-root` key and handed the value straight to `Blake2b256Hash::from_byte_array`, which is
+  `assert_eq!(bytes.len(), LENGTH, "Expected 32 but got N")` (`crypto/src/hash/blake2b256_hash.rs:49-56`).
+  A value that is not 32 bytes therefore **panicked** — on the path every state read goes through —
+  rather than reporting what was wrong. **Found by reading the module, and the tell is one file over:**
+  `rspace/src/history/codecs.rs` performs the identical conversion and *does* guard it, refusing a
+  wrong length by name, with a test whose own doc says why — "a corrupted or truncated store value must
+  be an error naming the length, not a hash built from whatever bytes arrived — a padded read would
+  silently address the wrong node in the radix tree." The discipline existed, was pinned, and was not
+  applied where the same bytes are read. **Trigger:** a truncated or corrupted `current-root` value —
+  a partial write, a hand-edited store, a restore from a bad backup. The node's own writes are always
+  32 bytes, so this is the corruption case and not a remote one. **Fixed** in the same shape as the
+  codec's guard: `current_root` now refuses a wrong length, naming both the length it found and the
+  32 it wanted. **Falsified both ways, and the failure is the defect:** with the guard removed,
+  `a_truncated_current_root_is_refused_rather_than_panicking` dies inside `from_byte_array` with
+  `Expected 32 but got 31` — the panic this row is about, printed by the test that now prevents it.
+  Its second arm is the control: a well-formed value still reads, so the guard is a length check and
+  not a read that refuses everything.
+

@@ -22,11 +22,11 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 5 · IN PROGRESS 0 · DONE 193** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  19 of 89 T1 modules unread**
+**Findings  TODO 5 · IN PROGRESS 0 · DONE 194** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  16 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 193 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 194 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
 ### TODO — findings (5)
@@ -39,7 +39,7 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
 
-### TODO — unread T1 modules (19)
+### TODO — unread T1 modules (16)
 
 The modules that can fork the chain or lose funds, and that nobody has read. In remit and not
 yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its
@@ -59,10 +59,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `rholang/src/contract_call.rs` |
 | `rholang/src/dispatch.rs` |
 | `rholang/src/scheduler.rs` |
-| `rspace/src/history/history_action.rs` |
 | `rspace/src/history/history_repository.rs` |
-| `rspace/src/history/root_repository.rs` |
-| `rspace/src/history/roots_store.rs` |
 | `rspace/src/replay_rspace.rs` |
 | `rspace/src/scheduled_space.rs` |
 | `shared/src/rate_limiter.rs` |
@@ -72,7 +69,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (193)
+### DONE (194)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -183,6 +180,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `C161` | a phase-two failure is discarded. `casper/src/gateway/mod.rs::apply_phase_two` ignores | a_failed_phase_two_leaves_the_decision_intact | §15 |
 | `C162` | the inner replay trace check does not fire for a term tamper; the state-hash comparison | a_tampered_deploy_replays_to_a_rejected_state_hash | §15 |
 | `C163` | C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file | genesis_boot_exposes_block_over_http | §21 |
+| `C164` | a truncated `current-root` panicked the node on the state-read path: `RootsStore::current_root` built the hash from whatever the store returned, and `Blake2b256Hash::from_byte_array` asserts its length | a_truncated_current_root_is_refused_rather_than_panicking | §22 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
