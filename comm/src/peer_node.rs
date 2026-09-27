@@ -6,6 +6,15 @@ use rchain_models::comm::protocol::Node;
 use rchain_shared::base16;
 use rchain_shared::refined::Port;
 
+/// The longest host string a routing `Node` may carry (AUDIT R32).
+///
+/// **`MAX_CONNECTIONS` bounds the table's entry count, not the size of an entry.** A peer could
+/// therefore send a host of the wire's maximum size and have it retained verbatim — 1024 times over,
+/// on a table that is a `Vec<PeerNode>` in memory. The DNS limit for a hostname is 253 bytes and the
+/// longest IP literal is 45 (`[` + 39 hex-ish + `]`), so 256 admits everything dialable and refuses
+/// what cannot be a host at all.
+pub const MAX_HOST_BYTES: usize = 256;
+
 /// A node identifier (a raw public key, hex-encoded in its string form).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeIdentifier {
@@ -97,10 +106,20 @@ impl PeerNode {
 
     /// Build a peer from a routing `Node` (port of `PeerNode.from(node)`).
     pub fn from_node(node: &Node) -> Result<PeerNode, crate::errors::CommError> {
+        // **The host is bounded here, at the boundary, because [`MAX_CONNECTIONS`] is not a bound on
+        // it** (AUDIT R32). That constant caps how many peers the connections table holds; a peer
+        // sending a host of the wire's maximum size had it retained verbatim, up to 1024 times over.
+        let host = String::from_utf8_lossy(&node.host).to_string();
+        if host.len() > MAX_HOST_BYTES {
+            return Err(crate::errors::CommError::ParseError(format!(
+                "host is {} bytes, over the {MAX_HOST_BYTES}-byte bound",
+                host.len()
+            )));
+        }
         Ok(PeerNode {
             id: NodeIdentifier::new(node.id.clone()),
             endpoint: Endpoint {
-                host: String::from_utf8_lossy(&node.host).to_string(),
+                host,
                 tcp_port: Port::try_from(node.tcp_port).map_err(|e| {
                     crate::errors::CommError::ParseError(format!("invalid tcp port: {e}"))
                 })?,
@@ -164,6 +183,40 @@ mod tests {
         let id = NodeIdentifier::new(vec![0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(id.s_key(), "deadbeef");
         assert_eq!(NodeIdentifier::from_hex("deadbeef").unwrap(), id);
+    }
+
+    /// **A host over [`MAX_HOST_BYTES`] is refused at the wire boundary** (AUDIT R32).
+    ///
+    /// `MAX_CONNECTIONS` caps how many peers the connections table holds, not how large one is — so a
+    /// peer could send a host of the wire's maximum size and have it retained verbatim, 1024 of them
+    /// on a table held in memory. The bound is applied where the value enters, not at the table.
+    ///
+    /// Two arms, so the refusal cannot be a boundary that rejects everything: an over-long host is
+    /// refused **naming its length**, and a 253-byte host — the DNS maximum — is admitted.
+    #[test]
+    fn a_host_over_the_bound_is_refused_at_the_wire() {
+        let over = Node {
+            id: vec![1, 2, 3],
+            host: vec![b'a'; MAX_HOST_BYTES + 1],
+            tcp_port: 40400,
+            udp_port: 40404,
+        };
+        let err = PeerNode::from_node(&over).expect_err("over the bound");
+        assert!(
+            format!("{err:?}").contains(&(MAX_HOST_BYTES + 1).to_string()),
+            "the refusal names the length it refused: {err:?}"
+        );
+
+        let longest_real = Node {
+            id: vec![1, 2, 3],
+            host: vec![b'a'; 253],
+            tcp_port: 40400,
+            udp_port: 40404,
+        };
+        assert!(
+            PeerNode::from_node(&longest_real).is_ok(),
+            "253 bytes is a hostname and must be admitted"
+        );
     }
 
     #[test]
