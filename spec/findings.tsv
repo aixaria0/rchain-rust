@@ -94,7 +94,7 @@ R29	C5	13	done	block-receiver maps unbounded. `casper/src/blocks/block_receiver.
 R30	C7	13	done	`PeerRateLimiter` never evicts. `casper/src/engine/node_running.rs:106` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn		-
 R31	F6	13	todo	attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136`	is_ssrf_unsafe_host	a disposition: validate the host the UPnP path advertises, or record why a hostname is safe there
 R32	F7	13	todo	attacker-controlled large `sender.host` retained in the connections table. `comm/src/rp/handle_messages.rs:70-93`		a disposition: cap the retained host string, or record that MAX_CONNECTIONS bounds the work
-R33	A4	13	todo	faucet to the deployer's own address is a no-op that still consumes the rate budget and submits a deploy		refuse a self-drip before charging the budget, or record why spending it is intended
+R33	A4	13	done	faucet to the deployer's own address is a no-op that still consumes the rate budget and submits a deploy	the_faucet_refuses_a_drip_to_the_deployers_own_address	-
 R34	A5	13	todo	`/api/faucet` routes are mounted unconditionally on the public router; the dev-mode gate is only inside the handler		gate the route at the mount, or record that the handler's refusal is the boundary
 R35	A6	13	done	a faucet drip is silently dropped once the tip passes `height+50` (`DEPLOY_LIFESPAN`), after `200` was already returned		-
 R36	A7	13	todo	the single `deploy_rate_limiter` is shared by deploy + explore-deploy, so explore floods starve deploys	deploy_rate_limiter	separate budgets for deploy and explore, or record why sharing one is intended
