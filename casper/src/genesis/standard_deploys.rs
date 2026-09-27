@@ -11,6 +11,7 @@ use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
 use rchain_crypto::signatures::signed::Signed;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
 use rchain_shared::base16;
+use rchain_shared::refined::NonNegI64;
 
 use crate::genesis::contracts::{rev_generator_code, ProofOfStake, Registry, Vault};
 
@@ -382,8 +383,8 @@ impl StandardDeploys {
     }
 
     pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Result<SignedDeployData, String> {
-        let minimum_bond = pos.minimum_bond.to_string();
-        let maximum_bond = pos.maximum_bond.to_string();
+        let minimum_bond = i64::from(pos.minimum_bond).to_string();
+        let maximum_bond = i64::from(pos.maximum_bond).to_string();
         let initial_bonds = ProofOfStake::initial_bonds(&pos.validators);
         let epoch_length = pos.epoch_length.to_string();
         let quarantine_length = pos.quarantine_length.to_string();
@@ -684,8 +685,8 @@ mod builder_tests {
     #[test]
     fn the_pos_and_rev_generators_substitute_their_parameters() {
         let pos = ProofOfStake {
-            minimum_bond: 3,
-            maximum_bond: 100,
+            minimum_bond: NonNegI64::try_from(3).unwrap(),
+            maximum_bond: NonNegI64::try_from(100).unwrap(),
             validators: vec![Validator {
                 pk: PublicKey::new(rchain_shared::base16::unsafe_decode(&"ab".repeat(65))),
                 stake: rchain_shared::refined::NonNegI64::try_from(42).expect("non-negative"),

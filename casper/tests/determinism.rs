@@ -436,7 +436,7 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
         params: rchain_rholang::native_state::PosParams {
             epoch_length: 1,
             quarantine_length: 0,
-            minimum_bond: 1,
+            minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..Default::default()
         },
     };

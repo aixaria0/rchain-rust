@@ -20,6 +20,7 @@ use rchain_models::casper::protocol::casper_message::{
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_rspace::state::{RSpaceExporter, RSpaceImporter};
 use rchain_shared::log::{Log, LogSource};
+use rchain_shared::refined::NonNegI64;
 use tokio::sync::mpsc;
 
 use crate::blocks::block_retriever::BlockRetriever;
@@ -78,8 +79,14 @@ pub async fn create_genesis_block(
         shard_id: shard_id.to_string(),
         block_number,
         proof_of_stake: ProofOfStake {
-            minimum_bond,
-            maximum_bond,
+            // The config is where a signed number becomes a protocol parameter, so this is where a
+            // negative one is refused rather than carried (deferred item 1d). Not clamped: "no
+            // minimum" and "a minimum of -1" are different intentions, and only one of them is
+            // expressible here.
+            minimum_bond: NonNegI64::try_from(minimum_bond)
+                .map_err(|e| format!("casper.genesis.bond-minimum must not be negative: {e}"))?,
+            maximum_bond: NonNegI64::try_from(maximum_bond)
+                .map_err(|e| format!("casper.genesis.bond-maximum must not be negative: {e}"))?,
             validators,
             epoch_length,
             quarantine_length,

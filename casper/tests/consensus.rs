@@ -212,7 +212,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
         bonds: std::collections::BTreeMap::new(),
         trusted: BTreeSet::from([deployer]),
         params: PosParams {
-            minimum_bond: 1,
+            minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..PosParams::default()
         },
     };
@@ -317,7 +317,7 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             .collect(),
         trusted: BTreeSet::from([trustee]),
         params: PosParams {
-            minimum_bond: 1,
+            minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..PosParams::default()
         },
     };
@@ -407,7 +407,7 @@ async fn the_bond_cache_is_the_active_pos_state_and_a_differing_one_is_refused()
             .collect(),
         trusted: BTreeSet::new(),
         params: PosParams {
-            minimum_bond: 1,
+            minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             number_of_active_validators: 2,
             ..PosParams::default()
         },

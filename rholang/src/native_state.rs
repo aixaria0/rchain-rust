@@ -436,10 +436,17 @@ pub fn decode_withdrawers(bytes: &[u8]) -> Result<BTreeMap<Validator, Withdrawal
 /// The immutable PoS parameters (installed at genesis, network-wide constants).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PosParams {
-    /// Minimum accepted bond (stake) per validator.
-    pub minimum_bond: i64,
-    /// Maximum accepted bond (stake) per validator.
-    pub maximum_bond: i64,
+    /// Minimum accepted bond (stake) per validator. **`NonNegI64`, not `i64`** (the deferred item
+    /// 1d): a negative minimum is not a configuration this protocol has a meaning for, and while the
+    /// field was signed the only thing standing between a genesis file and a stored `-1` was the
+    /// bond check's arithmetic — where a *negative* minimum silently accepts every bond, including
+    /// the zero-stake one the check exists to refuse. `decode_params` now refuses one at the wire,
+    /// so the invariant holds on every value that reaches this struct.
+    pub minimum_bond: NonNegI64,
+    /// Maximum accepted bond (stake) per validator. Refined for the same reason, in the direction
+    /// that matters at the other end: `i64::MAX` is the "no maximum" value, and a negative maximum
+    /// would refuse every bond.
+    pub maximum_bond: NonNegI64,
     /// Epoch length in blocks (`<= 1` = every block is an epoch boundary).
     pub epoch_length: i64,
     /// Quarantine length in blocks between a withdrawal request and the refund.
@@ -453,8 +460,8 @@ impl Default for PosParams {
     /// genesis PoS state has been installed (ad-hoc runtimes/tests).
     fn default() -> Self {
         PosParams {
-            minimum_bond: 0,
-            maximum_bond: i64::MAX,
+            minimum_bond: NonNegI64::zero(),
+            maximum_bond: NonNegI64::saturating(i64::MAX),
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
@@ -466,8 +473,8 @@ impl PosParams {
     /// Encode as five little-endian `i64`s (inverse: [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
-        out.extend_from_slice(&self.minimum_bond.to_le_bytes());
-        out.extend_from_slice(&self.maximum_bond.to_le_bytes());
+        out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
+        out.extend_from_slice(&i64::from(self.maximum_bond).to_le_bytes());
         out.extend_from_slice(&self.epoch_length.to_le_bytes());
         out.extend_from_slice(&self.quarantine_length.to_le_bytes());
         out.extend_from_slice(&self.number_of_active_validators.to_le_bytes());
@@ -488,9 +495,14 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
         arr.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
         i64::from_le_bytes(arr)
     };
+    // The two bond bounds are refused rather than clamped (the deferred item 1d): a stored negative
+    // is not a value this protocol can mean, and clamping it would silently turn a corrupted or
+    // malicious params leaf into "no minimum", which is the permissive reading of the same bytes.
     Ok(PosParams {
-        minimum_bond: read(0),
-        maximum_bond: read(1),
+        minimum_bond: NonNegI64::try_from(read(0))
+            .map_err(|e| format!("minimum_bond is not a valid accept threshold: {e}"))?,
+        maximum_bond: NonNegI64::try_from(read(1))
+            .map_err(|e| format!("maximum_bond is not a valid accept threshold: {e}"))?,
         epoch_length: read(2),
         quarantine_length: read(3),
         number_of_active_validators: read(4),
@@ -642,7 +654,7 @@ fn epoch_pot(
 /// **Zero where the contract's formula is undefined.** `minimumBond == 0`, or a normaliser of zero
 /// (`activeBonds < minimumBond`), makes the Scala divide by zero — which faults the `closeBlock`
 /// deploy rather than producing a value. The port's parameters are permissive by default
-/// (`minimum_bond: 0`), so a fault is not a rule it can copy, and zero is the only value that leaves
+/// (`minimum_bond: NonNegI64::try_from(0).unwrap()`), so a fault is not a rule it can copy, and zero is the only value that leaves
 /// the epoch total. That is the same case the Lean model leaves as a hypothesis
 /// (`hD : 0 < activeBonds / minimumBond`): the model states the theorem for the defined case, the port
 /// pays nothing in the undefined one. `an_epoch_with_a_zero_normaliser_pays_nothing` pins it.
@@ -1041,16 +1053,18 @@ impl NativeSystemState {
         }
         let params = self.params().await?;
         let stake = i64::from(amount);
-        if stake < params.minimum_bond {
+        if stake < i64::from(params.minimum_bond) {
             return Ok(Err(format!(
                 "Bond is less than minimum ({} < {}).",
-                stake, params.minimum_bond
+                stake,
+                i64::from(params.minimum_bond)
             )));
         }
-        if stake > params.maximum_bond {
+        if stake > i64::from(params.maximum_bond) {
             return Ok(Err(format!(
                 "Bond is greater than maximum ({} > {}).",
-                stake, params.maximum_bond
+                stake,
+                i64::from(params.maximum_bond)
             )));
         }
         let address = self.vault_address(validator)?;
@@ -1160,8 +1174,8 @@ impl NativeSystemState {
             boundary,
             params.epoch_length,
             params.number_of_active_validators,
-            params.minimum_bond,
-            params.maximum_bond
+            i64::from(params.minimum_bond),
+            i64::from(params.maximum_bond)
         );
         if !boundary {
             // `Pos.rhox:519`: "Epoch change does not occur." Nothing is written — no reward, no
@@ -1268,7 +1282,12 @@ impl NativeSystemState {
         let mut rewards = BTreeMap::new();
         for (validator, stake) in pool {
             let reward = if active.contains_key(validator) {
-                epoch_reward(pot, params.minimum_bond, active_bonds, i64::from(*stake))?
+                epoch_reward(
+                    pot,
+                    i64::from(params.minimum_bond),
+                    active_bonds,
+                    i64::from(*stake),
+                )?
             } else {
                 0
             };
@@ -1838,13 +1857,54 @@ mod tests {
     #[test]
     fn params_round_trip() {
         let params = PosParams {
-            minimum_bond: 1,
-            maximum_bond: 1000,
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            maximum_bond: NonNegI64::try_from(1000).unwrap(),
             epoch_length: 10,
             quarantine_length: 5,
             number_of_active_validators: 3,
         };
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
+    }
+
+    /// **Deferred item 1d, and the shape of the hole it closed.** The wire record held the two bond
+    /// bounds as raw `i64`s, so a stored `-1` was representable — and a *negative* minimum accepts
+    /// every bond, including the zero-stake one `bond`'s range check exists to refuse. The bounds are
+    /// `NonNegI64` now, and this is the boundary that makes that true for values that arrive as
+    /// bytes: a negative one is refused, not clamped, because clamping a corrupted leaf to zero turns
+    /// it into "no minimum", which is the permissive reading of the same bytes.
+    ///
+    /// Each field is exercised on its own, so this is a test of two checks rather than of one that
+    /// happens to run first, and the control is the untouched record — a refusal function that
+    /// refused everything would satisfy the other two assertions.
+    #[test]
+    fn a_negative_bond_bound_is_refused_at_the_wire() {
+        let params = PosParams {
+            minimum_bond: NonNegI64::try_from(7).unwrap(),
+            maximum_bond: NonNegI64::try_from(1000).unwrap(),
+            epoch_length: 10,
+            quarantine_length: 5,
+            number_of_active_validators: 3,
+        };
+        assert!(
+            decode_params(&params.encode()).is_ok(),
+            "the control: an in-range record still decodes"
+        );
+
+        let mut bytes = params.encode();
+        bytes[0..8].copy_from_slice(&(-1i64).to_le_bytes());
+        let err = decode_params(&bytes).expect_err("a negative minimum must not decode");
+        assert!(
+            err.contains("minimum_bond"),
+            "and the refusal names the field that was wrong: {err}"
+        );
+
+        let mut bytes = params.encode();
+        bytes[8..16].copy_from_slice(&(-1i64).to_le_bytes());
+        let err = decode_params(&bytes).expect_err("a negative maximum must not decode");
+        assert!(
+            err.contains("maximum_bond"),
+            "and the refusal names the field that was wrong: {err}"
+        );
     }
 
     #[test]
@@ -1916,8 +1976,8 @@ mod tests {
     #[tokio::test]
     async fn bond_enforces_min_and_max() {
         let params = PosParams {
-            minimum_bond: 10,
-            maximum_bond: 50,
+            minimum_bond: NonNegI64::try_from(10).unwrap(),
+            maximum_bond: NonNegI64::try_from(50).unwrap(),
             ..PosParams::default()
         };
         let native =
@@ -2231,7 +2291,7 @@ mod tests {
     #[tokio::test]
     async fn an_epoch_splits_the_pot_and_keeps_the_dust() {
         let params = PosParams {
-            minimum_bond: 3,
+            minimum_bond: NonNegI64::try_from(3).unwrap(),
             epoch_length: 1,
             ..PosParams::default()
         };
@@ -2296,7 +2356,7 @@ mod tests {
             epoch_length: 1,
             quarantine_length: 0,
             // A positive minimum, or the split is the undefined case and pays nothing.
-            minimum_bond: 3,
+            minimum_bond: NonNegI64::try_from(3).unwrap(),
             ..PosParams::default()
         };
         let native = native_with(&[validator(1)], params, &[(validator(1), 40)]).await;
@@ -2391,7 +2451,7 @@ mod tests {
         let native = native_with(
             &[validator(1)],
             PosParams {
-                minimum_bond: 100,
+                minimum_bond: NonNegI64::try_from(100).unwrap(),
                 epoch_length: 1,
                 ..PosParams::default()
             },
@@ -2419,7 +2479,7 @@ mod tests {
             &[validator(1)],
             PosParams {
                 epoch_length: 1,
-                minimum_bond: 3,
+                minimum_bond: NonNegI64::try_from(3).unwrap(),
                 ..PosParams::default()
             },
             &[(validator(1), 40)],

@@ -102,8 +102,8 @@ fn deploy_signed_by(term: &str, seed: u8) -> SignedDeployData {
 
 fn proof_of_stake() -> ProofOfStake {
     ProofOfStake {
-        minimum_bond: 1,
-        maximum_bond: 100,
+        minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
+        maximum_bond: rchain_shared::refined::NonNegI64::try_from(100).unwrap(),
         validators: Vec::new(),
         epoch_length: 1,
         quarantine_length: 1,

@@ -26,8 +26,11 @@ pub struct Vault {
 /// Proof-of-stake genesis parameters (port of `contracts.ProofOfStake`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProofOfStake {
-    pub minimum_bond: i64,
-    pub maximum_bond: i64,
+    /// Refined like [`PosParams`]'s own fields (deferred item 1d): these are copied straight into
+    /// the native state, so the invariant has to hold here as well as on the wire — one place is
+    /// where a config becomes a number, and the other is where the number is read back.
+    pub minimum_bond: NonNegI64,
+    pub maximum_bond: NonNegI64,
     pub validators: Vec<Validator>,
     pub epoch_length: i32,
     pub quarantine_length: i32,

@@ -84,7 +84,7 @@ pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenes
         std::path::Path::new(&gbd.bonds_file),
         spec.autogen_shard_size,
     )?;
-    Ok(build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)))
+    Ok(build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)?))
 }
 
 /// The genesis descriptors a node needs to *replay* the genesis block: the native PoS state
@@ -130,7 +130,7 @@ pub fn genesis_descriptors_from_config(
     };
     let vaults = crate::vault_parser::parse_if_exists(std::path::Path::new(&gbd.wallets_file))?;
     Ok(Some(GenesisDescriptors {
-        pos_genesis: build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)),
+        pos_genesis: build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)?),
         vaults,
     }))
 }
@@ -139,14 +139,18 @@ pub fn genesis_descriptors_from_config(
 fn proof_of_stake_from_config(
     gbd: &crate::conf::GenesisBlockData,
     bonds: BTreeMap<PublicKey, NonNegI64>,
-) -> ProofOfStake {
+) -> Result<ProofOfStake, String> {
     let validators: Vec<contracts::Validator> = bonds
         .into_iter()
         .map(|(pk, stake)| contracts::Validator { pk, stake })
         .collect();
-    ProofOfStake {
-        minimum_bond: gbd.bond_minimum,
-        maximum_bond: gbd.bond_maximum,
+    Ok(ProofOfStake {
+        // Refused, not clamped (deferred item 1d): a genesis file that asks for a negative bond
+        // bound is asking for a rule this protocol cannot state.
+        minimum_bond: NonNegI64::try_from(gbd.bond_minimum)
+            .map_err(|e| format!("casper.genesis.bond-minimum must not be negative: {e}"))?,
+        maximum_bond: NonNegI64::try_from(gbd.bond_maximum)
+            .map_err(|e| format!("casper.genesis.bond-maximum must not be negative: {e}"))?,
         validators,
         epoch_length: gbd.epoch_length,
         quarantine_length: gbd.quarantine_length,
@@ -154,7 +158,7 @@ fn proof_of_stake_from_config(
         pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
         pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
         pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
-    }
+    })
 }
 
 /// Build the unsigned genesis block from processed deploys (port of
@@ -534,8 +538,8 @@ mod tests {
 
     fn pos() -> ProofOfStake {
         ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: 100,
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            maximum_bond: NonNegI64::try_from(100).unwrap(),
             validators: vec![
                 Validator {
                     pk: PublicKey::new(vec![1; 65]),

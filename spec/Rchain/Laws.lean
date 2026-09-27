@@ -654,7 +654,9 @@ def laws : List Law := [
       is Law 1's canonicalization applied to a join key rather than an independent postulate. \
       `hashHashes` is the one primitive that stays axiomatized, in Law 19's class" },
   { number := 8, layer := "RSpace",
-    rustWitness := ["rspace/src/property_tests.rs:law8_comm_sorts_produces"],
+    rustWitness := [
+      "rspace/src/property_tests.rs:law8_comm_sorts_produces",
+      "rspace/src/space_matcher.rs:find_matching_data_candidate_finds_first_match"],
     statement := "Deterministic COMM: candidate selection is sorted-first by content hash and produce \
       refs are sorted, so the event trace is content-addressed",
     status := .provedModel,
@@ -1730,19 +1732,19 @@ def laws : List Law := [
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
       `txn_prepare`/`txn_commit` (`native_state.rs:1434-1523`, `txn_prepare` at `:1426` and \
       `txn_commit` at `:1454`; the test is \
-      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2662`); dropping the \
+      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2766`); dropping the \
       early return \
       would let a retry fail on insufficient balance *after* the first call had already succeeded, which \
-      the port's ordering (`native_state.rs:1437-1439`, before the balance check) forbids. \
+      the port's ordering (`native_state.rs:1461-1463`, before the balance check) forbids. \
       `commit_after_abort_is_an_error` \
       fails for a verb that allowed the transition — the port returns \
       `Err(\"txn commit: already aborted\")` (`native_state.rs:1468`), and `abort_after_commit_is_an_error` the mirror \
-      (`native_state.rs:1437`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1442`)",
+      (`native_state.rs:1461`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1466`)",
     note := "`leg_idempotent` is **proved now** — `funext` on a pointwise update, which is all it ever \
       needed — but it is the per-*shard-state* view, and the port's verbs are not pointwise updates: \
       they read a record, decide, and write a vault balance *and* a record. So the law is re-modelled on \
       the ledger the port keeps, where idempotence is the **early return on an existing record** \
-      (`native_state.rs:1437-1439`) rather than a coincidence of the arithmetic, and where the **fences** \
+      (`native_state.rs:1461-1463`) rather than a coincidence of the arithmetic, and where the **fences** \
       are stated too — commit after abort is an error and abort after commit is an error \
       (`native_state.rs:1468`, `:1492`), which idempotence alone would permit. A fidelity note: the \
       model's `TxnState` carried a \
@@ -2237,8 +2239,8 @@ def laws : List Law := [
       (`epochStep_conserves`, from `payDue_conserves` plus the observation that the other three steps \
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
-      `debit_pos_vault` *fails* the transfer (`native_state.rs:962`, its refusal at `:963`) and \
-      `close_block` (`native_state.rs:1151`) writes nothing on that path — the debit's `?` at `:1212` \
+      `debit_pos_vault` *fails* the transfer (`native_state.rs:974`, its refusal at `:979`) and \
+      `close_block` (`native_state.rs:1165`) writes nothing on that path — the debit's `?` at `:1234` \
       returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \
