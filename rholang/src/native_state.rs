@@ -1107,9 +1107,14 @@ impl NativeSystemState {
             return Ok(Err("User is not bonded".to_string()));
         }
         let params = self.params().await?;
+        // The **normalised** divisor, not the raw field (AUDIT C135): `epoch_divisor` is what
+        // `is_epoch_boundary` divides by, and `epoch_length <= 0` means a one-block epoch, so
+        // multiplying the raw field collapsed the quarantine to the absolute constant
+        // `quarantine_length` and dropped the epoch offset entirely — a rule applied at one of two
+        // sibling epoch sites, which is C109's tell.
         let deadline = checked_i64(
             i128::from(params.quarantine_length)
-                + i128::from(params.epoch_length)
+                + i128::from(epoch_divisor(&params))
                     * (1 + i128::from(block_number) / i128::from(epoch_divisor(&params))),
             "withdraw deadline",
         )?;
@@ -2069,6 +2074,45 @@ mod tests {
             ),
             40,
             "the stake is paid out at the first boundary past the quarantine"
+        );
+    }
+
+    /// **AUDIT C135.** The withdrawal deadline uses the **normalised** epoch divisor, so
+    /// `epoch_length <= 0` — which every other epoch site reads as a one-block epoch — cannot
+    /// collapse the quarantine to an absolute constant.
+    ///
+    /// The regression is exactly that collapse, and it is why the two arms are *compared* rather
+    /// than each asserted alone: with the raw field multiplied, `epoch_length = 0` gave
+    /// `quarantine_length` while `epoch_length = 1` gave `quarantine_length + 1 + block_number`, so
+    /// the quarantine the row is about was silently dropped for one setting and honoured for the
+    /// other. The concrete value then pins the formula itself, so "both arms agree" cannot be
+    /// satisfied by both being wrong the same way.
+    #[tokio::test]
+    async fn a_non_positive_epoch_length_keeps_the_withdrawal_quarantine() {
+        let v = validator(3);
+        let params = |epoch_length: i64| PosParams {
+            epoch_length,
+            quarantine_length: 100,
+            ..PosParams::default()
+        };
+
+        let zero = native_with(&[v], params(0), &[(v, 100)]).await;
+        zero.withdraw(&v, 10).await.unwrap().unwrap();
+        let staged_at_zero = zero.pending_withdrawers().await.unwrap()[&v];
+
+        let one = native_with(&[v], params(1), &[(v, 100)]).await;
+        one.withdraw(&v, 10).await.unwrap().unwrap();
+        let staged_at_one = one.pending_withdrawers().await.unwrap()[&v];
+
+        assert_eq!(
+            staged_at_zero, staged_at_one,
+            "a zero epoch length means a one-block epoch at the withdrawal deadline as it does at \
+             every other epoch site"
+        );
+        assert_eq!(
+            staged_at_one,
+            100 + 1 + 10,
+            "the deadline is quarantine_length + divisor * (1 + block_number)"
         );
     }
 

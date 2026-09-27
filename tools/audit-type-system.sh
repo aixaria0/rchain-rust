@@ -1064,9 +1064,35 @@ REFINEMENT_EXEMPT=(
   'rholang/src/util/rev_address.rs;;AddressTools;;G2;;a parser/tool holding `prefix`/`key_length`/`checksum_length`: private for encapsulation, with no invariant beyond "these are the parameters it was built with"'
 )
 
+# **The public-field newtype, derived semantically (AUDIT C131).** The tuple form used to be derived
+# only when its inner text held no `pub`, on the premise that "a public field is excluded because the
+# class flags that form directly" — G1's old justification. But the class's public-field alternative
+# is built by iterating `REFINEMENT_TYPES`, so it fires only on the twenty already-rostered names; for
+# a *new* name the form was flagged by nothing at all. Measured: appending
+# `pub struct ZzProbe2(pub u16);` to a roster file left the derived count at 28 and the class silent.
+#
+# A public field is an escape only on a type whose invariant a private field would carry, and this
+# workspace has 27 public-field newtypes that are not refinements (`ParsingError`, `PeerId`, `Base16`,
+# `AlwaysEqual`, the nine `proc_ast` wrappers, …), so widening this to every `pub` field would flag 27
+# legitimate types to catch an unknown number of real ones — and this class is *hard*, so every one of
+# those would have to be resolved before the gate could run. The rule is therefore the **semantic**
+# one: a tuple newtype with a public field **whose file also implements `TryFrom` for it** is derived,
+# because that is exactly the shape of the defect — a validating constructor beside a field that walks
+# around it. `TryFrom` rather than "any validating function": it is the validation entry point this
+# workspace's refinements are built on, and it is decidable from one line.
+#
+# The promotion is per **file**: a `pub struct X(pub T)` is buffered, and an `impl TryFrom<…> for X`
+# anywhere in the same file promotes it at the file's end (either order, since the flush is at the
+# boundary). A same-named type in another file could promote it too; names are unique across this
+# workspace, and the answer to a false positive is the completeness guard, which asks a human to look
+# rather than deciding silently.
 ESCAPE_ROSTER_AWK='
 function braces(s,   o, c, i, ch) { o = 0; c = 0; for (i = 1; i <= length(s); i++) { ch = substr(s, i, 1); if (ch == "{") o++; else if (ch == "}") c++ } return o - c }
-FNR == 1 { delete macros }
+function flush_public_fields(   k) {
+  for (k in pf_pending) if (k in pf_tryfrom) print pf_file[k] "\t" k "\tG1v"
+  delete pf_pending; delete pf_file; delete pf_tryfrom
+}
+FNR == 1 { delete macros; flush_public_fields() }
 /^[[:space:]]*macro_rules![[:space:]]*[a-z_][A-Za-z0-9_]*/ {
   m = $0; sub(/^[[:space:]]*macro_rules![[:space:]]*/, "", m); sub(/[^A-Za-z0-9_].*$/, "", m); macros[m] = 1
 }
@@ -1075,6 +1101,12 @@ match($0, /^[[:space:]]*pub struct[[:space:]]+[A-Z][A-Za-z0-9_]*/) {
   if ($0 ~ /^[[:space:]]*pub struct[[:space:]]+[A-Z][A-Za-z0-9_]*([[:space:]]*<[^>]*>)?[[:space:]]*\(/) {
     inner = $0; sub(/^[^()]*\(/, "", inner)
     if (inner !~ /(^|[^A-Za-z0-9_])pub([^A-Za-z0-9_]|$)/) print FILENAME "\t" name "\tG1"
+    else { pf_pending[name] = 1; pf_file[name] = FILENAME }
+  }
+}
+/^[[:space:]]*impl[^;]*TryFrom/ {
+  if (match($0, /for[[:space:]]+[A-Z][A-Za-z0-9_]*/)) {
+    v = substr($0, RSTART, RLENGTH); sub(/for[[:space:]]+/, "", v); pf_tryfrom[v] = 1
   }
 }
 match($0, /^[[:space:]]*[a-z_][A-Za-z0-9_]*!/) {
@@ -1093,6 +1125,7 @@ match($0, /^[[:space:]]*pub struct[[:space:]]+[A-Z][A-Za-z0-9_]*[[:space:]]*\{/)
   while (depth > 0 && body !~ /pub/) { if ((getline nxt) <= 0) break; body = body " " nxt; depth += braces(nxt) }
   if (body !~ /(^|[^A-Za-z0-9_])pub([^A-Za-z0-9_]|$)/) print FILENAME "\t" name "\tG2"
 }
+END { flush_public_fields() }
 '
 
 REFINEMENT_EXEMPT_CLAIMS=()

@@ -1726,7 +1726,7 @@ def laws : List Law := [
     witness := [`Rchain.commit_after_abort_is_an_error, `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft, `Rchain.txnPrepare_idempotent],
     falsifiable := some "the negatives are the witnesses: a second `prepare` that re-escrowed would fail \
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
-      `txn_prepare`/`txn_commit` (`native_state.rs:1429-1518`, `txn_prepare` at `:1421` and \
+      `txn_prepare`/`txn_commit` (`native_state.rs:1434-1523`, `txn_prepare` at `:1426` and \
       `txn_commit` at `:1454`; the test is \
       `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2662`); dropping the \
       early return \
@@ -2236,7 +2236,7 @@ def laws : List Law := [
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
       `debit_pos_vault` *fails* the transfer (`native_state.rs:962`, its refusal at `:963`) and \
-      `close_block` (`native_state.rs:1146`) writes nothing on that path — the debit's `?` at `:1207` \
+      `close_block` (`native_state.rs:1151`) writes nothing on that path — the debit's `?` at `:1212` \
       returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \

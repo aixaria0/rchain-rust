@@ -88,6 +88,30 @@ pub struct BlockApiImpl {
 /// legitimate request rather than an error: a DAG with no blocks yet, and a `start_block_number`
 /// above the top of the chain, both filter to nothing here — and the renderer must render that empty
 /// slice rather than index it (H2a, `graph_generator::dag_as_cluster`).
+/// The block a **no-hash** `explore-deploy` reads (AUDIT C129).
+///
+/// It is the last **finalized** block, and the choice is deliberate rather than incidental.
+///
+/// The arm used to read the chain *tip* — the highest height, then an arbitrary hash from that
+/// height's set (`height_map.iter().next_back()…hashes.iter().next()`) — on the argument that a
+/// wallet checking a balance after its own transfer should not see the finalized fringe lag. Two
+/// things are wrong with that as a default, and the second is why this is a decision rather than a
+/// preference. An **arbitrary** hash from a height's set is not a block anyone chose: two honest
+/// nodes can answer the same unauthenticated request from different blocks, so the read is not an
+/// oracle. And the anchor is a block a **byzantine proposer can pick** — the route takes no caller
+/// identity, and its answer is what a wallet believes about its own balance.
+///
+/// The finalized block is the one block in the DAG that is agreed by construction, which is what
+/// `bond_status` and `last_finalized_block` already read. A caller that wants the tip asks for it by
+/// hash (`explore-deploy-by-block-hash`), which is an explicit choice rather than this route's
+/// silent one.
+///
+/// Extracted from the handler so the choice is testable without a node: the fixture builds the two
+/// heights the decision is between.
+fn exploration_anchor(dag: &DagRepresentation) -> Result<BlockHash, String> {
+    dag.last_finalized_block_unsafe()
+}
+
 fn view_blocks_above(dag: &DagRepresentation, lowest_height: i64) -> Vec<ValidatorBlock> {
     let to_hash_str = |bytes: &[u8]| base16::encode(bytes).chars().take(5).collect::<String>();
     dag.dag_message_state
@@ -700,17 +724,7 @@ impl BlockApi for BlockApiImpl {
         let dag = self.dag.get_representation().await;
         let target: Option<BlockMessage> = match block_hash {
             None => {
-                // Read the LATEST block (chain tip), not the last *finalized* one: `explore-deploy`
-                // is the read surface a wallet uses to check balances, and the finalized fringe lags
-                // the tip by a block or more, so reading it shows stale vault balances for a deploy
-                // (e.g. a faucet transfer) that just landed. Callers that need a specific block can
-                // pass a `block_hash` (explore-deploy-by-block-hash) instead.
-                let hash = dag
-                    .height_map
-                    .iter()
-                    .next_back()
-                    .and_then(|(_, hashes)| hashes.iter().next().copied())
-                    .ok_or_else(|| "No blocks in the DAG.".to_string())?;
+                let hash = exploration_anchor(&dag)?;
                 self.block_store.get(&[hash]).await?.pop().flatten()
             }
             Some(h) => {
@@ -852,6 +866,71 @@ mod tests {
             sig: vec![],
             timestamp: 0,
         }
+    }
+
+    /// **AUDIT C129.** The no-hash anchor is the last **finalized** block, not the chain tip.
+    ///
+    /// The fixture is exactly the case that distinguishes them: height 1 holds a block the fringe
+    /// has not finalized, so the old tip read answered with it — and picked it *arbitrarily* out of
+    /// that height's set. The finalized block at height 0 is the only block two honest nodes must
+    /// agree on, which is the whole reason the read is anchored there.
+    #[test]
+    fn the_no_hash_exploration_read_is_anchored_to_the_finalized_block() {
+        use std::collections::BTreeMap;
+
+        use rchain_block_storage::dag::finalizer::Message;
+        use rchain_block_storage::dag::message_state::DagMessageState;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let finalized = BlockHash::new([0x0a; 32]);
+        let tip = BlockHash::new([0x0b; 32]);
+        let sender = Validator::new([0u8; 65]);
+        // The finalized block is a *message in the message map*, and the latest justification carries
+        // it in its fringe — which is the construction `latest_fringe` reads
+        // (`message_map.rs`: the max-height justification's fringe, mapped through `msg_at`). A
+        // fixture with an empty fringe resolves to no finalized block at all and would test the
+        // error arm instead of the choice.
+        let finalized_msg = Message {
+            id: finalized,
+            height: BlockHeight::try_from(0).unwrap(),
+            sender: sender.clone(),
+            sender_seq: SeqNum::try_from(0).unwrap(),
+            bonds_map: BTreeMap::new(),
+            parents: BTreeSet::new(),
+            fringe: BTreeSet::from([finalized]),
+            seen: Arc::new(BTreeSet::from([finalized])),
+        };
+        let mut latest_msgs = BTreeMap::new();
+        latest_msgs.insert(sender.clone(), finalized_msg.clone());
+        let mut msg_map = BTreeMap::new();
+        msg_map.insert(finalized, finalized_msg);
+        let dag = DagRepresentation {
+            dag_set: Arc::new(BTreeSet::from([finalized, tip])),
+            child_map: Arc::new(BTreeMap::new()),
+            height_map: Arc::new(BTreeMap::from([
+                (
+                    BlockHeight::try_from(0).unwrap(),
+                    BTreeSet::from([finalized]),
+                ),
+                (BlockHeight::try_from(1).unwrap(), BTreeSet::from([tip])),
+            ])),
+            dag_message_state: DagMessageState {
+                latest_msgs,
+                msg_map,
+            },
+            fringe_states: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            exploration_anchor(&dag).expect("the fringe is available"),
+            finalized,
+            "the anchor must be the finalized block, not the height-1 tip the old read picked"
+        );
+        assert_ne!(
+            exploration_anchor(&dag).unwrap(),
+            tip,
+            "the tip is reachable by hash, but it is not this route's default"
+        );
     }
 
     /// **A failed deploy reports the reason the reducer gave it**, not a placeholder. The three arms

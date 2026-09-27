@@ -1047,9 +1047,23 @@ pub fn router(state: HttpState) -> Router {
 
 /// Build the admin HTTP routes (port of `acquireAdminHttpServer`'s `/api` + `/api/v1` admin routes).
 pub fn admin_router(state: AdminState) -> Router {
-    // Restrictive CORS (no allowed origins) by default, so a browser on another origin cannot
-    // trigger block production via the loopback admin server (H-3). Devnet / browser-wallet access
-    // opts into permissive CORS via `api-server.enable-devnet-cors`.
+    // Restrictive CORS (no allowed origins) by default; devnet / browser-wallet access opts into
+    // permissive CORS via `api-server.enable-devnet-cors`.
+    //
+    // **What that does and does not buy, stated because this comment claimed more (AUDIT C133).** It
+    // used to say the restrictive layer stopped "a browser on another origin … trigger[ing] block
+    // production". `CorsLayer` never rejects a request: only `OPTIONS` takes the preflight branch and
+    // every other method is forwarded to the inner service with response headers added
+    // (`tower-http/src/cors/mod.rs`). `admin_propose` takes no extractor and checks no origin, so a
+    // bodyless cross-origin `POST` is a CORS **simple request** — no preflight is sent, the handler
+    // runs, and CORS only stops the page *reading* the reply. Loopback does not help either: the
+    // request comes from the operator's own browser (CSRF), and DNS rebinding resolves an attacker's
+    // name to `127.0.0.1`.
+    //
+    // **What actually protects the route** is the bind and the opt-in above it (C112): the admin
+    // server is loopback unless the operator publishes it, so the browser that can reach it is the
+    // operator's own. That is a real boundary for a remote attacker and no boundary at all for a
+    // page the operator visits — which is the residual this comment now names rather than denies.
     let cors = if state.enable_devnet_cors {
         CorsLayer::permissive()
     } else {

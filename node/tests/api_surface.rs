@@ -241,13 +241,15 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
         );
 
         // `POST /api/v1/explore-deploy-by-block-hash` runs a term against a **named** block's state,
-        // and its one piece of logic is the empty-hash arm: an empty string means "the latest state"
-        // rather than "a block whose hash is `""`". Both directions are asserted, because the arm that
-        // converts one to the other is the handler's whole content.
-        for (label, hash) in [
-            ("against the genesis block", genesis_hash.clone()),
-            ("with an empty hash meaning the latest state", String::new()),
-        ] {
+        // and its one piece of logic is the empty-hash arm: an empty string means "the no-hash
+        // default" rather than "a block whose hash is `""`".
+        //
+        // **What that default *is* changed with AUDIT C129**, and this is where the change shows. The
+        // arm used to read the chain tip; it reads the **last finalized block** now, so on a node that
+        // has produced only its genesis it answers the same 400 with the same reason
+        // `/api/last-finalized-block` does — asserted below, with the route's own comment above for
+        // why refusing is the behaviour rather than an arbitrary block presented as an answer.
+        for (label, hash) in [("against the genesis block", genesis_hash.clone())] {
             let resp = client
                 .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
                 .json(&serde_json::json!({
@@ -265,6 +267,31 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
                 "{label}: the term ran and its value came back: {body}"
             );
         }
+
+        // The empty-hash default, on a chain with no finalized fringe: a reported 400 naming the
+        // reason, which is exactly what `/api/last-finalized-block` answers — so the two routes cannot
+        // disagree about which block the node is talking about (AUDIT C129).
+        let unrouted = client
+            .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
+            .json(&serde_json::json!({
+                "term": "@\"out\"!(7)",
+                "blockHash": "",
+                "usePreStateHash": false
+            }))
+            .send()
+            .await
+            .expect("POST /api/v1/explore-deploy-by-block-hash");
+        assert_eq!(
+            unrouted.status(),
+            400,
+            "with no finalized fringe the no-hash default refuses rather than naming an arbitrary block"
+        );
+        let unrouted_json: Value = unrouted.json().await.expect("refusal json");
+        assert_eq!(
+            unrouted_json.as_str(),
+            Some("Finalized fringe is not available."),
+            "and it names the same reason the finalized-block route does: {unrouted_json}"
+        );
 
         // `GET /api/v1/openapi.json` serves the route document. It is generated from the same route
         // table the handlers are attached to, so the assertion is that it parses and names the surface
@@ -343,6 +370,35 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
         assert!(
             pos["blocksUntilEpochBoundary"].as_i64().unwrap_or(-1) >= 0,
             "a countdown to the boundary is never negative: {pos}"
+        );
+
+        // --- the admin router over HTTP, and its CORS residual (AUDIT C133) -------------------
+        //
+        // No test drove `admin_router` over HTTP, so its comment's claim was unpinned as well as
+        // untrue. A cross-origin `POST` with no preflight — the "simple request" shape that
+        // `CorsLayer` never rejects — reaches `/api/v1/propose` and produces a block. That is the
+        // residual the comment now names: what protects the route is the loopback bind and the
+        // operator's opt-in (C112), not the CORS layer, which only stops the page *reading* the
+        // reply.
+        let admin = format!("http://127.0.0.1:{}", ports[1]);
+        let cross_origin = client
+            .post(format!("{admin}/api/v1/propose"))
+            .header("Origin", "http://evil.example")
+            .send()
+            .await
+            .expect("POST admin /api/v1/propose");
+        assert_eq!(
+            cross_origin.status(),
+            200,
+            "a cross-origin simple request is not rejected by the CORS layer — this is the residual, \
+             pinned rather than denied"
+        );
+        assert!(
+            !cross_origin
+                .headers()
+                .contains_key("access-control-allow-origin"),
+            "and the restrictive layer answers the page nothing either: {:?}",
+            cross_origin.headers()
         );
 
         node.shutdown();

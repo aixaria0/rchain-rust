@@ -19,6 +19,14 @@ use crate::transport::transport_layer::TransportLayer;
 /// cap the oldest entries are evicted (mirrors the `PeerTable` bucket eviction style).
 pub const MAX_CONNECTIONS: usize = 1024;
 
+/// How long one `find_and_connect` round may spend dialling (AUDIT C136).
+///
+/// A dial that fails costs the full `DEFAULT_SEND_TIMEOUT` and gains nothing, so bounding the number
+/// of *dials* does not bound the round; bounding the clock does. Thirty seconds is chosen against
+/// the loop it runs in — the discovery round repeats on `peers_discovery.lookup_interval`, so an
+/// unfinished round is not lost work, it is work the next round picks up.
+pub const CONNECT_ROUND_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Shuffle the connections and take up to `max` (port of `ConnectionsCell.random`).
 pub fn random_connections(connections: &[PeerNode], max: usize) -> Vec<PeerNode> {
     let mut shuffled: Vec<PeerNode> = connections.to_vec();
@@ -119,13 +127,43 @@ pub async fn find_and_connect<T: TransportLayer + ?Sized>(
         .into_iter()
         .filter(|p| !connected.contains(p.key()))
         .collect();
+    // **The round is bounded, in two directions, and neither was there before (AUDIT C136).** The
+    // loop dialled every peer the Kademlia table offered — up to 5120 for a 32-byte id — one at a
+    // time, each bounded only by `DEFAULT_SEND_TIMEOUT` (5 s). `MAX_CONNECTIONS` capped the *result*
+    // (`add_conn`), so it bounded the table and not the work: a peer answering a lookup with
+    // addresses that accept no connection put the RP loop here for up to ~7 hours, and heartbeats,
+    // block requests and connection refresh do not run while it waits.
+    //
+    // `room` is the first bound and it is not a heuristic: a connection the table cannot hold has no
+    // effect, so dialling for one is work that cannot pay. `CONNECT_ROUND_BUDGET` is the second, for
+    // the case `room` does not cover — a *failing* dial costs the full timeout and returns nothing,
+    // so the number of dials is not the number of connections gained. Whatever a round does not
+    // reach is offered to the next one, which runs on `peers_discovery.lookup_interval`.
+    let budget = dial_budget(peers.len(), connections.len());
+    let deadline = std::time::Instant::now() + CONNECT_ROUND_BUDGET;
     let mut result = Vec::new();
-    for peer in &peers {
+    for peer in peers.iter().take(budget) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
         if connect(transport, conf, peer).await.is_ok() {
             result.push(peer.clone());
         }
     }
     result
+}
+
+/// The most peers one round may dial (AUDIT C136).
+///
+/// Two things bound it and they answer different questions. The **room** is the first and it is not a
+/// heuristic: a connection the table cannot hold has no effect on it, so dialling for one is work
+/// that cannot pay — and `MAX_CONNECTIONS` used to be applied by `add_conn` to the *result*, which
+/// bounded the table and not the loop. The **number of attempts** is the second: a dial that fails
+/// costs the full `DEFAULT_SEND_TIMEOUT` and returns nothing, so the loop is additionally bounded by
+/// `CONNECT_ROUND_BUDGET` on the clock. This function is the first bound alone, which is why it is
+/// pure and testable without a transport.
+fn dial_budget(offered: usize, connections: usize) -> usize {
+    offered.min(MAX_CONNECTIONS.saturating_sub(connections))
 }
 
 #[cfg(test)]
@@ -142,6 +180,32 @@ mod tests {
         )
     }
 
+    /// **AUDIT C136.** The round dials no more peers than the connection table can hold.
+    ///
+    /// The first arm is the finding's own shape: a Kademlia table offering the thousands it admits
+    /// (5120 for a 32-byte id) while the connection table is empty, where the old loop dialled all of
+    /// them one at a time. The last arm is the one that shows the bound is the *room* and not a
+    /// constant: a table one short of the cap has room for exactly one more peer.
+    #[test]
+    fn a_connect_round_dials_no_more_than_the_table_can_hold() {
+        assert_eq!(
+            dial_budget(5120, 0),
+            MAX_CONNECTIONS,
+            "a table with room for 1024 cannot be improved by 5120 dials"
+        );
+        assert_eq!(dial_budget(5120, MAX_CONNECTIONS - 1), 1);
+        assert_eq!(
+            dial_budget(5120, MAX_CONNECTIONS),
+            0,
+            "a full table has nothing to gain from any dial at all"
+        );
+        assert_eq!(
+            dial_budget(5, 0),
+            5,
+            "fewer offers than room: dial what there is"
+        );
+        assert_eq!(dial_budget(0, 7), 0, "an empty offer list dials nothing");
+    }
     #[test]
     fn add_conn_appends_new_and_dedupes_existing() {
         let a = peer(1, "a");
