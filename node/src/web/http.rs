@@ -110,6 +110,19 @@ pub struct HttpState {
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
     /// deviation: the Scala HTTP deploy routes are unlimited).
     pub deploy_rate_limiter: Arc<RateLimiter>,
+    /// Rate limiter for `/api/v1/explore-deploy` and its by-block-hash sibling — **separate from
+    /// `deploy_rate_limiter` since AUDIT R36**, because they are different resources.
+    ///
+    /// An exploratory deploy *runs a term*; a deploy only validates one and pools it. Sharing one
+    /// budget meant an explore flood spent the deploy budget, so the two routes starved each other
+    /// for a resource only one of them uses heavily. The faucet already had its own limiter, which is
+    /// the precedent; this is the same shape one route over.
+    ///
+    /// The *rate* is deliberately unchanged at `DEFAULT_API_RATE_LIMIT_PER_SEC`. R36 is about the
+    /// sharing, and "explore is more expensive per request, so it deserves a stricter number" is a
+    /// policy question with no oracle behind it — the Scala's HTTP deploy routes are unlimited — so it
+    /// is left where it was rather than answered by a guess.
+    pub explore_rate_limiter: Arc<RateLimiter>,
     /// Rate limiter for the devnet faucet endpoint.
     pub faucet_rate_limiter: Arc<RateLimiter>,
 }
@@ -400,10 +413,10 @@ async fn api_faucet(State(state): State<HttpState>, Json(req): Json<FaucetReques
 }
 
 async fn api_explore_deploy(State(state): State<HttpState>, Json(term): Json<String>) -> Response {
-    if !state.deploy_rate_limiter.allow() {
+    if !state.explore_rate_limiter.allow() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json("deploy rate limit exceeded".to_string()),
+            Json("explore-deploy rate limit exceeded".to_string()),
         )
             .into_response();
     }
@@ -414,10 +427,10 @@ async fn api_explore_deploy_by_block_hash(
     State(state): State<HttpState>,
     Json(req): Json<ExploreDeployRequest>,
 ) -> Response {
-    if !state.deploy_rate_limiter.allow() {
+    if !state.explore_rate_limiter.allow() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json("deploy rate limit exceeded".to_string()),
+            Json("explore-deploy rate limit exceeded".to_string()),
         )
             .into_response();
     }
@@ -1125,6 +1138,7 @@ pub async fn acquire_http_server(
         pos,
         enable_reporting,
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
+        explore_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
         faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
     })
     .layer(TimeoutLayer::with_status_code(
@@ -1280,7 +1294,11 @@ mod tests {
         }
 
         async fn deploy(&self, _: &DeployRequest) -> Result<String, BlockApiException> {
-            unimplemented!()
+            // Not `unimplemented!()`. It was, and that made the mock usable only for the paths that
+            // refuse *before* reaching it — so a test could assert "you never got here" but never
+            // "you got here". AUDIT R36's separator needs the second: an explore flood must leave the
+            // deploy route still answering, which means the deploy route has to have an answer.
+            Ok("mock-deploy-id".to_string())
         }
 
         async fn deploy_status(&self, _: &str) -> Result<DeployExecStatus, BlockApiException> {
@@ -1377,6 +1395,7 @@ mod tests {
             pos: Arc::new(StubPosRead),
             enable_reporting: true,
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
+            explore_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
             faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
         }
     }
@@ -1619,6 +1638,48 @@ mod tests {
         .expect("deploy request");
         let response = api_deploy(State(s), Json(request)).await;
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// **The explore routes have their own budget, and exhausting it leaves deploy's alone** (AUDIT
+    /// R36). They shared one limiter until 2026-09-27, so an explore flood spent the deploy budget —
+    /// the two routes starved each other for a resource only one of them uses heavily. An exploratory
+    /// deploy *runs a term*; a deploy validates one and pools it.
+    ///
+    /// The arm that matters is the second: deploy still answers, so what changed is that there are two
+    /// budgets rather than that one of them got stricter. **Falsified by pointing both fields at the
+    /// same limiter** — the state the row describes — and then the deploy request is a 429.
+    #[tokio::test]
+    async fn an_explore_flood_does_not_spend_the_deploy_budget() {
+        let mut s = state();
+        s.explore_rate_limiter = Arc::new(RateLimiter::new(0));
+
+        let explore = api_explore_deploy(State(s.clone()), Json("Nil".to_string())).await;
+        assert_eq!(
+            explore.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "explore is closed"
+        );
+
+        let request: DeployRequest = serde_json::from_value(serde_json::json!({
+            "data": {
+                "term": "Nil",
+                "timestamp": 0,
+                "phloPrice": 1,
+                "phloLimit": 1,
+                "validAfterBlockNumber": 0,
+                "shardId": "/root"
+            },
+            "deployer": "",
+            "signature": "",
+            "sigAlgorithm": "secp256k1"
+        }))
+        .expect("deploy request");
+        let response = api_deploy(State(s), Json(request)).await;
+        assert_ne!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a closed explore budget must not refuse a deploy — they are separate budgets"
+        );
     }
 
     // --- the shard list and the cross-shard transaction routes (Laws 26–29) ---
