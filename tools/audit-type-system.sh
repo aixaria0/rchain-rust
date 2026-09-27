@@ -417,20 +417,38 @@ scan_spanning() {
     local dir="$ROOT/$c/src"
     [ -d "$dir" ] || continue
     while IFS= read -r f; do
-      awk "$STRIP_AWK_N" "$f" | PAT="$pattern" perl -0777 -ne '
+      # **Process substitution, not a pipeline** (AUDIT C159). `cmd | while …; do note …; done` runs
+      # the loop in a *subshell*, so `note`'s `hard_failures=$((hard_failures + 1))` was incremented in
+      # a copy that died with the loop — the class listed every site it found and the gate exited 0
+      # over all of them. `scan` has always used `< <(…)` and is unaffected; this function did not.
+      #
+      # **And the line comes from `STRIP_AWK_N`'s own prefix, not from counting newlines.** The
+      # stripped stream is shorter than the file — every `#[test]` block is dropped — so
+      # `1 + ($pre =~ tr/\n//)` reports the position in the *stripped* stream. That is the same defect
+      # the `STRIP_AWK_N` comment above records for `grep -n`, reintroduced one layer up: a listing that
+      # is not the measured set is not an audit trail, and this one could not even be acted on.
+      while IFS=$'\t' read -r line text; do
+        [ -n "$line" ] || continue
+        note "$kind" "$f" "$line" "$text"
+      done < <(awk "$STRIP_AWK_N" "$f" | PAT="$pattern" perl -0777 -ne '
         my $pat = $ENV{PAT};
         while (/$pat/g) {
-          my $pre = substr($_, 0, $-[0]);
-          my $line = 1 + ($pre =~ tr/\n//);
+          # **Capture the match before matching anything else.** `$&` and `$-[0]` are reset by every
+          # subsequent match, and the line-number expression below is a match — so reading `$&` after it
+          # reported the *line prefix* as the site text (`:839: 839`) while the number was right. Both
+          # are captured first now.
           my $text = $&;
+          my $start = $-[0];
+          my $pre = substr($_, 0, $start);
+          # The line the match *starts* on is the last "N\t" prefix before it; `tr` copies so the
+          # fallback cannot mutate `$pre`.
+          my @before = split /\n/, $pre, -1;
+          my ($line) = ($before[-1] // "") =~ /^(\d+)\t/;
+          unless (defined $line) { my $copy = $pre; $line = 1 + ($copy =~ tr/\n//); }
           $text =~ s/\s+/ /g;
           print "$line\t$text\n";
         }' \
-        | grep -vE 'self\.expect\(|\.expect\(Tok::' \
-        | while IFS=$'\t' read -r line text; do
-            [ -n "$line" ] || continue
-            note "$kind" "$f" "$line" "$text"
-          done
+        | grep -vE 'self\.expect\(|\.expect\(Tok::')
     done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
   done
 }
@@ -1236,8 +1254,11 @@ run_class() {
     # keeps comments (the count strips them) and reported stripped-stream line numbers (see
     # `STRIP_AWK_N`): a reviewer auditing "the 336 cast sites" was handed 337 lines, at wrong numbers,
     # of which 9 were not counted and 8 counted ones were missing. A listing that is not the measured
-    # set is not an audit trail. `unsafe`/`silent` keep `scan` because `note` is what increments
-    # `hard_failures` for them — their listings are still numbered by `STRIP_AWK_N`.
+    # set is not an audit trail. `unsafe` keeps `scan` — and `note` is what increments
+    # `hard_failures` for it — while `silent` reads whole files through `scan_spanning` since
+    # AUDIT C126, whose listings are numbered by `STRIP_AWK_N`. This comment said both keep `scan`
+    # for a day after that stopped being true, which is how a stale sentence outlives the code it
+    # describes. See `scan_spanning` for the count that regression cost (AUDIT C159).
     cast)    counted_scan_sites cast "$PAT_CAST"
              ratchet cast "$(counted_scan "$PAT_CAST")" ;;
     lax)     counted_scan_sites lax "$PAT_LAX"
