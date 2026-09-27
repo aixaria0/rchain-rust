@@ -13,6 +13,13 @@
 #                                    -> done, with what holds it
 #   tools/todo.sh block <id> <why...>
 #                                    -> todo, with why it is not done
+#   tools/todo.sh read  <path> <symbol> <what it found, or why nothing>
+#                                    review-ledger: verdict `cleared`, depth `deep`
+#   tools/todo.sh found <path> <symbol> <C-number> <what the defect is>
+#                                    review-ledger: verdict `finding`
+#
+# The last two take a *path* where the first three take a C-number, because the coverage half of the
+# check-off is rows in `spec/review-ledger.tsv` rather than rows in `spec/findings.tsv`.
 #
 # <evidence> is what a reader checks: a test name, a path, a commit. It is required for `done`,
 # because a `done` row with nothing behind it is the claim this whole register is built to avoid.
@@ -23,6 +30,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TSV="$ROOT/spec/findings.tsv"
+LEDGER="$ROOT/spec/review-ledger.tsv"
 
 die() { printf 'todo: %s\n' "$*" >&2; exit 1; }
 
@@ -35,6 +43,29 @@ set_state() { # <id> <state> <owes> <evidence>
     $1 == id { $4 = st; if (ow != "") $7 = ow; if (ev != "") $6 = ev }
     { print }
   ' "$TSV" > "$TSV.tmp" && mv "$TSV.tmp" "$TSV"
+}
+
+# **The coverage half lives in another file, and until 2026-09-27 this tool could not reach it.**
+# `findings.tsv` holds the findings; the twenty unread T1 modules are rows in `review-ledger.tsv`, so
+# the larger half of the check-off was listed on the front page by a tool that refused to close it.
+# The two verbs below take a *path* where the ones above take a C-number.
+#
+# Columns: kind id tier verdict depth sample reason evidence registers note (1-10).
+set_ledger() { # <path> <verdict> <evidence> <registers> <note>
+  local path="$1" verdict="$2" ev="$3" reg="$4" note="$5"
+  [[ -f "$LEDGER" ]] || die "no $LEDGER"
+  awk -F'\t' -v p="$path" '$1 == "file" && $2 == p { found = 1 } END { exit !found }' "$LEDGER" \
+    || die "no review-ledger row for '$path' (the leftmost path column, kind 'file')"
+  awk -F'\t' -v OFS='\t' -v p="$path" -v v="$verdict" -v ev="$ev" -v reg="$reg" -v n="$note" '
+    $1 == "file" && $2 == p {
+      $4 = v; $5 = "deep"; $8 = ev; $9 = reg; $10 = n
+    }
+    { print }
+  ' "$LEDGER" > "$LEDGER.tmp" && mv "$LEDGER.tmp" "$LEDGER"
+}
+
+show_ledger() {
+  awk -F'\t' -v p="$1" '$1 == "file" && $2 == p { printf "  %s  %s  (%s)\n", $2, $4, $9 }' "$LEDGER"
 }
 
 show_state() {
@@ -60,6 +91,24 @@ case "${1:-next}" in
     [[ -n "$ev" ]] || die "evidence is required for 'done'"
     set_state "$id" "done" "-" "$ev"
     show_state "$id"
+    ;;
+
+  # **The two coverage verbs.** A T1 module is closed by *being read*, and the ledger records what
+  # that produced: `cleared` and the symbol you read, or `finding` and the C-number it became. Both
+  # are `deep` by construction — the tier definition says a T1 row cannot be closed shallow
+  # (`spec/TEST-COVERAGE.md:528-530`), and the depth column is what holds that.
+  read)
+    [[ $# -ge 4 ]] || die "usage: todo.sh read <path> <symbol> <what the read found, or why it found nothing>"
+    path="$2"; symbol="$3"; shift 3
+    set_ledger "$path" "cleared" "$path:$symbol" "-" "$*"
+    show_ledger "$path"
+    ;;
+
+  found)
+    [[ $# -ge 5 ]] || die "usage: todo.sh found <path> <symbol> <C-number> <what the defect is>"
+    path="$2"; symbol="$3"; cnum="$4"; shift 4
+    set_ledger "$path" "finding" "$path:$symbol $cnum" "$cnum" "$*"
+    show_ledger "$path"
     ;;
 
   block)

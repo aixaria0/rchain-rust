@@ -386,7 +386,7 @@ file	rspace/src/errors.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/factory.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hashing/mod.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hashing/stable_hash_provider.rs	T3	deferred	-	-	-	-	-	-
-file	rspace/src/history/codecs.rs	T1	deferred	-	-	-	-	-	-
+file	rspace/src/history/codecs.rs	T1	cleared	deep	-	-	rspace/src/history/codecs.rs:Blake2b256HashCodec::decode	-	read in full (57 lines) against its oracle while closing R32's wave. The codec is 32 bytes fixed, decode refuses any other length by name before constructing a hash, and both halves are pinned by a round trip that asserts the exact bytes and a four-length refusal arm. One interface difference from the Scala and it is the safer direction: scodec's codec is stream-based, so bytes(size = length) decodes a 32-byte prefix and leaves the remainder, while this Codec::decode is whole-value and refuses a 33-byte input that scodec would have accepted; a store handing back the wrong value length is a corruption, and refusing it is what a key codec should do.
 file	rspace/src/history/cold_store.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/history/export.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/history/history_action.rs	T1	deferred	-	-	-	-	-	-
