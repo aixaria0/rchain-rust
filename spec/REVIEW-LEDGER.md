@@ -27,13 +27,13 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 
 | kind | roster | rows | reviewed | finding | sampled | cleared | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `file` | 350 | 350 | 17 | 17 | 0 | 0 | 333 | 0 | 0 |
+| `file` | 350 | 350 | 21 | 21 | 0 | 0 | 329 | 0 | 0 |
 | `ingress` | 44 | 44 | 4 | 4 | 0 | 0 | 40 | 0 | 0 |
 | `law` | 60 | 60 | 23 | 5 | 0 | 18 | 37 | 0 | 0 |
 | `site` | — | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `class` | 6 | 6 | 0 | 0 | 0 | 0 | 6 | 0 | 0 |
 | `process` | 30 | 30 | 0 | 0 | 0 | 0 | 30 | 0 | 0 |
-| `config` | 104 | 104 | 0 | 0 | 0 | 0 | 104 | 0 | 0 |
+| `config` | 104 | 104 | 1 | 1 | 0 | 0 | 103 | 0 | 0 |
 | `tool` | 21 | 21 | 3 | 3 | 0 | 0 | 18 | 0 | 0 |
 | `roster` | — | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 
@@ -56,8 +56,8 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 | tier | rows | reviewed | deferred | exempt | unreachable |
 |---|---:|---:|---:|---:|---:|
 | T1 | 51 | 31 | 20 | 0 | 0 |
-| T2 | 21 | 2 | 19 | 0 | 0 |
-| T3 | 544 | 14 | 530 | 0 | 0 |
+| T2 | 21 | 3 | 18 | 0 | 0 |
+| T3 | 544 | 18 | 526 | 0 | 0 |
 
 **544 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
 files the register has already tiered, the tier above is *derived* from that table — a judgement
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at 26f830b4c.*
+*Emitted from a tree at 1e1d82b28.*

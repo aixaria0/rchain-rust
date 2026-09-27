@@ -96,7 +96,7 @@ config	protocol-grpc-max-recv-message-size	T3	deferred	-	-	-	-	-	-
 config	protocol-grpc-max-recv-stream-message-size	T3	deferred	-	-	-	-	-	-
 config	protocol-grpc-stream-chunk-size	T3	deferred	-	-	-	-	-	-
 config	protocol-max-connections	T3	deferred	-	-	-	-	-	-
-config	protocol-max-message-consumers	T3	deferred	-	-	-	-	-	-
+config	protocol-max-message-consumers	T3	finding	deep	-	-	node/src/configuration/defaults.conf:max_message_consumers C143	-	the keys are parsed into NodeConf and read by nothing outside the configuration module, so max-message-consumers leaves the effective dispatch bound at the hardcoded 1024 and the keepalive group leaves no http2 or tcp keepalive anywhere, while defaults.conf's longest comment tells operators to tune the first one
 config	protocol-port	T3	deferred	-	-	-	-	-	-
 config	quarantine-length	T3	deferred	-	-	-	-	-	-
 config	requested-blocks-timeout	T3	deferred	-	-	-	-	-	-
@@ -307,9 +307,9 @@ file	node/src/configuration/commandline/base16_converter.rs	T3	deferred	-	-	-	-	
 file	node/src/configuration/commandline/config_mapper.rs	T2	deferred	-	-	-	-	-	-
 file	node/src/configuration/commandline/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/configuration/commandline/options.rs	T3	deferred	-	-	-	-	-	-
-file	node/src/configuration/configuration.rs	T2	deferred	-	-	-	-	-	-
+file	node/src/configuration/configuration.rs	T2	finding	deep	-	-	node/src/configuration/configuration.rs:parse_file C141 node/src/configuration/configuration.rs:build C147	-	a malformed config file is silently truncated because the hocon loader is non-strict, so the node runs on defaults for every key after the first syntax error with no error and no log line; the same module silently substitutes the default profile for an unknown --profile, moving the data directory
 file	node/src/configuration/hocon.rs	T2	deferred	-	-	-	-	-	-
-file	node/src/configuration/model.rs	T3	deferred	-	-	-	-	-	-
+file	node/src/configuration/model.rs	T3	finding	deep	-	-	node/src/configuration/model.rs:Kamon C146	-	model.rs and defaults.conf both cite spec/AUDIT.md C315, which is not an allocated row, and the pointer check cannot see it because pointer_sources is built from spec/*.md and spec/Rchain/*.lean only, so the cross-reference discipline is unenforced outside spec/
 file	node/src/configuration/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/diagnostics/effects.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/diagnostics/influxdb.rs	T3	deferred	-	-	-	-	-	-
@@ -324,16 +324,16 @@ file	node/src/effects/repl_client.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/instances/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/instances/proposer_instance.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/lib.rs	T3	deferred	-	-	-	-	-	-
-file	node/src/main.rs	T3	deferred	-	-	-	-	-	-
+file	node/src/main.rs	T3	finding	deep	-	-	node/src/main.rs:main C144	-	no signal handler is installed anywhere in the workspace and the binary is PID 1 in the container, so SIGTERM is delivered and discarded and every stop burns the grace period before SIGKILL; there is no graceful shutdown path, so LMDB environments are not closed and in-flight work is killed mid-flight
 file	node/src/runtime/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_call_ctx.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_environment.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_main.rs	T2	deferred	-	-	-	-	-	-
-file	node/src/runtime/node_runtime.rs	T1	finding	deep	-	-	node/src/runtime/node_runtime.rs:admin_bind_host C112 node/src/runtime/node_runtime.rs:admin_bind_host C132	-	the admin HTTP server bound api-server.host with an unauthenticated propose endpoint behind it; the bind is now loopback unless the operator opts in
+file	node/src/runtime/node_runtime.rs	T1	finding	deep	-	-	node/src/runtime/node_runtime.rs:admin_bind_host C112 node/src/runtime/node_runtime.rs:admin_bind_host C132 node/src/runtime/node_runtime.rs:serve C142	-	the admin HTTP server bound api-server.host with an unauthenticated propose endpoint behind it; the bind is now loopback unless the operator opts in
 file	node/src/runtime/repl_runtime.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/instances.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/mod.rs	T3	deferred	-	-	-	-	-	-
-file	node/src/web/http.rs	T3	finding	deep	-	-	node/src/web/http.rs:gateway_or_not_found C121 node/src/web/http.rs:admin_router C133	-	the public API router mounts the fund-moving POST /api/txn with no authentication, no rate limiter and no bound on the leg vector, while every sibling state-mutating route consults the limiter; the admin router's own CORS comment promises a protection a simple cross-origin POST never has to ask for
+file	node/src/web/http.rs	T3	finding	deep	-	-	node/src/web/http.rs:gateway_or_not_found C121 node/src/web/http.rs:admin_router C133 node/src/web/http.rs:epoch C148	-	the public API router mounts the fund-moving POST /api/txn with no authentication, no rate limiter and no bound on the leg vector, while every sibling state-mutating route consults the limiter; the admin router's own CORS comment promises a protection a simple cross-origin POST never has to ask for
 file	node/src/web/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/reporting.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/status_info.rs	T3	deferred	-	-	-	-	-	-
@@ -448,7 +448,7 @@ file	shared/src/key_value_cache.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/language.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/lib.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/lmdb.rs	T3	deferred	-	-	-	-	-	-
-file	shared/src/log.rs	T3	deferred	-	-	-	-	-	-
+file	shared/src/log.rs	T3	finding	deep	-	-	shared/src/log.rs:StderrLog C145	-	the only installed logger prints level, class and message with no wall-clock time, debug and trace are empty bodies and is_trace_enabled is hardcoded false, so incident forensics are ordering-only and cross-node timelines cannot be reconstructed from the logs
 file	shared/src/long_ops.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/matcher.rs	T3	deferred	-	-	-	-	-	-
 file	shared/src/maybe_cell.rs	T3	deferred	-	-	-	-	-	-
