@@ -22,8 +22,16 @@ use crate::validate;
 type St = LfsState<BlockHash>;
 
 /// Validate a received block and, if accepted, request its justifications. Returns whether the
-/// block was requested and its hash valid (port of `validateReceivedBlock`, minus the Scala
-/// `lowerBound` acceptance cutoff — the full ancestry chain is walked to genesis).
+/// block was requested and its hash valid (port of `validateReceivedBlock`).
+///
+/// **The Scala's `lowerBound` acceptance cutoff is inert, so this is not a divergence** (AUDIT C64).
+/// The port used to say it omitted the cutoff; in fact the oracle's production path never seeds it
+/// either — `LfsBlockRequester.scala:125` defaults it to `0` and the only construction in the tree
+/// (`:318`) passes `latest` and `extraHeights` but not `lowerBound`, so
+/// `blockNumber >= minimumHeight` (`:228`) is `>= 0` for every block. `extraHeights` is not a bound
+/// on the walk: it *reduces* the bound further (`max(0, min(height - 1, lowerBound) - extraHeights)`).
+/// Both trees therefore walk the full ancestry to genesis.
+/// `a_walk_longer_than_deploy_lifespan_reaches_genesis` pins it.
 async fn validate_received_block(
     st: &Arc<tokio::sync::Mutex<St>>,
     block: &BlockMessage,
@@ -58,6 +66,9 @@ async fn validate_received_block(
         if last_latest {
             log.info(source, "Latest blocks downloaded.");
         }
+        // Always request the block's justifications: `dag.insert` requires every justification to
+        // be present in the message map, so the requester must reconstruct the full ancestry chain
+        // down to the genesis block (a syncing node's DAG is always empty).
         // Always request the block's justifications: `dag.insert` requires every justification to
         // be present in the message map, so the requester must reconstruct the full ancestry chain
         // down to the genesis block (a syncing node's DAG is always empty).
@@ -584,6 +595,96 @@ mod tests {
             "a {N}-block walk against a peer that answers every request took {elapsed:?} (bound \
              {BOUND:?}, idle timeout {REQUEST_TIMEOUT:?}): the walk is advancing on the idle resend \
              rather than on the response, so each block costs one request timeout"
+        );
+    }
+
+    /// **The walk is unbounded: it reaches genesis, and the oracle's `lowerBound` cutoff does not
+    /// bound it there either** (AUDIT C64).
+    ///
+    /// `lfs_block_requester.rs:26` and `engine/mod.rs:50` both say the port omits the Scala's
+    /// `lowerBound`/`extraHeights` cutoff and walks the full ancestry instead, and AUDIT C64 carried
+    /// "adopt the Scala's lowerBound cutoff" as the remedy. **That remedy is a no-op, and the
+    /// divergence it exists to close does not exist.** In `LfsBlockRequester.scala` the bound is a
+    /// parameter of `ST.apply` defaulting to `0` (`:125`) and the production construction is the only
+    /// one in the tree — `ST(initialHashes, latest = finalizedHashes, extraHeights =
+    /// blockHeightsBeforeFringe)` (`:318`) — which **never passes `lowerBound`**. So `minimumHeight`
+    /// is `0` for the whole sync, and both gates are vacuously true: `blockIsAccepted =
+    /// isReceivedLatest || isReceived && blockNumber >= minimumHeight` (`:228`) and `populateDag`'s
+    /// `blockHeightOk = blockHeight >= minHeight` (`NodeSyncing.scala`, fed `st.lowerBound`). The
+    /// `lowerBound` machinery is exercised only by `LfsBlockRequesterStateSpec`, which passes
+    /// `lowerBound = 200` itself.
+    ///
+    /// `extraHeights` is not a bound on the walk either — `deployLifespan = 50`
+    /// (`MultiParentCasper.scala:35`) arrives as `extraHeights`, and it *reduces* the bound further
+    /// (`max(0, min(height - 1, lowerBound) - extraHeights)`), so it lengthens the walk rather than
+    /// shortening it. The `N > 50` chain is therefore the discriminating fixture: a cutoff anywhere
+    /// near `deployLifespan` would leave the genesis of this chain unrequested.
+    ///
+    /// This is the witness the register said did not exist ("nothing in this register would catch a
+    /// wrong one", C94). It pins the port's own behaviour — every block of an over-`deployLifespan`
+    /// chain, genesis included, is fetched and saved — so a future pass that re-adds the cutoff
+    /// without first defining the truncated-ancestry DAG semantics fails here.
+    #[tokio::test]
+    async fn a_walk_longer_than_deploy_lifespan_reaches_genesis() {
+        // The oracle's `MultiParentCasper.deployLifespan`.
+        const DEPLOY_LIFESPAN: usize = 50;
+        const N: usize = DEPLOY_LIFESPAN + 1;
+
+        let blocks = chain(N);
+        let genesis = blocks.first().expect("a non-empty chain");
+        assert_eq!(
+            i64::from(genesis.block_number),
+            0,
+            "the chain's first block is its genesis, which is what a cutoff would strand"
+        );
+        let by_hash: BTreeMap<BlockHash, BlockMessage> =
+            blocks.iter().map(|b| (b.block_hash, b.clone())).collect();
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let store = store().await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(128);
+        let transport = Arc::new(ServingTransport {
+            blocks: by_hash,
+            incoming: incoming_tx,
+        });
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let comm_util = CommUtil::new(transport, conf, connections, Arc::new(NopLog));
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let state = request_blocks(
+            &fringe,
+            &mut incoming_rx,
+            Duration::from_secs(30),
+            &store,
+            &comm_util,
+            &NopLog,
+        )
+        .await
+        .expect("a healthy store");
+
+        assert!(state.is_finished(), "the walk completed");
+        // The genesis block's height is the low end of the ancestry, so it is the block a
+        // `lowerBound` cutoff at or near `deployLifespan` would never ask for.
+        assert!(
+            store
+                .contains(&[genesis.block_hash])
+                .await
+                .expect("store readable")[0],
+            "a {N}-block walk must reach the genesis block: the port has no cutoff, and neither \
+             does the oracle's production path (`lowerBound` is never seeded off its `0` default)"
         );
     }
     /// A block store that fails what it is told to fail — the fault injection AUDIT C65's two

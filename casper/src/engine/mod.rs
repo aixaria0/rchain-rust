@@ -47,13 +47,17 @@ pub struct ReceiveInfo {
 }
 
 /// Request-state machine for the Last Finalized State block requester (port of
-/// `LfsBlockRequester.ST`, minus the Scala `lowerBound`/`extraHeights` cutoff — see `spec/AUDIT.md`).
+/// `LfsBlockRequester.ST`, holding `d`/`latest`/`height_map`/`finished`).
 ///
-/// The Scala state tracks a `lowerBound` and stops requesting justifications below it (to download
-/// only `extraHeights` blocks before the fringe). That cutoff is removed here: a syncing node's DAG
-/// is always empty (see `NodeLaunch.apply`), and `BlockDagStorage::insert` requires every block's
-/// justifications to be present, so the requester must walk the full ancestry chain down to the
-/// genesis block.
+/// **`lowerBound` and `extraHeights` are deliberately absent, and that is faithful rather than a
+/// divergence** (AUDIT C64). The oracle's `lowerBound` bounds the walk only if something seeds it,
+/// and nothing does: `LfsBlockRequester.scala:125` defaults it to `0`, the sole construction in the
+/// tree (`:318`) passes `latest` and `extraHeights` but never `lowerBound`, and so both of its gates
+/// — `blockIsAccepted = isReceivedLatest || blockNumber >= minimumHeight` (`:228`) and
+/// `NodeSyncing`'s `blockHeightOk = blockHeight >= minHeight` — are `>= 0` and vacuously true.
+/// `extraHeights` is `deployLifespan` (50) and *lowers* the bound further rather than bounding the
+/// walk. Adding the field here without the oracle seeding it would change behaviour away from the
+/// oracle, not towards it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LfsState<Key: Ord + Clone> {
     pub d: BTreeMap<Key, ReqStatus>,
