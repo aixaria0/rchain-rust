@@ -11,7 +11,6 @@ use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
 use rchain_crypto::signatures::signed::Signed;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
 use rchain_shared::base16;
-use rchain_shared::refined::NonNegI64;
 
 use crate::genesis::contracts::{rev_generator_code, ProofOfStake, Registry, Vault};
 
@@ -154,6 +153,23 @@ pub const GENESIS_ALIASES: &[GenesisAlias] = &[
                    `@(nonce, *MakeMint)` then `MakeMint!(*ch)`",
     },
     GenesisAlias {
+        shorthand: "rho:rchain:authKey",
+        source: GenesisAliasSource::Contract {
+            private_key_hex: AUTH_KEY_PK,
+        },
+        consumer: "`MultiSigRevVault.rho:35` looks it up before it can install, and every \
+                   `deployerAuthKey` is made through it — without this alias the multi-signature \
+                   vault answers `Nil` to its own dependency",
+    },
+    GenesisAlias {
+        shorthand: "rho:rchain:multiSigRevVault",
+        source: GenesisAliasSource::Contract {
+            private_key_hex: MULTI_SIG_REV_VAULT_PK,
+        },
+        consumer: "multi-signature custody: `lookup!` then `@(_, MultiSigRevVault)` then its \
+                   `create` / `makeSealerUnsealer` / `deployerAuthKey` methods",
+    },
+    GenesisAlias {
         shorthand: "rho:lang:listOps",
         source: GenesisAliasSource::Contract {
             private_key_hex: LIST_OPS_PK,
@@ -252,6 +268,122 @@ fn make_mint_source() -> Result<String, String> {
     source = source.replace(epilogue, patched_epilogue);
 
     Ok(load_source("MakeMint.rho", &source))
+}
+
+/// `AuthKey.rho` and `MultiSigRevVault.rho` with the registry epilogue adapted, the way
+/// [`make_mint_source`] adapts `MakeMint.rho`.
+///
+/// Both sources end by asking `rho:registry:systemContractManager` for a write-only dispatcher and
+/// defining a `securityCheck` arm that calls `rho:rchain:configPublicKeyCheck` — **neither channel
+/// exists in this port** (they came from the interpreted `Registry.rho`, which is not installed;
+/// `spec/GENESIS.md` records the evidence). Left alone, the `for` that waits on them never fires, so
+/// the deploy registers nothing and `lookup!` of the contract's urn answers `Nil` forever. The
+/// adaptation registers the contract's **own bundle** instead, which is exactly what a consumer
+/// destructures (`for (@(_, AuthKey) <- ch)` and then `@AuthKey!(…)`).
+///
+/// **The tail is cut at a marker rather than a fifteen-line block being string-replaced**, which is
+/// the difference from `make_mint_source`: the two epilogues differ in their dispatcher names and in
+/// how they reach the manager (`rl!` and a gate here, a direct `@systemContractManager!` call there),
+/// and reproducing either verbatim in Rust is how a vendored source's edit goes unnoticed. The marker
+/// is asserted, so a source that moves fails the genesis build loudly.
+///
+/// The head keeps whatever the contract did before the epilogue — `MultiSigRevVault`'s
+/// `extractState` arm, for instance — because that is contract behaviour rather than registry
+/// plumbing.
+fn registry_epilogue_adapted(
+    name: &str,
+    source: &str,
+    marker: &str,
+    gate: Option<(&str, &str)>,
+    contract: &str,
+) -> Result<String, String> {
+    let Some(at) = source.find(marker) else {
+        return Err(format!(
+            "{name}: the registry-epilogue marker is missing from the vendored source, so the \
+             adaptation would ship a contract that cannot register"
+        ));
+    };
+    let head = source[..at].trim_end();
+    // **The absent channels have to go before the gate, not only at the tail.** `AuthKey` reaches the
+    // manager from a block at its *end*, so cutting the tail removes the whole thing. This vault
+    // reaches it from inside the gate that wraps its contracts — so the gate itself waits on two
+    // channels that never answer, the body (registration included) never runs, and the alias seed
+    // finds nothing to copy. Measured: that is how this adaptation's first version failed
+    // (`rho:rchain:multiSigRevVault must be seeded`).
+    let lookups = "  rl!(`rho:registry:systemContractManager`, *systemContractManagerCh)|\n  \
+                   rl!(`rho:rchain:configPublicKeyCheck`, *configPublicKeyCheckCh)|\n";
+    if !source.contains(lookups) {
+        return Err(format!(
+            "{name}: the lookup markers are missing from the vendored source"
+        ));
+    }
+    let head = head.replace(lookups, "");
+    let head = match gate {
+        Some((from, to)) => {
+            if !head.contains(from) {
+                return Err(format!(
+                    "{name}: the install-gate marker is missing from the vendored source"
+                ));
+            }
+            head.replace(from, to)
+        }
+        None => head,
+    };
+    // The head ends with the `|` that introduced the epilogue, and the epilogue is what completed
+    // that par — so the replacement sits on the other side of the same pipe. Stripping it leaves
+    // `} rs!(…)`, which the parser refuses (measured: `expected RBrace, got Ident("rs")`), and that
+    // is the failure mode these markers exist to catch.
+    if !head.ends_with('|') {
+        return Err(format!(
+            "{name}: the text before the registry-epilogue marker does not end a par arm, so the \
+             adaptation would splice two processes together"
+        ));
+    }
+    // **Close as many braces as the head left open**, rather than assuming one. The two sources
+    // differ in exactly this: `MultiSigRevVault`'s contracts sit inside the gate's `for (...) {`, so
+    // its head has one more open brace than `AuthKey`'s, and a fixed `}` truncated the par and the
+    // parser refused the file (`expected RBrace, got Eof`). The count is over the whole head, so it
+    // also notices a source that gains a block above the epilogue.
+    let open = head.matches('{').count() as i64 - head.matches('}').count() as i64;
+    if open <= 0 {
+        return Err(format!(
+            "{name}: the adapted head balances its braces, so there is no block for the epilogue to \
+             be the last arm of — the marker found the wrong place"
+        ));
+    }
+    let closing = "}".repeat(open as usize);
+    Ok(format!(
+        "{head}\n  rs!(\n    (9223372036854775807, bundle+{{*{contract}}}),\n    *deployerId,\n    \
+         *uriOut\n  )\n{closing}\n"
+    ))
+}
+
+/// `AuthKey.rho`, adapted (see [`registry_epilogue_adapted`]).
+fn auth_key_source() -> Result<String, String> {
+    let source = AUTH_KEY_RHO.to_string();
+    let marker = "  rl!(`rho:registry:systemContractManager`, *systemContractManagerCh)|";
+    registry_epilogue_adapted("AuthKey.rho", &source, marker, None, "AuthKey")
+}
+
+/// `MultiSigRevVault.rho`, adapted (see [`registry_epilogue_adapted`]).
+fn multi_sig_rev_vault_source() -> Result<String, String> {
+    let source = MULTI_SIG_REV_VAULT_RHO.to_string();
+    let marker =
+        "    @systemContractManager!(\"createDispatcher\", *MultiSigRevVault, *dispatcherCh)|";
+    // Its gate waits on the two channels this port does not have; the rest of it (`listOps`,
+    // `authKey`, `revVault`) is real, so the two conjuncts come out and the gate stays.
+    let gate = (
+        " &\n      @(_, systemContractManager) <- systemContractManagerCh &\n      \
+         @(_, configPublicKeyCheck)<- configPublicKeyCheckCh) {",
+        ") {",
+    );
+    registry_epilogue_adapted(
+        "MultiSigRevVault.rho",
+        &source,
+        marker,
+        Some(gate),
+        "MultiSigRevVault",
+    )
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -355,9 +487,13 @@ impl StandardDeploys {
         )
     }
 
+    /// The `AuthKey` contract, with its registry epilogue adapted
+    /// ([`registry_epilogue_adapted`]). Without the adaptation the deploy registers nothing, and the
+    /// multi-signature vault's `deployerAuthKey` — which is built through this contract — answers
+    /// `Nil` forever.
     pub fn auth_key(shard_id: &str) -> Result<SignedDeployData, String> {
         Self::to_deploy(
-            load_source("AuthKey.rho", AUTH_KEY_RHO),
+            auth_key_source()?,
             AUTH_KEY_PK,
             AUTH_KEY_TIMESTAMP,
             shard_id,
@@ -373,9 +509,13 @@ impl StandardDeploys {
         )
     }
 
+    /// The multi-signature REV vault, adapted like `AuthKey` — and **installed** rather than
+    /// refused. AUDIT C114's channel used to answer with the single-signer handler, was changed to
+    /// refuse (because that was single-key custody under a multi-signature name), and is now answered
+    /// by this contract.
     pub fn multi_sig_rev_vault(shard_id: &str) -> Result<SignedDeployData, String> {
         Self::to_deploy(
-            load_source("MultiSigRevVault.rho", MULTI_SIG_REV_VAULT_RHO),
+            multi_sig_rev_vault_source()?,
             MULTI_SIG_REV_VAULT_PK,
             MULTI_SIG_REV_VAULT_TIMESTAMP,
             shard_id,
@@ -682,6 +822,8 @@ mod builder_tests {
     /// The two parameterised generators: `pos_generator` substitutes the PoS parameters into the
     /// `Pos.rhox` template (so the term must contain them), and `rev_generator` renders the vault
     /// list — both scoped to the requested shard.
+    use rchain_shared::refined::NonNegI64;
+
     #[test]
     fn the_pos_and_rev_generators_substitute_their_parameters() {
         let pos = ProofOfStake {

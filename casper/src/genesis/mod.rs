@@ -214,7 +214,13 @@ fn create_block_with_processed_deploys(
 /// assuming — the first version of this table claimed an order for it, and the negative test refuted
 /// the claim.
 #[cfg(test)]
-const BLESSED_DEPENDENCIES: &[(&str, &[&str])] = &[("make_mint", &["non_negative_number"])];
+const BLESSED_DEPENDENCIES: &[(&str, &[&str])] = &[
+    ("make_mint", &["non_negative_number"]),
+    // `AuthKey.rho` looks `listOps` up before it can install; `MultiSigRevVault.rho` looks up
+    // `authKey` *and* `listOps` (and `revVault`, which is native and always present).
+    ("auth_key", &["list_ops"]),
+    ("multi_sig_rev_vault", &["auth_key", "list_ops"]),
+];
 
 /// The blessed set with its manifest names, in install order.
 ///
@@ -238,6 +244,18 @@ fn blessed_terms_named(
         (
             "make_mint",
             standard_deploys::StandardDeploys::make_mint(shard_id)?,
+        ),
+        // **The multi-signature vault, installed rather than refused** (AUDIT C114's alternative).
+        // `auth_key` first: `MultiSigRevVault.rho` looks it up before it can install, and its
+        // `deployerAuthKey` is built through it. Both need `revVault` (native, always present) and
+        // `authKey`'s own dependency `listOps` (above).
+        (
+            "auth_key",
+            standard_deploys::StandardDeploys::auth_key(shard_id)?,
+        ),
+        (
+            "multi_sig_rev_vault",
+            standard_deploys::StandardDeploys::multi_sig_rev_vault(shard_id)?,
         ),
     ];
     let rgov = rgov::governance_deploys(shard_id, ceremony)?;
@@ -602,6 +620,12 @@ mod tests {
                 "list_ops",
                 "non_negative_number",
                 "make_mint",
+                // **A genesis change, deliberately** (the multi-signature vault's install): the two
+                // contracts sit after their dependencies and before the governance block. Every
+                // chain built before this commit has a different genesis post-state, which is the
+                // point of asserting the order here rather than discovering it in a fork.
+                "auth_key",
+                "multi_sig_rev_vault",
                 "kudos",
                 "inbox",
                 "directory",

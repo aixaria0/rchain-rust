@@ -164,6 +164,19 @@ fn probes() -> Vec<(&'static str, &'static str)> {
                }"#,
         ),
         (
+            // The multi-signature vault, installed rather than refused (AUDIT C114's alternative).
+            // `makeSealerUnsealer` is the cheapest method that proves the *contract* is answering
+            // rather than a stub: it mints a pair and replies with both.
+            "rho:rchain:multiSigRevVault",
+            r#"new rl(`rho:registry:lookup`), ch, ret in {
+                 rl!(`rho:rchain:multiSigRevVault`, *ch) |
+                 for (@(_, *MultiSigRevVault) <- ch) {
+                   MultiSigRevVault!("makeSealerUnsealer", *ret) |
+                   for (@_ <- ret) { @"out"!("rho:rchain:multiSigRevVault") }
+                 }
+               }"#,
+        ),
+        (
             "rho:rchain:makeMint",
             r#"new rl(`rho:registry:lookup`), ch, ret in {
                  rl!(`rho:rchain:makeMint`, *ch) |
