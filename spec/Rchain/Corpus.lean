@@ -678,9 +678,19 @@ this layer is its rendering. Each row is a *probe*: call the urn with the argume
 the reply must arrive in the row's kind and slots. `args` and `slots` render as `-` when empty, so a
 column is never blank and the consumer never has to guess what a missing column means. -/
 
-/-- One protocol corpus line: layer, urn, the call's arguments, the reply's kind, its slots. -/
+/-- One protocol corpus line: layer, urn, the call's arguments, the call's **arity**, the reply's
+kind, its slots.
+
+**The arity column is emitted because its absence was a documented-but-missing field** (AUDIT C158):
+`ReplyRow` has carried `callArity` since the catalog was written, this file's sibling prose and the
+Rust consumer's own header both say the corpus line carries "the call's arity", and `protocolLine`
+did not emit it — so `spec/conformance/protocol.tsv` had five columns and the tie between the
+declared arity and the node was held only *indirectly*, by requiring a reply. For an entry that
+sends nothing back there is no reply to lose, so a wrong arity there was silence with nothing to
+report it. -/
 def protocolLine (r : ReplyRow) : String :=
   "protocol\t" ++ r.urn ++ "\t" ++ (if r.args.isEmpty then "-" else r.args) ++ "\t"
+    ++ toString r.callArity ++ "\t"
     ++ r.kind.tag ++ "\t" ++ (if r.slots.isEmpty then "-" else
       String.intercalate "," (r.slots.map SlotShape.tag))
 

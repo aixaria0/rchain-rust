@@ -52,6 +52,17 @@ async fn every_urn_replies_in_the_shape_the_lean_catalog_says() {
         );
         let urn = columns.next().expect("the urn column");
         let args = columns.next().expect("the arguments column");
+        // **The declared arity is read here, and until AUDIT C158 it was not in the file at all.**
+        // `ReplyRow` has carried `callArity` since the catalog was written and this consumer's own
+        // header said the line carried "the call's arity", while the emitter wrote five columns — so
+        // the tie between the declaration and the node was held only *indirectly*, by requiring a
+        // reply, and an entry that sends nothing back had no tie at all: for a non-replying urn a
+        // wrong arity is silence, not an error.
+        let declared_arity: usize = columns
+            .next()
+            .expect("the arity column")
+            .parse()
+            .unwrap_or_else(|e| panic!("{urn}: the arity column is not a number: {e}"));
         let kind = columns.next().expect("the reply-kind column");
         let slots = columns.next().expect("the slots column");
         assert!(
@@ -101,6 +112,36 @@ async fn every_urn_replies_in_the_shape_the_lean_catalog_says() {
             (_, "-") => "c!(*ret)".to_string(),
             (_, a) => format!("c!({a}, *ret)"),
         };
+        // **The declared arity is checked against the call this consumer builds**, and the count is
+        // taken by parsing rather than by counting commas: `rho:qucalc:zfa`'s argument is `[0, 1]`, so
+        // a comma count would be wrong for it. The value of reading the number from the corpus rather
+        // than deriving it here is that the two sides are then independent — this catches an emitter
+        // that transposed or dropped the column, which is what C158 found had happened to the column
+        // itself.
+        let built_arity = {
+            // `source_to_adt` returns a `Closed`, so the call has to be parsed with its two names
+            // bound — `c` the urn's channel and `ret` the reply channel — or the free-variable check
+            // refuses it before the send can be counted.
+            let closed =
+                rchain_rholang::normalizer::source_to_adt(&format!("new c, ret in {{ {call} }}"))
+                    .unwrap_or_else(|e| {
+                        panic!("{urn}: the probe call does not parse: {e}\n{call}")
+                    });
+            let par = rchain_models::ast::Par::from(closed);
+            // The `new` binds `c` and `ret`, and the normalization nests the body under it, so the
+            // send is one level down rather than at the top.
+            let body = par.news.first().map(|n| n.p.as_ref()).unwrap_or(&par);
+            let send = body
+                .sends
+                .first()
+                .unwrap_or_else(|| panic!("{urn}: the probe is not a send: {call}"));
+            send.data.len()
+        };
+        assert_eq!(
+            built_arity, declared_arity,
+            "{urn}: the catalog declares an arity of {declared_arity} and this probe calls with \
+             {built_arity} — the declaration and the corpus have drifted apart"
+        );
         let term = format!(
             "new c(`{urn}`), ret, o0, o1, o2, o3 in {{ {call} \
              | for ({patterns} <- ret) {{ {resends}Nil }} }} | @\"ctl\"!(\"ran\")"
