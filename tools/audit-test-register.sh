@@ -81,6 +81,12 @@
 #      runs**, and an `unhousedCeiling` so unregistered findings are a number that must move. The last
 #      two are about the linter and the audit rather than the tree, which is the point: the instrument
 #      is inside its own remit.
+#  16. **Every action a workflow uses is pinned to a commit, and every workflow states its permissions**
+#      — a `@v4` or `@stable` ref is a moving target: the build that ran yesterday and the build that
+#      runs tomorrow are executing different code under the same line. Pinning to a SHA with the tag in
+#      a trailing comment keeps the file readable and the execution fixed. The `permissions:` half is
+#      the same argument one level up: a token whose scope is whatever the repository default happens
+#      to be is a grant nobody decided (AUDIT C137).
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
@@ -1354,6 +1360,26 @@ fi
 
 if (( failures == ledger_bad_before )); then
   ok "review ledger: $ledger_checked row(s) checked, roster and rows agree in both directions, $tier_rows tier(s) inherited from the register, $unhoused_actual of ${unhoused_ceiling:-0} unregistered finding(s) against the ceiling"
+fi
+
+# --- 16. every CI action is pinned, and every workflow states its permissions ----
+printf '\n== CI workflows (each `uses:` names a commit, each file a token scope) ==\n'
+ci_unpinned=0
+ci_noperm=0
+for wf in "$ROOT"/.github/workflows/*.yml; do
+  [[ -f "$wf" ]] || continue
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    ci_unpinned=$((ci_unpinned + 1))
+    fail "CI action $(basename "$wf") uses '$ref' — a tag or branch moves; pin it to a commit SHA with the tag in a trailing comment (AUDIT C137)"
+  done < <(grep -hoE 'uses: [^ ]+' "$wf" | sed 's/uses: //' | grep -vE '@[0-9a-f]{40}$' | sort -u)
+  if ! grep -qE '^permissions:' "$wf"; then
+    ci_noperm=$((ci_noperm + 1))
+    fail "CI workflow $(basename "$wf") has no top-level permissions: block — the default token scope is not a decision anyone made (AUDIT C137)"
+  fi
+done
+if (( ci_unpinned == 0 && ci_noperm == 0 )); then
+  ok "CI workflows: every action is pinned to a commit and every file states its permissions"
 fi
 
 # --- summary -----------------------------------------------------------------
