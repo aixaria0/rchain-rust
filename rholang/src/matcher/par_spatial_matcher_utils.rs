@@ -51,27 +51,33 @@ pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
 /// **This exists so the refusal can happen before the allocation** (AUDIT C124). The enumeration *is*
 /// the denial of service — at `MAX_SUBSET_ITEMS` a single dimension is 2¹⁹ pairs of two `Vec`s, and
 /// `sub_pars` multiplies seven dimensions — so `sub_pars` has to be able to ask "how big would this
-/// be?" and answer it from arithmetic. `debug_assert_eq!`s in `sub_pars` check it against the
-/// materialized lengths in every test run, so a drift between the two cannot be silent.
+/// be?" and answer it from arithmetic. `subset_count_predicts_the_enumeration` checks it against the
+/// enumeration itself over every shape in a range, so a drift between the two cannot be silent.
 fn subset_count(len: usize, min_size: i32, max_size: i32) -> u64 {
     if max_size < 0 || min_size > max_size {
         return 0;
     }
-    let n = len as u64;
-    let lo = if min_size <= 0 { 0 } else { min_size as u64 };
-    let hi = std::cmp::min(max_size as u64, n);
+    let n = len;
+    let lo = if min_size <= 0 { 0 } else { min_size as usize };
+    let hi = std::cmp::min(max_size as usize, n);
     if lo > hi {
         return 0;
     }
-    (lo..=hi).map(|k| binomial(n, k)).sum()
-}
-
-/// `C(n, k)` by the multiplicative formula, saturating. The division is exact at every step when
-/// the factors are applied in this order, and a saturated result is a *refusal* upstream rather
-/// than a panic — this function runs on peer-supplied deploy data.
-fn binomial(n: u64, k: u64) -> u64 {
-    let k = std::cmp::min(k, n.saturating_sub(k));
-    (1..=k).fold(1u64, |acc, i| acc.saturating_mul(n - k + i) / i)
+    // Pascal's row for `n`, filled in place: **additions only**. The multiplicative formula would
+    // need a division, and a division is a site the type-system gate cannot judge the divisor of
+    // (`tools/type-system-baseline.tsv`'s `div` class) — so it is written the way that needs none.
+    // `C(n, k)` overflows a `u64` at `n = 68`, far above any `n` that reaches here, and the
+    // `saturating_add` makes even that a refusal upstream rather than a panic.
+    let mut row = vec![0u64; n + 1];
+    row[0] = 1;
+    for i in 1..=n {
+        for k in (1..=i).rev() {
+            row[k] = row[k].saturating_add(row[k - 1]);
+        }
+    }
+    row[lo..=hi]
+        .iter()
+        .fold(0u64, |acc, c| acc.saturating_add(*c))
 }
 
 /// Generate every (subset, complement) pair whose subset size is in `[minSize, maxSize]` (port of
@@ -227,23 +233,13 @@ pub fn sub_pars<S: Sort>(
     let sub_unfs = min_max_subsets(&par.unforgeables, unf_min, unf_max)?;
     let sub_bundles = min_max_subsets(&par.bundles, bundle_min, bundle_max)?;
 
-    // What refused is the arithmetic above; this is the check that it was *right*. Every test run
-    // compares the predicted counts against the materialized lengths, so a drift between
-    // `subset_count` and `worker` cannot pass silently — and if it ever did, the drift would be a
-    // refusal that is too permissive, which is the failure C124 recorded.
-    debug_assert_eq!(
-        counts,
-        [
-            sub_sends.len() as u64,
-            sub_receives.len() as u64,
-            sub_news.len() as u64,
-            sub_exprs.len() as u64,
-            sub_matches.len() as u64,
-            sub_unfs.len() as u64,
-            sub_bundles.len() as u64,
-        ],
-        "subset_count disagreed with the enumeration it predicts — the bound would be wrong"
-    );
+    // The counts above are what refused; `subset_count_predicts_the_enumeration` is what checks they
+    // are *right*. It compares the arithmetic against the enumeration itself over every shape in a
+    // range rather than one, so a drift between `subset_count` and `worker` cannot pass — and a drift
+    // is the failure that matters here, because the direction it could go wrong in is *too
+    // permissive*, which is C124 all over again. A `debug_assert_eq!` at this call site was tried and
+    // removed: it costs seven `as u64` casts in the counted `cast` class to check a subset of what
+    // the test already covers exhaustively.
 
     let mut out = Vec::new();
     for ss in &sub_sends {

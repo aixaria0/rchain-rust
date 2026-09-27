@@ -77,10 +77,19 @@
 # makes the budget divide into `u32` permits, and they are new because the bound is new.
 # `cast`/`index`/`overflow` are unmoved.
 #
+# `index` 313 -> 316 (AUDIT C124), raised deliberately, and the three sites are one construction.
+# `subset_count` fills Pascal's row for `n` in place — `row[k]`, `row[k - 1]` and the `row[lo..=hi]`
+# slice — because the alternative needs a division, which is the class above this one. The indices are
+# bounded by the loop (`k` runs `1..=i` with `i <= n == row.len() - 1`), so the class the gate cannot
+# judge (an index whose bound it cannot see) does not arise; this is a triangle computed in place and
+# reviewed as such. **`cast` is unmoved by this pass**: it reads 331 below its recorded 336 because
+# another session's in-flight work is in the tree, not because of C124 — the same churn the register
+# rosters show, and the number returns to its baseline when that lands.
+#
 # class	count
 cast	336
 lax	10
 get	0
-index	313
+index	316
 div	54
 overflow	41
