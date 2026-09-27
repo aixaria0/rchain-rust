@@ -146,6 +146,95 @@ run "check 9: an anchor past EOF" bash tools/audit-test-register.sh
 restore_all
 
 # ---------------------------------------------------------------------------------------------
+# Check 15, clause by clause. The letters are the body's own (a)-(j), and each probe plants the defect
+# that clause exists to catch and requires the register gate to refuse. The plan that wrote this check
+# found clause (h) vacuous — it compared nothing while reporting "48 tier(s)" — so the clauses are
+# probed rather than assumed. **Two of them had no subject in the tree at all when this was written**:
+# (f) applies only to a `sampled` row and the ledger holds none, and the header/body clause (i) is
+# self-referential. For those a probe is the only thing that separates "the clause is satisfied" from
+# "the clause never ran", which is the distinction this whole file exists for.
+printf '\ncheck 15 (the review ledger), clause by clause\n'
+
+# (a) rows and the roster agree in **both** directions — one direction alone is C80's defect.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^class\tcast\t.*\n//m' spec/review-ledger.tsv
+run "15(a): a roster item with no row" bash tools/audit-test-register.sh
+restore_all
+
+backup spec/review-ledger.tsv
+printf 'class\ta_class_no_roster_derives\tT3\tdeferred\t-\t-\t-\t-\t-\t-\n' >> spec/review-ledger.tsv
+run "15(a): a row about nothing" bash tools/audit-test-register.sh
+restore_all
+
+# (b) the emitter is the site of the join — an edit that does not re-emit is not the derived page.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/(law\t5\tT1\tcleared\tdeep\t-\t-\t[^\t]*\t-\t)mutation sweep/$1mutation sweep (edited by the probe)/' spec/review-ledger.tsv
+run "15(b): the page is not what the TSV emits" bash tools/audit-test-register.sh
+restore_all
+
+# (c) the vocabulary is closed and the cells are conditional on the verdict.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t10\tT1\t)cleared/$1banana/m' spec/review-ledger.tsv
+run "15(c): a verdict outside the vocabulary" bash tools/audit-test-register.sh
+restore_all
+
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t10\tT1\tcleared\tdeep\t)-\t/$1 3\/60\t/m' spec/review-ledger.tsv
+run "15(c): a sample on a row that is not sampled" bash tools/audit-test-register.sh
+restore_all
+
+# (d) a `finding` row names an allocated C-number sharing a token with that finding.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t46\tT1\tfinding\tdeep\t-\t-\t[^\t]* )C149/$1C999/m' spec/review-ledger.tsv
+run "15(d): a finding number that is allocated by nothing" bash tools/audit-test-register.sh
+restore_all
+
+# (e) the tier floor: a review claim at T1 is a `deep` read.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t10\tT1\tcleared\t)deep/$1-/m' spec/review-ledger.tsv
+run "15(e): a T1 row claiming no depth" bash tools/audit-test-register.sh
+restore_all
+
+# (f) a `sampled` row's denominator is the roster's own count. **No row in the tree is `sampled`**, so
+# the probe has to make one: the clause is turned on rather than exercised.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t10\tT1\t)cleared(\tdeep\t)-\t/$1sampled$2 1\/999\t/m' spec/review-ledger.tsv
+run "15(f): a sampled denominator that is remembered" bash tools/audit-test-register.sh
+restore_all
+
+# (g) ceilings, committed against derived.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^# ceiling\ttool\t(\d+)/"# ceiling\ttool\t" . ($1 + 1)/me' spec/review-ledger.tsv
+run "15(g): a ceiling the tree does not derive" bash tools/audit-test-register.sh
+restore_all
+
+# (h) the tier word agrees with the register's own tier table. Law 10's row inherits T1 from
+# spec/TEST-COVERAGE.md; demoting it here makes the two disagree.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t10\t)T1/$1T2/m' spec/review-ledger.tsv
+run "15(h): a tier that contradicts the register" bash tools/audit-test-register.sh
+restore_all
+
+# (i) the header names every check the body runs — C91's rule, one level down: a check the header does
+# not name is a check nobody knows ran.
+backup tools/audit-test-register.sh
+perl -0pi -e 's/^# Usage:/#  16. **a check the body does not run**\n#\n# Usage:/m' tools/audit-test-register.sh
+run "15(i): a header naming a check nothing runs" bash tools/audit-test-register.sh
+restore_all
+
+# (j) every allocated C-number is named by a row or counted against `unhousedCeiling`.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^# unhousedCeiling\t.*\n//m' spec/review-ledger.tsv
+run "15(j): no unhousedCeiling to count against" bash tools/audit-test-register.sh
+restore_all
+
+# …and the other direction: an allocated number that no row names must move the count.
+backup spec/review-ledger.tsv
+perl -0pi -e 's/^(law\t46\tT1\tfinding\tdeep\t-\t-\t[^\t]* )C149/$1C-none/m' spec/review-ledger.tsv
+run "15(j): C149 allocated and named by no row" bash tools/audit-test-register.sh
+restore_all
+
+# ---------------------------------------------------------------------------------------------
 printf '\ncheck-rust-witnesses.sh\n'
 # The tool's whole point is the zero-match refusal: `cargo test <filter>` exits 0 when nothing
 # matches, so a renamed witness would silently pass. A real `fn` that is not a test must fail.
