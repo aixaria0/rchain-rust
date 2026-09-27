@@ -282,6 +282,94 @@ async fn gateway_is_idempotent_under_txn_id() {
     );
 }
 
+/// **The regression test for AUDIT C125.** `run` reads the ledger, decides from that read whether to
+/// open a transaction, and writes the record it built from *its own* legs — a check-then-act with no
+/// per-`txn_id` serialization. Two concurrent callers for one id therefore both open it: each drives its
+/// own phase one with its own legs, and the durable record that `recover_in_flight` trusts afterwards
+/// describes whichever leg list won the last write rather than necessarily the effects applied under
+/// that id.
+///
+/// Two things about how it is written. The concurrency is **deterministic rather than hopeful**: every
+/// caller reaches the ledger read's `await` before any caller can reach its `put`, so on the unfixed code
+/// *all* of them read "no record" and all of them open. And the assertion is written so that it can fail
+/// on the broken code — it is the *number of opens*, calibrated against one open's cost in this same
+/// fixture, not "the call succeeded", which is green either way.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_calls_for_one_txn_id_open_the_transaction_once() {
+    let manager = Arc::new(InMemoryStoreManager::default());
+    let fx = Arc::new(fixture(manager).await);
+
+    let legs_for = |amount: i64| -> Vec<GatewayLeg> {
+        vec![
+            GatewayLeg {
+                shard_id: shard("/root"),
+                amount,
+                to: fx.destination.clone(),
+            },
+            GatewayLeg {
+                shard_id: shard("/root/child"),
+                amount,
+                to: fx.destination.clone(),
+            },
+        ]
+    };
+
+    // What one open costs on this fixture, measured rather than assumed: a transaction with its own id
+    // prepares and commits one leg on each shard.
+    let before = fx.shard_a.height();
+    fx.gateway
+        .run(b"gw-concurrent-calibration", &legs_for(10))
+        .await
+        .expect("calibration run");
+    let one_open = fx.shard_a.height() - before;
+    assert!(
+        one_open > 0,
+        "one open must submit at least one deploy to shard A"
+    );
+
+    // Four callers, four *distinct* leg lists, released together.
+    let after_calibration = fx.shard_a.height();
+    let barrier = Arc::new(tokio::sync::Barrier::new(4));
+    let mut handles = Vec::new();
+    for amount in [30i64, 31, 32, 33] {
+        let legs = legs_for(amount);
+        let fx = Arc::clone(&fx);
+        let barrier = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            fx.gateway.run(b"gw-concurrent", &legs).await
+        }));
+    }
+    let mut records = Vec::new();
+    for handle in handles {
+        records.push(handle.await.expect("join").expect("run"));
+    }
+
+    for record in &records {
+        assert_eq!(
+            record, &records[0],
+            "every caller must converge on the transaction that was opened, not return one of its own"
+        );
+    }
+    let stored = fx
+        .ledger
+        .get(b"gw-concurrent")
+        .await
+        .unwrap()
+        .expect("a record");
+    assert_eq!(
+        stored, records[0],
+        "the durable record must be the one every caller saw"
+    );
+
+    assert_eq!(
+        fx.shard_a.height() - after_calibration,
+        one_open,
+        "four concurrent calls must not produce four phase ones — the escrow would be prepared, and \
+         possibly committed, more times than the record describes"
+    );
+}
+
 /// A gateway that restarts mid-transaction finishes it from the ledger alone.
 ///
 /// The fixture is dropped and rebuilt over the *same* ledger (an in-memory store standing in for the

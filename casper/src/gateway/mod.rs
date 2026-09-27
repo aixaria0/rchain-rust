@@ -222,6 +222,18 @@ pub struct GatewayTxn {
     coordinator: PublicKey,
     /// Per-phase wait for a deploy to be included in a block.
     phase_timeout: Duration,
+    /// One lock per `txn_id`, so two concurrent callers for the same transaction cannot both decide the
+    /// ledger holds no record for it (AUDIT C125).
+    ///
+    /// **Why a lock and not a compare-and-set.** The ledger is a plain `get`/`put` over the node's own
+    /// store, and the coordinator is one process — the register's own disposition for this finding is
+    /// that an in-process keyed mutex is sufficient, and it covers the *drive* as well as the open,
+    /// which a store-level CAS would not.
+    ///
+    /// **The entries are removed when the last holder releases one**, which is the difference from the
+    /// `MultiLock` whose never-cleaned map the register records: an operator's node sees a distinct
+    /// `txn_id` per transaction, and a lock kept per transaction forever is a map nothing prunes.
+    inflight: Arc<tokio::sync::Mutex<BTreeMap<Vec<u8>, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl GatewayTxn {
@@ -238,6 +250,7 @@ impl GatewayTxn {
             key,
             coordinator,
             phase_timeout,
+            inflight: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -257,6 +270,25 @@ impl GatewayTxn {
     /// untouched and **no participant is contacted**, so re-issuing a completed transaction cannot
     /// move funds again.
     pub async fn run(&self, txn_id: &[u8], legs: &[GatewayLeg]) -> Result<CoordRecord, String> {
+        // **One transaction at a time per `txn_id`** (AUDIT C125). Everything below decides whether to
+        // open a transaction and then drives it — a check-then-act with no serialization of its own, so
+        // two callers that both read "no record" both open one: each builds a record from *its own* leg
+        // list, each drives its own phase one, and the durable record that `recover_in_flight` trusts
+        // afterwards can describe a different transaction than the effects applied under that `txn_id`.
+        let lock = self.acquire_txn_lock(txn_id).await;
+        let held = lock.lock().await;
+        let outcome = self.run_under_lock(txn_id, legs).await;
+        drop(held);
+        self.release_txn_lock(txn_id, &lock).await;
+        outcome
+    }
+
+    /// `run`'s body, with the per-`txn_id` lock already held.
+    async fn run_under_lock(
+        &self,
+        txn_id: &[u8],
+        legs: &[GatewayLeg],
+    ) -> Result<CoordRecord, String> {
         if let Some(existing) = self.ledger.get(txn_id).await? {
             if existing.state.is_terminal() {
                 return Ok(existing);
@@ -304,9 +336,40 @@ impl GatewayTxn {
     pub async fn recover_in_flight(&self) -> Result<Vec<CoordRecord>, String> {
         let mut recovered = Vec::new();
         for record in self.ledger.in_flight().await? {
-            recovered.push(self.drive(record).await?);
+            // The same per-`txn_id` lock a client's `run` takes, because the race is the documented
+            // retry and not an exotic one: re-issuing the same `txnId` after a restart is how a client is
+            // told to resume, so this task and that retry arrive together by construction — and two
+            // drives of one in-flight record each run their own phase one with their own timeout, so one
+            // can record `Committed` while the other records `Aborted` (AUDIT C125's second half).
+            let txn_id = record.txn_id.clone();
+            let lock = self.acquire_txn_lock(&txn_id).await;
+            let held = lock.lock().await;
+            let outcome = self.drive(record).await;
+            drop(held);
+            self.release_txn_lock(&txn_id, &lock).await;
+            recovered.push(outcome?);
         }
         Ok(recovered)
+    }
+
+    /// The per-`txn_id` lock, created on first use. The map is held *while* the entry is looked up: a
+    /// get-then-insert outside the guard is the race the register records for `MultiLock`.
+    async fn acquire_txn_lock(&self, txn_id: &[u8]) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.inflight.lock().await;
+        map.entry(txn_id.to_vec())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// Drop the entry for `txn_id` when this caller is its last holder, so an operator's node does not
+    /// keep a lock per transaction it has ever seen. `strong_count == 1` means nobody else can be holding
+    /// or waiting on it — a caller that has the handle holds a clone — and the check runs under the map's
+    /// own lock, so a caller cannot be about to acquire the handle while the entry is removed.
+    async fn release_txn_lock(&self, txn_id: &[u8], lock: &Arc<tokio::sync::Mutex<()>>) {
+        let mut map = self.inflight.lock().await;
+        if Arc::strong_count(lock) == 1 {
+            map.remove(txn_id);
+        }
     }
 
     /// Drive a record to a terminal state: prepare the legs that have no vote, write the decision,
