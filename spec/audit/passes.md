@@ -3431,6 +3431,24 @@ port against the **reference document** rather than against itself.
   a session that has already moved five crates, is worse than naming it, and the `owes` cell now
   carries that so the row stays open for the right reason rather than being closed for a tidy one.
 
+  **Refuted the same day, and the third point above is where this re-examination was wrong.** A second
+  session read `LfsBlockRequester.scala` itself instead of taking the account's figures, and found
+  that **the oracle's cutoff is inert**: `lowerBound` is declared `Long = 0` at `:125` and the only
+  construction of the requester's state in the tree (`:318`, inside `stream()`) never passes it, so
+  `minimumHeight` is `0` for the whole sync and both of the oracle's gates are vacuously true.
+  `blockHeightsBeforeFringe` is not a bound at all — it is `extraHeights`, `deployLifespan`, appearing
+  only as `max(0, min(height - 1, lowerBound) - extraHeights)`, which *reduces* the bound and so
+  lengthens the walk. **Both trees walk the full ancestry to genesis, and the port is faithful.** So
+  the "~50 blocks" figure this row repeated through two sessions — and that this re-examination
+  repeated too — described a cutoff the oracle never applies; the `lowerBound` machinery is exercised
+  only by `LfsBlockRequesterStateSpec`, which passes `lowerBound = 200` itself. **What survives from
+  above:** point (1), the latency measurement, and point (2), that `dag.insert` requires the ancestry
+  — which is *why* the full walk is the faithful shape rather than a deviation to fix. What does not
+  survive is point (3) and the whole remedy: there was never a bound to adopt. The lesson is the
+  register's own and it caught the register: a figure repeated in an account is not a reading of the
+  oracle, and this row was planned against one for two sessions. C64 is `done` — refuted, not fixed —
+  and C94's row and the §6 deviation note were corrected with it.
+
 
 - **C65 — the block store's side of LFS sync swallowed two failures the oracle propagates, so a
   transient store error became a permanently missing block** (found 2026-09-24 by the Phase-0 sweep,
