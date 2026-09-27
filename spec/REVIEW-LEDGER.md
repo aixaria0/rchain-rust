@@ -34,7 +34,7 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 | `class` | 6 | 6 | 0 | 0 | 0 | 0 | 6 | 0 | 0 |
 | `process` | 30 | 30 | 0 | 0 | 0 | 0 | 30 | 0 | 0 |
 | `config` | 104 | 104 | 1 | 1 | 0 | 0 | 103 | 0 | 0 |
-| `tool` | 22 | 22 | 3 | 3 | 0 | 0 | 19 | 0 | 0 |
+| `tool` | 22 | 22 | 4 | 4 | 0 | 0 | 18 | 0 | 0 |
 | `roster` | — | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 
 **What the columns mean, so the table is read the way it was written.** The first column is the derived
@@ -57,7 +57,7 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 |---|---:|---:|---:|---:|---:|
 | T1 | 69 | 49 | 20 | 0 | 0 |
 | T2 | 21 | 3 | 18 | 0 | 0 |
-| T3 | 527 | 19 | 508 | 0 | 0 |
+| T3 | 527 | 20 | 507 | 0 | 0 |
 
 **527 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
 files the register has already tiered, the tier above is *derived* from that table — a judgement
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at 5ee8155be.*
+*Emitted from a tree at 2388df70b.*
