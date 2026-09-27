@@ -34,6 +34,23 @@ PROBES=0
 
 die() { printf 'audit-instruments: %s\n' "$1" >&2; exit 2; }
 
+# **A linked worktree, not the primary checkout.** The restore is a whole-file write from a snapshot
+# taken *before* the probe ran, and there is no check of any kind in between — so a file another
+# session edits during the run is not "reverted", it is overwritten with stale content. That happened:
+# this harness rewrote a `spec/TEST-COVERAGE.md` row another session had just added, twice, and its
+# probe plants showed up as that session's red gates for the length of the run.
+#
+# No amount of care in `restore_all` fixes this — backup-and-restore cannot be made safe against a
+# concurrent writer. It can only be *confined* to a tree nobody else is writing, which is what this
+# guard does. `git rev-parse --git-dir` equals `--git-common-dir` in the primary checkout and differs
+# in a linked one. The flag is for a tree you genuinely own alone; it is not a formality to pass
+# reflexively, and passing it restores exactly the behaviour this guard exists to prevent.
+PRIMARY_OK=0
+for arg in "$@"; do [[ "$arg" == "--shared-tree-ok" ]] && PRIMARY_OK=1; done
+if [[ "$PRIMARY_OK" == "0" && "$(git rev-parse --git-dir 2>/dev/null)" == "$(git rev-parse --git-common-dir 2>/dev/null)" ]]; then
+  die "this is the primary checkout; the probes edit tracked files under other sessions' feet. Run from a linked worktree (git worktree add --detach <path> HEAD), or pass --shared-tree-ok if the tree is yours alone"
+fi
+
 # The probes edit tracked files, so a *modified* tracked file makes the restore ambiguous — and a
 # probe that cannot restore is worse than no probe, because it leaves a planted defect behind.
 # Untracked files are fine: a probe cannot corrupt what it does not back up, and refusing on them
