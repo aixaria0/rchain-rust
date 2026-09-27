@@ -1835,6 +1835,53 @@ mod tests {
         assert_eq!(out.par.exprs, vec![Expr::GInt(42)]);
     }
 
+    /// **Law 36 — the walk's output is closed, through every path that binds.** For a closed source
+    /// term the normalizer's output must carry **no free variable**: every construct that introduces a
+    /// scope — `new`, a receive's binds, a match's pattern, a collection's remainder — has to close
+    /// what it binds, or the term handed to the reducer holds a reference to a binder that is not
+    /// there. One term per construct, deliberately: a walk can be right on the `new` path and wrong on
+    /// the pattern one, and a witness that exercised only sends would say nothing about either.
+    ///
+    /// This is law 6 (`is_closed`) carried through the normalizer rather than stated of it: the row's
+    /// claim is that the walk is closed-preserving, so the assertion is the predicate, not a spot
+    /// check of one field.
+    #[test]
+    fn law36_normalization_preserves_closedness() {
+        for source in [
+            "Nil",
+            "new x in { x!(1) }",
+            "new x in { x!(1) | for (y <- x) { Nil } }",
+            "new x in { contract x(a) = { Nil } }",
+            "new x in { x!([1, 2, 3]) }",
+            "new x in { x!({\"a\": 1, \"b\": 2}) }",
+            "new x, y in { x!(1) | y!(2) }",
+            "new x in { match 1 { 1 => { Nil } } }",
+        ] {
+            let p = source_to_ast(source).unwrap_or_else(|e| panic!("{source:?} parses: {e}"));
+            let out = normalize_proc(
+                &p,
+                ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: crate::compiler::BoundMapChain::empty(),
+                    free_map: FreeMap::empty(),
+                    env: BTreeMap::new(),
+                },
+            )
+            .unwrap_or_else(|e| panic!("{source:?} normalizes: {e}"));
+            assert!(
+                rchain_models::types::is_closed(&out.par),
+                "{source:?} normalized to a par holding a free variable: {:?}",
+                out.par
+            );
+            assert_eq!(
+                out.free_map.count(),
+                0,
+                "{source:?} normalized with {} free variable(s) recorded",
+                out.free_map.count()
+            );
+        }
+    }
+
     #[test]
     fn binary_arith_normalizes() {
         let p = Proc::PAdd(
