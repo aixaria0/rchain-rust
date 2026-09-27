@@ -37,6 +37,21 @@ jobs:
         # moment is a visible diff rather than somebody's memory.)
         run: tools/audit-test-register.sh
 
+      - name: Vendored-source gate
+        # The blessed contracts under `casper/src/genesis/resources/` are the **oracle's own source
+        # text**, vendored and compiled in with `include_str!`, so an edit to one is a specification
+        # change wearing a comment's clothes: the contract still parses, still installs, still passes
+        # its tests, and nothing records that the text is no longer the oracle's. Two such edits had
+        # already happened and both were found by hand — by diffing the tree against `legacy/` while
+        # reading for something else — which is why this is a script.
+        #
+        # It lives here rather than in `check-lean` because it is a static audit of the tree and not a
+        # build of the specification. Until now it was invoked only by the `Makefile`'s
+        # `check-register` target, and **CI never runs the Makefile** — so the gate existed, passed,
+        # and could not fail anyone. `tools/audit-instruments.sh` reported exactly that, and its
+        # check is the reason this step is here rather than in a note.
+        run: tools/audit-vendored-sources.sh
+
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
