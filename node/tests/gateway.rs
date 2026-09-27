@@ -191,8 +191,12 @@ fn gateway_node_coordinates_a_two_shard_transaction() {
         assert_eq!(replayed, record, "a re-run returns the same record");
 
         // Nothing is left in flight.
-        let in_flight =
-            poll_json(&client, &format!("{admin_base}/api/v1/txn"), "in-flight list").await;
+        let in_flight = poll_json(
+            &client,
+            &format!("{admin_base}/api/v1/txn"),
+            "in-flight list",
+        )
+        .await;
         assert_eq!(in_flight["inFlight"].as_array().unwrap().len(), 0);
 
         node.shutdown();

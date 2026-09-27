@@ -502,11 +502,7 @@ pub async fn block_summary(
 /// after the one function that consumes it costs nothing and shifts no anchor, so a later pass reading
 /// the law register's citations finds them where they were written.
 pub fn deploy_signatures(b: &BlockMessage) -> BlockStatus {
-    if b.state
-        .deploys
-        .iter()
-        .all(|d| d.deploy.verify_signature())
-    {
+    if b.state.deploys.iter().all(|d| d.deploy.verify_signature()) {
         BlockStatus::Valid
     } else {
         BlockStatus::InvalidDeploySignature

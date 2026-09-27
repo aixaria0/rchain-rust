@@ -857,7 +857,8 @@ mod tests {
     /// An in-flight record must stay writable at the cap, or `recover_in_flight` could not drive a
     /// crashed transaction to a terminal state — which is the whole reason the record is durable.
     #[tokio::test]
-    async fn the_ledger_refuses_a_new_transaction_at_its_cap_but_still_finishes_the_ones_it_holds() {
+    async fn the_ledger_refuses_a_new_transaction_at_its_cap_but_still_finishes_the_ones_it_holds()
+    {
         let manager = rchain_shared::store_manager::InMemoryStoreManager::default();
         let ledger = TxnLedger::open(&manager).await.expect("open ledger");
 
