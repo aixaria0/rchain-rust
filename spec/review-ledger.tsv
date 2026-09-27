@@ -541,9 +541,9 @@ law	25	T1	finding	deep	-	-	rholang/src/reduce.rs:set_effect_mode C151	-	the decl
 law	26a	T3	deferred	-	-	-	-	-	-
 law	26b	T3	deferred	-	-	-	-	-	-
 law	26c	T3	deferred	-	-	-	-	-	-
-law	27	T3	deferred	-	-	-	-	-	-
+law	27	T1	finding	deep	-	-	casper/src/txn_coordinator.rs:decision_is_deterministic C153	-	the same three-file column change as C152 is owed for a different row: the declared Rust witnesses are the two end-to-end 2PC integration tests, and deleting the `!self.legs.is_empty()` conjunct from `decision_is_deterministic` leaves both green while reddening `law27_a_legless_record_cannot_commit` — a test that puts the law number in its own name and that no register field mentions. Scope: one guard of the row's several was mutated; the abort-prevents-commit and votes-agree witnesses were not independently deleted
 law	28	T1	cleared	deep	-	-	rholang/src/native_state.rs:txn_prepare	-	mutation sweep: the row has TWO independent guards — an explicit balance comparison and the NonNegI64 refinement — and removing either alone leaves the witness GREEN because the other still refuses. Removing both makes it FAIL. Single-site mutation cannot fail this witness and that is correct behaviour, not weakness: the overdraw is genuinely still rejected. Verified by removing both
-law	29	T3	deferred	-	-	-	-	-	-
+law	29	T1	cleared	deep	-	-	casper/src/gateway/ledger.rs:record_vote	-	mutation sweep: making the terminal guard in `record_vote` never fire (`if self.state.is_terminal()` → `if false`), so a decided record accepts further votes, turned the declared witness `law29_a_terminal_record_never_changes_again` FAILED. Scope: the absorbing-state guard was deleted; the legless guard in `decision_is_deterministic` was mutated separately under law 27 and did not affect this witness
 law	3	T1	finding	deep	-	-	rholang/src/property_tests.rs:law3_substituting_a_closed_value_keeps_the_term_closed C138	-	both named witnesses survive a substitution that does nothing, so the row's evidence is vacuous; four tests it does not name catch the mutation, and none of them is named by any law row
 law	30	T3	deferred	-	-	-	-	-	-
 law	31	T3	deferred	-	-	-	-	-	-
