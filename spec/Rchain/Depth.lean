@@ -254,4 +254,212 @@ def pairsDepth : Nat → Par
   | 0 => Par.mk [] [] [] [] [] [] [] []
   | n + 1 => Par.mk [] [] [] [.etuple [pairsDepth n]] [] [] [] []
 
+/-! ## The walk — `parDepth` as a refusal test
+
+`rholang/src/parser.rs::exceeds_ast_depth` is an **iterative, early-exiting traversal**: it starts the
+root at depth `1`, returns `true` the moment a node's depth exceeds the limit, and otherwise pushes its
+children one level deeper. It cannot be written recursively on the node, because the depth is the very
+thing a recursive walk does not survive — so the two directions law 50 owes are *not* `rfl`, and the
+walk has to be a recursion of its own (`Rchain/Laws.lean` records the alternative as law 22's vacuity:
+a walk defined as `decide (limit < parDepth p)` would make both directions trivial and prove nothing).
+
+`walkPar` below is the same test as a **structurally-recursive descent with a budget**, so that it *can*
+be reasoned about: a node with budget `0` is already too deep (its own depth is `1`), and a node with
+budget `n + 1` is too deep exactly when one of its children is too deep at budget `n`. That is the
+iterative walk's `d > limit` / `push children at d + 1`, read from the limit down instead of from the
+root up.
+
+`walkPar_iff_parDepth` is the obligation: `walkPar n p = false ↔ parDepth p ≤ n` — soundness in the
+`→` direction (a term the walk accepts is never deeper than the budget) and completeness in the `←`
+(the walk is not refusing by accident).
+
+**The heartbeat budget** is stated rather than hit by accident: the walk's termination goals are
+`sizeOf` comparisons over mutually-defined inductives, and `simp_wf` unfolds enough of the size table
+for the default 200,000 to expire on the list arms. The goals themselves are one-line arithmetic
+(`sizeOf a < 1 + sizeOf a + sizeOf as`); it is the unfolding that costs. -/
+set_option maxHeartbeats 1000000 in
+mutual
+  def walkPar : Nat → Par → Bool
+    | 0, _ => true
+    | n + 1, Par.mk s r nw e m u b c =>
+        walkListSend n s || walkListReceive n r || walkListNew n nw || walkListExpr n e ||
+        walkListMatch n m || walkListGUnforgeable n u || walkListBundle n b ||
+        walkListConnective n c
+  termination_by _ x => sizeOf x
+
+  def walkSend : Nat → Send → Bool
+    | 0, _ => true
+    | n + 1, Send.mk c d _ => walkPar n c || walkListPar n d
+  termination_by _ x => sizeOf x
+
+  def walkReceiveBind : Nat → ReceiveBind → Bool
+    | 0, _ => true
+    | n + 1, ReceiveBind.mk ps s _ => walkListPar n ps || walkPar n s
+  termination_by _ x => sizeOf x
+
+  def walkReceive : Nat → Receive → Bool
+    | 0, _ => true
+    | n + 1, Receive.mk bs b _ _ => walkListReceiveBind n bs || walkPar n b
+  termination_by _ x => sizeOf x
+
+  def walkNew : Nat → New → Bool
+    | 0, _ => true
+    | n + 1, New.mk _ b => walkPar n b
+  termination_by _ x => sizeOf x
+
+  def walkMatchCase : Nat → MatchCase → Bool
+    | 0, _ => true
+    | n + 1, MatchCase.mk p s _ => walkPar n p || walkPar n s
+  termination_by _ x => sizeOf x
+
+  def walkMatch : Nat → Match → Bool
+    | 0, _ => true
+    | n + 1, Match.mk t cs => walkPar n t || walkListMatchCase n cs
+  termination_by _ x => sizeOf x
+
+  def walkExpr : Nat → Expr → Bool
+    | 0, _ => true
+    | _ + 1, Expr.ground _ => false
+    | _ + 1, Expr.evar _ => false
+    | _ + 1, Expr.ebigint _ => false
+    | n + 1, Expr.eneg p => walkPar n p
+    | n + 1, Expr.enot p => walkPar n p
+    | n + 1, Expr.eplus p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eminus p q => walkPar n p || walkPar n q
+    | n + 1, Expr.emult p q => walkPar n p || walkPar n q
+    | n + 1, Expr.ediv p q => walkPar n p || walkPar n q
+    | n + 1, Expr.emod p q => walkPar n p || walkPar n q
+    | n + 1, Expr.elt p q => walkPar n p || walkPar n q
+    | n + 1, Expr.ele p q => walkPar n p || walkPar n q
+    | n + 1, Expr.egt p q => walkPar n p || walkPar n q
+    | n + 1, Expr.ege p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eeq p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eneq p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eand p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eor p q => walkPar n p || walkPar n q
+    | n + 1, Expr.ematches p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eshortand p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eshortor p q => walkPar n p || walkPar n q
+    | n + 1, Expr.elist ps _ => walkListPar n ps
+    | n + 1, Expr.etuple ps => walkListPar n ps
+    | n + 1, Expr.eset ps _ => walkListPar n ps
+    | n + 1, Expr.emap kvs _ => walkListPair n kvs
+    | n + 1, Expr.emethod _ p args => walkPar n p || walkListPar n args
+    | n + 1, Expr.epercentPercent p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eplusPlus p q => walkPar n p || walkPar n q
+    | n + 1, Expr.eminusMinus p q => walkPar n p || walkPar n q
+  termination_by _ x => sizeOf x
+  -- A two-`Par` arm leaves `sizeOf p < 1 + sizeOf p + sizeOf q`, which the default tactic does not
+  -- discharge: it is true but needs arithmetic on `sizeOf q ≥ 0`, not structural comparison.
+
+  def walkBundle : Nat → Bundle → Bool
+    | 0, _ => true
+    | n + 1, Bundle.mk p _ _ => walkPar n p
+  termination_by _ x => sizeOf x
+
+  def walkGUnforgeable : Nat → GUnforgeable → Bool
+    | 0, _ => true
+    | _ + 1, _ => false
+
+  def walkConnective : Nat → Connective → Bool
+    | 0, _ => true
+    | n + 1, Connective.connAnd ps => walkListPar n ps
+    | n + 1, Connective.connOr ps => walkListPar n ps
+    | n + 1, Connective.connNot p => walkPar n p
+    | _ + 1, Connective.connVarRef _ _ => false
+  termination_by _ x => sizeOf x
+
+  def walkListPar : Nat → List Par → Bool
+    | _, [] => false
+    | n, a :: as => walkPar n a || walkListPar n as
+  termination_by _ x => sizeOf x
+
+  def walkListPair : Nat → List (Par × Par) → Bool
+    | _, [] => false
+    | n, (a, b) :: as => walkPar n a || walkPar n b || walkListPair n as
+  termination_by _ x => sizeOf x
+
+  def walkListSend : Nat → List Send → Bool
+    | _, [] => false
+    | n, a :: as => walkSend n a || walkListSend n as
+  termination_by _ x => sizeOf x
+
+  def walkListReceive : Nat → List Receive → Bool
+    | _, [] => false
+    | n, a :: as => walkReceive n a || walkListReceive n as
+  termination_by _ x => sizeOf x
+
+  def walkListReceiveBind : Nat → List ReceiveBind → Bool
+    | _, [] => false
+    | n, a :: as => walkReceiveBind n a || walkListReceiveBind n as
+  termination_by _ x => sizeOf x
+
+  def walkListNew : Nat → List New → Bool
+    | _, [] => false
+    | n, a :: as => walkNew n a || walkListNew n as
+  termination_by _ x => sizeOf x
+
+  def walkListMatch : Nat → List Match → Bool
+    | _, [] => false
+    | n, a :: as => walkMatch n a || walkListMatch n as
+  termination_by _ x => sizeOf x
+
+  def walkListMatchCase : Nat → List MatchCase → Bool
+    | _, [] => false
+    | n, a :: as => walkMatchCase n a || walkListMatchCase n as
+  termination_by _ x => sizeOf x
+
+  def walkListExpr : Nat → List Expr → Bool
+    | _, [] => false
+    | n, a :: as => walkExpr n a || walkListExpr n as
+  termination_by _ x => sizeOf x
+
+  def walkListBundle : Nat → List Bundle → Bool
+    | _, [] => false
+    | n, a :: as => walkBundle n a || walkListBundle n as
+  termination_by _ x => sizeOf x
+
+  def walkListGUnforgeable : Nat → List GUnforgeable → Bool
+    | _, [] => false
+    | n, a :: as => walkGUnforgeable n a || walkListGUnforgeable n as
+  termination_by _ x => sizeOf x
+
+  def walkListConnective : Nat → List Connective → Bool
+    | _, [] => false
+    | n, a :: as => walkConnective n a || walkListConnective n as
+  termination_by _ x => sizeOf x
+end
+
+/-- The node's own walk, as the parser applies it: `rholang/src/parser.rs::exceeds_ast_depth root limit`.
+The budget is the limit, so `walkExceeds limit p = false` is the parser's acceptance. -/
+def walkExceeds (limit : Nat) (p : Par) : Bool := walkPar limit p
+
+
+/-! ## What is discharged, and what is not
+
+The walk above is **defined** — an independent recursion, as law 50's row requires, so that the two
+directions are not `rfl`. The **proof** that it agrees with `parDepth` is still owed, and the row
+remains `owed` for it:
+
+  * `walkPar n p = false → parDepth p ≤ n` — soundness, the direction that matters; and
+  * `parDepth p ≤ n → walkPar n p = false` — completeness.
+
+The shape is `Rchain/FreeVars.lean`'s mutual theorem block, and the attempt that stopped here
+established three things a next pass should not have to rediscover:
+
+  1. **The arithmetic step works**, and it is `Nat.succ_le_succ_iff` → `Nat.add_comm 1` →
+     `Nat.add_le_add_iff_right` → `Nat.max_le`, turning `1 + max A B ≤ m + 1` into `A ≤ m ∧ B ≤ m`
+     against the walk's `Bool.or_eq_false_iff` chain. `and_assoc` is needed as well: `parDepth`'s
+     eight-way `max` nests to the right and the `||` chain to the left.
+  2. **`termination_by` on a *theorem* block needs equation-style bodies** (`| Par.mk .. => by`), not
+     `cases … with` — a tactic-mode body binds no arguments as far as the clause is concerned, and a
+     `mutual` member with an unused clause makes Lean report the whole block non-recursive.
+  3. **The two multi-constructor types need per-constructor arms**, and the list members need
+     `decreasing_by all_goals (simp only [List.cons.sizeOf_spec]; omega)` — `sizeOf (a :: as)` has to
+     be reduced before the arithmetic is visible, and `simp_wf` alone does not do it.
+
+Those three are the whole of what a finished proof adds; nothing about the statement is in doubt.
+-/
+
+
 end Rchain

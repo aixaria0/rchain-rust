@@ -2424,7 +2424,8 @@ def laws : List Law := [
       (the normalizer, the sorter, `well_scoped`, the evaluator, the matcher, the printer) recurses \
       deeper than the bound, on a stack the bound was measured against",
     status := .owed,
-    declarations := [`Rchain.parDepth, `Rchain.maxAstDepth, `Rchain.notsDepth],
+    declarations := [`Rchain.parDepth, `Rchain.maxAstDepth, `Rchain.notsDepth,
+                     `Rchain.walkPar, `Rchain.walkExceeds],
     rust := ["rholang/src/parser.rs"],
     rustWitness := [
       "rholang/src/parser.rs:rejects_a_deep_ast_that_stays_inside_both_component_guards",
@@ -2438,7 +2439,11 @@ def laws : List Law := [
       (completeness: the refusal is not accidental). The witness for a mutation is `notsDepth`: a \
       mutation that drops one arm of the walk's children function must make soundness false at \
       `notsDepth 768` (`a_dropped_arm_breaks_soundness`), and a walk that could not be broken that way \
-      would be a restatement of the definition rather than a check of it — the vacuity law 22 records",
+      would be a restatement of the definition rather than a check of it — the vacuity law 22 records. \
+      **The walk itself is defined now** (2026-09-27): `walkPar`/`walkExceeds` in `Rchain/Depth.lean` \
+      are that independent recursion — a budget-decrementing descent mirroring \
+      `exceeds_ast_depth`'s `d > limit` loop — so what this row still owes is the *agreement*, not the \
+      mechanism",
     note := "**`owed`, and the reason is a measurement rather than an unfinished proof** (2026-09-26, \
       AUDIT C99). The parser's older guards bound two *shapes* and compose into nothing: \
       `MAX_PARSE_DEPTH` bounds the parser's recursion, and a flat chain is built by a loop — bounded \
