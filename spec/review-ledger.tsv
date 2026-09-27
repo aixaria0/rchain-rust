@@ -515,7 +515,7 @@ ingress	p2p:grpc_kademlia_rpc_server:send_ping	T3	deferred	-	-	-	-	-	-
 ingress	p2p:grpc_transport_receiver:send	T3	deferred	-	-	-	-	-	-
 ingress	p2p:grpc_transport_receiver:stream	T3	deferred	-	-	-	-	-	-
 law	10	T1	cleared	deep	-	-	rspace/src/history/radix_tree.rs:hash_node	-	mutation sweep: making every node hash alike made this witness FAIL (loudly, at the tree's own internal assertion), so it catches a degenerate mechanism and not merely a structural property. The tree's child maps are BTreeMaps, so order-independence is also structural; the mutation shows the test is not resting on that alone
-law	11	T3	deferred	-	-	-	-	-	-
+law	11	T1	finding	deep	-	-	rspace/src/replay_rspace.rs:check_replay_data C152	-	the row's declared Rust witness cannot fail on this mechanism while its own `falsifiable` prose names the two tests that can: neutering `check_replay_data` to `Ok` unconditionally (`if data.is_empty()` → `if true`) leaves `law11_a_replayed_script_matches_its_recording` GREEN and reddens `a_rig_whose_comm_never_happens_is_reported` (3 passed, 1 failed), which no row names. Cause: the checker reports only rigged events the replay never produced, never missing ones, so the failing shape needs a rig that expects an absent match — the property test replays a script against its own recording and cannot build that. Owed: the two side tests belong in `laws.tsv`/`Laws.lean`/`LAWS.md` column 14, as a three-file change
 law	12	T3	deferred	-	-	-	-	-	-
 law	13	T3	deferred	-	-	-	-	-	-
 law	14a	T3	deferred	-	-	-	-	-	-
