@@ -4201,6 +4201,24 @@ remotely.
   process serving two shards, driven over HTTP — which is stronger than a unit double and still not a
   *network*: nothing here shows a byzantine proposer being refused by a peer that is actually bonded to
   it. That remains the shape neither critical's evidence reaches.
+  **Run 2026-09-28 on a live two-validator devnet (`tools/devnet.sh up --validators 2 --fresh`),
+  and it reaches half of the shape.** The validators are **bonded** — each reports `peers = 1,
+  nodes = 1` over `/api/status` — and against that network the unauthenticated transaction route is
+  **absent from the public surface**: `POST /api/v1/txn` answers `404` on both nodes' public
+  listeners. That the two routers genuinely differ is shown by a control pair on the *same running
+  nodes* rather than asserted: `/api/v1/propose` answers `400` on the **admin** port and `404` on the
+  public one, while `/api/status` answers on the public port and `404`s on the admin one. So C121's
+  boundary is now demonstrated against a network, not against a double.
+  **What it does not reach, stated rather than implied.** With `api-server.enable-txn-api = true` the
+  route still answers `404`, because `gateway_or_not_found` requires a *gateway* as well and a
+  single-shard node has none — so the probe shows "this node does not serve transactions", not a live
+  refusal of an *actual* spend, which needs a gateway-shaped node. And the admin bind's loopback
+  default is **not** observable this way: the devnet image publishes the admin port, so it is
+  host-reachable with and without `--dev-mode`. That default stays pinned where it was, by
+  `admin_bind_host`'s own unit test (C112/C132). **C120 is untouched by this run and needs a different
+  instrument**: driving it live means a node that *proposes* a block whose `ProcessedDeploy` names a
+  victim's `deployer` — a deliberately byzantine binary, built and bonded to an honest peer. That is a
+  patched image rather than a probe, and it remains the shape neither critical's evidence reaches.
 - **The instrument findings (C124, C125, C126, C128, C129) were each demonstrated with a probe in an
   isolated worktree**, with a control pair where one was available — and every probe was removed. The
   probes are reproduced in the rows because a gate defect is only credible as a shown gate defect.
