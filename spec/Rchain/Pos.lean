@@ -114,12 +114,23 @@ theorem sum_rewards_le_pot (pot minimumBond activeBonds : Nat) (bonds : List Nat
     _ = pot := Nat.mul_div_cancel _ hD
 
 /-- **The inequality is strict, so it is not an accounting identity in disguise.** `minimumBond = 3`,
-bonds `[4, 5]`: the normaliser is `9 / 3 = 3`, each validator's scaled share is `4/3 = 1` and `5/3 = 1`,
-so with a pot of ten each is paid `10 * 1 / 3 = 3` and the epoch distributes **6 of 10** — four units of
-dust, which is the whole content of law 46. A statement that said `Σ = pot` would be refuted by this
-line. -/
+bonds `[4, 8]`: the normaliser is `12 / 3 = 4`, and the validators' scaled shares are `4/3 = 1` and
+`8/3 = 2`, so with a pot of ten they are paid `10 * 1 / 4 = 2` and `10 * 2 / 4 = 5` and the epoch
+distributes **7 of 10** — three units of dust, which is the whole content of law 46. A statement that
+said `Σ = pot` would be refuted by this line.
+
+**And the shares must differ, which is the only reason the bonds above are 4 and 8** (AUDIT C149). This
+witness used to bond `[4, 5]`, where `4/3 = 5/3 = 1`: the proportionality factor `bond / minimumBond`
+was the identity for *every* validator in the instance, so a `reward` that dropped the factor entirely —
+paying each active validator `pot / (activeBonds / minimumBond)` — satisfied this line exactly as the
+real one did, and the module's Rust twin with it. The comment that stood here *stated* that collapse as
+the evidence of strictness ("each validator's scaled share is `4/3 = 1` and `5/3 = 1`"), which is the
+part worth keeping: a fixture whose parameters make the term under test the identity cannot witness that
+term, however exact the assertion about it is, and reasoning carefully about the arithmetic does not
+prevent it — this one was reasoned about. `8/3 = 2` is the smallest change that breaks the tie and keeps
+the dust strict. -/
 theorem the_dust_is_real :
-    reward 10 3 9 4 + reward 10 3 9 5 = 6 ∧ (6 : Nat) < 10 := by decide
+    reward 10 3 12 4 + reward 10 3 12 8 = 7 ∧ (7 : Nat) < 10 := by decide
 
 end Rchain
 

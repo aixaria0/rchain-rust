@@ -993,7 +993,7 @@ def laws : List Law := [
       rather than axioms**, because resolving an id back to a value needs uniqueness and a finite \
       descent. **And the descent is *enforced* rather than assumed** (H1b, `46c35b545`): `blockNumber` \
       refuses a block that names a resolved parent at or above its own number, the **failed** ones \
-      included (`casper/src/validate.rs:152-154`), so `Descends` holds of **every state the port \
+      included (`casper/src/validate.rs:222-226`), so `Descends` holds of **every state the port \
       admits** — where the reference validator, which filters failed parents out of its own \
       `blockNumber`, admits the violating block, the §6 deviation AUDIT C83 carries. The earlier plan \
       to weaken this to *unfailed* parents is therefore **superseded**: a weakened `Descends` forces \
@@ -1022,9 +1022,9 @@ def laws : List Law := [
       second distinct block by one sender reusing a `seq_num`, **before any partial write** \
       (`casper/src/dag.rs:244-252`, test `insert_rejects_equivocation_same_seq_num` at `:568`); \
       `sequence_number` requires a block to justify a same-sender block exactly one `seq_num` lower \
-      (`casper/src/validate.rs:169-188`, test `sequence_number_must_be_creator_latest_plus_one` at \
-      `:629`); and `check_justification_regression` admits at most one justification per sender and \
-      demands that it be the latest (`casper/src/validate.rs:205-241`). **Why the port refuses it, and \
+      (`casper/src/validate.rs:241-258`, test `sequence_number_must_be_creator_latest_plus_one` at \
+      `:813`); and `check_justification_regression` admits at most one justification per sender and \
+      demands that it be the latest (`casper/src/validate.rs:263-275`). **Why the port refuses it, and \
       why that refusal is a deviation the oracle does not share, is AUDIT C84** — the Scala has no \
       equivocation gate anywhere and its `validateDagState` checks only height contiguity, so the \
       premise this proof needs is **guaranteed here and only observed there**. H-1 landed **2026-08-20** \
@@ -1115,7 +1115,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.block_number_rejects, `Rchain.block_number_universal_is_false],
     falsifiable := some "`block_number_rejects` is the case the port returns `InvalidBlockNumber` for \
-      (`validate.rs:160-164`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
+      (`validate.rs:232-236`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
       falsifiable on its own: a block with no live justification must be numbered `0`, so a model that \
       folded a maximum from `0` would demand `1` and reject the genesis-shaped case. And \
       `block_number_universal_is_false` exhibits the refutation of the axiom that stood here — which \
@@ -1123,7 +1123,7 @@ def laws : List Law := [
     note := "**the axiom was false, not merely unproven**: it quantified over every `Block`, and a \
       `Block` is freely constructed, so one line refutes it (`block_number_universal_is_false`). The law \
       is re-scoped to the check the code has — a fold over the block's justifications, skipping the \
-      failed ones and seeded `-1` (`validate.rs:145-159`) — and the proof is that predicate's \
+      failed ones and seeded `-1` (`validate.rs:218-230`) — and the proof is that predicate's \
       elimination, which is the honest shape: the port enforces this by *refusing blocks*, not by \
       maintaining an invariant it states. The model's `Block` carries `justifications` because the check \
       reads them; the `parents : List Nat` field this row's model used does not exist in the port" },
@@ -1140,7 +1140,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.seq_num_universal_is_false, `Rchain.seq_num_strictly_increases],
     falsifiable := some "a block whose `seqNum` skips or repeats the sender's latest justification is \
-      rejected (`InvalidSequenceNumber`, `validate.rs:183-187`), and the `-1` seed is a case of its own: \
+      rejected (`InvalidSequenceNumber`, `validate.rs:255-258`), and the `-1` seed is a case of its own: \
       a sender's first block must be `0`. `seq_num_universal_is_false` is the published refutation of \
       the axiom this replaces — and it refutes it **for a single sender**, which is why the re-scoping \
       is the justification relation and not the sender relation",
@@ -1148,7 +1148,7 @@ def laws : List Law := [
       the diagnosis in the row it replaces — \"the sender relation is missing\" — was wrong: a same-sender \
       pair with a non-consecutive `seqNum` refutes it just as well \
       (`seq_num_universal_is_false`). What the check folds over is the block's justifications **whose \
-      sender matches**, against their maximum (`validate.rs:169-188`); the law is re-scoped to that, and \
+      sender matches**, against their maximum (`validate.rs:241-258`); the law is re-scoped to that, and \
       the proof is the predicate's elimination. The old model also carried a `seqNum`-ordering axiom over \
       any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
@@ -1415,7 +1415,7 @@ def laws : List Law := [
       is claimed — the code has none to claim, so `mergeRandom_assoc` went with the commutativity. Law \
       17's RNG clause duplicated this one and is merged into it. **The types were retyped to mirror the \
       code's**: `Msg`/`Hash` are byte strings rather than opaque `Nat` wrappers, and the 32-byte width \
-      is `blake2b256_output_is_32_bytes` (`Hash32`, `shared/src/refined.rs:287-296`) — which is what \
+      is `blake2b256_output_is_32_bytes` (`Hash32`, `shared/src/refined.rs:302-311`) — which is what \
       lets Law 7's and Law 10's models be built out of hashes instead of guessed numbers. **And the \
       nine are not all load-bearing — measured 2026-09-25** with `Lean.collectAxioms` over every \
       declaration the register names: `blake2b256` is used by 7 of them (the block hash, the Merkle \
@@ -1615,17 +1615,17 @@ def laws : List Law := [
       witness that the row's original identity is **false** — `shardChild \"\" \"x\"` is `/x`, valid, \
       while `\"\"` is not",
     note := "**the order is derived, so the model needs no instance of its own** (2026-09-24): \
-      `shared/src/refined.rs:372` is \
+      `shared/src/refined.rs:387` is \
       `#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] pub struct ShardId(String)` — the \
       lexicographic order on the id string, which `child`'s prefixing makes *structurally meaningful* (a \
       shard sorts before all of its descendants, and `is_descendant_of` is the separate structural \
       predicate that agrees with it). Where the order is observable is the two `BTreeMap<ShardId, _>` \
-      sites (`casper/src/gateway/mod.rs:65`, `node/src/runtime/node_runtime.rs:862`) — deterministic \
+      sites (`casper/src/gateway/mod.rs:65`, `node/src/runtime/node_runtime.rs:893`) — deterministic \
       iteration, exactly where a silently different order would bite — and the model's `ShardId` *is* a \
       `String`, so `decide` and `omega` see the same order the port derives. **And the witness this row \
       carried needed correcting, which is the part worth keeping**: `validShardId (s.child n) = \
       validShardId s` is **false in both directions** — the port's `child` constructs the newtype \
-      **directly** (`refined.rs:382-386`), bypassing `TryFrom`, so a non-ASCII name yields an id \
+      **directly** (`refined.rs:397-401`), bypassing `TryFrom`, so a non-ASCII name yields an id \
       `TryFrom` would have refused; and an invalid parent can have a valid child \
       (`shardChild \"\" \"x\" = \"/x\"`). What holds instead is the characterisation in \
       `validShardId_child`: given a **valid** parent, the child is valid exactly when the name is ASCII. \
@@ -1715,23 +1715,23 @@ def laws : List Law := [
     witness := [`Rchain.commit_after_abort_is_an_error, `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft, `Rchain.txnPrepare_idempotent],
     falsifiable := some "the negatives are the witnesses: a second `prepare` that re-escrowed would fail \
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
-      `txn_prepare`/`txn_commit` (`native_state.rs:1333-1397`, `txn_prepare` at `:1333` and \
-      `txn_commit` at `:1366`; the test is \
-      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2397`); dropping the \
+      `txn_prepare`/`txn_commit` (`native_state.rs:1421-1510`, `txn_prepare` at `:1421` and \
+      `txn_commit` at `:1454`; the test is \
+      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2628`); dropping the \
       early return \
       would let a retry fail on insufficient balance *after* the first call had already succeeded, which \
-      the port's ordering (`native_state.rs:1341-1343`, before the balance check) forbids. \
+      the port's ordering (`native_state.rs:1429-1431`, before the balance check) forbids. \
       `commit_after_abort_is_an_error` \
       fails for a verb that allowed the transition — the port returns \
-      `Err(\"txn commit: already aborted\")` (`native_state.rs:1372`), and `abort_after_commit_is_an_error` the mirror \
-      (`native_state.rs:1404`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1346`)",
+      `Err(\"txn commit: already aborted\")` (`native_state.rs:1460`), and `abort_after_commit_is_an_error` the mirror \
+      (`native_state.rs:1429`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1434`)",
     note := "`leg_idempotent` is **proved now** — `funext` on a pointwise update, which is all it ever \
       needed — but it is the per-*shard-state* view, and the port's verbs are not pointwise updates: \
       they read a record, decide, and write a vault balance *and* a record. So the law is re-modelled on \
       the ledger the port keeps, where idempotence is the **early return on an existing record** \
-      (`native_state.rs:1341-1343`) rather than a coincidence of the arithmetic, and where the **fences** \
+      (`native_state.rs:1429-1431`) rather than a coincidence of the arithmetic, and where the **fences** \
       are stated too — commit after abort is an error and abort after commit is an error \
-      (`native_state.rs:1372`, `:1404`), which idempotence alone would permit. A fidelity note: the \
+      (`native_state.rs:1460`, `:1492`), which idempotence alone would permit. A fidelity note: the \
       model's `TxnState` carried a \
       fourth constructor (`proposed`) that the code does not have (`native_state.rs:140`); a transaction with no \
       record is `none`, which is how the verbs spell it" },
@@ -2223,8 +2223,8 @@ def laws : List Law := [
       (`epochStep_conserves`, from `payDue_conserves` plus the observation that the other three steps \
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
-      `debit_pos_vault` *fails* the transfer (`native_state.rs:904`, its refusal at `:909`) and \
-      `close_block` (`native_state.rs:1083`) writes nothing on that path — the debit's `?` at `:1154` \
+      `debit_pos_vault` *fails* the transfer (`native_state.rs:958`, its refusal at `:963`) and \
+      `close_block` (`native_state.rs:1138`) writes nothing on that path — the debit's `?` at `:1207` \
       returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \
@@ -2245,12 +2245,17 @@ def laws : List Law := [
     declarations := [`Rchain.rewardPot, `Rchain.reward],
     rust := ["rholang/src/native_state.rs"],
     witness := [`Rchain.the_dust_is_real],
-    falsifiable := some "`Rchain.the_dust_is_real` decides an instance: minimum bond 3, bonds `[4, 5]`, \
-      pot 10 — each validator is paid 3, so the epoch distributes **6 of 10**. A statement that said the \
-      shares sum to the pot is refuted by that line, and so is one that dropped either division. On the \
-      Rust side `an_epoch_splits_the_pot_and_keeps_the_dust` builds exactly that state (bonds 4 and 5, \
+    falsifiable := some "`Rchain.the_dust_is_real` decides an instance: minimum bond 3, bonds `[4, 8]`, \
+      pot 10 — the validators' scaled shares are `4/3 = 1` and `8/3 = 2`, so they are paid 2 and 5 and \
+      the epoch distributes **7 of 10**. A statement that said the shares sum to the pot is refuted by \
+      that line, and so is one that dropped either division. On the Rust side \
+      `an_epoch_splits_the_pot_and_keeps_the_dust` builds exactly that state (bonds 4 and 8, \
       `minimum_bond` 3, a pot of 10 paid in as phlo) and reads the split back, so the implementation is \
-      checked against the arithmetic rather than against a remembered number",
+      checked against the arithmetic rather than against a remembered number. **The two bonds differ by \
+      more than one `minimumBond` for a reason** (AUDIT C149): this instance used to bond `[4, 5]`, where \
+      both scaled shares are 1, so the factor `bond / minimumBond` under test was the identity and a \
+      `reward` that dropped it satisfied this line exactly as the real one did — the degeneracy is in the \
+      fixture's parameters, so no assertion-level reading and no coverage count can see it",
     note := "the formula is the Scala's `getCurrentEpochRewards` (`casper/src/genesis/resources/Pos.rhox:241-256`), and the port's \
       `epoch_reward` agrees with it wherever the contract is *defined*; where it is not — \
       `minimumBond = 0`, or a normaliser of zero — the contract divides by zero and faults the deploy, \
@@ -2267,10 +2272,13 @@ def laws : List Law := [
     rust := ["rholang/src/native_state.rs"],
     witness := [`Rchain.the_dust_is_real, `Rchain.sum_rewards_le_pot],
     falsifiable := some "the inequality is **strict in an instance**: `the_dust_is_real` is minimum \
-      bond 3, bonds `[4, 5]`, pot 10, six units distributed of ten (`decide`d, so the strictness is a \
+      bond 3, bonds `[4, 8]`, pot 10, seven units distributed of ten (`decide`d, so the strictness is a \
       computation rather than a remark), and `an_epoch_splits_the_pot_and_keeps_the_dust` reads the \
-      same four units back out of the Rust's pot afterwards — the dust is still there for the next \
-      epoch",
+      same three units of dust back out of the Rust's pot afterwards — the dust is still there for the \
+      next epoch. **The bonds are 4 and 8, and that gap is load-bearing** (AUDIT C149): they were 4 and \
+      5, where `4/3 = 5/3 = 1`, so the factor `bond / minimumBond` under test was the identity for every \
+      validator the instance built and a `reward` that dropped the factor satisfied it exactly as the \
+      real one did",
     note := "the row this register most needed from Programme B: a conservation law written as an \
       *equality* would have been false, and the Scala's own comment does not say which it means. The \
       two divisions are the whole content — the model decides the question by computing `Pos.rhox`'s \
