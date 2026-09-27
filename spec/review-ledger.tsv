@@ -520,7 +520,7 @@ law	12	T3	deferred	-	-	-	-	-	-
 law	13	T3	deferred	-	-	-	-	-	-
 law	14a	T3	deferred	-	-	-	-	-	-
 law	14b	T3	deferred	-	-	-	-	-	-
-law	15	T3	deferred	-	-	-	-	-	-
+law	15	T1	finding	deep	-	-	block-storage/src/property_tests.rs:law15_adding_blocks_only_grows_the_state C140	-	both named witnesses assert a one-directional property and stay green when add_block_to_dag_state never adds anything; six tests catch it, five of them law 18's, and none belongs to law 15
 law	16a	T1	cleared	deep	-	-	casper/src/validate.rs:block_number	-	mutation sweep: accepting any block number turned 2 witnesses red. The descent bound added by H1b is in the same function and was not separately mutated
 law	16b	T1	cleared	deep	-	-	casper/src/validate.rs:sequence_number	-	mutation sweep: accepting any sequence number turned 2 witnesses red
 law	16c	T3	deferred	-	-	-	-	-	-
