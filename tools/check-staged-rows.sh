@@ -40,7 +40,7 @@ printf '%s\n' "$staged_files" | sed 's/^/  /'
 # A C-row is the one thing whose author is unambiguous — the row opens with its number, so a commit
 # that adds one is making a claim about that number. Anchored at the start of the added line, so a row
 # that merely *mentions* another finding in its prose is not mistaken for adding it.
-rows="$(git diff --cached -- spec/AUDIT.md | grep -E '^\+\| C[0-9]+' | grep -oE 'C[0-9]+' | sort -u || true)"
+rows="$(git diff --cached -- spec/AUDIT.md | grep -oE '^\+\| C[0-9]+' | grep -oE 'C[0-9]+' | sort -u || true)"
 
 if [[ "$mine" == "-" ]]; then
   if [[ -n "$rows" ]]; then
