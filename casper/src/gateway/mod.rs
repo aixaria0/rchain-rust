@@ -103,7 +103,7 @@ impl LocalShardDeployService {
     /// `valid_after = 0` the deploy is *born expired* once the chain is more than `DEPLOY_LIFESPAN`
     /// blocks past genesis, and the participant never sees it.
     ///
-    /// **A head that cannot be read is an `Err`, not `0`** (AUDIT C64). `0` anchors the deploy at
+    /// **A head that cannot be read is an `Err`, not `0`** (AUDIT C67). `0` anchors the deploy at
     /// genesis, so a failed read did not fail the phase — it submitted a deploy that expires on
     /// arrival, invisibly: nothing downstream reports an error, the participant simply never sees the
     /// leg. The gateway is Rust-first (`docs/src/node/shard-invoke.md`), so there is no Scala `F` to

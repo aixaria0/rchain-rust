@@ -187,7 +187,7 @@ file	casper/src/state/mod.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/system_deploy.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/tools.rs	T3	deferred	-	-	-	-	-	-
-file	casper/src/txn_coordinator.rs	T1	deferred	-	-	-	-	-	-
+file	casper/src/txn_coordinator.rs	T1	finding	deep	-	-	casper/src/txn_coordinator.rs:TxnCoordinator::run_2pc C166	C166	run_2pc anchored every phase deploy at block 0 (it called the 0-hardcoded run_phase wrapper), so on any chain past DEPLOY_LIFESPAN = 50 every prepare and commit was born expired: the participant never saw it, nothing reported an error, and the transaction silently did not happen. run_phase_at had been added to fix exactly this trap -- it is named as one of the sites that anchor correctly in protocol/client.rs's resolve_valid_after_block_number doc -- but the whole-transaction driver kept calling the wrapper, and run_phase_anchors_at_zero pinned that as intended. The anchor is now a required TxnLeg field, run_2pc forwards each leg's own height, and the wrapper is deleted
 file	casper/src/validate.rs	T1	finding	deep	-	-	casper/src/validate.rs:slashable_senders C110 casper/src/validate.rs:block_summary C120	-	block validation replayed a peer's Slash without re-deriving who the block's justifications hold responsible; the rule is shared with the proposer here
 file	casper/src/validator_identity.rs	T3	deferred	-	-	-	-	-	-
 file	casper/src/vault_parser.rs	T3	deferred	-	-	-	-	-	-

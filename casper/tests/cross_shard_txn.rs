@@ -222,11 +222,17 @@ async fn two_shard_2pc_commits_all() {
             shard_id: "shard-a".to_string(),
             amount: 30,
             to: destination.clone(),
+            // The in-process shards these tests build are genesis-only, so `0` *is* each shard's
+            // head here and the leg is anchored correctly. What pins the anchor is the coordinator's
+            // own `run_2pc_anchors_each_phase_at_its_legs_height` (AUDIT C166): an anchor at genesis
+            // on a chain past `DEPLOY_LIFESPAN` is born expired, silently.
+            valid_after_block_number: 0,
         },
         TxnLeg {
             shard_id: "shard-b".to_string(),
             amount: 40,
             to: destination.clone(),
+            valid_after_block_number: 0,
         },
     ];
     let outcomes = coordinator
@@ -303,11 +309,17 @@ async fn two_shard_2pc_aborts_all_when_a_leg_fails() {
             shard_id: "shard-a".to_string(),
             amount: 30,
             to: destination.clone(),
+            // The in-process shards these tests build are genesis-only, so `0` *is* each shard's
+            // head here and the leg is anchored correctly. What pins the anchor is the coordinator's
+            // own `run_2pc_anchors_each_phase_at_its_legs_height` (AUDIT C166): an anchor at genesis
+            // on a chain past `DEPLOY_LIFESPAN` is born expired, silently.
+            valid_after_block_number: 0,
         },
         TxnLeg {
             shard_id: "shard-b".to_string(),
             amount: 40,
             to: destination.clone(),
+            valid_after_block_number: 0,
         },
     ];
     let _outcomes = coordinator
@@ -373,11 +385,17 @@ async fn re_running_a_committed_2pc_stays_uniform() {
             shard_id: "shard-a".to_string(),
             amount: 30,
             to: destination.clone(),
+            // The in-process shards these tests build are genesis-only, so `0` *is* each shard's
+            // head here and the leg is anchored correctly. What pins the anchor is the coordinator's
+            // own `run_2pc_anchors_each_phase_at_its_legs_height` (AUDIT C166): an anchor at genesis
+            // on a chain past `DEPLOY_LIFESPAN` is born expired, silently.
+            valid_after_block_number: 0,
         },
         TxnLeg {
             shard_id: "shard-b".to_string(),
             amount: 40,
             to: destination.clone(),
+            valid_after_block_number: 0,
         },
     ];
     let txn_id: &[u8] = b"e2e-txn-retry";

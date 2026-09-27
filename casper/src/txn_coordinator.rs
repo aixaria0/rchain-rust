@@ -63,13 +63,24 @@ pub fn txn_term(method: &str, txn_id: &[u8], data_args: &[Par], needs_deployer: 
     }
 }
 
-/// One leg of a 2PC transaction: the target shard, the REV amount to escrow, and the commit
-/// destination REV address.
+/// One leg of a 2PC transaction: the target shard, the REV amount to escrow, the commit
+/// destination REV address, and the height to anchor the phase deploy at.
+///
+/// **The anchor is a field rather than a defaulted `0`, because a `0` anchor is a silent failure**
+/// (AUDIT C166). A deploy is expired once `height - valid_after_block_number > DEPLOY_LIFESPAN` (50),
+/// so a phase anchored at genesis is *born expired* on any chain taller than the lifespan: the
+/// participant never sees it, nothing reports an error, and the transaction quietly does not happen.
+/// The gateway reads each shard's head for this (`gateway/mod.rs`'s `current_height`) and
+/// `protocol/client.rs`'s `resolve_valid_after_block_number` lists the other sites that do; making it
+/// a required field means a caller cannot omit it and get genesis by accident.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxnLeg {
     pub shard_id: String,
     pub amount: i64,
     pub to: String,
+    /// The *target shard's* current height — `current_height`'s answer for `shard_id`, not this
+    /// node's.
+    pub valid_after_block_number: i64,
 }
 
 /// A client-side 2PC coordinator: signs the phase deploys with `key` and drives the participants.
@@ -83,33 +94,17 @@ impl TxnCoordinator {
         TxnCoordinator { key, pub_key }
     }
 
-    /// Sign, submit and await one phase on one participant shard.
-    async fn run_phase(
-        &self,
-        service: &dyn DeployService,
-        method: &str,
-        txn_id: &[u8],
-        shard_id: &str,
-        data_args: &[Par],
-        needs_deployer: bool,
-    ) -> Result<ShardOutcome, String> {
-        self.run_phase_at(
-            service,
-            method,
-            txn_id,
-            shard_id,
-            data_args,
-            needs_deployer,
-            0,
-        )
-        .await
-    }
-
     /// Sign, submit and await one phase, anchoring the deploy at the shard's height.
     ///
     /// `valid_after_block_number` must be the *target shard's* current height: a deploy anchored at
     /// 0 is born expired once that chain is more than `DEPLOY_LIFESPAN` blocks past genesis, and the
     /// participant would never see the phase at all.
+    ///
+    /// **The 0-anchored `run_phase` wrapper this replaced is deleted rather than kept** (AUDIT C166).
+    /// It existed "for the client path", and `run_2pc` was the client — so the whole-transaction
+    /// driver walked into exactly the trap this function's own doc names, and
+    /// `run_phase_anchors_at_zero` pinned the trap as intended. A wrapper whose only behaviour is the
+    /// defect is not a convenience.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_phase_at(
         &self,
@@ -149,6 +144,10 @@ impl TxnCoordinator {
 
     /// Drive the full 2PC over `legs`: prepare every leg, collect the votes, then commit (if every
     /// participant voted ready) or abort. Returns the phase-two outcome per leg.
+    ///
+    /// Each phase deploy is anchored at **that leg's own** `valid_after_block_number` — the target
+    /// shard's head — rather than at a coordinator-wide constant, because the participants are
+    /// different chains at different heights (AUDIT C166).
     pub async fn run_2pc(
         &self,
         service: &dyn DeployService,
@@ -158,7 +157,7 @@ impl TxnCoordinator {
         let mut votes = Vec::with_capacity(legs.len());
         for leg in legs {
             let outcome = self
-                .run_phase(
+                .run_phase_at(
                     service,
                     "prepare",
                     txn_id,
@@ -169,6 +168,7 @@ impl TxnCoordinator {
                         RhoString::apply(leg.to.clone()),
                     ],
                     true,
+                    leg.valid_after_block_number,
                 )
                 .await?;
             votes.push(outcome);
@@ -184,8 +184,16 @@ impl TxnCoordinator {
         for (i, leg) in legs.iter().enumerate() {
             if ready[i] {
                 outcomes.push(
-                    self.run_phase(service, decision, txn_id, &leg.shard_id, &[], true)
-                        .await?,
+                    self.run_phase_at(
+                        service,
+                        decision,
+                        txn_id,
+                        &leg.shard_id,
+                        &[],
+                        true,
+                        leg.valid_after_block_number,
+                    )
+                    .await?,
                 );
             } else {
                 outcomes.push(ShardOutcome::Error("not prepared".to_string()));
@@ -460,16 +468,43 @@ mod tests {
         assert!(terms[0].contains("prepare"), "{}", terms[0]);
     }
 
-    /// `run_phase` is the 0-anchored wrapper — kept for the client path, pinned so the wrapper and the
-    /// parameterised form cannot drift.
+    /// **`run_2pc` anchors every phase at its own leg's height, not at genesis** (AUDIT C166).
+    ///
+    /// The `run_phase` wrapper it used to call hardcoded `0`, so on any chain taller than
+    /// `DEPLOY_LIFESPAN` (50) every phase deploy was born expired: the participant never saw it,
+    /// nothing reported an error, and the transaction quietly did not happen. This is the falsifier —
+    /// against the pre-fix tree every anchor below was `0`, which is exactly what made the defect
+    /// invisible to the suite. The legs deliberately carry **different** heights, because the
+    /// participants are different chains.
     #[tokio::test]
-    async fn run_phase_anchors_at_zero() {
+    async fn run_2pc_anchors_each_phase_at_its_legs_height() {
         let service = RecordingService::replying("ready");
+        let legs = [
+            TxnLeg {
+                shard_id: "/root".to_string(),
+                amount: 1,
+                to: "dest".to_string(),
+                valid_after_block_number: 700,
+            },
+            TxnLeg {
+                shard_id: "/child".to_string(),
+                amount: 2,
+                to: "dest".to_string(),
+                valid_after_block_number: 900,
+            },
+        ];
+
         coordinator()
-            .run_phase(&service, "prepare", b"txn", "/root", &[], true)
+            .run_2pc(&service, b"txn", &legs)
             .await
-            .expect("phase");
-        assert_eq!(service.anchors(), vec![0]);
+            .expect("2pc");
+
+        // Two prepares then two commits, each at its own leg's head.
+        assert_eq!(
+            service.anchors(),
+            vec![700, 900, 700, 900],
+            "every phase deploy is anchored at its leg's height, never at genesis"
+        );
     }
 
     /// Both legs reply `ready`, so the coordinator commits every one of them and sends phase two to
@@ -483,11 +518,13 @@ mod tests {
                 shard_id: "/root".to_string(),
                 amount: 30,
                 to: "dest".to_string(),
+                valid_after_block_number: 100,
             },
             TxnLeg {
                 shard_id: "/root/child".to_string(),
                 amount: 40,
                 to: "dest".to_string(),
+                valid_after_block_number: 200,
             },
         ];
         let outcomes = coordinator()

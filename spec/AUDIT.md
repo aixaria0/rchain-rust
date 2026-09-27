@@ -22,11 +22,11 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 3 · IN PROGRESS 0 · DONE 197** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  7 of 89 T1 modules unread**
+**Findings  TODO 3 · IN PROGRESS 0 · DONE 198** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  6 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 197 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 198 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
 ### TODO — findings (3)
@@ -37,7 +37,7 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
 
-### TODO — unread T1 modules (7)
+### TODO — unread T1 modules (6)
 
 The modules that can fork the chain or lose funds, and that nobody has read. In remit and not
 yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its
@@ -48,7 +48,6 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `casper/src/engine/lfs_block_requester.rs` |
 | `casper/src/multi_parent_casper.rs` |
 | `casper/src/runtime_replay.rs` |
-| `casper/src/txn_coordinator.rs` |
 | `rspace/src/history/history_repository.rs` |
 | `rspace/src/replay_rspace.rs` |
 | `rspace/src/scheduled_space.rs` |
@@ -58,7 +57,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (197)
+### DONE (198)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -173,6 +172,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `C163` | C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file | genesis_boot_exposes_block_over_http | §21 |
 | `C164` | a truncated `current-root` panicked the node on the state-read path: `RootsStore::current_root` built the hash from whatever the store returned, and `Blake2b256Hash::from_byte_array` asserts its length | a_truncated_current_root_is_refused_rather_than_panicking | §22 |
 | `C165` | the private key is written *before* its file is narrowed, so a pre-existing 0644 `rnode.key` held the secret world-readable for the length of the write — and the comment says the opposite | the_mode_is_narrowed_before_anything_is_written | §22 |
+| `C166` | `TxnCoordinator::run_2pc` anchored **every** phase deploy at block 0 -- it called the 0-hardcoded `run_phase` wrapper -- so on any chain taller than `DEPLOY_LIFESPAN` (50) every prepare and commit was *born expired*: the participant never saw it, nothing reported an error, and the transaction silently did not happen. `run_phase_at` had been added to fix exactly this trap, and `protocol/client.rs`'s `resolve_valid_after_block_number` doc names it as one of the sites that anchor correctly -- but the whole-transaction driver kept calling the wrapper, and `run_phase_anchors_at_zero` pinned that as "kept for the client path". The anchor is a required `TxnLeg` field now, `run_2pc` forwards each leg's own height, and the wrapper is deleted. Found reading `casper/src/txn_coordinator.rs` (T1) | run_2pc_anchors_each_phase_at_its_legs_height | §22 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
