@@ -1589,7 +1589,7 @@ def laws : List Law := [
       freely constructible record, refuted by `Leg.mk \"\" 0 0` (`shard_scope_deterministic_is_false`, \
       2026-09-23). The axiom is deleted rather than kept beside its own refutation (a false axiom makes \
       everything provable). What the law is about is the *ingress*: the port rejects an invalid shard id \
-      at the boundary (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:273-288`, with \
+      at the boundary (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:305-331`, with \
       the boundary test that pins the 400), so the narrowed statement is about the function that admits \
       a leg — which needed that function modelled. **That function is modelled now (2026-09-24, \
       Programme F) and the row is proved**: `admitLeg` mirrors the boundary's decision exactly — \
@@ -1627,7 +1627,8 @@ def laws : List Law := [
       lexicographic order on the id string, which `child`'s prefixing makes *structurally meaningful* (a \
       shard sorts before all of its descendants, and `is_descendant_of` is the separate structural \
       predicate that agrees with it). Where the order is observable is the two `BTreeMap<ShardId, _>` \
-      sites (`casper/src/gateway/mod.rs:65`, `node/src/runtime/node_runtime.rs:893`) — deterministic \
+      sites — `shards` at `casper/src/gateway/mod.rs:65` and at \
+      `node/src/runtime/node_runtime.rs:958` — deterministic \
       iteration, exactly where a silently different order would bite — and the model's `ShardId` *is* a \
       `String`, so `decide` and `omega` see the same order the port derives. **And the witness this row \
       carried needed correcting, which is the part worth keeping**: `validShardId (s.child n) = \

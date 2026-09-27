@@ -150,28 +150,44 @@ pub struct TestNode {
     /// transaction routes). Read from the config rather than passed in, so a test that needs it does
     /// not have to thread another argument through `start`.
     pub admin_port: u16,
+    /// The node's stop path (AUDIT C144), held for the node's lifetime. It is a field rather than a
+    /// local in `start` because a **dropped sender resolves every listener's `stop_requested` at
+    /// once** — letting it fall out of scope would stop the node the instant it started, and the
+    /// symptom (every test timing out on a node that answers nothing) would point at everything
+    /// except this. Tests that do not stop the node never touch it.
+    stop: tokio::sync::watch::Sender<bool>,
 }
 
 impl TestNode {
-    /// Abort the server task (the node has no graceful-shutdown RPC).
+    /// Abort the server task outright — the blunt stop, for tests that want the process killed the
+    /// way a `SIGKILL` does.
     pub fn shutdown(self) {
         self.handle.abort();
+    }
+
+    /// Ask the node to stop the way an operator's `SIGTERM` does: every listener is told, they
+    /// drain, and `serve` returns. Unlike [`TestNode::shutdown`] this is the graceful path, so a
+    /// test can await the handle afterwards and see what the node reported.
+    pub fn request_stop(&self) {
+        let _ = self.stop.send(true);
     }
 }
 
 /// Initialize the environment, assemble the node, and start serving it.
 pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode {
     let id = node_environment::create(conf).expect("node environment");
-    let program: NodeProgram = setup_node_program(conf, &id, Arc::new(StderrLog))
+    let program: NodeProgram = setup_node_program(conf, &id, Arc::new(StderrLog::default()))
         .await
         .expect("setup node program");
-    let handle = tokio::spawn(program.serve());
+    let (stop, stop_rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(program.serve(stop_rx));
     TestNode {
         handle,
         id,
         grpc_port,
         http_port,
         admin_port: conf.api_server.port_admin_http as u16,
+        stop,
     }
 }
 

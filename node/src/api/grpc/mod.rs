@@ -57,6 +57,7 @@ pub async fn serve_deploy(
     deploy: DeployGrpcServiceV1,
     addr: std::net::SocketAddr,
     max_message_size: usize,
+    stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     use ::tonic::service::interceptor::InterceptedService;
     use rchain_models::proto::casper::deploy_service_server::DeployServiceServer;
@@ -73,9 +74,11 @@ pub async fn serve_deploy(
         }
     });
 
+    // Graceful shutdown (AUDIT C144): on the operator's word this stops accepting and lets the RPCs
+    // already in flight finish, instead of the process being killed with them outstanding.
     ::tonic::transport::Server::builder()
         .add_service(service)
-        .serve(addr)
+        .serve_with_shutdown(addr, crate::runtime::shutdown::stop_requested(stop))
         .await
         .map_err(|e| e.to_string())
 }
@@ -86,6 +89,7 @@ pub async fn serve_internal(
     repl: ReplGrpcService,
     addr: std::net::SocketAddr,
     max_message_size: usize,
+    stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     use rchain_models::proto::casper::propose_service_server::ProposeServiceServer;
     use rchain_models::proto::repl::repl_server::ReplServer;
@@ -93,7 +97,7 @@ pub async fn serve_internal(
     ::tonic::transport::Server::builder()
         .add_service(ProposeServiceServer::new(propose).max_decoding_message_size(max_message_size))
         .add_service(ReplServer::new(repl).max_decoding_message_size(max_message_size))
-        .serve(addr)
+        .serve_with_shutdown(addr, crate::runtime::shutdown::stop_requested(stop))
         .await
         .map_err(|e| e.to_string())
 }

@@ -17,6 +17,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 
@@ -40,6 +41,8 @@ use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
 use crate::api::web_api::WebApi;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
+use crate::runtime::shutdown::stop_requested;
+use crate::web::pos_read::PosReadApi;
 use crate::web::reporting::transform_result;
 use crate::web::status_info;
 use crate::web::version_info;
@@ -99,6 +102,10 @@ pub struct HttpState {
     pub block_report_api: Arc<BlockReportApi>,
     pub shards: Arc<ShardRegistry>,
     pub status_provider: Option<StatusProvider>,
+    /// The primary shard's PoS read (`GET /api/v1/pos`, AUDIT C148): epoch, boundary distance,
+    /// active validator set, pending withdrawals. Separate from `web_api` because it reads native
+    /// state rather than the block API.
+    pub pos: Arc<dyn PosReadApi>,
     pub enable_reporting: bool,
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
     /// deviation: the Scala HTTP deploy routes are unlimited).
@@ -217,6 +224,22 @@ async fn api_shards(State(state): State<HttpState>) -> Response {
         "shards": shards,
     }))
     .into_response()
+}
+
+/// `GET /api/v1/pos` — the PoS reads this node had no surface for (AUDIT C148): the epoch, how far
+/// the next boundary is, the active validator set, and every staged withdrawal with its countdown.
+///
+/// A failed read is the node's own store rather than the caller's request, so it answers **500 with
+/// the reason** instead of the 400 the block-API routes use for a refusal.
+async fn api_pos_status(State(state): State<HttpState>) -> Response {
+    match state.pos.pos_status().await {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
 }
 
 /// The gateway, or the standard not-available response.
@@ -998,6 +1021,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
+        .route("/api/v1/pos", get(api_pos_status))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route("/api/v1/faucet", post(api_faucet))
@@ -1065,8 +1089,10 @@ pub async fn acquire_http_server(
     block_report_api: Arc<BlockReportApi>,
     shards: Arc<ShardRegistry>,
     status_provider: Option<StatusProvider>,
+    pos: Arc<dyn PosReadApi>,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
     let addr: SocketAddr = format!("{host}:{port}")
@@ -1082,6 +1108,7 @@ pub async fn acquire_http_server(
         block_report_api,
         shards,
         status_provider,
+        pos,
         enable_reporting,
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
         faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
@@ -1090,7 +1117,12 @@ pub async fn acquire_http_server(
         StatusCode::REQUEST_TIMEOUT,
         max_connection_idle,
     ));
-    axum::serve(listener, app).await.map_err(|e| e.to_string())
+    // Graceful shutdown (AUDIT C144): on the operator's word this stops accepting and lets the
+    // connections already in flight finish, so a stop is not a truncation of somebody's request.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(stop_requested(stop))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Bind and serve the admin HTTP routes (port of `web/acquireAdminHttpServer`).
@@ -1108,6 +1140,7 @@ pub async fn acquire_admin_http_server(
     gateway: Option<Arc<GatewayTxn>>,
     enable_txn_api: bool,
     max_connection_idle: Duration,
+    stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
     let addr: SocketAddr = format!("{host}:{port}")
@@ -1127,7 +1160,11 @@ pub async fn acquire_admin_http_server(
         StatusCode::REQUEST_TIMEOUT,
         max_connection_idle,
     ));
-    axum::serve(listener, app).await.map_err(|e| e.to_string())
+    // The same stop path as the public server (AUDIT C144).
+    axum::serve(listener, app)
+        .with_graceful_shutdown(stop_requested(stop))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -1321,9 +1358,41 @@ mod tests {
                 members: Vec::new(),
             }),
             status_provider: None,
+            // `GET /api/v1/pos` (AUDIT C148) is pinned on its own below; the other routes never read
+            // this, so a value the assertions can name stands in.
+            pos: Arc::new(StubPosRead),
             enable_reporting: true,
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
             faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
+        }
+    }
+
+    /// **AUDIT C148**: the PoS read has a route, and the route renders what it was handed. The
+    /// numbers here are deliberately *not* round — an epoch of 3 with 40 blocks to the boundary and
+    /// a withdrawal with 60 left are values a handler that dropped or transposed a field would fail
+    /// on, where `0`s and `1`s would pass.
+    struct StubPosRead;
+
+    #[async_trait]
+    impl PosReadApi for StubPosRead {
+        async fn pos_status(&self) -> Result<crate::web::pos_read::PosStatus, String> {
+            use crate::web::pos_read::{PendingWithdrawal, PosStatus};
+            use rchain_models::validator::Validator;
+            Ok(PosStatus {
+                latest_block_number: 260,
+                epoch_length: 100,
+                quarantine_length: 100,
+                epoch: 2,
+                blocks_until_epoch_boundary: 40,
+                active_validators: vec![
+                    Validator::try_from([3u8; 65].as_slice()).expect("65 bytes")
+                ],
+                pending_withdrawals: vec![PendingWithdrawal {
+                    validator: Validator::try_from([9u8; 65].as_slice()).expect("65 bytes"),
+                    staged_at_block: 200,
+                    blocks_remaining: 60,
+                }],
+            })
         }
     }
 
@@ -1855,6 +1924,35 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["shardCount"], 0);
         assert_eq!(json["shards"].as_array().unwrap().len(), 0);
+    }
+
+    /// **AUDIT C148's surface, rendered.** Every field the row says had no read is asserted by name,
+    /// and the two that carry an *answer* rather than a value — how far the next boundary is, and how
+    /// long a staged withdrawal has left — are the ones a transposed field would silently swap.
+    #[tokio::test]
+    async fn api_v1_pos_answers_the_epoch_the_validator_set_and_the_staged_withdrawals() {
+        let response = api_pos_status(State(state())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["latestBlockNumber"], 260);
+        assert_eq!(json["epochLength"], 100);
+        assert_eq!(json["epoch"], 2);
+        assert_eq!(json["blocksUntilEpochBoundary"], 40);
+        assert_eq!(json["quarantineLength"], 100);
+        assert_eq!(
+            json["activeValidators"].as_array().unwrap().len(),
+            1,
+            "the active set is the consensus set, not the bond pool: {json}"
+        );
+        // The validator renders as hex, which is what an operator copies into `bond-status`.
+        assert!(json["activeValidators"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("0303"));
+        assert_eq!(json["pendingWithdrawals"][0]["stagedAtBlock"], 200);
+        assert_eq!(json["pendingWithdrawals"][0]["blocksRemaining"], 60);
     }
 
     /// The gate: without a gateway, or with the feature switched off, the transaction routes answer

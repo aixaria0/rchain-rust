@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use prost::Message;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use rchain_block_storage::approved_store::{self, ApprovedStore};
 use rchain_block_storage::block_store::{self, BlockStore};
@@ -100,9 +101,11 @@ use crate::configuration::model::NodeConf;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::instances::proposer_instance;
+use crate::runtime::shutdown::{stop_requested, SHUTDOWN_DRAIN_TIMEOUT};
 use crate::web::http::{
     acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
 };
+use crate::web::pos_read::{PosReadApi, ShardPosRead};
 use crate::web::transaction::TransactionAPIImpl;
 use rchain_casper::gateway::ledger::TxnLedger;
 use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
@@ -374,6 +377,8 @@ pub struct ProtocolServer {
 pub struct NodeProgram {
     grpc_services: GrpcServices,
     web_api: Arc<dyn WebApi>,
+    /// The PoS read surface (`GET /api/v1/pos`, AUDIT C148).
+    pos_read: Arc<dyn PosReadApi>,
     admin_web_api: Arc<dyn AdminWebApi>,
     /// The shards this node validates for, for the `GET /api/v1/shards` route.
     shards: Arc<ShardRegistry>,
@@ -399,10 +404,15 @@ pub struct NodeProgram {
 
 impl NodeProgram {
     /// Serve the gRPC + HTTP + protocol servers (port of `NetworkServers.create`).
-    pub async fn serve(self) -> Result<(), String> {
+    ///
+    /// `stop` is the operator's word (AUDIT C144): every listener is handed a receiver, so the same
+    /// event stops them all, and this returns once they have finished draining — or once
+    /// [`SHUTDOWN_DRAIN_TIMEOUT`] has passed, whichever comes first.
+    pub async fn serve(self, stop: watch::Receiver<bool>) -> Result<(), String> {
         let NodeProgram {
             grpc_services,
             web_api,
+            pos_read,
             admin_web_api,
             shards,
             block_report_api,
@@ -446,16 +456,19 @@ impl NodeProgram {
             deploy,
             grpc_external_addr,
             grpc_max_recv_message_size,
+            stop.clone(),
         ));
         let mut grpc_internal = tokio::spawn(serve_internal(
             propose,
             repl,
             grpc_internal_addr,
             grpc_max_recv_message_size,
+            stop.clone(),
         ));
 
         let mut http = tokio::spawn({
             let host = host.clone();
+            let stop = stop.clone();
             async move {
                 // No gateway here: the cross-shard transaction routes are on the admin listener, which
                 // is loopback by default (AUDIT C121), and `HttpState` no longer carries the capability.
@@ -468,8 +481,10 @@ impl NodeProgram {
                     block_report_api,
                     shards,
                     status_provider,
+                    pos_read,
                     max_connection_idle,
                     enable_reporting,
+                    stop,
                 )
                 .await
             }
@@ -477,6 +492,7 @@ impl NodeProgram {
 
         let mut admin = tokio::spawn({
             let host = host.clone();
+            let stop = stop.clone();
             async move {
                 // The admin HTTP server hosts the **unauthenticated** `/api/propose`, which triggers
                 // block production. It used to bind `api-server.host` — `0.0.0.0` — unconditionally,
@@ -499,6 +515,7 @@ impl NodeProgram {
                     gateway,
                     enable_txn_api,
                     max_connection_idle,
+                    stop,
                 )
                 .await
             }
@@ -510,7 +527,17 @@ impl NodeProgram {
         // never return, a listener whose bind failed — its task ending with `Err` at once — left the
         // join pending forever while the node ran with a dead component and logged nothing at all
         // (AUDIT C142). `select!` reports the first exit, and `listener_stopped` names it.
-        if let Some(protocol) = protocol_server {
+        //
+        // The last arm is the operator's stop (AUDIT C144): the listeners were handed the same word
+        // through `stop`, so `None` here means "every one of them is draining", not "something went
+        // wrong". It is also the **bound**: without it this wait could only end when a listener
+        // returned, and a listener that never finishes draining would hold the process open forever
+        // — the termination grace this path exists to stop paying. The protocol listener is not among
+        // the drained ones: the transport's `serve` has no shutdown path to hand it (its
+        // `grpc_transport_receiver` is the layer that would need one, AUDIT C144's residue), so it is
+        // the one this arm is really for.
+        let stopping = stop.clone();
+        let stopped = if let Some(protocol) = protocol_server {
             let mut protocol = tokio::spawn(async move {
                 protocol
                     .server
@@ -518,20 +545,39 @@ impl NodeProgram {
                     .await
             });
             tokio::select! {
-                r = &mut grpc_external => listener_stopped("deploy gRPC listener", r),
-                r = &mut grpc_internal => listener_stopped("internal gRPC listener", r),
-                r = &mut http => listener_stopped("HTTP listener", r),
-                r = &mut admin => listener_stopped("admin HTTP listener", r),
-                r = &mut protocol => listener_stopped("protocol listener", r),
+                r = &mut grpc_external => Some(listener_stopped("deploy gRPC listener", r, *stopping.borrow())),
+                r = &mut grpc_internal => Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())),
+                r = &mut http => Some(listener_stopped("HTTP listener", r, *stopping.borrow())),
+                r = &mut admin => Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())),
+                r = &mut protocol => Some(listener_stopped("protocol listener", r, *stopping.borrow())),
+                _ = stop_requested(stop) => None,
             }
         } else {
             tokio::select! {
-                r = &mut grpc_external => listener_stopped("deploy gRPC listener", r),
-                r = &mut grpc_internal => listener_stopped("internal gRPC listener", r),
-                r = &mut http => listener_stopped("HTTP listener", r),
-                r = &mut admin => listener_stopped("admin HTTP listener", r),
+                r = &mut grpc_external => Some(listener_stopped("deploy gRPC listener", r, *stopping.borrow())),
+                r = &mut grpc_internal => Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())),
+                r = &mut http => Some(listener_stopped("HTTP listener", r, *stopping.borrow())),
+                r = &mut admin => Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())),
+                _ = stop_requested(stop) => None,
             }
+        };
+        // Both `None` (the operator's word arrived first) and `Some(Ok(()))` (a listener drained
+        // because of it) mean the same thing here: stop waiting for a fault and wait out the drain.
+        match stopped {
+            None | Some(Ok(())) => {}
+            Some(Err(e)) => return Err(e),
         }
+        // Wait for the listeners so the requests already in flight are answered rather than cut off —
+        // bounded, because a listener that will not finish must not hold the process past the
+        // orchestrator's grace.
+        let drain = async {
+            let _ = grpc_external.await;
+            let _ = grpc_internal.await;
+            let _ = http.await;
+            let _ = admin.await;
+        };
+        let _ = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await;
+        Ok(())
     }
 }
 
@@ -981,6 +1027,12 @@ pub async fn setup_node_program(
         faucet_deployer_key,
         primary_id.to_string(),
     ));
+    // The PoS read (AUDIT C148): the primary shard's live native state through the runtime manager
+    // that owns it, plus the status API for the head's height — one definition of "latest block".
+    let pos_read: Arc<dyn PosReadApi> = Arc::new(ShardPosRead::new(
+        primary_parts.runtime_manager.clone(),
+        web_api.clone(),
+    ));
     let admin_web_api: Arc<dyn AdminWebApi> = Arc::new(AdminWebApiImpl::new(routing.clone()));
     let grpc_services = GrpcServices::build(
         routing.clone(),
@@ -1006,6 +1058,7 @@ pub async fn setup_node_program(
     Ok(NodeProgram {
         grpc_services,
         web_api,
+        pos_read,
         admin_web_api,
         shards: registry,
         block_report_api: primary_parts.block_report_api.clone(),
@@ -1136,11 +1189,22 @@ async fn build_gateway(
 ///
 /// `JoinError` is separated from the listener's own `Err` on purpose: a task that panicked and a bind
 /// that was refused are different faults, and reporting the second as the first hides the panic.
+///
+/// **`stopping` is what keeps a clean stop from being reported as a fault** (AUDIT C144). Once the
+/// operator's word has gone out, the listeners end *because they were told to* — that `Ok(())` is the
+/// drain working, and it reads as "an accept loop returned" only if the reader is not told which of
+/// the two it is looking at. Without it the race is real rather than theoretical: the stop arm and a
+/// draining listener's arm both become ready, `select!` picks among ready arms in arbitrary order, and
+/// `docker stop` would sometimes exit 1 on a perfectly clean shutdown.
 fn listener_stopped(
     name: &str,
     joined: Result<Result<(), String>, tokio::task::JoinError>,
+    stopping: bool,
 ) -> Result<(), String> {
     match joined {
+        // The listener finished what it was doing and stopped because it was asked to: not a fault,
+        // and the signal for `serve` to wait out the others.
+        Ok(Ok(())) if stopping => Ok(()),
         Ok(Ok(())) => Err(format!(
             "the {name} stopped serving — an accept loop returned, so this node is not answering there"
         )),
@@ -2120,7 +2184,11 @@ mod tests {
         }
 
         let (routing_tx, routing_rx) = mpsc::channel::<RoutingMessage>(5);
-        spawn_peer_message_router(routing_rx, shards, Arc::new(rchain_shared::log::StderrLog));
+        spawn_peer_message_router(
+            routing_rx,
+            shards,
+            Arc::new(rchain_shared::log::StderrLog::default()),
+        );
         routing_tx
             .send(RoutingMessage {
                 peer: a_peer(),

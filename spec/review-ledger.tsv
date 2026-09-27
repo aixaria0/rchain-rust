@@ -5,11 +5,11 @@
 # tier vocabulary: T1 T2 T3   |   depth vocabulary: shallow medium deep -
 # reason vocabulary (exempt): data generated dev-tool legacy axiomatized
 # reason vocabulary (unreachable): peer-bound harness-bound
-# ceiling	ingress	44
+# ceiling	ingress	45
 # ceiling	process	30
-# ceiling	config	104
-# ceiling	tool	22
-# unhousedCeiling	107
+# ceiling	config	105
+# ceiling	tool	23
+# unhousedCeiling	111
 class	cast	T3	deferred	-	-	-	-	-	-
 class	div	T3	deferred	-	-	-	-	-	-
 class	get	T3	deferred	-	-	-	-	-	-
@@ -72,6 +72,7 @@ config	help	T3	deferred	-	-	-	-	-	-
 config	host	T3	deferred	-	-	-	-	-	-
 config	influxdb	T3	deferred	-	-	-	-	-	-
 config	influxdb-udp	T3	deferred	-	-	-	-	-	-
+config	log-level	T3	deferred	-	-	-	-	-	-
 config	max-number-of-parents	T3	deferred	-	-	-	-	-	-
 config	min-phlo-price	T3	deferred	-	-	-	-	-	-
 config	network-id	T3	deferred	-	-	-	-	-	-
@@ -331,10 +332,12 @@ file	node/src/runtime/node_environment.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_main.rs	T2	deferred	-	-	-	-	-	-
 file	node/src/runtime/node_runtime.rs	T1	finding	deep	-	-	node/src/runtime/node_runtime.rs:admin_bind_host C112 node/src/runtime/node_runtime.rs:admin_bind_host C132 node/src/runtime/node_runtime.rs:serve C142	-	the admin HTTP server bound api-server.host with an unauthenticated propose endpoint behind it; the bind is now loopback unless the operator opts in
 file	node/src/runtime/repl_runtime.rs	T3	deferred	-	-	-	-	-	-
+file	node/src/runtime/shutdown.rs	T3	cleared	deep	-	-	node/src/runtime/shutdown.rs:stop_requested C144 node/tests/shutdown.rs:a_node_that_is_asked_to_stop_returns_and_stops_answering	node/src/runtime/shutdown.rs:shutdown_signal	written and reviewed in this session while closing AUDIT C144, so the review is the authoring: the file is the node's whole stop path — the signal handler, the watch channel every listener awaits, and the bounded drain timeout. **Both directions measured, and the review found one defect in its own first draft.** With `wait_for` replaced by a plain borrow (so `stop_requested` resolves immediately) the unit test's first arm fails — "a listener must not stop before the coordinator asks it to"; and with `acquire_http_server`'s `with_graceful_shutdown` removed, `node/tests/shutdown.rs` fails at "the HTTP listener must be closed after the stop, not merely unreported". The defect: a listener that drains *because it was told to* returns `Ok(())`, and the first draft's `listener_stopped` read that as "an accept loop returned" — so `docker stop` would sometimes have reported a server error and exited 1 on a perfectly clean shutdown, decided by `select!`'s arbitrary choice among ready arms. The `stopping` flag is that fix. Not read: the transport layer's own shutdown (`comm/src/transport/grpc_transport_receiver.rs`), which is the residue C144's own row names — this file hands it nothing to await.
 file	node/src/state/instances.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/state/mod.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/http.rs	T3	finding	deep	-	-	node/src/web/http.rs:gateway_or_not_found C121 node/src/web/http.rs:admin_router C133 node/src/web/http.rs:epoch C148	-	the public API router mounts the fund-moving POST /api/txn with no authentication, no rate limiter and no bound on the leg vector, while every sibling state-mutating route consults the limiter; the admin router's own CORS comment promises a protection a simple cross-origin POST never has to ask for
 file	node/src/web/mod.rs	T3	deferred	-	-	-	-	-	-
+file	node/src/web/pos_read.rs	T3	cleared	deep	-	-	node/src/web/pos_read.rs:pos_status C148 node/tests/api_surface.rs:the_read_routes_answer_and_their_refusals_are_defined	-	written and reviewed in this session while closing AUDIT C148, so the review is the authoring: the file is the whole PoS read surface — the trait, the DTO, the live read through the primary shard's `RuntimeManager`, and the three arithmetic helpers the operator previously did by hand. **The three layers are pinned separately**: `the_boundary_arithmetic_answers_the_operators_question` and `a_pending_withdrawal_counts_down_and_never_goes_negative` pin the arithmetic, including the `epochLength <= 1` setting — where a `%` would divide by zero, and where "every block is a boundary" is a real genesis configuration rather than a corner case; `api_v1_pos_answers_the_epoch_the_validator_set_and_the_staged_withdrawals` pins the rendering through the handler with deliberately non-round values, so a transposed field fails the assertion rather than passing on a 0; and the end-to-end read against **live native state** is `node/tests/api_surface.rs`'s `activeValidators` assertion, which names the validator the genesis bonds file bonded. Not read: the other callers of `NativeSystemState` (separate register rows), and the freshness of what this reads — it is the shard's last checkpoint, not the block being produced.
 file	node/src/web/reporting.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/status_info.rs	T3	deferred	-	-	-	-	-	-
 file	node/src/web/transaction.rs	T3	deferred	-	-	-	-	-	-
@@ -501,6 +504,7 @@ ingress	http:/api/v1/deploys	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/explore-deploy	T3	finding	deep	-	-	casper/src/api/block_api_impl.rs:exploratory_deploy C129	-	the versioned twin of the same tip read on the same unauthenticated route
 ingress	http:/api/v1/faucet	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/openapi.json	T3	deferred	-	-	-	-	-	-
+ingress	http:/api/v1/pos	T3	cleared	deep	-	-	node/src/web/http.rs:api_pos_status C148 node/src/web/pos_read.rs:pos_status	-	a new GET on the public router, added by AUDIT C148. Read: it takes no body, no query parameters and no caller identity, so it adds no parse surface; it reads the primary shard's native state (`pos:params`, `pos:active`, `pos:pendingWithdrawers`) plus the head's height, so it moves no funds and mutates nothing; and a failed read answers 500 with the reason rather than the block routes' 400, because the failure is the node's own store rather than the caller's request. **Rate limiting was considered and not applied**: the handler is one in-memory read per call with no state mutation, the shape every sibling read route shares. **The disclosure is deliberate and is not new**: `bond-status` already reports a validator's bond over this same public API, and the active set and pending withdrawals are public chain facts — C148's whole point is that an operator could not read them, and the alternative (answering them only on the loopback admin port) would leave the operator to curl the node they are already on.
 ingress	http:/api/v1/propose	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/shards	T3	deferred	-	-	-	-	-	-
 ingress	http:/api/v1/status	T3	deferred	-	-	-	-	-	-
@@ -613,10 +617,11 @@ tool	tools/audit-instruments.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-mutate.sh	T3	finding	deep	-	-	tools/audit-mutate.sh:run C157	-	C157: reported `green` for runs in which no test ran — `cargo test`'s positional argument is a filter on test names, not a target selector, so three law-30 probes were empty runs read as evidence. Fixed: the harness refuses when every `test result:` line reads `0 passed; 0 failed`, and prints the per-target summaries on every run. Otherwise read end to end because I wrote it; the restore/journal/HEAD-anchor paths have not been falsified by planting defects in the harness itself
 tool	tools/audit-partiality.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-test-register.sh	T3	finding	deep	-	-	tools/audit-test-register.sh:ANCHOR_CITE C155	-	the anchor check's cited window is the range padded by eight lines on each side, so a citation that moves by up to eight lines still contains the construct it names and is reported ok — measured when cargo fmt --all moved validate.rs by +4 and native_state.rs by +8 and fourteen of seventeen citations pointed at changed content while the step printed ok. The same blindness caught this row's author: one of the fourteen (native_state.rs:2628, law 28's test, moved to :2662) was missed by the hand-built enumeration and fixed a commit later than the other thirteen, with the gate green for it throughout. Read in full: the window construction, the identifier test and the comment that claims moved lines are caught. Not read: the pointer family and coverage-ledger steps of the same script, and the Rchain/LawsMain.lean anchor checks on the other side
-tool	tools/audit-type-system.sh	T3	finding	deep	-	-	tools/audit-type-system.sh:PAT_SILENT C126 tools/audit-type-system.sh:REFINEMENT_FILES C127 tools/audit-type-system.sh:unsafe C130 tools/audit-type-system.sh:ESCAPE_ROSTER_AWK C131	-	four holes in the partiality gate, each demonstrated with a probe in an isolated worktree: the silent class is line-anchored so a rustfmt-wrapped try_from().unwrap_or(0) is invisible, the escape class reads only eleven files so a Deref impl in a sibling file is green, the unsafe class matches only an unsafe block, and G1's exclusion of public-field newtypes is unbacked for any name not already rostered
+tool	tools/audit-type-system.sh	T1	finding	deep	-	-	tools/audit-type-system.sh:scan_spanning C159	-	C159, found by this file's own probe: `silent` is `scan_spanning`'s only caller, and `scan_spanning` piped its `note` calls into a subshell so `hard_failures` never incremented — the class printed every site it found and the gate exited 0. Its reported line was the stripped stream's too. Both fixed and measured: a planted `try_into().unwrap()` in production code went from `OK: no hard production violations` with the site printed above it, to a reported violation at the file's own line and exit 1. Introduced today in `03cafa506` as C126's fix, which was itself real: the exposure is a day and the tree holds no other site of the pattern. The rest of this tool is read end to end; its counted classes, the panic allowlist and the escape allowlist are not falsified by this row
 tool	tools/audit-vendored-sources.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/check-lean-conformance.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/check-rust-witnesses.sh	T3	finding	deep	-	-	tools/check-rust-witnesses.sh:witness C128	-	the witness verdict matches 'test <name> ...' without requiring '... ok', so libtest's '... ignored' line counts as a pass and an #[ignore]d test satisfies the law register's Rust half; demonstrated live with a witness that panics if it ever runs
+tool	tools/check-staged-rows.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/devnet-fuzz.py	T3	deferred	-	-	-	-	-	-
 tool	tools/devnet.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/devnet-test.sh	T3	deferred	-	-	-	-	-	-

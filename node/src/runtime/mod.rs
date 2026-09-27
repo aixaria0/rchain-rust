@@ -5,6 +5,7 @@ pub mod node_environment;
 pub mod node_main;
 pub mod node_runtime;
 pub mod repl_runtime;
+pub mod shutdown;
 
 pub use node_call_ctx::NodeCallCtx;
 pub use node_environment::InitializationException;

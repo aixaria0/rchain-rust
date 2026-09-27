@@ -222,6 +222,13 @@ pub struct Run {
     #[arg(long = "thread-pool-size")]
     pub thread_pool_size: Option<i32>,
 
+    /// Verbosity of the node's own log lines on stderr: `error`, `warn`, `info` (the default),
+    /// `debug` or `trace`. **AUDIT C145:** before this there was no way to raise verbosity short of
+    /// rebuilding — `debug` and `trace` were empty bodies in the only logger the node installs — so
+    /// every diagnostic behind them was unreachable in a shipped binary.
+    #[arg(long = "log-level")]
+    pub log_level: Option<String>,
+
     /// The effect scheduler (Laws 20–25): `dfs` (default, the sequential DFS loop), `gate` (the
     /// DFS gate), `relaxed` (per-channel claim queues; off-chain only — a relaxed node refuses
     /// block-path deploy execution), or `relaxed-validated` (Laws 23–25: relaxed on the block

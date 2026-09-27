@@ -28,6 +28,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use common::{free_ports, standalone_conf, start, temp_dir, VALIDATOR_PRIV_HEX};
+use rchain_casper::validator_identity::ValidatorIdentity;
+use rchain_shared::base16;
 
 /// Poll until the HTTP server answers `/version` (the server is up before genesis is).
 async fn wait_for_server(client: &reqwest::Client, base: &str) {
@@ -302,6 +304,45 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
             bad.status().is_client_error(),
             "a malformed data-at-name request is refused by name: {}",
             bad.status()
+        );
+
+        // --- the PoS read (AUDIT C148) ---------------------------------------------------------
+        //
+        // The epoch, the active validator set and the staged withdrawals had no surface at all: the
+        // only validator read was `bond-status`'s bool, and the docs left the operator to derive the
+        // epoch boundary from block heights. The set asserted here is the one the genesis bonds file
+        // installed, so an empty list means the read is not reaching native state.
+        let pos = get(format!("{base}/api/v1/pos")).await;
+        assert_eq!(pos.status(), 200, "GET /api/v1/pos");
+        let pos: Value = pos.json().await.expect("pos json");
+        assert_eq!(
+            pos["activeValidators"].as_array().map(Vec::len),
+            Some(1),
+            "the active set is the validator the bonds file bonded: {pos}"
+        );
+        let bonded = base16::encode(
+            ValidatorIdentity::from_hex(VALIDATOR_PRIV_HEX)
+                .expect("validator identity")
+                .public_key
+                .bytes(),
+        );
+        assert_eq!(
+            pos["activeValidators"][0].as_str(),
+            Some(bonded.as_str()),
+            "an operator copies this into `bond-status`: {pos}"
+        );
+        assert_eq!(
+            pos["pendingWithdrawals"].as_array().map(Vec::len),
+            Some(0),
+            "a fresh node has staged nothing: {pos}"
+        );
+        assert!(
+            pos["epochLength"].is_number() && pos["epoch"].is_number(),
+            "the epoch and its length are both read, not inferred: {pos}"
+        );
+        assert!(
+            pos["blocksUntilEpochBoundary"].as_i64().unwrap_or(-1) >= 0,
+            "a countdown to the boundary is never negative: {pos}"
         );
 
         node.shutdown();

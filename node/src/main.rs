@@ -8,7 +8,7 @@ use clap::Parser;
 use rchain_node::configuration::commandline::options::{Commands, Options};
 use rchain_node::configuration::configuration::Configuration;
 use rchain_node::runtime::{node_environment, node_runtime, run_cli};
-use rchain_shared::log::StderrLog;
+use rchain_shared::log::{Log, LogSource, StderrLog};
 
 fn main() {
     // Parse options before building the tokio runtime: the thread-pool size must be known up
@@ -30,6 +30,23 @@ fn main() {
         _ => default_worker_threads(),
     };
 
+    // The log level (AUDIT C145) is resolved here for the same reason the worker count is: it is a
+    // property of the *process*, and a typo has to fail before the node starts rather than leave the
+    // operator with logs quieter than they asked for.
+    let log_level = match &options.subcommand {
+        Commands::Run(run) => match &run.log_level {
+            Some(value) => match rchain_shared::log::Level::parse(value) {
+                Ok(level) => level,
+                Err(e) => {
+                    eprintln!("Invalid --log-level: {e}");
+                    std::process::exit(1);
+                }
+            },
+            None => rchain_shared::log::Level::Info,
+        },
+        _ => rchain_shared::log::Level::Info,
+    };
+
     // The rholang parser + reducer recurse through deeply-nested contract sources (the genesis
     // blessed terms in particular); a 2 MiB worker stack overflows. Give the runtime a larger
     // per-worker stack (the JVM node runs these paths on a much larger native stack).
@@ -45,7 +62,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    runtime.block_on(async_main(options));
+    runtime.block_on(async_main(options, log_level));
 }
 
 /// The machine's hardware parallelism (the tokio default), falling back to 1.
@@ -86,7 +103,11 @@ mod tests {
     }
 }
 
-async fn async_main(options: Options) {
+async fn async_main(options: Options, log_level: rchain_shared::log::Level) {
+    // The one logger the node installs, at the operator's level (AUDIT C145). `StderrLog` writes the
+    // wall clock on every line, so this is also what makes a cross-node timeline reconstructable.
+    let log: Arc<StderrLog> = Arc::new(StderrLog::new(log_level));
+
     // Execute a thin-client CLI command (port of `Main.main`'s `runCLI` branch).
     if !matches!(options.subcommand, Commands::Run(_)) {
         if let Err(errors) = run_cli(&options).await {
@@ -114,8 +135,7 @@ async fn async_main(options: Options) {
         }
     };
 
-    let program = match node_runtime::setup_node_program(&node_conf, &id, Arc::new(StderrLog)).await
-    {
+    let program = match node_runtime::setup_node_program(&node_conf, &id, log.clone()).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Setup error: {e}");
@@ -123,8 +143,55 @@ async fn async_main(options: Options) {
         }
     };
 
-    if let Err(e) = program.serve().await {
-        eprintln!("Server error: {e}");
-        std::process::exit(1);
+    // The stop path (AUDIT C144). Before this, nothing installed a signal handler: the only stop was
+    // a `SIGKILL` after the orchestrator's grace period, and **inside the container the node is PID 1,
+    // where the kernel does not apply the default terminate disposition** — so `docker stop`,
+    // systemd's `ExecStop` and a pod eviction all had their `SIGTERM` delivered and discarded.
+    //
+    // The listener handles are the sixth thing that can end the wait, and they must keep being
+    // reported (AUDIT C142), so the serve future is pinned and raced rather than moved into a
+    // `select!` arm: on a signal it still has to be *awaited* to completion, or dropping it would
+    // detach the listeners and turn a drain back into a truncation.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let serving = program.serve(stop_rx);
+    tokio::pin!(serving);
+    let stopping = tokio::select! {
+        result = &mut serving => Stopping::Served(result),
+        signal = rchain_node::runtime::shutdown::shutdown_signal() => Stopping::Signal(signal),
+    };
+    match stopping {
+        Stopping::Served(Err(e)) => {
+            eprintln!("Server error: {e}");
+            std::process::exit(1);
+        }
+        Stopping::Served(Ok(())) => {}
+        Stopping::Signal(signal) => {
+            log.info(
+                LogSource::new("coop.rchain.node.Main"),
+                &format!(
+                    "Received {signal}: stopping the listeners and draining (AUDIT C144, bounded at \
+                     {}s)",
+                    rchain_node::runtime::shutdown::SHUTDOWN_DRAIN_TIMEOUT.as_secs()
+                ),
+            );
+            let _ = stop_tx.send(true);
+            if let Err(e) = serving.await {
+                eprintln!("Server error while shutting down: {e}");
+                std::process::exit(1);
+            }
+            log.info(
+                LogSource::new("coop.rchain.node.Main"),
+                "Shutdown complete.",
+            );
+        }
     }
+}
+
+/// Why the wait for the listeners ended.
+enum Stopping {
+    /// `NodeProgram::serve` returned: a listener stopped, or failed. Its result is the error to
+    /// report — a clean `Ok` here means an accept loop returned, which is not a normal stop.
+    Served(Result<(), String>),
+    /// The operator asked the node to stop, naming the signal so the log can say which one arrived.
+    Signal(&'static str),
 }
