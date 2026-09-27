@@ -3349,6 +3349,68 @@ mod tests {
         }
     }
 
+    /// **The witness AUDIT C151 found missing: the effect-scheduler *mode* is what enables Law 24's
+    /// per-commit certificate.**
+    ///
+    /// `set_validation_enabled` has exactly one production caller — `set_effect_mode`'s
+    /// `mode == EffectMode::RelaxedValidated` — and every other caller in the tree is a test that
+    /// sets the flag *directly* on a queue it built (`rspace`'s `channel_queue` tests, this crate's
+    /// property tests). So the certificate's behaviour is witnessed and the wiring from the mode to
+    /// it was not: replacing that expression with `false` left every test green — measured, 250
+    /// rholang and 292 casper lib tests — because a test that never consults the mode cannot notice
+    /// that the mode stopped mattering.
+    ///
+    /// The arms below observe the *behaviour* the wiring controls rather than the flag: a write is
+    /// stamped on the channel at the claim's own path — equal is already a violation, since the
+    /// certificate requires the newest write to be strictly DFS-earlier — and the acquisition must be
+    /// refused under `RelaxedValidated` and accepted under every other mode, with nothing differing
+    /// between the arms but the mode.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn law24_the_effect_mode_is_what_enables_the_certificate() {
+        let interp = DebruijnInterpreter::new(
+            MockSpace {
+                produced: Mutex::new(Vec::new()),
+            },
+            MockDispatch,
+            BTreeMap::new(),
+            SortedProc::default(),
+        );
+        let channel = SortedProc::default();
+        let at = vec![0u16];
+
+        interp.set_effect_mode(EffectMode::RelaxedValidated);
+        interp.claims.record_write(&channel, &at, true);
+        let refused = interp
+            .claims
+            .claim(at.clone(), &[channel.clone()])
+            .wait_at_head()
+            .await;
+        assert!(
+            matches!(refused, Err(AcquireError::ValidationFailed { .. })),
+            "the validated mode must refuse a claim whose channel was last written at its own path — \
+             this is the certificate the block path turns into the sequential fallback"
+        );
+
+        // The control: the same stamp and the same claim, and only the mode differs. All three other
+        // modes leave the certificate off — `Relaxed` is the one that matters, and `Sequential` and
+        // `Gate` are here so the wiring is pinned as an *equality* with `RelaxedValidated` rather
+        // than as a truthiness that any non-default mode would satisfy.
+        for mode in [EffectMode::Sequential, EffectMode::Gate, EffectMode::Relaxed] {
+            interp.set_effect_mode(mode);
+            interp.claims.reset_write_record();
+            interp.claims.record_write(&channel, &at, true);
+            assert!(
+                interp
+                    .claims
+                    .claim(at.clone(), &[channel.clone()])
+                    .wait_at_head()
+                    .await
+                    .is_ok(),
+                "{mode:?} must not enforce the certificate"
+            );
+        }
+    }
+
     /// **Law 22 (`next_step_closure_computable`).** The next-step closure is computable *at
     /// dispatch*, from the term alone: `resolve_children` turns each top-level term of a par into one
     /// effect (a produce, a consume, or a nested `Par` to walk) without touching the tuple space, so

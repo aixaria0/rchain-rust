@@ -1511,7 +1511,8 @@ def laws : List Law := [
     note := "the property test `law23_read_state_determines_outcome` (`rspace/src/property_tests.rs`) \
       names it on the Rust side (commit 35dd13b62)" },
   { number := 24, layer := "Scheduler",
-    rustWitness := ["rspace/src/property_tests.rs:law24_record_layer_and_validation"],
+    rustWitness := ["rspace/src/property_tests.rs:law24_record_layer_and_validation",
+      "rholang/src/reduce.rs:law24_the_effect_mode_is_what_enables_the_certificate"],
     statement := "DFS-order serializability: a concurrent execution is sound for the block path iff \
       every commit read exactly the state the DFS-earlier effects produced (the versioned \
       write-record layer)",
