@@ -427,9 +427,10 @@ fi
 #
 # **The column is found by name, not by index.** `$14` was the column's position in a schema emitted
 # from `Rchain/Laws.lean`, and a position is a fact about the *emitter* that this reader cannot check:
-# `audit-test-register.sh` reads the same register through named fields for the same reason (and its
-# `IFS=$'\034'` note is the neighbouring trap — a tab-separated consumer that lets `read` collapse an
-# empty field shifts every later column silently). A column that cannot be found now names itself
+# `audit-test-register.sh` read the same register through named fields for the same reason, before it
+# was deleted on 2026-09-27 (and its `IFS=$'\034'` note is the neighbouring trap — a tab-separated
+# consumer that lets `read` collapse an empty field shifts every later column silently). A column that
+# cannot be found now names itself
 # instead of running over an empty list.
 #
 # **The log is per-run, and the verdict reported is the checker's own summary.** `>/tmp/rust-witnesses.log`

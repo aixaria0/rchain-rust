@@ -259,12 +259,18 @@ chain that accepted such a block under the old (over-charging) rule diverges on 
 
 | Command | What it refuses |
 |---|---|
-| `tools/check-lean-conformance.sh` | a failed Lean or Coq build, a `sorry`/`admit`, a module `Rchain.lean` does not import, a **stale or untracked corpus**, a corpus with no consumer, a consumer that disagrees with its corpus, and a law-39 catalog urn with no row in `spec/API-SCHEMA.md`. It is the `formal` job in CI. |
+| `tools/check-lean-conformance.sh` | a failed Lean or Coq build, a `sorry`/`admit`, a module `Rchain.lean` does not import, a **stale or untracked corpus**, a corpus with no consumer, a consumer that disagrees with its corpus, and a law-39 catalog urn with no row in `spec/API-SCHEMA.md`. It is the `formal` job in the nightly. |
 | `tools/audit-type-system.sh` | production `panic!`/`unsafe`/silent conversion — the no-silent-partiality discipline |
-| `tools/audit-test-register.sh` | a register that overstates the tree, a named test that does not exist, **a law row claiming coverage without naming a Lean module, a corpus and a consumer that exist** |
+| `tools/audit-status.sh` | a check-off that disagrees with `spec/findings.tsv`, a `todo` that names nothing, a `done` row whose evidence resolves to nothing |
 
-The third of those is the one that answers "which law would have caught the eleventh failure?":
-`spec/audit/passes.md` §20 maps every incident to its law and its case.
+**A third gate used to be here** — `tools/audit-test-register.sh`, which refused a register that
+overstated the tree, a named test that did not exist, and a law row claiming coverage without naming a
+Lean module, a corpus and a consumer that exist. It was deleted on 2026-09-27: 1,453 lines, 78.5
+seconds, and every failure meant a document disagreed with another document.
+
+The gates answer "would this have been caught?"; the question *"which law would have caught the
+eleventh failure?"* is answered by `spec/audit/passes.md` §20, which maps every incident to its law
+and its case.
 
 Per-law status, source-of-truth pointers, and Rust realization are in
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); the machine-readable rows are

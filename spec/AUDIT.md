@@ -6,8 +6,15 @@ it was falsified, what the fix does not do -- is in [`audit/passes.md`](audit/pa
 § the row cites.
 
 The companion pages: [`RUST-VS-SCALA.md`](RUST-VS-SCALA.md) on how the rewrite made these fragile
-patterns explicit; [`REVIEW-LEDGER.md`](REVIEW-LEDGER.md), the denominator; [`INVENTORY.md`](INVENTORY.md),
-the law catalog; and [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md), the discipline this is checked against.
+patterns explicit; [`review-ledger.tsv`](review-ledger.tsv), the coverage data the count below is read
+from; [`INVENTORY.md`](INVENTORY.md), the law catalog; and [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md), the
+discipline this is checked against.
+
+**The review ledger's rendering and its gate are gone** (2026-09-27): `REVIEW-LEDGER.md`, its emitter,
+and the 1,453-line `tools/audit-test-register.sh` that checked it were deleted. Their failures were
+always "a document disagrees with the tree", nothing production-facing read them, and the gate needed
+maintaining more often than it caught anything. What a reader wanted from that material is the count
+on this page, which costs 2.5 seconds.
 
 ---
 
@@ -15,14 +22,14 @@ the law catalog; and [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md), the discipline this is 
 
 ## Check-off
 
-**Findings  TODO 15 · IN PROGRESS 0 · DONE 183** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  20 of 89 T1 modules unread**
+**Findings  TODO 14 · IN PROGRESS 0 · DONE 184** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  20 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 183 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 184 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
-### TODO — findings (15)
+### TODO — findings (14)
 
 | id | what | what closes it | account |
 |---|---|---|---|
@@ -34,7 +41,6 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | `C70` | the gate could not see a nested comment, and the widened token set is the only check that | the end-to-end run of the modified conformance gate | §19 |
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
-| `C163` | C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file | the test asserts the refusal as its `api_surface.rs` sibling does, or drives explore-deploy-by-block-hash against the genesis so it can still assert a 200 | §21 |
 | `R31` | attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136` | a disposition: validate the host the UPnP path advertises, or record why a hostname is safe there | §13 |
 | `R32` | attacker-controlled large `sender.host` retained in the connections table. `comm/src/rp/handle_messages.rs:70-93` | a disposition: cap the retained host string, or record that MAX_CONNECTIONS bounds the work | §13 |
 | `R33` | faucet to the deployer's own address is a no-op that still consumes the rate budget and submits a deploy | refuse a self-drip before charging the budget, or record why spending it is intended | §13 |
@@ -45,7 +51,8 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 ### TODO — unread T1 modules (20)
 
 The modules that can fork the chain or lose funds, and that nobody has read. In remit and not
-yet read, which is what `deferred` means in [`REVIEW-LEDGER.md`](REVIEW-LEDGER.md).
+yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its
+rendering and the gate that checked it were deleted on 2026-09-27; the data is the file.
 
 | module |
 |---|
@@ -75,7 +82,7 @@ yet read, which is what `deferred` means in [`REVIEW-LEDGER.md`](REVIEW-LEDGER.m
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (183)
+### DONE (184)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -182,6 +189,7 @@ yet read, which is what `deferred` means in [`REVIEW-LEDGER.md`](REVIEW-LEDGER.m
 | `C160` | a decided coordinator record could be resurrected by a late vote | an_abort_is_absorbing | §15 |
 | `C161` | a phase-two failure is discarded. `casper/src/gateway/mod.rs::apply_phase_two` ignores | a_failed_phase_two_leaves_the_decision_intact | §15 |
 | `C162` | the inner replay trace check does not fire for a term tamper; the state-hash comparison | a_tampered_deploy_replays_to_a_rejected_state_hash | §15 |
+| `C163` | C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file | genesis_boot_exposes_block_over_http | §21 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

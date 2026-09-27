@@ -304,6 +304,14 @@ mod tests {
     /// been materialized — which is exactly the 16 GB, and why the constant is 19 rather than 20.
     ///
     /// This is the row's own named proof, red on the tree before the fix.
+    ///
+    /// **`assertions_on_constants` is allowed here, and the lint is wrong about this one.** It exists
+    /// to catch `assert!(true)` — an assertion that can never fail because it is folded away. This
+    /// assertion is the opposite: *both sides being constants is the property under test*, and the
+    /// test is the only thing that fails when someone raises one constant without the other. That is
+    /// exactly what happened (the per-dimension guard was 20 while the product cap was 1,000,000), and
+    /// a foldable comparison is what makes it checkable at all.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn a_single_dimension_cannot_outgrow_the_product_cap() {
         assert!(

@@ -207,4 +207,4 @@ C157		21	done	`tools/audit-mutate.sh` reported `green` for runs in which no test
 C158		21	todo	an arity drift on a catalog entry that does not reply is caught by nothing	every_urn_replies_in_the_shape_the_lean_catalog_says/stdout/stderr	tie a non-replying entry's arity to something, or a decision that the corpus need not
 C159		21	done	`tools/audit-type-system.sh`'s `silent` class listed every violation it found and counted none of them	scan_spanning	-
 C155		21	done	the register's own anchor check cannot see a citation move by up to eight lines		-
-C163		21	todo	C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file		the test asserts the refusal as its `api_surface.rs` sibling does, or drives explore-deploy-by-block-hash against the genesis so it can still assert a 200
+C163		21	done	C129's fix left `node/tests/node_api.rs` asserting the old explore-deploy behaviour, and C129's own commit never ran that file	genesis_boot_exposes_block_over_http	-

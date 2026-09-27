@@ -113,11 +113,10 @@ if [[ "$fail" == "1" ]]; then exit 1; fi
 
 # --- the coverage half ---------------------------------------------------------------------------
 #
-# Read straight from `spec/review-ledger.tsv` rather than through `tools/emit-review-ledger.sh`, and
-# that is a deliberate cost decision: the emitter's *join* (that the ledger's rows and the tree's
-# rosters agree in both directions) is 46 of the register gate's 78 seconds, and it is a cross-check
-# of the *tree*. What the check-off needs is a count over 624 rows, which is an awk. The join stays in
-# `tools/audit-test-register.sh`, where it belongs.
+# Read straight from `spec/review-ledger.tsv`, which since 2026-09-27 is the only half that exists:
+# its emitter and the 46-second join that proved its rows and the tree's rosters agreed were deleted
+# with the rest of `tools/audit-test-register.sh`. What the check-off needs is a count over 624 rows,
+# which is an awk, and that is all there is.
 t1_total=$(awk -F'\t' '$3 == "T1"' "$LEDGER" 2>/dev/null | wc -l)
 t1_deferred=$(awk -F'\t' '$3 == "T1" && $4 == "deferred"' "$LEDGER" 2>/dev/null | wc -l)
 
@@ -155,7 +154,8 @@ panel="$(mktemp)"
   tbl_todo; printf '\n'
   printf '### TODO — unread T1 modules (%s)\n\n' "$t1_deferred"
   printf 'The modules that can fork the chain or lose funds, and that nobody has read. In remit and not\n'
-  printf 'yet read, which is what `deferred` means in [`REVIEW-LEDGER.md`](REVIEW-LEDGER.md).\n\n'
+  printf 'yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its\n'
+  printf 'rendering and the gate that checked it were deleted on 2026-09-27; the data is the file.\n\n'
   printf '| module |\n|---|\n'
   tbl_unread; printf '\n'
   printf '### IN PROGRESS (%s)\n\n| id | what | what closes it | account |\n|---|---|---|---|\n' "$(count_of 'in progress')"

@@ -2,6 +2,10 @@
 
 use serde::Serialize;
 
+// `StateHash` is used only by the test module below, so the import is test-only. Without the gate it
+// is an unused import in the plain lib build, and `-D warnings` makes that a hard failure — which is
+// what it was on `dev` from 11ec9e037 until this.
+#[cfg(test)]
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::report::BlockEventInfo;
 

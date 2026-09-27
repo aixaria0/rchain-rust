@@ -129,20 +129,32 @@ fn genesis_boot_exposes_block_over_http() {
         assert_eq!(shards["shards"][0]["shardId"], "/root");
         assert_eq!(shards["shards"][0]["primary"], true);
 
-        // `POST /api/v1/explore-deploy` runs a term and returns what it produced (AUDIT C38/C39).
-        // Three things are asserted at once, and each was wrong before:
+        // An exploratory deploy runs a term and returns what it produced (AUDIT C38/C39). Three things
+        // are asserted at once, and each was wrong before:
         //   * the reply is read from `@"out"` — the channel every corpus, example and client writes
         //     to — and not only from the term's first `new`-bound name;
         //   * the response *says* which channel answered (`replySource`), so an empty `expr` is a
         //     fact rather than a guess;
         //   * the value is the reference document's shape — `{"ExprInt":{"data":42}}` — rather than
         //     the `{"ExprInt":42}` the port used to write, which no client could read.
+        //
+        // **Through the by-hash route, because the no-hash default cannot answer on this node.** AUDIT
+        // C129 made `POST /api/v1/explore-deploy` read the last *finalized* block, and a node that has
+        // produced only its genesis has no finalized fringe — so that route answers the 400 its sibling
+        // `api_surface.rs` asserts. Naming the genesis block is what lets this test keep doing the job
+        // it was written for; which of the two routes carries the term does not change any of it.
+        // (Registered as C163: C129's commit changed the default and verified `--test api_surface`,
+        // never this file, so this assertion had been failing unseen.)
         let explore = client
-            .post(format!("{base}/api/v1/explore-deploy"))
-            .json(&"@\"out\"!(42)".to_string())
+            .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
+            .json(&serde_json::json!({
+                "term": "@\"out\"!(42)",
+                "blockHash": genesis["blockHash"],
+                "usePreStateHash": false
+            }))
             .send()
             .await
-            .expect("POST /api/v1/explore-deploy");
+            .expect("POST /api/v1/explore-deploy-by-block-hash");
         assert_eq!(explore.status(), 200);
         let body: Value = explore.json().await.expect("explore json");
         assert_eq!(
@@ -157,11 +169,15 @@ fn genesis_boot_exposes_block_over_http() {
         // The first `new`-bound name keeps working — a client following the reference node's own
         // convention sees no change.
         let named = client
-            .post(format!("{base}/api/v1/explore-deploy"))
-            .json(&"new result in { result!(7) }".to_string())
+            .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
+            .json(&serde_json::json!({
+                "term": "new result in { result!(7) }",
+                "blockHash": genesis["blockHash"],
+                "usePreStateHash": false
+            }))
             .send()
             .await
-            .expect("POST /api/v1/explore-deploy (first private name)");
+            .expect("POST /api/v1/explore-deploy-by-block-hash (first private name)");
         assert_eq!(named.status(), 200);
         let body: Value = named
             .json()

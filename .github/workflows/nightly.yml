@@ -6,9 +6,11 @@
 #   * `check-lean-conformance.sh` is **~104 serial `cargo test` invocations** (15 corpus layers + 89
 #     witness entries) behind a Lean build that is 16 minutes cold and a Coq `make`;
 #   * `cargo llvm-cov` recompiles the whole workspace with source-based instrumentation — a codegen
-#     profile of its own, so none of the warm `test` cache is reused — and then runs the full suite;
-#   * `audit-instruments.sh` plants a defect per gate and runs the whole gate 24 times, and each probe
-#     is itself a cascade (`audit-test-register.sh` re-emits two ledgers and the type-system scan).
+#     profile of its own, so none of the warm `test` cache is reused — and then runs the full suite.
+#
+# The instrument harness was the third and is gone (2026-09-27): it planted a defect per gate and ran
+# the whole gate 23 times, which tests the *apparatus*. Two of the gates it exercised have since been
+# deleted, and the two that remain are exercised by `ci.yml` on every push.
 #
 # They move here rather than disappearing. Nothing is dropped from the evidence; it stops gating every
 # push and starts being measured on a schedule. What stays per-push is what finishes in minutes and can
@@ -98,9 +100,13 @@ jobs:
 
       - name: Coverage
         # The measurement, the per-file ranking and the floor are emitted to `spec/COVERAGE-LEDGER.md`
-        # by `tools/emit-coverage-ledger.sh`, and check 11 of `tools/audit-test-register.sh` recomputes
-        # `floor = floor(measured) - 2` from the committed lcov, so this line and the ledger cannot
-        # drift. The floor is a regression tripwire, not a target: it is raised only *after* measuring.
+        # by `tools/emit-coverage-ledger.sh`. The floor is a regression tripwire, not a target: it is
+        # raised only *after* measuring.
+        #
+        # **The rule used to be checked and is not any more.** `floor = floor(measured) - 2` was
+        # recomputed from the committed lcov by check 11 of `tools/audit-test-register.sh`, which was
+        # deleted on 2026-09-27 with the rest of that gate. The rule still describes how the numbers
+        # below were arrived at, and re-running `make coverage` is what reconciles them.
         #
         # The line and function floors, and why the second is a *function* floor (AUDIT C107): the
         # audit's item asked for `--branch`, and the toolchain refuses it (`-Z coverage-options=branch`
@@ -119,8 +125,8 @@ jobs:
         # 89.14 => 87 (the reporting replay and its system deploy, the OpenAPI document).
         #
         # **This step moved here from `coverage.yml` when the deep gates left the push path**, and it
-        # took the floors and this history with it — check 11 of `tools/audit-test-register.sh` reads
-        # them from this file, so the two cannot drift (`tools/audit-test-register.sh`'s `FLOOR_SITE`).
+        # took the floors and this history with it. `coverage.yml` was deleted outright on 2026-09-27;
+        # what it did per push (format, lints, the tests, the two static gates) is `ci.yml`'s now.
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
       - name: Upload coverage
@@ -129,28 +135,3 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
 
-  instruments:
-    name: Instrument harness (each gate against its own defect)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          cache-on-failure: false
-
-      - name: Instrument harness
-        # **`--shared-tree-ok` because CI's checkout *is* the primary one.** The flag exists for a tree
-        # nobody else is writing, which is exactly what a CI runner is; in a working tree shared with
-        # another session it must not be passed, and the harness refuses without it (`C159`'s guard).
-        #
-        # This gate is the one that found C159 — a hard class that listed every violation it found and
-        # counted none — so it is not decoration. It is also 23 whole-gate runs, serially, which is why
-        # it is here and not on the push path.
-        run: tools/audit-instruments.sh --shared-tree-ok

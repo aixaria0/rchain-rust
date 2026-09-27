@@ -13,8 +13,9 @@
 # **The zero-match refusal is the point, not a detail.** `cargo test <filter>` exits 0 when the filter
 # matches nothing, so a registry of renamed, deleted or `#[ignore]`d tests would run green while
 # checking nothing — the fifth blind instrument this pass has found, and the same clause
-# `tools/audit-test-register.sh`'s checks 9 and 10 already carry ("a check that matched nothing is not
-# evidence"). A witness whose symbol is not even *in* its file is refused before cargo runs.
+# `tools/audit-test-register.sh`'s checks 9 and 10 carried, before that gate was deleted on
+# 2026-09-27 ("a check that matched nothing is not evidence"). A witness whose symbol is not even
+# *in* its file is refused before cargo runs.
 #
 # Usage:  tools/check-rust-witnesses.sh [file]      (default: stdin; `-` also means stdin)
 #         the input is one `path.rs:symbol` per line; blank lines and `#` comments are skipped.

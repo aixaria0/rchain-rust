@@ -4132,10 +4132,13 @@ remotely.
   (207) and `--test api_surface`, and that file is not among them. Found by running
   `cargo test --workspace` on the check-off's own branch, where it is the only failure.
   **This is not a code defect** — C129 decided the behaviour deliberately, and a 400 for a request
-  that names no block on a node with no agreed block is the honest answer. **What is owed is the
-  test**: either it asserts the refusal, as its sibling already does, or it drives
-  `explore-deploy-by-block-hash` against the genesis so it can still assert a `200`. Registering
-  rather than fixing because which of those is right is C129's decision to confirm, and a test that
-  is corrected to whatever the code happens to do is the class of edit this register exists to
-  catch.
+  that names no block on a node with no agreed block is the honest answer. **What was owed was the
+  test.** It took the second of the two routes: both calls now go to
+  `explore-deploy-by-block-hash` with the genesis block's hash, which the test already had at
+  `node_api.rs:111`, so every assertion it was written for — the reply channel, `replySource`, the
+  reference document's value shape, and the first-`new`-bound-name convention — still runs. Asserting
+  the refusal instead was the cheaper route and was rejected: it would have left the test green while
+  no longer testing anything it exists for, which is the class of edit this register is about. The
+  fix is pinned by the test itself (`genesis_boot_exposes_block_over_http`, green) and the whole
+  suite is green behind it — the first time in this tree's recent history.
 

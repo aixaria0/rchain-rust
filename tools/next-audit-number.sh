@@ -3,7 +3,7 @@
 #
 # Why this exists: the finding numbers are the one part of the audit's structure that nothing
 # allocates. Every other cell is owned (`tools/emit-lean-counts.sh` owns the counts, the register owns
-# the laws, `tools/audit-test-register.sh` owns the citations), but the C-number is chosen by whoever
+# the laws, `tools/emit-findings-register.sh` owns the check-off), but the C-number is chosen by whoever
 # writes the finding — and in a checkout with four writers that raced three times in one hour
 # (2026-09-24: C64, then C66, then C67, then C68, with C66 left as a gap and one commit message
 # citing a number that now names a different finding).

@@ -4,17 +4,17 @@ This register records an adversarial audit of the Rust port's test coverage. It 
 companion to [`AUDIT.md`](AUDIT.md) (the *code* findings check-off): it records what the code
 does wrong; this page records what the tests fail to catch.
 
-**The register is machine-checked.** [`tools/audit-test-register.sh`](../tools/audit-test-register.sh)
-recomputes every number below, verifies that every test the register names actually exists, requires
-every source file to be tested or exempt with a reason class, and fails on any still-deferred row. It
-exists because this page drifted: it claimed an `#[ignore]`d test that no longer existed, "110 legacy
-contracts" when the tree held 165, and per-crate counts several releases stale. Run it after changing
-this file:
+**This page is no longer machine-checked, and that is a decision rather than a regression**
+(2026-09-27). `tools/audit-test-register.sh` recomputed every number below, verified that every test
+the register named existed, required every source file to be tested or exempt, and failed on any
+still-deferred row — 1,453 lines and 78.5 seconds over 17 checks, every one of whose failures meant *a
+document disagrees with the tree*. It was deleted with `tools/audit-instruments.sh`,
+`tools/audit-mutate.sh` and the review ledger's emitter; `spec/AUDIT.md`'s header says why, and
+`tools/audit-status.sh` is what replaced the part of it a person acts on.
 
-```sh
-tools/audit-test-register.sh               # hard: what `make check-register` and CI run
-tools/audit-test-register.sh --deferred-ok # reports what hard mode would fail on (a burn-down view)
-```
+Read this page as what it is: a record, last reconciled by the pass that wrote each row. The one thing
+it still does mechanically is the law matrix, which `tools/check-lean-conformance.sh` consumes through
+named fields rather than by counting this file.
 
 ### The census: files, not per-crate totals
 
@@ -54,7 +54,7 @@ that had already rotted: item 11's ordering below was written by hand from an ol
 the file ranked fifteenth first.
 
 The **raise history is not restated here.** It lives in one place — the comment above
-`--fail-under-lines` in `.github/workflows/coverage.yml` — and the ledger derives its own sentence from
+`--fail-under-lines` in `.github/workflows/nightly.yml` — and the ledger derives its own sentence from
 that site, so the two cannot disagree. This paragraph used to carry the list *and a count of it* ("raised
 six times"), and both had rotted: the count was already three raises out of date when it was read, which
 is the same failure this register exists to close, one line above the sentence that closes it. The floor
@@ -712,7 +712,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | Item | State |
 |---|---|
 | 1. No deferred gap rows (the register's own marker); every ✅ names a findable test | **done** — the linter's hard mode passes with no deferred rows and no open tier rows |
-| 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (seven checks; hard mode green) |
+| 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **reverted** — `tools/audit-test-register.sh` grew to seventeen checks and was deleted on 2026-09-27; a linter over a record nobody acts on was the thing being litigated, not the record |
 | 3. Every law has a property test or a recorded exemption | **done** — the matrix in Inventory; exempt: 12/13 (orphaned), 19 (axiom, KAT-pinned), 22/23 (stated reason), 28 (unit idempotency) |
 | 4. `make test-unit` runs `--all-features` | **done** (with `test-integration`) |
 | 5. The coverage floor raised after measuring | **done, and now derived rather than remembered** — `tools/emit-coverage-ledger.sh` computes the floor from the measurement, check 11 refuses a CI floor that is not `floor(measured) − 2`, and the *history* of raises lives in one place (the comment above `--fail-under-lines`), from which the ledger derives its own sentence. The list that used to sit here, with a count of it, had rotted. |
