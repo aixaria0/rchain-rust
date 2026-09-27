@@ -276,6 +276,167 @@ fn a_fresh_chain_resolves_and_can_call_every_seeded_shorthand() {
 
 /// Two genesis ceremonies over fresh stores must agree on the registered values — the property that
 /// makes the aliases chain-independent (a consumer hardcodes them; `spec/GENESIS.md`).
+/// A deploy signed by a **real 65-byte key**. `deploy` above uses a 32-byte placeholder, which
+/// `RevAddress::from_deployer_id` refuses; anything that spends needs a deployerId that resolves.
+fn deploy_from(
+    term: &str,
+    deployer: Vec<u8>,
+) -> rchain_models::casper::protocol::casper_message::SignedDeployData {
+    let mut d = deploy(term);
+    d.deployer = deployer;
+    d
+}
+
+/// A genesis vault for `public_key`, so the funding transfer has something to move.
+fn vault_for(public_key: Vec<u8>, amount: i64) -> rchain_casper::genesis::contracts::Vault {
+    rchain_casper::genesis::contracts::Vault {
+        rev_address: rchain_rholang::util::rev_address::RevAddress::from_public_key(
+            &rchain_crypto::public_key::PublicKey::new(public_key),
+        )
+        .expect("a valid rev address"),
+        initial_balance: rchain_shared::refined::NonNegI64::try_from(amount).expect("non-negative"),
+    }
+}
+
+/// **The multi-signature vault actually moving funds** — AUDIT C114's alternative, exercised rather
+/// than merely installed.
+///
+/// The authorisation is the *human* path the oracle's wallet uses: `deployerAuthKey` makes an
+/// `AuthKey` token whose shape is `(*_multiSigRevVault, pubKey)`, and the vault's `transfer` checks it
+/// through the installed `AuthKey` contract. **The shape contains the contract's own private name**,
+/// so only the contract can build it — which is why this path needs no native code at all, and why
+/// the earlier attempt through the sealer/unsealer machinery was looking in the wrong place.
+///
+/// What the flow proves, beyond "the contract answers": the vault's REV is spent by *the contract*,
+/// through the vault handle's `transfer` and an `unforgeableAuthKey` — i.e. the delegated spend that
+/// `spec/RUST-FIRST.md`'s B2 said this port did not have. The assertion is the destination balance,
+/// because a reply of "done" with no movement is the defect C114 was about, one layer in.
+fn multi_sig_single_key_term(target: &str) -> String {
+    format!(
+        r#"new rl(`rho:registry:lookup`), ch, deployerId(`rho:rchain:deployerId`),
+               DeployerIdOps(`rho:rchain:deployerId:ops`),
+               mainVault(`rho:rchain:revVault`),
+               pkCh, createCh, authCh, fundCh, transferCh, out(`rho:io:stdout`) in {{
+             rl!(`rho:rchain:multiSigRevVault`, *ch) |
+             for (@(_, *MultiSigRevVault) <- ch) {{
+               DeployerIdOps!("pubKeyBytes", *deployerId, *pkCh) |
+               for (@pk <- pkCh) {{
+                 // Quorum 1 with this deployer's own key: the simple custody case, and the one whose
+                 // authorisation needs nothing but the deployer's identity.
+                 MultiSigRevVault!("create", [pk], [], 1, *createCh) |
+                 for (@created <- createCh) {{
+                   match created {{
+                     (true, (*multiSig, revAddr, *revVault)) => {{
+                       // Fund the vault the contract just made: its address comes from a fresh name,
+                       // so it starts empty and a transfer out of it would fail for insufficient
+                       // funds — correctly. (The oracle's wallet funds the vault too.)
+                       mainVault!("transfer", *deployerId, revAddr, 40000000, *fundCh) |
+                       for (_ <- fundCh) {{
+                         MultiSigRevVault!("deployerAuthKey", *deployerId, *authCh) |
+                         for (auth <- authCh) {{
+                           multiSig!("transfer", "{target}", 30000000, *auth, *transferCh) |
+                           for (@result <- transferCh) {{ @"out"!(result) }}
+                         }}
+                       }}
+                     }}
+                     other => {{ @"out"!(other) }}
+                   }}
+                 }}
+               }}
+             }}
+           }}"#
+    )
+}
+
+#[test]
+fn a_multisig_vault_spends_through_the_contract_that_holds_it() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let target = rchain_rholang::util::rev_address::RevAddress::from_public_key(
+            &rchain_crypto::public_key::PublicKey::new(vec![2u8; 65]),
+        )
+        .expect("target address")
+        .to_base58();
+
+        let terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+            &ceremony_identity(),
+        )
+        .expect("the blessed term list builds");
+
+        let (_, post, _) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[vault_for(vec![0u8; 65], 1_000_000_000)],
+            )
+            .await
+            .expect("compute_genesis");
+
+        let (post, results, _) = rm
+            .compute_state(
+                &post,
+                &[deploy_from(
+                    &multi_sig_single_key_term(&target),
+                    vec![0u8; 65],
+                )],
+                &[],
+                &rand,
+                BlockData::empty(),
+            )
+            .await
+            .expect("the multi-signature deploy runs");
+        let last = results.last().expect("the deploy ran");
+        assert!(
+            last.eval_result.succeeded(),
+            "the flow must run: {:?}",
+            last.eval_result.errors
+        );
+
+        {
+            let ch = rchain_models::sorted::SortedProc::new(rchain_models::par_ops::from_expr(
+                rchain_models::ast::Expr::GString("out".to_string()),
+            ));
+            let datums = rm.runtime().get_data_par(&ch).await.expect("read out");
+            assert!(
+                !datums.is_empty(),
+                "the contract must answer the transfer (post-state {post:?})"
+            );
+            // The contract's success shape for a single-signature vault is `(true, (false, "done"))`
+            // — the inner `false` means "no further confirmation is needed", which is why the check
+            // is on the *word* rather than on the presence of a boolean. (The first version of this
+            // test asserted no `GBool(false)` at all, and would have failed the success case.)
+            let text = format!("{:?}", datums);
+            assert!(
+                text.contains("done") && !text.contains("invalid auth"),
+                "the deployer's own auth key must authorise the transfer: {text}"
+            );
+        }
+
+        let native =
+            rchain_rholang::native_state::NativeSystemState::new(rm.runtime().native_store());
+        let balance = native
+            .vault_balance(&target)
+            .await
+            .expect("read the target balance")
+            .map(i64::from)
+            .unwrap_or(0);
+        assert_eq!(
+            balance, 30_000_000,
+            "the contract's own transfer must move the funds: a reply without a movement is not the \
+             delegated spend working (post-state {post:?})"
+        );
+    });
+}
+
 #[test]
 fn the_seeded_registry_is_identical_across_fresh_genesis_ceremonies() {
     with_big_stack(async {
