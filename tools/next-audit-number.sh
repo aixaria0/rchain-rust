@@ -17,15 +17,28 @@
 
 set -euo pipefail
 
+# **Two files, since the pass record moved.** The finding *entries* live in `spec/audit/passes.md`
+# and the summary rows live in the emitted check-off at `spec/AUDIT.md`; a number is allocated if
+# either shape names it. Scanning one file would silently de-allocate every finding whose only row is
+# in the other, and this tool is the oracle the pointer check reads -- so the failure would present as
+# "every citation in the tree is dangling", which is the loudest possible way to be wrong.
 audit="$(cd "$(dirname "$0")/.." && pwd)/spec/AUDIT.md"
+passes="$(cd "$(dirname "$0")/.." && pwd)/spec/audit/passes.md"
 [[ -f "$audit" ]] || { echo "no spec/AUDIT.md at $audit" >&2; exit 1; }
+[[ -f "$passes" ]] || { echo "no pass record at $passes" >&2; exit 1; }
 
 # Only the two shapes a *finding* number takes: the entry and the §20 table row. A prose mention
 # (`… traced to C66`) is not an allocation — C66 is a gap the numbering race left, and it must read as
 # a gap here too, or the tool would disagree with the register about what is allocated.
+# **Every grep is `|| true`, and that is load-bearing under `set -e` + `pipefail`.** A shape with no
+# rows makes its grep exit 1, `pipefail` makes that the pipeline's status, and `set -e` then takes the
+# script down with no output at all -- which reads as "this tool is broken" rather than "one of the two
+# files has no rows yet". It happened the moment the pass record moved: a freshly-split `spec/AUDIT.md`
+# has no rows until the emitter runs, and the tool exited 1 in silence.
 used="$(
-  { grep -oE '^- \*\*C[0-9]+' "$audit"; grep -oE '^\| C[0-9]+ ' "$audit"; } \
-    | grep -oE '[0-9]+' | sort -n -u
+  { grep -oE '^- \*\*C[0-9]+' "$passes" || true; grep -oE '^\| C[0-9]+ ' "$passes" || true
+    grep -oE '^- \*\*C[0-9]+' "$audit"  || true; grep -oE '^\| C[0-9]+ ' "$audit"  || true; } \
+    | { grep -oE '[0-9]+' || true; } | sort -n -u
 )"
 max="$(printf '%s\n' "$used" | tail -1)"
 

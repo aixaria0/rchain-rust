@@ -560,7 +560,7 @@ impl PosGenesis {
 /// **This is `pickActiveValidators` with a different selection rule** — the contract takes the first
 /// `$$numberOfActiveValidators$$` entries of the bonds map in *key* order (`Pos.rhox:718-726`, whose
 /// own TODO marks it a placeholder for a random selection), and the port takes the highest-staked.
-/// Registered in `spec/AUDIT.md` §6.
+/// Registered in `spec/audit/passes.md` §6.
 pub fn select_active<V>(
     pool: &BTreeMap<Validator, NonNegI64>,
     withdrawers: &BTreeMap<Validator, V>,
@@ -1226,7 +1226,7 @@ impl NativeSystemState {
             // validator's bond but leaves it in `pendingWithdrawers` (`Pos.rhox:491`), so at the next
             // boundary it lands in `withdrawers` with a zero amount and is never paid; dropping it
             // here is the same payable outcome without the permanent tombstone. Registered in
-            // `spec/AUDIT.md` §6.
+            // `spec/audit/passes.md` §6.
         }
 
         // 3. Pay the claims whose quarantine has elapsed.
@@ -1435,7 +1435,7 @@ impl NativeSystemState {
     /// RevVault `findOrCreate` behavior, simplified: the vault is keyed by REV address, so the
     /// unforgeable-name capability is not modeled — `spec/RUST-FIRST.md`'s B2 decision says what that
     /// costs (delegation) and what it does not (the spend rule, which the caller's `deployerId`
-    /// carries), and `spec/AUDIT.md` §6 holds it as a registered deviation).
+    /// carries), and `spec/audit/passes.md` §6 holds it as a registered deviation).
     pub async fn find_or_create_vault(&self, address: &str) -> Result<(), String> {
         if self.vault_balance(address).await?.is_none() {
             self.set_vault_balance(address, NonNegI64::zero());

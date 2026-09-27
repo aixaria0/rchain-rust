@@ -34,7 +34,7 @@ would be a number whose denominator changes meaning when someone re-scopes a kin
 | `class` | 6 | 6 | 0 | 0 | 0 | 0 | 6 | 0 | 0 |
 | `process` | 30 | 30 | 0 | 0 | 0 | 0 | 30 | 0 | 0 |
 | `config` | 105 | 105 | 1 | 1 | 0 | 0 | 104 | 0 | 0 |
-| `tool` | 24 | 24 | 5 | 4 | 0 | 1 | 19 | 0 | 0 |
+| `tool` | 27 | 27 | 5 | 4 | 0 | 1 | 22 | 0 | 0 |
 | `roster` | — | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
 
 **What the columns mean, so the table is read the way it was written.** The first column is the derived
@@ -57,9 +57,9 @@ not of a file — `casper/src/merging.rs` is T1 while one arithmetic site inside
 |---|---:|---:|---:|---:|---:|
 | T1 | 89 | 65 | 20 | 4 | 0 |
 | T2 | 21 | 3 | 18 | 0 | 0 |
-| T3 | 513 | 23 | 490 | 0 | 0 |
+| T3 | 516 | 23 | 493 | 0 | 0 |
 
-**513 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
+**516 rows are T3, and most of them are T3 by default rather than by judgement.** For the 48
 files the register has already tiered, the tier above is *derived* from that table — a judgement
 inherited, not invented. For every other item the seed writes T3 because it is the lowest tier, and that
 is the consequence to read with it: **a T3 row is not a file that was judged presentational, it is a file
@@ -82,9 +82,9 @@ below the derivation means rows are missing; a ceiling far above it means the ro
 | `ingress` | 45 | 45 | ok |
 | `process` | 30 | 30 | ok |
 | `config` | 105 | 105 | ok |
-| `tool` | 24 | 24 | ok |
+| `tool` | 27 | 27 | ok |
 
-**Findings allocated but unhoused**: the header records a ceiling of `112` for
+**Findings allocated but unhoused**: the header records a ceiling of `116` for
 C-numbers the register allocates and no `finding` row names. An audit whose findings are all unregistered
 is honest about that *as a number*, not as a sentence — the ceiling only goes down, and check 15 compares
 it against the allocator.
@@ -106,4 +106,4 @@ uses for its own boundary.
 * **Overlap is real and deliberate.** A file row and the law rows witnessed in it are different
   questions about the same bytes. That is why the table above is never summed.
 
-*Emitted from a tree at ae2f888df.*
+*Emitted from a tree at 11ec9e037.*

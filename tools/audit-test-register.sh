@@ -103,6 +103,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPEC="$ROOT/spec"
 REGISTER="$ROOT/spec/TEST-COVERAGE.md"
+# The two halves of the audit register. `spec/AUDIT.md` is the check-off a reader opens; the finding
+# entries and their `## N. ` headings live in the pass record beside it. The pointer check resolves
+# `Cnn` against the allocator and `§N` against a heading, and both of those are in the pass record --
+# so every site that reads AUDIT.md for row text or for a heading reads `$PASSES`.
+AUDIT="$ROOT/spec/AUDIT.md"
+PASSES="$ROOT/spec/audit/passes.md"
 DEFERRED_OK=0
 [[ "${1:-}" == "--deferred-ok" ]] && DEFERRED_OK=1
 
@@ -962,6 +968,25 @@ fi
 # That is the opposite of check 9's choice (which reads the emitted TSV because a citation is only
 # checked once it is emitted), and the reason differs: a citation lives in the row, a pointer lives in
 # the source.
+printf '\n== findings register (the checklist is what the authored TSV renders) ==\n'
+# **The state of a finding was prose, and this is the check that makes it a field.** At 4,118 lines
+# the file carried not one `state:` token and not one `| state |` column: `**Fixed` appeared 108 times
+# as a bolded phrase buried in a 2 KB cell, `**Decided` 9, `**Registered` 4, and each pass section had
+# its own vocabulary on top. So "is anything outstanding?" took twenty-one sections and a hand merge,
+# no tool could answer it, and the ninth pass found four rows asserting a state the tree contradicts
+# while six of §13's Low findings had sat unaddressed since pass 4 with no disposition at all.
+#
+# `spec/findings.tsv` is the authored half and `tools/emit-findings-register.sh` owns every rule about
+# it -- the closed vocabulary, an `open` row naming what would close it, a row that is a row. This
+# check is the join, and it is one line because the rules live where they can be read next to the
+# thing they govern.
+if freport="$("$ROOT/tools/emit-findings-register.sh" --check 2>&1)"; then
+  ok "$(printf '%s' "$freport" | sed -n 's/^emit-findings-register: //p')"
+else
+  fail "the findings register is stale or malformed:"
+  printf '%s\n' "$freport" | sed -n '2,14p' | while IFS= read -r fline; do info "  $fline"; done
+fi
+
 printf '\n== pointers (every C-number and section reference resolves) ==\n'
 pointer_bad_before=$failures
 pointer_checked=0       # every C-number and section reference examined
@@ -986,8 +1011,8 @@ pointer_row_text() {
   t="$(awk -v n="C$1" '
     /^- \*\*C[0-9]+ / { if (grab) exit; if ($0 ~ ("^- \\*\\*" n " ")) grab = 1 }
     grab { print }
-  ' "$ROOT/spec/AUDIT.md")"
-  [[ -n "$t" ]] || t="$(grep -m1 -E "^\| C$1 " "$ROOT/spec/AUDIT.md" || true)"
+  ' "$PASSES")"
+  [[ -n "$t" ]] || t="$(grep -m1 -E "^\| C$1 " "$PASSES" || true)"
   printf '%s' "$t"
 }
 
@@ -1031,6 +1056,12 @@ pointer_subject_ok() {
 pointer_sources=()
 while IFS= read -r f; do pointer_sources+=("$f"); done < <(
   { ls "$ROOT"/spec/*.md 2>/dev/null
+    # **`spec/audit/` is one level below the `spec/*.md` glob, and that matters.** The pass record
+    # moved there on 2026-09-27 and it holds the finding entries and their `§N` headings -- the two
+    # things this check resolves against. Left out, the register's own text would silently stop being
+    # checked, which is the failure mode C146 records: a citation outside the check's subject is a
+    # citation nothing resolves, and the check prints ok.
+    find "$ROOT/spec/audit" -name '*.md' 2>/dev/null
     find "$ROOT/spec/Rchain" -name '*.lean' 2>/dev/null
     find "$ROOT"/*/src -name '*.rs' 2>/dev/null
     ls "$ROOT"/node/src/configuration/defaults.conf 2>/dev/null
@@ -1065,39 +1096,33 @@ while IFS=: read -r pfile pline ptext; do
   done
 done < <(grep -nHE 'C[0-9]+' "${pointer_sources[@]}" 2>/dev/null || true)
 
-# --- family A, tier 3: section references and line ranges -------------------------
-# A `§N` of one or two digits is a section of `spec/AUDIT.md` (it has twenty), and it must name a
-# heading. A `§NNN(-NNN)` of three or more cannot be a section, so it is a *line range* into that file —
-# and the window must contain a distinctive token of the citing sentence. The split is measured rather
-# than assumed: the first draft of this check read `§337-343` as "section 33" and reported a section
-# that does not exist, which is a false positive of the check's own making.
+# --- family A, tier 3: section references -----------------------------------------
+# A `§N` of one or two digits is a section of `spec/AUDIT.md`, and it must name a heading.
+#
+# **The line-range form this used to accept is refused rather than resolved** (2026-09-27). It read a
+# `§NNN(-NNN)` as a *line range* into `spec/AUDIT.md` and required the window to share a distinctive
+# token with the citing sentence -- a token-overlap heuristic over a +/-3-line window, which is a great
+# deal of machinery for a citation that should not exist. The register is 4,300 lines and is edited
+# several times a day; a line range into it is wrong as soon as anything above it moves, and the
+# heuristic cannot tell. Measured: the tree's one live `§337-343` (`spec/API-SCHEMA.md:92`) was
+# silently wrong *before* this check ever looked at it, and inserting the register above it moved it
+# again. It now names the row (`AUDIT F5`). A tenth of the heuristic's size, and it cannot rot.
 while IFS=: read -r pfile pline ptext; do
   [[ -z "$pfile" ]] && continue
   for ref in $(printf '%s' "$ptext" | grep -oE '§[0-9]+(-[0-9]+)?' | sort -u); do
     body="${ref#§}"
     pointer_checked=$((pointer_checked + 1))
     if [[ "$body" =~ ^[0-9]{1,2}$ ]]; then
-      if [[ "$pfile" == "$ROOT/spec/AUDIT.md" ]]; then
-        # inside AUDIT.md itself a `§N` is the enclosing document's own structure
-        grep -qE "^## $body\. " "$ROOT/spec/AUDIT.md" \
-          || fail "AUDIT.md:$pline cites §$body, which is not a section of this file (it has 20, and the numbers are checked)"
+      if [[ "$pfile" == "$PASSES" ]]; then
+        # inside the pass record a `§N` is the enclosing document's own structure
+        grep -qE "^## $body\. " "$PASSES" \
+          || fail "audit/passes.md:$pline cites §$body, which is not a section of this file (it has $(grep -cE '^## [0-9]+\. ' "$PASSES"), and the numbers are checked)"
       else
-        grep -qE "^## $body\. " "$ROOT/spec/AUDIT.md" \
-          || fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body, which is not a section of that file"
+        grep -qE "^## $body\. " "$PASSES" \
+          || fail "${pfile#"$ROOT"/}:$pline cites a pass §$body that the pass record does not have"
       fi
-    elif [[ "$body" =~ ^([0-9]{3,4})(-([0-9]{3,4}))?$ ]]; then
-      pfrom="${BASH_REMATCH[1]}"; pto="${BASH_REMATCH[3]:-$pfrom}"
-      if (( pfrom > $(wc -l < "$ROOT/spec/AUDIT.md") )); then
-        fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body, which is past that file's end ($(wc -l < "$ROOT/spec/AUDIT.md") lines)"
-        continue
-      fi
-      pwindow="$(sed -n "$(( pfrom > 3 ? pfrom - 3 : 1 )),$(( pto + 3 ))p" "$ROOT/spec/AUDIT.md")"
-      if ! printf '%s\n' "$ptext" | pointer_tokens | while IFS= read -r tok; do
-             [[ -n "$tok" ]] || continue
-             printf '%s' "$pwindow" | grep -qiF "$tok" && { echo "$tok"; break; }
-           done | grep -q .; then
-        fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body and the lines there hold nothing that sentence names — $(sed -n "${pfrom}p" "$ROOT/spec/AUDIT.md" | cut -c1-50)"
-      fi
+    else
+      fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body as a line range — a line number is wrong as soon as anything above it moves, so name the row instead (C-number, or §N for a pass section)"
     fi
   done
 done < <(grep -nHE '§[0-9]' "${pointer_sources[@]}" 2>/dev/null || true)

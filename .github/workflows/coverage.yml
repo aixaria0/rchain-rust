@@ -30,6 +30,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
+      - name: Audit status
+        # **First, before any gate.** The status is the answer to "what is left"; a run that prints a
+        # wall of `ok` without it answers a question nobody had. `--quiet` keeps it to one line, and
+        # it is also a check: it refuses a check-off that disagrees with the authored TSV.
+        run: tools/audit-status.sh --quiet
+
       - name: Type-system audit gate
         run: tools/audit-type-system.sh
 

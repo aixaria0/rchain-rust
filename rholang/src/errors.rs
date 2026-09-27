@@ -346,7 +346,7 @@ mod tests {
                 "Error: Operator `%` is not defined on Tuple.",
             ),
             // `expected` is carried but *not* rendered — faithful to the Scala message (see
-            // AUDIT.md §16), so the assertion deliberately expects the same text as
+            // spec/audit/passes.md §16), so the assertion deliberately expects the same text as
             // `OperatorNotDefined`.
             (
                 RholangError::OperatorExpectedError {

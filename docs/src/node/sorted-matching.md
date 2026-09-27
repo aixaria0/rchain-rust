@@ -97,7 +97,7 @@ This is a further deviation from the Scala oracle, but a principled one:
 - sorted selection is a **third deterministic rule**, consistent with the content-addressing theme of
   Laws 8 and 10, and with the "produce refs sorted" language already in Law 8.
 
-The deviation should be recorded in `spec/AUDIT.md` §6 (Scala-deviation register).
+The deviation should be recorded in `spec/audit/passes.md` §6 (Scala-deviation register).
 
 ## 6. Law mapping
 
@@ -126,7 +126,7 @@ vectors have no multi-candidate comms).
 1. ~~Review + approve~~ done.
 2. ~~Implement selection~~ done (storage was already canonical).
 3. ~~Add the same-channel-race differential test~~ done; golden vectors unchanged.
-4. ~~Update `spec/INVENTORY.md` (Law 8) and `spec/AUDIT.md` §6~~ done.
+4. ~~Update `spec/INVENTORY.md` (Law 8) and `spec/audit/passes.md` §6~~ done.
 5. Activation: dev-only for now — the change alters post-state hashes for multi-candidate deploys and
    must be versioned if the node is ever on a live chain.
 

@@ -64,7 +64,7 @@ rather than just the cost.
 
 `MergeScope::compute_merged_state` then combines the accepted chains' `StateChange`s and applies the
 mergeable-channel arithmetic — a channel whose value is a number merges by **summing the diffs**
-(`rholang/src/merging.rs`; the diffs are checked for `i64` overflow rather than wrapped — `spec/AUDIT.md` §6).
+(`rholang/src/merging.rs`; the diffs are checked for `i64` overflow rather than wrapped — `spec/audit/passes.md` §6).
 
 ## Validation: replay once, and check the denied set
 
@@ -91,7 +91,7 @@ was honest. Both are required, and both are deterministic.
 - the trie update is content-addressed (**Law 10**), so the merged state hash is a function of the
   changes, not of the order they were applied in;
 - `calculate_num_channel_diff` is checked, so a number channel cannot silently wrap into a wrong
-  merged state (`spec/AUDIT.md` §6).
+  merged state (`spec/audit/passes.md` §6).
 
 ## Open items
 

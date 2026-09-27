@@ -231,7 +231,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The private key file must be owner-only (R6 in `spec/AUDIT.md` §11: it was written with the
+    /// The private key file must be owner-only (R6 in `spec/audit/passes.md` §11: it was written with the
     /// process umask, so on a default `0022` it landed world-readable). The public key files are
     /// deliberately not restricted — they are meant to be shared — so the two modes are asserted
     /// together, and a `write` swapped back in for `write_private_key` fails this test.

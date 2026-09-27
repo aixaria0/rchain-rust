@@ -315,7 +315,7 @@ mod tests {
     /// `RhoMatch::get` matches in isolation (`rholang/src/storage.rs`'s `rho_match_binds_free_vars`)
     /// — still comes back `None`, and the datum is still in the space afterwards. So the probe
     /// neither matches nor consumes. That is pinned as observed behaviour, and recorded in
-    /// `spec/AUDIT.md` §16 as an **open question** rather than a confirmed defect: the matching arm is
+    /// `spec/audit/passes.md` §16 as an **open question** rather than a confirmed defect: the matching arm is
     /// unreachable through this entry point, and I could not establish whether that is intended
     /// (`consume_result` may be a reporting placeholder) or a wiring gap.
     #[tokio::test]

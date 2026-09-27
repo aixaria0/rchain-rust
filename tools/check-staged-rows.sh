@@ -40,7 +40,46 @@ printf '%s\n' "$staged_files" | sed 's/^/  /'
 # A C-row is the one thing whose author is unambiguous — the row opens with its number, so a commit
 # that adds one is making a claim about that number. Anchored at the start of the added line, so a row
 # that merely *mentions* another finding in its prose is not mistaken for adding it.
-rows="$(git diff --cached -- spec/AUDIT.md | grep -oE '^\+\| C[0-9]+' | grep -oE 'C[0-9]+' | sort -u || true)"
+#
+# **The two authored halves, and neither is `spec/AUDIT.md` any more** (2026-09-27). The register is
+# now the check-off in `spec/AUDIT.md`, which the emitter writes; the finding *entries* live in
+# `spec/audit/passes.md` and the finding *rows* in `spec/findings.tsv`. So a finding arrives in one of
+# two places, and a gate watching only the emitted file would watch the one place nobody authors.
+#
+# The distinction that makes this usable: **a `findings.tsv` row for a number that already existed at
+# `HEAD` is not a new finding.** Backfilling, correcting a state, or re-pointing a citation all edit
+# existing rows, and a gate that refused them would be a gate every commit has to bypass — which is
+# how the peer-row defect this check exists for would come straight back. So the TSV arm reports only
+# the numbers that are genuinely new against `HEAD`.
+# **`cut -f1`, not a pattern over the line.** The first cell is the id and the rest of the line is
+# prose that names other findings, so a `grep -oE` over the whole line reports the ids a row *cites*
+# as if it were adding them. And the class is `[A-Z]+[0-9]+` rather than a letter list: the first
+# version named the letters and left out `T`, so it could not see a single `TS` row.
+#
+# **What counts as "already allocated" is read from every place a row has ever lived**, and that is
+# the load-bearing half. A finding that *moved* between files is not a new finding: relocating the pass
+# record out of `spec/AUDIT.md` showed all 158 ids as added, because a file that is new to git has
+# every one of its lines as a `+`. Without this the gate is one the move has to bypass, and a gate that
+# gets bypassed on a large change gets bypassed on the next one.
+head_ids="$(
+  { git show HEAD:spec/findings.tsv 2>/dev/null | grep -vE '^#' | cut -f1 | grep -E '^[A-Z]+[0-9]+$'
+    git show HEAD:spec/AUDIT.md 2>/dev/null     | grep -oE '^- \*\*[A-Z]+[0-9]+' | grep -oE '[A-Z]+[0-9]+'
+    git show HEAD:spec/AUDIT.md 2>/dev/null     | grep -oE '^\| [A-Z]+[0-9]+ '  | grep -oE '[A-Z]+[0-9]+'
+  } | LC_ALL=C sort -u || true)"
+
+# Both authored halves, then one subtraction -- subtracting from only one of them is what let the
+# first version of this print all 158 ids as new.
+added_ids="$(
+  { git diff --cached -- spec/audit/passes.md  | grep -oE '^\+- \*\*[A-Z]+[0-9]+' | grep -oE '[A-Z]+[0-9]+'
+    git diff --cached -- spec/audit/passes.md  | grep -oE '^\+\| [A-Z]+[0-9]+ '  | grep -oE '[A-Z]+[0-9]+'
+    git diff --cached -- spec/findings.tsv     | grep -E '^\+[A-Z]+[0-9]+[[:space:]]' | sed 's/^+//' | cut -f1
+  } | LC_ALL=C sort -u || true)"
+
+# **Both sides lexically sorted for `comm`, and that is a fix rather than style** — the same one
+# `tools/next-audit-number.sh` records as AUDIT C103. `comm` requires a lexical order and exits
+# non-zero when it does not get one, and a numeric-or-locale sort of `100` against `99` disagrees with
+# it. A failure here would read as a refusal to commit, which is the worst way for a gate to be wrong.
+rows="$(comm -23 <(printf '%s\n' "$added_ids") <(printf '%s\n' "$head_ids") | grep -v '^$' || true)"
 
 if [[ "$mine" == "-" ]]; then
   if [[ -n "$rows" ]]; then

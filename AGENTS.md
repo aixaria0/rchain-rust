@@ -22,7 +22,8 @@ IV.
 | Human-facing walkthrough: each law → concrete Rust file/type/function + test | [`docs/src/contributor/laws-to-rust.md`](docs/src/contributor/laws-to-rust.md) |
 | The ρ→CoC type-system spec | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) |
 | How Rust made the Scala fragility explicit (bugs caught, production-readiness) | [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) |
-| Adversarial-audit findings register — every audit pass's findings and Scala-deviations, by section (type-system findings, the red-team passes, the full-system HAZOP, the legacy-corpus syntax findings, the census-sweep findings) | [`spec/AUDIT.md`](spec/AUDIT.md) |
+| **Audit check-off** — what the adversarial audit has left, in three states (`todo` · `in progress` · `done`), with the unread T1 coverage that bounds any claim it makes. Start here. | [`spec/AUDIT.md`](spec/AUDIT.md) |
+| The audit's **pass record** — the evidence behind every check-off row: one section per pass, and the Scala-deviation register (§6). This is what a row's `§` cites. | [`spec/audit/passes.md`](spec/audit/passes.md) |
 | Native system contracts (registry/PoS/vault state model + replay determinism) | [`spec/RUST-FIRST.md`](spec/RUST-FIRST.md) |
 | Test-coverage audit & gap analysis — machine-checked: the per-crate inventory, the law property matrix, the risk tiers, the exempt-module table, and the census that requires every source file to be tested or exempt | [`spec/TEST-COVERAGE.md`](spec/TEST-COVERAGE.md) |
 | Machine-checked Lean/Coq definitions & proofs | [`spec/`](spec/) |
@@ -59,7 +60,7 @@ strengths: carry the invariants *structurally* in the type system (refinement ty
 partiality), rather than mechanically reproducing Scala's patterns. Where the Scala code and the
 specification disagree, the specification is correct and the code is brought into line — a latent
 Scala bug (e.g. wrapping a negative cost into a `uint64`) is **not** preserved; such deviations are
-recorded in [`spec/AUDIT.md`](spec/AUDIT.md)'s Scala-deviation register.
+recorded in the Scala-deviation register, [`spec/audit/passes.md`](spec/audit/passes.md) §6.
 
 ## How to use this file
 
@@ -182,8 +183,8 @@ on every law, since they pin the ρ-calculus behavior:
 - `node/src/test/scala/coop/rchain/node/mergeablity/MergeabilityRules.scala`
 - `casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperReportingSpec.scala`
 
-A divergence from the *specification* is fixed in the Rust code and recorded in
-[`spec/AUDIT.md`](spec/AUDIT.md); it is **not** propagated to stay byte-identical with a Scala bug.
+A divergence from the *specification* is fixed in the Rust code and recorded in the
+[`spec/AUDIT.md`](spec/AUDIT.md) check-off and its [`pass record`](spec/audit/passes.md); it is **not** propagated to stay byte-identical with a Scala bug.
 
 ## Module scoping & rewrite order
 
@@ -288,4 +289,5 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
   either the deliberate cryptography boundary (Law 19) or named proof debt, and the register's own
   checks refuse a row that cites an axiom the tree does not declare. Laws 12–13 are orphaned (the
   Rosette VM is out of scope). The type-system fundamentals F1–F6 are proven in `Rchain/Ty.lean`. The
-  adversarial audit findings are in `spec/AUDIT.md`.
+  adversarial audit findings are in `spec/AUDIT.md`'s check-off, with the evidence in
+  `spec/audit/passes.md`.

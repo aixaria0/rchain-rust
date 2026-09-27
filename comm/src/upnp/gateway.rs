@@ -82,7 +82,7 @@ fn header(text: &str, name: &str) -> Option<String> {
 /// Split an authority into `(host, Some(port))`, handling **bracketed IPv6 literals**: `[::1]:80`,
 /// `[::1]` and `host:80` all split correctly, while splitting on the first `:` alone turns `[::1]`
 /// into the host `"["` — which silently *bypassed* the SSRF guard (a `[::1]` URL read as "not an IP
-/// literal") and would have connected to a name rather than the address. See `spec/AUDIT.md` §16 C14.
+/// literal") and would have connected to a name rather than the address. See `spec/AUDIT.md` C14.
 fn split_authority(authority: &str) -> (&str, Option<&str>) {
     if let Some(rest) = authority.strip_prefix('[') {
         match rest.split_once(']') {

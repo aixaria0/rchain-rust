@@ -8,8 +8,8 @@
 # ceiling	ingress	45
 # ceiling	process	30
 # ceiling	config	105
-# ceiling	tool	24
-# unhousedCeiling	112
+# ceiling	tool	27
+# unhousedCeiling	116
 class	cast	T3	deferred	-	-	-	-	-	-
 class	div	T3	deferred	-	-	-	-	-	-
 class	get	T3	deferred	-	-	-	-	-	-
@@ -633,3 +633,6 @@ tool	tools/emit-lean-laws.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/emit-review-ledger.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/next-audit-number.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/run-integration-tests.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/emit-findings-register.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/audit-status.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/todo.sh	T3	deferred	-	-	-	-	-	-

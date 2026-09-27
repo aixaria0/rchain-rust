@@ -13,9 +13,29 @@
 # `shared/src/lmdb.rs` and `rspace/src/state/exporters.rs` are silently skipped without it, which is
 # how they escaped local runs while CI (`--all-features`) still exercised them.
 
-.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec deep
+.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec deep status check
 
 test: test-all
+
+# The loop: what is left, and is the check-off telling the truth. **Seconds.**
+#
+# Measured: ~2.5 s warm, dominated by the evidence check's single pass over the tracked tree. That is
+# the number to defend -- `tools/audit-status.sh` reads the authored TSV and counts the review ledger
+# directly, and deliberately does *not* run the ledger's join, which is 46 s of the register gate's 78.
+#
+# This is the first thing to run, before any gate, because "what is left" is the question; a wall of
+# `ok` from a gate that finished is the answer to a question nobody asked yet.
+status:
+	tools/audit-status.sh
+
+# What a change gets: the status, then the formatter. The third thing is the crate's own test filter
+# -- `cargo test -p <crate> <filter>`, 0.2-2 s warm -- and it is not wrapped here because the crate
+# and the filter are exactly the parts that change per change.
+#
+# **Not** `check-register`: 78 s of whole-tree cross-checks is a boundary, not a per-edit step. See
+# the `deep` target's note and `docs/src/contributor/laws-to-rust.md`.
+check: status
+	cargo fmt --all --check
 
 test-unit:
 	cargo test --workspace --lib --all-features
@@ -36,6 +56,7 @@ test-all: test-unit test-integration
 # the tree, not a build: the blessed contracts are the *oracle's own source text*, vendored, so an
 # edit to one is a specification change wearing a comment's clothes. Nothing diffed them until now.
 check-register:
+	tools/audit-status.sh --quiet
 	tools/audit-test-register.sh
 	tools/audit-vendored-sources.sh
 

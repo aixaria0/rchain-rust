@@ -118,7 +118,7 @@ TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 # `from_slice` length asserts in block_hash/state_hash/validator (and
 # `Blake2b256Hash::from_byte_array`) are reachable only from internally-produced data: untrusted
 # wire/API bytes use the checked `TryFrom<&[u8]>`/`try_from_hex` constructors (validate-on-ingress,
-# see spec/AUDIT.md §11 R12).
+# see spec/audit/passes.md §11 R12).
 #
 # **That paragraph asserted the same thing in 2026-09 and was false for four paths** (AUDIT C97):
 # HasBlockRequest/HasBlock/BlockRequest fed `Vec<u8>` from a peer's packet to `BlockHash::from_slice`,

@@ -1350,7 +1350,7 @@ def laws : List Law := [
       result uses `checked_add` (`rholang/src/merging.rs:102`) while the diff accumulator *was* a plain \
       `i64 +=` (`EventLogIndex::combine`, `rspace/src/merger/event_log_index.rs:156`, and the merge's \
       own fold at `casper/src/merging.rs:891` — both `checked_add` now) — a debug panic, a \
-      release wrap. That half was a code finding (AUDIT §17 C41) and is **fixed**: the accumulation is
+      release wrap. That half was a code finding (AUDIT C41) and is **fixed**: the accumulation is
       checked now and its error reaches the merge, with `combining_refuses_a_diff_that_leaves_i64`
       (`rspace/src/merger/event_log_index.rs`) failing on a `wrapping_add`" },
   { number := 18, layer := "Storage",
@@ -1778,7 +1778,7 @@ def laws : List Law := [
       `coordinator_decision_committed_iff` says `committed` iff every vote is ready — while the \
       **durability half is now modelled too** (2026-09-23, Programme D unit 6): `CoordRecord.recordVote` \
       is the port's `record_vote` (`casper/src/gateway/ledger.rs:158-178`), whose first line — a terminal record \
-      ignores later votes — is the fix for AUDIT §15 C1, and the four theorems are the port's own \
+      ignores later votes — is the fix for AUDIT C160, and the four theorems are the port's own \
       `an_abort_is_absorbing` / `a_commit_is_absorbing` plus the contrast that shows the guard is a \
       choice rather than a fact about votes (`an_abort_vote_aborts_a_prepared_record`). On the \
       participant's side the durability is `Ledger.record_setRecord` (a written record reads back) with \
@@ -2160,7 +2160,7 @@ def laws : List Law := [
       that consumed its datum would fail both, and C25 (`Group`'s `new` reading a dictionary nobody \
       writes) was found by the second",
     note := "the static walk over the vendored text was retired unshipped rather than committed with \
-      an exception list (AUDIT §17 C22 item 1)" },
+      an exception list (AUDIT C22 item 1)" },
   { number := 42, layer := "JSON",
     statement := "`rho_expr_to_par (expr_from_par p) = p`, and the `0 → absent`, `1 → unwrapped`, \
       `n → ExprPar` envelope rule",
@@ -2275,7 +2275,7 @@ def laws : List Law := [
     note := "the formula is the Scala's `getCurrentEpochRewards` (`casper/src/genesis/resources/Pos.rhox:241-256`), and the port's \
       `epoch_reward` agrees with it wherever the contract is *defined*; where it is not — \
       `minimumBond = 0`, or a normaliser of zero — the contract divides by zero and faults the deploy, \
-      and the port pays zero instead (registered in `AUDIT.md` §6). The model's `reward` is total, so \
+      and the port pays zero instead (registered in `spec/audit/passes.md` §6). The model's `reward` is total, so \
       the two-part statement is: the model is the formula, and the Rust is the model on the model's \
       domain" },
   { number := 46, layer := "PoS",
@@ -2299,7 +2299,7 @@ def laws : List Law := [
       *equality* would have been false, and the Scala's own comment does not say which it means. The \
       two divisions are the whole content — the model decides the question by computing `Pos.rhox`'s \
       arithmetic in `Nat` — and the Lean statement's hypothesis is the case the contract leaves \
-      defined (`0 < activeBonds / minimumBond`), which is the same boundary `AUDIT.md` §6 records on \
+      defined (`0 < activeBonds / minimumBond`), which is the same boundary `spec/audit/passes.md` §6 records on \
       the Rust side" },
   { number := 47, layer := "PoS",
     rustWitness := [

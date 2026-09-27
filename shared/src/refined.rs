@@ -286,7 +286,7 @@ macro_rules! len_newtype {
 // nothing ever constructed either type. A refinement nothing constructs enforces nothing, and the file's
 // other refinements (`NonNegI64`, `ShardId`, `BlockHash`, `WireLen`, `Port`) are all load-bearing, so
 // carrying two that are not would make it harder to tell which is which. The citation they used to
-// justify themselves ("spec/AUDIT.md §8 item 1c") named no such item — that bullet is a fix, not a
+// justify themselves ("spec/audit/passes.md §8 item 1c") named no such item — that bullet is a fix, not a
 // deferral. Re-add them when a site needs a `usize` length proved to fit the wire's width; that is what
 // `len_newtype!` above is for.
 len_newtype!(WireLen, u32);

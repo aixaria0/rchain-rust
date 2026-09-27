@@ -112,7 +112,7 @@ pub struct WaitingContinuationInfo {
 /// A deploy execution status (port of `DeployExecStatus`).
 ///
 /// `rename_all` renames the *variants*; the fields of the struct variants need `rename_all_fields`
-/// (AUDIT §16 C16), without which they serialize as `deploy_result`/`deploy_error` — snake_case in
+/// (AUDIT C16), without which they serialize as `deploy_result`/`deploy_error` — snake_case in
 /// the middle of an otherwise camelCase API response, where the Scala case-class fields the API
 /// mirrors are `deployResult`/`deployError`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

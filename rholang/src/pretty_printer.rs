@@ -842,7 +842,7 @@ mod printer_tests {
     ///   `~` is the *process* negation whose operand is parsed below the parenthesised-expression
     ///   level, so `~(x)` is a syntax error, not a parenthesised operand.
     ///
-    /// Both are recorded in `spec/AUDIT.md` §16 and pinned here, so making the output re-parsable is a
+    /// Both are recorded in `spec/audit/passes.md` §16 and pinned here, so making the output re-parsable is a
     /// deliberate change with a test to update rather than an accident.
     #[test]
     fn the_documented_warts_print_what_the_grammar_cannot_read_back() {

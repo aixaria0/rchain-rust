@@ -824,7 +824,7 @@ mod tests {
         );
     }
 
-    /// Documented deviation (AUDIT.md §15 C6): neither `quote` nor `head` escapes its input, so a
+    /// Documented deviation (spec/audit/passes.md §15 C6): neither `quote` nor `head` escapes its input, so a
     /// name or label containing a quote produces malformed DOT. Faithful to Scala, presentation
     /// only — pinned so the day escaping is added, this test fails and is updated deliberately.
     #[test]
