@@ -82,7 +82,7 @@ esac
 
 [[ -s "$JOURNAL" ]] && die "a previous run left a plant in the tree; run --recover first (see --journal)"
 
-FILE="" OLD="" NEW="" CRATE="" TEST="" LABEL="" LAW="" OLD_FILE="" NEW_FILE="" EXTRA=()
+FILE="" OLD="" NEW="" CRATE="" TEST="" LABEL="" LAW="" CORPUS="" OLD_FILE="" NEW_FILE="" EXTRA=()
 declare -a ALSO_FILE=() ALSO_OLD=() ALSO_NEW=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -93,6 +93,12 @@ while [[ $# -gt 0 ]]; do
     --test)  TEST="$2"; shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
     --law)   LAW="$2";   shift 2 ;;
+    # A corpus-witnessed row: the register's evidence is a corpus in `spec/conformance/`, not a named
+    # Rust test, so there is no column-14 witness for `--law` to read. Naming the corpus here ties the
+    # run to the corpus the register names, and the witness is that corpus's conformance test — which
+    # is still named explicitly with `--test`, because a run whose criterion is entirely my choice is
+    # the loose criterion this harness was changed to stop using.
+    --corpus) CORPUS="$2"; shift 2 ;;
     --old-file) OLD_FILE="$2"; shift 2 ;;
     --new-file) NEW_FILE="$2"; shift 2 ;;
     # A second (third, …) plant, for the rows with two independent guards: law 28's and law 50a's both
@@ -123,6 +129,11 @@ if ! git diff HEAD --quiet -- "$FILE"; then
   die "$FILE is already modified relative to HEAD — commit it, or run --recover; a restore to an already-modified file verifies nothing"
 fi
 [[ -n "$OLD" ]] || die "--old is empty; a plant that matches nothing measures nothing"
+
+# A named corpus must exist, or the row is being swept against evidence the register does not have.
+if [[ -n "$CORPUS" ]]; then
+  [[ -f "spec/conformance/$CORPUS.tsv" ]] || die "--corpus $CORPUS names no spec/conformance/$CORPUS.tsv"
+fi
 
 SCRATCH="$(mktemp -d)"
 # The restore is on every path out, including a signal. This is the fix for the incident: the earlier
@@ -195,6 +206,7 @@ done > "$JOURNAL"
 
 printf 'mutate: %s\n' "$LABEL"
 for f in "${PLANTED[@]}"; do printf '  %s\n' "$f"; done
+if [[ -n "$CORPUS" ]]; then printf '  corpus:  spec/conformance/%s.tsv (the evidence the register names for this row)\n' "$CORPUS"; fi
 printf '  witness: cargo test -p %s %s\n' "$CRATE" "$TEST"
 
 out="$(cargo test -p "$CRATE" "${EXTRA[@]+"${EXTRA[@]}"}" "$TEST" 2>&1)"; rc=$?
