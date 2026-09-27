@@ -485,3 +485,52 @@ fn law4_the_same_program_reduces_to_the_same_state() {
         });
     }
 }
+
+/// **AUDIT C151's search, recorded: the relaxed scheduler reaches the sequential fold on every shape
+/// tried, certificate or not.**
+///
+/// C151 owes "a program whose relaxed commits diverge without validation", because
+/// `law25_the_validated_relaxed_scheduler_refines_sequential` would also pass with the certificate
+/// deleted — `arb_program`'s shapes are confluent under reordering, so there is nothing for the gate
+/// to reject. This is the search for a program that is not, written down rather than left as a note.
+///
+/// Each shape below runs under `EffectMode::Relaxed` — **the relaxed scheduler with no certificate at
+/// all** — and must still reach the sequential reference's state hash and event count. Seventeen
+/// shapes were tried across two rounds; the ones kept are the nearest misses, including the ordering
+/// law 24 exists for: a produce `o`, a consume `p` and a second produce `q` with `o < p < q` in DFS
+/// order, where `q` writes `p`'s channel — the DFS-later write the certificate refuses at the *queue*
+/// level (`rspace`'s `validation_fails_on_later_write_and_does_not_retry`). None diverged, at 40
+/// repetitions each.
+///
+/// **So the missing witness is not merely unfound by `arb_program`; it does not exist for these
+/// shapes, for a structural reason.** `EffectMode::Relaxed` preserves *per-channel* DFS op order in
+/// the claim queue (Law 20), and the interleaving it frees is cross-channel — which changes neither
+/// how many events commit nor what the space holds for any program here. The certificate's observable
+/// effect is at the acquire, not on the resulting state.
+///
+/// Kept as a test rather than a comment because it is falsifiable in the direction that matters:
+/// break per-channel ordering and these shapes diverge.
+#[test]
+fn c151_the_unvalidated_relaxed_scheduler_reaches_sequential_on_every_shape_tried() {
+    let cases = 4;
+    let shapes = [
+        // o < p < q: an early consume on a channel a later effect also writes.
+        ("produce consume produce", "new c, r in { c!(1) | for (x <- c) { r!(*x) } | c!(2) }"),
+        ("later write to consumed chan", "new c, r, s in { c!(1) | for (x <- c) { r!(*x) } | c!(2) | for (z <- c) { s!(*z) } }"),
+        // Competing consumers on one channel: only one can take the datum.
+        ("competing consumes", "new a, r1, r2 in { for (x <- a) { r1!(*x) } | for (y <- a) { r2!(*y) } | a!(7) }"),
+        // Joins acquire two channels, so their claims interleave across channels.
+        ("join then compete", "new a, b, r1, r2 in { for (x <- a; y <- b) { r1!((*x, *y)) } | a!(1) | b!(2) | for (z <- a) { r2!(*z) } }"),
+        ("two joins one datum", "new a, b, r1, r2 in { for (x <- a; y <- b) { r1!((*x, *y)) } | for (u <- a; v <- b) { r2!((*u, *v)) } | a!(1) | b!(2) }"),
+        ("diamond", "new a, b, c, r in { a!(1) | for (x <- a) { b!(*x) } | for (y <- a) { c!(*y) } | for (u <- b; v <- c) { r!((*u, *v)) } }"),
+        ("cross feed", "new a, b, r in { a!(1) | b!(2) | for (x <- a) { b!(*x) } | for (y <- b) { r!(*y) } }"),
+        ("consume two from one chan", "new a, r in { a!(1) | a!(2) | for (x <- a) { for (y <- a) { r!((*x, *y)) } } }"),
+    ];
+
+    for (name, program) in shapes {
+        compare_mode(program, EffectMode::Relaxed, cases)
+            .unwrap_or_else(|e| panic!("{name}: the unvalidated relaxed scheduler diverged: {e}"));
+        compare_mode(program, EffectMode::RelaxedValidated, cases)
+            .unwrap_or_else(|e| panic!("{name}: the validated relaxed scheduler diverged: {e}"));
+    }
+}

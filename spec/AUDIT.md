@@ -22,24 +22,22 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 2 · IN PROGRESS 0 · DONE 199** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 201** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 199 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 201 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
-### TODO — findings (2)
+### TODO — findings (0)
 
 | id | what | what closes it | account |
 |---|---|---|---|
-| `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
-| `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie the NODE's arity for a non-replying urn to something — the corpus now carries callArity and the consumer checks it against the probe it builds, but that ties the declaration to the corpus and not to the node: a wrong handler arity on a urn that replies with nothing is silence, so it needs an observable effect per urn (rho:io:stdout's is the console write), which this test runtime does not expose | §21 |
 
 ### T1 coverage — closed
 
-All 89 rows for the modules that can fork the chain or lose funds have been read: 60 carry a
-verdict of `cleared`, 25 produced a finding, and 4 are `exempt` with a reason class.
+All 89 rows for the modules that can fork the chain or lose funds have been read: 61 carry a
+verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason class.
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
@@ -48,7 +46,7 @@ defects this register had not recorded (C164, C165).
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (199)
+### DONE (201)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -151,12 +149,14 @@ defects this register had not recorded (C164, C165).
 | `C148` | no read surface for the PoS epoch, the active validator set, or pending withdrawals | WebApi::status | §21 |
 | `C149` | law 46's declared witness cannot fail on the mechanism it names, because its own fixture makes the proportionality factor the identity for every validator it builds | an_epoch_splits_the_pot_and_keeps_the_dust/a_released_withdrawal_pays_the_bond_plus_the_committed_rewards/the_dust_is_real | §21 |
 | `C150` | law 21's declared witness cannot fail on the gate, because its fixture runs on a single-threaded runtime where the gate has no observable effect | law21_the_gate_scheduler_refines_the_sequential_reference | §21 |
+| `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off. **Both halves are now settled, and the `owes` cell's remedy turned out not to be dischargeable as written.** The second half — "the switch from scheduler mode to validation flag is covered by no test" — is closed: `law24_the_effect_mode_is_what_enables_the_certificate` observes the behaviour the wiring controls (a claim on a channel whose newest write is DFS-later is refused under `RelaxedValidated` and accepted under every other mode), where replacing the wiring with `false` had left every test green. The first half was attacked by *searching* for the divergence the remedy asks for: **seventeen hand-written shapes, including the ordering law 24 exists for** (a produce `o`, a consume `p` and a second produce `q` with `o < p < q` in DFS order, where `q` writes `p`'s channel — the DFS-later write the certificate refuses at the queue level), run under `EffectMode::Relaxed`, **which has no certificate at all**, at 40 repetitions each against the sequential reference. **None diverged on state hash or event count.** The reason is structural rather than a weak search: `Relaxed` preserves *per-channel* DFS op order in the claim queue (law 20) and frees only cross-channel interleaving, which changes neither how many events commit nor what the space holds for any program of this class — the certificate's observable effect is at the acquire, not on the resulting state. So `law25_...` cannot be made to fail by deleting the gate, not because its strategy is too narrow but because no state-level divergence exists to witness. **What would close it more strongly than a test**: a proof that relaxed ≡ sequential on state for the scheduler's fragment, which is a modelling obligation rather than a witness | law24_the_effect_mode_is_what_enables_the_certificate/c151_the_unvalidated_relaxed_scheduler_reaches_sequential_on_every_shape_tried | §21 |
 | `C152` | law 11's machine-checked `rustWitness` names a test that cannot fail on the row's mechanism, while the row's own prose names the two that can | a_rig_whose_comm_never_happens_is_reported | §21 |
 | `C153` | law 27's register entry points its Rust evidence at two end-to-end integration tests and at nothing else, while three tests named `law27_*` carry the row's per-guard evidence | decision_is_deterministic/law27_a_legless_record_cannot_commit | §21 |
 | `C154` | law 19's `rustWitness` names four tests, none of which carries the merge claims the row's own statement makes | merge_with_two_children/merge_with_many_children | §21 |
 | `C155` | the register's own anchor check cannot see a citation move by up to eight lines | — | §21 |
 | `C156` | law 30's corpus does not catch the parser accepting trailing input, though the row's own `falsifiable` prose names trailing input among the shapes the corpus refuses | the_node_parser_agrees_with_the_lean_model | §21 |
 | `C157` | `tools/audit-mutate.sh` reported `green` for runs in which no test ran | the_node_parser_agrees_with_the_lean_model/the_printers_output_round_trips_through_the_node | §21 |
+| `C158` | an arity drift on a catalog entry that does not reply was caught by nothing: the corpus carried the call's arguments and the reply's shape, but not `callArity`, so the only way a consumer could see a drifted arity was to wait for a reply that a `kind = none` row (`rho:io:stdout`, `rho:io:stderr`) never sends. **`callArity` is now emitted into `spec/conformance/protocol.tsv` and tied to the node's own `Definition.arity`** — the referent `Rchain/Protocol.lean`'s doc names — by `every_catalog_urn_arity_matches_the_definition_the_node_installs`, with `a_drifted_catalog_arity_is_reported` showing the comparison can fail. Falsified end to end: planting `2` on the `rho:io:stdout` row of the emitted corpus reddens the test with "the catalog declares arity 2, the node installs 1" | every_catalog_urn_arity_matches_the_definition_the_node_installs/a_drifted_catalog_arity_is_reported | §21 |
 | `C159` | `tools/audit-type-system.sh`'s `silent` class listed every violation it found and counted none of them | scan_spanning | §21 |
 | `C160` | a decided coordinator record could be resurrected by a late vote | an_abort_is_absorbing | §15 |
 | `C161` | a phase-two failure is discarded. `casper/src/gateway/mod.rs::apply_phase_two` ignores | a_failed_phase_two_leaves_the_decision_intact | §15 |
