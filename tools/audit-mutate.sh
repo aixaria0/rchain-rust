@@ -24,6 +24,9 @@
 #   no-build  the crate did not compile with the plant in. The mechanism is load-bearing, but this
 #           says nothing about the witness, so it is not reported as evidence either way.
 #
+# With `--law N` a red is only a red if the failing test is one the row declares. Otherwise the run is
+# green, however many other tests went red — a row is falsified by its own witness or by nothing.
+#
 # The last two are distinguished deliberately: a compile error is not a red witness, and a run that
 # reported "red" off a build failure would be exactly the kind of unearned green this audit exists to
 # find, in reverse.
@@ -31,6 +34,10 @@
 # Usage:
 #   tools/audit-mutate.sh --file F --old OLD --new NEW --crate C --test FILTER --label LABEL
 #   tools/audit-mutate.sh --file F --old-file A --new-file B --crate C --test T --label L
+#     --law N            require row N's *declared* Rust witness (spec/laws.tsv col 14) to be the one
+#                        that failed; a red elsewhere in the filter is not this row's evidence
+#     --also-file F --also-old-file A --also-new-file B
+#                        a second plant, for the rows with two independent guards (law 28, law 50a)
 #   tools/audit-mutate.sh --recover            # undo a plant left by a killed run
 #   tools/audit-mutate.sh --journal            # show what is pending, restore nothing
 #
@@ -75,7 +82,8 @@ esac
 
 [[ -s "$JOURNAL" ]] && die "a previous run left a plant in the tree; run --recover first (see --journal)"
 
-FILE="" OLD="" NEW="" CRATE="" TEST="" LABEL="" OLD_FILE="" NEW_FILE="" EXTRA=()
+FILE="" OLD="" NEW="" CRATE="" TEST="" LABEL="" LAW="" OLD_FILE="" NEW_FILE="" EXTRA=()
+declare -a ALSO_FILE=() ALSO_OLD=() ALSO_NEW=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --file)  FILE="$2"; shift 2 ;;
@@ -84,8 +92,15 @@ while [[ $# -gt 0 ]]; do
     --crate) CRATE="$2"; shift 2 ;;
     --test)  TEST="$2"; shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
+    --law)   LAW="$2";   shift 2 ;;
     --old-file) OLD_FILE="$2"; shift 2 ;;
     --new-file) NEW_FILE="$2"; shift 2 ;;
+    # A second (third, …) plant, for the rows with two independent guards: law 28's and law 50a's both
+    # record that removing either alone leaves the witness green because the other still refuses, so a
+    # single-plant sweep cannot falsify them at all.
+    --also-file)     ALSO_FILE+=("$2"); ALSO_OLD+=(""); ALSO_NEW+=(""); shift 2 ;;
+    --also-old-file) ALSO_OLD[-1]="$(cat "$2")"; shift 2 ;;
+    --also-new-file) ALSO_NEW[-1]="$(cat "$2")"; shift 2 ;;
     --)      shift; EXTRA=("$@"); break ;;
     *)       die "unknown argument: $1" ;;
   esac
@@ -113,43 +128,73 @@ SCRATCH="$(mktemp -d)"
 # The restore is on every path out, including a signal. This is the fix for the incident: the earlier
 # in-line sweep restored on success and on failure, but not when the call was killed between the two.
 restore_all() {
-  if [[ -n "$BACKED_FILE" && -f "$BACKED_COPY" ]]; then
-    cp "$BACKED_COPY" "$BACKED_FILE"
-    : > "$JOURNAL"
-  fi
+  local f c
+  for f in "${PLANTED[@]:-}"; do
+    [[ -n "$f" ]] || continue
+    c="$SCRATCH/$(printf '%s' "$f" | tr / _)"
+    [[ -f "$c" ]] && cp "$c" "$f"
+  done
+  [[ ${#PLANTED[@]} -gt 0 ]] && : > "$JOURNAL"
   rm -rf "$SCRATCH"
 }
 trap 'restore_all' EXIT INT TERM
 
-backup="$(printf '%s' "$FILE" | tr / _)"
-cp "$FILE" "$SCRATCH/$backup"
-sha_before="$(sha256sum "$FILE" | cut -d' ' -f1)"
-
-# The exact-string edit, with the strings passed through the environment so no shell quoting rule can
-# reach them. `count` distinguishes "did not match" from "matched twice" — both are harness errors,
-# and both would otherwise be indistinguishable from a green witness.
-export MUT_FILE="$FILE" MUT_OLD="$OLD" MUT_NEW="$NEW"
-python3 - <<'PY' || exit 2
+# A row may need more than one plant: law 28's and law 50a's rows both record two independent guards
+# where removing either alone leaves the witness green because the other still refuses. A sweep that
+# can only delete one mechanism at a time cannot falsify those rows at all, so the plants are a list.
+PLANTED=()
+pl_shas=()
+plant() {
+  local file="$1" old="$2" new="$3"
+  local key
+  key="$(printf '%s' "$file" | tr / _)"
+  cp "$file" "$SCRATCH/$key"
+  pl_shas+=("$(sha256sum "$file" | cut -d' ' -f1)")
+  export MUT_FILE="$file" MUT_OLD="$old" MUT_NEW="$new"
+  # The exact-string edit, with the strings passed through the environment so no shell quoting rule
+  # can reach them. `count` distinguishes "did not match" from "matched twice" — both are harness
+  # errors, and both would otherwise be indistinguishable from a green witness.
+  python3 - <<'PY' || exit 2
 import os, sys, pathlib
 p = pathlib.Path(os.environ["MUT_FILE"])
 s = p.read_text()
 old, new = os.environ["MUT_OLD"], os.environ["MUT_NEW"]
 n = s.count(old)
 if n != 1:
-    print(f"audit-mutate: --old matches {n} times, need exactly 1", file=sys.stderr)
+    print(f"audit-mutate: a plant's --old matches {n} times, need exactly 1", file=sys.stderr)
     sys.exit(2)
 p.write_text(s.replace(old, new, 1))
 PY
+  [[ "$(sha256sum "$file" | cut -d' ' -f1)" != "${pl_shas[-1]}" ]] || die "the plant did not change $file"
+  PLANTED+=("$file")
+}
 
-# The plant is on disk now, so the journal goes down before anything else can fail.
-BACKED_FILE="$FILE"; BACKED_COPY="$SCRATCH/$backup"
-printf '%s\t%s\n' "$BACKED_FILE" "$BACKED_COPY" > "$JOURNAL"
+check_clean() {
+  local file="$1"
+  # The restore is verified against the file's content at the start of the run — so if that content is
+  # already a plant, the verification blesses it and the run ends with the plant still live and a
+  # "restored" line saying it is fine. Anchoring to HEAD closes that: a run may only start from the
+  # committed content. (This is the failure mode the earlier hand-typed sweep would have had if two
+  # plants had ever overlapped.)
+  git diff HEAD --quiet -- "$file" ||
+    die "$file is already modified relative to HEAD — commit it, or run --recover; a restore to an already-modified file verifies nothing"
+}
 
-sha_planted="$(sha256sum "$FILE" | cut -d' ' -f1)"
-[[ "$sha_planted" != "$sha_before" ]] || die "the plant did not change $FILE"
+check_clean "$FILE"
+plant "$FILE" "$OLD" "$NEW"
+for i in "${!ALSO_FILE[@]}"; do
+  [[ -n "${ALSO_FILE[$i]}" ]] || continue
+  check_clean "${ALSO_FILE[$i]}"
+  plant "${ALSO_FILE[$i]}" "${ALSO_OLD[$i]}" "${ALSO_NEW[$i]}"
+done
+
+# The plants are on disk now, so the journal goes down before anything else can fail.
+for f in "${PLANTED[@]}"; do
+  printf '%s\t%s\n' "$f" "$SCRATCH/$(printf '%s' "$f" | tr / _)"
+done > "$JOURNAL"
 
 printf 'mutate: %s\n' "$LABEL"
-printf '  %s\n' "$FILE"
+for f in "${PLANTED[@]}"; do printf '  %s\n' "$f"; done
 printf '  witness: cargo test -p %s %s\n' "$CRATE" "$TEST"
 
 out="$(cargo test -p "$CRATE" "${EXTRA[@]+"${EXTRA[@]}"}" "$TEST" 2>&1)"; rc=$?
@@ -165,16 +210,58 @@ else
   verdict="red"
 fi
 
+# The pass criterion, and it is not "a witness went red". It is "**the row's own declared witness** went
+# red". A module-wide run that reddens some other row's witness is not evidence for this row, and the
+# loose criterion records the opposite of the truth: C149 is the demonstration — law 46's declared
+# witness stayed green while law 47's caught the mutation, so a run filtered on the module reads as
+# `law 46 cleared` when law 46 is exactly the row whose evidence is vacuous. Passing `--law N` makes the
+# criterion checkable instead of remembered: it reads row N's declared Rust witnesses out of
+# `spec/laws.tsv` and requires the failure set to intersect them.
+if [[ -n "$LAW" ]]; then
+  export MUT_OUT="$out" MUT_LAW="$LAW"
+  declared_result="$(python3 - <<'PY'
+import os, subprocess, re, sys
+law = os.environ["MUT_LAW"]
+field = subprocess.run(["awk", "-F\t", "-v", f"n={law}", '$1==n {print $14}', "spec/laws.tsv"],
+                       capture_output=True, text=True).stdout.strip()
+if not field or field == "-":
+    print("none\t"); sys.exit(0)
+names = set()
+for part in field.split(", "):
+    part = part.strip()
+    if part:
+        names.add(part.rsplit(":", 1)[-1])
+failed = set()
+for line in os.environ["MUT_OUT"].splitlines():
+    m = re.match(r"^test (\S+) \.\.\. FAILED$", line)
+    if m:
+        failed.add(m.group(1).rsplit("::", 1)[-1])
+print(("hit\t" if names & failed else "miss\t") + ", ".join(sorted(names)))
+PY
+)"
+  case "$declared_result" in
+    none*)  die "law $LAW declares no Rust witness in spec/laws.tsv column 14 — it cannot be falsified this way"
+            ;;
+    miss*)  if [[ "$verdict" == "red" ]]; then verdict="red-undeclared"; else verdict="green"; fi
+            printf '\n  declared witness(es) for law %s: %s\n' "$LAW" "${declared_result#*\t}"
+            printf '  none of them failed — a red elsewhere in the filter is not this row'"'"'s evidence\n'
+            ;;
+  esac
+fi
+
 # Restore now, not at the trap, so the restore is verified while the run is still the topic.
-cp "$SCRATCH/$backup" "$FILE"
-sha_after="$(sha256sum "$FILE" | cut -d' ' -f1)"
-[[ "$sha_after" == "$sha_before" ]] || die "$FILE did not restore to its pre-plant content"
+for i in "${!PLANTED[@]}"; do
+  f="${PLANTED[$i]}"
+  cp "$SCRATCH/$(printf '%s' "$f" | tr / _)" "$f"
+  [[ "$(sha256sum "$f" | cut -d' ' -f1)" == "${pl_shas[$i]}" ]] || die "$f did not restore to its pre-plant content"
+done
 : > "$JOURNAL"
-BACKED_FILE=""
+PLANTED=()
 
 printf '\n'
 case "$verdict" in
   red)      printf '  RED    the witness fails with the mechanism deleted — real evidence\n' ;;
+  red-undeclared) printf '  GREEN  something failed but NOT the row'"'"'s declared witness — the row is unfalsified by this run\n' ;;
   green)    printf '  GREEN  the witness PASSES with the mechanism deleted — vacuous, this is a finding\n' ;;
   no-build) printf '  NO-BUILD  the crate rejects the plant; says nothing about the witness\n' ;;
 esac
@@ -185,7 +272,7 @@ if [[ "$verdict" == "red" ]]; then
 else
   printf '%s\n' "$out" | grep -E '^(test .* FAILED|failures:|assertion|thread .* panicked|error)' | head -8 | sed 's/^/    /'
 fi
-printf '  restored: sha256 %s verified\n' "${sha_before:0:12}"
+printf '  restored: %s file(s) at their pre-plant sha256\n' "${#pl_shas[@]}"
 
 [[ "$verdict" == "red" ]] && exit 0
 exit 1
