@@ -3395,7 +3395,11 @@ mod tests {
         // modes leave the certificate off — `Relaxed` is the one that matters, and `Sequential` and
         // `Gate` are here so the wiring is pinned as an *equality* with `RelaxedValidated` rather
         // than as a truthiness that any non-default mode would satisfy.
-        for mode in [EffectMode::Sequential, EffectMode::Gate, EffectMode::Relaxed] {
+        for mode in [
+            EffectMode::Sequential,
+            EffectMode::Gate,
+            EffectMode::Relaxed,
+        ] {
             interp.set_effect_mode(mode);
             interp.claims.reset_write_record();
             interp.claims.record_write(&channel, &at, true);
