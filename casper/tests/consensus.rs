@@ -13,7 +13,8 @@ use rchain_crypto::public_key::PublicKey;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    BlockMessage, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
+    BlockMessage, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RholangState,
+    SignedDeployData,
 };
 use rchain_models::validator::Validator;
 use rchain_rholang::native_state::{PosGenesis, PosParams};
@@ -429,8 +430,7 @@ async fn the_bond_cache_is_the_active_pos_state_and_a_differing_one_is_refused()
     );
     assert_eq!(cache.len(), 2, "the cap selects two of the three bonded");
     assert_ne!(
-        cache,
-        pos_genesis.bonds,
+        cache, pos_genesis.bonds,
         "…which is a different map from the pool, and that difference is the whole distinction"
     );
 

@@ -34,7 +34,26 @@ impl Secp256k1 {
     }
 
     /// Verify a DER-encoded signature over a 32-byte message hash.
+    ///
+    /// **A message that is not 32 bytes is refused, not truncated** (AUDIT C134). `verify_prehash`
+    /// reduces its input through `bytes2scalar`, which keeps the **leftmost 32 bytes** of a longer slice
+    /// (`ecdsa-0.17.0/src/hazmat.rs:164-172`) — so this function returned a verdict over a *prefix* of
+    /// the message it was handed: signing a 32-byte hash and verifying
+    /// `hash || b"ARBITRARY SUFFIX THE SIGNER NEVER SIGNED"` answered `true`. The sentence above has
+    /// always said "a 32-byte message hash", every caller in this tree passes one (`signature_hash`
+    /// hashes to 32 for `secp256k1` *and* for `secp256k1:eth`), and the oracle's ABI takes exactly 32 —
+    /// so the length is now part of the check rather than an assumption that happened to hold.
+    ///
+    /// `false` rather than an error: the signature is not over *this* message, which is what "does not
+    /// verify" means — and `rho:crypto:secp256k1Verify`'s handler *is* this function, so a contract's
+    /// answer stays a verdict rather than becoming a differently-shaped failure.
     pub fn verify_bytes(data: &[u8], signature: &[u8], pub_key: &[u8]) -> bool {
+        // Named, because the number is the *point* of the check: `sha256`, `blake2b256` and `keccak256`
+        // all serve the 32-byte prehash the two algorithms' `signature_hash` produces.
+        const PREHASH_LEN: usize = 32;
+        if data.len() != PREHASH_LEN {
+            return false;
+        }
         let Ok(sig) = Signature::from_der(signature) else {
             return false;
         };
@@ -119,6 +138,47 @@ mod tests {
     use crate::hash::sha256;
     use crate::signatures::signatures_alg::normalize_signature_low_s;
     use rchain_shared::base16;
+
+    /// **The regression test for AUDIT C134**, written at the crate's own seam because that is where the
+    /// defect lives. `verify_bytes` calls `verify_prehash`, whose `bytes2scalar` reduces a longer input
+    /// by **keeping its leftmost 32 bytes** (`ecdsa-0.17.0/src/hazmat.rs:164-172`) — so the function
+    /// answered for a *prefix* of the message it was handed. Every caller in this tree passes 32
+    /// (`signature_hash` hashes to 32 for both `secp256k1` and `secp256k1:eth`) and the doc above says
+    /// "a 32-byte message hash", but `rho:crypto:secp256k1Verify` is a fixed channel of arity 4 whose
+    /// handler *is* this function, so a rholang author could get `true` for a message nobody signed by
+    /// appending anything at all to one that was.
+    ///
+    /// The control comes first, so a failure below cannot be a failure for an unrelated reason, and the
+    /// suffixed case is the row's own demonstration sentence turned into an assertion.
+    #[test]
+    fn a_message_that_is_not_32_bytes_is_refused_not_truncated() {
+        let (PrivateKey(ref sec), public_key) = Secp256k1.new_key_pair();
+        let data = sha256::hash(b"testing");
+        let sig = Secp256k1::sign_bytes(&data, &sec).expect("sign");
+
+        assert!(
+            Secp256k1::verify_bytes(&data, &sig, public_key.bytes()),
+            "the control: the message that was signed must verify"
+        );
+
+        let mut extended = data.clone();
+        extended.extend_from_slice(b"ARBITRARY SUFFIX THE SIGNER NEVER SIGNED");
+        assert!(
+            !Secp256k1::verify_bytes(&extended, &sig, public_key.bytes()),
+            "a verdict over a prefix of the message is not a verdict over the message — this answered \
+             true on the pre-fix tree, where the suffix was silently dropped (AUDIT C134)"
+        );
+
+        // Shorter than a prehash is no better: the contract is a 32-byte hash in both directions, and a
+        // well-defined refusal is what makes the length part of the check rather than an accident of
+        // where the reduction happens to bite.
+        assert!(!Secp256k1::verify_bytes(
+            &data[..31],
+            &sig,
+            public_key.bytes()
+        ));
+        assert!(!Secp256k1::verify_bytes(&[], &sig, public_key.bytes()));
+    }
 
     #[test]
     fn verifies_signature_with_keypair() {

@@ -165,7 +165,13 @@ mod tests {
     /// checks, which read this same trait.
     #[test]
     fn every_algorithms_verify_refuses_malformed_input() {
-        let data = b"a 32-byte hash, as the callers pass it".as_slice();
+        // **A real 32-byte prehash** (AUDIT C134). This literal read "a 32-byte hash, as the callers
+        // pass it" and was 38 bytes long, which is exactly what the register's row says about this
+        // instrument: `verify_bytes` silently dropped the last six, so every arm below failed for a
+        // reason that had nothing to do with the malformed `sig`/`pk` under test. Now that the length is
+        // *checked*, a 38-byte fixture would make the whole loop vacuous instead of merely misattributed,
+        // so the length is right and each arm fails on its own account.
+        let data = crate::hash::sha256::hash(b"a prehash the signature arms are actually over");
         let enabled: Vec<&'static dyn SignaturesAlg> = ["secp256k1", "secp256k1:eth"]
             .iter()
             .filter_map(|a| from_algorithm(a))
@@ -186,9 +192,29 @@ mod tests {
                 ("oversized", vec![7u8; 4096], vec![7u8; 4096]),
             ] {
                 assert!(
-                    !alg.verify(data, &sig, &pk),
+                    !alg.verify(&data, &sig, &pk),
                     "{}: the {label} input verified, so a malformed signature is being accepted",
                     alg.name()
+                );
+            }
+
+            // **The key arm**, which the loop above cannot reach: every case there fails at the
+            // *signature* parse, so `PublicKey::from_sec1_bytes` was never exercised and this test's name
+            // promised more than its cases did — the same shape as C134's own defect, an instrument whose
+            // cases cannot reach the check they are named for. A well-formed signature over `data` with
+            // malformed keys reaches it; the control comes first, so the arms are attributable.
+            use crate::signatures::secp256k1::Secp256k1;
+            let (PrivateKey(ref sec), pk) = Secp256k1.new_key_pair();
+            let good = Secp256k1::sign_bytes(&data, sec).expect("sign");
+            assert!(
+                Secp256k1::verify_bytes(&data, &good, pk.bytes()),
+                "the control: a well-formed pair must verify, or the key arms below prove nothing"
+            );
+            for bad_key in [vec![], vec![1u8], vec![0u8; 65], vec![7u8; 4096]] {
+                assert!(
+                    !Secp256k1::verify_bytes(&data, &good, &bad_key),
+                    "a malformed public key of {} bytes verified",
+                    bad_key.len()
                 );
             }
         }
