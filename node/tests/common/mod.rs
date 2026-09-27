@@ -145,6 +145,11 @@ pub struct TestNode {
     pub id: NodeIdentifier,
     pub grpc_port: u16,
     pub http_port: u16,
+    /// The admin HTTP port — the listener that binds loopback by default and carries the surfaces
+    /// that act with the node's own key (`/api/propose`, and since AUDIT C121 the cross-shard
+    /// transaction routes). Read from the config rather than passed in, so a test that needs it does
+    /// not have to thread another argument through `start`.
+    pub admin_port: u16,
 }
 
 impl TestNode {
@@ -166,6 +171,7 @@ pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode 
         id,
         grpc_port,
         http_port,
+        admin_port: conf.api_server.port_admin_http as u16,
     }
 }
 

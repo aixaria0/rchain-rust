@@ -355,6 +355,23 @@ pub fn record_hash(rec: &CoordRecord) -> Blake2b256Hash {
     Blake2b256Hash::create(&encode_coord(rec))
 }
 
+/// How many transaction records this node's coordinator ledger will hold (AUDIT C121).
+///
+/// **Why a cap at all.** The ledger is node-local LMDB keyed by `txn_id` and it had no bound and no
+/// expiry, so every transaction the node ever opened stayed forever — and `GET /api/txn` walks the
+/// whole of it. The write path was reachable by an unauthenticated caller until the same finding moved
+/// the routes to the admin listener, which is why the cap is here as well: the bind is the
+/// authorization boundary, and this is the resource bound that does not depend on it being configured
+/// correctly.
+///
+/// **Why a count and not an expiry.** Eviction needs a policy for records that are *in flight* — the
+/// startup recovery path (`recover_in_flight`) exists to finish exactly those, and dropping one makes a
+/// crashed transaction unresumable — so an age-based rule would have to exempt the state the
+/// coordinator most needs. The shape chosen is the one `MAX_POOLED_DEPLOYS` already uses (R2): a count
+/// on the store, refusing *new* work once it is reached, with every existing record still writable so
+/// an open transaction can always reach a terminal state.
+const MAX_TXN_RECORDS: usize = 10_000;
+
 /// The durable coordinator ledger: node-local, keyed by `txn_id`.
 pub struct TxnLedger {
     store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, Vec<u8>>>,
@@ -383,9 +400,35 @@ impl TxnLedger {
     }
 
     /// Write a record (durably — every write precedes the I/O it authorizes).
+    ///
+    /// **A record for a `txn_id` the ledger does not already hold is refused at [`MAX_TXN_RECORDS`]**
+    /// (AUDIT C121). The check is here, on the single write path, rather than at the RPC handler: a
+    /// bound enforced by the one caller that happens to exist today is the shape this register keeps
+    /// recording (a rule on the producing side only), and `GatewayTxn::run`'s resume path, the
+    /// startup recovery task and any future caller all reach the store through this function.
+    ///
+    /// An *update* to a record already here is always allowed, cap or no cap: it is the same
+    /// transaction moving through its phases, and the recovery path depends on being able to finish
+    /// one. Only opening a new one is bounded — which is why the cheap `count()` gate comes first and
+    /// the existence probe only runs once the ledger is actually full.
     pub async fn put(&self, record: &CoordRecord) -> Result<(), String> {
         let key = txn_key(&record.txn_id);
+        if self.count().await? >= MAX_TXN_RECORDS {
+            let known = self.store.get(&[key]).await?.into_iter().next().flatten();
+            if known.is_none() {
+                return Err(format!(
+                    "the coordinator ledger holds {MAX_TXN_RECORDS} records, which is its cap, so \
+                     this node cannot open another transaction until it is drained"
+                ));
+            }
+        }
         self.store.put(&[(key, encode_coord(record))]).await
+    }
+
+    /// How many records the ledger holds. `count()` is O(1) on the byte store (`num_records`), so
+    /// this is cheap enough for the write path.
+    pub async fn count(&self) -> Result<usize, String> {
+        self.store.count().await
     }
 
     /// Every record still in flight (`Proposed` or `Prepared`) — what a restart must finish.
@@ -804,5 +847,55 @@ mod tests {
                 .expect_err("corrupt bytes must not decode");
             assert!(!err.is_empty());
         });
+    }
+
+    /// **The regression test for AUDIT C121's ledger half.** The record store had no cap and no expiry,
+    /// so every transaction the node ever opened stayed in it — and `GET /api/txn` walks the whole of it,
+    /// from a route that until the same finding was unauthenticated.
+    ///
+    /// Two assertions, because the bound is not "no more writes": it is "no more *new transactions*".
+    /// An in-flight record must stay writable at the cap, or `recover_in_flight` could not drive a
+    /// crashed transaction to a terminal state — which is the whole reason the record is durable.
+    #[tokio::test]
+    async fn the_ledger_refuses_a_new_transaction_at_its_cap_but_still_finishes_the_ones_it_holds() {
+        let manager = rchain_shared::store_manager::InMemoryStoreManager::default();
+        let ledger = TxnLedger::open(&manager).await.expect("open ledger");
+
+        // Filled through the same `put` every caller uses, so the test exercises the real path.
+        for i in 0..MAX_TXN_RECORDS {
+            let mut record = sample();
+            record.txn_id = format!("txn-{i}").into_bytes();
+            ledger.put(&record).await.expect("fill to the cap");
+        }
+        assert_eq!(ledger.count().await.unwrap(), MAX_TXN_RECORDS);
+
+        let mut new_one = sample();
+        new_one.txn_id = b"txn-new".to_vec();
+        let err = ledger
+            .put(&new_one)
+            .await
+            .expect_err("at the cap, opening a transaction must be refused");
+        assert!(
+            err.contains(&MAX_TXN_RECORDS.to_string()),
+            "the refusal must name the bound it met: {err}"
+        );
+
+        // The differential: an update to a record already held is never refused, and adds no record.
+        let mut existing = sample();
+        existing.txn_id = b"txn-0".to_vec();
+        existing.state = CoordState::Committed;
+        ledger
+            .put(&existing)
+            .await
+            .expect("an update is not bounded by the cap");
+        assert_eq!(
+            ledger.get(b"txn-0").await.unwrap().unwrap().state,
+            CoordState::Committed
+        );
+        assert_eq!(
+            ledger.count().await.unwrap(),
+            MAX_TXN_RECORDS,
+            "an update must not add a record"
+        );
     }
 }

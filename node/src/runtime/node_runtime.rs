@@ -457,6 +457,8 @@ impl NodeProgram {
         let http = tokio::spawn({
             let host = host.clone();
             async move {
+                // No gateway here: the cross-shard transaction routes are on the admin listener, which
+                // is loopback by default (AUDIT C121), and `HttpState` no longer carries the capability.
                 acquire_http_server(
                     &host,
                     port_http,
@@ -465,11 +467,9 @@ impl NodeProgram {
                     web_api,
                     block_report_api,
                     shards,
-                    gateway,
                     status_provider,
                     max_connection_idle,
                     enable_reporting,
-                    enable_txn_api,
                 )
                 .await
             }
@@ -496,6 +496,8 @@ impl NodeProgram {
                     port_admin_http,
                     admin_web_api,
                     enable_devnet_cors,
+                    gateway,
+                    enable_txn_api,
                     max_connection_idle,
                 )
                 .await

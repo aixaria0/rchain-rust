@@ -48,6 +48,26 @@ use crate::web::version_info;
 /// request transfers real (dev) REV.
 const FAUCET_RATE_LIMIT_PER_SEC: u64 = 1;
 
+/// The most legs one cross-shard transaction may name (AUDIT C121).
+///
+/// **Why a bound here at all.** A leg is a shard membership, so a request naming more legs than the
+/// gateway has memberships is asking for something the coordinator cannot do — `GatewayTxn::run`
+/// rejects each non-member leg individually, but only *after* the request has been parsed into
+/// node-signed deploys. `legs.len()` was unbounded, so one request bought as many deploys as the
+/// caller cared to list.
+///
+/// **Why a constant and not a config key.** The register has recorded three times that a knob which is
+/// parsed and then not honoured is worse than no knob (the metrics reporters, `disable-state-exporter`,
+/// the nine in C143), and no operator needs to tune this: the number is a property of the topology, not
+/// of a deployment. A wallet that legitimately spans more shards than this is a shape the coordinator's
+/// own per-leg membership check would refuse anyway.
+const MAX_TXN_LEGS: usize = 32;
+
+/// Rate limit for the transaction routes. See [`AdminState::txn_rate_limiter`]; deliberately far
+/// stricter than the deploy API's 100/s, because one admitted request signs up to [`MAX_TXN_LEGS`]
+/// deploys with the node's own key and holds a 2PC transaction open across phase timeouts.
+const TXN_RATE_LIMIT_PER_SEC: u64 = 10;
+
 /// Comm state needed by `GET /status` (port of the `ConnectionsCell`/`NodeDiscovery`/`RPConfAsk`
 /// arguments of `StatusInfo.service`).
 #[derive(Clone)]
@@ -78,11 +98,6 @@ pub struct HttpState {
     pub web_api: Arc<dyn WebApi>,
     pub block_report_api: Arc<BlockReportApi>,
     pub shards: Arc<ShardRegistry>,
-    /// The on-node cross-shard 2PC coordinator, present only when this node is a multi-shard
-    /// gateway (several memberships and a signing key).
-    pub gateway: Option<Arc<GatewayTxn>>,
-    /// Whether the cross-shard transaction routes are enabled (`api-server.enable-txn-api`).
-    pub enable_txn_api: bool,
     pub status_provider: Option<StatusProvider>,
     pub enable_reporting: bool,
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
@@ -94,10 +109,36 @@ pub struct HttpState {
 
 /// State shared by the admin HTTP server (port of the `adminWebApiRoutes` argument of
 /// `acquireAdminHttpServer`).
+///
+/// **Why the cross-shard coordinator lives here and not on the public state.** It used to be a field
+/// of `HttpState`, and the transaction routes with it — on a server that binds `api-server.host`
+/// (`0.0.0.0`) by default. That made `POST /api/txn` a *"spend this node's validator REV to an address
+/// I choose"* primitive with no caller identity and no rate limit: the coordinator signs every phase
+/// deploy with the node's own key, and `rho:txn prepare` derives the escrow source from that signing
+/// identity, so the funds moved out of the operator's account (AUDIT C121). The admin server is the
+/// one this codebase already treats as privileged: it binds loopback unless
+/// `api-server.enable-devnet-admin-public` is set, the same opt-in that protects the unauthenticated
+/// `/api/propose` (C112). Moving the capability rather than guarding the route means the public state
+/// no longer *holds* a gateway, so the fund-moving routes cannot be mounted there by accident later.
 #[derive(Clone)]
 pub struct AdminState {
     pub admin_web_api: Arc<dyn AdminWebApi>,
     pub enable_devnet_cors: bool,
+    /// The on-node cross-shard 2PC coordinator, present only when this node is a multi-shard
+    /// gateway (several memberships and a signing key).
+    pub gateway: Option<Arc<GatewayTxn>>,
+    /// Whether the cross-shard transaction routes are enabled (`api-server.enable-txn-api`).
+    ///
+    /// It remains a gate *in addition to* the bind: a gateway operator who does not serve
+    /// transactions never mounts them, and one who does still has to publish the admin port to reach
+    /// them from another host.
+    pub enable_txn_api: bool,
+    /// Rate limiter for the transaction routes. Every sibling state-mutating route consults one
+    /// (`api_deploy`, `api_faucet`, both explore-deploy handlers) and this was the only exception —
+    /// the asymmetry AUDIT C121 rests on. The limit is lower than the deploy API's 100/s on purpose:
+    /// one admitted request can open up to [`MAX_TXN_LEGS`] node-signed deploys and drives a 2PC
+    /// transaction that holds per-phase timeouts.
+    pub txn_rate_limiter: Arc<RateLimiter>,
 }
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
@@ -183,7 +224,11 @@ async fn api_shards(State(state): State<HttpState>) -> Response {
 /// Mirrors the `enable-reporting` convention: the route is mounted unconditionally and answers 404
 /// when the feature is off, so a single-shard node's surface is unchanged and a client can tell
 /// "not a gateway" from "bad request".
-fn gateway_or_not_found(state: &HttpState) -> Result<Arc<GatewayTxn>, Response> {
+///
+/// **The state is the admin server's, and that is the authorization boundary** (AUDIT C121): the routes
+/// live on the loopback-by-default listener, so the 404 here means "this node does not serve
+/// transactions" rather than "this node will spend its REV for anyone who asks".
+fn gateway_or_not_found(state: &AdminState) -> Result<Arc<GatewayTxn>, Response> {
     match (&state.gateway, state.enable_txn_api) {
         (Some(gateway), true) => Ok(gateway.clone()),
         _ => Err((StatusCode::NOT_FOUND, ()).into_response()),
@@ -196,11 +241,35 @@ fn gateway_or_not_found(state: &HttpState) -> Result<Arc<GatewayTxn>, Response> 
 /// been included in a block — seconds, not microseconds — and can fail by timeout. It is
 /// idempotent under `txnId`: re-issuing a completed transaction returns its record and moves no
 /// funds.
-async fn api_txn_run(State(state): State<HttpState>, Json(req): Json<TxnRequest>) -> Response {
+///
+/// **Served on the admin server, and the caller's legs are bounded** (AUDIT C121). The coordinator
+/// signs every phase deploy with the node's validator key and the escrow is taken from that key's own
+/// vault, so this handler is a spend surface for the operator's account; it sits behind the same
+/// loopback-by-default bind as `/api/propose` (C112), consults a rate limiter like every sibling
+/// state-mutating route, and refuses a leg list longer than [`MAX_TXN_LEGS`] before the gateway is
+/// driven.
+async fn api_txn_run(State(state): State<AdminState>, Json(req): Json<TxnRequest>) -> Response {
     let gateway = match gateway_or_not_found(&state) {
         Ok(gateway) => gateway,
         Err(response) => return response,
     };
+    if !state.txn_rate_limiter.allow() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("transaction rate limit exceeded".to_string()),
+        )
+            .into_response();
+    }
+    if req.legs.len() > MAX_TXN_LEGS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(format!(
+                "a transaction may name at most {MAX_TXN_LEGS} legs, this one names {}",
+                req.legs.len()
+            )),
+        )
+            .into_response();
+    }
     let txn_id = match base16::decode(&req.txn_id) {
         Some(bytes) if !bytes.is_empty() && bytes.len() <= 64 => bytes,
         _ => {
@@ -248,7 +317,7 @@ async fn api_txn_run(State(state): State<HttpState>, Json(req): Json<TxnRequest>
 }
 
 /// `GET /api/v1/txn/:txnId` — the durable record of a transaction, or 404 when this node has none.
-async fn api_txn_status(State(state): State<HttpState>, Path(txn_id): Path<String>) -> Response {
+async fn api_txn_status(State(state): State<AdminState>, Path(txn_id): Path<String>) -> Response {
     let gateway = match gateway_or_not_found(&state) {
         Ok(gateway) => gateway,
         Err(response) => return response,
@@ -270,7 +339,7 @@ async fn api_txn_status(State(state): State<HttpState>, Path(txn_id): Path<Strin
 }
 
 /// `GET /api/v1/txn` — the transactions this node is still coordinating.
-async fn api_txn_list(State(state): State<HttpState>) -> Response {
+async fn api_txn_list(State(state): State<AdminState>) -> Response {
     let gateway = match gateway_or_not_found(&state) {
         Ok(gateway) => gateway,
         Err(response) => return response,
@@ -905,8 +974,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/status", get(api_status))
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/shards", get(api_shards))
-        .route("/api/txn", get(api_txn_list).post(api_txn_run))
-        .route("/api/txn/{txn_id}", get(api_txn_status))
         .route("/api/deploys", get(api_deploys))
         .route("/api/deploy", post(api_deploy))
         .route("/api/faucet", post(api_faucet))
@@ -931,8 +998,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
-        .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
-        .route("/api/v1/txn/{txn_id}", get(api_txn_status))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route("/api/v1/faucet", post(api_faucet))
@@ -969,6 +1034,16 @@ pub fn admin_router(state: AdminState) -> Router {
     Router::new()
         .route("/api/propose", post(admin_propose))
         .route("/api/v1/propose", post(admin_propose))
+        // The cross-shard transaction surface (AUDIT C121). It used to be mounted on the **public**
+        // router, where the coordinator's fund-moving handler had no caller identity, no rate limit and
+        // no bound on the leg vector — on a server that binds `0.0.0.0` by default. It belongs on the
+        // privileged listener for the same reason `/api/propose` does: both act with the node's own key,
+        // and this one spends from its account. `gateway_or_not_found` still answers 404 on a node that
+        // is not a gateway or has the feature off, so the 404 a client sees has not changed meaning.
+        .route("/api/txn", get(api_txn_list).post(api_txn_run))
+        .route("/api/txn/{txn_id}", get(api_txn_status))
+        .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
+        .route("/api/v1/txn/{txn_id}", get(api_txn_status))
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .layer(cors)
         .with_state(state)
@@ -976,6 +1051,10 @@ pub fn admin_router(state: AdminState) -> Router {
 
 /// Bind and serve the public HTTP routes (port of `web/acquireHttpServer`), with a CORS layer and a
 /// per-request timeout (`api-server.max-connection-idle`).
+///
+/// **No gateway parameter, and that is deliberate** (AUDIT C121): the cross-shard coordinator is not
+/// reachable from this listener at all, so the fund-moving routes cannot be mounted here by a later
+/// change without moving the capability back into `HttpState`.
 #[allow(clippy::too_many_arguments)]
 pub async fn acquire_http_server(
     host: &str,
@@ -985,11 +1064,9 @@ pub async fn acquire_http_server(
     web_api: Arc<dyn WebApi>,
     block_report_api: Arc<BlockReportApi>,
     shards: Arc<ShardRegistry>,
-    gateway: Option<Arc<GatewayTxn>>,
     status_provider: Option<StatusProvider>,
     max_connection_idle: Duration,
     enable_reporting: bool,
-    enable_txn_api: bool,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
     let addr: SocketAddr = format!("{host}:{port}")
@@ -1004,8 +1081,6 @@ pub async fn acquire_http_server(
         web_api,
         block_report_api,
         shards,
-        gateway,
-        enable_txn_api,
         status_provider,
         enable_reporting,
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
@@ -1019,11 +1094,19 @@ pub async fn acquire_http_server(
 }
 
 /// Bind and serve the admin HTTP routes (port of `web/acquireAdminHttpServer`).
+///
+/// This listener carries the two surfaces that act with the node's own key: `POST /api/propose` and,
+/// since AUDIT C121, the cross-shard transaction routes. The caller chooses the bind host
+/// (`admin_bind_host`), which is loopback unless the operator opts in — that choice is what makes the
+/// transaction routes' absence from the public server an authorization boundary rather than a
+/// rearrangement.
 pub async fn acquire_admin_http_server(
     host: &str,
     port: Port,
     admin_web_api: Arc<dyn AdminWebApi>,
     enable_devnet_cors: bool,
+    gateway: Option<Arc<GatewayTxn>>,
+    enable_txn_api: bool,
     max_connection_idle: Duration,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
@@ -1036,6 +1119,9 @@ pub async fn acquire_admin_http_server(
     let app = admin_router(AdminState {
         admin_web_api,
         enable_devnet_cors,
+        gateway,
+        enable_txn_api,
+        txn_rate_limiter: Arc::new(RateLimiter::new(TXN_RATE_LIMIT_PER_SEC)),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -1234,13 +1320,26 @@ mod tests {
                 primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
                 members: Vec::new(),
             }),
-            // No gateway in these tests: the transaction routes answer 404.
-            gateway: None,
-            enable_txn_api: false,
             status_provider: None,
             enable_reporting: true,
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
             faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
+        }
+    }
+
+    /// The admin web API is not what these tests drive; `propose` is on the admin router and pinned
+    /// elsewhere. A stub is enough to build `AdminState`, which the transaction handlers take
+    /// (AUDIT C121).
+    struct MockAdminWebApi;
+
+    #[async_trait]
+    impl AdminWebApi for MockAdminWebApi {
+        async fn propose(&self) -> Result<String, BlockApiException> {
+            unimplemented!()
+        }
+
+        async fn propose_result(&self) -> Result<String, BlockApiException> {
+            unimplemented!()
         }
     }
 
@@ -1660,16 +1759,30 @@ mod tests {
         ))
     }
 
-    /// State with a shard list and an optional gateway.
-    fn txn_state(gateway: Option<Arc<GatewayTxn>>, enable_txn_api: bool) -> HttpState {
+    /// **Admin** state with an optional gateway — the listener the transaction routes are mounted on
+    /// (AUDIT C121). It was the public state until that finding: the coordinator spends from the node's
+    /// own REV account, so it is privileged like `/api/propose`, not public like `/api/deploy`.
+    fn txn_state(gateway: Option<Arc<GatewayTxn>>, enable_txn_api: bool) -> AdminState {
+        AdminState {
+            admin_web_api: Arc::new(MockAdminWebApi),
+            enable_devnet_cors: false,
+            gateway,
+            enable_txn_api,
+            txn_rate_limiter: Arc::new(RateLimiter::new(TXN_RATE_LIMIT_PER_SEC)),
+        }
+    }
+
+    /// Public state whose shard list is populated. `api_shards` is the only handler that reads
+    /// `HttpState::shards`, and it stayed on the public router while the transaction routes moved, so
+    /// this helper is separate from [`txn_state`] on purpose.
+    fn state_with_shards(
+        members: Vec<(rchain_shared::refined::ShardId, Arc<dyn BlockApi>)>,
+    ) -> HttpState {
         let mut s = state();
-        let shard = |id: &str| rchain_shared::refined::ShardId::try_from(id.to_string()).unwrap();
         s.shards = Arc::new(ShardRegistry {
-            primary: shard("/root"),
-            members: txn_shards(),
+            primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
+            members,
         });
-        s.gateway = gateway;
-        s.enable_txn_api = enable_txn_api;
         s
     }
 
@@ -1721,7 +1834,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_shards_lists_every_member_primary_first() {
-        let response = api_shards(State(txn_state(None, false))).await;
+        let response = api_shards(State(state_with_shards(txn_shards()))).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1737,13 +1850,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_shards_with_no_members_is_an_empty_list() {
-        let mut s = txn_state(None, false);
-        let primary = s.shards.primary.clone();
-        s.shards = Arc::new(ShardRegistry {
-            primary,
-            members: Vec::new(),
-        });
-        let response = api_shards(State(s)).await;
+        let response = api_shards(State(state_with_shards(Vec::new()))).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["shardCount"], 0);
@@ -1778,6 +1885,44 @@ mod tests {
                 StatusCode::NOT_FOUND
             );
         }
+    }
+
+    /// The leg count is bounded before the coordinator is driven (AUDIT C121). One request used to buy
+    /// as many node-signed deploys as the caller cared to list, from a coordinator that spends the
+    /// node's own REV account — so `legs.len()` is now checked against [`MAX_TXN_LEGS`] at the handler,
+    /// before the per-leg parse loop and before `GatewayTxn::run`.
+    #[tokio::test]
+    async fn a_transaction_naming_too_many_legs_is_rejected() {
+        let leg = serde_json::json!({ "shardId": "/root", "amount": 1, "to": "1111abc" });
+        let legs = |n: usize| serde_json::Value::Array(vec![leg.clone(); n]);
+
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body("7373", legs(MAX_TXN_LEGS + 1))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains(&MAX_TXN_LEGS.to_string()),
+            "the refusal must name the bound: {}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // The differential: exactly the bound is *not* refused on the count. Whatever the gateway then
+        // answers for those legs, it must not be this refusal — otherwise the test above would pass on
+        // a handler that refused every list at all.
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body("7474", legs(MAX_TXN_LEGS))),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            !String::from_utf8_lossy(&body).contains("at most"),
+            "the bound itself must reach the gateway, not the refusal: {}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]

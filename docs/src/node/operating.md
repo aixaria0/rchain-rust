@@ -45,6 +45,15 @@ Notes for operators:
   without a validator key, answers 404. The legs are ordinary deploys, so they take effect when a
   block includes them — enable `--propose-on-deploy` or `--autopropose`, or the transaction will
   time out waiting.
+  **These routes are on the *admin* HTTP server (port 40405), not the public one (40403)** — the
+  coordinator signs every leg with this node's validator key and escrows out of **that key's own REV
+  account**, so the surface is privileged in the same way `/api/propose` is, and it is deliberately not
+  reachable on the API port a remote client can reach (AUDIT C121). The admin server binds
+  `127.0.0.1` unless `api-server.enable-devnet-admin-public = true`, so a wallet on another host needs
+  that opt-in — and should weigh it: publishing the admin port publishes an unauthenticated
+  spend-this-node's-REV route as well. A transaction may name at most 32 legs, and the coordinator
+  ledger holds at most 10,000 records; past either bound a new transaction is refused rather than
+  queued.
 - `GET /api/v1/shards` lists the memberships, primary first, each with its own chain height. The
   membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
   parses on its own.

@@ -105,6 +105,13 @@ fn gateway_node_runs_two_shards_with_their_own_genesis() {
 
 /// The node coordinates a cross-shard transaction itself: `POST /api/v1/txn` escrows on both of its
 /// own shards and commits, and the durable record is readable back by id.
+///
+/// **Driven through the admin listener, and the public one is asserted to refuse the same request**
+/// (AUDIT C121). The coordinator signs every phase deploy with the node's validator key and the escrow
+/// comes out of that key's own REV account, so the route is a spend surface for the operator; before
+/// this finding it was mounted on the public router, which binds `0.0.0.0` by default. The two
+/// assertions together are the falsifier: the move preserved the feature *and* removed it from the
+/// surface a remote caller can reach.
 #[test]
 fn gateway_node_coordinates_a_two_shard_transaction() {
     common::test_runtime().block_on(async {
@@ -114,9 +121,11 @@ fn gateway_node_coordinates_a_two_shard_transaction() {
         let conf = gateway_conf(&dir, &ports, VALIDATOR_PRIV_HEX);
         let node = start(&conf, ports[2], http_port).await;
         let base = format!("http://127.0.0.1:{http_port}");
+        let admin_base = format!("http://127.0.0.1:{}", node.admin_port);
         let client = reqwest::Client::new();
 
-        // Transacting before both shards have a chain would race their genesis ceremonies.
+        // Transacting before both shards have a chain would race their genesis ceremonies. The shard
+        // list is a public read and stays on the public server.
         wait_for_shards_ready(&client, &base).await;
 
         let txn_id = "aabbccdd";
@@ -127,8 +136,25 @@ fn gateway_node_coordinates_a_two_shard_transaction() {
                 { "shardId": "/root/child", "amount": 40, "to": "gatewayDest" }
             ]
         });
-        let resp = client
+
+        // The falsifier, first: this node *is* a gateway with the transaction API enabled, and the
+        // public listener must still have no such route. On the tree before C120/C121's fix this
+        // answered 200 and moved the node's own REV.
+        let public_attempt = client
             .post(format!("{base}/api/v1/txn"))
+            .json(&body)
+            .send()
+            .await
+            .expect("POST /api/v1/txn to the public port");
+        assert_eq!(
+            public_attempt.status(),
+            404,
+            "the fund-moving transaction route must not be reachable on the public listener, \
+             whatever the gateway's configuration"
+        );
+
+        let resp = client
+            .post(format!("{admin_base}/api/v1/txn"))
             .json(&body)
             .send()
             .await
@@ -150,13 +176,13 @@ fn gateway_node_coordinates_a_two_shard_transaction() {
         // The same record comes back by id, and a re-run is idempotent (no second escrow).
         let fetched = poll_json(
             &client,
-            &format!("{base}/api/v1/txn/{txn_id}"),
+            &format!("{admin_base}/api/v1/txn/{txn_id}"),
             "txn record",
         )
         .await;
         assert_eq!(fetched, record);
         let replay = client
-            .post(format!("{base}/api/v1/txn"))
+            .post(format!("{admin_base}/api/v1/txn"))
             .json(&body)
             .send()
             .await
@@ -165,7 +191,8 @@ fn gateway_node_coordinates_a_two_shard_transaction() {
         assert_eq!(replayed, record, "a re-run returns the same record");
 
         // Nothing is left in flight.
-        let in_flight = poll_json(&client, &format!("{base}/api/v1/txn"), "in-flight list").await;
+        let in_flight =
+            poll_json(&client, &format!("{admin_base}/api/v1/txn"), "in-flight list").await;
         assert_eq!(in_flight["inFlight"].as_array().unwrap().len(), 0);
 
         node.shutdown();
@@ -183,11 +210,12 @@ fn gateway_node_refuses_a_non_member_shard() {
         let conf = gateway_conf(&dir, &ports, VALIDATOR_PRIV_HEX);
         let node = start(&conf, ports[2], http_port).await;
         let base = format!("http://127.0.0.1:{http_port}");
+        let admin_base = format!("http://127.0.0.1:{}", node.admin_port);
         let client = reqwest::Client::new();
         wait_for_shards_ready(&client, &base).await;
 
         let resp = client
-            .post(format!("{base}/api/v1/txn"))
+            .post(format!("{admin_base}/api/v1/txn"))
             .json(&json!({
                 "txnId": "deadbeef",
                 "legs": [ { "shardId": "/elsewhere", "amount": 1, "to": "dest" } ]
@@ -203,7 +231,7 @@ fn gateway_node_refuses_a_non_member_shard() {
 
         // A malformed transaction id is a bad request, not a panic.
         let resp = client
-            .post(format!("{base}/api/v1/txn"))
+            .post(format!("{admin_base}/api/v1/txn"))
             .json(&json!({ "txnId": "zz", "legs": [ { "shardId": "/root", "amount": 1, "to": "d" } ] }))
             .send()
             .await

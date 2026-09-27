@@ -169,9 +169,11 @@ fn genesis_boot_exposes_block_over_http() {
             .expect("explore json (first private name)");
         assert_eq!(body["replySource"], "firstPrivateName", "{body}");
 
-        // This node is not a gateway (one shard), so the cross-shard transaction routes are not
-        // available: 404, the same convention the reporting routes use. A single-shard node's
-        // surface is otherwise unchanged.
+        // This node is not a gateway (one shard), so there is no cross-shard coordinator to drive.
+        // Since AUDIT C121 the route is also **absent from the public router altogether** — a gateway's
+        // transaction surface lives on the admin listener, which binds loopback by default — so this
+        // 404 is doubly determined here, and what the assertion now pins is that the public surface did
+        // not gain the route while it moved. A single-shard node's surface is otherwise unchanged.
         assert_eq!(
             client
                 .get(format!("{base}/api/v1/txn"))

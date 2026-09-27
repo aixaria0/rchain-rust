@@ -196,8 +196,11 @@ Law 28 is different in kind: `leg_idempotent` is a **theorem** about the model's
   side evaluation), collects the votes, decides, and applies phase two. `casper/src/conf.rs`'s
   `ShardMemberships` and the node's per-shard assembly (`node/src/runtime/node_runtime.rs`) supply the
   memberships; `node/src/api/shard_routing.rs` routes the one client surface across them. Reachable as
-  `POST /api/v1/txn` (plus `GET /api/v1/txn` and `/api/v1/txn/{txnId}`), served only on a node that
-  is a gateway.
+  `POST /api/v1/txn` (plus `GET /api/v1/txn` and `/api/v1/txn/{txnId}`), served only on the **admin**
+  HTTP listener of a node that is a gateway. It is not on the public API port: the coordinator signs
+  every leg with the node's validator key and escrows out of that key's own REV account, so the route
+  is privileged like `/api/propose` and binds loopback unless `enable-devnet-admin-public` is set
+  (AUDIT C121).
 - **The coordinator's record is durable but *not* consensus state**
   (`casper/src/gateway/ledger.rs`): votes and the commit decision belong to one node — no other
   validator runs a coordinator — so they live in a node-local database (`<data-dir>/gateway/`) rather

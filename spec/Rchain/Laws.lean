@@ -1582,7 +1582,7 @@ def laws : List Law := [
       freely constructible record, refuted by `Leg.mk \"\" 0 0` (`shard_scope_deterministic_is_false`, \
       2026-09-23). The axiom is deleted rather than kept beside its own refutation (a false axiom makes \
       everything provable). What the law is about is the *ingress*: the port rejects an invalid shard id \
-      at the boundary (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:203-218`, with \
+      at the boundary (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:273-288`, with \
       the boundary test that pins the 400), so the narrowed statement is about the function that admits \
       a leg — which needed that function modelled. **That function is modelled now (2026-09-24, \
       Programme F) and the row is proved**: `admitLeg` mirrors the boundary's decision exactly — \

@@ -80,8 +80,10 @@ pub struct ApiServer {
     pub port_admin_http: i32,
     pub max_blocks_limit: i32,
     pub enable_reporting: bool,
-    /// Serve the cross-shard transaction routes (`/api/v1/txn*`). Off by default; a node that is not
-    /// a gateway answers 404 either way.
+    /// Serve the cross-shard transaction routes (`/api/v1/txn*`) on the **admin** HTTP server. Off by
+    /// default; a node that is not a gateway answers 404 either way. They are not on the public API
+    /// port at all: the coordinator spends from the node's own validator REV account, so the surface
+    /// is privileged like `/api/propose` (AUDIT C121).
     pub enable_txn_api: bool,
     pub enable_devnet_cors: bool,
     /// Bind the **admin** HTTP server (`/api/propose`, port `port_admin_http`) to `api_server.host`
