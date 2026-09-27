@@ -92,7 +92,7 @@ R27	C3	13	done	`phlo_price` checked after replay. `casper/src/multi_parent_caspe
 R28	C4	13	done	deploy pool never expires future-dated deploys. `casper/src/dag.rs:409-413` — the pool ingress never bounded `valid_after_block_number`, so deploys anchored at `i64::MAX` filled …	valid_after_block_number	-
 R29	C5	13	done	block-receiver maps unbounded. `casper/src/blocks/block_receiver.rs:101` — valid-signed blocks with unresolvable justifications are retained forever		-
 R30	C7	13	done	`PeerRateLimiter` never evicts. `casper/src/engine/node_running.rs:106` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn		-
-R31	F6	13	todo	attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136`	is_ssrf_unsafe_host	a disposition: validate the host the UPnP path advertises, or record why a hostname is safe there
+R31	F6	13	done	attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136`	a_hostname_external_address_is_published_and_named_as_one	-
 R32	F7	13	done	attacker-controlled large `sender.host` retained in the connections table. `comm/src/rp/handle_messages.rs:70-93`	a_host_over_the_bound_is_refused_at_the_wire	-
 R33	A4	13	done	faucet to the deployer's own address is a no-op that still consumes the rate budget and submits a deploy	the_faucet_refuses_a_drip_to_the_deployers_own_address	-
 R34	A5	13	done	`/api/faucet` routes are mounted unconditionally on the public router; the dev-mode gate is only inside the handler	a_node_without_the_faucet_does_not_mount_the_route	-
