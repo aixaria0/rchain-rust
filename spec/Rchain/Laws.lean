@@ -1480,11 +1480,11 @@ def laws : List Law := [
       `j + 2 = i` would leave odd-indexed tasks unordered)",
     note := "`gate_exec_refines_apply` is **gone**: it defined `gateApply` as the sequential fold and \
       then proved the fold is the fold. The Rust's own comment above the gate says the same — 'Not a \
-      speedup — the sound, sequential-equivalent carrier' (`reduce.rs:2526`, in the gate's own comment) — so the content was \
+      speedup — the sound, sequential-equivalent carrier' (`reduce.rs:2568-2569`, in the gate's own comment) — so the content was \
       never in the identification. It is in the **dependency structure**, and that is what \
       `gate_await_closure_orders` proves: the immediate-predecessor await chain is transitively \
       complete, which is exactly the Rust's 'a linear chain of awaits, not the quadratic \
-      all-predecessors join' (`reduce.rs:2523-2527`)" },
+      all-predecessors join' (`reduce.rs:2570-2575`)" },
   { number := 22, layer := "Scheduler",
     rustWitness := ["rholang/src/reduce.rs:law22_the_next_step_closure_is_computable_at_dispatch"],
     statement := "Next-step closure is computable at dispatch (the matched datum is concrete); \
@@ -1497,7 +1497,7 @@ def laws : List Law := [
       asserted",
     note := "the positive half is a fact about a **signature**, not a theorem, which is why this row is \
       `vacuous` rather than a proof claim: `resolve_children` takes no store \
-      (`reduce.rs:2242-2250`, with the doc comment naming the purity at `:2238`), so stating it in Lean \
+      (`reduce.rs:resolve_match`, whose doc comment names the purity), so stating it in Lean \
       would prove that \
       a function ignores a parameter nobody passes. The theorem that stood here \
       (`next_step_closure_computable`) was `by rfl` and is **deleted** — and **that is the reason not to \
@@ -1667,7 +1667,7 @@ def laws : List Law := [
       **determined by reading the port, not by judgement** (2026-09-24), and the answer is that \
       the node scopes **neither** to a shard — so this is a **design claim** (law 48's shape), not a \
       port gap. The unforgeable names *are* the deploy's RNG stream: the `GPrivate` constructor over a draw: \
-      `GUnforgeable::GPrivate(GPrivate { id: bytes })` with `bytes = rand.next()` (`rholang/src/reduce.rs:1973`, \
+      `GUnforgeable::GPrivate(GPrivate { id: bytes })` with `bytes = rand.next()` (`rholang/src/reduce.rs:2198`, \
       in `alloc`); and \
       every seed site is shard-free — `unforgeable_name_rng` over the deployer and the timestamp \
       (`casper/src/tools.rs:11`), `Blake2b512Random::from_init(&deploy.to_bytes())` (`:26`), \
@@ -1730,25 +1730,25 @@ def laws : List Law := [
     witness := [`Rchain.commit_after_abort_is_an_error, `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft, `Rchain.txnPrepare_idempotent],
     falsifiable := some "the negatives are the witnesses: a second `prepare` that re-escrowed would fail \
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
-      `txn_prepare`/`txn_commit` (`native_state.rs:1434-1523`, `txn_prepare` at `:1426` and \
+      `txn_prepare`/`txn_commit` (`native_state.rs:txn_prepare`, `txn_prepare` and \
       `txn_commit` at `:1454`; the test is \
       `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2766`); dropping the \
       early return \
       would let a retry fail on insufficient balance *after* the first call had already succeeded, which \
-      the port's ordering (`native_state.rs:1461-1463`, before the balance check) forbids. \
+      the port's ordering (`native_state.rs:txn_prepare`, before the balance check) forbids. \
       `commit_after_abort_is_an_error` \
       fails for a verb that allowed the transition — the port returns \
-      `Err(\"txn commit: already aborted\")` (`native_state.rs:1468`), and `abort_after_commit_is_an_error` the mirror \
-      (`native_state.rs:1461`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1466`)",
+      `Err(\"txn commit: already aborted\")` (`native_state.rs:txn_commit`), and `abort_after_commit_is_an_error` the mirror \
+      (`native_state.rs:txn_prepare`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:txn_prepare`)",
     note := "`leg_idempotent` is **proved now** — `funext` on a pointwise update, which is all it ever \
       needed — but it is the per-*shard-state* view, and the port's verbs are not pointwise updates: \
       they read a record, decide, and write a vault balance *and* a record. So the law is re-modelled on \
       the ledger the port keeps, where idempotence is the **early return on an existing record** \
-      (`native_state.rs:1461-1463`) rather than a coincidence of the arithmetic, and where the **fences** \
+      (`native_state.rs:txn_prepare`) rather than a coincidence of the arithmetic, and where the **fences** \
       are stated too — commit after abort is an error and abort after commit is an error \
-      (`native_state.rs:1468`, `:1492`), which idempotence alone would permit. A fidelity note: the \
+      (`native_state.rs:txn_commit`, `native_state.rs:txn_abort`), which idempotence alone would permit. A fidelity note: the \
       model's `TxnState` carried a \
-      fourth constructor (`proposed`) that the code does not have (`native_state.rs:140`); a transaction with no \
+      fourth constructor (`proposed`) that the code does not have (`native_state.rs:vault_key`); a transaction with no \
       record is `none`, which is how the verbs spell it" },
   { number := 29, layer := "Cross-shard",
     rustWitness := [
@@ -2239,8 +2239,8 @@ def laws : List Law := [
       (`epochStep_conserves`, from `payDue_conserves` plus the observation that the other three steps \
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
-      `debit_pos_vault` *fails* the transfer (`native_state.rs:974`, its refusal at `:979`) and \
-      `close_block` (`native_state.rs:1165`) writes nothing on that path — the debit's `?` at `:1234` \
+      `debit_pos_vault` *fails* the transfer (`native_state.rs:debit_pos_vault`, its refusal inside `debit_pos_vault`) and \
+      `close_block` (`native_state.rs:close_block`) writes nothing on that path — the debit's `?` inside it \
       returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \
