@@ -8,7 +8,7 @@
 # ceiling	ingress	44
 # ceiling	process	30
 # ceiling	config	104
-# ceiling	tool	21
+# ceiling	tool	22
 # unhousedCeiling	107
 class	cast	T3	deferred	-	-	-	-	-	-
 class	div	T3	deferred	-	-	-	-	-	-
@@ -610,6 +610,7 @@ tool	.github/workflows/ci.yml	T3	deferred	-	-	-	-	-	-
 tool	.github/workflows/coverage.yml	T3	finding	deep	-	-	.github/workflows/coverage.yml:permissions C137	-	coverage.yml declares no permissions block, so it runs with the repository default token scope, and resolves five floating action refs of which dtolnay/rust-toolchain@stable is a moving branch; it triggers on every push to dev and main, and the hardening the other workflows got is half-applied
 tool	.github/workflows/devnet-fuzz.yml	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-instruments.sh	T3	deferred	-	-	-	-	-	-
+tool	tools/audit-mutate.sh	T3	deferred	-	-	-	-	-	authored 2026-09-27 to replace a hand-typed sweep that twice left a live plant in the tree. Read end to end because I wrote it; NOT falsified — nobody has planted a defect in the harness itself and required it to notice, so it is `deferred` and not `cleared`. What it does not do: it cannot stop a concurrent session's `cargo test` from compiling a planted tree during the window the plant is on disk (one test run long), and its `--old` match is exact-string, so a plant that compiles but changes nothing would report a vacuous witness
 tool	tools/audit-partiality.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-test-register.sh	T3	deferred	-	-	-	-	-	-
 tool	tools/audit-type-system.sh	T3	finding	deep	-	-	tools/audit-type-system.sh:PAT_SILENT C126 tools/audit-type-system.sh:REFINEMENT_FILES C127 tools/audit-type-system.sh:unsafe C130 tools/audit-type-system.sh:ESCAPE_ROSTER_AWK C131	-	four holes in the partiality gate, each demonstrated with a probe in an isolated worktree: the silent class is line-anchored so a rustfmt-wrapped try_from().unwrap_or(0) is invisible, the escape class reads only eleven files so a Deref impl in a sibling file is green, the unsafe class matches only an unsafe block, and G1's exclusion of public-field newtypes is unbacked for any name not already rostered
