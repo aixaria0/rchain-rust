@@ -165,7 +165,7 @@ C71		19	done	the matcher's padding is reachable from a well-formed term, so U10'
 C64		19	todo	a fresh validator cannot catch up, and it is a registered deviation multiplied by a	-	adopt the Scala's lowerBound cutoff (isReceivedLatest || blockNumber >= minimumHeight), which needs CasperDag::insert to stop requiring every justification present (casper/src/dag.rs:298) — a consensus-path design change, not a guard
 C65		19	done	the block store's side of LFS sync swallowed two failures the oracle propagates, so a	a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done	-
 C68		19	done	a failed LFS sync still signalled the node out of syncing, so it could run on an	notify_when_restored/a_failed_sync_does_not_signal_the_node_out_of_syncing/a_failed_sync_leaves_the_node_in_syncing	-
-C70		19	todo	the gate could not see a nested comment, and the widened token set is the only check that	lean_parse_corpus	the end-to-end run of the modified conformance gate
+C70		19	done	the gate could not see a nested comment, and the widened token set is the only check that	check_rust_witnesses	-
 C72		19	done	four register cells, three prose paragraphs and two citations called something owed while the	RSpaceImporter::get_history_item/RNodeStateManager::is_empty	-
 C73		19	done	a store-items page had a cap on its *count* and none on its *bytes*, so one request bought tens	validate_state_items/a_page_over_the_byte_cap_is_dropped_not_truncated	-
 C74		19	done	the name-shape vocabulary is a convention, not a predicate, and the measurement says which half	reduce_not_deterministic	-

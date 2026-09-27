@@ -22,20 +22,19 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 5 · IN PROGRESS 0 · DONE 195** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  9 of 89 T1 modules unread**
+**Findings  TODO 4 · IN PROGRESS 0 · DONE 196** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  9 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
-close it. **64 of the 195 findings name no evidence**, which is a column here rather than an
+close it. **64 of the 196 findings name no evidence**, which is a column here rather than an
 implication: a `done` row says the fix is in the tree, not that it is correct.
 
-### TODO — findings (5)
+### TODO — findings (4)
 
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C60` | the tie's domain was still too wide, and the port's matcher is not the clauses at all: the | a modelling decision on what the matcher's route actually is | §19 |
 | `C64` | a fresh validator cannot catch up, and it is a registered deviation multiplied by a | adopt the Scala's lowerBound cutoff (isReceivedLatest || blockNumber >= minimumHeight), which needs CasperDag::insert to stop requiring every justification present (casper/src/dag.rs:298) — a consensus-path design change, not a guard | §19 |
-| `C70` | the gate could not see a nested comment, and the widened token set is the only check that | the end-to-end run of the modified conformance gate | §19 |
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
 
@@ -62,7 +61,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | id | what | what closes it | account |
 |---|---|---|---|
 
-### DONE (195)
+### DONE (196)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -129,6 +128,7 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 | `C62` | the sync path multiplied the page it served, and the node's own metrics surface had no | chunking_a_page_does_not_copy_it_whole/report_period_snapshot/the_metrics_route_serves_the_registrys_own_numbers | §19 |
 | `C65` | the block store's side of LFS sync swallowed two failures the oracle propagates, so a | a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done | §19 |
 | `C68` | a failed LFS sync still signalled the node out of syncing, so it could run on an | notify_when_restored/a_failed_sync_does_not_signal_the_node_out_of_syncing/a_failed_sync_leaves_the_node_in_syncing | §19 |
+| `C70` | the gate could not see a nested comment, and the widened token set is the only check that | check_rust_witnesses | §19 |
 | `C71` | the matcher's padding is reachable from a well-formed term, so U10's refusal was refuted by | spatial_match_result/resolve_match_pads_a_level_the_pattern_does_not_bind/rho_match_pads_a_free_count_its_pattern_does_not_bind | §19 |
 | `C72` | four register cells, three prose paragraphs and two citations called something owed while the | RSpaceImporter::get_history_item/RNodeStateManager::is_empty | §19 |
 | `C73` | a store-items page had a cap on its *count* and none on its *bytes*, so one request bought tens | validate_state_items/a_page_over_the_byte_cap_is_dropped_not_truncated | §19 |

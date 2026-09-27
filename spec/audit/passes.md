@@ -3567,6 +3567,18 @@ port against the **reference document** rather than against itself.
   `[[ -s log ]]` fail branch; deleting the file restores a clean scan. The plant lived for one command
   and the file is gone.
 
+  **Closed 2026-09-27 — the end-to-end run, which is all the row's `owes` cell ever asked for.** It had
+  been owed since the fix landed, because the change was exercised at the scan step only: the gate's
+  first step is `lake build` and the Lean slot belonged to the lead. `tools/check-lean-conformance.sh`
+  now runs whole and **green**, and the parts that matter to this row are the ones the scan step cannot
+  reach: the Coq trust surface at its ceiling of 8, all **17** committed corpora agreeing with the Lean
+  definitions they are emitted from, the law register emitted and matching, every marked count against
+  the register (50 laws, 60 entries), law 39's catalog reconciled with `spec/API-SCHEMA.md`, and **all
+  91 Rust witnesses ran and passed**. So the widened token set is not merely exercised in isolation —
+  it is exercised in the gate that ships, behind a build that actually completed, over a corpus set that
+  actually re-emitted. Nothing was changed to close this; a row whose remedy is a run is closed by
+  running it, and the output is the evidence.
+
   **The citation, and the fix that ends the fragility.** Law 30 cites a line of this script for
   `lean_parse_corpus`; the first version of this change moved it `207 → 247` and
   `tools/audit-test-register.sh` failed on the stale window (correctly — it is check 9's job). The
