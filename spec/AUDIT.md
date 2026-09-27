@@ -22,7 +22,7 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 5 · IN PROGRESS 0 · DONE 194** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  13 of 89 T1 modules unread**
+**Findings  TODO 5 · IN PROGRESS 0 · DONE 194** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  10 of 89 T1 modules unread**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
@@ -39,7 +39,7 @@ implication: a `done` row says the fix is in the tree, not that it is correct.
 | `C151` | law 25's declared witness cannot fail when the block path's validation gate is switched off, and the switch from scheduler mode to validation flag is covered by no test in either crate | a program whose relaxed commits diverge without validation — `arb_program`'s shapes are confluent under reordering | §21 |
 | `C158` | an arity drift on a catalog entry that does not reply is caught by nothing | tie a non-replying entry's arity to something, or a decision that the corpus need not | §21 |
 
-### TODO — unread T1 modules (13)
+### TODO — unread T1 modules (10)
 
 The modules that can fork the chain or lose funds, and that nobody has read. In remit and not
 yet read, which is what `deferred` means in [`review-ledger.tsv`](review-ledger.tsv). Its
@@ -47,19 +47,16 @@ rendering and the gate that checked it were deleted on 2026-09-27; the data is t
 
 | module |
 |---|
-| `casper/src/conf.rs` |
 | `casper/src/engine/lfs_block_requester.rs` |
 | `casper/src/multi_parent_casper.rs` |
 | `casper/src/runtime_replay.rs` |
 | `casper/src/txn_coordinator.rs` |
 | `crypto/src/util/key_util.rs` |
-| `models/src/par_ops.rs` |
 | `rholang/src/contract_call.rs` |
 | `rholang/src/dispatch.rs` |
 | `rspace/src/history/history_repository.rs` |
 | `rspace/src/replay_rspace.rs` |
 | `rspace/src/scheduled_space.rs` |
-| `shared/src/rate_limiter.rs` |
 
 ### IN PROGRESS (0)
 
