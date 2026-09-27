@@ -164,6 +164,7 @@ pub fn write_to_disk_dir<E: RSpaceExporter>(
 mod tests {
     use super::*;
     use rchain_shared::state::TrieExporter;
+    use rchain_shared::store::InMemoryKeyValueStore;
 
     use crate::state::instances::RSpaceExporterStore;
 
@@ -264,6 +265,35 @@ mod tests {
         assert!(
             !err.contains("EmptyHistoryException"),
             "…and not the empty-history verdict: {err}"
+        );
+    }
+
+    /// **`write_to_disk` validates a chunk before it writes it, and reports a bad one as one.**
+    ///
+    /// The whole drain — the chunking loop, the validation and the two store writes — had no test at
+    /// all, which is most of this file's uncovered region, and this file tops
+    /// `spec/COVERAGE-LEDGER.md`'s **by-missed-fraction** ranking at 41.4% (TEST-COVERAGE item 11).
+    ///
+    /// The fixture is `MockExporter`, whose history bytes (`[1u8]`) do not hash to the key it
+    /// declares them under — precisely the shape `validate_state_items` refuses. What the assertion
+    /// pins is that the refusal *reaches the caller with its own verdict* rather than being swallowed
+    /// and the mismatched chunk written to disk, which for a state-export path is the difference
+    /// between a failed sync and a **corrupt one**.
+    ///
+    /// **What the happy path still needs, recorded rather than attempted**: a chunk that validates is
+    /// one whose history bytes encode a real `TrieNode`, and this crate exposes no encoder for one —
+    /// the bytes come from the RSpace trie store's own node codec. So the arm above is reachable from
+    /// a hand-built fixture and the write-and-loop arm is not, which makes part of this file's
+    /// thinness a **fixture gap** rather than an untested-intent gap.
+    #[test]
+    fn write_to_disk_refuses_a_chunk_whose_hash_does_not_match_its_bytes() {
+        let mut history = InMemoryKeyValueStore::default();
+        let mut data = InMemoryKeyValueStore::default();
+        let err = write_to_disk(&MockExporter, root_hash(), &mut history, &mut data, 10)
+            .expect_err("a chunk whose bytes do not hash to its key must be refused");
+        assert!(
+            err.contains("Trie hash does not match decoded trie"),
+            "the verdict names the mismatch: {err}"
         );
     }
 

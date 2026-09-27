@@ -731,6 +731,31 @@ missed lines, and check 11 refuses a coverage figure written here by hand — wh
 (it named `node/src/api/grpc/tonic.rs`, ranked fifteenth, first, while `rholang/src/reduce.rs` led with
 640 missed lines) is prevented from coming back.
 
+**Worked so far (2026-09-27), two files off the ranking's top, and one classification the ranking does
+not show.**
+
+* **`rholang/src/reduce.rs`** — first by missed lines. Its evaluation helpers' failure arms are pinned
+  by `the_evaluation_helpers_refuse_what_they_cannot_evaluate`: `eval_var`'s three refusals (a pattern
+  variable, `Empty`, an unbound level), `eval_to_long`'s non-integer operand, `restrict_to_int`'s
+  `i32` boundary — which had no test at either end — `eval_single_expr`'s "not a single expression",
+  and `split_rand`'s three arms including the `n > 256` branch. Each is pinned by the **message**,
+  because that is what a deploy's error report carries; falsified first by widening
+  `restrict_to_int`'s guard, which reddens it.
+* **`rspace/src/state/exporters.rs`** — the thinnest by missed fraction (41.4%), and the largest
+  single uncovered region here was an **entire function**: `write_to_disk`, the state-export drain,
+  had no test at all. Its validation arm is now pinned
+  (`write_to_disk_refuses_a_chunk_whose_hash_does_not_match_its_bytes`), which is the verdict that
+  separates a *failed* sync from a *corrupt* one.
+
+* **The classification the ranking cannot show, and it is the useful part:** `write_to_disk`'s
+  *happy* path is **`harness-bound` on a fixture the crate does not expose**. A chunk that validates
+  is one whose history bytes encode a real `TrieNode`, and the only encoder for those is the RSpace
+  trie store's own node codec — nothing public produces them. So this file's thinness is partly a
+  **fixture gap** rather than an untested-intent gap, and the cheap next step for it is not a test but
+  a fixture: expose the trie-node encoder (or a test-only builder) and the loop, both writes and the
+  resume path become reachable. That belongs to this row's own `harness-bound` bucket, and it is worth
+  saying before someone re-derives it as "nobody tried".
+
 **Classification before tests, and read rather than grepped.** Every region below was read and put in one
 of six buckets; the bucket decides what the region can become, and a region with no bucket is not yet
 understood. Two traps the first attempt fell into, recorded because both silently produce a wrong table:

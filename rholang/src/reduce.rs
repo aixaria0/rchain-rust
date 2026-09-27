@@ -3069,6 +3069,83 @@ mod tests {
         assert_eq!(eval_single_expr(&p, &e, &cost).unwrap(), Expr::GInt(5));
     }
 
+    /// **The evaluation helpers' failure arms, which nothing reached** (TEST-COVERAGE item 11: this
+    /// file tops `spec/COVERAGE-LEDGER.md`'s ranking by missed lines, and these branches are what the
+    /// ranking is counting).
+    ///
+    /// Each arm is a refusal a deploy can actually meet, and each is pinned by the **message** it
+    /// produces rather than by `is_err()`: the message is what the deploy's error report carries, so a
+    /// silent switch from one refusal to another would otherwise be invisible. The arms are reached
+    /// directly — these are pure helpers, so no runtime is needed to exercise them — which is also why
+    /// no end-to-end test had: nothing in the corpus spells a wildcard in expression position.
+    #[test]
+    fn the_evaluation_helpers_refuse_what_they_cannot_evaluate() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let env = Env::new();
+
+        // `eval_var`. A pattern variable is not evaluable, `Empty` is not a var instance at all, and
+        // a bound level the environment does not carry is unbound.
+        let err = eval_var(&Var::Wildcard, &env, &cost).expect_err("a wildcard is a pattern");
+        assert!(
+            err.to_string().contains("attempting to evaluate a pattern"),
+            "{err}"
+        );
+        let err = eval_var(&Var::FreeVar(2), &env, &cost).expect_err("a free var is a pattern");
+        assert!(
+            err.to_string().contains("attempting to evaluate a pattern"),
+            "{err}"
+        );
+        let err = eval_var(&Var::Empty, &env, &cost).expect_err("Empty is not a var instance");
+        assert!(
+            err.to_string().contains("Impossible var instance EMPTY"),
+            "{err}"
+        );
+        let err = eval_var(&Var::BoundVar(7), &env, &cost).expect_err("level 7 is unbound");
+        assert!(err.to_string().contains("Unbound variable: 7"), "{err}");
+
+        // `eval_to_long`: a non-integer operand of `nth`, `*`, `repeat` and the rest.
+        let string = from_expr(Expr::GString("x".to_string()));
+        let err = eval_to_long(&string, &env, &cost).expect_err("a string is not an Int");
+        assert!(err.to_string().contains("expected Int"), "{err}");
+
+        // `restrict_to_int`: the boundary that keeps an `i64` index from silently wrapping. In range
+        // on both sides of the guard, out of range just past each end.
+        assert_eq!(restrict_to_int(0).expect("zero is in range"), 0);
+        assert_eq!(
+            restrict_to_int(i32::MAX as i64).expect("i32::MAX is the last accepted"),
+            i32::MAX as usize
+        );
+        for n in [i32::MAX as i64 + 1, i64::MAX, i32::MIN as i64 - 1, i64::MIN] {
+            let err = restrict_to_int(n).expect_err("out of range");
+            assert!(err.to_string().contains("value out of range"), "{n}: {err}");
+        }
+
+        // `eval_single_expr`: a `Par` that is not a single expression. The empty par is the shape the
+        // check exists for — a term whose value is not an expression at all.
+        let empty: Par = Par::default();
+        let err =
+            eval_single_expr(&empty, &env, &cost).expect_err("an empty par holds no expression");
+        assert!(
+            err.to_string().contains("Expected a single expression"),
+            "{err}"
+        );
+
+        // `split_rand`: the three arms, including the `n > 256` branch that uses the 16-bit split and
+        // the `u16::try_from` refusal past its range.
+        let rand = Blake2b512Random::from_init(&[3u8; 32]);
+        assert!(
+            split_rand(&rand, 0, 1).is_ok(),
+            "n == 1 passes the RNG through"
+        );
+        assert!(split_rand(&rand, 3, 256).is_ok(), "n <= 256 splits by byte");
+        assert!(
+            split_rand(&rand, 300, 257).is_ok(),
+            "n > 256 splits by short"
+        );
+        let err = split_rand(&rand, 70_000, 257).expect_err("beyond a u16 index");
+        assert!(err.to_string().contains("out of range"), "{err}");
+    }
+
     /// `++` is defined for String, ByteArray, List, **Map** and **Set** (`Reduce.scala`'s
     /// `EPlusPlusBody`: the Map/Set arms go through `union`). The Map/Set arms were missing in the
     /// port, so `Set(1) ++ Set(2)` and `{"a": 1} ++ {"b": 2}` — both valid rholang — errored instead
