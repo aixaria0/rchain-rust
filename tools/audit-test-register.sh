@@ -521,6 +521,7 @@ sym_present() {
   return 1
 }
 anchor_total=0
+anchor_pad_only=0
 anchor_bad_before=$failures
 # The delimiter is `\034`, not tab, and that is load-bearing: `read` treats tab as IFS *whitespace*,
 # so it collapses an **empty field** — and every single-clause law has an empty `clause` column, which
@@ -565,6 +566,13 @@ while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq w
         continue
       fi
       window="$(sed -n "$(( from > 8 ? from - 8 : 1 )),$(( to + 8 ))p" "$file")"
+      # The cited window **without** the pad (AUDIT C155). The pad exists to tolerate a citation that
+      # has shifted a few lines, not to hide one that has: `produce_refs` moving eight lines down is
+      # still in the padded window, so the row reads as resolved while pointing at the wrong place.
+      # Measured when this was written: eleven of seventeen cited windows had moved and the check was
+      # green on all of them. The pad is kept — a strict window would fail on every unrelated insert —
+      # but a match that is *only* in the pad is now reported.
+      tight="$(sed -n "${from},${to}p" "$file")"
       hit=""
       while IFS= read -r id; do
         [[ -z "$id" ]] && continue
@@ -580,6 +588,26 @@ while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq w
       done <<< "$row_idents"
       if [[ -z "$hit" ]]; then
         fail "law ${num}${clause}: \`$cite_path:$from-$to\` holds no identifier the row names — $(sed -n "${from}p" "$file" | cut -c1-60)"
+      else
+        # …and the identifier must be in the **cited window**, not only in the pad (AUDIT C155). The
+        # same three spellings as the search, because a citation is not resolved by a name the check
+        # matched and this test then failed to recognise.
+        hit_camel="$(printf '%s' "$hit" | awk -F_ '{s=$1; for(i=2;i<=NF;i++) s=s toupper(substr($i,1,1)) substr($i,2); print s}')"
+        hit_snake="$(printf '%s' "$hit" | awk '{s=""; for(i=1;i<=length($0);i++){c=substr($0,i,1); if (c ~ /[A-Z]/) s=s "_" tolower(c); else s=s c} print s}')"
+        if [[ "$tight" != *"$hit"* && "$tight" != *"$hit_camel"* && "$tight" != *"$hit_snake"* ]]; then
+          # **Reported, not fatal, and the number is why.** Measured when this was written: **77** of
+          # the register's citations match only inside the pad. A strict window is not achievable by
+          # editing tool prose — every one of the 77 is a `file:line` in `spec/laws.tsv`'s three-file
+          # pair with `Rchain/Laws.lean`, so making this fatal would gate the whole tree on a register
+          # pass that has not been done. C155 asked for these to be "reported as such", and a count in
+          # the summary line is a number that must move; a `fail` here would be a build nobody can
+          # turn green, which is the failure mode this repository keeps recording.
+          anchor_pad_only=$((anchor_pad_only + 1))
+          if (( anchor_pad_only <= 8 )); then
+            printf '  (pad-only) law %s%s: `%s:%s-%s` holds `%s` only inside the ±8-line pad\n' \
+              "$num" "$clause" "$cite_path" "$from" "$to" "$hit"
+          fi
+        fi
       fi
     done
     # The same row's citations in **symbol form** (`path:identifier`), separated from the line form
@@ -608,7 +636,11 @@ done < <(awk -F'\t' 'BEGIN { OFS="\034" } { $1 = $1; print }' "$ROOT/spec/laws.t
 # than report success over zero citations — the trap check 8's own comment records finding.
 (( anchor_total > 0 )) || fail "no register citations found — the TSV's columns moved and this check is vacuous"
 if (( failures == anchor_bad_before )); then
-  ok "$anchor_total register citation(s) resolve, and each cited window holds what the row names"
+  if (( anchor_pad_only == 0 )); then
+    ok "$anchor_total register citation(s) resolve, and each cited window holds what the row names"
+  else
+    ok "$anchor_total register citation(s) resolve; $anchor_pad_only of them hold what the row names only inside the ±8-line pad (AUDIT C155 — the pad is reported rather than fatal, because making it fatal needs the register's three-file citation pass)"
+  fi
 fi
 
 # --- 10. a layer count is that layer's count ---------------------------------
