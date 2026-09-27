@@ -94,7 +94,7 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
             &arity.to_le_bytes(),
         ]);
         let mut first_eight = [0u8; 8];
-        first_eight.copy_from_slice(&digest.as_bytes()[..8]);
+        first_eight.copy_from_slice(digest.as_bytes().split_at(8).0);
         i64::from_be_bytes(first_eight) | i64::MIN
     }
 

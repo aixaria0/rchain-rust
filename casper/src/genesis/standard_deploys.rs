@@ -303,7 +303,7 @@ fn registry_epilogue_adapted(
              adaptation would ship a contract that cannot register"
         ));
     };
-    let head = source[..at].trim_end();
+    let head = source.split_at(at).0.trim_end();
     // **The absent channels have to go before the gate, not only at the tail.** `AuthKey` reaches the
     // manager from a block at its *end*, so cutting the tail removes the whole thing. This vault
     // reaches it from inside the gate that wraps its contracts — so the gate itself waits on two
@@ -344,14 +344,28 @@ fn registry_epilogue_adapted(
     // its head has one more open brace than `AuthKey`'s, and a fixed `}` truncated the par and the
     // parser refused the file (`expected RBrace, got Eof`). The count is over the whole head, so it
     // also notices a source that gains a block above the epilogue.
-    let open = head.matches('{').count() as i64 - head.matches('}').count() as i64;
-    if open <= 0 {
+    // **Close as many braces as the head left open.** The two sources differ in exactly this:
+    // `MultiSigRevVault`'s contracts sit inside the gate's `for (...) {`, so its head has one open
+    // brace more than `AuthKey`'s — and a fixed `}` truncated the par, which the parser refused
+    // (`expected RBrace, got Eof`). Counted with `checked_sub`, so a head that balances (or closes
+    // more than it opens) is a refusal naming the marker rather than an arithmetic surprise.
+    let Some(open) = head
+        .matches('{')
+        .count()
+        .checked_sub(head.matches('}').count())
+    else {
         return Err(format!(
-            "{name}: the adapted head balances its braces, so there is no block for the epilogue to \
-             be the last arm of — the marker found the wrong place"
+            "{name}: the text before the registry-epilogue marker balances its braces, so there is \
+             no block for the epilogue to be the last arm of — the marker found the wrong place"
+        ));
+    };
+    if open == 0 {
+        return Err(format!(
+            "{name}: the text before the registry-epilogue marker opens no block, so the \
+             adaptation would append a process outside every `new`"
         ));
     }
-    let closing = "}".repeat(open as usize);
+    let closing = "}".repeat(open);
     Ok(format!(
         "{head}\n  rs!(\n    (9223372036854775807, bundle+{{*{contract}}}),\n    *deployerId,\n    \
          *uriOut\n  )\n{closing}\n"
