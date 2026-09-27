@@ -418,6 +418,56 @@ async fn get_block(
     Ok(vals.pop().flatten())
 }
 
+/// The most deploys one block may carry, before the slashes it also has to seed (AUDIT C123).
+///
+/// **The bound is the per-deploy randomness seed, which is indexed in a `u8`.** `BlockCreator::create`
+/// derives each deploy's seed with `rand.split_byte(u8::try_from(selected.len() + i)?)` and the
+/// `close_block` seed with `split_byte(u8::try_from(selected.len() + to_slash.len())?)`
+/// (`block_creator.rs`), so a block's deploy count **plus** its slash count must fit in 255. Nothing
+/// bounded the selection, and the pool's own cap is 10,000 — set for a different reason entirely — so a
+/// pool of 256 valid deploys made `create` fail *before any state work*: the node could not produce a
+/// block at all, on any shard, until the pool drained below 256.
+///
+/// **The cap is on the selection and not on the seed**: widening the index would hide the bound rather
+/// than respect it, and the deploys a block cannot carry are not lost — the pool keeps them and the next
+/// block takes them. The slash count needs no cap of its own: `to_slash` comes from the block's
+/// justifications, which are bounded by `max-number-of-parents`, so it is small by construction.
+pub const MAX_BLOCK_DEPLOYS: usize = 255; // `u8::MAX` — the width of the seed index
+
+/// The deploys one block may carry, given how many validators it also has to seed — see
+/// [`MAX_BLOCK_DEPLOYS`] for why the *sum* is what has to fit.
+fn per_block_deploy_budget(slashes: usize) -> usize {
+    MAX_BLOCK_DEPLOYS.saturating_sub(slashes)
+}
+
+/// The deploys this block will carry: the pool's valid entries in their canonical order, truncated to
+/// `budget` (AUDIT C123).
+///
+/// "Valid" is the Scala proposer's filter — not future, not expired, not already in the DAG (the replay
+/// guard). The order is canonical because the pool is a `BTreeMap` keyed by `DeployId`, so the prefix the
+/// budget takes is the same for every node holding the same pool. The loop stops *reading* at the budget
+/// as well as collecting, so an oversized pool costs no more DAG lookups than the block can carry.
+async fn select_deploys(
+    dag: &dyn BlockDagStorage,
+    next_block_num: BlockHeight,
+    budget: usize,
+) -> Result<Vec<DeployId>, String> {
+    let pooled = dag.pooled_deploys().await?;
+    let mut deploys: Vec<DeployId> = Vec::new();
+    for (id, d) in pooled {
+        let future = d.data.valid_after_block_number > i64::from(next_block_num);
+        let expired = d.data.valid_after_block_number < next_block_num - DEPLOY_LIFESPAN;
+        let replay_attack = dag.lookup_by_deploy_id(&id).await?.is_some();
+        if !(future || expired || replay_attack) {
+            deploys.push(id);
+            if deploys.len() == budget {
+                break;
+            }
+        }
+    }
+    Ok(deploys)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_block<'a, F, Fut>(
     runtime: &'a RuntimeManager,
@@ -562,17 +612,10 @@ where
 
     let suppress_attestation = nothing_to_finalize || waiting_for_supermajority;
 
-    // User deploys: filter future / expired / replayed.
-    let pooled = dag.pooled_deploys().await?;
-    let mut deploys: Vec<DeployId> = Vec::new();
-    for (id, d) in pooled {
-        let future = d.data.valid_after_block_number > i64::from(next_block_num);
-        let expired = d.data.valid_after_block_number < next_block_num - DEPLOY_LIFESPAN;
-        let replay_attack = dag.lookup_by_deploy_id(&id).await?.is_some();
-        if !(future || expired || replay_attack) {
-            deploys.push(id);
-        }
-    }
+    // User deploys: filter future / expired / replayed, then cap at what the block can seed — the pool
+    // may hold far more than one block can carry, and the leftover stays pooled (AUDIT C123).
+    let mut deploys =
+        select_deploys(dag, next_block_num, per_block_deploy_budget(to_slash.len())).await?;
 
     // Dev-mode dummy deploy: when there is nothing pooled to include, inject a signed `Nil` deploy so
     // `--autopropose` can keep producing blocks (port of Scala `Proposer.dummyDeployOpt`).
@@ -713,6 +756,146 @@ mod tests {
         assert!(
             err.contains("the DAG store is down"),
             "and the refusal must name the failure, got: {err}"
+        );
+    }
+
+    /// A DAG whose pool is whatever the test hands it, and which has never seen a deploy — so the replay
+    /// guard never fires. Every other trait method is off the selection path.
+    struct PoolDag {
+        pooled: std::collections::BTreeMap<DeployId, SignedDeployData>,
+    }
+
+    #[async_trait::async_trait]
+    impl BlockDagStorage for PoolDag {
+        async fn get_representation(
+            &self,
+        ) -> Arc<rchain_block_storage::dag::representation::DagRepresentation> {
+            todo!("not on the selection path")
+        }
+        async fn insert(
+            &self,
+            _m: rchain_models::block_metadata::BlockMetadata,
+            _b: BlockMessage,
+        ) -> Result<(), String> {
+            todo!("not on the selection path")
+        }
+        async fn lookup(
+            &self,
+            _h: &BlockHash,
+        ) -> Result<Option<rchain_models::block_metadata::BlockMetadata>, String> {
+            todo!("not on the selection path")
+        }
+        async fn lookup_by_deploy_id(&self, _d: &DeployId) -> Result<Option<BlockHash>, String> {
+            Ok(None)
+        }
+        async fn add_deploy(&self, _d: SignedDeployData) -> Result<(), String> {
+            todo!("not on the selection path")
+        }
+        async fn pooled_deploys(
+            &self,
+        ) -> Result<std::collections::BTreeMap<DeployId, SignedDeployData>, String> {
+            Ok(self.pooled.clone())
+        }
+        async fn contains_deploy_in_pool(&self, _d: &DeployId) -> Result<bool, String> {
+            todo!("not on the selection path")
+        }
+    }
+
+    /// A pooled deploy valid at the block being proposed (`add_deploy`'s shape, minimal).
+    fn pooled(sig: u16, valid_after: i64) -> SignedDeployData {
+        SignedDeployData {
+            data: DeployData {
+                attachments: Vec::new(),
+                term: "Nil".to_string(),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 1,
+                valid_after_block_number: valid_after,
+                shard_id: "root".to_string(),
+            },
+            deployer: vec![0u8; 65],
+            sig: sig.to_le_bytes().to_vec(),
+            sig_algorithm: "secp256k1".to_string(),
+        }
+    }
+
+    /// **The regression test for AUDIT C123's bound**, and it is arithmetic on purpose: the invariant the
+    /// per-deploy seed needs is `deploys + slashes ≤ 255`. A test that only exercised a pool of 300 would
+    /// pass while the *bound itself* drifted, so this asserts the bound.
+    ///
+    /// `budget(0) == 255` is the half that matters: it is what makes a selection of 256 unreachable, and
+    /// 256 pooled deploys were exactly what stopped block production — `BlockCreator::create` computed
+    /// `u8::try_from(selected.len() + to_slash.len())` and returned `Err` *before any state work*, so the
+    /// node could not produce a block at all until the pool drained.
+    #[test]
+    fn the_per_block_budget_leaves_room_for_every_seed_the_block_needs() {
+        assert_eq!(
+            per_block_deploy_budget(0),
+            MAX_BLOCK_DEPLOYS,
+            "a block with no slashes may still not select 256 deploys"
+        );
+        for slashes in 0..=MAX_BLOCK_DEPLOYS {
+            assert!(
+                per_block_deploy_budget(slashes) + slashes <= MAX_BLOCK_DEPLOYS,
+                "the seed index is a u8, so {slashes} slashes leave {} deploys",
+                per_block_deploy_budget(slashes)
+            );
+        }
+        // Past the bound the budget saturates rather than wrapping — a slash count that large is
+        // unreachable (`to_slash` comes from the block's justifications), and a wrap here would be the
+        // arithmetic that got C123 into trouble in the first place.
+        assert_eq!(per_block_deploy_budget(MAX_BLOCK_DEPLOYS + 1), 0);
+    }
+
+    /// **The other half of C123**: the selection is a bounded, deterministic prefix of the pool's valid
+    /// entries, so a pool larger than one block can carry produces a block instead of an error.
+    #[tokio::test]
+    async fn the_selection_is_capped_and_takes_the_pools_canonical_prefix() {
+        // Two bytes per key, little-endian so the map's order is the index order — no cast and no
+        // division, which also keeps this fixture out of the partiality gate's `div`/`cast` classes.
+        let key = |i: u16| i.to_le_bytes().to_vec();
+        let pooled_map: std::collections::BTreeMap<DeployId, SignedDeployData> =
+            (0..300u16).map(|i| (key(i), pooled(i, 0))).collect();
+        let dag = PoolDag { pooled: pooled_map };
+        let next = BlockHeight::try_from(1).unwrap();
+
+        let selected = select_deploys(&dag, next, per_block_deploy_budget(0))
+            .await
+            .unwrap();
+        assert_eq!(
+            selected.len(),
+            MAX_BLOCK_DEPLOYS,
+            "a pool three times the block's capacity must yield a block-sized selection"
+        );
+        // The prefix is the pool's **canonical order**, and the assertion takes that order from the map
+        // rather than from a hand-written list: the first draft of this test spelled the expected keys
+        // out and got them wrong (`Vec<u8>` keys sort lexicographically, so `[0,1]` precedes `[1,0]` and
+        // the prefix is not the first N indices). What has to hold is the *property* — the selection is
+        // the pool's own order, truncated — and that is what this states.
+        let mut all_keys: Vec<DeployId> = dag.pooled.keys().cloned().collect();
+        all_keys.sort();
+        let expected: Vec<DeployId> = all_keys[..MAX_BLOCK_DEPLOYS].to_vec();
+        assert_eq!(selected, expected);
+
+        // A slash takes a seed as well, so it takes a deploy's place.
+        let with_one_slash = select_deploys(&dag, next, per_block_deploy_budget(1))
+            .await
+            .unwrap();
+        assert_eq!(with_one_slash.len(), MAX_BLOCK_DEPLOYS - 1);
+
+        // And the pool's own filter still runs: an expired deploy is not selected at all.
+        let mut with_expired = std::collections::BTreeMap::new();
+        with_expired.insert(vec![0u8, 9u8], pooled(9, 0));
+        with_expired.insert(vec![0u8, 10u8], pooled(10, -(DEPLOY_LIFESPAN + 1)));
+        let dag = PoolDag {
+            pooled: with_expired,
+        };
+        assert_eq!(
+            select_deploys(&dag, next, per_block_deploy_budget(0))
+                .await
+                .unwrap(),
+            vec![vec![0u8, 9u8]],
+            "the expiry filter must still apply under the cap"
         );
     }
 
