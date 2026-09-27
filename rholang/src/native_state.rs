@@ -45,7 +45,7 @@ use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
     InMemNativeStore, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
-    PREFIX_VAULT_NAME,
+    PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
 };
 
 use crate::util::rev_address::RevAddress;
@@ -1458,6 +1458,33 @@ impl NativeSystemState {
             Some(bytes) => Ok(String::from_utf8(bytes).ok()),
             None => Ok(None),
         }
+    }
+
+    /// The address a **minted authority** opens, or `None` if this name was never made an authority.
+    ///
+    /// This is the spend check's other half: `vault_name_address` answers "which vault does this name
+    /// open", this answers "may the holder of this name spend from it". `findOrCreate` writes the
+    /// first and never the second, so a handle it mints for someone else's address is not an
+    /// authority over that vault.
+    pub async fn vault_authority_address(&self, name: &[u8]) -> Result<Option<String>, String> {
+        match self
+            .store
+            .get(PREFIX_VAULT_AUTH, &vault_name_key(name))
+            .await?
+        {
+            Some(bytes) => Ok(String::from_utf8(bytes).ok()),
+            None => Ok(None),
+        }
+    }
+
+    /// Record that `name` **authorises** spends from the vault at `address` — what
+    /// `unforgeableAuthKey` writes.
+    pub fn set_vault_authority(&self, name: &[u8], address: &str) {
+        self.store.put(
+            PREFIX_VAULT_AUTH,
+            vault_name_key(name),
+            address.as_bytes().to_vec(),
+        );
     }
 
     /// Record that `name` opens the vault at `address` — what `findOrCreate` writes when it mints a

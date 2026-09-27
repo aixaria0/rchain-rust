@@ -1732,7 +1732,7 @@ def laws : List Law := [
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
       `txn_prepare`/`txn_commit` (`native_state.rs:txn_prepare`, `txn_prepare` and \
       `txn_commit` at `:1454`; the test is \
-      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2766`); dropping the \
+      `law28_txn_prepare_rejects_overdraw_and_is_idempotent`, `native_state.rs` (the symbol form: this test has moved twice now)); dropping the \
       early return \
       would let a retry fail on insufficient balance *after* the first call had already succeeded, which \
       the port's ordering (`native_state.rs:txn_prepare`, before the balance check) forbids. \

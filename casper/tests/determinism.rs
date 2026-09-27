@@ -202,10 +202,12 @@ async fn a_minted_vault_handle_spends_in_the_deploy_that_minted_it() {
         .expect("target address")
         .to_base58();
     let term = format!(
-        r#"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`), vaultCh, r in {{
+        r#"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`),
+               vaultCh, authCh, r in {{
             revVault!("findOrCreate", *deployerId, *vaultCh) |
-            for (@(_, *vault) <- vaultCh) {{
-                vault!("transfer", "{target}", 30000000, *vault, *r) |
+            revVault!("deployerAuthKey", *deployerId, *authCh) |
+            for (@(_, *vault) <- vaultCh; auth <- authCh) {{
+                vault!("transfer", "{target}", 30000000, *auth, *r) |
                 for (_ <- r) {{ Nil }}
             }}
         }}"#

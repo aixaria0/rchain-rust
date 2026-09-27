@@ -27,10 +27,18 @@ pub const PREFIX_TXN: u8 = 0x06;
 pub const PREFIX_HTTP: u8 = 0x07;
 /// Trie prefix for the vault **handle** map (`minted-name -> base58 rev-address`) — the record that
 /// lets a name handed out by `findOrCreate` still resolve to its vault in a later block, and after a
-/// replay. A handle is a rholang `GPrivate` name; this is the only thing tying it to an account, and
-/// it is what makes the name an *authority* rather than a lookup key: holding it is what lets a
-/// caller spend, which is the point of the capability (`spec/RUST-FIRST.md`'s B2 follow-on).
+/// replay. A handle is a rholang `GPrivate` name, and it is a *lookup* key only: holding the name a
+/// vault was opened under is not by itself the right to spend from it — that is [`PREFIX_VAULT_AUTH`],
+/// which is the distinction that keeps `findOrCreate(someone_else's_address)` from being an authority.
 pub const PREFIX_VAULT_NAME: u8 = 0x08;
+/// Trie prefix for the vault **authority** map (`unforgeable-name -> base58 rev-address`).
+///
+/// Separate from [`PREFIX_VAULT_NAME`] because the two are different questions: a *handle* says which
+/// vault a name opens, and an *authority* says who may spend it. Keeping them in one map would make
+/// `findOrCreate(victim_address)` an authority over the victim's vault — the handle alone would be
+/// enough to spend, which is exactly the hole this level of the design exists to close. An authority
+/// is recorded only by `unforgeableAuthKey`, whose argument the caller must already hold.
+pub const PREFIX_VAULT_AUTH: u8 = 0x09;
 
 /// A native-state mutation, folded into the trie at checkpoint (port of a `NativeStoreAction`).
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -524,13 +524,23 @@ where
                 .ok_or_else(|| illegal_arg("transfer expects a number amount"))?;
             let amount = NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
 
-            let authorised = match RhoName::unapply(auth) {
-                Some(presented) => native
-                    .vault_name_address(&presented.id)
-                    .await
-                    .map_err(|e| illegal_arg(&e))?
+            // **Two authorities, and a handle is neither.** A `deployerId` authorises the vault at
+            // its own address (the classic rule, reused here rather than re-spelled); a *name*
+            // authorises what `unforgeableAuthKey` recorded for it — the authority map, **not** the
+            // handle map. Reading the handle map here would make `findOrCreate(victim_address)` a
+            // spend right over that vault, which is the hole the two maps exist to keep apart.
+            let authorised = match RhoDeployerId::unapply(auth) {
+                Some(id) => RevAddress::from_deployer_id(id)
+                    .map(|a| a.to_base58())
                     .is_some_and(|resolved| resolved == address),
-                None => false,
+                None => match RhoName::unapply(auth) {
+                    Some(presented) => native
+                        .vault_authority_address(&presented.id)
+                        .await
+                        .map_err(|e| illegal_arg(&e))?
+                        .is_some_and(|resolved| resolved == address),
+                    None => false,
+                },
             };
             if !authorised {
                 let out = RhoTupleN::apply(vec![
@@ -1990,13 +2000,25 @@ impl SystemProcesses {
                                 "findOrCreate expects deployerId and return channel",
                             ));
                         };
-                        // Capability, not data: the vault is created for the caller's own
-                        // deployer-derived address only.
-                        let deployer_id = RhoDeployerId::unapply(deployer_id)
-                            .ok_or_else(|| illegal_arg("findOrCreate expects a deployerId"))?;
-                        let addr = RevAddress::from_deployer_id(deployer_id)
-                            .ok_or_else(|| illegal_arg("findOrCreate: invalid deployerId"))?
-                            .to_base58();
+                        // **Two shapes, one arm** (additive, like the handle itself). The port's
+                        // classic shape takes the caller's own `deployerId`, so a deploy can only
+                        // open its own vault; the oracle's takes a REV *address*
+                        // (`RevVault.rho:103`), which is what `MultiSigRevVault.rho` calls with —
+                        // it opens a vault for an address derived from a `new` name it holds. Both
+                        // mint a handle, and neither is an authority: the address form opens a vault
+                        // its caller may not be able to spend from, which is the point.
+                        let addr = match RhoDeployerId::unapply(deployer_id) {
+                            Some(id) => RevAddress::from_deployer_id(id)
+                                .ok_or_else(|| illegal_arg("findOrCreate: invalid deployerId"))?
+                                .to_base58(),
+                            None => RhoString::unapply(deployer_id)
+                                .ok_or_else(|| {
+                                    illegal_arg(
+                                        "findOrCreate expects a deployerId or a REV address",
+                                    )
+                                })?
+                                .to_string(),
+                        };
                         native
                             .find_or_create_vault(&addr)
                             .await
@@ -2028,6 +2050,22 @@ impl SystemProcesses {
                         let out = RhoTupleN::apply(vec![RhoBoolean::apply(true), handle]);
                         cc.produce(&rand, &[out], ret, path).await
                     }
+                    "deployerAuthKey" => {
+                        let [deployer_id, ret] = rest else {
+                            return Err(illegal_arg(
+                                "deployerAuthKey expects a deployerId and a return channel",
+                            ));
+                        };
+                        // The human half of the authority (`RevVault.rho:94` makes an `AuthKey` whose
+                        // shape is the deployer's own address). The port returns the `deployerId`
+                        // itself: it is unforgeable, it names the signer, and the transfer check
+                        // derives the address from it exactly as the classic arm does — so `transfer`
+                        // accepts one value for "I am this vault's key holder" on both paths.
+                        let deployer_id = RhoDeployerId::unapply(deployer_id)
+                            .ok_or_else(|| illegal_arg("deployerAuthKey expects a deployerId"))?;
+                        let key = RhoDeployerId::apply(deployer_id.to_vec());
+                        cc.produce(&rand, &[key], ret, path).await
+                    }
                     "unforgeableAuthKey" => {
                         let [unf, ret] = rest else {
                             return Err(illegal_arg(
@@ -2043,7 +2081,10 @@ impl SystemProcesses {
                             .ok_or_else(|| illegal_arg("unforgeableAuthKey expects a name"))?;
                         let name_bytes = unf.id.clone();
                         let addr = RevAddress::from_unforgeable(unf).to_base58();
-                        native.set_vault_name(&name_bytes, &addr);
+                        // **An authority, not a handle** — this is the half `findOrCreate` must not
+                        // be able to mint: the caller supplies the name, so only a holder can make
+                        // the entry, and the spend check reads this map rather than the handle map.
+                        native.set_vault_authority(&name_bytes, &addr);
                         let key = RhoName::apply_bytes(name_bytes);
                         cc.produce(&rand, &[key], ret, path).await
                     }
