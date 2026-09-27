@@ -105,6 +105,22 @@ jobs:
         # The line and function floors, and why the second is a *function* floor (AUDIT C107): the
         # audit's item asked for `--branch`, and the toolchain refuses it (`-Z coverage-options=branch`
         # on the pinned 1.95.0), so the closest instrument available is function coverage.
+        #
+        # Measurement history, written without the sign as a record: 73.68 => 71 (Stages 0-2),
+        # 79.69 => 77 (Stages 3-4), 81.30 => 79 (the low-coverage sweep), 84.07 => 82 (the census
+        # sweep), 86.77 => 84 (the coverage pass: the emitted ledger, and the node's read surface
+        # pinned route by route), 87.22 => 85 (the same pass, after its first batches: the
+        # `eval_method` arms and refusal tables, the http system process, the gateway carrier),
+        # 87.60 => 85 (autopropose, the message variants, the number-channel refusals),
+        # 87.95 => 85 (the merge's entry point, the deploy service's delegations),
+        # 88.02 => 86 (the export traversal's second level, proposeResult's arms),
+        # 88.62 => 86 (the merge's block index, NodeRunning's dispatch),
+        # 88.87 => 86 (the codecs' decode halves, the UPnP device report, the normalizer refusals),
+        # 89.14 => 87 (the reporting replay and its system deploy, the OpenAPI document).
+        #
+        # **This step moved here from `coverage.yml` when the deep gates left the push path**, and it
+        # took the floors and this history with it — check 11 of `tools/audit-test-register.sh` reads
+        # them from this file, so the two cannot drift (`tools/audit-test-register.sh`'s `FLOOR_SITE`).
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
       - name: Upload coverage
