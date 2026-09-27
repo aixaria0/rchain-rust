@@ -27,6 +27,7 @@ use crate::dispatch::{RholangAndScalaDispatcher, ScalaBodyFn};
 use crate::errors::RholangError;
 use crate::native_state::{NativeSystemState, TxnState};
 use crate::pretty_printer::PrettyPrinter;
+use crate::reduce::{Dispatch, Tuplespace};
 use crate::registry;
 use crate::scheduler::DfsPath;
 use crate::storage::ChargingRSpace;
@@ -396,6 +397,162 @@ pub struct SystemProcesses {
     pretty_printer: PrettyPrinter,
     block_data: Arc<Mutex<BlockData>>,
     native_state: Arc<NativeSystemState>,
+}
+
+/// Install both arities of a **vault handle** on `name_bytes` and return the channel.
+///
+/// Arity 2 is the oracle's `@"balance", ret` and arity 5 its
+/// `@"transfer", @targetAddress, @amount, authKey, ret` (`RevVault.rho:196-200`). A native handler has
+/// one arity and RSpace matches on arity, so serving that API from Rust means two continuations under
+/// one name — which is why the dispatch id is derived from the name *and* the arity
+/// (`ContractCall::native_body_ref`).
+///
+/// The channel is built here rather than taken from `install_native`'s return so both arities are
+/// known to have landed before the caller is handed the capability; a handle that resolves for
+/// `balance` but not `transfer` would be worse than no handle.
+async fn install_vault_handle<T, D>(
+    cc: ContractCall<T, D>,
+    native: Arc<NativeSystemState>,
+    name_bytes: Vec<u8>,
+    address: String,
+) -> Result<Par, RholangError>
+where
+    T: Tuplespace + Clone + Send + Sync + 'static,
+    D: Dispatch + Clone + Send + Sync + 'static,
+{
+    for (arity, handler) in [
+        (
+            2,
+            vault_balance_handler(cc.clone(), native.clone(), address.clone()),
+        ),
+        (
+            5,
+            vault_transfer_handler(cc.clone(), native.clone(), address.clone()),
+        ),
+    ] {
+        cc.install_native(name_bytes.clone(), arity, handler)
+            .await?;
+    }
+    Ok(RhoName::apply_bytes(name_bytes))
+}
+
+/// A vault handle's `balance` arm: replies the balance **directly**, as the oracle does
+/// (`revVault(@"balance", ret)` → `purse!("getBalance", *ret)`, and the wallet vector destructures a
+/// bare balance rather than an `Either`).
+fn vault_balance_handler<T, D>(
+    cc: ContractCall<T, D>,
+    native: Arc<NativeSystemState>,
+    address: String,
+) -> ScalaBodyFn
+where
+    T: Tuplespace + Clone + Send + Sync + 'static,
+    D: Dispatch + Clone + Send + Sync + 'static,
+{
+    Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
+        let cc = cc.clone();
+        let native = native.clone();
+        let address = address.clone();
+        Box::pin(async move {
+            let (pars, rand) = cc
+                .unapply(&args)
+                .ok_or_else(|| illegal_arg("a vault handle expects a method and arguments"))?;
+            let [op, ret] = pars.as_slice() else {
+                return Err(illegal_arg("vault balance expects a return channel"));
+            };
+            let op = RhoString::unapply(op)
+                .ok_or_else(|| illegal_arg("a vault method must be a string"))?;
+            // RSpace matched on *arity*, not on the method string, so the method is checked here —
+            // which is what the oracle's `contract v(@"balance", ret)` does in its pattern. A send
+            // that carries the wrong method at the right arity is answered with an error rather than
+            // left pending: a caller who is told is better off than one who waits.
+            if op != "balance" {
+                return Err(illegal_arg(&format!(
+                    "vault handle: {op} is not a method of this arity"
+                )));
+            }
+            let balance = native
+                .vault_balance(&address)
+                .await
+                .map_err(|e| illegal_arg(&e))?
+                .unwrap_or(NonNegI64::zero());
+            cc.produce(&rand, &[RhoNumber::apply(i64::from(balance))], ret, path)
+                .await
+        })
+    })
+}
+
+/// A vault handle's `transfer` arm: `(true, Nil)` on success, `(false, reason)` on a refusal — the
+/// `Either` shape both wallet vectors destructure.
+///
+/// **The authority is the name, not a key.** The oracle checks an `AuthKey` whose shape is the vault's
+/// own address (`RevVault.rho:257`); here the presented value must *resolve to this vault's address*,
+/// which is the same rule expressed in the encoding this port has. It is deliberately not "the
+/// caller's `deployerId`": a contract holding this handle has no deployer key of its own, which is the
+/// whole point of a capability, and it is what the multi-signature vault needs.
+fn vault_transfer_handler<T, D>(
+    cc: ContractCall<T, D>,
+    native: Arc<NativeSystemState>,
+    address: String,
+) -> ScalaBodyFn
+where
+    T: Tuplespace + Clone + Send + Sync + 'static,
+    D: Dispatch + Clone + Send + Sync + 'static,
+{
+    Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
+        let cc = cc.clone();
+        let native = native.clone();
+        let address = address.clone();
+        Box::pin(async move {
+            let (pars, rand) = cc
+                .unapply(&args)
+                .ok_or_else(|| illegal_arg("a vault handle expects a method and arguments"))?;
+            let [op, to, amount, auth, ret] = pars.as_slice() else {
+                return Err(illegal_arg(
+                    "vault transfer expects a target, an amount, an auth key and a return channel",
+                ));
+            };
+            let op = RhoString::unapply(op)
+                .ok_or_else(|| illegal_arg("a vault method must be a string"))?;
+            if op != "transfer" {
+                return Err(illegal_arg(&format!(
+                    "vault handle: {op} is not a method of this arity"
+                )));
+            }
+            let to = RhoString::unapply(to)
+                .ok_or_else(|| illegal_arg("transfer expects a string to-address"))?;
+            let amount = RhoNumber::unapply(amount)
+                .ok_or_else(|| illegal_arg("transfer expects a number amount"))?;
+            let amount = NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
+
+            let authorised = match RhoName::unapply(auth) {
+                Some(presented) => native
+                    .vault_name_address(&presented.id)
+                    .await
+                    .map_err(|e| illegal_arg(&e))?
+                    .is_some_and(|resolved| resolved == address),
+                None => false,
+            };
+            if !authorised {
+                let out = RhoTupleN::apply(vec![
+                    RhoBoolean::apply(false),
+                    RhoString::apply("Invalid AuthKey".to_string()),
+                ]);
+                return cc.produce(&rand, &[out], ret, path).await;
+            }
+
+            let outcome = native
+                .transfer_vault(&address, to, amount)
+                .await
+                .map_err(|e| illegal_arg(&e))?;
+            let out = match outcome {
+                Ok(()) => RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()]),
+                Err(reason) => {
+                    RhoTupleN::apply(vec![RhoBoolean::apply(false), RhoString::apply(reason)])
+                }
+            };
+            cc.produce(&rand, &[out], ret, path).await
+        })
+    })
 }
 
 impl SystemProcesses {
@@ -1810,45 +1967,22 @@ impl SystemProcesses {
                             .ok_or_else(|| illegal_arg("transfer expects a number amount"))?;
                         let amount =
                             NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
-                        let from_balance = match native
-                            .vault_balance(&from)
+                        // **The movement is `transfer_vault`, shared with the capability handle.**
+                        // The two arms differ only in where `from` comes from — the caller's
+                        // `deployerId` here, a presented name there — and the spend rule must not be
+                        // able to differ with it. The self-transfer no-op and the insufficient-balance
+                        // refusal both live in that one place now.
+                        match native
+                            .transfer_vault(&from, to, amount)
                             .await
                             .map_err(|e| illegal_arg(&e))?
                         {
-                            Some(b) => b,
-                            None => NonNegI64::zero(),
-                        };
-                        if i64::from(from_balance) < i64::from(amount) {
-                            return Err(illegal_arg("transfer: insufficient balance"));
+                            Ok(()) => cc.produce(&rand, &[RhoNil::apply()], ret, path).await,
+                            // The classic arm reports a refusal as a deploy error rather than as
+                            // `(false, reason)`: that is its existing contract, and changing a reply
+                            // shape is not what this change is for.
+                            Err(reason) => Err(illegal_arg(&reason)),
                         }
-                        // Self-transfer is a no-op AFTER the balance check: the Scala purse
-                        // split/deposit nets to zero, but an amount above the balance must still
-                        // fail. Without this guard the read-then-write below would double the balance
-                        // when `from == to` (both writes target the same vault leaf).
-                        if from.as_str() == to {
-                            return cc.produce(&rand, &[RhoNil::apply()], ret, path).await;
-                        }
-                        let to_balance = match native
-                            .vault_balance(to)
-                            .await
-                            .map_err(|e| illegal_arg(&e))?
-                        {
-                            Some(b) => b,
-                            None => NonNegI64::zero(),
-                        };
-                        let new_from =
-                            NonNegI64::try_from(i64::from(from_balance) - i64::from(amount))
-                                .map_err(|e| illegal_arg(&e.to_string()))?;
-                        // Accumulate in checked i64 so `to_balance + amount` cannot overflow (both are
-                        // non-negative, so only an i64::MAX-exceeding sum overflows).
-                        let new_to_i64 = i64::from(to_balance)
-                            .checked_add(i64::from(amount))
-                            .ok_or_else(|| illegal_arg("transfer: destination balance overflow"))?;
-                        let new_to = NonNegI64::try_from(new_to_i64)
-                            .map_err(|e| illegal_arg(&e.to_string()))?;
-                        native.set_vault_balance(&from, new_from);
-                        native.set_vault_balance(to, new_to);
-                        cc.produce(&rand, &[RhoNil::apply()], ret, path).await
                     }
                     "findOrCreate" => {
                         let [deployer_id, ret] = rest else {
@@ -1867,10 +2001,51 @@ impl SystemProcesses {
                             .find_or_create_vault(&addr)
                             .await
                             .map_err(|e| illegal_arg(&e))?;
-                        // In the simplified address-keyed model the vault identifier is the address.
-                        let out =
-                            RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoString::apply(addr)]);
+
+                        // **The handle: the capability half of the vault, and the reason
+                        // `spec/RUST-FIRST.md`'s B2 could be revisited.** The oracle's `findOrCreate`
+                        // returns a `MakeMint` *purse* — a capability a contract can be handed and
+                        // spend from, which is what the multi-signature vault needs (it holds REV
+                        // under a name, not under a key). This port's vault was address-keyed only,
+                        // so a contract could not hold one.
+                        //
+                        // The name is drawn from the send's own RNG (`unapply`'s `random_state`),
+                        // which is the deploy's carried state — so a replay mints the same bytes and
+                        // the same continuations, which is what makes this replayable rather than a
+                        // `new_random` hole in the state hash.
+                        let mut rand = rand;
+                        let name_bytes = rand.next();
+                        native.set_vault_name(&name_bytes, &addr);
+                        let handle = install_vault_handle(
+                            cc.clone(),
+                            native.clone(),
+                            name_bytes,
+                            addr.clone(),
+                        )
+                        .await
+                        .map_err(|e| illegal_arg(&e.to_string()))?;
+
+                        let out = RhoTupleN::apply(vec![RhoBoolean::apply(true), handle]);
                         cc.produce(&rand, &[out], ret, path).await
+                    }
+                    "unforgeableAuthKey" => {
+                        let [unf, ret] = rest else {
+                            return Err(illegal_arg(
+                                "unforgeableAuthKey expects a name and a return channel",
+                            ));
+                        };
+                        // The oracle makes an `AuthKey` whose *shape* is the vault's own REV address
+                        // (`RevVault.rho:94-101`). The port keeps the shape and drops the token
+                        // machinery: a name is an authority by being a name, so the value returned
+                        // here **is** the one `transfer` accepts, and what makes it valid is that it
+                        // resolves to the same address the vault being spent resolves to.
+                        let unf = RhoName::unapply(unf)
+                            .ok_or_else(|| illegal_arg("unforgeableAuthKey expects a name"))?;
+                        let name_bytes = unf.id.clone();
+                        let addr = RevAddress::from_unforgeable(unf).to_base58();
+                        native.set_vault_name(&name_bytes, &addr);
+                        let key = RhoName::apply_bytes(name_bytes);
+                        cc.produce(&rand, &[key], ret, path).await
                     }
                     _ => Err(illegal_arg(&format!("revVault: unknown method {op}"))),
                 }

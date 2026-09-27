@@ -25,6 +25,12 @@ pub const PREFIX_VAULT: u8 = 0x05;
 pub const PREFIX_TXN: u8 = 0x06;
 /// Trie prefix for the native HTTP-result oracle (`url -> recorded value`); RCHIP #54.
 pub const PREFIX_HTTP: u8 = 0x07;
+/// Trie prefix for the vault **handle** map (`minted-name -> base58 rev-address`) — the record that
+/// lets a name handed out by `findOrCreate` still resolve to its vault in a later block, and after a
+/// replay. A handle is a rholang `GPrivate` name; this is the only thing tying it to an account, and
+/// it is what makes the name an *authority* rather than a lookup key: holding it is what lets a
+/// caller spend, which is the point of the capability (`spec/RUST-FIRST.md`'s B2 follow-on).
+pub const PREFIX_VAULT_NAME: u8 = 0x08;
 
 /// A native-state mutation, folded into the trie at checkpoint (port of a `NativeStoreAction`).
 #[derive(Clone, Debug, PartialEq, Eq)]

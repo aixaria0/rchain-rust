@@ -173,6 +173,124 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
     );
 }
 
+/// **The vault capability, end to end** — the deferred half of `spec/RUST-FIRST.md`'s B2.
+///
+/// A deploy asks `findOrCreate` for a handle and then **spends from it in the same deploy**. Nothing
+/// could do that before: the handle is a name minted during the deploy, so no compile-time
+/// `BodyRefs` entry describes it, and the send would have matched nothing. The evidence is a *fund
+/// movement* rather than a read, so a handler that replied without acting would fail this.
+///
+/// The auth argument is the handle itself, which is what a capability means here: the value that
+/// authorises the spend is the unforgeable name, not the caller's deployer key — a contract holding
+/// this handle has no key of its own, which is the whole reason the multi-signature vault needs it.
+#[tokio::test]
+async fn a_minted_vault_handle_spends_in_the_deploy_that_minted_it() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let (_pre, post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let target = RevAddress::from_public_key(&PublicKey::new(vec![1u8; 65]))
+        .expect("target address")
+        .to_base58();
+    let term = format!(
+        r#"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`), vaultCh, r in {{
+            revVault!("findOrCreate", *deployerId, *vaultCh) |
+            for (@(_, *vault) <- vaultCh) {{
+                vault!("transfer", "{target}", 30000000, *vault, *r) |
+                for (_ <- r) {{ Nil }}
+            }}
+        }}"#
+    );
+
+    let (post_state, user_results, _) = rm
+        .compute_state(&post, &[deploy(&term)], &[], &rand, BlockData::empty())
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "a handle spend must succeed: {:?}",
+        user_results[0].eval_result.errors
+    );
+
+    let native = NativeSystemState::new(rm.runtime().native_store());
+    let target_balance = native
+        .vault_balance(&target)
+        .await
+        .expect("read target balance")
+        .map(i64::from)
+        .unwrap_or(0);
+    assert_eq!(
+        target_balance, 30_000_000,
+        "the handle's transfer must have moved the funds — a reply without a movement is not the \
+         capability working"
+    );
+    let _ = post_state;
+}
+
+/// **And the authority check is real.** The same transfer with a name that opens nothing — a fresh
+/// `new`, which is exactly what a caller without the handle holds — must move nothing. Without this
+/// arm the first test would pass on a handler that ignored its auth argument entirely.
+#[tokio::test]
+async fn a_vault_handle_refuses_a_name_that_opens_no_vault() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let (_pre, post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let target = RevAddress::from_public_key(&PublicKey::new(vec![1u8; 65]))
+        .expect("target address")
+        .to_base58();
+    let term = format!(
+        r#"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`), vaultCh, r, other in {{
+            revVault!("findOrCreate", *deployerId, *vaultCh) |
+            for (@(_, *vault) <- vaultCh) {{
+                vault!("transfer", "{target}", 30000000, *other, *r) |
+                for (_ <- r) {{ Nil }}
+            }}
+        }}"#
+    );
+
+    let (post_state, user_results, _) = rm
+        .compute_state(&post, &[deploy(&term)], &[], &rand, BlockData::empty())
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "the deploy itself runs; the *transfer* is refused: {:?}",
+        user_results[0].eval_result.errors
+    );
+
+    let native = NativeSystemState::new(rm.runtime().native_store());
+    let _ = post_state;
+    let target_balance = native
+        .vault_balance(&target)
+        .await
+        .expect("read target balance")
+        .map(i64::from)
+        .unwrap_or(0);
+    assert_eq!(
+        target_balance, 0,
+        "a name that opens no vault must not authorise a spend"
+    );
+}
+
 #[tokio::test]
 async fn play_and_replay_agree_for_failed_user_deploy_with_recorded_error() {
     // Issue #15: a failed user deploy must record the reducer's error in `system_deploy_error`,

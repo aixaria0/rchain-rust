@@ -1891,6 +1891,27 @@ pub trait Tuplespace: std::marker::Send + std::marker::Sync {
         peeks: BTreeSet<usize>,
     ) -> Result<Application, RholangError>;
 
+    /// Install a **persistent** native continuation on `channel`, outside any deploy's term.
+    ///
+    /// The pair of this and [`Dispatch::register`]: a native system process binds its continuation at
+    /// a constant channel when the runtime is built (`runtime.rs::install_system_processes`), which
+    /// works while every native channel is known at compile time. The vault capability's handle is
+    /// not — it is minted per call — so a handler that mints one has to be able to bind it. The space
+    /// side is this; the handler side is the dispatcher's.
+    ///
+    /// The default refuses, for the same reason the dispatcher's does: a tuplespace that cannot
+    /// install must say so rather than hand back a name nothing answers on.
+    async fn install(
+        &self,
+        _channel: &SortedProc,
+        _patterns: &[BindPattern],
+        _continuation: TaggedContinuation,
+    ) -> Result<(), RholangError> {
+        Err(RholangError::BugFoundError(
+            "this tuplespace cannot install a native continuation".to_string(),
+        ))
+    }
+
     /// Produce *at* the given DFS path (the Law 20 scheduling entry point). The default is the
     /// plain produce plus `ReleaseToken::detached()` — non-scheduling tuplespaces "don't
     /// schedule": their ops complete inline and no phase-two claim set is returned.
@@ -1951,6 +1972,30 @@ pub trait Dispatch: std::marker::Send + std::marker::Sync {
         data_list: Vec<ListParWithRandom>,
         path: DfsPath,
     ) -> Result<(), RholangError>;
+
+    /// Bind `handler` to `body_ref`, so a continuation carrying that id dispatches to it.
+    ///
+    /// **Why this exists.** Every native system process is installed at a *constant* channel with a
+    /// `BodyRefs` id (`runtime.rs::install_system_processes`), which is enough while the set of native
+    /// channels is known at compile time. The vault capability is the first native surface that is
+    /// not: `findOrCreate` mints a fresh unforgeable name per call and a send to it must reach Rust
+    /// (the multi-signature vault holds REV under exactly such a name). So a handler has to be able to
+    /// bind a *minted* channel at runtime, which needs this and nothing else.
+    ///
+    /// **The default refuses rather than doing nothing.** A dispatcher that owns no table cannot
+    /// register into one, and a silent no-op would leave the minted channel answering nothing — the
+    /// failure mode where a caller is handed a capability that does not work. `None` is not an
+    /// option for the same reason a `Result` is used elsewhere in this tree: the caller must be able
+    /// to tell.
+    fn register(
+        &self,
+        _body_ref: i64,
+        _handler: crate::dispatch::ScalaBodyFn,
+    ) -> Result<(), RholangError> {
+        Err(RholangError::BugFoundError(
+            "this dispatcher cannot register a handler".to_string(),
+        ))
+    }
 }
 
 /// An owned, flattened term (the borrow-free unit the scheduler reduces).

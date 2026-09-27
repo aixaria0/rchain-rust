@@ -306,6 +306,26 @@ impl Tuplespace for ChargingRSpace {
         Ok(to_application(result))
     }
 
+    /// Bind a persistent native continuation on `channel` (see [`Tuplespace::install`]).
+    ///
+    /// **Nothing is charged, and that is deliberate.** The charged paths are a deploy's produce and
+    /// consume; this one is the *installation* of a native handler — the same work
+    /// `install_system_processes` does at runtime construction, which no deploy pays for. Charging it
+    /// would price the minting of a capability by a number the operator never chose, and a deploy
+    /// that hit the limit mid-install would be left with a name whose handler is missing.
+    async fn install(
+        &self,
+        channel: &SortedProc,
+        patterns: &[BindPattern],
+        continuation: TaggedContinuation,
+    ) -> Result<(), RholangError> {
+        self.space
+            .install(std::slice::from_ref(channel), patterns, continuation)
+            .await
+            .map(|_| ())
+            .map_err(|e| RholangError::ReduceError(e.to_string()))
+    }
+
     async fn consume(
         &self,
         channels: &[SortedProc],

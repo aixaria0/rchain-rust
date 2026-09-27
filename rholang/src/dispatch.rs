@@ -76,6 +76,30 @@ impl RholangAndScalaDispatcher {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = table;
     }
+
+    /// Bind one handler to one id, leaving every other entry alone — the entry point the vault
+    /// capability needs (see [`Dispatch::register`](crate::reduce::Dispatch::register)).
+    ///
+    /// **Re-registering the same id is a no-op, not a replacement.** The install path is re-run on
+    /// replay and a deploy may legitimately call `findOrCreate` twice for one address within a block;
+    /// the second call must reach the same handler rather than swap in a new closure under a
+    /// continuation the space already holds. The check-then-insert is under the table's own lock, so
+    /// two concurrent installs of one id cannot both win.
+    pub fn register_handler(
+        &self,
+        body_ref: i64,
+        handler: ScalaBodyFn,
+    ) -> Result<(), RholangError> {
+        let mut table = self
+            .dispatch_table
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if table.contains_key(&body_ref) {
+            return Ok(());
+        }
+        table.insert(body_ref, handler);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -126,6 +150,13 @@ impl Dispatch for RholangAndScalaDispatcher {
             TaggedContinuation::Empty => Ok(()),
         }
     }
+
+    /// Forward to the concrete table: the `Arc` impl exists so handlers can hold the dispatcher
+    /// cheaply, and a registration that stopped at the wrapper would be a capability that works for
+    /// one holder and silently not for another.
+    fn register(&self, body_ref: i64, handler: ScalaBodyFn) -> Result<(), RholangError> {
+        self.register_handler(body_ref, handler)
+    }
 }
 
 #[async_trait]
@@ -137,6 +168,10 @@ impl Dispatch for Arc<RholangAndScalaDispatcher> {
         path: DfsPath,
     ) -> Result<(), RholangError> {
         self.as_ref().dispatch(continuation, data_list, path).await
+    }
+
+    fn register(&self, body_ref: i64, handler: ScalaBodyFn) -> Result<(), RholangError> {
+        self.as_ref().register_handler(body_ref, handler)
     }
 }
 
@@ -155,6 +190,17 @@ impl Dispatch for Weak<RholangAndScalaDispatcher> {
             RholangError::BugFoundError("system dispatcher has been dropped".to_string())
         })?;
         dispatcher.dispatch(continuation, data_list, path).await
+    }
+
+    /// The same upgrade-then-forward, and it is load-bearing rather than symmetry: a system-process
+    /// handler holds the dispatcher **weakly** (issues #18/#23), so the handler that installs a
+    /// minted channel's continuation is exactly the holder that would otherwise fall back to the
+    /// refusing default.
+    fn register(&self, body_ref: i64, handler: ScalaBodyFn) -> Result<(), RholangError> {
+        let dispatcher = self.upgrade().ok_or_else(|| {
+            RholangError::BugFoundError("system dispatcher has been dropped".to_string())
+        })?;
+        dispatcher.register_handler(body_ref, handler)
     }
 }
 
@@ -191,6 +237,54 @@ mod tests {
         assert_eq!(value(1), Some(rchain_models::ast::Expr::GInt(11)));
         assert_eq!(value(2), Some(rchain_models::ast::Expr::GInt(10)));
         assert_eq!(value(3), None, "nothing beyond the data");
+    }
+
+    /// **The minted-channel primitive's handler half (vault capability, stage 1).** A registration
+    /// is per-entry — it must not disturb the constants `install_system_processes` put in the table —
+    /// and re-registering one id is a no-op rather than a swap, because the install path runs again
+    /// on replay and a deploy may mint the same handle twice; a second closure under a continuation
+    /// the space already holds would make the two runs disagree about what the channel does.
+    #[tokio::test]
+    async fn a_registration_is_per_entry_and_idempotent() {
+        let mut table: BTreeMap<i64, ScalaBodyFn> = BTreeMap::new();
+        table.insert(7, Box::new(|_data, _path| Box::pin(async { Ok(()) })));
+        let dispatcher = RholangAndScalaDispatcher::new(table);
+
+        let first: ScalaBodyFn = Box::new(|_data, _path| {
+            Box::pin(async { Err(RholangError::ReduceError("first".to_string())) })
+        });
+        dispatcher
+            .register_handler(-5, first)
+            .expect("a free id registers");
+
+        // The constant that was already there is untouched, and the new id is now occupied.
+        {
+            let table = dispatcher
+                .dispatch_table
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            assert_eq!(table.len(), 2, "one entry added, not a replacement");
+            assert!(table.contains_key(&7), "the constant survives");
+            assert!(table.contains_key(&-5));
+        }
+
+        // A second registration of the same id is a no-op: the *first* handler is still the one the
+        // id dispatches to, which is the property replay depends on.
+        let second: ScalaBodyFn = Box::new(|_data, _path| {
+            Box::pin(async { Err(RholangError::ReduceError("second".to_string())) })
+        });
+        dispatcher
+            .register_handler(-5, second)
+            .expect("re-registering is not an error");
+        let err = dispatcher
+            .dispatch(
+                TaggedContinuation::ScalaBodyRef(-5),
+                vec![],
+                DfsPath::default(),
+            )
+            .await
+            .expect_err("the first handler errors");
+        assert_eq!(err.to_string(), "first");
     }
 
     #[test]

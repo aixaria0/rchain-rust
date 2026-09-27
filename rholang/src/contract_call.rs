@@ -1,8 +1,10 @@
 //! System-contract message unapplying (port of `ContractCall.scala`).
 
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
-use rchain_models::ast::Par;
-use rchain_models::runtime::ListParWithRandom;
+use rchain_models::ast::{Expr, Par, Var};
+use rchain_models::par_ops::from_expr;
+use rchain_models::rholang::RhoType::RhoName;
+use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 
 use crate::errors::RholangError;
@@ -70,6 +72,70 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
         } else {
             None
         }
+    }
+
+    /// The dispatch id for one **arity** of a minted channel: a function of the channel's bytes and
+    /// that arity.
+    ///
+    /// Negative, so it can never collide with a `BodyRefs` constant (those are small non-negative
+    /// ids), and derived from the name rather than from a counter — a counter would depend on how many
+    /// handles *this dispatcher* has installed, which is not the same on play and on replay (replay
+    /// builds a fresh dispatcher), so the continuation would dispatch nowhere on the second run. A
+    /// hash of the name is a function of the name, and the name is a function of the deploy's RNG.
+    ///
+    /// **The arity is part of the id because a channel can carry several continuations.** RSpace
+    /// matches by arity, and the oracle's vault is exactly that shape: one `contract` per method
+    /// (`@"balance", ret` at arity 2 beside `@"transfer", @to, @amount, @auth, ret` at arity 4). A
+    /// native handler has one arity, so serving that API means one install per arity under one name —
+    /// which only works if the ids differ.
+    pub fn native_body_ref(name_bytes: &[u8], arity: i32) -> i64 {
+        let digest = rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::create_many(&[
+            name_bytes,
+            &arity.to_le_bytes(),
+        ]);
+        let mut first_eight = [0u8; 8];
+        first_eight.copy_from_slice(&digest.as_bytes()[..8]);
+        i64::from_be_bytes(first_eight) | i64::MIN
+    }
+
+    /// Bind `handler` to one arity of a channel minted from `name_bytes`, returning that channel as a
+    /// `Par`, ready to be handed out as a capability.
+    ///
+    /// This is the whole of the minted-channel primitive: build the name the way `reduce::alloc` does
+    /// for a rholang `new` ([`RhoName::apply_bytes`]), register the handler against the id derived
+    /// from those bytes and that arity, and install the persistent continuation the space will match a
+    /// send against. Calling it again for another arity of the same name returns the same channel and
+    /// adds a second continuation — which is how one native handler serves `balance`'s two arguments
+    /// and `transfer`'s five.
+    ///
+    /// **Register before installing**, so a failure leaves a handler nobody can reach rather than a
+    /// continuation that dispatches into an empty table — the second is an error inside the reducer,
+    /// the first is a name the caller is told about.
+    pub async fn install_native(
+        &self,
+        name_bytes: Vec<u8>,
+        arity: i32,
+        handler: crate::dispatch::ScalaBodyFn,
+    ) -> Result<Par, RholangError> {
+        let channel = RhoName::apply_bytes(name_bytes.clone());
+        let body_ref = Self::native_body_ref(&name_bytes, arity);
+        self.dispatcher.register(body_ref, handler)?;
+
+        let patterns = vec![BindPattern {
+            patterns: (0..arity)
+                .map(|i| SortedProc::new(from_expr(Expr::EVar(Box::new(Var::FreeVar(i))))))
+                .collect(),
+            remainder: None,
+            free_count: arity,
+        }];
+        self.space
+            .install(
+                &SortedProc::new(channel.clone()),
+                &patterns,
+                TaggedContinuation::ScalaBodyRef(body_ref),
+            )
+            .await?;
+        Ok(channel)
     }
 }
 

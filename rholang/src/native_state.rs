@@ -45,6 +45,7 @@ use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
     InMemNativeStore, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
+    PREFIX_VAULT_NAME,
 };
 
 use crate::util::rev_address::RevAddress;
@@ -133,6 +134,15 @@ fn vault_key(address: &str) -> Blake2b256Hash {
 /// Leaf key for a cross-shard transaction record (the `txn_id` bytes, hashed).
 fn txn_key(id: &[u8]) -> Blake2b256Hash {
     Blake2b256Hash::create(id)
+}
+
+/// Leaf key for a **vault handle** (the minted name's bytes, hashed).
+///
+/// The name's own bytes are the key rather than a hash of the address, because a handle is per-call:
+/// the same vault handed out twice is two names, and both must resolve (the oracle mints a fresh
+/// purse per `findOrCreate` too — `RevVault.rho:103-140`).
+fn vault_name_key(name: &[u8]) -> Blake2b256Hash {
+    Blake2b256Hash::create(name)
 }
 
 /// The state of a cross-shard two-phase-commit transaction record.
@@ -1431,6 +1441,76 @@ impl NativeSystemState {
             self.set_vault_balance(address, NonNegI64::zero());
         }
         Ok(())
+    }
+
+    /// The address a **minted handle** opens, or `None` if this name was never handed out.
+    ///
+    /// `None` is the interesting answer — it is what refuses a caller who presents a name nobody
+    /// minted, which is the whole authority check the capability rests on. The bytes are the base58
+    /// address, stored as-is; a value that is not valid UTF-8 is treated as absent rather than as an
+    /// error, because a corrupted leaf and a forged name are the same answer here (refuse).
+    pub async fn vault_name_address(&self, name: &[u8]) -> Result<Option<String>, String> {
+        match self
+            .store
+            .get(PREFIX_VAULT_NAME, &vault_name_key(name))
+            .await?
+        {
+            Some(bytes) => Ok(String::from_utf8(bytes).ok()),
+            None => Ok(None),
+        }
+    }
+
+    /// Record that `name` opens the vault at `address` — what `findOrCreate` writes when it mints a
+    /// handle. Recorded in native state (not in the handler's closure) so the handle still resolves
+    /// in a later block and on the replay path, both of which construct a fresh dispatcher.
+    pub fn set_vault_name(&self, name: &[u8], address: &str) {
+        self.store.put(
+            PREFIX_VAULT_NAME,
+            vault_name_key(name),
+            address.as_bytes().to_vec(),
+        );
+    }
+
+    /// Move `amount` from one vault to another: the spend rule, in one place.
+    ///
+    /// **The two callers are two shapes of the same authority** — the classic arm, where `from` comes
+    /// from the caller's `deployerId`, and the capability handle, where it comes from the name the
+    /// caller presented. They must not be able to disagree about what a legal spend is, so the
+    /// movement lives here rather than in each arm.
+    ///
+    /// The return is deliberately two-layered: `Ok(Err(reason))` is a refusal the *caller* caused and
+    /// should see (`(false, reason)` — insufficient balance, a sum that would overflow); `Err(e)` is
+    /// the store failing, which is not their fault and must not be dressed as a verdict about their
+    /// transfer.
+    ///
+    /// The self-transfer arm is a no-op **after** the balance check, preserving the arm's existing
+    /// behaviour: in the oracle the purse split/deposit nets to zero, but an amount above the balance
+    /// must still fail, and without the guard the two writes below would target one leaf.
+    pub async fn transfer_vault(
+        &self,
+        from: &str,
+        to: &str,
+        amount: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        let from_balance = self.vault_balance(from).await?.unwrap_or(NonNegI64::zero());
+        if i64::from(from_balance) < i64::from(amount) {
+            return Ok(Err("transfer: insufficient balance".to_string()));
+        }
+        if from == to {
+            return Ok(Ok(()));
+        }
+        let to_balance = self.vault_balance(to).await?.unwrap_or(NonNegI64::zero());
+        let new_from = NonNegI64::try_from(i64::from(from_balance) - i64::from(amount))
+            .map_err(|e| e.to_string())?;
+        // Accumulate in checked i64 so `to_balance + amount` cannot overflow (both are non-negative,
+        // so only an i64::MAX-exceeding sum overflows).
+        let new_to_i64 = i64::from(to_balance)
+            .checked_add(i64::from(amount))
+            .ok_or_else(|| "transfer: destination balance overflow".to_string())?;
+        let new_to = NonNegI64::try_from(new_to_i64).map_err(|e| e.to_string())?;
+        self.set_vault_balance(from, new_from);
+        self.set_vault_balance(to, new_to);
+        Ok(Ok(()))
     }
 
     // --- Cross-shard 2PC transactions ----------------------------------------
