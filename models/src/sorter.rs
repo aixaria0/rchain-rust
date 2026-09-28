@@ -832,15 +832,20 @@ pub fn sort_receive_binds_with<T>(binds: Vec<(ReceiveBind, T)>) -> Vec<(ReceiveB
 }
 
 /// Construct a `ParSet`, deduplicating (by raw equality) then sorting (the Scala `ParSet.apply`).
+///
+/// The dedup is ordered, not a linear scan. `Par`'s derived total order groups equal elements
+/// adjacently, and the sort is stable, so `Vec::dedup` keeps exactly the element the previous
+/// `contains` scan kept (the first of each run). This preserves the output byte-for-byte while
+/// dropping the cost from Θ(N²) to Θ(N log N).
+///
+/// That cost mattered: a `Set` operation charges flat phlo, so the scan let a 229 KB deploy buy
+/// roughly 98 CPU-seconds for 13 phlo — measured, and the reason this is the audit's first fix.
 pub fn par_set(ps: Vec<Par>) -> ParSet {
-    let mut deduped: Vec<Par> = Vec::new();
-    for p in ps {
-        if !deduped.contains(&p) {
-            deduped.push(p);
-        }
-    }
+    let mut ps = ps;
+    ps.sort();
+    ps.dedup();
     ParSet {
-        ps: sort_pars(deduped),
+        ps: sort_pars(ps),
         connective_used: false,
         locally_free: AlwaysEqual(BitSet::new()),
         remainder: None,
@@ -848,14 +853,22 @@ pub fn par_set(ps: Vec<Par>) -> ParSet {
 }
 
 /// Construct a `ParMap`, deduplicating by key (last-write-wins) then sorting by key (the Scala `ParMap.apply`).
+///
+/// As `par_set`: sorting by key groups equal keys adjacently, so one stable keep-last pass over the
+/// sorted keys reproduces the previous first-position/last-value result exactly, at Θ(N log N)
+/// rather than the Θ(N²) of the `iter_mut().find` scan.
 pub fn par_map(kvs: Vec<(Par, Par)>) -> ParMap {
-    let mut map: Vec<(Par, Par)> = Vec::new();
+    let mut kvs = kvs;
+    kvs.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut map: Vec<(Par, Par)> = Vec::with_capacity(kvs.len());
     for (k, v) in kvs {
-        if let Some(slot) = map.iter_mut().find(|(ek, _)| ek == &k) {
-            slot.1 = v;
-        } else {
-            map.push((k, v));
+        if let Some(last) = map.last_mut() {
+            if last.0 == k {
+                last.1 = v;
+                continue;
+            }
         }
+        map.push((k, v));
     }
     ParMap {
         kvs: sort_pairs(map),
@@ -1025,6 +1038,47 @@ mod tests {
         ]);
         let expected = par_map(vec![(g_int(1), g_int(1)), (g_int(2), g_int(1))]);
         assert_eq!(sort_par_term(&par_ground.into_expr()), expected.into_expr());
+    }
+
+    /// The dedup is ordered, not a scan. A `Set` operation charges flat phlo, so the former Θ(N²)
+    /// scan let a 229 KB deploy buy roughly 98 CPU-seconds for 13 phlo — the September 2026 audit's
+    /// first finding. At this size the scan took tens of seconds; the ordered dedup is milliseconds,
+    /// so this fails by timeout rather than by assertion if the scan ever returns.
+    #[test]
+    fn a_large_set_deduplicates_without_a_linear_scan() {
+        let n = 20_000_i64;
+        let ps: Vec<Par> = (0..n).map(g_int).chain((0..n).map(g_int)).collect();
+        let set = par_set(ps);
+        assert_eq!(
+            set.ps.len(),
+            n as usize,
+            "every element appears exactly once"
+        );
+        assert_eq!(
+            sort_pars(set.ps.clone()),
+            set.ps,
+            "and the order is canonical"
+        );
+    }
+
+    /// The same for a map, whose dedup is last-write-wins over the key. Each key is written twice
+    /// (`i`, then `i + 1`); the result must equal a map built from the final writes alone, which
+    /// pins both the last-write choice and the surviving order.
+    #[test]
+    fn a_large_map_deduplicates_without_a_linear_scan() {
+        let n = 20_000_i64;
+        let kvs: Vec<(Par, Par)> = (0..n)
+            .map(|i| (g_int(i), g_int(i)))
+            .chain((0..n).map(|i| (g_int(i), g_int(i + 1))))
+            .collect();
+        let expected: Vec<(Par, Par)> = (0..n).map(|i| (g_int(i), g_int(i + 1))).collect();
+        let map = par_map(kvs);
+        assert_eq!(map.kvs.len(), n as usize, "one entry per key");
+        assert_eq!(
+            sort_par_term(&map.into_expr()),
+            sort_par_term(&par_map(expected).into_expr()),
+            "last write wins, in canonical order"
+        );
     }
 
     #[test]
