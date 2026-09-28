@@ -6,6 +6,10 @@
 //! equivalent; the raw benches use the real `Par`/`BindPattern`/`ListParWithRandom`/
 //! `TaggedContinuation` types instead.
 
+// The one crate root in the workspace that did not carry this (AUDIT F-21). A bench target has no
+// `lib.rs` or `main.rs` to hold the attribute, which is why it was missed rather than refused.
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

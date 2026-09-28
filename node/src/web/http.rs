@@ -638,7 +638,7 @@ pub const OPENAPI_JSON: &str = r##"{
     "/explore-deploy": {
       "post": {
         "summary": "Run an exploratory deploy",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploreDeployRequest" } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "string" } } } },
         "responses": {
           "200": { "description": "Result expression", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExploratoryDeployResponse" } } } },
           "400": { "description": "Deploy failed" }

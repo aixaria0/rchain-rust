@@ -68,10 +68,19 @@ rholang-typed values, and the reply shapes of the system processes.
    deploy that fails is `processedWithError`.
 5. **`POST /api/deploy` and `POST /api/propose` return a JSON-encoded string**
    (`"Success!\nDeployId is: <hex>"`), not a JSON object. `deploy-status` returns the
-   `DeployExecStatus` enum instead: `{processedWithSuccess:{deployResult,block}}`,
-   `{processedWithError:{deployError,block}}`, `{notProcessed:{status}}` — **camelCase on both the
-   variant and its fields** (C16), and `notProcessed.status` is one of `"Pooled"`,
+   `DeployExecStatus` enum instead: `{ProcessedWithSuccess:{deployResult,block}}`,
+   `{ProcessedWithError:{deployError,block}}`, `{NotProcessed:{status}}` — **the variant tag is
+   capitalized and its fields are camelCase**, which is the `serde` default for an externally-tagged
+   enum carrying `rename_all_fields`. `NotProcessed.status` is one of `"Pooled"`,
    `"Block not yet available"`, `"Unknown"`.
+
+   *Corrected by the September 2026 audit (F-10).* This rule previously said the **tag** was camelCase
+   and cited C16 — which fixed the *fields*, not the tag, so the citation was a misattribution on top
+   of the error. Three sources agree on the capitalized tag and none on the old wording: the wire
+   (`node/src/api/dto.rs`, which sets `rename_all_fields` and no `rename_all`), the pinned HTTP test
+   (`node/tests/api_surface.rs`), and the machine-checked envelope law (`spec/Rchain/Envelope.lean`,
+   which rejects the camelCase spelling outright). A consumer coded to the old wording looked for a
+   key that is never sent.
 6. **`POST /api/explore-deploy` takes a raw JSON string body** (the term), not
    `ExploreDeployRequest`.
 7. **`rho:rchain:deployId` / `deployerId` are bound by the normalizer env on the deploy path only.**

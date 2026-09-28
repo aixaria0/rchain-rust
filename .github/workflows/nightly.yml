@@ -125,8 +125,9 @@ jobs:
         # 89.14 => 87 (the reporting replay and its system deploy, the OpenAPI document).
         #
         # **This step moved here from `coverage.yml` when the deep gates left the push path**, and it
-        # took the floors and this history with it. `coverage.yml` was deleted outright on 2026-09-27;
-        # what it did per push (format, lints, the tests, the two static gates) is `ci.yml`'s now.
+        # took the floors and this history with it. That file was *reduced* to on-demand measurement
+        # rather than deleted — it still exists, and carries its own account of why — while what it did
+        # per push (format, lints, the tests, the two static gates) is `ci.yml`'s now.
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
       - name: Upload coverage

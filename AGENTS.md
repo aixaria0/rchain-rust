@@ -273,10 +273,11 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
   Law 11 rig-replay); certificate and oracle are complementary, each with a decided witness.
   Pure `relaxed` stays hard-rejected on the block paths. Phase-by-phase account:
   [`docs/src/contributor/onchain-validation-phases.md`](docs/src/contributor/onchain-validation-phases.md).
-- **Rewrite — complete**: all eleven crates (`sdk`, `shared`, `crypto`, `graphz`, `models`,
-  `block-storage`, `rspace`, `rholang`, `casper`, `comm`, `node`) are ported at the
-  workspace root. The proofs-first *pause* was lifted in practice; the port was written against the
-  verified spec rather than waiting on Laws 1–11.
+- **Rewrite — complete**: all thirteen workspace members are at the workspace root — the eleven ported
+  crates (`sdk`, `shared`, `crypto`, `graphz`, `models`, `block-storage`, `rspace`, `rholang`,
+  `casper`, `comm`, `node`) plus `rspace-bench` and `qucalc`, the Rust-first native AI + governance
+  crate (Part VI of the book). The proofs-first *pause* was lifted in practice; the port was written
+  against the verified spec rather than waiting on Laws 1–11.
 - **Node — operational**: `rnode` builds and runs. A standalone node reaches the `Running` state
   (genesis block created) and serves the API — Deploy **40401**, Propose/Repl **40402** (loopback),
   HTTP **40403**, admin **40405**, protocol **40400**, discovery **40404**. Run instructions:
