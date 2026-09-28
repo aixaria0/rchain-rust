@@ -75,17 +75,6 @@ pub fn pos_active_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:active")
 }
 
-/// Leaf key for the **seed the next epoch's active-set draw will use**.
-///
-/// This leaf is why the draw can be strengthened later without touching the rule. `select_active`
-/// depends on a *value*, not on a *mechanism*: replacing what writes this leaf — with commit-reveal or
-/// a VRF accumulator — changes nothing about the selection rule or any of its consumers. Today it is
-/// written one boundary ahead from a window of the previous epoch's block hashes, so the proposer of
-/// the drawing block cannot choose it.
-pub fn pos_epoch_seed_key() -> Blake2b256Hash {
-    Blake2b256Hash::create(b"pos:epoch_seed")
-}
-
 /// Leaf key for the trusted validator-stakeholder set (admission gate for bonding).
 pub fn pos_trusted_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:trusted")
@@ -261,83 +250,6 @@ fn decode_txn(bytes: &[u8]) -> Result<TxnRecord, String> {
 // --- Canonical encoders ------------------------------------------------------
 
 /// Canonically encode a bonds map (sorted by `Validator`, 65-byte key + little-endian stake).
-/// The seed one epoch's active-set draw is made from, as stored in `pos:epoch_seed`.
-///
-/// **Why this exists as a leaf rather than as a parameter.** The value is written one boundary ahead
-/// and read by the *next* boundary's draw, so the block that draws is not the block that chose the
-/// entropy — which is the whole point (see the module's `select_active`). Keeping it in state rather
-/// than threading it through `SystemDeploy::close_block` means replay agrees *by construction*: the
-/// seed is a function of the pre-state, not a second derivation that has to be kept in sync.
-///
-/// The window is the previous epoch's block hashes, in height order. It is a `Vec` rather than a fixed
-/// array because `W` is a deployer choice, and the codec length-checks it so a malformed leaf cannot
-/// be read as a shorter window.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EpochSeed {
-    pub epoch: i64,
-    pub window: Vec<Blake2b256Hash>,
-}
-
-/// A `Blake2b256Hash` on the wire.
-const HASH_LEN: usize = 32;
-
-impl EpochSeed {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(16 + self.window.len() * HASH_LEN);
-        out.extend_from_slice(&self.epoch.to_le_bytes());
-        out.extend_from_slice(&(self.window.len() as u64).to_le_bytes());
-        for h in &self.window {
-            out.extend_from_slice(h.as_bytes());
-        }
-        out
-    }
-
-    /// Decode (inverse of [`Self::encode`]). Refuses a length that disagrees with the declared count,
-    /// so a truncated or padded leaf is an error rather than a silently shorter window — a window of
-    /// the wrong length would still draw a set, and the divergence would only surface as a post-state
-    /// mismatch much later.
-    pub fn decode(bytes: &[u8]) -> Result<EpochSeed, String> {
-        if bytes.len() < 16 {
-            return Err(format!(
-                "epoch seed encoding has {} bytes, under the 16-byte header",
-                bytes.len()
-            ));
-        }
-        let epoch = i64::from_le_bytes(
-            bytes[..8]
-                .try_into()
-                .map_err(|_| "epoch seed: invalid epoch field".to_string())?,
-        );
-        let declared = u64::from_le_bytes(
-            bytes[8..16]
-                .try_into()
-                .map_err(|_| "epoch seed: invalid count field".to_string())?,
-        );
-        let count = usize::try_from(declared)
-            .map_err(|_| format!("epoch seed: window count {declared} does not fit a usize"))?;
-        let rest = &bytes[16..];
-        let expected = count
-            .checked_mul(HASH_LEN)
-            .ok_or_else(|| format!("epoch seed: window count {count} overflows"))?;
-        if rest.len() != expected {
-            return Err(format!(
-                "epoch seed window declares {count} hashes ({expected} bytes) but carries {}",
-                rest.len()
-            ));
-        }
-        let window = rest
-            .chunks_exact(HASH_LEN)
-            .map(|chunk| {
-                let bytes: [u8; HASH_LEN] = chunk
-                    .try_into()
-                    .map_err(|_| "epoch seed: invalid hash length".to_string())?;
-                Ok(Blake2b256Hash::from_byte_array(&bytes))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(EpochSeed { epoch, window })
-    }
-}
-
 pub fn encode_bonds(bonds: &BTreeMap<Validator, NonNegI64>) -> Vec<u8> {
     let mut out = Vec::with_capacity(bonds.len() * BOND_ENTRY_LEN);
     for (v, stake) in bonds {
@@ -859,30 +771,6 @@ impl NativeSystemState {
     /// The active-validator set (the consensus validator set).
     pub async fn active_validators(&self) -> Result<BTreeSet<Validator>, String> {
         Ok(self.active().await?.into_keys().collect())
-    }
-
-    /// Read the seed the next epoch's active-set draw will use.
-    ///
-    /// An absent leaf is a *distinguishable* state, not a default: it means no draw has been seeded
-    /// yet (a genesis-installed state, before its first boundary). The caller decides what that means —
-    /// genesis supplies a constant, the boundary supplies a window — so this returns `Option` rather
-    /// than inventing a seed that would silently change the draw.
-    pub async fn epoch_seed(&self) -> Result<Option<EpochSeed>, String> {
-        let bytes = self
-            .store
-            .get(PREFIX_POS, &pos_epoch_seed_key())
-            .await
-            .map_err(|e| e.to_string())?;
-        match bytes {
-            Some(b) => EpochSeed::decode(&b).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    /// Write the seed the next epoch's active-set draw will use.
-    pub fn set_epoch_seed(&self, seed: &EpochSeed) {
-        self.store
-            .put(PREFIX_POS, pos_epoch_seed_key(), seed.encode());
     }
 
     /// Read the trusted stakeholder set.
@@ -2067,66 +1955,6 @@ mod tests {
         assert!(decode_bonds(&[0u8; 3]).is_err());
     }
 
-    /// The epoch seed round-trips, window and all.
-    #[test]
-    fn epoch_seed_round_trips() {
-        let seed = EpochSeed {
-            epoch: 7,
-            window: vec![
-                Blake2b256Hash::create(b"block:1"),
-                Blake2b256Hash::create(b"block:2"),
-                Blake2b256Hash::create(b"block:3"),
-            ],
-        };
-        assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
-    }
-
-    /// **A window of the wrong length is an error, not a shorter window.** This is the failure this
-    /// codec exists to prevent: a truncated or padded leaf would still *draw a set*, so a
-    /// mis-encoded seed would not crash — it would produce a deterministic-but-wrong active set and
-    /// surface much later as a post-state mismatch. Every length disagreement is refused here.
-    #[test]
-    fn an_epoch_seed_window_of_the_wrong_length_is_refused() {
-        let seed = EpochSeed {
-            epoch: 1,
-            window: vec![Blake2b256Hash::create(b"a"), Blake2b256Hash::create(b"b")],
-        };
-        let encoded = seed.encode();
-
-        // One byte short of the declared window.
-        assert!(
-            EpochSeed::decode(&encoded[..encoded.len() - 1]).is_err(),
-            "a truncated window must be refused"
-        );
-        // One byte long.
-        let mut padded = encoded.clone();
-        padded.push(0);
-        assert!(
-            EpochSeed::decode(&padded).is_err(),
-            "a padded window must be refused"
-        );
-        // A header that disagrees with the body: claim three hashes, carry two.
-        let mut lying = encoded.clone();
-        lying[8..16].copy_from_slice(&3u64.to_le_bytes());
-        assert!(
-            EpochSeed::decode(&lying).is_err(),
-            "a count that disagrees with the body must be refused"
-        );
-        // And a header too short to hold the epoch and count.
-        assert!(EpochSeed::decode(&[0u8; 15]).is_err());
-    }
-
-    /// An *absent* seed is distinguishable from a zeroed one — the reader a boundary uses to decide
-    /// whether a draw has been seeded at all.
-    #[test]
-    fn an_epoch_seed_with_no_window_is_still_a_seed() {
-        let seed = EpochSeed {
-            epoch: 0,
-            window: vec![],
-        };
-        assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
-    }
-
     #[test]
     fn trusted_round_trip() {
         let trusted: BTreeSet<Validator> = [validator(1), validator(2)].into_iter().collect();
@@ -3283,5 +3111,195 @@ mod tests {
             "slash removed the entry in memory and must persist that: otherwise the next holder of this key \
              inherits the withdrawal and never becomes active"
         );
+    }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Appended rather than placed with its siblings, deliberately.
+//
+// `native_state.rs`'s line numbers are cited by 41 Lean declarations across `Rchain/Pos.lean`,
+// `Rchain/Casper/Bonds.lean` and `Rchain/CrossShard.lean`, and by ten rows of hand-maintained spec.
+// An insertion anywhere above them shifts every one, and a Lean citation can only be repaired by
+// editing the Lean and re-emitting the register. Adding at the end shifts nothing, so the cost of
+// putting this code where it reads best is a lake build and 51 citation edits -- paid once here, or
+// avoided entirely by keeping the tail of this file append-only. The tail is append-only.
+// ----------------------------------------------------------------------------------------------
+
+/// Leaf key for the **seed the next epoch's active-set draw will use**.
+///
+/// This leaf is why the draw can be strengthened later without touching the rule. `select_active`
+/// depends on a *value*, not on a *mechanism*: replacing what writes this leaf — with commit-reveal or
+/// a VRF accumulator — changes nothing about the selection rule or any of its consumers. Today it is
+/// written one boundary ahead from a window of the previous epoch's block hashes, so the proposer of
+/// the drawing block cannot choose it.
+pub fn pos_epoch_seed_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:epoch_seed")
+}
+
+/// The seed one epoch's active-set draw is made from, as stored in `pos:epoch_seed`.
+///
+/// **Why this exists as a leaf rather than as a parameter.** The value is written one boundary ahead
+/// and read by the *next* boundary's draw, so the block that draws is not the block that chose the
+/// entropy — which is the whole point (see the module's `select_active`). Keeping it in state rather
+/// than threading it through `SystemDeploy::close_block` means replay agrees *by construction*: the
+/// seed is a function of the pre-state, not a second derivation that has to be kept in sync.
+///
+/// The window is the previous epoch's block hashes, in height order. It is a `Vec` rather than a fixed
+/// array because `W` is a deployer choice, and the codec length-checks it so a malformed leaf cannot
+/// be read as a shorter window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochSeed {
+    pub epoch: i64,
+    pub window: Vec<Blake2b256Hash>,
+}
+
+/// A `Blake2b256Hash` on the wire.
+const HASH_LEN: usize = 32;
+
+impl EpochSeed {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + self.window.len() * HASH_LEN);
+        out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.extend_from_slice(&(self.window.len() as u64).to_le_bytes());
+        for h in &self.window {
+            out.extend_from_slice(h.as_bytes());
+        }
+        out
+    }
+
+    /// Decode (inverse of [`Self::encode`]). Refuses a length that disagrees with the declared count,
+    /// so a truncated or padded leaf is an error rather than a silently shorter window — a window of
+    /// the wrong length would still draw a set, and the divergence would only surface as a post-state
+    /// mismatch much later.
+    pub fn decode(bytes: &[u8]) -> Result<EpochSeed, String> {
+        if bytes.len() < 16 {
+            return Err(format!(
+                "epoch seed encoding has {} bytes, under the 16-byte header",
+                bytes.len()
+            ));
+        }
+        let epoch = i64::from_le_bytes(
+            bytes[..8]
+                .try_into()
+                .map_err(|_| "epoch seed: invalid epoch field".to_string())?,
+        );
+        let declared = u64::from_le_bytes(
+            bytes[8..16]
+                .try_into()
+                .map_err(|_| "epoch seed: invalid count field".to_string())?,
+        );
+        let count = usize::try_from(declared)
+            .map_err(|_| format!("epoch seed: window count {declared} does not fit a usize"))?;
+        let rest = &bytes[16..];
+        let expected = count
+            .checked_mul(HASH_LEN)
+            .ok_or_else(|| format!("epoch seed: window count {count} overflows"))?;
+        if rest.len() != expected {
+            return Err(format!(
+                "epoch seed window declares {count} hashes ({expected} bytes) but carries {}",
+                rest.len()
+            ));
+        }
+        let window = rest
+            .chunks_exact(HASH_LEN)
+            .map(|chunk| {
+                let bytes: [u8; HASH_LEN] = chunk
+                    .try_into()
+                    .map_err(|_| "epoch seed: invalid hash length".to_string())?;
+                Ok(Blake2b256Hash::from_byte_array(&bytes))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(EpochSeed { epoch, window })
+    }
+}
+
+impl NativeSystemState {
+    /// Read the seed the next epoch's active-set draw will use.
+    ///
+    /// An absent leaf is a *distinguishable* state, not a default: it means no draw has been seeded
+    /// yet (a genesis-installed state, before its first boundary). The caller decides what that means —
+    /// genesis supplies a constant, the boundary supplies a window — so this returns `Option` rather
+    /// than inventing a seed that would silently change the draw.
+    pub async fn epoch_seed(&self) -> Result<Option<EpochSeed>, String> {
+        let bytes = self
+            .store
+            .get(PREFIX_POS, &pos_epoch_seed_key())
+            .await
+            .map_err(|e| e.to_string())?;
+        match bytes {
+            Some(b) => EpochSeed::decode(&b).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Write the seed the next epoch's active-set draw will use.
+    pub fn set_epoch_seed(&self, seed: &EpochSeed) {
+        self.store
+            .put(PREFIX_POS, pos_epoch_seed_key(), seed.encode());
+    }
+}
+
+#[cfg(test)]
+mod epoch_seed_tests {
+    use super::*;
+
+    /// The epoch seed round-trips, window and all.
+    #[test]
+    fn epoch_seed_round_trips() {
+        let seed = EpochSeed {
+            epoch: 7,
+            window: vec![
+                Blake2b256Hash::create(b"block:1"),
+                Blake2b256Hash::create(b"block:2"),
+                Blake2b256Hash::create(b"block:3"),
+            ],
+        };
+        assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
+    }
+
+    /// **A window of the wrong length is an error, not a shorter window.** This is the failure this
+    /// codec exists to prevent: a truncated or padded leaf would still *draw a set*, so a
+    /// mis-encoded seed would not crash — it would produce a deterministic-but-wrong active set and
+    /// surface much later as a post-state mismatch. Every length disagreement is refused here.
+    #[test]
+    fn an_epoch_seed_window_of_the_wrong_length_is_refused() {
+        let seed = EpochSeed {
+            epoch: 1,
+            window: vec![Blake2b256Hash::create(b"a"), Blake2b256Hash::create(b"b")],
+        };
+        let encoded = seed.encode();
+
+        // One byte short of the declared window.
+        assert!(
+            EpochSeed::decode(&encoded[..encoded.len() - 1]).is_err(),
+            "a truncated window must be refused"
+        );
+        // One byte long.
+        let mut padded = encoded.clone();
+        padded.push(0);
+        assert!(
+            EpochSeed::decode(&padded).is_err(),
+            "a padded window must be refused"
+        );
+        // A header that disagrees with the body: claim three hashes, carry two.
+        let mut lying = encoded.clone();
+        lying[8..16].copy_from_slice(&3u64.to_le_bytes());
+        assert!(
+            EpochSeed::decode(&lying).is_err(),
+            "a count that disagrees with the body must be refused"
+        );
+        // And a header too short to hold the epoch and count.
+        assert!(EpochSeed::decode(&[0u8; 15]).is_err());
+    }
+
+    /// An *absent* seed is distinguishable from a zeroed one — the reader a boundary uses to decide
+    /// whether a draw has been seeded at all.
+    #[test]
+    fn an_epoch_seed_with_no_window_is_still_a_seed() {
+        let seed = EpochSeed {
+            epoch: 0,
+            window: vec![],
+        };
+        assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
     }
 }
