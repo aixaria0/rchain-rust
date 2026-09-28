@@ -97,6 +97,25 @@ concrete, auditable ways:
    because a Set operation charges *flat* phlo, a 229 KB deploy bought roughly 98 CPU-seconds for 13
    phlo. Both now sort by `Par`'s total order and dedup the adjacent runs, which is byte-for-byte the
    same output at Θ(N log N). See `models/src/sorter.rs`.
+7. **The DAG writes a block's fringe record before its metadata, where the Scala writes metadata
+   first.** `BlockDagKeyValueStorage.insert` records the fringe data — the thing a block *refers to* —
+   before `block_metadata_store.add`, which is the *pointer*: metadata is what makes a block known, so
+   `contains` short-circuits a re-insert and the receiver drops a re-received known block. With the
+   Scala's order a crash between the two writes left a block present with no fringe record, and
+   nothing rebuilds one — `create`'s fold skips a missing entry in silence while its three sibling arms
+   fail closed, and `get_pre_state_for_parents` then refuses every block for which the torn one is the
+   max-fringe parent. On a single-validator node that was permanent and silent, recoverable only by
+   deleting the shard data dir so `dag_set` empties and `NodeSyncing` runs. Data-then-pointer is the
+   order `rspace/src/history/roots_store.rs` already uses; this brings the DAG side into line with it.
+   **The Scala's own order is the deviation** (`BlockDagKeyValueStorage.scala:54` vs `:83`), so the
+   reorder is the port's, and it is registered here rather than in a findings row. Found by the
+   September 2026 audit (F-5), which demonstrated it with four tests over a reconstructed store.
+
+   *Provenance note:* this change is recorded here rather than in its own commit message because a
+   concurrent session's `git commit` swept the staged files into an unrelated commit
+   (`19259c733`, "Depth.lean's own notes stop saying clause b is owed"). The code and its tests are
+   correct in the tree; only the message that should have carried this reasoning was lost, so it is
+   written down where the divergence already belongs.
 
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely
