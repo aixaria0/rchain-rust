@@ -61,6 +61,14 @@ pub enum BlockStatus {
     /// equivalent, and it is a deliberate divergence — the Scala `blockSummary` composes no per-block
     /// bound at all.
     ExceedsBlockPhloLimit,
+    /// The block's `version` field names a version this node does not support (AUDIT F-6).
+    ///
+    /// `validate::version` has existed since the port with `SUPPORTED = [1]`, a passing unit test, and
+    /// **zero production callers**: nothing on the acceptance path read the field. A block stamped
+    /// `version: 999`, self-consistently hashed and signed, satisfied every predicate. The field is
+    /// inside `hash_block`'s cover, so it is consensus-visible and a future version bump would not
+    /// have been enforced at all.
+    InvalidVersion,
 }
 
 impl BlockStatus {
@@ -102,6 +110,9 @@ impl std::fmt::Display for BlockStatus {
             BlockStatus::ExceedsBlockPhloLimit => {
                 "the block's total declared phlo exceeds the per-block budget"
             }
+            BlockStatus::InvalidVersion => {
+                "the block's version is not one this node supports"
+            }
         };
         write!(f, "{s}")
     }
@@ -112,7 +123,7 @@ mod tests {
     use super::*;
 
     /// Every status, so a variant added without a message (or with a copy-pasted one) fails here.
-    const ALL: [BlockStatus; 18] = [
+    const ALL: [BlockStatus; 19] = [
         BlockStatus::Valid,
         BlockStatus::InvalidBlockNumber,
         BlockStatus::InvalidRepeatDeploy,
@@ -131,6 +142,7 @@ mod tests {
         BlockStatus::InvalidDeploySignature,
         BlockStatus::TooManyDeploys,
         BlockStatus::ExceedsBlockPhloLimit,
+        BlockStatus::InvalidVersion,
     ];
 
     /// `Valid` is the **only** status that is valid: `is_valid` is the one predicate the block

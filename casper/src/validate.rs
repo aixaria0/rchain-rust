@@ -470,6 +470,9 @@ pub async fn block_summary(
         // budget bounds each deploy and nothing bounds the block.
         deploy_count(block),
         block_phlo(block),
+        // And the block's declared version (F-6). `version` had a predicate and a test from the port
+        // onward and no caller: a block stamped `version: 999` was accepted by every check here.
+        block_version(block),
     ];
     for status in pure {
         if !status.is_valid() {
@@ -590,6 +593,32 @@ pub fn block_phlo(b: &BlockMessage) -> BlockStatus {
     }
 }
 
+/// Validate that the block's `version` is one this node supports (AUDIT F-6).
+///
+/// **A predicate that existed and was never called.** [`version`] has been in this file since the
+/// port: `SUPPORTED = [1]`, a passing unit test at the bottom of this module, and — until now — no
+/// production caller anywhere in the tree. The acceptance path read the block's hash, its signature,
+/// its shard and its deploy data, and never the field that says which protocol the block is written
+/// against. So a block stamped `version: 999`, self-consistently hashed and signed, satisfied every
+/// predicate a validator ran.
+///
+/// It matters beyond tidiness because the field is inside `hash_block`'s cover, which makes it
+/// consensus-visible: a future version bump would not have been enforced by anything, and two nodes
+/// disagreeing about which versions they accept is exactly the divergence the field exists to
+/// prevent. The gap is inherited rather than introduced — the Scala's `BlockReceiver` carries
+/// `// TODO: check valid version` in the same conjunction, and its `Validate.version` has no
+/// production caller either — but the port kept the TODO's behaviour and the Scala's.
+///
+/// Declared here rather than beside the other predicates for the reason [`deploy_signatures`]
+/// records: inserting above `block_summary` shifts line numbers the law register cites.
+pub fn block_version(b: &BlockMessage) -> BlockStatus {
+    if version(b) {
+        BlockStatus::Valid
+    } else {
+        BlockStatus::InvalidVersion
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +650,24 @@ mod tests {
             is_failed: false,
             system_deploy_error: None,
         }
+    }
+
+    /// A block whose `version` this node does not support is refused (AUDIT F-6).
+    ///
+    /// The predicate and its own test have been in this module since the port. What was missing was a
+    /// *caller*: nothing on the acceptance path read the field, so a self-consistently hashed and
+    /// signed block could name any version it liked.
+    #[test]
+    fn a_block_version_outside_the_supported_set_is_refused() {
+        let mut b = block();
+        assert_eq!(
+            block_version(&b),
+            BlockStatus::Valid,
+            "the fixture carries a supported version, so the refusal below is the version and not the block"
+        );
+
+        b.version = 999;
+        assert_eq!(block_version(&b), BlockStatus::InvalidVersion);
     }
 
     /// A block carrying more deploys than the seed index can address is refused, and the limit itself
@@ -1121,6 +1168,16 @@ mod effectful_tests {
     /// agreement, because that is the whole attack surface: the signature an attacker can produce, and
     /// the identity it wants to spend from.
     pub(super) fn signed_deploy(term: &str) -> ProcessedDeploy {
+        signed_deploy_with_phlo(term, 1)
+    }
+
+    /// As [`signed_deploy`], with a chosen phlo limit.
+    ///
+    /// The limit is part of the data the signature covers, so a test that mutates it *after* signing
+    /// is testing `deploy_signatures` rather than whatever it meant to test — which is how this helper
+    /// came to exist: the first version of the block-budget test below did exactly that and was refused
+    /// with `InvalidDeploySignature`, correctly.
+    pub(super) fn signed_deploy_with_phlo(term: &str, phlo_limit: i64) -> ProcessedDeploy {
         use rchain_crypto::signatures::secp256k1::Secp256k1;
         use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
         use rchain_crypto::signatures::signed::Signed;
@@ -1131,7 +1188,7 @@ mod effectful_tests {
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,
-            phlo_limit: 1,
+            phlo_limit,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
         };
@@ -1278,6 +1335,69 @@ mod effectful_tests {
         assert_eq!(
             repeat_deploy(&dag, &store, &current, 100).await.unwrap(),
             Ok(())
+        );
+    }
+
+    /// An unsupported block `version` is refused *by the summary* (AUDIT F-6).
+    ///
+    /// This is the wiring, not the predicate — and the distinction is the whole finding. `block_version`
+    /// had a unit test from the port onward, so a test of the predicate alone would pass in exactly the
+    /// state the field was in: a predicate, a test, and no caller. Only going through `block_summary`
+    /// pins the check into the acceptance path, so removing it from the array turns this red.
+    #[tokio::test]
+    async fn the_block_summary_refuses_an_unsupported_version() {
+        let dag = mock(BTreeMap::new());
+        let store = block_store(vec![]).await;
+
+        let mut supported = block(2, 0, 0, vec![]);
+        supported.state.deploys = vec![signed_deploy("Nil")];
+        assert_eq!(
+            block_summary(&dag, &store, &supported, "root", 100, 1)
+                .await
+                .unwrap(),
+            Ok(()),
+            "the control: a supported version reaches the end of the pure checks, so the refusal below \
+             is about the version and not about the fixture"
+        );
+
+        let mut unsupported = supported.clone();
+        unsupported.version = 999;
+        assert_eq!(
+            block_summary(&dag, &store, &unsupported, "root", 100, 1)
+                .await
+                .unwrap(),
+            Err(BlockStatus::InvalidVersion),
+            "an unsupported version must be refused by the summary, not merely by a predicate nobody calls"
+        );
+    }
+
+    /// The per-block phlo cap is enforced *by the summary*, not merely by its predicate (AUDIT F-3).
+    ///
+    /// The same distinction as the version test above, and it was a real gap in this change's first
+    /// form: `a_block_exceeding_the_block_phlo_budget_is_refused` calls `block_phlo` directly, so it
+    /// would have passed with the check absent from `block_summary`'s array — which is the state the
+    /// version field sat in for the whole life of the port.
+    ///
+    /// The deploy-count cap has no equivalent here: building a 256-deploy block means 256 signatures,
+    /// too slow for a unit test. It is pinned by its predicate and by reading the array, and this
+    /// comment is the record that it is not pinned end to end.
+    #[tokio::test]
+    async fn the_block_summary_enforces_the_block_phlo_budget() {
+        let dag = mock(BTreeMap::new());
+        let store = block_store(vec![]).await;
+
+        let mut over = block(2, 0, 0, vec![]);
+        // Signed *with* the oversized limit rather than mutated after signing: the limit is inside the
+        // signed data, so mutating it would be refused by `deploy_signatures` first and this test would
+        // be green for the wrong reason.
+        over.state.deploys = vec![signed_deploy_with_phlo("Nil", MAX_BLOCK_PHLO + 1)];
+
+        assert_eq!(
+            block_summary(&dag, &store, &over, "root", 100, 1)
+                .await
+                .unwrap(),
+            Err(BlockStatus::ExceedsBlockPhloLimit),
+            "an over-budget block must be refused by the summary, not merely by a predicate nobody calls"
         );
     }
 }

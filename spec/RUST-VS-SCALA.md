@@ -116,6 +116,24 @@ concrete, auditable ways:
    (`19259c733`, "Depth.lean's own notes stop saying clause b is owed"). The code and its tests are
    correct in the tree; only the message that should have carried this reasoning was lost, so it is
    written down where the divergence already belongs.
+8. **The block `version` is now checked on the acceptance path, where the Scala never checked it
+   either.** `validate::version` (`SUPPORTED = [1]`) has existed since the port with a unit test and
+   **no production caller**: the acceptance path read the block's hash, signature, shard and deploy
+   data, and never the field naming the protocol it is written against. The Scala is the same — its
+   `BlockReceiver` carries `// TODO: check valid version` in the same conjunction, and its
+   `Validate.version` likewise has no caller — so this is a deliberate divergence rather than a
+   fidelity fix: the reference accepts a `version: 999` block, this port now refuses one. It matters
+   because the field is inside `hash_block`'s cover, so a future version bump would otherwise have
+   been enforced by nothing, and two nodes disagreeing about which versions they accept is exactly
+   the divergence the field exists to prevent. Found by the September 2026 audit (F-6).
+
+   **Still open from the same finding:** `timestamp` is likewise inside the hash and read by no rule,
+   and it is exposed to contracts on `rho:block:data`. It is not fixed here. A correct bound is a
+   policy choice — a `now ± slack` window imports the node's clock into consensus, which this node's
+   own audit flags elsewhere, while a monotonic "not before your parents" floor is skew-independent
+   but needs a parent-block read the store API does not make obvious. Left for a decision rather than
+   guessed at; the audit rated it P3 for the chain as it stands, since no default-genesis contract
+   consumes the channel today.
 
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely
