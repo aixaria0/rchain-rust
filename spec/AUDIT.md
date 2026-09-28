@@ -22,7 +22,7 @@ on this page, which costs 2.5 seconds.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 201** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 204** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -30,7 +30,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 201 are settled: **137 name the evidence that holds them** and **64 do not** — the
+All 204 are settled: **140 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -47,7 +47,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (201)
+### DONE (204)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -166,6 +166,9 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C164` | a truncated `current-root` panicked the node on the state-read path: `RootsStore::current_root` built the hash from whatever the store returned, and `Blake2b256Hash::from_byte_array` asserts its length | a_truncated_current_root_is_refused_rather_than_panicking | §22 |
 | `C165` | the private key is written *before* its file is narrowed, so a pre-existing 0644 `rnode.key` held the secret world-readable for the length of the write — and the comment says the opposite | the_mode_is_narrowed_before_anything_is_written | §22 |
 | `C166` | `TxnCoordinator::run_2pc` anchored **every** phase deploy at block 0 -- it called the 0-hardcoded `run_phase` wrapper -- so on any chain taller than `DEPLOY_LIFESPAN` (50) every prepare and commit was *born expired*: the participant never saw it, nothing reported an error, and the transaction silently did not happen. `run_phase_at` had been added to fix exactly this trap, and `protocol/client.rs`'s `resolve_valid_after_block_number` doc names it as one of the sites that anchor correctly -- but the whole-transaction driver kept calling the wrapper, and `run_phase_anchors_at_zero` pinned that as "kept for the client path". The anchor is a required `TxnLeg` field now, `run_2pc` forwards each leg's own height, and the wrapper is deleted. Found reading `casper/src/txn_coordinator.rs` (T1) | run_2pc_anchors_each_phase_at_its_legs_height | §22 |
+| `C167` | law 50a's own falsifier could not fire: its witness was `n` siblings rather than `n` nested levels, so the mutation test would have passed vacuously, under the cell that cites law 22 | parDepth_notsDepth/a_dropped_arm_breaks_soundness | §20 |
+| `C168` | law 50a's Rust half was pinned by three tests that do not test it, while the every-constructor test that does exists and belongs to clause b | every_construct_in_the_parser_walk_is_descended | §20 |
+| `C169` | law 50b's statement was not true as written: the walk's counted quantity is `Par`-nesting, and the gap is a tight factor of 3 rather than a slack of 128 | parNestDepth/walkValuePar/parDepth_le_three_mul_parNestDepth | §20 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

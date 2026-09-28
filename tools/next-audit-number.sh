@@ -27,9 +27,19 @@ passes="$(cd "$(dirname "$0")/.." && pwd)/spec/audit/passes.md"
 [[ -f "$audit" ]] || { echo "no spec/AUDIT.md at $audit" >&2; exit 1; }
 [[ -f "$passes" ]] || { echo "no pass record at $passes" >&2; exit 1; }
 
-# Only the two shapes a *finding* number takes: the entry and the §20 table row. A prose mention
-# (`… traced to C66`) is not an allocation — C66 is a gap the numbering race left, and it must read as
-# a gap here too, or the tool would disagree with the register about what is allocated.
+# Only the shapes a *finding* number takes: the entry, the §20 table row, and -- added 2026-09-28 -- the
+# **emitted** check-off row. A prose mention (`… traced to C66`) is not an allocation — C66 is a gap the
+# numbering race left, and it must read as a gap here too, or the tool would disagree with the register
+# about what is allocated.
+#
+# **The emitted shape is the third one because its absence was a live defect** (found 2026-09-28, when
+# this tool offered `C166` while `spec/AUDIT.md` already held it). `tools/emit-findings-register.sh`
+# renders an id **backticked** — ``| `C166` | … `` — so `^\| C[0-9]+ ` never matched it, and a number
+# whose only row was the emitted one read as *free*. A gap is how a retired number looks, so the failure
+# mode was not "a warning" but "the next caller reuses a live id", silently, across sessions. The lesson
+# is the register's own: a tool that infers a set from one rendering of it must be checked against every
+# rendering, and this one had two of three.
+#
 # **Every grep is `|| true`, and that is load-bearing under `set -e` + `pipefail`.** A shape with no
 # rows makes its grep exit 1, `pipefail` makes that the pipeline's status, and `set -e` then takes the
 # script down with no output at all -- which reads as "this tool is broken" rather than "one of the two
@@ -37,7 +47,9 @@ passes="$(cd "$(dirname "$0")/.." && pwd)/spec/audit/passes.md"
 # has no rows until the emitter runs, and the tool exited 1 in silence.
 used="$(
   { grep -oE '^- \*\*C[0-9]+' "$passes" || true; grep -oE '^\| C[0-9]+ ' "$passes" || true
-    grep -oE '^- \*\*C[0-9]+' "$audit"  || true; grep -oE '^\| C[0-9]+ ' "$audit"  || true; } \
+    grep -oE '^\| `C[0-9]+`' "$passes" || true
+    grep -oE '^- \*\*C[0-9]+' "$audit"  || true; grep -oE '^\| C[0-9]+ ' "$audit"  || true
+    grep -oE '^\| `C[0-9]+`' "$audit"  || true; } \
     | { grep -oE '[0-9]+' || true; } | sort -n -u
 )"
 max="$(printf '%s\n' "$used" | tail -1)"
