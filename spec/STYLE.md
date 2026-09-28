@@ -26,7 +26,7 @@ infer from 15,000 lines.
 ## Anchors name a symbol, not just a line
 
 A row's prose cites the code it is a claim about, and a citation that carries a line number must also
-name the symbol it points at — `native_state.rs:1341-1343` (`txn_prepare`'s early return), not a bare
+name the symbol it points at — `native_state.rs:1371-1373` (`txn_prepare`'s early return), not a bare
 range. Where a symbol alone suffices, prefer the symbol form (`path.rs:symbol`, the shape the `coq`
 field already uses), because a name does not rot and a line does. Write paths in full whenever the
 basename is not unique in the tree: `rholang/src/storage.rs`, not `storage.rs` (which `rspace/` also

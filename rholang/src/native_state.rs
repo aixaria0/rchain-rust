@@ -534,7 +534,12 @@ pub struct PosGenesis {
 impl PosGenesis {
     /// The initial active set (top-N of the pool by stake).
     pub fn active_bonds(&self) -> BTreeMap<Validator, NonNegI64> {
-        select_active(&self.bonds, &BTreeMap::<Validator, ()>::new(), &self.params)
+        select_active(
+            &self.bonds,
+            &BTreeMap::<Validator, ()>::new(),
+            &self.params,
+            &genesis_epoch_seed(),
+        )
     }
 
     /// The initial bond sum — the amount the staking vault is created with (`Pos.rhox:167-174`:
@@ -565,18 +570,37 @@ pub fn select_active<V>(
     pool: &BTreeMap<Validator, NonNegI64>,
     withdrawers: &BTreeMap<Validator, V>,
     params: &PosParams,
+    seed: &EpochSeed,
 ) -> BTreeMap<Validator, NonNegI64> {
+    // Eligible candidates, in the `BTreeMap`'s key order — the canonical container order, which is
+    // what makes the draw a function of `(pool, seed)` and nothing else.
     let mut candidates: Vec<(&Validator, NonNegI64)> = pool
         .iter()
         .filter(|(v, stake)| i64::from(**stake) > 0 && !withdrawers.contains_key(*v))
         .map(|(v, stake)| (v, *stake))
         .collect();
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    if params.number_of_active_validators > 0 {
-        candidates
-            .truncate(usize::try_from(params.number_of_active_validators).unwrap_or(usize::MAX));
+    // `number_of_active_validators` of `0` means unlimited, and a cap that does not bite is not a
+    // selection: return the pool as read rather than drawing. Fewer RNG calls, and it keeps `0`
+    // meaning "no selection happens" as the params doc says.
+    //
+    // The `<= 0` arm is load-bearing and was missing in the first draft, which mapped a zero cap to
+    // `cap = 0` and drew *nothing* — so a genesis-installed node came up with an empty active set and
+    // no validator could propose. Every genesis test failed at once, which is how it was caught.
+    if params.number_of_active_validators <= 0 {
+        return candidates
+            .into_iter()
+            .map(|(v, stake)| (*v, stake))
+            .collect();
     }
-    candidates
+    let cap = usize::try_from(params.number_of_active_validators).unwrap_or(usize::MAX);
+    if cap >= candidates.len() {
+        return candidates
+            .into_iter()
+            .map(|(v, stake)| (*v, stake))
+            .collect();
+    }
+    let mut rand = Blake2b512Random::from_init(&seed.rng_input());
+    draw_without_replacement(&mut candidates, cap, &mut rand)
         .into_iter()
         .map(|(v, stake)| (*v, stake))
         .collect()
@@ -1016,7 +1040,12 @@ impl NativeSystemState {
             genesis.trusted.clone()
         };
         let withdrawers: BTreeMap<Validator, Withdrawal> = BTreeMap::new();
-        let active = select_active(&genesis.bonds, &withdrawers, &genesis.params);
+        let active = select_active(
+            &genesis.bonds,
+            &withdrawers,
+            &genesis.params,
+            &genesis_epoch_seed(),
+        );
         self.set_bonds(&genesis.bonds);
         self.set_active(&active);
         self.set_trusted(&trusted);
@@ -1254,7 +1283,8 @@ impl NativeSystemState {
         }
 
         // 4. The active set for the epoch that starts now.
-        let active = select_active(&pool, &withdrawers, &params);
+        let seed = self.epoch_seed().await?.unwrap_or_else(genesis_epoch_seed);
+        let active = select_active(&pool, &withdrawers, &params, &seed);
         self.set_bonds(&pool);
         self.set_withdrawers(&withdrawers);
         self.set_pending_withdrawers(&pending);
@@ -2015,23 +2045,120 @@ mod tests {
     }
 
     #[test]
-    fn select_active_orders_by_stake_then_key_and_caps() {
-        let pool: BTreeMap<Validator, NonNegI64> = [
-            (validator(1), NonNegI64::try_from(10).unwrap()),
-            (validator(2), NonNegI64::try_from(30).unwrap()),
-            (validator(3), NonNegI64::try_from(20).unwrap()),
-        ]
-        .into_iter()
-        .collect();
+    fn select_active_draws_a_deterministic_subset_of_the_cap() {
+        // **This test used to assert `vec![validator(2), validator(3)]` — the top two by stake.**
+        // That rule is gone; which validators are active is now a draw, so pinning a specific set here
+        // would only pin the seed. What is pinned instead is the shape the rule guarantees for *any*
+        // seed, and the exact set is pinned once, by the known-answer vector below.
+        let pool = pool_of(&[(1, 10), (2, 30), (3, 20)]);
         let params = PosParams {
             number_of_active_validators: 2,
             ..PosParams::default()
         };
-        let active = select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params);
+        let seed = genesis_epoch_seed();
+
+        let first = select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params, &seed);
+        let again = select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params, &seed);
+
+        assert_eq!(
+            first, again,
+            "the same pool and seed must draw the same set"
+        );
+        assert_eq!(first.len(), 2, "the cap is respected");
+        for (v, stake) in &first {
+            assert_eq!(
+                pool.get(v),
+                Some(stake),
+                "a drawn validator carries its pool stake, not a synthesised one"
+            );
+        }
+    }
+
+    /// **Distinct seeds must be able to draw distinct sets.** This is the property the old rule
+    /// lacked in kind: it had exactly one answer for a given pool, so nothing could ever rotate. A
+    /// draw that returned the same set for every seed would pass every other test here.
+    #[test]
+    fn distinct_seeds_draw_distinct_sets() {
+        let pool = pool_of(&[(1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60)]);
+        let params = PosParams {
+            number_of_active_validators: 3,
+            ..PosParams::default()
+        };
+        let mut seen: BTreeSet<Vec<Validator>> = BTreeSet::new();
+        for epoch in 0..64i64 {
+            let seed = EpochSeed {
+                epoch,
+                window: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+            };
+            seen.insert(
+                select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params, &seed)
+                    .keys()
+                    .copied()
+                    .collect(),
+            );
+        }
+        assert!(
+            seen.len() > 1,
+            "64 seeds produced one set: this is not a draw"
+        );
+    }
+
+    /// **A zero cap means unlimited, and this is a regression test by name.** The first draft mapped
+    /// it to `cap = 0` and drew *nothing*, so a genesis-installed node came up with an empty active
+    /// set and no validator could propose. The old truncate-when-positive rule could not have had
+    /// this bug, which is what makes it the shape a draw introduces.
+    #[test]
+    fn a_zero_cap_returns_the_whole_pool() {
+        let pool = pool_of(&[(1, 10), (2, 20), (3, 30)]);
+        let params = PosParams {
+            number_of_active_validators: 0,
+            ..PosParams::default()
+        };
+        let active = select_active(
+            &pool,
+            &BTreeMap::<Validator, ()>::new(),
+            &params,
+            &genesis_epoch_seed(),
+        );
+        assert_eq!(active.len(), 3, "zero means unlimited, not 'draw none'");
+    }
+
+    /// **A known-answer vector: this pool, this seed, exactly this set.**
+    ///
+    /// Every other test here asserts a *property*, so a refactor that changed the draw would satisfy
+    /// all of them — only a full chain replay would notice. This pins the output itself, in the style
+    /// of `Blake2b512Random`'s own vectors.
+    #[test]
+    fn the_draw_matches_a_known_answer_vector() {
+        let pool = pool_of(&[(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)]);
+        let params = PosParams {
+            number_of_active_validators: 3,
+            ..PosParams::default()
+        };
+        let active = select_active(
+            &pool,
+            &BTreeMap::<Validator, ()>::new(),
+            &params,
+            &genesis_epoch_seed(),
+        );
         assert_eq!(
             active.keys().copied().collect::<Vec<_>>(),
-            vec![validator(2), validator(3)]
+            vec![validator(1), validator(3), validator(5)],
+            "the draw for this pool and seed; a change here is a consensus change"
         );
+    }
+
+    /// A pool whose bonds are the given `(index, stake)` pairs.
+    fn pool_of(bonds: &[(u8, i64)]) -> BTreeMap<Validator, NonNegI64> {
+        bonds
+            .iter()
+            .map(|(i, stake)| {
+                (
+                    validator(*i),
+                    NonNegI64::try_from(*stake).expect("test stake is non-negative"),
+                )
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -2724,8 +2851,16 @@ mod tests {
             .unwrap()
             .into_iter()
             .collect();
-        // The two highest-stake validators (2 and 3); `BTreeSet` iteration is by key order.
-        assert_eq!(active, vec![validator(2), validator(3)]);
+        // Which two are active is a draw now, so this pins the *cap* and the *provenance* rather
+        // than the set: exactly two, all from the pool. The exact set is pinned by the
+        // known-answer vector beside `select_active`.
+        assert_eq!(active.len(), 2, "the cap is respected");
+        assert!(
+            active
+                .iter()
+                .all(|v| [validator(1), validator(2), validator(3)].contains(v)),
+            "every active validator comes from the pool: {active:?}"
+        );
         assert_eq!(
             native.bonds().await.unwrap().len(),
             3,
@@ -3302,4 +3437,102 @@ mod epoch_seed_tests {
         };
         assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
     }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Randomised active-set selection (audit follow-on; see `docs/src/node/security-audit.md` §8).
+//
+// In the append-only tail for the reason the seam above gives: everything here is new, and new code
+// at the end costs no citations.
+// ----------------------------------------------------------------------------------------------
+
+/// Domain separator for the epoch draw's RNG input.
+///
+/// Binding the epoch *and* a purpose string means a seed leaf cannot be replayed for the wrong epoch,
+/// and cannot collide with any other use of `Blake2b512Random` seeded from similar bytes.
+const EPOCH_DRAW_DOMAIN: &[u8] = b"rchain:pos:epoch-draw:v1";
+
+// Imported here rather than at the top of the file: a `use` above line 3115 shifts every cited line.
+use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+
+impl EpochSeed {
+    /// The bytes handed to [`Blake2b512Random::from_init`] — domain-separated and epoch-bound.
+    pub fn rng_input(&self) -> Vec<u8> {
+        let body = self.encode();
+        let mut out = Vec::with_capacity(EPOCH_DRAW_DOMAIN.len() + body.len());
+        out.extend_from_slice(EPOCH_DRAW_DOMAIN);
+        out.extend_from_slice(&body);
+        out
+    }
+}
+
+/// The seed the **genesis** active set is drawn from.
+///
+/// A fixed constant rather than a `PosGenesis` field, and that is a deliberate choice: a config value
+/// would let two nodes disagree about the genesis post-state hash, which is a config-driven fork — the
+/// same failure `spec/RUST-VS-SCALA.md` §3 item 5 names for `MAX_BLOCK_DEPLOYS`. A constant cannot
+/// disagree. It is also *sound* despite being public: the genesis pool is fixed in the genesis file, so
+/// a seed that produced a set you preferred would be a different chain's genesis, not this one's.
+///
+/// An empty window is not "unseeded" — [`EPOCH_DRAW_DOMAIN`] plus epoch zero is the seed. The window is
+/// empty because genesis has no blocks to take one from, and inventing a fake window would pretend the
+/// chain had history it does not.
+pub fn genesis_epoch_seed() -> EpochSeed {
+    EpochSeed {
+        epoch: 0,
+        window: Vec::new(),
+    }
+}
+
+/// A uniform `u64` in `[0, bound)`, rejection-sampled — never reduced modulo.
+///
+/// A modulo of a 64-bit draw biases the low indices when `bound` does not divide 2^64, and "negligible
+/// bias" is not a phrase this codebase accepts on a consensus path. `accept` is the largest multiple of
+/// `bound` that fits a `u64`, so every accepted value maps to exactly `2^64 / bound` rejected-or-taken
+/// values and `v % bound` is uniform.
+///
+/// **The rejection loop consumes the stream a data-dependent number of times.** That is harmless here
+/// and it is checked rather than assumed: nothing reads the stream after a draw, and the draw's output
+/// is pinned by a known-answer test, so a change in consumption would show up there.
+fn uniform_below(rand: &mut Blake2b512Random, bound: usize) -> usize {
+    if bound <= 1 {
+        return 0;
+    }
+    // The draw is `size_of::<usize>()` bytes wide, so the arithmetic is natively `usize`: there is no
+    // narrowing conversion here to flatten, which is what makes this total on 32- and 64-bit alike.
+    // (The first draft used `u64` and narrowed at the call site with `unwrap_or(0)` — the type-system
+    // gate refused it as a *silent* conversion, correctly, because a flattened failure there would
+    // have silently picked index 0.)
+    let mut buf = [0u8; std::mem::size_of::<usize>()];
+    let width = buf.len();
+    let accept = (usize::MAX / bound) * bound;
+    loop {
+        let draw = rand.next();
+        buf.copy_from_slice(&draw[..width]);
+        let value = usize::from_le_bytes(buf);
+        if value < accept {
+            return value % bound;
+        }
+    }
+}
+
+/// Draw `count` distinct entries from `candidates`, uniformly without replacement, in draw order.
+///
+/// Partial Fisher–Yates over a slice whose order is the caller's canonical order. `candidates` is built
+/// from a `BTreeMap`, so that order is key order — which is what makes the result a function of
+/// `(the pool, the seed)` and nothing else.
+fn draw_without_replacement<T: Clone>(
+    candidates: &mut [T],
+    count: usize,
+    rand: &mut Blake2b512Random,
+) -> Vec<T> {
+    let mut out = Vec::with_capacity(count);
+    let mut remaining = candidates.len();
+    for _ in 0..count {
+        let pick = uniform_below(rand, remaining);
+        candidates.swap(pick, remaining - 1);
+        remaining -= 1;
+        out.push(candidates[remaining].clone());
+    }
+    out
 }
