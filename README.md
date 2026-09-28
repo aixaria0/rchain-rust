@@ -1,8 +1,9 @@
 # RChain — Rust rewrite
 
 A faithful Rust rewrite of the [RChain](https://rchain.coop) node. The Rust implementation is a
-Cargo workspace at the top level (one crate per original sbt module); the entire upstream Scala
-fork is preserved for reference under [`legacy/`](legacy/).
+Cargo workspace at the top level (one crate per original sbt module); the upstream Scala fork is
+preserved for reference at [`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy)
+— see [Where the Scala went](#where-the-scala-went) for why it is a revision rather than a directory.
 
 ## Provenance
 
@@ -208,10 +209,30 @@ for the full flag reference.
 The upstream Scala fork — the sbt modules (`node/`, `sdk/`, `shared/`, `crypto/`, `models/`,
 `rspace/`, `comm/`, `casper/`, `rholang/`, `block-storage/`, `regex/`, `graphz/`, `roscala/`,
 `rosette/`, `rspace-bench/`), the sbt build (`build.sbt`, `project/`), configuration, CI, docs,
-tooling, and data files — now lives under [`legacy/`](legacy/), with the original directory names.
+tooling, and data files — lived under `legacy/` from the start of the rewrite.
+
+**It was archived out of the working tree on 2026-09-28.** Two reasons: it was 32 MB and 1,596 files
+that no CI job built, tested or scanned, and it carried its own 2020–21 dependency manifest
+(`build.sbt`, `project/Dependencies.scala` — netty, logback, protobuf, lz4) that `cargo-deny` cannot
+see because it walks only the Rust lockfile.
+
+**It is still there, and every citation to it still resolves** — at the commit that froze it:
+
+| | |
+|---|---|
+| Last commit carrying `legacy/` | [`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) |
+| Read a file | `https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/<path>` |
+| Restore it locally | `git checkout 1b7583649 -- legacy` |
+
+That is the point of recording the revision rather than just deleting the tree: this repository cites
+the Scala in around 150 places, as the port's reference implementation, and a citation that cannot be
+followed is not a citation. Every `legacy/...` path in a code comment, in `spec/`, or in the book
+resolves at `1b7583649` — including the ones written after the archive, which is why the revision is
+here and not just in the commit that removed it.
 
 ## License
 
 The Rust rewrite is licensed under the [GNU Affero General Public License, version 3](LICENSE)
-(AGPL-3.0). The upstream Scala fork preserved for reference under [`legacy/`](legacy/) retains its
-original [Apache License 2.0](legacy/LICENSE.TXT).
+(AGPL-3.0). The upstream Scala fork — archived out of the working tree on 2026-09-28 and readable at
+[`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) — retains its
+original [Apache License 2.0](https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/LICENSE.TXT).

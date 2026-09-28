@@ -174,6 +174,14 @@ For every law in the inventory:
 
 ## Ground truth
 
+**Where the Scala is.** The `legacy/` tree was archived out of the working tree on 2026-09-28 — 32 MB
+and 1,596 files that no CI job built, tested or scanned, carrying a 2020-21 dependency manifest
+`cargo-deny` cannot see. It is readable at the revision that froze it, **`1b7583649`**:
+`https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/<path>`, or locally with
+`git checkout 1b7583649 -- legacy`. Every `legacy/...` path cited anywhere in this repository — here,
+in `spec/`, in the book, in code comments — resolves at that revision, which is why it is recorded
+rather than left to a deletion commit's message. See `README.md`'s *Where the Scala went*.
+
 The oracle is the invariant catalog + the machine-checked formalization. The Scala tests below encode
 the laws and remain **differential reference vectors** — the Rust implementation must agree with them
 on every law, since they pin the ρ-calculus behavior:

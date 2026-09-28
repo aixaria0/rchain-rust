@@ -216,12 +216,18 @@ post-state hash. The `version` half is inherited from the Scala; the `timestamp`
 The generalisable question — *which fields are in the hash but absent from the acceptance predicate?* —
 has a four-item answer: `version`, `timestamp`, `rejected_blocks`, `rejected_senders`.
 
-**DAG memory grows quadratically in block count (P2, registered).** Each message retains its whole
-ancestry, so total residency is N(N+1)/2 where N is every block ever accepted, and the message map is
-never pruned. This is a known, measured residual — the node's own metric reads 17 319 555 entries at
-5 885 blocks, exactly N(N+1)/2. What this pass adds is the reachability analysis: the input rate is
-attacker-controllable, and nothing a bonded validator must respect bounds it, which puts 16 GB of
-resident memory roughly twelve hours away at a two-second block interval.
+**DAG memory grows quadratically in block count (P2, registered — and accepted).** Each message retains
+its whole ancestry, so total residency is N(N+1)/2 where N is every block ever accepted, and the
+message map is never pruned. This is a known, measured residual — the node's own metric reads
+17 319 555 entries at 5 885 blocks, exactly N(N+1)/2. What this pass adds is the reachability analysis:
+the input rate is attacker-controllable, and nothing a bonded validator must respect bounds it, which
+puts 16 GB of resident memory roughly twelve hours away at a two-second block interval.
+
+**The decision taken on it is to accept and record the rate, not to bound it** (2026-09-28). Bounding
+it means designing pruning of finalized ancestry into the DAG and its liveness rules — a design change,
+not a patch, and one that touches the rules the finalizer depends on. The rate above is the measurement
+that makes accepting it a decision rather than an omission: the growth is a known function of a known
+input, so an operator can size for it and a later pass can revisit with a number rather than a hunch.
 
 **Fourteen lower-severity items** span: two production `await-holding-lock` sites that contradict the
 audit record's claim that only test modules remain; a published API-schema rule that states the wrong

@@ -58,7 +58,7 @@ describes every arm, so a generated client is right by construction.
 ## 2. What the parser now refuses
 
 **The parser here is held to the grammar** — the BNFC file the language is defined by
-([`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rchain-community/rchain-rust/blob/dev/legacy/rholang/src/main/bnfc/rholang_mercury.cf))
+([`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/rholang/src/main/bnfc/rholang_mercury.cf))
 — so it is stricter than a permissive one, and it never accepts a *prefix* of what you sent. Two
 consequences for a term your app already has: it may be **refused**, or it may have been doing
 something other than what it looked like. Check these against the terms you store or deploy:

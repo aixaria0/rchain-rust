@@ -57,10 +57,12 @@ jobs:
         # one *detectable* for anyone who obtains the digest through a second channel, which is the
         # property that was entirely absent.
         #
-        # Signing (cosign/sigstore) and an SBOM are the next steps, and both need a decision this
-        # change should not make silently: signing needs a key and a trust root, an SBOM needs a tool
-        # choice (`cargo-sbom` vs `cargo-cyclonedx`). Recorded as owed in
-        # `docs/src/node/security-audit.md` rather than guessed at here.
+        # **Signing and an SBOM are a decision that was taken, not work left undone** (2026-09-28):
+        # the project chose to ship the checksum and nothing further. A signature would need a trust
+        # root — keyless via GitHub OIDC, or a GPG key to custody and rotate — and an SBOM needs a tool
+        # choice, and neither was judged worth the custody it creates for a pre-testnet binary whose
+        # only consumer is an operator reading the digest. Stated here so a later reader finds a
+        # decision rather than an omission. See `docs/src/node/security-audit.md` §2.
         working-directory: target/x86_64-unknown-linux-musl/release
         run: sha256sum rnode | tee rnode.sha256
 

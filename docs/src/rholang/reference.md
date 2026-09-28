@@ -99,7 +99,7 @@ promotes to `BigInt`, mixed `Int`/`BigInt` operands interoperate, and `2 == 2n` 
 ## Known limitations
 
 Some surface features are known incomplete in the reference semantics (see
-[`legacy/rholang/README.md`](../../../legacy/rholang/README.md) "what's broken"): guarded patterns, and
+[`legacy/rholang/README.md`](https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/rholang/README.md) "what's broken"): guarded patterns, and
 certain 0-arity/match-case pre-evaluation edge cases. Treat the K semantics under
-[`legacy/rholang/src/main/k/rholang/`](../../../legacy/rholang/src/main/k/rholang/) as the executable
+[`legacy/rholang/src/main/k/rholang/`](https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/rholang/src/main/k/rholang/) as the executable
 reference, and the [laws](../formal/laws.md) as the authoritative invariants.

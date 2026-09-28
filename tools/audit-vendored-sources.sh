@@ -34,6 +34,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RES="$ROOT/casper/src/genesis/resources"
+ORIGINALS="$ROOT/casper/src/genesis/vendored-originals"
 failures=0
 fail() { printf 'FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 ok() { printf 'ok    %s\n' "$*"; }
@@ -59,11 +60,22 @@ declare -A seen_allow=()
 while IFS= read -r path; do
   base="$(basename "$path")"
   rel="${path#"$ROOT"/}"
-  original="$(find "$ROOT/legacy" -name "$base" -path '*resources*' -type f 2>/dev/null | head -1)"
 
-  if [ -z "$original" ]; then
-    echo "  no original: $rel"
+  # The originals are **vendored in this repository** rather than read out of `legacy/`, which was
+  # archived away on 2026-09-28. Vendoring them is what stops this gate going **vacuously green**: the
+  # old lookup searched `legacy/`, and a missing original was *reported, not failed* — so deleting that
+  # tree would have turned every file into "no original" and left the check passing while comparing
+  # nothing, which is the failure mode this file's own header warns about. A file directly under
+  # `resources/` must now have an original here; only the port's own `rgov/` set may have none.
+  if [[ "$rel" == *"/rgov/"* ]]; then
+    echo "  no original expected: $rel (the port's own rgov set)"
     no_original=$((no_original + 1))
+    continue
+  fi
+
+  original="$ORIGINALS/$base"
+  if [ ! -f "$original" ]; then
+    fail "$rel has no original at vendored-originals/$base — the comparison cannot be made, and a check that cannot compare is not a check"
     continue
   fi
 
