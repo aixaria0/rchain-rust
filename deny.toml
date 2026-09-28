@@ -27,6 +27,11 @@ allow = [
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    # `foldhash` (a `hashbrown` dependency) is Zlib — permissive, OSI-approved, no copyleft. It was
+    # reaching the tree unlisted for as long as this check was not actually run: CI invoked
+    # `cargo deny check advisories`, so the allow-list below was dead letter and nothing noticed
+    # (AUDIT F-12). Adding it, rather than the check, is the fix the file's own policy prescribes.
+    "Zlib",
     # This repository is AGPL-3.0-only (see LICENSE), and cargo-deny checks *workspace* crates like
     # any other unless their manifests say `publish = false` — which ours do not. So our own license
     # has to be listed here. It is the one entry above that is not a dependency-license policy, and it

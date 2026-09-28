@@ -55,10 +55,23 @@ jobs:
         # describes how these numbers were arrived at, and re-running this job is what reconciles them.
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
-      - name: Emit the ledger
+      - name: Emit the ledger, and refuse a stale commit
         # `spec/COVERAGE-LEDGER.md` is the per-file ranking and the floor, emitted from the lcov this
         # job just produced. A measurement that is not emitted is a number nobody reads.
-        run: tools/emit-coverage-ledger.sh
+        #
+        # **And a ledger that is emitted but never compared is a number nobody checks** (AUDIT F-17).
+        # `tools/emit-coverage-ledger.sh --check` existed and no workflow invoked it: this job only
+        # emitted — writing the very file it would have checked — and the nightly job did not emit at
+        # all, so the committed ledger could disagree with a real measurement indefinitely with nothing
+        # saying so. Comparing the *committed* file against this run's emission is the check that means
+        # something, and the remedy is stated rather than implied.
+        run: |
+          tools/emit-coverage-ledger.sh
+          if ! git diff --quiet -- spec/COVERAGE-LEDGER.md; then
+            echo "::error::spec/COVERAGE-LEDGER.md is stale — it does not match this measurement. Commit the re-emitted ledger."
+            git diff --stat -- spec/COVERAGE-LEDGER.md
+            exit 1
+          fi
 
       - name: Upload coverage
         uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7

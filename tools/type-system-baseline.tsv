@@ -1,11 +1,16 @@
 # The counted classes of tools/audit-type-system.sh, and the number each one is allowed to have.
 #
-# This is a **ratchet**: the gate measures each class over production code (test blocks stripped,
-# comments and string literals removed) and compares the measurement to the number here in *both*
-# directions. A rise fails the build until the baseline is raised deliberately in the same commit; a
-# fall fails it until the baseline is lowered. Neither direction is a warning, because a number that
-# can move without a commit saying so is a number nobody is watching — the same rule the coverage
-# floor uses (`tools/audit-test-register.sh`, `floor(measured) - 2`).
+# **This is a dated measurement, not a ratchet — and this header claimed otherwise until it was
+# corrected** (AUDIT F-16). Until 2026-09-27 the gate compared each class to the number here in *both*
+# directions and failed the build on either. That comparison was removed with the rest of the gate
+# apparatus, and nothing has read these numbers since: `ratchet_failures` in
+# `tools/audit-type-system.sh` is declared and never incremented, and the script's own closing line
+# says the counted classes "are reported above and not enforced".
+#
+# So read the numbers below as a measurement with a date — useful for asking "how much of this class
+# was there, and is it going up?" — and *not* as a bound anything enforces. A class sitting at its
+# baseline is not evidence that it cannot rise. Restoring the ratchet is a decision to take
+# deliberately; until it is taken, this is the honest description of what the file is.
 #
 # Measured 2026-09-26 by the gate itself (`bash tools/audit-type-system.sh`), at `6b7a7f494`+C98;
 # `cast` and `div` re-measured and reviewed the same day at `1078a824c` (see the paragraph below).
