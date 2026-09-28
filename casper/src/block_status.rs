@@ -45,6 +45,22 @@ pub enum BlockStatus {
     /// victim (see `UnjustifiedSlash` above), and the rule that makes one legitimate is a different
     /// check entirely.
     InvalidDeploySignature,
+    /// A block carries more deploys than the protocol's seed index can address (AUDIT F-3).
+    ///
+    /// The proposer has always bounded its *own* selection, because `close_block` indexes the deploy
+    /// randomness seed in a `u8` and the deploy count plus the slash count must fit in 255. Nothing
+    /// bounded what a validator would *accept*: a peer's block could carry any number of deploys and
+    /// every node would replay all of them. The bound is a length, so it costs nothing to apply, and it
+    /// belongs among the pre-replay checks for the same reason `phlo_price` does.
+    TooManyDeploys,
+    /// A block's total declared phlo exceeds the block budget (AUDIT F-3).
+    ///
+    /// Without this there is no bound on what one block costs: the per-deploy budget bounds each deploy
+    /// separately, so a proposer could pack the block arbitrarily full and every validator would replay
+    /// the lot. Sui and Solana both contain a block's blast radius this way; this is the port's
+    /// equivalent, and it is a deliberate divergence — the Scala `blockSummary` composes no per-block
+    /// bound at all.
+    ExceedsBlockPhloLimit,
 }
 
 impl BlockStatus {
@@ -80,6 +96,12 @@ impl std::fmt::Display for BlockStatus {
                  block charges — and pays — was chosen by the block's author rather than proven by a \
                  signature"
             }
+            BlockStatus::TooManyDeploys => {
+                "the block carries more deploys than the protocol's seed index can address"
+            }
+            BlockStatus::ExceedsBlockPhloLimit => {
+                "the block's total declared phlo exceeds the per-block budget"
+            }
         };
         write!(f, "{s}")
     }
@@ -90,7 +112,7 @@ mod tests {
     use super::*;
 
     /// Every status, so a variant added without a message (or with a copy-pasted one) fails here.
-    const ALL: [BlockStatus; 16] = [
+    const ALL: [BlockStatus; 18] = [
         BlockStatus::Valid,
         BlockStatus::InvalidBlockNumber,
         BlockStatus::InvalidRepeatDeploy,
@@ -107,6 +129,8 @@ mod tests {
         BlockStatus::InvalidPhloLimit,
         BlockStatus::UnjustifiedSlash,
         BlockStatus::InvalidDeploySignature,
+        BlockStatus::TooManyDeploys,
+        BlockStatus::ExceedsBlockPhloLimit,
     ];
 
     /// `Valid` is the **only** status that is valid: `is_valid` is the one predicate the block

@@ -80,6 +80,23 @@ concrete, auditable ways:
    finality, the swallowed matcher error, the underflowing chunker, the `Vec` radix node, and —
    through this remediation — the unenforced `phlo_limit`, the equivocation/failed-block liveness
    gaps, and the remotely-triggerable panics that were faithful Scala behavior.
+5. **The port adds a bound the Scala reference does not have, as a deliberate divergence.** The Scala
+   `blockSummary` composes no per-block limit at all: the per-deploy phlo budget bounds each deploy
+   *separately*, and nothing bounds the block, so a proposer could make one block arbitrarily expensive
+   to replay on every validator. The receiving side now enforces two bounds — a deploy-count cap
+   (`validate::deploy_count`, mirroring the proposer's own `MAX_BLOCK_DEPLOYS`, which the proposer had
+   always applied to itself and the validator never applied to a peer) and a per-block phlo cap
+   (`validate::block_phlo`, summed over the **signed** `phlo_limit` of the block's deploys rather than
+   the proposer-supplied `cost` field, which replay recomputes and which a proposer would therefore be
+   setting for itself). Both are protocol constants rather than config values: two operators running
+   different values would disagree about which blocks are valid, which is a fork — the same reason
+   `MAX_BLOCK_DEPLOYS` is a constant. Pre-testnet, so the hard fork costs nothing today.
+   Rationale and measurement: [`docs/src/node/security-audit.md`](../docs/src/node/security-audit.md) §3.
+6. **The set/map deduplication is ordered rather than scanned.** `par_set`/`par_map` deduplicated with a
+   linear scan ahead of an already-Θ(N log N) sort, making every `Set`/`Map` operation Θ(N²) — and
+   because a Set operation charges *flat* phlo, a 229 KB deploy bought roughly 98 CPU-seconds for 13
+   phlo. Both now sort by `Par`'s total order and dedup the adjacent runs, which is byte-for-byte the
+   same output at Θ(N log N). See `models/src/sorter.rs`.
 
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely

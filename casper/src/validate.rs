@@ -464,6 +464,12 @@ pub async fn block_summary(
         // and this is the only one that asks whether the key those fields name actually authored them
         // (AUDIT C120).
         deploy_signatures(block),
+        // The two bounds on the block *as a whole* (F-3). Both are lengths or sums over
+        // wire-supplied data, so they are here for the reason the checks above are: a peer's block must
+        // be rejected before every validator spends the replay on it. Without them the per-deploy
+        // budget bounds each deploy and nothing bounds the block.
+        deploy_count(block),
+        block_phlo(block),
     ];
     for status in pure {
         if !status.is_valid() {
@@ -513,6 +519,77 @@ pub fn deploy_signatures(b: &BlockMessage) -> BlockStatus {
     }
 }
 
+/// The most phlo one block may declare across all its deploys (AUDIT F-3).
+///
+/// Sized as a full block of deploys each at the protocol's default limit: `MAX_BLOCK_DEPLOYS` (255,
+/// the width of the seed index) × 100 000 000 — the `phloLimit` a deploy carries unless its author asks
+/// for more. A block at that bound is one the proposer could always have built, so this refuses only
+/// what is already outside the protocol's own envelope, while still bounding the sum that nothing
+/// bounded before.
+///
+/// **A protocol constant, not a config value, and that is the point.** Two operators running different
+/// values would disagree about which blocks are valid, which is a fork; `MAX_BLOCK_DEPLOYS` is a
+/// constant for the same reason. It is also the reason this is not threaded through `CasperConf`.
+///
+/// Declared below `block_summary` so it shifts no cited line — see [`deploy_signatures`].
+pub const MAX_BLOCK_PHLO: i64 = 25_500_000_000; // MAX_BLOCK_DEPLOYS × 1e8
+
+/// Validate that the block carries no more deploys than the protocol's seed index can address
+/// (AUDIT F-3).
+///
+/// **Why this has to exist on the receiving side.** The proposer has always bounded its own selection
+/// — `MAX_BLOCK_DEPLOYS` is the width of the `u8` seed index in `block_creator`, so the deploy count
+/// plus the slash count has to fit in 255 — but that bound lived *only* in the proposer. A block
+/// arriving from a peer was never checked against it, so a bonded proposer could pack a block
+/// arbitrarily full and every validator would replay the lot. The check is a length, so it belongs
+/// among the pre-replay checks beside `phlo_price` and `phlo_limit`.
+///
+/// `system_deploys` are not counted: they are seeded separately and are already bounded by
+/// `max-number-of-parents`, which is what makes the proposer's budget a subtraction
+/// (`per_block_deploy_budget`) rather than a joint cap.
+pub fn deploy_count(b: &BlockMessage) -> BlockStatus {
+    // Fully qualified rather than imported: a `use` line here would shift every line below it, and
+    // `spec/laws.tsv` cites twenty of them by number (max line 429), inherited from the Lean register.
+    // The same reason `deploy_signatures` is declared below its consumer rather than above it.
+    if b.state.deploys.len() <= crate::blocks::proposer::proposer::MAX_BLOCK_DEPLOYS {
+        BlockStatus::Valid
+    } else {
+        BlockStatus::TooManyDeploys
+    }
+}
+
+/// Validate that the block's total declared phlo fits the block budget (AUDIT F-3).
+///
+/// **The sum is over the signed `phlo_limit`, not over `ProcessedDeploy.cost`.** The cost field is
+/// proposer-supplied wire data that replay recomputes, so a cap keyed on it would be a cap the
+/// proposer sets for itself. `phlo_limit` is what the deploy's author signed, and it is therefore the
+/// honest statement of how much work the block asks for. The sum saturates rather than wrapping: the
+/// deploy-level `phlo_limit` check rejects negatives in the same pass, but a cap that could itself
+/// overflow on hostile input would be no cap at all.
+///
+/// **Deliberate divergence from the Scala reference**, which composes no per-block bound:
+/// `blockSummary` runs the seven checks this port already had and nothing else. Without one, the
+/// per-deploy budget bounds each deploy separately and a block can be arbitrarily expensive — which is
+/// what the September 2026 audit measured, and the reason Sui's transaction bound and Solana's block
+/// compute budget are cited against this node in the comparison.
+///
+/// See [`MAX_BLOCK_PHLO`] for why the bound is a constant rather than a config value. Declared here
+/// rather than beside its consumers for the reason [`deploy_signatures`] records: inserting above
+/// `block_summary` shifts line numbers that the law and audit registers cite.
+pub fn block_phlo(b: &BlockMessage) -> BlockStatus {
+    let total = b
+        .state
+        .deploys
+        .iter()
+        .map(|d| d.deploy.data.phlo_limit)
+        .fold(0i64, i64::saturating_add);
+    if total <= MAX_BLOCK_PHLO {
+        BlockStatus::Valid
+    } else {
+        BlockStatus::ExceedsBlockPhloLimit
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +621,79 @@ mod tests {
             is_failed: false,
             system_deploy_error: None,
         }
+    }
+
+    /// A block carrying more deploys than the seed index can address is refused, and the limit itself
+    /// is allowed (AUDIT F-3).
+    ///
+    /// The proposer has always bounded its own selection — the seed in `block_creator` is indexed in a
+    /// `u8` — but that bound lived only in the proposer: a block arriving from a peer was never checked
+    /// against it, so a bonded proposer could pack a block arbitrarily full and every validator would
+    /// replay the lot.
+    #[test]
+    fn a_block_carrying_more_deploys_than_the_seed_index_addresses_is_refused() {
+        let cap = crate::blocks::proposer::proposer::MAX_BLOCK_DEPLOYS;
+
+        let mut at_limit = block();
+        at_limit.state.deploys = (0..cap).map(|_| deploy(0, 1, "root")).collect();
+        assert_eq!(
+            deploy_count(&at_limit),
+            BlockStatus::Valid,
+            "the limit itself is within the protocol's envelope"
+        );
+
+        let mut past = block();
+        past.state.deploys = (0..=cap).map(|_| deploy(0, 1, "root")).collect();
+        assert_eq!(deploy_count(&past), BlockStatus::TooManyDeploys);
+    }
+
+    /// A block whose deploys collectively declare more phlo than the block budget is refused, and the
+    /// budget itself is allowed (AUDIT F-3).
+    ///
+    /// Before this there was no per-block bound at all. The per-deploy budget bounds each deploy
+    /// separately, so a proposer could make one block arbitrarily expensive to replay on every
+    /// validator — which is what the September 2026 audit measured, and the gap Sui's transaction bound
+    /// and Solana's block compute budget are cited against.
+    #[test]
+    fn a_block_exceeding_the_block_phlo_budget_is_refused() {
+        let half = MAX_BLOCK_PHLO / 2;
+
+        let mut at_limit = block();
+        let mut first = deploy(0, 1, "root");
+        first.deploy.data.phlo_limit = half;
+        let mut second = deploy(0, 1, "root");
+        second.deploy.data.phlo_limit = MAX_BLOCK_PHLO - half;
+        at_limit.state.deploys = vec![first, second];
+        assert_eq!(
+            block_phlo(&at_limit),
+            BlockStatus::Valid,
+            "a block that sums to exactly the budget is within it"
+        );
+
+        let mut over = block();
+        let mut single = deploy(0, 1, "root");
+        single.deploy.data.phlo_limit = MAX_BLOCK_PHLO + 1;
+        over.state.deploys = vec![single];
+        assert_eq!(block_phlo(&over), BlockStatus::ExceedsBlockPhloLimit);
+    }
+
+    /// The sum saturates rather than wrapping. Two maximal limits are the adversarial case: without
+    /// saturation they would overflow back below the budget and the cap would admit exactly the block it
+    /// exists to refuse.
+    #[test]
+    fn the_block_phlo_sum_saturates_rather_than_wrapping() {
+        let mut b = block();
+        let mut first = deploy(0, 1, "root");
+        first.deploy.data.phlo_limit = i64::MAX;
+        let mut second = deploy(0, 1, "root");
+        second.deploy.data.phlo_limit = i64::MAX;
+        b.state.deploys = vec![first, second];
+
+        assert_eq!(
+            block_phlo(&b),
+            BlockStatus::ExceedsBlockPhloLimit,
+            "two maximal limits must not wrap back under the budget"
+        );
     }
 
     fn block() -> BlockMessage {
