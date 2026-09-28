@@ -9,8 +9,17 @@ in this chapter, together with the structural properties that make whole classes
 unrepresentable. Both halves matter: a review that lists only residual defects misrepresents a system
 whose thesis is carrying invariants in the semantics rather than in review.
 
-**Scope.** Report-only. No code was changed as a result of this pass, and no finding in it has been
-fixed or closed. Read it as a photograph, not as a status.
+**Scope, and how to read it.** The review itself was report-only: nothing was changed *by the pass*,
+and no finding was fixed while it ran. What you are reading is therefore a photograph of `67dd6fb7b`,
+and every count in it — the register's totals, the witness census, the findings — is true of that
+commit and not of whatever `dev` says today.
+
+The close-out that followed is a separate piece of work, and it is recorded where it belongs rather
+than edited into this chapter: the code changes are in their own commits, and the two places where they
+*went beyond* the reference implementation are registered in
+[`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 — the per-block cost bounds, the DAG write
+order, and the block `version` check. The one correction that does belong here is marked inline in §3,
+because it is advice this chapter gave and got wrong.
 
 ## 1. Method
 
@@ -113,10 +122,24 @@ panic, not an `unsafe`, not a type escape, not a coverage drop, and not a law vi
 invisible to every check the project runs. That is a gap in the shape of the register, not in the
 strictness of any particular gate.
 
-**Prioritised remediation.** Add a per-block phlo cap and a validator-side deploy-count cap; replace the
-linear scan with a `HashSet` (semantically identical — the derived `Hash`/`Eq` are consistent); wire
-`parsing_cost` at execution time before the cost is sampled; and check the cancellation flag inside long
-builtins. The `par_set` change is two lines and removes the amplification's root.
+**Prioritised remediation.** Add a per-block phlo cap and a validator-side deploy-count cap; make the
+set/map dedup ordered; wire `parsing_cost` at execution time before the cost is sampled; and check the
+cancellation flag inside long builtins. The `par_set` change is small and removes the amplification's
+root.
+
+*Corrected during the close-out, 2026-09-28.* This paragraph first said "replace the linear scan with a
+`HashSet`", and **that does not compile**: `Par` derives no `Hash` anywhere in the AST and no manual
+impl exists, so `HashSet<Par>` is a type error. The fix that landed is **sort-then-dedup** — `par_set`
+sorts by `Par`'s derived total order, which puts equal elements adjacent, then `Vec::dedup`s them, and
+because the sort is stable it keeps the first of each run, which is the element the scan kept;
+`par_map` sorts by key and makes one keep-last pass, reproducing last-write-wins. Byte-for-byte the
+same output at Θ(N log N). The advice was wrong in the ordinary way — a remediation sentence is a claim
+like any other, and this one was never compiled before it was published.
+
+*And the four P1 items above have since landed* (2026-09-28): the ordered dedup, the two validator-side
+caps, and the execution-time parse charge. The cancellation item is the one deliberately left — with a
+per-block budget and a charged parse in place, a single builtin is bounded even though it still cannot
+be interrupted mid-flight. Details and the divergences they carry: `spec/RUST-VS-SCALA.md` §3.
 
 ## 4. Other confirmed findings
 
