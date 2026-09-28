@@ -1,4 +1,4 @@
-# RChain in Rust: a language with a theorem, not a test suite
+# RChain in Rust: a language with a theorem, not just a test suite
 
 Rholang's <!-- counts:laws -->50 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
 its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
