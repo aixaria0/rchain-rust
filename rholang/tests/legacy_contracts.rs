@@ -1,8 +1,8 @@
 //! The legacy `.rho` corpus: the first contact between the Rust parser/reducer and real programs.
 //!
 //! Everything the Rust side has been tested against so far — inline strings, the `qucalc`/`examples`
-//! set, the `rholang/tests` fixtures — was written *for* this port. The 165 `.rho` files under
-//! `legacy/` are the programs the Scala node actually ran: its tutorials, its linking-package
+//! set, the `rholang/tests` fixtures — was written *for* this port. The 165 `.rho` files of the
+//! `legacy/` corpus are the programs the Scala node actually ran: its tutorials, its linking-package
 //! examples, its integration-test fixtures and the resources shipped in `casper`. They exercise
 //! syntax nobody wrote a Rust test for, and a parse or reduce failure here is a real port bug.
 //!
@@ -34,6 +34,30 @@ mod common;
 /// The corpus size, asserted literally: the register records it, and a change here is a change to
 /// the corpus (a file added or removed in `legacy/`), which should be a deliberate diff.
 const CORPUS: usize = 165;
+
+/// Where the corpus's **bytes** live — the 165 `.rho` files, vendored, 0.4 MB.
+///
+/// `legacy/` was archived out of the working tree (`656290777`, into revision `1b7583649`) because
+/// 32 MB and 1,596 files no CI job built, tested or scanned. That commit repointed the one
+/// dependency it knew about (`tools/audit-vendored-sources.sh`, whose originals are now vendored at
+/// `casper/src/genesis/vendored-originals/`) — but *this test is a second one*, and it reads the
+/// files rather than citing them, so the archiving broke it: the walk found 0 files and every
+/// assertion here failed on `d9f0d4b`'s CI.
+///
+/// So the corpus is vendored the same way the genesis originals are, and nothing else is. Every
+/// path this test *names* stays the `legacy/...` path, which is the citation that resolves at
+/// `1b7583649`; only the bytes come from here. The vendored copies are byte-identical to that
+/// revision's blobs (verified by `git hash-object` against `git ls-tree 1b7583649` when they were
+/// taken), so the test still parses exactly what the Scala node ran.
+const CORPUS_ROOT: &str = "rholang/tests/legacy-corpus";
+
+/// The file a `legacy/...` citation's bytes are read from: the same path under [`CORPUS_ROOT`].
+fn vendored(rel: &str) -> PathBuf {
+    repo_root().join(CORPUS_ROOT).join(
+        rel.strip_prefix("legacy/")
+            .expect("a corpus path is a `legacy/...` citation"),
+    )
+}
 
 /// Reduction-step budget per program. The reducer's own default is `DEFAULT_MAX_REDUCE_STEPS`
 /// (100 000); this test names its own bound so that "the corpus needs more fuel than the default"
@@ -221,35 +245,36 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every `.rho` file under `legacy/`, sorted, as paths relative to the repo root.
+/// Every `.rho` file in the corpus, sorted, as `legacy/...` paths — the citation, not the location.
+/// The bytes come from [`CORPUS_ROOT`]; the name stays the archived path so every skip entry and
+/// every failure message names something a reader can look up at `1b7583649`.
 fn corpus() -> Vec<String> {
-    fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, root, out);
+                walk(&path, out);
             } else if path.extension().is_some_and(|e| e == "rho") {
-                out.push(
-                    path.strip_prefix(root)
-                        .expect("a walked path is under the root")
-                        .to_string_lossy()
-                        .into_owned(),
-                );
+                let rel = path
+                    .strip_prefix(repo_root().join(CORPUS_ROOT))
+                    .expect("a walked path is under the corpus root")
+                    .to_string_lossy()
+                    .into_owned();
+                out.push(format!("legacy/{rel}"));
             }
         }
     }
-    let root = repo_root();
     let mut out = Vec::new();
-    walk(&root.join("legacy"), &root, &mut out);
+    walk(&repo_root().join(CORPUS_ROOT), &mut out);
     out.sort();
     out
 }
 
 fn read(rel: &str) -> String {
-    let path = repo_root().join(rel);
+    let path = vendored(rel);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
@@ -294,7 +319,7 @@ fn every_skip_entry_names_a_real_corpus_file() {
     let found = corpus();
     for (path, reason) in SKIPS {
         assert!(
-            repo_root().join(path).is_file(),
+            vendored(path).is_file(),
             "skip entry {path} ({}) names a file that does not exist",
             reason.as_str()
         );
