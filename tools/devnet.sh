@@ -122,6 +122,11 @@ Commands:
   --epoch-length N               PoS epoch length: the first epoch boundary is at block N (default
                                  10000, so a short devnet never reaches one). A *genesis* parameter,
                                  so every bonded validator is given the same value
+  --stakes A,B[,C]               per-validator genesis bond, in validator order (default: 100
+                                 each). Unequal stakes are how a measurement reaches the cases #70
+                                 turns on: three equal validators minus one is *exactly* 2/3, which
+                                 is not a supermajority (`two_thirds_is_not_supermajority`), while
+                                 100/100/50 minus the 50 leaves 80 % and should recover.
   --active-validators N          the active-set draw's cap. Below the validator count the draw
                                  *selects*, which is the only way to watch randomised selection do
                                  anything on a live chain (default 100, i.e. no selection at 1-3)
@@ -155,7 +160,15 @@ genesis_files() {
   local dir="$1" n="$2" i
   : > "$dir/bonds.txt"
   for (( i = 0; i < n; i++ )); do
-    echo "${VALIDATOR_PUB[$i]} 100" >> "$dir/bonds.txt"
+    local stake=100
+    if [[ -n "$POS_STAKES" ]]; then
+      stake="$(echo "$POS_STAKES" | cut -d, -f$((i + 1)))"
+      if [[ -z "$stake" ]]; then
+        echo "--stakes needs one stake per bonded validator ($n wanted, $POS_STAKES given)" >&2
+        return 2
+      fi
+    fi
+    echo "${VALIDATOR_PUB[$i]} $stake" >> "$dir/bonds.txt"
   done
   if $DEPLOYER; then
     echo "$DEPLOYER_REV_ADDR,$DEPLOYER_BALANCE" > "$dir/wallets.txt"
@@ -282,6 +295,7 @@ cmd_up() {
   EFFECT_SCHEDULER=""   # default: the node's own default (dfs)
   POS_EPOCH_LENGTH=""   # default: the node's own (10000) — see `rnode_run_common`
   POS_ACTIVE_VALIDATORS=""
+  POS_STAKES=""   # default: 100 each; `--stakes` sets them per validator
   FRESH=false
 
   while [[ $# -gt 0 ]]; do
@@ -296,6 +310,7 @@ cmd_up() {
         BOOTSTRAP_DATA_VOLUME="${2:?--data-volume needs a volume name}"; shift 2 ;;
       --epoch-length) POS_EPOCH_LENGTH="${2:?}"; shift 2 ;;
       --active-validators) POS_ACTIVE_VALIDATORS="${2:?}"; shift 2 ;;
+      --stakes) POS_STAKES="${2:?}"; shift 2 ;;
       --effect-scheduler)
         EFFECT_SCHEDULER="${2:?}"
         case "$EFFECT_SCHEDULER" in

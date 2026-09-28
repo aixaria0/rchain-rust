@@ -341,17 +341,20 @@ A join takes about 15 seconds and ~19 MB, measured.
 
 ## Do not onboard a validator yet
 
-**This net takes one validator on purpose, and adding a second is unsafe today.** Two independent
-blockers, both measured on this testnet:
+**This net takes one validator on purpose, and adding a second is unsafe today.** Three blockers, all
+measured:
 
-1. **Three validators panic at the first epoch boundary.** With bonds A 100 / B 100 / C 50 and
-   `--epoch-length 10`, all three nodes died in the same second at block 10 with
-   `Cannot process duplicate actions on one key`
-   (`rspace/src/history/instances/radix_history.rs:69`) and the chain froze — deploys were still
-   accepted and never proposed. Filed as
-   [#83](https://github.com/rchain-community/rchain-rust/issues/83). Two-validator chains cross the
-   same boundary happily (that boundary code ran 17 times on the 2026-09-26 chain), so this is the
-   three-validator case specifically.
+1. ~~**Three validators panic at the first epoch boundary.**~~ **Fixed, 2026-09-28.** With bonds
+   A 100 / B 100 / C 50 and `--epoch-length 10`, all three nodes used to die in the same second at
+   block 10 with `Cannot process duplicate actions on one key`
+   (`rspace/src/history/instances/radix_history.rs:69`) and the chain froze. The duplicate was **two
+   native actions on one key, across two accepted blocks**: at a boundary every proposer runs
+   `close_block` and writes the same `PREFIX_POS` leaves, and the merge concatenated both blocks'
+   actions into one batch. The merge now keeps one action per slot, last accepted host in ascending
+   order — a `BTreeSet<Blake2b256Hash>` iteration, so every node picks the same winner
+   ([#83](https://github.com/rchain-community/rchain-rust/issues/83), commit `b5e024d0c`). **Verified
+   on the configuration that killed every node**: a fresh three-validator devnet at `--epoch-length 10`
+   crossed heights 10, 20, 30 and 40 with all three containers healthy and no panic.
 2. **A silent validator keeps its weight, so added stake can stop finality.** The quorum is a *strict*
    supermajority — `sdk/src/consensus.rs:15`, `stake * 3 > total * 2`, with a test named
    `two_thirds_is_not_supermajority` — taken over the **whole bond pool**, and there is no inactivity
@@ -359,16 +362,24 @@ blockers, both measured on this testnet:
    ([#70](https://github.com/rchain-community/rchain-rust/issues/70)). Attesting also *is* proposing:
    the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with no node
    contributes nothing while still diluting A.
+3. **A fresh multi-validator network never forms at all.**
+   ([#100](https://github.com/rchain-community/rchain-rust/issues/100)). On
+   `tools/devnet.sh up --validators 3 --fresh`, the joining validators send a
+   `FinalizedFringeRequest` that **the bootstrap never receives** — it logs no fringe line at all —
+   and they stay at height 0 while the bootstrap counts `peers: 0` against their `peers: 1`. Nothing
+   finalises, so there is no finalized fringe for them to sync, and the deadlock is from genesis
+   rather than a slow start.
 
-Together those mean that while A is the only proposer, A must hold **more than ⅔ of the whole pool**
-or nothing finalises — which is exactly why the split is 1000 against 100. Anyone bonding on top takes
-A's share down, and at ⅔ or below finality stops with no automatic recovery. That is the 2026-09-22
-incident, and the reason for this split.
+The arithmetic of (2) is unchanged and still the reason the split is 1000 against 100: while A is the
+only proposer, A must hold **more than ⅔ of the whole pool** or nothing finalises. Anyone bonding on
+top takes A's share down, and at ⅔ or below finality stops with no automatic recovery. That is the
+2026-09-22 incident.
 
-**Before a validator is added: #83 must be fixed, and the recovery case measured.** The intended test —
+**Before a validator is added: #100 must be fixed, and then #70's recovery case measured.** That test —
 three validators where the survivors hold > ⅔ of the pool, one killed, finality expected to continue —
-has not been run to completion (the chain died of #83 first). Until then, add nothing: use the net as a
-single-proposer chain, and read or deploy against A.
+is now blocked by #100 rather than by #83: the network it needs cannot be built yet. `tools/devnet.sh`
+gained `--stakes A,B,C` for it, so the case is expressible as soon as a fresh three-validator net can
+form. Until then, add nothing: use the net as a single-proposer chain, and read or deploy against A.
 
 ## Onboarding an observer into the validator pool
 
