@@ -3,9 +3,9 @@
 # check-lean-conformance.sh — the formal gate.
 #
 # The repo's standard is "the oracle is the mathematical specification, not the Scala code"
-# (`AGENTS.md:55-57`), but until this script existed the specification was checked by nothing: no CI
-# job built the Lean, and the Coq had never been built outside a developer's shell. A theorem that
-# stopped holding, or a module that quietly fell out of the library, was noticed by no one.
+# (`AGENTS.md`'s *Prime directive*) — and until this script existed the specification was checked by
+# nothing: no CI job built the Lean, and the Coq had never been built outside a developer's shell. A
+# theorem that stopped holding, or a module that quietly fell out of the library, was noticed by no one.
 #
 # What it checks, in order:
 #   1. **The library builds** — `lake build` in `spec/`.

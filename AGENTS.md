@@ -45,6 +45,64 @@ For an agent that needs to *understand the language* (rather than port code), th
 
 The formal oracle is `spec/`; the book explains it, it does not duplicate it.
 
+### The documentation network
+
+**Two rules decide where a document lives. Neither is enforced by a tool; both are enforced by this
+section being read.**
+
+- **Quarantine.** Plans, roadmaps and hypotheticals are labelled as such and live *outside* the
+  repository (today that is `~/.claude/plans/`). The book and `spec/` describe what compiles and what
+  is proved. A claim in a document that cannot be traced to a `.rs`, `.lean` or `.v` file is a claim a
+  reader will take as implemented — so a document making one says so in the sentence that makes it,
+  and links the artifact.
+- **A page has exactly one parent.** Every page in the book is listed in
+  [`docs/src/SUMMARY.md`](docs/src/SUMMARY.md); every `spec/` document is reachable from
+  [`spec/README.md`](spec/README.md) or from this file. The single sources of truth are the table
+  above: where the book explains a law it links `spec/`, and does not restate it.
+
+**Routing is intent-based in two places, and they are not duplicates.** The README's *Documentation*
+section routes by part (the book's I–VI). [`docs/src/ai-entrypoint.md`](docs/src/ai-entrypoint.md)
+routes by goal — "I want to…" — for readers and agents, and mirrors the map above. A new page goes in
+`SUMMARY.md`, and into the goal table if it answers a question someone would arrive with.
+
+**The orphan audit, run 2026-09-28.** Every tracked `.md` outside `legacy/` was resolved as a link
+target across every other tracked `.md`, expanding each `](target)` against the linking file's own
+directory. It is short enough to re-run as it stands:
+
+```sh
+for f in $(git ls-files '*.md' | grep -v '^legacy/'); do
+  grep -ohE '\]\([^)#]*\)' "$f" 2>/dev/null | sed -E 's/^\]\(|\)$//g' | grep -v '^http' \
+    | while read -r t; do readlink -m "$(dirname "$f")/$t"; done
+done | sed "s|^$PWD/||" | sort -u > /tmp/tgt
+git ls-files '*.md' | grep -v '^legacy/' | grep -vxF -f /tmp/tgt
+```
+
+**It prints two files: `spec/STYLE.md` and `spec/coq/README.md`.** Both are **book-orphans rather
+than orphans** — `spec/STYLE.md` is named in `spec/README.md`'s layout tree, and
+`spec/coq/README.md` is the README of a directory this file and `spec/README.md` both link — so
+neither is unreachable, but neither is a *clickable* target anywhere, and a reader who follows links
+rather than browsing the tree does not arrive at them. That is the whole residue, and it is left
+standing rather than patched here: `spec/` is deliberately outside the book (its index is
+`spec/README.md`), and both files are one link away for whoever next edits those pages.
+
+**The run before this section existed printed three.** The third was `docs/src/SUMMARY.md`, the book's
+index, which is a root by construction — and the `SUMMARY.md` link in the first rule above is what
+gave it an incoming link, so re-running the snippet on a tree without that link restores it. That is
+worth keeping visible rather than tidying: the number this audit reports is a property of the tree it
+is run on, including this file, and an audit that edits the thing it measures should say so.
+
+**The Lean side has no orphans at all**: the two modules nothing imports, `Rchain/Corpus.lean` and
+`Rchain/LawsMain.lean`, are the conformance emitter and the law-register checker — `lean_exe` roots,
+named in `spec/lakefile.toml`'s `defaultTargets`, which is load-bearing, because an `lean_exe` root
+is not pulled in by the library target and a bare `lake build` would otherwise compile neither.
+
+**Not adopted here: a review process enforced on every documentation PR.** The discussion this section
+answers asks for one — a "network usability test" applied to every doc change. It is not recorded as
+adopted, because a policy nothing checks reads as a policy that holds. What does hold is the narrower
+and true thing: the two rules above, the audit's residue stated above, and the registers that *are*
+gated (`spec/AUDIT.md`'s check-off, the law register, the test-coverage census). Whether a doc PR gets
+a checklist is a maintainer's decision rather than an edit to this file.
+
 ## Intent
 
 The RChain node runs Rholang natively. We are rewriting it in **Rust**, absorbing both the Scala/JVM
