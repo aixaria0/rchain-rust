@@ -3,7 +3,7 @@ name = "rchain-casper"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain casper module (CBC-Casper consensus + DAG)."
+description = "Faithful and hardened Rust port of the RChain casper module (CBC-Casper consensus + DAG)."
 
 [dependencies]
 async-trait = "0.1"

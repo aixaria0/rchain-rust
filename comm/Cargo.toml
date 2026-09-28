@@ -3,7 +3,7 @@ name = "rchain-comm"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain comm module (peer-to-peer networking)."
+description = "Faithful and hardened Rust port of the RChain comm module (peer-to-peer networking)."
 
 [dependencies]
 async-trait = "0.1"

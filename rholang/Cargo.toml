@@ -3,7 +3,7 @@ name = "rchain-rholang"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain rholang interpreter (core: Env, Substitute, matcher, accounting, Reduce)."
+description = "Faithful and hardened Rust port of the RChain rholang interpreter (core: Env, Substitute, matcher, accounting, Reduce)."
 
 [dependencies]
 async-trait = "0.1"

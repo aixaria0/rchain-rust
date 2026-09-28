@@ -3,7 +3,7 @@ name = "rchain-crypto"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain crypto module (Blake2b256, Blake2b512Random, secp256k1, Ed25519, Curve25519)."
+description = "Faithful and hardened Rust port of the RChain crypto module (Blake2b256, Blake2b512Random, secp256k1, Ed25519, Curve25519)."
 
 [dependencies]
 rchain-shared = { path = "../shared" }

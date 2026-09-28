@@ -1,4 +1,4 @@
-# AGENTS.md — RChain → Rust rewrite: intent & formal specification
+# AGENTS.md — RChain → hardened Rust node: intent & formal specification
 
 This file is the **authoritative intent + formal specification** for rewriting this node in Rust. It
 is written for both AI coding agents and humans: read it in full before writing or changing any Rust

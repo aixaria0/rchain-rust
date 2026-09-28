@@ -3,7 +3,7 @@ name = "rchain-sdk"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain sdk module (consensus stake + DAG merge conflict resolution)."
+description = "Faithful and hardened Rust port of the RChain sdk module (consensus stake + DAG merge conflict resolution)."
 
 [dependencies]
 rchain-shared = { path = "../shared", default-features = false }

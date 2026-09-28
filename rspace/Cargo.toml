@@ -3,7 +3,7 @@ name = "rchain-rspace"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain rspace module (concurrent tuple space + radix history)."
+description = "Faithful and hardened Rust port of the RChain rspace module (concurrent tuple space + radix history)."
 
 [features]
 default = []

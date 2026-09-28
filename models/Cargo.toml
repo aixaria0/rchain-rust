@@ -3,7 +3,7 @@ name = "rchain-models"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Faithful Rust port of the RChain models module (rholang AST + canonicalizing sorter)."
+description = "Faithful and hardened Rust port of the RChain models module (rholang AST + canonicalizing sorter)."
 
 [dependencies]
 num-bigint = { version = "0.5", features = ["serde"] }
