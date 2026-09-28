@@ -271,6 +271,12 @@ rnode_run_common() {
   # producing blocks and the port was mapped — the listener was bound to the container's loopback.
   if $ADMIN; then flags="$flags --api-enable-devnet-admin-public"; fi
   if $DEPLOYER; then flags="$flags --dev-mode --deployer-private-key ${DEPLOYER_PRIV}"; fi
+  # A verbosity passthrough for diagnosing the **inbound** path, where a node's silence is otherwise
+  # indistinguishable from a message that never arrived (issue #100): the frames a node *receives* are
+  # logged at debug/trace and nowhere else, so without this a stalled handshake reads as a healthy
+  # node with a height that does not move. Read from the environment rather than a flag, because it is
+  # a diagnostic knob rather than a property of the network being started.
+  if [[ -n "${DEVNET_LOG_LEVEL:-}" ]]; then flags="$flags --log-level $DEVNET_LOG_LEVEL"; fi
   # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
   # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
   # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting

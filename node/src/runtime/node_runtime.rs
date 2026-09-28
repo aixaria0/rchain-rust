@@ -901,6 +901,19 @@ fn spawn_peer_message_router(
                         // Hash-keyed requests: every member looks, only the owner answers.
                         _ => shards.values().collect(),
                     };
+                    if targets.is_empty() {
+                        // **The silent branch.** A block for a shard this node is not a member of is
+                        // logged above; every *other* message is sent to every member, so an empty
+                        // `shards` map dropped it with no line anywhere — and a node with no shard
+                        // task answers nothing while looking healthy (issue #100's class).
+                        log.warn(
+                            source,
+                            &format!(
+                                "Dropped a message from {peer}: this node has no shard task to \
+                                 deliver it to"
+                            ),
+                        );
+                    }
                     for tx in targets {
                         // `send().await` already applies backpressure when the shard is busy (this is
                         // not the drop-on-full site that AUDIT C105 is about) — but the *error* was
@@ -943,6 +956,7 @@ fn build_protocol_server(
     conf: &NodeConf,
     comm_state: &CommState,
     routing_tx: mpsc::Sender<RoutingMessage>,
+    log: Arc<dyn Log>,
 ) -> Result<ProtocolServer, String> {
     let cert = std::fs::read_to_string(&conf.tls.certificate_path).map_err(|e| e.to_string())?;
     let key = std::fs::read_to_string(&conf.tls.key_path).map_err(|e| e.to_string())?;
@@ -967,11 +981,13 @@ fn build_protocol_server(
         let rp_conf = comm_state.rp_conf.clone();
         let connections = comm_state.connections.clone();
         let routing_tx = routing_tx.clone();
+        let log = log.clone();
         Box::new(move |proto: Protocol| {
             let transport = transport.clone();
             let rp_conf = rp_conf.clone();
             let connections = connections.clone();
             let routing_tx = routing_tx.clone();
+            let log = log.clone();
             Box::pin(async move {
                 handle_messages::handle(
                     proto,
@@ -979,6 +995,7 @@ fn build_protocol_server(
                     transport.as_ref(),
                     connections.as_ref(),
                     &routing_tx,
+                    log.as_ref(),
                 )
                 .await
             })
@@ -1160,7 +1177,12 @@ pub async fn setup_node_program(
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
-        protocol_server: Some(build_protocol_server(conf, &comm_state, routing_tx)?),
+        protocol_server: Some(build_protocol_server(
+            conf,
+            &comm_state,
+            routing_tx,
+            log.clone(),
+        )?),
         status_provider: Some(StatusProvider {
             connections: comm_state.connections.clone(),
             rp_conf: comm_state.rp_conf.clone(),
