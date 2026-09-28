@@ -173,6 +173,13 @@ it. The worst was `rho::gov:censure`, cubic in its arguments and charged **nothi
 that being free was measured at **14.2 seconds** for a 4097-member fold, and the bound that replaced it
 is 512 — set from that measurement, not chosen.
 
+**What that sweep is worth, stated rather than implied.** The five were found by *reading the cost
+table for charges that do not track their work* — an inspection, not a proof that no sixth exists. The
+claim is "these five", not "the cost model is now sound", and a sixth charge of the same shape would
+need the same reading to find. The per-block cap bounds the total a block can spend; it does not, on
+its own, make any individual charge proportional, which is why both halves were needed and why the cap
+alone was found to be inoperative.
+
 **The cancellation item is not "left" — it is not achievable on this design**, which the close-out
 established by reading rather than assumed. A builtin runs its CPU synchronously inside
 `Box::pin(async { … })` with no `await` before it, so it blocks a worker thread to completion; `tokio`'s

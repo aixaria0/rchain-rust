@@ -66,11 +66,10 @@ documentation is also served as a book: `mdbook serve docs`.
 
 **A pre-testnet node, measured against live mainnet chains — and ahead on structure.**
 
-Solana, Sui and Bitcoin SV are live networks. They have been for years, at a combined market
-capitalisation north of $75bn (September 2026), and they have had the adversarial exposure, audit
-budgets and production hardening that come with it. This node is **pre-testnet** and has had none of
-that. So the September 2026 review did not take the peers at their published word: it read all four
-from source at pinned revisions and probed them with the *same* adversarial tests. It found **no chain
+Solana, Sui and Bitcoin SV are live, at a combined market capitalisation north of $75bn (September
+2026), with years of adversarial exposure, audit budgets and production hardening behind them. This
+node is **pre-testnet** and has had none of that. So the September 2026 review read all four from
+source at pinned revisions and probed them with the *same* adversarial tests. It found **no chain
 split, no fund loss and no remote code execution** here. On the structural axes below, the pre-testnet
 node leads.
 
@@ -84,30 +83,19 @@ node leads.
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
 | **Cost model bounds attacker work** | ✓ **closed out the same day** — a per-block phlo cap, and the five operations that were charged less than their work now charge for it | ✗ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ✗ no step budget at all |
 
-**The last row is the one this node did not lead, and it is now the one it fixed within the day.** The
-review found five operations whose charge did not track their work — the worst was `rho:gov:censure`,
-cubic in its arguments and charged *nothing at all* — and the honest statement of why that mattered is
-that a cost model only bounds work when a phlo buys bounded work. A per-block cap landed first and did
-not help until the charges underneath it were made proportional; that is the whole of the close-out,
-and it is a defect class **all four nodes share**.
+**The last row is the one this node did not lead, and it is the one it fixed within the day** — a defect
+class **all four nodes share**, and the close-out is not claimed to be more than it is: those charges
+were found by reading the cost table, so the claim is "these five" rather than "the cost model is now
+sound".
 
-Two things about that fix are worth stating rather than glossing. It was found by **reading the cost
-table for sublinear charges**, which is not the same as a proof that no sixth exists — the honest claim
-is "these five", not "the cost model is now sound". And one of the planned fixes was *reverted* because
-implementing it showed the finding was wrong: the crypto builtins' inputs have to pass through the
-storage path, which already charges proportionally, so their flat charge bought no unbounded work. A
-finding that does not survive being implemented is a finding that was wrong.
+Two limits bound the table. Two of the four trees could not be fully read — unvendored dependencies —
+so those columns are marked as traced rather than cleared; and this node's assurance ends where the
+review says it does: the language and calculus are safe-by-structure and partly proved, the chain
+layer's authority distribution is access control by another name, and unforgeability is axiomatised at
+the crypto boundary (law 19) rather than proved.
 
-Two limits on the table. Two of the four trees could not be fully read — Solana's VM and bignum
-library, and Sui's crypto and P2P layers, are unvendored dependencies — so those columns are marked as
-traced or untraceable rather than cleared. And the review states where this node's assurance actually
-ends: the language and calculus are safe-by-structure and partly proved, the chain layer's authority
-distribution is access control by another name, and unforgeability is axiomatised at the crypto
-boundary (law 19) rather than proved.
-
-Ten candidate findings were refuted during the pass, including the one it opened expecting to lead
-with. That discipline is what makes the rest of the numbers worth reading. **Full report, every
-citation, the refuted candidates and the open questions:**
+**Full report, every citation, the reverted fixes, the open questions — and the ten candidate findings
+the pass refuted, including the one it opened expecting to lead with:**
 [**docs/src/node/security-audit.md**](docs/src/node/security-audit.md).
 
 ## Governance
