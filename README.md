@@ -3,10 +3,9 @@
 Rholang's <!-- counts:laws -->50 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
 its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
 
-The node is a Cargo workspace at the top level (one crate per original sbt module); the upstream Scala
-fork is preserved for reference at
-[`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) — see
-[Where the Scala went](#where-the-scala-went) for why it is a revision rather than a directory.
+**Whole classes of defect are absent by construction**: no `unsafe` in any of the thirteen crates, so
+memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
+Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
 ## Provenance
 
@@ -17,6 +16,11 @@ This repository was developed through commit `14b8b77` on
 code at that state is timestamped on Arweave — transaction
 [`MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw`](https://arweave.net/MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw),
 22 August 2026 7:15pm.
+
+The node is a Cargo workspace at the top level (one crate per original sbt module); the upstream Scala
+fork is preserved for reference at
+[`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) — see
+[Where the Scala went](#where-the-scala-went) for why it is a revision rather than a directory.
 
 ## Documentation
 
