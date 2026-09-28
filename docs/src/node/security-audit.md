@@ -14,12 +14,35 @@ and no finding was fixed while it ran. What you are reading is therefore a photo
 and every count in it — the register's totals, the witness census, the findings — is true of that
 commit and not of whatever `dev` says today.
 
-The close-out that followed is a separate piece of work, and it is recorded where it belongs rather
-than edited into this chapter: the code changes are in their own commits, and the two places where they
-*went beyond* the reference implementation are registered in
+**Every confirmed finding was closed out the same day.** The fixes are in their own commits rather
+than edited into this text, so that the photograph stays a photograph; what follows is the outcome,
+not a rewrite.
+
+The three P1s were one root cause — the gas model did not bound work — and were closed by a per-block
+phlo cap, by making the five operations that charged less than their work charge for it, and by
+charging the parse. The P2s closed by a DAG write order that now writes data before the pointer it is
+found by, by saturating arithmetic in the `qucalc` governance folds, and by a block `version`
+predicate that had existed since the port with **no caller**.
+
+**Two things did not close, and the first is the more interesting.** *Signing and an SBOM on the
+release path* need a key and a trust-root decision that a code change should not make silently — a
+checksum landed, and the rest is owed by decision rather than by work. And *cancellation inside a
+running builtin* is **not achievable on this design**: a builtin runs its CPU synchronously inside
+`Box::pin(async { … })` with no `await` before it, so a deadline can bound how long the *caller* waits
+and never the work itself. That finding is what determined the shape of the whole remediation — bound
+the work, because interrupting it is not available — and it is worth stating here because a reader who
+expects a cancellation token will go looking for one that was deliberately not written.
+
+**Two corrections belong in this chapter rather than in a commit.** The remediation advice in §3 named
+a `HashSet` where `Par` derives no `Hash`, so it did not compile; it is marked there. And one of the
+five planned charge fixes was **reverted because implementing it showed the finding was wrong**: the
+crypto builtins' inputs have to pass through the storage path, which already charges proportionally,
+so their flat charge bought no unbounded work. A finding that does not survive being implemented is a
+finding that was wrong, and it is recorded as one rather than quietly dropped.
+
+The places where the close-out *went beyond* the reference implementation are registered in
 [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 — the per-block cost bounds, the DAG write
-order, and the block `version` check. The one correction that does belong here is marked inline in §3,
-because it is advice this chapter gave and got wrong.
+order, the block `version` check, and the governance bound.
 
 ## 1. Method
 
@@ -64,18 +87,24 @@ marked *measured* carry a command and a number; those marked *read* are code-pat
 
 ## 2. Results
 
-| | |
-|---|---|
-| Confirmed P0 (chain split / fund loss / RCE) | **none** |
-| Confirmed P1 (remote unauthenticated denial of service) | 3, sharing one root cause |
-| Confirmed P2 | 4 |
-| Confirmed P3 | 14 |
-| Not re-established (refutation incomplete) | 1 |
-| Refuted during the pass | 10 |
+| | | Closed out |
+|---|---|---|
+| Confirmed P0 (chain split / fund loss / RCE) | **none** | — |
+| Confirmed P1 (remote unauthenticated denial of service) | 3, sharing one root cause | **all three, same day** |
+| Confirmed P2 | 4 | **all four, same day** |
+| Confirmed P3 | 14 | all but signing/SBOM on the release path, which needs a key decision |
+| Not re-established (refutation incomplete) | 1 | ⬜ open — its cost asymmetry was never measured |
+| Refuted during the pass | 10 | — |
 
 The absence of a P0 is the headline result, and it is a result about the project's prior work: on a tree
 where earlier passes had confirmed remote denial-of-service defects, this pass could not find a chain
 split, a fund loss, or remote code execution.
+
+**The closure column is the part a later reader needs most**, and two entries in it are not "fixed".
+The *not-re-established* row is the `qucalc::gov::censure` cost asymmetry — its refutation never
+completed, so what an attacker actually pays at the ingress was never answered, and the close-out
+recorded that rather than guessing. And the P3 row's exception is a decision, not work: signing and an
+SBOM need a key and a trust root, which is not something a code change should choose silently.
 
 ## 3. The gas model does not bound work
 
@@ -136,10 +165,24 @@ because the sort is stable it keeps the first of each run, which is the element 
 same output at Θ(N log N). The advice was wrong in the ordinary way — a remediation sentence is a claim
 like any other, and this one was never compiled before it was published.
 
-*And the four P1 items above have since landed* (2026-09-28): the ordered dedup, the two validator-side
-caps, and the execution-time parse charge. The cancellation item is the one deliberately left — with a
-per-block budget and a charged parse in place, a single builtin is bounded even though it still cannot
-be interrupted mid-flight. Details and the divergences they carry: `spec/RUST-VS-SCALA.md` §3.
+*And the remediation has since been carried out* (2026-09-28), in the order given. The ordered dedup,
+the two validator-side caps and the execution-time parse charge landed first — and then the per-block
+cap turned out to be **inoperative on its own**, because a cost model bounds work only when a phlo buys
+bounded work. A second pass made the five operations whose charge did not track their work charge for
+it. The worst was `rho::gov:censure`, cubic in its arguments and charged **nothing at all**; the cost of
+that being free was measured at **14.2 seconds** for a 4097-member fold, and the bound that replaced it
+is 512 — set from that measurement, not chosen.
+
+**The cancellation item is not "left" — it is not achievable on this design**, which the close-out
+established by reading rather than assumed. A builtin runs its CPU synchronously inside
+`Box::pin(async { … })` with no `await` before it, so it blocks a worker thread to completion; `tokio`'s
+spawn handle *detaches* rather than aborts when dropped, and the code's own comment says so; and the
+cancellation flag is read only at dispatch boundaries. A deadline can therefore bound how long the
+*caller* waits and never the work itself — which is why this remediation took the shape it did. Bound
+the work, because interrupting it is not available, and a reader who goes looking for the cancellation
+token will not find one.
+
+Details and the divergences they carry: `spec/RUST-VS-SCALA.md` §3.
 
 ## 4. Other confirmed findings
 
@@ -316,6 +359,12 @@ trace", not as a clean bill of health. The Solana tree compared is the archived 
 monorepo, whose last commit predates this audit; the live lineage is Anza's Agave fork.
 
 ## 8. Open questions
+
+**These are decisions, not defects, and the close-out left them open on purpose.** Nothing here is
+something the review found broken and nobody got to; each is a choice the project has to make
+deliberately, and the close-out recorded them as an agenda rather than resolving them on the way past.
+A reader looking for what is *unfinished* should read this section; a reader looking for what was
+*found* should read §3 and §4, all of which closed the same day.
 
 **Active-validator-set selection has no oracle.** The set is chosen as the top N by descending stake
 with a key-ascending tie-break. The Scala contract returns the first N in map-key order and carries a

@@ -81,13 +81,21 @@ node leads.
 | **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->50 laws<!-- counts:end -->; every registered witness resolves; zero `#[ignore]`d tests; the gate refuses `sorry`/`admit`/`opaque` | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
 | **Peer identity** | Mutual TLS — the certificate's key is bound to the identity the peer claims in the message | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ✗ superlinear work charged at a flat rate | ✗ account copies are unbilled | Closest — instruction tiers, 128 KiB transaction bound | ✗ no step budget at all |
+| **Cost model bounds attacker work** | ✓ **closed out the same day** — a per-block phlo cap, and the five operations that were charged less than their work now charge for it | ✗ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ✗ no step budget at all |
 
-**The last row is the one this node does not lead, and the review leads with it.** It is also a defect
-class **all four share** — every peer was probed with that same question, because reading declared
-constants and calling them bounds is how a comparison flatters the wrong party. This node's instance is
-a two-line fix against its own Scala oracle; Sui and Solana both contain a block's blast radius better
-than it does. It is on the list, and it is in the report.
+**The last row is the one this node did not lead, and it is now the one it fixed within the day.** The
+review found five operations whose charge did not track their work — the worst was `rho:gov:censure`,
+cubic in its arguments and charged *nothing at all* — and the honest statement of why that mattered is
+that a cost model only bounds work when a phlo buys bounded work. A per-block cap landed first and did
+not help until the charges underneath it were made proportional; that is the whole of the close-out,
+and it is a defect class **all four nodes share**.
+
+Two things about that fix are worth stating rather than glossing. It was found by **reading the cost
+table for sublinear charges**, which is not the same as a proof that no sixth exists — the honest claim
+is "these five", not "the cost model is now sound". And one of the planned fixes was *reverted* because
+implementing it showed the finding was wrong: the crypto builtins' inputs have to pass through the
+storage path, which already charges proportionally, so their flat charge bought no unbounded work. A
+finding that does not survive being implemented is a finding that was wrong.
 
 Two limits on the table. Two of the four trees could not be fully read — Solana's VM and bignum
 library, and Sui's crypto and P2P layers, are unvendored dependencies — so those columns are marked as
