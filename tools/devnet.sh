@@ -152,6 +152,14 @@ cmd_build() {
   elif [[ -n "${1:-}" ]]; then
     echo "unknown flag: $1" >&2; help
   fi
+  # The image's own provenance. `.dockerignore` excludes `.git/`, so the in-image build cannot run
+  # `git rev-parse` — without this argument the served `/version` reads `commit # unknown`, which is
+  # what the image did until it was measured (`node/build.rs`, issue #32).
+  local commit
+  commit="$(git -C "$(cd "$(dirname "$0")/.." && pwd)" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$commit" ]]; then
+    opts+=(--build-arg "GIT_HEAD_COMMIT=$commit")
+  fi
   docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
 }
 
