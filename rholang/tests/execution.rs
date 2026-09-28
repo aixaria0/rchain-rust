@@ -1024,3 +1024,155 @@ async fn a_budget_below_the_parse_cost_refuses_the_deploy() {
         ran.errors
     );
 }
+
+/// **A message queue built on peeks delivers every item, or this test says so.** (Issue #40, porting
+/// upstream `rchain/rchain#3479`.)
+///
+/// The queue is a linked list of channel nodes carrying `(value, next)`, and both the subscriber's
+/// walk (`for (value, next <<- curr)`) and the publisher's tail read (`for (_ <<- tail)`) are **peeks**.
+/// The reported symptom is that a run stops early — one to three of four items, nondeterministically,
+/// for both explore and deploy, on a testnet and on a local node — so the assertion is not "it works"
+/// but "all four arrive **and** the program terminates", which is what `done` pins: it is reached only
+/// after the fourth publish is acked, so a run that stalls leaves it absent while `evaluate` returns.
+///
+/// **Two modes, and they are not symmetric.** Under `Sequential` the four deliverables are required.
+/// Under `RelaxedValidated` the block-path mode may legitimately report `SpeculationInvalid` — that is
+/// the Law 24 fallback, not a peek defect — so that mode is required to deliver all four *or* say so
+/// (the same split `relaxed_validated_mode_runs_corpus_without_error` makes).
+///
+/// **Falsified by construction, and the result is the interesting part.** Replacing the program's two
+/// peeks with consumes — `for (value, next <- curr)` and `for (_ <- tail)`, nothing else changed —
+/// delivers **one** item of the four, which is the reported symptom exactly. So the symptom is
+/// peek-specific, the port's peek path does not exhibit it, and this test can fail for the reason it
+/// exists rather than only for a bad fixture.
+///
+/// **What this test is the only witness for.** Peek is deliberately outside the Lean domain — the
+/// model says so (`spec/RChain/Surface.lean`: "`peek` is `<<-` and is out of the domain", and
+/// `Corpus.lean` records that a peek "would have to state its own verdict rather than derive") — so no
+/// law row covers the linear-read path this program exercises end to end. The family has been fixed
+/// before (#19, #20, #22, #23) and this is its customer; before this test, nothing ran the whole queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_queue_built_on_peeks_delivers_every_item() {
+    // The issue's program, with the harness's stdout replaced by a `@"log"` channel — the repository's
+    // tests read channels, not stdout — and `done` added so termination is observable rather than
+    // inferred from `evaluate` returning.
+    const QUEUE: &str = r#"
+new listener, mq, seq in {
+  seq!(0) |
+  contract listener(value, ack) = {
+    for (n <- seq) {
+      @"log"!(*n, *value) | seq!(*n + 1) | ack!(Nil)
+    }
+  } |
+  contract mq(ret) = {
+    new head, tail, pub, sub in {
+      tail!(*head) |
+      ret!(*pub, *sub) |
+      contract sub(l) = {
+        new loop, ack in {
+          loop!(*head) |
+          contract loop(curr) = {
+            for (value, next <<- curr) {
+              l!(*value, *ack) |
+              for (_ <- ack) { loop!(*next) }
+            }
+          }
+        }
+      } |
+      contract pub(value, ret) = {
+        new newTail in {
+          for (end <- tail) {
+            end!(*value, *newTail) | tail!(*newTail) |
+            for (_ <<- tail) { ret!(Nil) }
+          }
+        }
+      }
+    }
+  } |
+  new ack, pair in {
+    mq!(*pair) |
+    for (pub, sub <- pair) {
+      sub!(*listener) |
+      pub!("one", *ack) | for (_ <- ack) {
+      pub!("two", *ack) | for (_ <- ack) {
+      pub!("three", *ack) | for (_ <- ack) {
+      pub!("four", *ack) | for (_ <- ack) {
+        @"done"!(Nil)
+      }}}}
+    }
+  }
+}
+"#;
+
+    let expected: Vec<rchain_models::ast::Par> = ["one", "two", "three", "four"]
+        .into_iter()
+        .map(|s| from_expr(Expr::GString(s.to_string())))
+        .collect();
+
+    for mode in [EffectMode::Sequential, EffectMode::RelaxedValidated] {
+        let rt = build_runtime_with_mode(true, mode).await;
+        // The block-path mode dispatches relaxed and may legitimately raise the Law 24 certificate
+        // signal rather than reduce — the same allowance `relaxed_validated_mode_runs_corpus_without_error`
+        // makes, and no other error is excused under either mode.
+        let res = match rt.evaluate(QUEUE, &fixed_rand()).await {
+            Ok(res) => res,
+            Err(RholangError::SpeculationInvalid { .. })
+                if mode == EffectMode::RelaxedValidated =>
+            {
+                continue;
+            }
+            Err(e) => panic!("the queue must not error under {mode:?}: {e}"),
+        };
+        assert!(
+            res.succeeded(),
+            "the queue must run to completion under {mode:?}: {:?}",
+            res.errors
+        );
+        // The log holds `(n, value)` pairs, and the **n is what makes this an order assertion**:
+        // the listener labels each delivery, so the sequence is carried in the data rather than
+        // inferred from the order the tuple space happens to read back. (It reads back prepended —
+        // the four arrive reversed by datum — which is a property of the store, not of the queue, and
+        // a test about peek semantics should not be pinned to it.)
+        let log = rt.get_data_par(&chan("log")).await.unwrap();
+        assert_eq!(
+            log.len() % 2,
+            0,
+            "the log is pairs, so an odd count means a delivery was half-written: {log:?}"
+        );
+        let mut delivered: Vec<(i64, rchain_models::ast::Par)> = log
+            .chunks(2)
+            .map(|pair| {
+                let n = match pair[0].exprs.first() {
+                    Some(Expr::GInt(n)) => *n,
+                    other => panic!("a log label that is not an integer: {other:?}"),
+                };
+                (n, pair[1].clone())
+            })
+            .collect();
+        delivered.sort_by_key(|(n, _)| *n);
+
+        assert_eq!(
+            delivered.len(),
+            expected.len(),
+            "all four items must be delivered under {mode:?} — the reported symptom is one to three,              and the log is {log:?}"
+        );
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|(_, par)| par.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "and in publish order, which the labels make checkable under {mode:?}"
+        );
+        assert_eq!(
+            delivered.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "with no gap in the sequence, so a lost delivery cannot hide behind a later label,              under {mode:?}"
+        );
+        assert_eq!(
+            rt.get_data_par(&chan("done")).await.unwrap(),
+            vec![rchain_models::ast::Par::default()],
+            "and the fourth ack must be reached, which a stalled run cannot do under {mode:?}"
+        );
+    }
+}
