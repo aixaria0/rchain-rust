@@ -161,6 +161,21 @@ impl Proposer {
         match (self.check_active_validator)(&self.validator).await {
             Ok(true) => {}
             Ok(false) => {
+                // The decision, logged where it is made — the same reason `close_block` logs its
+                // boundary decision. `NotBonded` covers two states a validator can be in and an
+                // operator cannot tell apart from the outside: *not in the pool*, and *in the pool but
+                // not in the active set this epoch*. The second is new with the randomised draw
+                // (`spec/RUST-VS-SCALA.md` §3 item 12) and it is the one that stops a node proposing
+                // for a whole epoch with nothing else in the log: measured on a 3-validator devnet with
+                // a cap of 2, where the drawn-out validator was the only one that could propose, the
+                // chain halted and said nothing. The check itself reads the newest block's carried
+                // bonds map, which is a state read, so every node agrees on the answer.
+                eprintln!(
+                    "[pos] not proposing: {} is not in the active set this node reads, \
+                     which is the newest block's bond cache — either it is not bonded, or the \
+                     draw left it out for this epoch",
+                    rchain_shared::base16::encode(self.validator.public_key.bytes())
+                );
                 return Ok((
                     ProposeResult {
                         propose_status: ProposeStatus::NotBonded,

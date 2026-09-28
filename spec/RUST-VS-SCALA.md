@@ -185,24 +185,65 @@ concrete, auditable ways:
    rather than deleted.
 
    **Residuals, named rather than implied.**
-   - **O1 — the seed-setter's influence.** The anchor is the writing boundary's pre-state hash, which
-     its own proposer influences through the justification set it chooses. What the rule removes is
-     the *drawing* block's reroll; a seed-setter can still steer by producing two conflicting blocks
-     at its own height and releasing one, which is an equivocation rather than a private choice. The
-     attribution path for that is not traced, so the honest claim is "requires equivocation", not "is
-     slashed".
+   - **O1 — the seed-setter's influence, reduced rather than closed.** The anchor is the writing
+     boundary's pre-state hash, and a proposer has some say in its own pre-state. The justification set
+     is *derived* from the DAG (`get_pre_state_for_new_block` reads `latest_msgs`), so a pre-state
+     cannot be invented — but nothing requires a block to justify everything it has seen
+     (`validate::check_justification_regression` forbids going *backwards* on the messages a block
+     carries, not omitting them). A seed-writer can therefore present a block that omits recent
+     messages, compute the seed that follows, and keep the one it likes: a search over the
+     justification-closed subsets of its own DAG rather than a reroll from nothing. It can publish one
+     candidate only — a second block at the same height and sequence number is refused at insert before
+     any write (`casper/src/dag.rs:243-257`) — and the proposer of the *drawing* block has no say at
+     all. Choosing a different anchor cannot close this: every recent state a boundary block can name is
+     a merge of justifications it chose. Removing the subset choice is what the deferred commit-reveal
+     or VRF writer is for.
    - **O2 — capital can pre-position.** The seed is public before the boundary, so a validator can
      bond to enter or stage a withdrawal to leave the pool in time for `B_k`. Neither this design nor
      commit-reveal closes that without an extra rule (a withdrawal delay longer than the
      seed→snapshot window, or an earlier snapshot). This is a design gap, not an implementation one.
-   - **O3 — uniform selection is sybil-sensitive.** Splitting a stake across `k` validators yields
-     roughly `k` times the expected slots of the same stake held whole, while a large honest
-     validator is no likelier to be drawn than a dust one. The cap (default 100) bites, so this is a
-     live exposure in the finality weight set. Weighted sampling without replacement — an
-     exact-integer walk of the pool in canonical order, no floats — is the drop-in alternative and
-     changes nothing else in the file.
+   - **O3 — uniform selection is sybil-sensitive, in the weight set and in the income.** Splitting a
+     stake across `k` validators yields roughly `k` times the expected slots of the same stake held
+     whole, while a large honest validator is no likelier to be drawn than a dust one. The cap
+     (default 100) bites, so this is a live exposure in the finality weight set. Weighted sampling
+     without replacement — an exact-integer walk of the pool in canonical order, no floats — is the
+     drop-in alternative and changes nothing else in the file. **The same is true of rewards**:
+     `epoch_rewards` pays pool members that were drawn and zero for everyone else, so a pool member not drawn for an
+     epoch earns nothing in it, and stake stops predicting income.
    - **O4 — the absolute security budget now fluctuates** epoch to epoch, more so with a cap. It
      should be measured by simulation over many seeds with a stated tolerance rather than asserted.
+
+   **What the consumer sweep found, since the rule is read in more places than the five named.**
+   Every reader of `pos:active` needed no change — they decode the leaf, compare it to a state, or
+   report it — but three of them read the set for a *decision*, and the draw changes what that
+   decision covers:
+   - `validate::neglected_invalid_block` rejects a block that neglects an invalid justification whose
+     sender is in the block's carried `bonds`. With a draw that set is the drawn subset, so a
+     *bonded-but-undrawn* validator's invalid block may now be neglected. Semantically right, since
+     only drawn validators carry weight, but it is a narrowing of what the rule covers.
+   - The proposer's own `check_active_validator` reads the newest block's carried map, so a pool member
+     that was not drawn reports `NotBonded` and declines to propose for that epoch. No state change, and
+     the correct reading of "active" — but this is the one place where a validator *notices* the draw,
+     and **it is where the draw can cost liveness.** Measured on a 3-validator devnet with
+     `--epoch-length 3 --active-validators 2`: the chain ran to the boundary at block 30, the draw left
+     the only validator that could actually propose out of the set, and the chain halted — silently,
+     because `NotBonded` had no log at the point of decision (now it has one, at the return in
+     `blocks/proposer/proposer.rs`). **The draw did not cause that halt; a pre-existing 2-of-3 sync
+     stall did, and the draw made a latent one fatal** — with three working validators, two of three
+     are always drawn and the epoch always has a proposer. The decision this leaves open, deliberately
+     rather than by omission: the gate is *self-imposed* — a drawn-out validator's block would still be
+     accepted by its peers, because no receiving-side rule tests the sender against the active set
+     (`bonds_cache` compares the block's carried map to the state, which a non-active sender computes
+     honestly) — so `check_active_validator` could ask "am I in the **pool**" instead and remove the
+     hazard. That is a proposal-behaviour change, not a reading of the rule, so it is recorded here
+     rather than taken.
+   - The finaliser's pruned-history fallback (`multi_parent_casper.rs`, the arm that requires the
+     justifications' carried maps to agree when the newest justification's state is unreadable) is now
+     unsatisfiable across a boundary: the drawn set changes at every boundary even when no stake moves,
+     so those maps always disagree there. That path already refuses rather than guessing — the shape of
+     #73 — but the draw makes its refusal reachable where it previously was not. It fires only on a node
+     whose history is pruned.
+
 
    **No law row changes.** Laws 44–47 constrain the epoch's timing, step order, conservation and the
    withdrawal machine; none states a membership predicate, and `Rchain/Pos.lean`'s `reselect` is a
@@ -211,6 +252,13 @@ concrete, auditable ways:
 
    Rationale, the reference point (`PatrickMockridge/Mudra`'s beacon, re-sourced from this chain's own
    entropy), and the negative results: [`docs/src/node/security-audit.md`](../docs/src/node/security-audit.md) §8.
+
+   **What is deliberately not in this change: the beacon itself.** O1 is closed by removing the
+   seed-writer's subset choice — a commit-reveal round or a VRF accumulator — and both change what the
+   *writer* is, not what the *rule* is. The selection rule reads the `pos:epoch_seed` leaf and nothing
+   else, so replacing the writer touches `close_block` step 5 and no consumer, no law, and no test of
+   the draw. That separability is why the seed is a state leaf rather than a value threaded through the
+   deploy, and it is the shape the next pass should take.
 
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely

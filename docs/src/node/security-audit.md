@@ -390,7 +390,9 @@ different block — a free, unbounded reroll by the one party that also chose th
 2026-09-28 `select_active` draws uniformly without replacement from the pool, seeded by a
 `pos:epoch_seed` leaf written one boundary ahead, so the block that draws is not the block that chose
 the entropy. **The residuals are named in [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md)
-§3 item 12** — the seed-setter's influence through its justification set, capital pre-positioning
+§3 item 12** — the seed-setter's influence through its justification set (reduced, not closed: the
+justification set is derived from the DAG, but a block need not justify everything it has seen,
+so the writer keeps a search over the subsets it can present), capital pre-positioning
 before a public seed, the sybil exposure uniform sampling carries where stake-weighting does not, and a
 security budget that now fluctuates epoch to epoch — and the uniform draw is the one decision there
 worth revisiting. The membership predicate remains unverified by either oracle; it is now *different*

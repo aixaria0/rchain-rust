@@ -109,6 +109,12 @@ Commands:
   --effect-scheduler MODE        effect-scheduler mode: dfs (default), gate, relaxed-validated, or
                                  relaxed — the last is rejected on the block path at runtime, which
                                  is how tools/devnet-fuzz.py --mode scheduler exercises that guard
+  --epoch-length N               PoS epoch length: the first epoch boundary is at block N (default
+                                 10000, so a short devnet never reaches one). A *genesis* parameter,
+                                 so every bonded validator is given the same value
+  --active-validators N          the active-set draw's cap. Below the validator count the draw
+                                 *selects*, which is the only way to watch randomised selection do
+                                 anything on a live chain (default 100, i.e. no selection at 1-3)
   --deployer-key HEX | --no-deployer
                                  fund the deployer wallet + enable dev-mode dummy-deploy keepalive
                                  (default: on for devnet, using validator[0]'s key)
@@ -232,6 +238,20 @@ rnode_run_common() {
   # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting
   # a devnet with it is how that rejection is exercised end to end.
   if [[ -n "$EFFECT_SCHEDULER" ]]; then flags="$flags --effect-scheduler $EFFECT_SCHEDULER"; fi
+  # The PoS epoch length and active-set cap, for exercising an **epoch boundary** and the randomised
+  # active-set draw on a live chain. Both are *genesis* parameters installed outside the genesis
+  # block's deploys, so every bonded validator must be given the same values or it computes a
+  # different genesis post-state and refuses block #0 forever (AUDIT C46). They are set here, on the
+  # flag string every node shares, rather than per node, which is what makes that automatic.
+  #
+  # `epoch_length` is the boundary period (`block % epoch_length == 0`); the default is 10000, so a
+  # devnet crosses its first boundary at block 10000 unless it is lowered. `active_validators` is the
+  # draw's cap — set it below the validator count and the draw *selects*, which is the only way to
+  # see the rule do anything end to end.
+  if [[ -n "$POS_EPOCH_LENGTH" ]]; then flags="$flags --epoch-length $POS_EPOCH_LENGTH"; fi
+  if [[ -n "$POS_ACTIVE_VALIDATORS" ]]; then
+    flags="$flags --number-of-active-validators $POS_ACTIVE_VALIDATORS"
+  fi
   echo "$flags"
 }
 
@@ -243,6 +263,8 @@ cmd_up() {
   ADMIN=true
   DEPLOYER=true
   EFFECT_SCHEDULER=""   # default: the node's own default (dfs)
+  POS_EPOCH_LENGTH=""   # default: the node's own (10000) — see `rnode_run_common`
+  POS_ACTIVE_VALIDATORS=""
   FRESH=false
 
   while [[ $# -gt 0 ]]; do
@@ -255,6 +277,8 @@ cmd_up() {
         # recorded long chain (`devnet-stale-snapshot`) instead of `${BOOTSTRAP}-data`; `--fresh`
         # still clears the standard volumes, so passing both leaves the named artifact alone.
         BOOTSTRAP_DATA_VOLUME="${2:?--data-volume needs a volume name}"; shift 2 ;;
+      --epoch-length) POS_EPOCH_LENGTH="${2:?}"; shift 2 ;;
+      --active-validators) POS_ACTIVE_VALIDATORS="${2:?}"; shift 2 ;;
       --effect-scheduler)
         EFFECT_SCHEDULER="${2:?}"
         case "$EFFECT_SCHEDULER" in
@@ -285,6 +309,9 @@ cmd_up() {
 
   echo "==> devnet: $n validator(s) + $m observer(s)"
   echo "    autopropose=$AUTOPROPOSE propose-on-deploy=$PROPOSE_ON_DEPLOY admin=$ADMIN deployer=$DEPLOYER"
+  if [[ -n "$POS_EPOCH_LENGTH" || -n "$POS_ACTIVE_VALIDATORS" ]]; then
+    echo "    pos: epoch-length=${POS_EPOCH_LENGTH:-default} active-validators=${POS_ACTIVE_VALIDATORS:-default}"
+  fi
   docker network create "$NETWORK" >/dev/null 2>&1 || true
 
   local genesis_dir

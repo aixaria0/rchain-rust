@@ -1332,14 +1332,20 @@ impl NativeSystemState {
         // boundary that value already covers the epoch now ending. Older entropy costs nothing here —
         // it only has to be *fixed* before the drawing proposer acts, which it is.
         //
-        // **What this does not close, stated rather than implied.** The seed-writer's pre-state is
-        // influenced by that proposer's justification set — residual **O1**, and a design gap rather
-        // than an implementation one. What it *does* close is the unbounded, free reroll: the proposer
-        // of the drawing block cannot steer a seed fixed before it acted, and the seed-writer can only
-        // steer it by producing two conflicting blocks at its own height and releasing one — an
-        // equivocation, which every honest node refuses at insert (`casper/src/dag.rs:244-258`). The
-        // attribution path for that equivocation is the check `spec/audit/passes.md` still owes; until
-        // it is traced, the honest statement is "requires equivocation", not "is slashed".
+        // **What this does not close, stated rather than implied.** The seed is a function of *this*
+        // block's pre-state, and a proposer has some say in that pre-state. The justification set is
+        // *derived*, not invented — `get_pre_state_for_new_block` reads the DAG's own `latest_msgs` —
+        // but nothing requires a block to justify everything it has seen:
+        // `validate::check_justification_regression` forbids going *backwards* on the messages a block
+        // does carry, not omitting them. So a seed-writer can present a block that omits recent
+        // messages, compute the seed that follows, and keep the one it likes: residual **O1**, and a
+        // search rather than a reroll-from-nothing. It can publish only one of its candidates — a
+        // second block at the same height and sequence number is refused at insert, before any write
+        // (`casper/src/dag.rs:243-257`) — and the proposer of the *drawing* block has no say at all,
+        // which is the property this step exists for. Closing O1 means removing the subset choice
+        // itself, which is what the deferred commit-reveal/VRF writer in `spec/RUST-VS-SCALA.md` §3
+        // item 12 is for; choosing a different anchor cannot do it, because every recent state a
+        // boundary block can name is a merge of justifications it chose.
         //
         // Freshness is self-guaranteeing: the previous seed is an input to this one, so consecutive
         // seeds differ even on a chain where nothing else changed, and the seed sequence is a hash

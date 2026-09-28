@@ -2,12 +2,14 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rchain_casper::block_status::BlockStatus;
 use rchain_casper::genesis::contracts::Vault;
+use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_casper::system_deploy::SystemDeploy;
 use rchain_casper::validate::bonds_cache;
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::block::state_hash::StateHash;
@@ -17,7 +19,7 @@ use rchain_models::casper::protocol::casper_message::{
     SignedDeployData,
 };
 use rchain_models::validator::Validator;
-use rchain_rholang::native_state::{PosGenesis, PosParams};
+use rchain_rholang::native_state::{NativeSystemState, PosGenesis, PosParams};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::refined::NonNegI64;
@@ -501,4 +503,228 @@ async fn the_bond_cache_is_the_active_pos_state_and_a_differing_one_is_refused()
         ),
         "a bond cache that differs from the state is refused rather than accepted"
     );
+}
+
+/// One block played on one node: the state it reaches, the active set the state carries, and the
+/// processed deploys a replayer would need.
+struct Played {
+    post: Blake2b256Hash,
+    bonds: BTreeMap<Validator, NonNegI64>,
+    user: Vec<ProcessedDeploy>,
+    sys: Vec<ProcessedSystemDeploy>,
+}
+
+/// Play one block at `height` on `rm` from `pre`: one user deploy, and the close deploy
+/// `block_creator` appends to every block.
+///
+/// The close deploy carries `pre`, which is the block's own pre-state hash — the value the seed writer
+/// folds into the *next* epoch's seed. It has to be the same value the replayer derives from the block
+/// header, which is what `block_data(height)` and this argument are both for.
+async fn play_block(
+    rm: &RuntimeManager,
+    pre: Blake2b256Hash,
+    height: i64,
+    term: &str,
+    rand: &Blake2b512Random,
+) -> Played {
+    let close = SystemDeploy::close_block(
+        height,
+        pre,
+        rand.split_byte(u8::try_from(height).expect("a test height fits a byte")),
+    );
+    let (post, user, sys) = rm
+        .compute_state(
+            &pre,
+            &[deploy_with_key(term, vec![0u8; 65])],
+            &[close],
+            rand,
+            block_data(height),
+        )
+        .await
+        .expect("play the block");
+    assert!(
+        user[0].eval_result.succeeded(),
+        "the block's deploy must succeed, or it writes nothing and the caller's state comparisons \
+         are between two identical states: {:?}",
+        user[0].eval_result.errors
+    );
+    let bonds = rm
+        .compute_bonds(&StateHash::from_slice(post.as_bytes()))
+        .await
+        .expect("the block's own post-state carries a bonds map");
+    Played {
+        post,
+        bonds,
+        user: user.into_iter().map(|r| r.deploy).collect(),
+        sys: sys.into_iter().map(|r| r.deploy).collect(),
+    }
+}
+
+/// **The draw, end to end: it is the state's, not the block's — and where the two rules differ.**
+///
+/// Two nodes with the same genesis play the same chain and then diverge at block 3 (one deploy
+/// differs). Block 4 is the next epoch boundary, so it is where the two selection rules predict
+/// different things:
+///
+/// - **This rule.** The seed block 4 draws with is the `pos:epoch_seed` leaf written at block 2, from
+///   block 2's *pre-state* — so it is the same on both nodes, and the drawn set must be identical even
+///   though their pre-states differ.
+/// - **The rule this replaced.** The seed was `hash(shard_id, block_number, sender, pre_state_hash)`
+///   computed at the moment of use, so block 4's seed was a function of block 4's *own* pre-state —
+///   which differs between the nodes. The set would then differ in five of six draws.
+///
+/// **Six independent trials, because one boundary is one draw.** A single trial would leave the old
+/// rule a 1-in-6 chance of coincidence; over six, a rule that reads the drawing block's pre-state
+/// survives with probability 6⁻⁶. The trials are the test's power, not padding — and the falsification
+/// is measured, not asserted: with `close_block` reading its own `pre_state_hash` as the seed (the rule
+/// this replaces, and nothing else changed), this test fails on **trial 0** at the trial-0 assertion
+/// below.
+///
+/// **Why the deploy inside the boundary block is also varied, and what that does not prove.** Block 4's
+/// deploy differs too, so the two post-states differ and the assertion cannot be satisfied by two
+/// identical states. That half is *not* discriminating, and the first version of this test learned it
+/// the hard way: it varied **only** the boundary block's own deploy and asserted the set held — and it
+/// passed unchanged under the removed rule, because a proposer's deploy does not move the block's
+/// pre-state and the old rule read only the pre-state. A test that passes under the defect it names is
+/// not evidence, so the discriminating perturbation is the *earlier* block.
+///
+/// What else this pins that no unit test can:
+///
+/// - **The draw is a function of the chain, not of the process.** A seed carrying any local state — a
+///   clock, a thread id, a fresh random — would give the two nodes different post-states at height 1.
+/// - **The set is drawn through the whole pipeline**: `compute_state` → `close_block` → the checkpoint
+///   → the `pos:active` leaf → `compute_bonds`, read back at the block's own post-state by the same
+///   call `validate::bonds_cache` uses on the receiving side.
+/// - **The seed leaf survives the checkpoint**, which is the realistic way to get this wrong — and that
+///   is the replay arm at the end, not a separate test.
+#[tokio::test]
+async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
+    let rand = fixed_rand();
+    let pool: Vec<Validator> = (1u8..=4).map(|i| Validator::new([i; 65])).collect();
+    // Four bonded, two active, a boundary every second block, and a funded deployer — see below for why
+    // the funding is load-bearing.
+    let pos_genesis = PosGenesis {
+        bonds: pool
+            .iter()
+            .map(|v| (*v, NonNegI64::try_from(10).expect("positive")))
+            .collect(),
+        trusted: BTreeSet::new(),
+        params: PosParams {
+            number_of_active_validators: 2,
+            epoch_length: 2,
+            ..PosParams::default()
+        },
+    };
+    // The deployer must be funded: an unfunded deployer's pre-charge fails, a failed deploy writes
+    // nothing to the runtime state, and every "these two states differ" assertion below would then be
+    // false — a test that cannot fail. (Measured: that is what the first version did.)
+    let deployer_address =
+        RevAddress::from_public_key(&PublicKey::new(vec![0u8; 65])).expect("valid rev address");
+    let vaults = [Vault {
+        rev_address: deployer_address,
+        initial_balance: NonNegI64::try_from(1_000_000_000).expect("positive"),
+    }];
+
+    for trial in 0..6 {
+        let (a, b) = (build_runtime_manager().await, build_runtime_manager().await);
+        let mut a_state = a
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &vaults)
+            .await
+            .expect("compute_genesis")
+            .1;
+        let mut b_state = b
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &vaults)
+            .await
+            .expect("compute_genesis")
+            .1;
+        assert_eq!(
+            a_state, b_state,
+            "two nodes installing the same genesis must agree — the genesis seed is a constant, not a \
+             config value, so there is nothing here to disagree about"
+        );
+
+        // Blocks 1 and 2: identical on both nodes. Height 2 is the first boundary, and it writes the
+        // seed height 4 reads.
+        for height in 1..=2i64 {
+            let term = format!("@\"t{trial}h{height}\"!(1)");
+            let pa = play_block(&a, a_state, height, &term, &rand).await;
+            let pb = play_block(&b, b_state, height, &term, &rand).await;
+            assert_eq!(
+                pa.post, pb.post,
+                "trial {trial}: two nodes playing the same chain must reach the same state at height \
+                 {height}"
+            );
+            assert_eq!(
+                pa.bonds, pb.bonds,
+                "trial {trial}: …and must draw the same set"
+            );
+            assert_eq!(pa.bonds.len(), 2, "the cap draws two of the four bonded");
+            assert!(
+                pa.bonds.keys().all(|v| pos_genesis.bonds.contains_key(v)),
+                "the drawn set is a subset of the pool"
+            );
+            a_state = pa.post;
+            b_state = pb.post;
+        }
+
+        // Height 3: **not** a boundary, and where the two nodes diverge. This is the perturbation that
+        // discriminates — it moves height 4's pre-state without moving the seed written at height 2.
+        let pa3 = play_block(&a, a_state, 3, &format!("@\"t{trial}h3a\"!(1)"), &rand).await;
+        let pb3 = play_block(&b, b_state, 3, &format!("@\"t{trial}h3b\"!(2)"), &rand).await;
+        assert_ne!(
+            pa3.post, pb3.post,
+            "trial {trial}: the diverging deploys must reach different states"
+        );
+
+        // Height 4: the next boundary. Its own deploy differs too, so the states differ — but the draw
+        // must not.
+        let pa4 = play_block(&a, pa3.post, 4, &format!("@\"t{trial}h4a\"!(1)"), &rand).await;
+        let pb4 = play_block(&b, pb3.post, 4, &format!("@\"t{trial}h4b\"!(2)"), &rand).await;
+        assert_ne!(
+            pa4.post, pb4.post,
+            "trial {trial}: the boundary blocks differ, so their states must"
+        );
+        assert_eq!(
+            pa4.bonds, pb4.bonds,
+            "trial {trial}: the set drawn at a boundary must come from the seed its *pre-state* \
+             carried, not from that pre-state — which is what the rule this replaces got wrong"
+        );
+        assert_eq!(pa4.bonds.len(), 2);
+
+        if trial == 0 {
+            // The writer ran, and it is labelled for the epoch that will read it: `4 / 2 + 1`.
+            let native = NativeSystemState::new(a.runtime().native_store());
+            let seed = native
+                .epoch_seed()
+                .await
+                .expect("read the seed leaf")
+                .expect("a boundary must leave a seed behind for the next one");
+            assert_eq!(seed.epoch, 3);
+            assert!(
+                !seed.anchors.is_empty(),
+                "and it must be anchored to something, or the next draw is the genesis constant again"
+            );
+
+            // Law 11 across the boundary. The replay path reads the seed leaf out of the state it
+            // replayed, so a leaf written outside the checkpoint draws something else here and this
+            // hash diverges.
+            let (replayed, _) = a
+                .replay_compute_state(
+                    &pa3.post,
+                    &pa4.user,
+                    &pa4.sys,
+                    &rand,
+                    block_data(4),
+                    true,
+                    &pos_genesis,
+                    &vaults,
+                )
+                .await
+                .expect("replay the boundary block");
+            assert_eq!(
+                replayed, pa4.post,
+                "replay must reproduce the play post-state across an epoch boundary"
+            );
+        }
+    }
 }
