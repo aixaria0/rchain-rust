@@ -11,7 +11,9 @@
 # Columns: kind	id	tier	verdict	depth	sample	reason	evidence	registers	note
 # verdict vocabulary: cleared finding sampled exempt deferred unreachable
 # tier vocabulary: T1 T2 T3   |   depth vocabulary: shallow medium deep -
-# reason vocabulary (exempt): data generated dev-tool legacy axiomatized
+# reason vocabulary (exempt): data generated dev-tool legacy axiomatized deleted
+#   `deleted` was added 2026-09-28: the other five say what a file *is*, and a file removed
+#   from the tree is none of them. The note carries what it was and why it went.
 # reason vocabulary (unreachable): peer-bound harness-bound
 # ceiling	ingress	45
 # ceiling	process	30
@@ -380,7 +382,7 @@ file	rholang/src/storage_printer.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/storage.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/substitute.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/system_processes.rs	T1	finding	deep	-	-	rholang/src/system_processes.rs:multi_sig_rev_vault C114	-	the multi-signature vault name was wired to the single-signer rev_vault handler; it now refuses rather than silently providing weaker custody
-file	rholang/src/tree_proc.rs	T3	deferred	-	-	-	-	-	-
+file	rholang/src/tree_proc.rs	T3	exempt	-	-	deleted	-	-	EXEMPT, not deferred. This file was **deleted 2026-09-28** (issue #38) as an unreachable prototype: it was exported by one `pub mod` and referenced by nothing else in the tree, including its own tests, and the sound form of what it prototyped is already specified and implemented as Laws 23-25 / `EffectMode::RelaxedValidated`. So there is nothing to review: it is absent, not pending. The `deleted` reason was added to the vocabulary above for it — the existing five classify *what a file is*, and none of them describes a file that is gone.
 file	rholang/src/util/base58.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/util/mod.rs	T3	deferred	-	-	-	-	-	-
 file	rholang/src/util/rev_address.rs	T3	deferred	-	-	-	-	-	-
@@ -389,7 +391,7 @@ file	rspace/src/concurrent/channel_queue.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/concurrent/mod.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/concurrent/multi_lock.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/concurrent/two_step_lock.rs	T3	deferred	-	-	-	-	-	-
-file	rspace/src/concurrent/zfa_ledger.rs	T3	deferred	-	-	-	-	-	-
+file	rspace/src/concurrent/zfa_ledger.rs	T3	exempt	-	-	deleted	-	-	EXEMPT, not deferred. This file was **deleted 2026-09-28** (issue #38) as an unreachable prototype: it was exported by one `pub mod` and referenced by nothing else in the tree, including its own tests, and the sound form of what it prototyped is already specified and implemented as Laws 23-25 / `EffectMode::RelaxedValidated`. So there is nothing to review: it is absent, not pending. The `deleted` reason was added to the vocabulary above for it — the existing five classify *what a file is*, and none of them describes a file that is gone.
 file	rspace/src/errors.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/factory.rs	T3	deferred	-	-	-	-	-	-
 file	rspace/src/hashing/mod.rs	T3	deferred	-	-	-	-	-	-

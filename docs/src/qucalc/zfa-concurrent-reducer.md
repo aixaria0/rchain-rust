@@ -1,9 +1,22 @@
 # Experimental: TreeProc + zero-action ledger concurrent reducer
 
-> **Status: experimental phase plan.** This document lives on the
-> `experimental/zfa-concurrent-reducer` branch and tracks issue
+> **Status: historical.** The two artefacts this page planned were built as a prototype and then
+> **deleted on 2026-09-28** (issue
+> [rchain-community/rchain-rust#38](https://github.com/rchain-community/rchain-rust/issues/38)):
+> `rholang/src/tree_proc.rs` and `rspace/src/concurrent/zfa_ledger.rs` were each exported by one
+> `pub mod` and referenced by nothing else in the tree, tests included. What they prototyped is
+> **specified and implemented** as Laws 23–25 — see
+> [on-chain validation phases](../contributor/onchain-validation-phases.md) and the concurrency model
+> in [the ρ-calculus, formally](../formal/concurrency.md) — which is the sound form the prototype was
+> reaching for.
+>
+> The page is kept rather than deleted because it is the record of *why* the prototype went: the
+> mechanism is described below, and a reader who wonders whether an explicit `TreeProc` should be
+> revived can read what was tried and what it cost. Nothing here is on the `dev` critical path.
+>
+> **Original status line, kept for the record:** this document lived on the
+> `experimental/zfa-concurrent-reducer` branch and tracked issue
 > [rchain-community/rchain-rust#8](https://github.com/rchain-community/rchain-rust/issues/8).
-> Nothing here is on the `dev` critical path until each phase is demonstrated and CI-green.
 
 ## 1. Goal
 

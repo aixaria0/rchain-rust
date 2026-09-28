@@ -4,16 +4,19 @@
 
 Generated, never written: `tools/emit-coverage-ledger.sh` reads `lcov.info` — the committed measurement,
 `cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info` — and emits the per-file
-ranking that `spec/TEST-COVERAGE.md`'s Definition-of-done item 11 is worked from. Check 11 of
-`tools/audit-test-register.sh` refused a ledger that disagreed with the lcov it names; that gate was
-deleted on 2026-09-27, so this file is reconciled by re-running `make coverage` rather than by a check.
+ranking that `spec/TEST-COVERAGE.md`'s Definition-of-done item 11 is worked from. Run it with
+`--check` to refuse a ledger that disagrees with the lcov it names.
 
-**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at ae2f888df.
+**Measurement**: 2026-09-25 (the lcov's own date), **minus the two files issue #38 deleted** — their
+records were filtered out of it rather than recalled, which is the whole of the delta a fresh
+measurement would show for them. Emitted 2026-09-28 from a tree at c361f17b5. The rest of the figures
+are therefore as of 2026-09-25 and a `make coverage` run refreshes them; this line is written by hand
+because the emitter dates itself from its input file's mtime, which filtering made today's.
 
 | measured | found | hit | missed | coverage | CI floor (implied) |
 |---|---:|---:|---:|---:|---:|
-| lines | 69918 | 62330 | 7588 | 89.14% | 87 |
-| functions | 8809 | 7249 | 1560 | 82.29% | 80 |
+| lines | 69637 | 62077 | 7560 | 89.14% | 87 |
+| functions | 8776 | 7217 | 1559 | 82.23% | 80 |
 
 **Branch coverage is not collected, and that is measured rather than preferred** (AUDIT C107):
 `cargo llvm-cov --branch` passes `-Z coverage-options=branch` to rustc, which the pinned toolchain
@@ -34,14 +37,14 @@ ledger not re-emitted after a raising reads as stale rather than as current. A f
 not support fails check 11 in either direction: too high is a tripwire nothing justifies, too low is a
 raise that was owed.
 
-Rows are the workspace members' own code under `src/`, `tests/` and `benches/`. Of the 281 file
+Rows are the workspace members' own code under `src/`, `tests/` and `benches/`. Of the 279 file
 records in the lcov, **0 are excluded** here — `legacy/` (the unported Scala tree), `spec/`,
 `target/`, and prost/tonic-generated files, whose `include!`d lines are not the `.rs` the compiler
-attributes them to. The remaining **281** are below.
+attributes them to. The remaining **279** are below.
 
 Each row's line counts are its record's own `LF:`/`LH:` summary — the line model
 `--fail-under-lines` scores — **not** a re-count of its `DA:` records: the two disagree here by a
-little under 5% (66033 `DA:` records against 69918 `LF`), which is llvm-cov mapping lines it
+little under 5% (65754 `DA:` records against 69637 `LF`), which is llvm-cov mapping lines it
 emits no per-line record for. A ledger built on `DA:` would state a percentage CI's own gate does not
 agree with, so the summary wins and the gap is printed rather than hidden.
 
@@ -121,7 +124,6 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 27 | 625 | 652 | 95.9 | `node/src/configuration/configuration.rs` |
 | 26 | 249 | 275 | 90.5 | `casper/src/txn_coordinator.rs` |
 | 26 | 246 | 272 | 90.4 | `comm/src/transport/grpc_transport.rs` |
-| 25 | 145 | 170 | 85.3 | `rholang/src/tree_proc.rs` |
 | 25 | 207 | 232 | 89.2 | `shared/src/lmdb.rs` |
 | 24 | 758 | 782 | 96.9 | `casper/src/dag.rs` |
 | 23 | 156 | 179 | 87.2 | `models/src/rholang.rs` |
@@ -218,7 +220,6 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 3 | 77 | 80 | 96.2 | `node/src/instances/proposer_instance.rs` |
 | 3 | 88 | 91 | 96.7 | `rholang/src/env.rs` |
 | 3 | 72 | 75 | 96.0 | `rspace/src/concurrent/multi_lock.rs` |
-| 3 | 108 | 111 | 97.3 | `rspace/src/concurrent/zfa_ledger.rs` |
 | 3 | 84 | 87 | 96.6 | `rspace/src/factory.rs` |
 | 3 | 95 | 98 | 96.9 | `rspace/src/history/key_segment.rs` |
 | 2 | 204 | 206 | 99.0 | `block-storage/src/dag/representation.rs` |
@@ -367,7 +368,6 @@ where a third or more of the behaviour is unpinned.
 | 16.2 | 256 | 1582 | `node/src/runtime/node_runtime.rs` |
 | 15.7 | 40 | 255 | `crypto/src/util/certificate_helper.rs` |
 | 15.6 | 446 | 2855 | `rholang/src/reduce.rs` |
-| 14.7 | 25 | 170 | `rholang/src/tree_proc.rs` |
 | 14.6 | 75 | 513 | `qucalc/src/lib.rs` |
 | 14.5 | 48 | 330 | `node/src/api/web_api_impl.rs` |
 | 14.3 | 387 | 2711 | `rholang/src/system_processes.rs` |
@@ -637,7 +637,6 @@ all — which is the shape a line count reports as "a few missed lines" and this
 | 1 | 17 | 18 | 94.4 | \`rspace/src/history/key_segment.rs\` |
 | 1 | 18 | 19 | 94.7 | \`node/src/configuration/commandline/config_mapper.rs\` |
 | 1 | 19 | 20 | 95.0 | \`crypto/src/signatures/ed25519.rs\` |
-| 1 | 19 | 20 | 95.0 | \`rspace/src/concurrent/zfa_ledger.rs\` |
 | 1 | 21 | 22 | 95.5 | \`comm/src/discovery/kademlia_node_discovery.rs\` |
 | 1 | 2 | 3 | 66.7 | \`rspace/src/tuple_space.rs\` |
 | 1 | 27 | 28 | 96.4 | \`casper/src/event_converter.rs\` |
