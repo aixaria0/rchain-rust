@@ -10,13 +10,17 @@ unrepresentable. Both halves matter: a review that lists only residual defects m
 whose thesis is carrying invariants in the semantics rather than in review.
 
 **Scope, and how to read it.** The review itself was report-only: nothing was changed *by the pass*,
-and no finding was fixed while it ran. What you are reading is therefore a photograph of `67dd6fb7b`,
-and every count in it — the register's totals, the witness census, the findings — is true of that
-commit and not of whatever `dev` says today.
+and no finding was fixed while it ran. What you are reading is therefore a photograph of `67dd6fb7b`:
+the findings, their probes and the numbers those probes produced — the amplification table in §3, the
+probe results in §7 — are true of that commit and not of whatever `dev` says today, and they are left
+as measured rather than edited. **Where a *status* has moved since, it is stated as a status and given
+its current figure** (the register's totals, the witness count, which questions have closed), because a
+reader checking this chapter against today's tree should not find it wrong — only dated.
 
-**Every confirmed finding was closed out the same day.** The fixes are in their own commits rather
-than edited into this text, so that the photograph stays a photograph; what follows is the outcome,
-not a rewrite.
+**Every confirmed finding was closed out — the P1s and P2s the same day, and the lower-severity tail
+over the following days.** The fixes are in their own commits rather than edited into this text, so
+that the photograph stays a photograph; what follows is the outcome, not a rewrite, and where a status
+has moved since, it is stated as a status rather than edited into the measurement.
 
 The three P1s were one root cause — the gas model did not bound work — and were closed by a per-block
 phlo cap, by making the five operations that charged less than their work charge for it, and by
@@ -24,10 +28,12 @@ charging the parse. The P2s closed by a DAG write order that now writes data bef
 found by, by saturating arithmetic in the `qucalc` governance folds, and by a block `version`
 predicate that had existed since the port with **no caller**.
 
-**Two things did not close, and the first is the more interesting.** *Signing and an SBOM on the
-release path* need a key and a trust-root decision that a code change should not make silently — a
-checksum landed, and the rest is owed by decision rather than by work. And *cancellation inside a
-running builtin* is **not achievable on this design**: a builtin runs its CPU synchronously inside
+**Signing and an SBOM on the release path closed as a decision, and the other item did not close
+because it cannot.** The release path was resolved on 2026-09-28: a `sha256sum` is published beside the
+binary and nothing further, because a signature needs a trust root and a key policy that a code change
+should not choose silently — the decision and its reasoning are recorded on the step in
+`.github/workflows/build-rnode.yml`, which is where a reader should look for it. And *cancellation
+inside a running builtin* is **not achievable on this design**: a builtin runs its CPU synchronously inside
 `Box::pin(async { … })` with no `await` before it, so a deadline can bound how long the *caller* waits
 and never the work itself. That finding is what determined the shape of the whole remediation — bound
 the work, because interrupting it is not available — and it is worth stating here because a reader who
@@ -42,7 +48,9 @@ finding that was wrong, and it is recorded as one rather than quietly dropped.
 
 The places where the close-out *went beyond* the reference implementation are registered in
 [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 — the per-block cost bounds, the DAG write
-order, the block `version` check, and the governance bound.
+order, the block `version` check, the governance bound, the ordered dedup and the three charges that
+followed, and (item 12, the largest of them) the **randomised active-validator draw**, which replaces a
+selection rule the reference's own source marks as a placeholder.
 
 ## 1. Method
 
@@ -92,19 +100,24 @@ marked *measured* carry a command and a number; those marked *read* are code-pat
 | Confirmed P0 (chain split / fund loss / RCE) | **none** | — |
 | Confirmed P1 (remote unauthenticated denial of service) | 3, sharing one root cause | **all three, same day** |
 | Confirmed P2 | 4 | **all four, same day** |
-| Confirmed P3 | 14 | all but signing/SBOM on the release path, which needs a key decision |
-| Not re-established (refutation incomplete) | 1 | ⬜ open — its cost asymmetry was never measured |
+| Confirmed P3 | 14 | **all fourteen** — the signing/SBOM one as a decision (a checksum, nothing further), the rest fixed |
+| Not re-established (refutation incomplete) | 1 | **closed since** — the cost asymmetry was measured at 14.2 s for a 4097-member fold and bounded to 512 (§3) |
 | Refuted during the pass | 10 | — |
 
 The absence of a P0 is the headline result, and it is a result about the project's prior work: on a tree
 where earlier passes had confirmed remote denial-of-service defects, this pass could not find a chain
 split, a fund loss, or remote code execution.
 
-**The closure column is the part a later reader needs most**, and two entries in it are not "fixed".
-The *not-re-established* row is the `qucalc::gov::censure` cost asymmetry — its refutation never
-completed, so what an attacker actually pays at the ingress was never answered, and the close-out
-recorded that rather than guessing. And the P3 row's exception is a decision, not work: signing and an
-SBOM need a key and a trust root, which is not something a code change should choose silently.
+**The closure column is the part a later reader needs most**, and both of its exceptions have since
+been settled. The *not-re-established* row was the `qucalc::gov::censure` cost asymmetry: the pass's
+refutation never completed, so what an attacker actually pays at the ingress was unanswered, and the
+close-out recorded that rather than guessing. **It was measured afterwards** — 14.2 seconds for a
+4097-member fold, i.e. the charge was not merely asymmetric but absent — and the bound that replaced it
+is 512, set from that measurement. The register now reads **204 of 204 rows `done`**, with no
+not-re-established row left. The P3 row's exception was signing and an SBOM, a decision rather than
+work, and the decision has been taken: an `sha256sum` beside the binary and nothing further, recorded
+on the release step with the reason (a signature needs a trust root that a code change should not pick
+on the project's behalf).
 
 ## 3. The gas model does not bound work
 
@@ -203,25 +216,32 @@ declaring the same fringe repairs it. **On a single-validator or standalone node
 is wedged permanently and the recovery is to wipe the data directory and resync.** The write order is a
 faithful port of the Scala; the fix — write the fringe record before the metadata — is the same
 data-then-pointer order the RSpace history layer already follows, and it turns the window into a
-harmless orphan record. Making the silent restore arm loud is a complementary one-line change.
+harmless orphan record. **That half has landed** (`casper/src/dag.rs`, AUDIT F-5). Making the silent
+restore arm loud is a complementary one-line change and **is still owed** — the fold that skips a
+missing entry in silence is unchanged.
 
-**Governance arithmetic is unchecked in release (P2).** `qucalc`'s `rho:gov:*` handlers perform plain
-`i64` arithmetic on values taken straight from deploy arguments with no range check. In debug builds
-this panics and the deploy fails; in release it wraps, and the wrapped results are silently wrong —
-`resolveWeights` returns a clamped zero where a maximum was asked for, a delegation can produce a
-*negative* weight, `censure` can promote a voucher from `i64::MIN` to `i64::MAX`, and a ranked tally can
-elect the landslide loser or report no winner for a unanimous vote. These are pure functions and every
-node wraps identically, so this is a correctness defect for anything reading the governance channels as
-an oracle rather than a consensus split.
+**Governance arithmetic is unchecked in release (P2) — closed.** `qucalc`'s `rho:gov:*` handlers
+performed plain `i64` arithmetic on values taken straight from deploy arguments with no range check. In
+debug builds this panicked and the deploy failed; in release it wrapped, and the wrapped results were
+silently wrong — `resolveWeights` returned a clamped zero where a maximum was asked for, a delegation
+could produce a *negative* weight, `censure` could promote a voucher from `i64::MIN` to `i64::MAX`, and a
+ranked tally could elect the landslide loser or report no winner for a unanimous vote. These are pure
+functions and every node wrapped identically, so it was a correctness defect for anything reading the
+governance channels as an oracle rather than a consensus split — which is why it was fixed rather than
+registered: the folds now **saturate** (`0c1ee2f2c`), and the `censure` fold's charge, which was absent
+altogether, was added with a bound measured at 14.2 s (§3).
 
 **Block `timestamp` is hashed and consumed but never validated (P2 for any contract that reads it).**
-The acceptance predicates check every other field that the content hash covers, but not `timestamp` and
-not `version` (whose predicate exists and has no production caller). `timestamp` is not merely
-informational: it is exposed to contracts on `rho:block:data`, so a bonded proposer can choose a value
-that every honest validator replays, and a contract that reads it changes its output and therefore the
-post-state hash. The `version` half is inherited from the Scala; the `timestamp` half is the port's own.
-The generalisable question — *which fields are in the hash but absent from the acceptance predicate?* —
-has a four-item answer: `version`, `timestamp`, `rejected_blocks`, `rejected_senders`.
+The acceptance predicates check every other field that the content hash covers, but not `timestamp`.
+`timestamp` is not merely informational: it is exposed to contracts on `rho:block:data`, so a bonded
+proposer can choose a value that every honest validator replays, and a contract that reads it changes
+its output and therefore the post-state hash. **The `version` half of this finding is closed** — its
+predicate had existed since the port with no caller, and it is now one of `block_summary`'s pure checks,
+answering `InvalidVersion`. **The `timestamp` half is the port's own and remains open**: no predicate
+was written for it, and the question of what a validator could check (a bound? a window? nothing, since
+the proposer's clock is unverifiable) has no obvious answer. The generalisable question — *which fields
+are in the hash but absent from the acceptance predicate?* — now has a three-item answer:
+`timestamp`, `rejected_blocks`, `rejected_senders`.
 
 **DAG memory grows quadratically in block count (P2, registered — and accepted).** Each message retains
 its whole ancestry, so total residency is N(N+1)/2 where N is every block ever accepted, and the
@@ -247,12 +267,25 @@ counted-but-unenforced classes in the type-system gate; a coverage-ledger check 
 invokes; and hand-repeated counts that have drifted (the README's line count and the two documents'
 disagreement over how many crates the workspace has).
 
+**All but one of those have since closed**, re-checked against the tree rather than remembered:
+`await-holding-lock` is now reported **only inside `#[cfg(test)]` modules** (the gate still allow-lists
+the lint, so this is a property of the sites, not of the lint); the deploy-status casing is stated
+correctly in `operating.md` and `building-apps.md` and held by law 43's envelope corpus; the served
+`openapi.json` declares a string body for `/api/explore-deploy` and says so in `spec/API-SCHEMA.md`;
+`cargo-deny` runs `check` rather than `check advisories`, so the licence allow-list is live; the release
+workflow publishes a checksum; `next-audit-number` reads the emitted register's own rendering, which is
+the shape it had missed; the README's lines and the crate count agree with the workspace (13);
+`coverage.yml` exists and refuses a stale commit. The one that remains is the type-system gate's
+counted classes — still reported, still not enforced — and it is no longer a *finding*: the baseline's
+own header now says they are a dated measurement rather than a ratchet, so the gate does not claim to
+enforce what it does not.
+
 ## 5. What a green register does not cover
 
-The project's check-off is genuinely green — 201 of 201 findings closed, all 89 T1 rows with a verdict —
-and, unusually, the law register does not overclaim: all 87 registered Rust witnesses resolve to real
-functions, there are **zero `#[ignore]`d tests** in the tree, and the Lean gate refuses `sorry`,
-`admit` and `opaque`. That was checked adversarially rather than assumed.
+The project's check-off is genuinely green — **204 of 204 findings closed**, all 89 T1 rows with a
+verdict — and, unusually, the law register does not overclaim: all **88** registered Rust witnesses
+resolve to real functions, there are **zero `#[ignore]`d tests** in the tree, and the Lean gate refuses
+`sorry`, `admit` and `opaque`. That was checked adversarially rather than assumed.
 
 What the register does not cover is specific:
 
@@ -304,9 +337,10 @@ which removes a class of divergence rather than testing for it.
    contradict a proof. Say "axiomatised at the crypto boundary" — never "proved unforgeable".
 2. **The `rho:*` namespace is ambient authority.** Twenty-seven system urns are resolved
    unconditionally for every deploy, so any contract that can spell the public string can reach the
-   channel — including `rho:gov:*`, whose arithmetic is unchecked (§4). Mutation methods on some
-   channels are additionally gated by the caller's own deployer identity, which is genuine capability
-   discipline, but the channel and everything read-only are ambient.
+   channel — including `rho:gov:*`, whose folds were the pass's worst cost finding and are now charged
+   and bounded (§3, §4). Mutation methods on some channels are additionally gated by the caller's own
+   deployer identity, which is genuine capability discipline, but the channel and everything read-only
+   are ambient.
 3. **The blessed genesis keys are published constants in the source.** The capability they confer is
    therefore forgeable, and what actually prevents their use is a negative allow-list that rejects
    deploys signed with them. That is the cleanest seam in the codebase: a forgeable capability restored
@@ -337,6 +371,15 @@ attacker is flat or sublinear?**
 Every one of the four has such an operation. This is a defect class in the design of VM cost models
 generally, not a distinguishing weakness of any one chain.
 
+**Two rows below have moved since the probe, and the table is left as measured rather than edited.**
+This node's amplification instance — the `Set` dedup's Θ(N²·⁴³) for a flat 13 phlo — is now
+sort-then-dedup, i.e. Θ(N log N), and the zero-phlo governance folds are charged and bounded (§3, §4),
+so "worst instance found" describes the tree the probe ran against. The containment cell said "no
+per-block cap"; a per-block phlo cap and a validator-side deploy-count cap have since landed, which is
+the row the README's own table marks as the one this node did not lead and fixed within the day. What
+remains of that cell is the third item: there is still **no timeout on the block execution path**, and
+that is not repairable by bounding work, because a builtin cannot be interrupted (§3).
+
 | | Worst instance found | What the attacker pays | Blast-radius containment |
 |---|---|---|---|
 | **This node** | `Set` dedup Θ(N^2.43) for a flat 13 phlo; 98 CPU-seconds at N = 40 000. Plus a zero-phlo path | 13 phlo | **no per-block cap**; no deploy-count cap on validators; no block-path timeout |
@@ -346,8 +389,9 @@ generally, not a distinguishing weakness of any one chain.
 
 **Where this node sits:** mid-pack on amplification — better than Bitcoin SV, comparable to Solana,
 behind Sui — and second-worst on containment, because Sui and Solana both bound the blast radius and
-this node bounds a block hardly at all. Its instance is also the narrowest of the four to repair: a
-two-line regression against its own Scala oracle.
+this node bounds a block hardly at all. Its instance was also the narrowest of the four to repair — a
+regression against its own Scala oracle, which deduplicates through a hash set — and it is the one that
+has since been repaired (§3).
 
 On the inherent-safety axis (§6) the ordering is different, and more favourable:
 
@@ -377,7 +421,9 @@ monorepo, whose last commit predates this audit; the live lineage is Anza's Agav
 something the review found broken and nobody got to; each is a choice the project has to make
 deliberately, and the close-out recorded them as an agenda rather than resolving them on the way past.
 A reader looking for what is *unfinished* should read this section; a reader looking for what was
-*found* should read §3 and §4, all of which closed the same day.
+*found* should read §3 and §4. **One item has left this list since it was written** — the `legacy/`
+tree, which was not decided but resolved — and it is kept below as a closed entry rather than deleted,
+so a later reader does not raise it again.
 
 **Active-validator-set selection has no oracle — and the rule has now been changed, which is why this
 item was acted on rather than left listed.** The law register pins the epoch-boundary *timing*, not the
@@ -397,22 +443,39 @@ candidates induce rather than one per justification subset — and the pre-state
 have restored the larger space is deliberately *not* kept beside the fringe), capital pre-positioning
 before a public seed, the sybil exposure uniform sampling carries where stake-weighting does not, and a
 security budget that now fluctuates epoch to epoch — and the uniform draw is the one decision there
-worth revisiting. The membership predicate remains unverified by either oracle; it is now *different*
-and *documented*, which is not the same as *checked*.
+worth revisiting. **And the draw carries a liveness consequence that the deterministic rule masked**,
+measured on devnets with a cap below the validator count: an epoch's proposal duty can land on a
+validator whose own view of the active set is stale, while the node that could propose is drawn out —
+so the chain waits. With no cap every bonded validator is always in the set, so there is always a
+proposer; that is why this arrives with the draw rather than before it. The gate that produces it is
+*self-imposed* — a drawn-out validator's block would still be accepted by its peers, since no
+receiving-side rule tests the sender against the active set — so reading the **pool** rather than the
+drawn set in `check_active_validator` would remove the hazard, at the cost of letting non-active
+validators propose. That is a change to proposal behaviour and is left as a decision. Measurements and
+the control are in [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 item 12.
+The membership predicate remains unverified by either oracle; it is now *different* and *documented*,
+which is not the same as *checked*.
 
 **Two permissive defaults define what the contract treats as an arithmetic fault.** An epoch length of
 zero and a minimum bond of zero make every block an epoch boundary and zero the reward, where the
-contract divides by both and faults. A node running these defaults mints and pays on a schedule the
-contract cannot express.
+contract divides by both and faults — a node running these mints and pays on a schedule the contract
+cannot express. **Where they are reachable is narrower than it first reads, and worth stating**: a
+*configured* node never sees them (`epoch-length` is 10000 and `bond-minimum` 1 in
+`node/src/configuration/`), and `PosParams::default()` is reached only when no genesis PoS state has
+been installed at all (`rholang/src/native_state.rs`, the `None` arm of the params read). So this is a
+decision about ad-hoc runtimes and tests, not about a devnet or a testnet.
 
 **Whether the margin on term depth is worth stating.** The parser and storage depth guards have
 measured values but their agreement with the depth measure is an acknowledged proof debt. They are also
 a hard fork: a term an older node accepts, a newer one refuses.
 
-**The `legacy/` tree is unmanaged.** It is built and scanned by no CI job, and it carries its own
-dependency manifest from 2020–21 whose advisories `cargo-deny` cannot see because it walks only the Rust
-lockfile. It is not a runtime surface, but re-enabling its build would resolve to known-vulnerable
-versions with nothing to say so.
+**Resolved: the `legacy/` tree was archived out of the working tree** (2026-09-28). It was built and
+scanned by no CI job, and it carried its own 2020–21 dependency manifest whose advisories `cargo-deny`
+cannot see because it walks only the Rust lockfile — so it was never a runtime surface, but
+re-enabling its build would have resolved to known-vulnerable versions with nothing to say so. It now
+lives at the commit that froze it (`1b7583649`), and every `legacy/…` citation in this repository — in
+code comments, in `spec/`, and in this book — resolves there, which is why the revision is recorded
+rather than the tree merely deleted. See the README's *Where the Scala went*.
 
 **Whether the fringe's liveness predicate should be re-decided.** It compares cardinalities — how many
 messages, not which senders — so two messages from one sender plus one from a second satisfy a
