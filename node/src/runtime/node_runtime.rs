@@ -1004,15 +1004,40 @@ fn build_protocol_server(
 
     let handle_streamed: Box<dyn Fn(Blob) -> BoxFuture<()> + Send + Sync> = {
         let routing_tx = routing_tx.clone();
+        let log = log.clone();
         Box::new(move |blob: Blob| {
             let routing_tx = routing_tx.clone();
+            let log = log.clone();
             Box::pin(async move {
-                let _ = routing_tx
+                // **The streamed path had no inbound record at all** (issue #100). The one added to
+                // `handle_messages::handle` covers the *unary* dispatch, and every streamed message —
+                // the finalized fringe, every store-items page, every `stream_to_peers` broadcast —
+                // bypasses it. That is why a second fringe arriving and being ignored was invisible
+                // during #100's diagnosis, which had to be settled from the *other* node's timestamps.
+                // `type_id` is the serde tag, so it names the message without a decode.
+                log.debug(
+                    LogSource::new("coop.rchain.comm.inbound"),
+                    &format!(
+                        "Received {} (streamed) from {}",
+                        blob.packet.type_id, blob.sender.id
+                    ),
+                );
+                // The result was discarded as well: the only error left is a closed channel, i.e. the
+                // router task has exited, in which case the message cannot be delivered at all and a
+                // node that "handled" it would be lying about it.
+                if routing_tx
                     .send(RoutingMessage {
                         peer: blob.sender,
                         packet: blob.packet,
                     })
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    log.warn(
+                        LogSource::new("coop.rchain.node.runtime.Setup"),
+                        "Could not deliver a streamed message: the peer-message router is not running",
+                    );
+                }
             })
         })
     };

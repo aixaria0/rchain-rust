@@ -217,6 +217,34 @@ bootstrap_id() {
 }
 
 # Wait until the bootstrap serves /api/v1/status and (if autopropose is on) is producing blocks.
+# Wait until the bootstrap has **committed its genesis** — a different event from serving HTTP.
+#
+# `latest_block_number()` is `max_height + 1`, so genesis alone reports `1`. This matters because the
+# genesis master *broadcasts* its approved fringe as it creates genesis — `FinalizedFringe { hashes: [] }`
+# with the genesis **pre**-state — and a node that connected first receives it. A joining validator that
+# latches on that empty announcement instead of the answer to its own request syncs to nothing and then
+# discards the real answer (issue #100). `wait_for_http` cannot serve here: with `--no-autopropose` it
+# skips the block-number check altogether, and it runs after the node loops in any case.
+#
+# The HTTP server is up before genesis exists (the same ordering `node/tests/node_api.rs` polls around),
+# so this is a real gate rather than a no-op.
+wait_for_genesis() {
+  local url="http://localhost:${HTTP_BASE}/api/v1/status"
+  local body block_num
+  for _ in $(seq 1 120); do
+    if body="$(curl -fsS --max-time 5 "$url" 2>/dev/null)"; then
+      block_num="$(printf '%s' "$body" | sed -n 's/.*"latestBlockNumber":\([0-9]*\).*/\1/p')"
+      if [[ -n "$block_num" && "$block_num" -gt 0 ]]; then
+        echo "==> $BOOTSTRAP has committed genesis (latestBlockNumber=$block_num); starting the network"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for $BOOTSTRAP to commit its genesis" >&2
+  return 1
+}
+
 wait_for_http() {
   local url="http://localhost:${HTTP_BASE}/api/v1/status"
   local body block_num
@@ -409,6 +437,9 @@ cmd_up() {
   local id
   id="$(bootstrap_id)"
   echo "==> bootstrap id: $id"
+
+  # Before any node joins: the master must have committed genesis, or a joiner races its broadcast.
+  wait_for_genesis
 
   # Validators 1..n-1: bonded in genesis.
   local i name host_port http_port admin_port
