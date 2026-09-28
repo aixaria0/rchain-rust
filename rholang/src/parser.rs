@@ -2251,4 +2251,462 @@ mod tests {
             )
         );
     }
+
+    /// A `Proc` whose deepest node sits at depth `n` in `exceeds_ast_depth`'s accounting.
+    ///
+    /// The convention is the walk's own, read off `parser.rs:413-418`: the root is seeded at depth 1
+    /// and a node popped at `d` hands its children `d + 1`, while `PNegation`'s arm pushes its child
+    /// at exactly the depth it was handed (`parser.rs:433`). So every `PNegation` costs exactly one
+    /// level and `n - 1` of them around `PNil` is depth `n`. The test below re-derives that boundary
+    /// in both directions before it leans on it.
+    fn proc_of_depth(n: usize) -> Proc {
+        let mut p = Proc::PNil;
+        for _ in 1..n {
+            p = Proc::PNegation(Box::new(p));
+        }
+        p
+    }
+
+    /// One case per position `push_sub_procs` (`parser.rs:424`) descends into, with `child` parked in
+    /// that position.
+    ///
+    /// The parameter is the point: the list is built twice by the caller, once around a deep child
+    /// and once around a depth-1 one, so a case's "too deep" verdict is attributable to the child
+    /// having been reached rather than to the shape of the case around it.
+    fn walk_cases(child: &Proc) -> Vec<(String, Proc)> {
+        use Proc::*;
+        let mut cases: Vec<(String, Proc)> = Vec::new();
+        let deep = || Box::new(child.clone());
+        let nil = || Box::new(Proc::PNil);
+        let quote = || Name::NameQuote(Box::new(child.clone()));
+
+        // The four unary variants share one arm, so each gets its own case: one missing
+        // `out.push` in that arm costs all four at once.
+        cases.push(("PNegation.0".to_string(), PNegation(deep())));
+        cases.push(("PNot.0".to_string(), PNot(deep())));
+        cases.push(("PNeg.0".to_string(), PNeg(deep())));
+        cases.push(("PExprs.0".to_string(), PExprs(deep())));
+        cases.push((
+            "PBundle.body".to_string(),
+            PBundle(Bundle::BundleRead, deep()),
+        ));
+
+        // Every binary arm pushes both operands, and the variants share that one arm — so the left
+        // and the right position of each variant are separate cases: a dropped `out.push((b, d))`
+        // is invisible to a case that parks its child on the left.
+        let binary: [(&str, fn(Box<Proc>, Box<Proc>) -> Proc); 22] = [
+            ("PConjunction", PConjunction),
+            ("PDisjunction", PDisjunction),
+            ("PMult", PMult),
+            ("PDiv", PDiv),
+            ("PMod", PMod),
+            ("PPercentPercent", PPercentPercent),
+            ("PAdd", PAdd),
+            ("PMinus", PMinus),
+            ("PPlusPlus", PPlusPlus),
+            ("PMinusMinus", PMinusMinus),
+            ("PLt", PLt),
+            ("PLte", PLte),
+            ("PGt", PGt),
+            ("PGte", PGte),
+            ("PMatches", PMatches),
+            ("PEq", PEq),
+            ("PNeq", PNeq),
+            ("PAnd", PAnd),
+            ("PShortAnd", PShortAnd),
+            ("POr", POr),
+            ("PShortOr", PShortOr),
+            ("PPar", PPar),
+        ];
+        for (name, ctor) in binary {
+            cases.push((format!("{name}.left"), ctor(deep(), nil())));
+            cases.push((format!("{name}.right"), ctor(nil(), deep())));
+        }
+
+        cases.push((
+            "PMethod.target".to_string(),
+            PMethod(deep(), "m".to_string(), vec![]),
+        ));
+        cases.push((
+            "PMethod.arguments".to_string(),
+            PMethod(nil(), "m".to_string(), vec![child.clone()]),
+        ));
+        // `PEval` reaches its child only through `push_name`, which quotes a `NameQuote` and passes
+        // over the other two `Name` shapes: this is the one position where a `Name` is the edge.
+        cases.push(("PEval.NameQuote".to_string(), PEval(quote())));
+
+        cases.push((
+            "PCollect.CollectList.items".to_string(),
+            PCollect(Collection::CollectList(
+                vec![child.clone()],
+                ProcRemainder::ProcRemainderEmpty,
+            )),
+        ));
+        cases.push((
+            "PCollect.CollectSet.items".to_string(),
+            PCollect(Collection::CollectSet(
+                vec![child.clone()],
+                ProcRemainder::ProcRemainderEmpty,
+            )),
+        ));
+        cases.push((
+            "PCollect.CollectTuple.TupleSingle".to_string(),
+            PCollect(Collection::CollectTuple(Tuple::TupleSingle(deep()))),
+        ));
+        cases.push((
+            "PCollect.CollectTuple.TupleMultiple.head".to_string(),
+            PCollect(Collection::CollectTuple(Tuple::TupleMultiple(
+                deep(),
+                vec![],
+            ))),
+        ));
+        cases.push((
+            "PCollect.CollectTuple.TupleMultiple.tail".to_string(),
+            PCollect(Collection::CollectTuple(Tuple::TupleMultiple(
+                nil(),
+                vec![child.clone()],
+            ))),
+        ));
+        cases.push((
+            "PCollect.CollectMap.key".to_string(),
+            PCollect(Collection::CollectMap(
+                vec![KeyValuePair(child.clone(), Proc::PNil)],
+                ProcRemainder::ProcRemainderEmpty,
+            )),
+        ));
+        cases.push((
+            "PCollect.CollectMap.value".to_string(),
+            PCollect(Collection::CollectMap(
+                vec![KeyValuePair(Proc::PNil, child.clone())],
+                ProcRemainder::ProcRemainderEmpty,
+            )),
+        ));
+
+        cases.push((
+            "PSend.chan".to_string(),
+            PSend(quote(), Send::SendSingle, vec![]),
+        ));
+        cases.push((
+            "PSend.data".to_string(),
+            PSend(
+                Name::NameVar("x".to_string()),
+                Send::SendSingle,
+                vec![child.clone()],
+            ),
+        ));
+        cases.push((
+            "PContr.name".to_string(),
+            PContr(quote(), vec![], NameRemainder::NameRemainderEmpty, nil()),
+        ));
+        cases.push((
+            "PContr.names".to_string(),
+            PContr(
+                Name::NameVar("c".to_string()),
+                vec![quote()],
+                NameRemainder::NameRemainderEmpty,
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PContr.body".to_string(),
+            PContr(
+                Name::NameVar("c".to_string()),
+                vec![],
+                NameRemainder::NameRemainderEmpty,
+                deep(),
+            ),
+        ));
+
+        // The receipt helpers: `push_receipt` reaches three shapes, `push_linear` two positions
+        // inside a `LinearBind`, and `push_receipt_source` three `NameSource` shapes — one of which,
+        // `SendReceiveSource`, carries procs of its own.
+        let linear =
+            |binds: Vec<LinearBind>| Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(binds));
+        let bind = |names: Vec<Name>, src: NameSource| {
+            LinearBind(names, NameRemainder::NameRemainderEmpty, src)
+        };
+        let source = |n: Name| NameSource::SimpleSource(n);
+        cases.push((
+            "PInput.receipts[].ReceiptLinear.bind.names".to_string(),
+            PInput(
+                vec![linear(vec![bind(
+                    vec![quote()],
+                    source(Name::NameVar("x".to_string())),
+                )])],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptLinear.bind.source.SimpleSource".to_string(),
+            PInput(vec![linear(vec![bind(vec![], source(quote()))])], nil()),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptLinear.bind.source.ReceiveSendSource".to_string(),
+            PInput(
+                vec![linear(vec![bind(
+                    vec![],
+                    NameSource::ReceiveSendSource(quote()),
+                )])],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptLinear.bind.source.SendReceiveSource.chan".to_string(),
+            PInput(
+                vec![linear(vec![bind(
+                    vec![],
+                    NameSource::SendReceiveSource(quote(), vec![]),
+                )])],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptLinear.bind.source.SendReceiveSource.procs".to_string(),
+            PInput(
+                vec![linear(vec![bind(
+                    vec![],
+                    NameSource::SendReceiveSource(
+                        Name::NameVar("x".to_string()),
+                        vec![child.clone()],
+                    ),
+                )])],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptRepeated.bind.names".to_string(),
+            PInput(
+                vec![Receipt::ReceiptRepeated(
+                    ReceiptRepeatedImpl::RepeatedSimple(vec![RepeatedBind(
+                        vec![quote()],
+                        NameRemainder::NameRemainderEmpty,
+                        Name::NameVar("x".to_string()),
+                    )]),
+                )],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptRepeated.bind.source".to_string(),
+            PInput(
+                vec![Receipt::ReceiptRepeated(
+                    ReceiptRepeatedImpl::RepeatedSimple(vec![RepeatedBind(
+                        vec![],
+                        NameRemainder::NameRemainderEmpty,
+                        quote(),
+                    )]),
+                )],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptPeek.bind.names".to_string(),
+            PInput(
+                vec![Receipt::ReceiptPeek(ReceiptPeekImpl::PeekSimple(vec![
+                    PeekBind(
+                        vec![quote()],
+                        NameRemainder::NameRemainderEmpty,
+                        Name::NameVar("x".to_string()),
+                    ),
+                ]))],
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PInput.receipts[].ReceiptPeek.bind.source".to_string(),
+            PInput(
+                vec![Receipt::ReceiptPeek(ReceiptPeekImpl::PeekSimple(vec![
+                    PeekBind(vec![], NameRemainder::NameRemainderEmpty, quote()),
+                ]))],
+                nil(),
+            ),
+        ));
+        cases.push(("PInput.body".to_string(), PInput(vec![], deep())));
+
+        cases.push((
+            "PChoice.branches[].bind.names".to_string(),
+            PChoice(vec![Branch(
+                ReceiptLinearImpl::LinearSimple(vec![bind(
+                    vec![quote()],
+                    source(Name::NameVar("x".to_string())),
+                )]),
+                nil(),
+            )]),
+        ));
+        cases.push((
+            "PChoice.branches[].body".to_string(),
+            PChoice(vec![Branch(
+                ReceiptLinearImpl::LinearSimple(vec![]),
+                deep(),
+            )]),
+        ));
+
+        cases.push(("PMatch.target".to_string(), PMatch(deep(), vec![])));
+        cases.push((
+            "PMatch.cases[].pattern".to_string(),
+            PMatch(nil(), vec![Case(deep(), nil())]),
+        ));
+        cases.push((
+            "PMatch.cases[].body".to_string(),
+            PMatch(nil(), vec![Case(nil(), deep())]),
+        ));
+
+        // `PLet`'s `Decls` arm is an `if let`, not a `match`: `EmptyDeclImpl` carries no decl and so
+        // has no position, and the `decl` position is reachable through all three shapes (the third
+        // by leaving `decls` empty).
+        let decl = |names: Vec<Name>, procs: Vec<Proc>| {
+            Decl(names, NameRemainder::NameRemainderEmpty, procs)
+        };
+        cases.push((
+            "PLet.decl.names".to_string(),
+            PLet(decl(vec![quote()], vec![]), Decls::EmptyDeclImpl, nil()),
+        ));
+        cases.push((
+            "PLet.decl.procs".to_string(),
+            PLet(
+                decl(vec![], vec![child.clone()]),
+                Decls::EmptyDeclImpl,
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PLet.decls[].LinearDecl.names".to_string(),
+            PLet(
+                decl(vec![], vec![]),
+                Decls::LinearDeclsImpl(vec![LinearDecl(decl(vec![quote()], vec![]))]),
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PLet.decls[].LinearDecl.procs".to_string(),
+            PLet(
+                decl(vec![], vec![]),
+                Decls::LinearDeclsImpl(vec![LinearDecl(decl(vec![], vec![child.clone()]))]),
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PLet.decls[].ConcDecl.names".to_string(),
+            PLet(
+                decl(vec![], vec![]),
+                Decls::ConcDeclsImpl(vec![ConcDecl(decl(vec![quote()], vec![]))]),
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PLet.decls[].ConcDecl.procs".to_string(),
+            PLet(
+                decl(vec![], vec![]),
+                Decls::ConcDeclsImpl(vec![ConcDecl(decl(vec![], vec![child.clone()]))]),
+                nil(),
+            ),
+        ));
+        cases.push((
+            "PLet.body".to_string(),
+            PLet(decl(vec![], vec![]), Decls::EmptyDeclImpl, deep()),
+        ));
+
+        cases.push(("PIf.condition".to_string(), PIf(deep(), nil())));
+        cases.push(("PIf.then".to_string(), PIf(nil(), deep())));
+        cases.push((
+            "PIfElse.condition".to_string(),
+            PIfElse(deep(), nil(), nil()),
+        ));
+        cases.push(("PIfElse.then".to_string(), PIfElse(nil(), deep(), nil())));
+        cases.push(("PIfElse.else".to_string(), PIfElse(nil(), nil(), deep())));
+        // `PNew`'s other field is a `Vec<NameDecl>`, and a `NameDecl` is a pair of strings: the body
+        // is its only position.
+        cases.push(("PNew.body".to_string(), PNew(vec![], deep())));
+        cases.push((
+            "PSendSynch.chan".to_string(),
+            PSendSynch(quote(), vec![], SynchSendCont::EmptyCont),
+        ));
+        cases.push((
+            "PSendSynch.data".to_string(),
+            PSendSynch(
+                Name::NameVar("x".to_string()),
+                vec![child.clone()],
+                SynchSendCont::EmptyCont,
+            ),
+        ));
+        cases.push((
+            "PSendSynch.cont".to_string(),
+            PSendSynch(
+                Name::NameVar("x".to_string()),
+                vec![],
+                SynchSendCont::NonEmptyCont(deep()),
+            ),
+        ));
+
+        cases
+    }
+
+    /// **Every position the parser's depth walk descends into is descended into.**
+    ///
+    /// `push_sub_procs` `match`es `Proc` **exhaustively**, so a *new* variant cannot be forgotten:
+    /// the file does not compile until the arm exists. What an exhaustive match does not check is
+    /// that an arm already written reaches every child it should — dropping one `out.push((.., d))`
+    /// is a silent under-count, and the guard then admits a term of unbounded AST depth for exactly
+    /// the constructs that arm covers. That is the failure `MAX_AST_DEPTH` exists to prevent (AUDIT
+    /// C99: the normalizer recursed ~800 levels and overflowed the stack), so this test is the other
+    /// half of the exhaustive match: one case per position `push_sub_procs`, `push_decl`,
+    /// `push_receipt`, `push_linear` and `push_receipt_source` descend into, each parking a depth-10
+    /// child in that position and asking for a limit of 5.
+    ///
+    /// The limit/child pair is the value route's (`models/src/types.rs`'s
+    /// `every_construct_that_carries_a_par_is_walked`): the child's deepest node lands at depth 11
+    /// (a case root is depth 1 and a parked child always depth 2 — every position here is one edge
+    /// from the root), while the *skeleton* of every case is at most depth 2, so at a limit of 5 the
+    /// verdict is decided by whether the walk reached the child at all. A dropped push leaves the
+    /// walk at depth 2 and the case fails. Every case is built a second time around a depth-1 child
+    /// and asserted **not** to exceed the same limit, so the first loop cannot be satisfied by a walk
+    /// that is simply always `true`.
+    ///
+    /// **Verified by mutation** two ways: commenting out `PMethod`'s `out.push((target, d))` fails
+    /// `PMethod.target` alone, and commenting out the binary arm's `out.push((b, d))` fails
+    /// `PConjunction.right` — the first right-hand case — while the left-hand case beside it, same
+    /// arm and same variant, passes. Those two runs are why an arm with more than one variant, or
+    /// more than one position, gets a case for every one of them: an arm's pushes are shared, so one
+    /// dropped push takes out each case that leans on it.
+    ///
+    /// The leaves (`PGround`, `PVar`, `PVarRef`, `PNil`, `PSimpleType`) have no case because they
+    /// carry no `Proc`; neither does `PNew`'s `Vec<NameDecl>`, nor the `ProcRemainder`/`NameRemainder`
+    /// /`VarRefKind` fields of the arms above. `Decls::EmptyDeclImpl` and `SynchSendCont::EmptyCont`
+    /// likewise have no position to park a child in. Two arms are `if let` rather than `match` —
+    /// `PLet`'s `Decls` and `PSendSynch`'s `SynchSendCont` — so a *new* variant of either would
+    /// compile and be silently unwalked; these cases pin the variants that exist, and nothing can pin
+    /// ones that do not.
+    #[test]
+    fn every_construct_in_the_parser_walk_is_descended() {
+        // Establish the depth convention `proc_of_depth` claims before leaning on it: depth `n` is
+        // admitted at a limit of `n` and refused at `n - 1`, in both directions.
+        for n in [1usize, 2, 5, 10] {
+            assert!(
+                !exceeds_ast_depth(&proc_of_depth(n), n),
+                "depth {n} is *at* the limit, not past it"
+            );
+            assert!(
+                exceeds_ast_depth(&proc_of_depth(n + 1), n),
+                "depth {} is one past the limit of {n}",
+                n + 1
+            );
+        }
+
+        const LIMIT: usize = 5;
+        for (label, p) in walk_cases(&proc_of_depth(10)) {
+            assert!(
+                exceeds_ast_depth(&p, LIMIT),
+                "`{label}` parks a depth-10 child and the limit is {LIMIT}, so the walk must reach \
+                 it — a position of `push_sub_procs` is not descended into"
+            );
+        }
+        // The control: the very same cases around a depth-1 child are all inside the limit, so the
+        // loop above is a verdict on the child being reached and not on the shape of the case.
+        for (label, p) in walk_cases(&proc_of_depth(1)) {
+            assert!(
+                !exceeds_ast_depth(&p, LIMIT),
+                "`{label}` with a depth-1 child is at most 2 deep: nothing in it is past {LIMIT}"
+            );
+        }
+    }
 }

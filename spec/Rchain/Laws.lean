@@ -2423,49 +2423,64 @@ def laws : List Law := [
       is the bound, and the parser refuses a source whose tree exceeds it — so no consumer of a term \
       (the normalizer, the sorter, `well_scoped`, the evaluator, the matcher, the printer) recurses \
       deeper than the bound, on a stack the bound was measured against",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.parDepth, `Rchain.maxAstDepth, `Rchain.notsDepth,
-                     `Rchain.walkPar, `Rchain.walkExceeds],
+                     `Rchain.walkPar, `Rchain.walkExceeds, `Rchain.walkParDroppingExpr,
+                     `Rchain.walkPar_iff_parDepth, `Rchain.walkExceeds_sound,
+                     `Rchain.walkExceeds_complete, `Rchain.parDepth_notsDepth,
+                     `Rchain.a_dropped_arm_breaks_soundness,
+                     `Rchain.the_walk_refuses_the_mutant_witness],
+    witness := [`Rchain.walkPar_iff_parDepth, `Rchain.walkExceeds_sound,
+                `Rchain.walkExceeds_complete, `Rchain.a_dropped_arm_breaks_soundness,
+                `Rchain.parDepth_notsDepth,
+                `Rchain.the_walk_refuses_the_mutant_witness],
     rust := ["rholang/src/parser.rs"],
     rustWitness := [
       "rholang/src/parser.rs:rejects_a_deep_ast_that_stays_inside_both_component_guards",
       "rholang/src/parser.rs:accepts_a_deep_ast_under_the_budget",
-      "rholang/src/parser.rs:a_maximal_chain_still_parses"],
+      "rholang/src/parser.rs:a_maximal_chain_still_parses",
+      "rholang/src/parser.rs:every_construct_in_the_parser_walk_is_descended"],
     falsifiable := some "**the walk's own children function is where it fails, so the falsifier is a \
-      dropped arm.** `parDepth` is defined; what is owed is that \
-      `rholang/src/parser.rs::exceeds_ast_depth` — an iterative, early-exiting walk — agrees with it: \
-      `walkExceeds limit p = false → parDepth p ≤ limit` (soundness: a term the node accepts is never \
-      deeper than the bound) and the control `parDepth p ≤ limit → walkExceeds limit p = false` \
-      (completeness: the refusal is not accidental). The witness for a mutation is `notsDepth`: a \
-      mutation that drops one arm of the walk's children function must make soundness false at \
-      `notsDepth 768` (`a_dropped_arm_breaks_soundness`), and a walk that could not be broken that way \
-      would be a restatement of the definition rather than a check of it — the vacuity law 22 records. \
-      **The walk itself is defined now** (2026-09-27): `walkPar`/`walkExceeds` in `Rchain/Depth.lean` \
-      are that independent recursion — a budget-decrementing descent mirroring \
-      `exceeds_ast_depth`'s `d > limit` loop — so what this row still owes is the *agreement*, not the \
-      mechanism",
-    note := "**`owed`, and the reason is a measurement rather than an unfinished proof** (2026-09-26, \
-      AUDIT C99). The parser's older guards bound two *shapes* and compose into nothing: \
-      `MAX_PARSE_DEPTH` bounds the parser's recursion, and a flat chain is built by a loop — bounded \
-      frames, an AST of depth `n` — so `d` levels of `c` operators compose into an AST of depth \
-      `d × c` with both guards satisfied. Measured on the node's own 32 MiB worker: a debug build \
-      **aborts the process** between AST depth 732 and 994 (a ~4 KB deploy term, SIGABRT), and a \
+      dropped arm — and it is a theorem now, not a comment.** `walkPar_iff_parDepth` is the agreement \
+      (`walkPar p k = false ↔ parDepth p ≤ k`), of which the two directions this row quotes are \
+      `walkExceeds_sound` and `walkExceeds_complete`. The witness is `notsDepth`, whose depth is \
+      `parDepth_notsDepth`'s `2 * n + 1`: `a_dropped_arm_breaks_soundness` shows the walk with its \
+      `exprs` arm deleted (`walkParDroppingExpr`) accepting `notsDepth 384` — depth 769, one past the \
+      bound — so a walk that could not be broken that way would be a restatement of the definition \
+      rather than a check of it, which is the vacuity law 22 records. \
+      `the_walk_refuses_the_mutant_witness` is the contrast: the real walk refuses the very term the \
+      mutant admits. **The witness had to be repaired to make that true** (2026-09-28): `notsDepth` \
+      was `List.replicate n (enot unit)` — `n` *siblings*, so `parDepth` was 3 for every `n ≥ 1` and \
+      the mutation test would have passed **vacuously**, accepting at the bound along with every \
+      mutant of it. **The half that is not a Lean claim at all**: that the Rust walk descends into \
+      every `Proc` constructor. No theorem can say it — this walk is over the de Bruijn `Par`, and \
+      `exceeds_ast_depth` walks the parser's surface `Proc` — so it is pinned by \
+      `every_construct_in_the_parser_walk_is_descended`, which parks a deep child in each position \
+      `push_sub_procs` must reach",
+    note := "**`proved-model` (2026-09-28), and the reason it was `owed` for two days is worth \
+      keeping** (2026-09-26, AUDIT C99). The parser's older guards bound two *shapes* and compose into \
+      nothing: `MAX_PARSE_DEPTH` bounds the parser's recursion, and a flat chain is built by a loop — \
+      bounded frames, an AST of depth `n` — so `d` levels of `c` operators compose into an AST of \
+      depth `d × c` with both guards satisfied. Measured on the node's own 32 MiB worker: a debug \
+      build **aborts the process** between AST depth 732 and 994 (a ~4 KB deploy term, SIGABRT), and a \
       release build costs **64 s** at 8,040 and aborts at 50,100 — while the deploy path runs parse \
       and normalize *before* any phlo or balance check, so that is free to the submitter. The fix is \
-      `MAX_AST_DEPTH` + the walk, and this row is that fix's *quantity*; what is owed is the \
-      agreement between the walk and `parDepth`. **The recipe is `Rchain/FreeVars.lean`'s** (the same \
-      `mutual` block over `Par`/`Send`/`Expr`/the `List`s with `termination_by … => sizeOf …`), plus a \
-      second `mutual` block for the walk so that it is an *independent* recursion — a walk defined as \
-      `decide (limit < parDepth p)` would make both directions `rfl`, which is not a model of the \
-      code. **A trap this row met while being written**: `parDepth` needs `termination_by`, so it is \
-      **not kernel-reducible** and no `decide`d example can evaluate it (`spec/STYLE.md`'s \
-      reducibility note); the two directions are therefore inductions, and `notsDepth` is their \
-      witness shape rather than a checked instance. **The half that is not a Lean claim at all**: that \
-      the Rust walk descends into every `Proc` constructor. No theorem can say it — the walk is over \
-      the parser's syntax, which has no model — so it is pinned by the three `rustWitness` tests. \
-      **The residual this row used to record is clause b's subject**: a runtime-built deep value never \
-      passes the parser, so the parser's bound cannot see that route, and the space enforces the \
-      bound instead (AUDIT C100). \
+      `MAX_AST_DEPTH` + the walk, and this row is that fix's *quantity*; the agreement between the two \
+      is `walkPar_iff_parDepth`, in `Rchain/Depth.lean`'s 23-member `mutual` theorem block — the \
+      recipe this row names, `Rchain/FreeVars.lean`'s, and the block carries **no `termination_by` \
+      and no `decreasing_by`**. \
+      **Why it took three attempts, and the correction** (2026-09-28): this file's own note had blamed \
+      `termination_by`. `Rchain/FreeVars.lean` falsifies that — its definitions carry it and its 23 \
+      theorems sit in a block without it. The variable was where the extra `Nat` sits: `FreeVars` \
+      takes the recursed term first with the level as a plain pattern variable, while the walk as \
+      first committed matched the budget *in the equation header*, which routes the definition through \
+      a well-founded fixpoint whose equations the theorems must then be proved about. The reshape is \
+      the row's own recipe applied correctly. Dropping `termination_by` was never the fix, and the \
+      attempt that dropped it paid in `Decidable`. \
+      **What this row does not claim.** `rholang/src/parser.rs::exceeds_ast_depth` walks the surface \
+      `Proc`; its own doc comment calls its count \"a proxy — and a deliberate one\", because the `Par` \
+      \"adds a small constant per construct\". So `walkPar_iff_parDepth` is an agreement *inside the \
+      model*, and the bridge to the parser's tree is a modelling argument rather than a theorem. \
       **One of the consumers this clause's statement names is not bounded by this constant, and is \
       handled rather than bounded** (2026-09-26, AUDIT C101): the *evaluator*'s frames are larger than \
       the normalizer's — a parsed flat chain as send data (inside both parser guards) returned `Ok` at \
@@ -2477,26 +2492,50 @@ def laws : List Law := [
       the chain guard admits" },
   { number := 50, clause := "b", layer := "Rholang",
     statement := "A **runtime-built value** is depth-bounded on the route the parser cannot see: the \
-      space refuses a produced value deeper than `maxValueDepth` (256), so a term a program built by \
-      folding cannot reach a consumer deeper than the bound — the same quantity (`parDepth`) as \
-      clause a, enforced at the space instead of at the parser",
-    status := .owed,
-    declarations := [`Rchain.parDepth, `Rchain.maxValueDepth, `Rchain.pairsDepth],
+      space refuses a produced value whose **`Par`-nesting** exceeds `maxValueDepth` (256), so a value \
+      a program built by folding cannot reach a consumer with more than 256 `Par` levels — and at most \
+      `3 * 256 = 768` of clause a's `parDepth`, the same number as `maxAstDepth`, which is the honest \
+      form of the relation between the two quantities rather than an identification of them",
+    status := .provedModel,
+    declarations := [`Rchain.parDepth, `Rchain.maxValueDepth, `Rchain.pairsDepth,
+                     `Rchain.parNestDepth, `Rchain.walkValuePar, `Rchain.valueWalkExceeds,
+                     `Rchain.walkValueParDroppingExpr, `Rchain.walkValuePar_iff_parNestDepth,
+                     `Rchain.valueWalkExceeds_sound, `Rchain.valueWalkExceeds_complete,
+                     `Rchain.valueWalkExceeds_sound_parDepth,
+                     `Rchain.parDepth_le_three_mul_parNestDepth,
+                     `Rchain.parNestDepth_pairsDepth, `Rchain.parDepth_pairsDepth,
+                     `Rchain.a_dropped_value_arm_breaks_soundness,
+                     `Rchain.the_value_walk_refuses_the_mutant_witness],
+    witness := [`Rchain.walkValuePar_iff_parNestDepth, `Rchain.valueWalkExceeds_sound,
+                `Rchain.valueWalkExceeds_complete, `Rchain.valueWalkExceeds_sound_parDepth,
+                `Rchain.parDepth_le_three_mul_parNestDepth, `Rchain.parNestDepth_pairsDepth,
+                `Rchain.parDepth_pairsDepth, `Rchain.a_dropped_value_arm_breaks_soundness,
+                `Rchain.the_value_walk_refuses_the_mutant_witness],
     rust := ["models/src/types.rs", "rholang/src/storage.rs"],
     rustWitness := [
       "models/src/types.rs:the_value_walk_admits_the_limit_and_refuses_past_it",
       "models/src/types.rs:every_construct_that_carries_a_par_is_walked",
       "rholang/src/storage.rs:a_value_at_the_bound_is_stored_and_one_past_it_is_refused_on_both_produce_paths"],
     falsifiable := some "**the falsifier is a dropped arm of the walk's children function, over the \
-      value route's own shape.** `pairsDepth n` (nested pairs — what a folding contract builds, and \
-      what an attacker builds) has `parDepth` `2 * n + 1`, so a mutation that drops one arm must let \
-      a value past the bound and make soundness false there; the Rust half of the same risk (a `Proc` \
-      constructor the walk never descends into) is not a Lean claim at all — the walk is over the \
-      Rust AST, which has no model — and is pinned by \
+      value route's own shape — and it is a theorem now, not a comment.** \
+      `walkValuePar_iff_parNestDepth` is the agreement (`walkValuePar p k = false ↔ parNestDepth p ≤ \
+      k`), of which `valueWalkExceeds_sound` and `valueWalkExceeds_complete` are the two directions \
+      this clause quotes. `pairsDepth` — nested pairs, what a folding contract builds and what an \
+      attacker builds — has `parDepth_pairsDepth`'s `2 * n + 1` of `parDepth` against \
+      `parNestDepth_pairsDepth`'s `n + 1` of nesting, so at `maxValueDepth` the guard admits \
+      `pairsDepth 255` (`parDepth` 511) and refuses `pairsDepth 256` (`parDepth` 513). \
+      `a_dropped_value_arm_breaks_soundness` shows the walk with its `exprs` arm deleted \
+      (`walkValueParDroppingExpr`) accepting `pairsDepth 256` at the bound — so a walk that could not \
+      be broken that way would be a restatement of the definition rather than a check of it, which is \
+      the vacuity law 22 records — and `the_value_walk_refuses_the_mutant_witness` is the contrast. \
+      **The Rust half of the same risk** (a constructor the walk never descends into) is not a Lean \
+      claim at all — this walk is over the de Bruijn `Par`, the Rust value walk is over the Rust AST, \
+      which has no Lean model — and is pinned by \
       `models/src/types.rs:every_construct_that_carries_a_par_is_walked`, which parks a depth-10 child \
       in each of the 22 positions the walk must reach and asks for a limit of 5. Verified by mutation \
       before it was trusted: disabling the `bundles` arm makes exactly that case fail",
-    note := "**`owed`, and the number is a measurement rather than a preference** (2026-09-26, AUDIT \
+    note := "**`proved-model` (2026-09-28), and the number is a measurement rather than a preference** \
+      (2026-09-26, AUDIT \
       C100). A contract folding its accumulator into a deeper pair reaches depth `n` in `O(n)` reduce \
       steps, inside `DEFAULT_MAX_REDUCE_STEPS`; on the node's 32 MiB worker in a debug build a fold to \
       depth 101 costs 7.3 s of CPU and a fold to depth 401 **aborts the process** \
@@ -2515,12 +2554,26 @@ def laws : List Law := [
       does not bound the **evaluator's** recursion while building the value, because the guard runs \
       after that walk — the honest statement of the mechanism is that the deepest value ever built is \
       capped at the bound + 1 (iteration `i` evaluates depth `i` and produces depth `i + 1`). \
-      **The modelling gap the owed proof has to settle**, and the reason this row is not tied: the \
-      Rust walk gives an `Expr` node **no level of its own** while `parDepth` counts it, so the two \
-      are not equal and soundness must be stated with that slack. The slack is bounded on this route \
-      because a value's expression nesting is *syntax* and no runtime path builds `Expr` nodes, so it \
-      is at most the parser's `MAX_PARSE_DEPTH` (128) — an argument that stops for a hand-built or \
-      wire-carried value, which is the boundary of the claim. \
+      **The accounting the owed statement got wrong, and what replaced it** (2026-09-28): this row \
+      said the Rust walk gives an `Expr` node **no level of its own** while `parDepth` counts it, and \
+      that the gap is therefore a slack bounded by `MAX_PARSE_DEPTH` (128) because \"no runtime path \
+      builds `Expr` nodes\". Every clause of that is false. The walk gives **no element node** a level \
+      — `push_value_fields` pushes its fields at the depth it was handed, as do `push_value_expr` and \
+      `push_value_connective`, so `Send`/`Receive`/`New`/`Match`/`Bundle`/`MatchCase`/`Connective` \
+      are transparent along with `Expr` — so the counted quantity is the number of **`Par` nodes** on \
+      the deepest `Par`-chain, which is `Rchain.parNestDepth` in `Rchain/ValueDepth.lean` and not \
+      `parDepth` at all. And a runtime path *does* build `Expr` nodes: `(a, b)` **is** \
+      `Expr::ETuple`, built by the reducer, which is the shape `rholang/tests/deep_value_bound.rs` \
+      exists to exercise. The gap is a *factor*, not a constant: \
+      `Rchain.parDepth_le_three_mul_parNestDepth` proves it is at most three, and three is tight — two \
+      element nodes can sit between consecutive `Par`s (`Receive`→`ReceiveBind`, \
+      `Match`→`MatchCase`), so a `Match` ladder spends three levels per `Par` and \
+      `parDepth ≤ 2 * parNestDepth` fails from two rungs. At this bound that is `3 * 256 = 768`. \
+      **Two boundaries of the tie are named rather than hidden**: the Rust guard never pushes its root \
+      (its fields go on the worklist at depth 2), so it accepts a value with no `Par` child when \
+      `limit = 0` where the model refuses it, and the two agree for every `limit ≥ 1` — which is what \
+      `maxValueDepth` is; and the guard walks `New.injections`, which the model's `New.mk` does not \
+      have, so it is *stricter* there, which is the safe direction. \
       **The gap this unit's own claim hid**: the guard's first draft sat inside `produce`, under a \
       comment calling it the one place a value enters the space; \
       `rholang/src/storage.rs::produce_at` — the scheduled path the channel scheduler and the deferred \
