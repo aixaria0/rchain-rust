@@ -26,7 +26,7 @@ statically checked property rather than a runtime, best-effort one.
 
 ### The practical upshot — a validator on modest hardware
 
-The payoff is operational, not just theoretical. Roughly **69,000 lines of Rust** across 351 source
+The payoff is operational, not just theoretical. Roughly **122,000 lines of Rust** across 358 source
 files compile to a single tight **native binary** — no JVM to boot, no tracing GC to pause, no
 `-Xmx4g -Xss2m` to tune. The stop-the-world pauses and heap pressure that made the JVM node's runtime
 heavy and its latency unpredictable are gone by construction, so a validator runs comfortably — and

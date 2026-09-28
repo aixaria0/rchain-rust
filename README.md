@@ -47,7 +47,7 @@ Three reasons drive the rewrite.
 `Memory`/`GarbageCollector` diagnostics and needed `SBT_OPTS="-Xmx4g -Xss2m"` to run. Rust's ownership
 model and lack of a tracing GC make the leak and the stop-the-world pause unrepresentable.
 
-**Decentralization.** ~69,000 lines of Rust compile to a single tight native binary — no JVM, no GC,
+**Decentralization.** ~122,000 lines of Rust compile to a single tight native binary — no JVM, no GC,
 no heap tuning — so a validator runs on any modern desktop or laptop with an NVMe SSD. Validator
 operation sits within consumer-grade hardware, which is what makes the network genuinely decentralized
 (see [hardware requirements](docs/src/node/validator-requirements.md)).
@@ -60,6 +60,43 @@ the base sort of a Calculus of Constructions, constructible and provable in Lean
 The full argument — including the co-op lesson and the Rust → calculus → formalization correspondence
 table — is in [docs/src/contributor/why-rust.md](docs/src/contributor/why-rust.md). The prose
 documentation is also served as a book: `mdbook serve docs`.
+
+## Security
+
+An adversarial red-team review of the node was completed in September 2026, including a comparison
+against Solana, Sui and Bitcoin SV read from their own source. The full report — findings, method, and
+the properties that make defects *unrepresentable* rather than merely detected — is in
+[**docs/src/node/security-audit.md**](docs/src/node/security-audit.md). Its four headline results:
+
+**No `unsafe` anywhere, enforced by the compiler.** Every crate in the workspace begins with
+`#![forbid(unsafe_code)]`, and there are no `unsafe` blocks in the tree. This is not a convention: an
+`unsafe` block will not build. Neither Sui nor Solana carries that guarantee — Solana's loader alone has
+dozens of blocks — and Bitcoin SV is C++.
+
+**Authority cannot be forged.** There is no grammar production that writes a private name, and no
+rholang operation destructures one. A name is allocated from a splittable hash-derived RNG and exists
+only to be *received*: "invoke on a channel you were not given" has no term in the language. The
+soundness of that rests on the crypto axioms (law 19), which is the correct place for the boundary —
+but it is an axiom, not a theorem, and we say so.
+
+**Authority cannot be captured across a call, and that one is proved.** A COMM step transfers exactly
+the datum that was sent into the *receiver's* body in the receiver's own environment; the sender's
+environment is never consulted. Reaching into a caller's variables or continuation is not guarded — it
+is unsayable. Closedness is a theorem, not a convention: a closed program cannot grow a free variable by
+reduction. Confused-deputy, in the sense of a deputy acting with borrowed authority, has no expression.
+
+**Machine-checked semantics, with a register that does not overclaim.**
+<!-- counts:laws -->50 laws<!-- counts:end --> across Lean 4 and Coq. All 87 registered Rust witnesses
+resolve to real functions, there are **zero `#[ignore]`d tests** in the tree, and the formal gate
+refuses `sorry`, `admit` and `opaque`. That last property is the one most worth checking in projects
+that claim formal methods, so the audit checked it adversarially: Sui's Move Prover is absent from its
+tree and CI, and Solana's frozen-ABI digests are checksums rather than proofs.
+
+The same review is equally explicit about what it did *not* establish. Its one confirmed
+high-severity finding is that the phlo cost model does not bound the work a deploy causes — a
+superlinear `Set` dedup charged at a flat rate — and it records where the chain layer's authority is
+access control by another name rather than capability discipline. Read the report for those; they are
+the reason to trust the rest of it.
 
 ## Governance
 
