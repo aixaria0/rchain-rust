@@ -372,15 +372,50 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
             "a countdown to the boundary is never negative: {pos}"
         );
 
-        // --- the admin router over HTTP, and its CORS residual (AUDIT C133) -------------------
+        // --- the admin router over HTTP, and its origin check (AUDIT C133) --------------------
         //
         // No test drove `admin_router` over HTTP, so its comment's claim was unpinned as well as
         // untrue. A cross-origin `POST` with no preflight — the "simple request" shape that
-        // `CorsLayer` never rejects — reaches `/api/v1/propose` and produces a block. That is the
-        // residual the comment now names: what protects the route is the loopback bind and the
-        // operator's opt-in (C112), not the CORS layer, which only stops the page *reading* the
-        // reply.
+        // `CorsLayer` never rejects — reached `/api/v1/propose` and produced a block; CORS only stops
+        // the page *reading* the reply, and loopback does not help against a request the operator's
+        // own browser makes. `admin_origin_guard` closes that, and the four arms below are what makes
+        // the closure mean something: a guard that refused everything would satisfy the third arm
+        // alone, so the first two assert that legitimate callers still get through, and the fourth
+        // pins the compare-don't-inspect rule.
         let admin = format!("http://127.0.0.1:{}", ports[1]);
+
+        // Arm 1 — no `Origin` at all: the CLI and this repository's own devnet scripts. It must both
+        // be accepted *and* do the work, or the arms below prove nothing about the guard's position.
+        let no_origin = client
+            .post(format!("{admin}/api/v1/propose"))
+            .send()
+            .await
+            .expect("POST admin /api/v1/propose");
+        assert_eq!(
+            no_origin.status(),
+            200,
+            "an origin-less admin request is not cross-site and must be accepted"
+        );
+        let body = no_origin.text().await.unwrap_or_default();
+        assert!(
+            body.contains("created and added"),
+            "and it must actually reach the handler: {body}"
+        );
+
+        // Arm 2 — the admin page talking to its own node.
+        let same_origin = client
+            .post(format!("{admin}/api/v1/propose"))
+            .header("Origin", admin.as_str())
+            .send()
+            .await
+            .expect("POST admin /api/v1/propose");
+        assert_eq!(
+            same_origin.status(),
+            200,
+            "same-origin is the admin page's own shape and must be accepted"
+        );
+
+        // Arm 3 — the cross-origin simple request, refused where it used to produce a block.
         let cross_origin = client
             .post(format!("{admin}/api/v1/propose"))
             .header("Origin", "http://evil.example")
@@ -389,16 +424,22 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
             .expect("POST admin /api/v1/propose");
         assert_eq!(
             cross_origin.status(),
-            200,
-            "a cross-origin simple request is not rejected by the CORS layer — this is the residual, \
-             pinned rather than denied"
+            403,
+            "a cross-origin request must be refused before the handler runs"
         );
-        assert!(
-            !cross_origin
-                .headers()
-                .contains_key("access-control-allow-origin"),
-            "and the restrictive layer answers the page nothing either: {:?}",
-            cross_origin.headers()
+
+        // Arm 4 — `Origin: null`, which a sandboxed iframe or a `data:` redirect sends. It matches no
+        // host, and the guard compares rather than pattern-matching, so it is refused.
+        let null_origin = client
+            .post(format!("{admin}/api/v1/propose"))
+            .header("Origin", "null")
+            .send()
+            .await
+            .expect("POST admin /api/v1/propose");
+        assert_eq!(
+            null_origin.status(),
+            403,
+            "`Origin: null` is not the admin host's authority"
         );
 
         node.shutdown();

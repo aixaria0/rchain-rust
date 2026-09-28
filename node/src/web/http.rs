@@ -1080,6 +1080,61 @@ pub fn router(state: HttpState) -> Router {
     routes.layer(CorsLayer::permissive()).with_state(state)
 }
 
+/// Refuse a **cross-origin** request to the admin surface — the residual AUDIT C133 named and did not
+/// close, closed here.
+///
+/// **Why this is a layer and not a check in each handler.** Every route on this router acts with the
+/// node's own key: `/api/propose` produces a block, and the `/api/txn` family spends out of the
+/// validator's account. A guard written into the handlers would be a bound enforced by the callers
+/// that happen to exist — the shape this register keeps recording — and the next admin route added
+/// would not have it. A layer applies to every route on the router, including later ones.
+///
+/// **What it allows, and why each exception is principled rather than convenient:**
+///
+/// * **No `Origin` header at all.** CSRF requires a browser, and every browser sends `Origin` on a
+///   `POST`; a client that sends none — `curl`, the CLI, this repository's own devnet scripts — is not
+///   making a cross-site request, and refusing those would break the tooling while buying nothing.
+/// * **Same-origin**, i.e. an `Origin` whose authority equals the request's `Host`. Compared
+///   scheme-insensitively on purpose: the admin port is plain HTTP on loopback and `https` behind an
+///   operator's TLS proxy, and what this decides is *which site* is asking, not which scheme it used.
+/// * **Anything, when `api-server.enable-devnet-cors` is set.** That flag *is* the operator asking for
+///   cross-origin access, and the browser-wallet path that the C112 bind exists to allow depends on
+///   it. A guard that ignored the flag would break the feature it is meant to protect.
+///
+/// `Origin: null` — a sandboxed iframe, or a redirect from a `data:` URL — matches no host and is
+/// refused, which is what comparing rather than pattern-matching buys.
+async fn admin_origin_guard(
+    State(state): State<AdminState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.enable_devnet_cors {
+        if let Some(origin) = request
+            .headers()
+            .get(axum::http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+        {
+            let host = request
+                .headers()
+                .get(axum::http::header::HOST)
+                .and_then(|v| v.to_str().ok());
+            // `scheme://authority` → `authority`. An origin that does not parse keeps its whole
+            // value, which then matches no host and is refused.
+            let authority = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+            if host != Some(authority) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "cross-origin request refused: this listener acts with the node's own key, so \
+                     only same-origin or origin-less requests are accepted. A browser on another \
+                     origin needs `api-server.enable-devnet-cors`.\n",
+                )
+                    .into_response();
+            }
+        }
+    }
+    next.run(request).await
+}
+
 /// Build the admin HTTP routes (port of `acquireAdminHttpServer`'s `/api` + `/api/v1` admin routes).
 pub fn admin_router(state: AdminState) -> Router {
     // Restrictive CORS (no allowed origins) by default; devnet / browser-wallet access opts into
@@ -1095,10 +1150,12 @@ pub fn admin_router(state: AdminState) -> Router {
     // request comes from the operator's own browser (CSRF), and DNS rebinding resolves an attacker's
     // name to `127.0.0.1`.
     //
-    // **What actually protects the route** is the bind and the opt-in above it (C112): the admin
-    // server is loopback unless the operator publishes it, so the browser that can reach it is the
-    // operator's own. That is a real boundary for a remote attacker and no boundary at all for a
-    // page the operator visits — which is the residual this comment now names rather than denies.
+    // **What protects the route is two things, and this comment first named only the first.** The
+    // bind and the opt-in above (C112) are the boundary against a *remote* attacker. They are no
+    // boundary against a page the operator visits, which is what `admin_origin_guard` below is for: a
+    // cross-origin request to this router is refused before any handler runs, so the residual this
+    // comment used to name is closed rather than documented. The CORS layer remains what the
+    // paragraph above says it is — a header policy, not a boundary.
     let cors = if state.enable_devnet_cors {
         CorsLayer::permissive()
     } else {
@@ -1119,6 +1176,13 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/v1/txn/{txn_id}", get(api_txn_status))
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .layer(cors)
+        // Outermost, so a cross-origin request is refused before any handler on this router runs —
+        // including the ones that spend the node's REV. See `admin_origin_guard` for why it is a layer
+        // rather than a check in each handler.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            admin_origin_guard,
+        ))
         .with_state(state)
 }
 
