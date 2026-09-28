@@ -894,3 +894,64 @@ fn every_execution_golden_row_is_consumed() {
         );
     }
 }
+
+/// The parse is charged (AUDIT F-2).
+///
+/// `evaluate_with_env` sampled `total_charged()` *after* parsing, so the parse was neither charged
+/// against the deploy's budget nor counted in the cost it reported. `Costs::parsing_cost` sat in the
+/// cost table called from nowhere, and the Scala charges `parsingCost` ahead of `sourceToADT`. The
+/// consequence was a free lunch: a `phlo_limit = 0` deploy got a full parse and normalize for nothing,
+/// and the term only had to be large, not clever.
+#[tokio::test]
+async fn the_reported_cost_includes_the_parse() {
+    let rt = build_runtime(false).await;
+    let term = r#"@"chan"!(42)"#;
+    let res = rt.evaluate(term, &fixed_rand()).await.expect("evaluate");
+    assert!(
+        res.cost.value >= term.len() as i64,
+        "a {}-byte term must be charged at least its own length; got {}",
+        term.len(),
+        res.cost.value
+    );
+}
+
+/// And the charge lands on the *budget*, not merely in the report: a deploy whose phlo limit cannot
+/// cover its own parse is refused before the term runs (AUDIT F-2).
+///
+/// The term is mostly padding, so it is long — a large parse cost — but does almost no work. That is
+/// what makes this a test of the *parse* charge rather than of the reduction's own charges: a budget
+/// one short of the term's length fails, and the same term with several times that budget succeeds. On
+/// the old code the tight budget would also have succeeded, because the parse cost nothing and the
+/// reduction is cheap — which is the free lunch the zero-phlo path gave away.
+#[tokio::test]
+async fn a_budget_below_the_parse_cost_refuses_the_deploy() {
+    let term = format!(r#"@"chan"!(42){}"#, " ".repeat(200));
+    let parse = term.len() as i64;
+
+    let tight = build_runtime(false).await;
+    tight.cost().set(Cost::new(parse - 1, "deploy"));
+    let refused = tight
+        .evaluate(&term, &fixed_rand())
+        .await
+        .expect("an unaffordable parse is a failed deploy, not a node fault");
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|e| matches!(e, RholangError::OutOfPhlogistonsError)),
+        "a budget one below the parse cost must exhaust it; got {:?}",
+        refused.errors
+    );
+
+    let roomy = build_runtime(false).await;
+    roomy.cost().set(Cost::new(parse * 4, "deploy"));
+    let ran = roomy
+        .evaluate(&term, &fixed_rand())
+        .await
+        .expect("evaluate");
+    assert!(
+        ran.succeeded(),
+        "the same term with room to parse must run — so the refusal above is the parse, not the work: {:?}",
+        ran.errors
+    );
+}

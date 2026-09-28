@@ -494,9 +494,12 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
         "the clean replay is accepted"
     );
 
-    // Tamper: the processed deploy claims to be a term that did not run.
+    // Tamper: the processed deploy claims a term that did not run. Same *length* as the one that did,
+    // deliberately — the parse is charged (`AUDIT F-2`), so a length change would be caught one check
+    // earlier by the replay's cost comparison, and this test exists to exercise the state-hash path.
+    // The cost path has its own test below.
     processed[0].deploy.data.term =
-        r#"new deployerId(`rho:rchain:deployerId`) in { @"other"!(99) }"#.to_string();
+        r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(43) }"#.to_string();
 
     let (tampered_hash, _) = rm
         .replay_compute_state(
@@ -521,6 +524,37 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             .expect("no internal error"),
         None,
         "the validating comparison must reject a state that does not match the block's claim"
+    );
+
+    // And a tamper that changes the term's *length* is refused even earlier, by the replay's own cost
+    // comparison, because the parse is charged (`AUDIT F-2`) and the recorded cost no longer matches.
+    //
+    // Both rejections are rejections, so this is a stricter detection than the state hash alone rather
+    // than a weaker one — but it is a *different* channel, and a future change that dropped the cost
+    // comparison would leave the state-hash path as the only guard. Pinning both means neither can be
+    // removed without a test going red.
+    processed[0].deploy.data.term =
+        r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(4242) }"#.to_string();
+
+    let cost_tamper = rm
+        .replay_compute_state(
+            &post,
+            &processed,
+            &processed_sys,
+            &rand,
+            BlockData::empty(),
+            true,
+            &PosGenesis::default(),
+            &[],
+        )
+        .await;
+
+    assert!(
+        matches!(
+            cost_tamper,
+            Err(rchain_casper::rholang::ReplayFailure::ReplayCostMismatch { .. })
+        ),
+        "a length-changing tamper must be caught by the replay's cost comparison, got {cost_tamper:?}"
     );
 }
 

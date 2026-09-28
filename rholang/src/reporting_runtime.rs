@@ -129,8 +129,22 @@ impl ReportingRuntime {
         env: &BTreeMap<String, Par>,
         rand: &Blake2b512Random,
     ) -> Result<EvaluateResult, RholangError> {
-        let par = crate::normalizer::source_to_adt_with_env(term, env)?;
         let before = self.cost.total_charged();
+        // As `RhoRuntime::evaluate_with_env`: charge the parse before doing it (AUDIT F-2). This type
+        // does not delegate to that one, so the change has to be made in both — including the shape of
+        // the failure, which is a collected deploy error rather than a returned fault.
+        if let Err(e) = self
+            .cost
+            .charge(crate::accounting::Costs::parsing_cost(term))
+        {
+            let cost = self.cost.total_charged() - before;
+            return Ok(EvaluateResult {
+                cost: crate::accounting::Cost::new(cost, "evaluate"),
+                errors: vec![e],
+                mergeable: BTreeSet::new(),
+            });
+        }
+        let par = crate::normalizer::source_to_adt_with_env(term, env)?;
         let errors = match self.inj(&par, &Env::new(), rand).await {
             Ok(()) => Vec::new(),
             Err(e) => vec![e],

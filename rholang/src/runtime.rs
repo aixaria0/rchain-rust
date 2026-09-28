@@ -317,8 +317,30 @@ impl RhoRuntime {
         env: &BTreeMap<String, Par>,
         rand: &Blake2b512Random,
     ) -> Result<EvaluateResult, RholangError> {
-        let par = crate::normalizer::source_to_adt_with_env(term, env)?;
         let before = self.cost.total_charged();
+        // Charge the parse *before* doing it (AUDIT F-2). It used to happen after `before` was
+        // sampled, so the parse was neither charged against the deploy's budget nor counted in the
+        // reported cost — which let a `phlo_limit = 0` deploy run a full parse and normalize for free.
+        // `parsing_cost` was already in the cost table and called nowhere; the Scala charges
+        // `parsingCost` ahead of `sourceToADT`, and this is that.
+        //
+        // A deploy that cannot afford its own parse is a **failed deploy, not a node fault**, so the
+        // error is collected and returned as `Ok` — the same shape the reduction's own exhaustion takes
+        // in the match below. Returning `Err` here would have escaped the genesis and block paths as a
+        // hard fault, and `Err` from this function has to keep meaning what the `SpeculationInvalid` arm
+        // says it means.
+        if let Err(e) = self
+            .cost
+            .charge(crate::accounting::Costs::parsing_cost(term))
+        {
+            let cost = self.cost.total_charged() - before;
+            return Ok(EvaluateResult {
+                cost: crate::accounting::Cost::new(cost, "evaluate"),
+                errors: vec![e],
+                mergeable: BTreeSet::new(),
+            });
+        }
+        let par = crate::normalizer::source_to_adt_with_env(term, env)?;
         let errors = match self.inj(&par, &Env::new(), rand).await {
             Ok(()) => Vec::new(),
             // Laws 23–25: a per-commit validation failure must escape as an error — it is the
@@ -572,8 +594,30 @@ impl ReplayRhoRuntime {
         env: &BTreeMap<String, Par>,
         rand: &Blake2b512Random,
     ) -> Result<EvaluateResult, RholangError> {
-        let par = crate::normalizer::source_to_adt_with_env(term, env)?;
         let before = self.cost.total_charged();
+        // Charge the parse *before* doing it (AUDIT F-2). It used to happen after `before` was
+        // sampled, so the parse was neither charged against the deploy's budget nor counted in the
+        // reported cost — which let a `phlo_limit = 0` deploy run a full parse and normalize for free.
+        // `parsing_cost` was already in the cost table and called nowhere; the Scala charges
+        // `parsingCost` ahead of `sourceToADT`, and this is that.
+        //
+        // A deploy that cannot afford its own parse is a **failed deploy, not a node fault**, so the
+        // error is collected and returned as `Ok` — the same shape the reduction's own exhaustion takes
+        // in the match below. Returning `Err` here would have escaped the genesis and block paths as a
+        // hard fault, and `Err` from this function has to keep meaning what the `SpeculationInvalid` arm
+        // says it means.
+        if let Err(e) = self
+            .cost
+            .charge(crate::accounting::Costs::parsing_cost(term))
+        {
+            let cost = self.cost.total_charged() - before;
+            return Ok(EvaluateResult {
+                cost: crate::accounting::Cost::new(cost, "evaluate"),
+                errors: vec![e],
+                mergeable: BTreeSet::new(),
+            });
+        }
+        let par = crate::normalizer::source_to_adt_with_env(term, env)?;
         let errors = match self.inj(&par, &Env::new(), rand).await {
             Ok(()) => Vec::new(),
             Err(e) => vec![e],
