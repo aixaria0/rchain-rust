@@ -7,7 +7,7 @@ arguments and a return channel, and receive the answer on that channel.
 ```rholang
 new zfa(`rho:qucalc:zfa`), ret in {
   zfa!([0, 1], *ret) |
-  for (@result <- ret) { Nil }     //  result == (true, 1)
+  for (@result <- ret) { Nil }     //  result == (true, -1)
 }
 ```
 
@@ -26,8 +26,12 @@ or a ZFA verdict is reproduced identically by every validator.
 ## Conventions
 
 **Twists.** A *twist history* is a sequence of values `0..7` — the eight-symbol
-alphabet `^ v > < / \ + -`. Every process that takes a history accepts either a
-list of numbers (`[0, 1]`) or the equivalent string (`"^v"`).
+alphabet `^ v > < / \ + -`. Every process that takes a history takes a **list of
+numbers** (`[0, 1]`), one value per twist. The symbol names are notation for reading
+a history, not a syntax the system processes accept: the node parses a `RhoList` of
+`RhoNumber` and nothing else, so `"^v"` is a deploy error rather than a history. (The
+`qucalc` library carries `from_symbols`/`to_symbols` for converting between the two
+spellings; the node does not call them.)
 
 | value | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 |---|---|---|---|---|---|---|---|---|
@@ -41,8 +45,14 @@ signer: a member can set their own delegate, rating, censure or ballot, and
 cannot forge another's.
 
 **Return values.** Each process takes a return channel as its last argument and
-produces exactly one value on it. A process that cannot honour the request
-produces `Nil` rather than failing the deploy — check for it.
+produces exactly one value on it. A process that cannot honour a **well-formed**
+request produces `Nil` rather than failing the deploy — not-ZFA, no winner, an
+unknown URI — so check for it.
+
+**Malformed arguments are a different outcome, and the difference matters.** An
+argument of the wrong shape fails the deploy with an error; it does not return
+`Nil`. A caller that treats every `Nil` as a refusal will still have to handle a
+deploy that failed outright.
 
 ## `rho:qucalc:*` — proofs and capabilities
 
@@ -57,7 +67,7 @@ is what makes the predicate safe to replay.
 new zfa(`rho:qucalc:zfa`), ret in {
   zfa!([0, 1], *ret) |                      // "^v"
   for (@(ok, phase) <- ret) {
-    // ok == true, phase == 1  (the scalar +I)
+    // ok == true, phase == -1  (σ_y·−σ_y = −I, the scalar −I)
     Nil
   }
 }
@@ -116,7 +126,7 @@ does not close, returns `Nil`.
 
 ```rholang
 new fuse(`rho:qucalc:fuse`), ret in {
-  fuse!("^v", ">c<", *ret) |
+  fuse!([0, 1], [2, 3], *ret) |          // "^v" and "><"
   for (@out <- ret) {
     match out {
       Nil            => { /* thesis and antithesis did not synthesize */ }

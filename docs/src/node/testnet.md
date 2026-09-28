@@ -33,8 +33,14 @@ hosts, the genesis, the wallets, and the incident record.
 | Validators | genesis signed for **two** — A (`0410b8c5…`, stake **1000**) and B (`04675f16…`, stake 100). B withdrew at the first epoch boundary (block 10) of the 2026-09-27 rebuild, so the pool and the active set are A alone and B's 100 is escrowed. **No further validator is to be added — see below.** |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `3dd21e705`, static musl `e82be7e3805c…`, on both hosts |
+| Binary | rchain-rust `dev` @ `3dd21e705`, static musl, `sha256:e82be7e3805c…`, on both hosts |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
+
+Short hashes in this document are the first twelve hex characters of the value they name, and each is
+labelled with what it is a digest *of*: `sha256:` is `sha256sum` over the `rnode` artifact as shipped,
+so it can be recomputed from the release; the bare ones are block hashes and addresses as the node
+prints them. (Before the September 2026 audit the binary's digest was written unlabelled, which made it
+indistinguishable from a commit and unverifiable either way.)
 
 A's stake is 1000 against B's 100 on purpose: with no `--autopropose`, A is the only proposer, so A
 must hold **more than ⅔ of the whole bond pool** (including any stake sitting in withdrawal
@@ -465,7 +471,7 @@ Two easy-to-miss details:
 
 #### Current chain — rebuilt 2026-09-27
 
-A `a014e1ee…`, B `d4434ebc…`, genesis `6a6db0db…`, binary `e82be7e3805c…` (`dev` @ `3dd21e705`).
+A `a014e1ee…`, B `d4434ebc…`, genesis `6a6db0db…`, binary `sha256:e82be7e3805c…` (`dev` @ `3dd21e705`).
 Genesis signed for A 1000 + B 100; B withdrew at the first epoch boundary (block 10), so the pool and
 the active set are A alone. `GET /api/status` → `peers: 1`, and `/health` → `ok: true`,
 `api_reachable: true`; neither running node has panicked. The 2026-09-26 transcript below describes the

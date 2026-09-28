@@ -50,7 +50,15 @@ impl GrpcReplClient {
         let content = std::fs::read_to_string(file_name)
             .map_err(|_| format!("File not found: {file_name}"))?;
         self.handle.block_on(async {
-            let mut client = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            // Clone the client out of the lock rather than holding the guard across the `await`
+            // (AUDIT F-9). A tonic client is a handle over a shared channel, so cloning is cheap and
+            // the clone is independent; holding a `std::sync::MutexGuard` across a suspension point is
+            // the class `clippy::await_holding_lock` exists to catch, and the audit's note that only
+            // test modules remained was wrong about this file.
+            let mut client = {
+                let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                guard.clone()
+            };
             let response = client
                 .eval(EvalRequest {
                     program: content,
@@ -66,7 +74,11 @@ impl GrpcReplClient {
 impl ReplClient for GrpcReplClient {
     fn run(&self, line: &str) -> Result<String, String> {
         self.handle.block_on(async {
-            let mut client = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            // As `eval_one`: the guard is cloned out and dropped before the await (AUDIT F-9).
+            let mut client = {
+                let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                guard.clone()
+            };
             let response = client
                 .run(CmdRequest {
                     line: line.to_string(),

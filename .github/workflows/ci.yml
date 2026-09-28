@@ -32,6 +32,23 @@ jobs:
       # fixture in `casper/src/reporting.rs`'s, neither called by any test — so they were also the
       # only two lines in the tree that no test could ever cover, and deleting them removed them from
       # the coverage denominator as well. Verified with the command below minus this flag.
+      #
+      # **Which entries are correctness-critical, and where they fire** (verified 2026-09-28 by
+      # deleting each in turn and reading Clippy's output, not by grepping). `await-holding-lock`,
+      # `bad-bit-mask` and `if-same-then-else` fire **only in `#[cfg(test)]` and `tests/` code**
+      # (block-storage's and rholang's lib-tests). That is what this file has always said, and the
+      # note is here because the September 2026 audit read the three as "no locatable site,
+      # indistinguishable from stale allowances" — a search of *production* sources does not reach
+      # test modules, which is where the sites are. The lesson is the audit's, not the list's.
+      #
+      # `-A clippy::non-canonical-partial-ord-impl` is **gone** (2026-09-28). Its last occurrence was
+      # `AlwaysEqual`'s hand-written `partial_cmp` in `models/src/ast.rs`, now spelled
+      # `Some(self.cmp(other))` — behaviourally identical, since both answer `Equal`, but canonical.
+      # Verified with the command below minus this flag.
+      #
+      # `await-holding-lock`'s two **production** sites are also gone: `node/src/effects/repl_client.rs`
+      # now clones the client out of the mutex rather than holding the guard across the tonic await.
+      # The entry stays for the test-module sites above.
       CLIPPY_DEBT: >-
         -A clippy::await-holding-lock
         -A clippy::bad-bit-mask
@@ -59,7 +76,6 @@ jobs:
         -A clippy::explicit-counter-loop
         -A clippy::new-ret-no-self
         -A clippy::new-without-default
-        -A clippy::non-canonical-partial-ord-impl
         -A clippy::redundant-closure
         -A clippy::result-large-err
         -A clippy::should-implement-trait
