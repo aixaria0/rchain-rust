@@ -912,7 +912,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             let v2 = eval_single_expr(p2, env, cost)?;
             match (&v1, &v2) {
                 (Expr::ESet(b), Expr::ESet(o)) => {
-                    cost.charge(Costs::diff_cost(o.ps.len() as i64))?;
+                    cost.charge(Costs::diff_cost(b.ps.len() as i64, o.ps.len() as i64))?;
                     let ps: Vec<Par> = b.ps.iter().filter(|p| !o.ps.contains(p)).cloned().collect();
                     Ok(Expr::ESet(par_set(ps)))
                 }
@@ -1294,12 +1294,12 @@ fn eval_method(
             let other = eval_single_expr(&args[0], env, cost)?;
             match (&base, &other) {
                 (Expr::ESet(b), Expr::ESet(o)) => {
-                    cost.charge(Costs::diff_cost(o.ps.len() as i64))?;
+                    cost.charge(Costs::diff_cost(b.ps.len() as i64, o.ps.len() as i64))?;
                     let ps: Vec<Par> = b.ps.iter().filter(|p| !o.ps.contains(p)).cloned().collect();
                     Ok(from_expr(Expr::ESet(par_set(ps))))
                 }
                 (Expr::EMap(b), Expr::EMap(o)) => {
-                    cost.charge(Costs::diff_cost(o.kvs.len() as i64))?;
+                    cost.charge(Costs::diff_cost(b.kvs.len() as i64, o.kvs.len() as i64))?;
                     let kvs: Vec<(Par, Par)> = b
                         .kvs
                         .iter()
@@ -1344,7 +1344,7 @@ fn eval_method(
                 Expr::GString(s) => {
                     // `S.contains(T)` (RCHIP #37): is `T` a substring of `S`.
                     let needle = expect_string_par("contains", &element)?;
-                    cost.charge(Costs::string_search_cost(
+                    cost.charge(Costs::string_search_worst_cost(
                         s.chars().count() as i64,
                         needle.chars().count() as i64,
                         "contains",
@@ -1637,7 +1637,7 @@ fn eval_method(
             } else {
                 0
             };
-            cost.charge(Costs::string_search_cost(
+            cost.charge(Costs::string_search_worst_cost(
                 s.chars().count() as i64,
                 needle.chars().count() as i64,
                 "indexOf",

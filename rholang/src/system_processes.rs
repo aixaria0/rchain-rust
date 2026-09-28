@@ -3592,6 +3592,7 @@ mod tests {
     /// a change to either has to face the other.
     const MAX_UNIVERSE_PROBE: usize = SystemProcesses::MAX_GOV_UNIVERSE;
 
+    #[tokio::test]
     async fn gov_tally_ranked_returns_winner() {
         let mock = Arc::new(MockSpace {
             produced: Mutex::new(Vec::new()),

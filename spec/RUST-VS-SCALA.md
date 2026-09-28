@@ -149,7 +149,25 @@ concrete, auditable ways:
    charges `3 · |right|` while the work is `left.iter().filter(|p| !right.contains(p))` — a linear
    scan per element, so `|left| · |right|`. Charging one factor for a product is the sublinear-charge
    shape that lets a phlo buy unbounded work, and it is the shape that made the per-block phlo cap
-   inoperative: a cap bounds work only when the charge tracks it.
+   inoperative: a cap bounds work only when the charge tracks it. `indexOf` and `contains` are the
+   same defect one table entry over — `n + m` charged for a scan whose worst case is `n · m` — and
+   are charged the product too; `startsWith`/`endsWith` really are `n + m` and keep that charge.
+
+11. **`replace` is charged for the string it is about to build, not for its inputs.** `input + old +
+   new` bought `input + k·(new − old)` output, with `k` up to `input / old`, so a short needle and a
+   long replacement amplified without bound — 100 KB × 100 KB is a 10 GB allocation. The charge is
+   the output bound, computed in constant time and taken *before* the allocation, so the phlo budget
+   is what stops it. Charged rather than refused, which is the least invasive form the fix could
+   take: no new constant, and no term the reference accepts is now rejected.
+
+   **One thing this pass reverted rather than kept.** The plan called for a per-byte charge on the
+   crypto builtins, on the grounds that a 16 MiB hash cost a flat charge. Implementing it made the
+   gap visible: those bytes have to be *produced or consumed through the storage path*, which charges
+   proportionally to their size, so the hash reads bytes that were already paid for and a flat charge
+   buys no unbounded work. A test was written for it and refused the term with the charge reverted —
+   for the parse, not the hash — which is a test that would have gone on passing if the charge were
+   deleted. It is not in the tree, and neither is the charge. A finding that does not survive being
+   implemented is the finding that was wrong.
 
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely

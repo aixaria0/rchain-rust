@@ -212,12 +212,57 @@ impl Costs {
         Cost::new(len, what)
     }
     /// Cost of a substring search (`indexOf`, `contains`, `startsWith`, `endsWith`).
+    ///
+    /// Right for the *anchored* tests — `startsWith` and `endsWith` compare at one position, so
+    /// `n + m` is the work — and wrong for the *scanning* ones, which is what
+    /// [`Self::string_search_worst_cost`] exists for. Kept for the anchored pair.
     pub fn string_search_cost(haystack: i64, needle: i64, what: &str) -> Cost {
         Cost::new(haystack.saturating_add(needle), what)
     }
-    /// Cost of `replace` (walk the input, build the output).
+    /// Cost of a *scanning* substring search, proportional to the product (audit F-3).
+    ///
+    /// `indexOf` and `contains` walk the haystack a window at a time and compare each window against
+    /// the needle, so the worst case is `n · m` — `"aaaa…a"` against `"aaaa…b"` compares nearly the
+    /// whole needle at every position. Charging `n + m` for that is the sublinear-charge shape: the
+    /// amplification factor is unbounded in the ratio of needle to haystack, and this is the same
+    /// defect as `diff_cost` one table entry over. The `.max(n + m)` floor keeps a one-character
+    /// search from costing nothing.
+    pub fn string_search_worst_cost(haystack: i64, needle: i64, what: &str) -> Cost {
+        Cost::new(
+            haystack.saturating_mul(needle).max(haystack + needle),
+            format!("{what} (worst case)"),
+        )
+    }
+    /// Cost of `replace`, proportional to the **output it is about to build** (audit F-3).
+    ///
+    /// The old charge was `input + old + new` — linear in the *inputs* — while `str::replace`
+    /// allocates `input + k·(new − old)` for `k` occurrences, and `k` can be `input / old`. With `old`
+    /// one character and `new` as long as the input, a 100 KB × 100 KB call builds a 10 GB string for
+    /// a charge proportional to 200 KB. The amplification is unbounded in the ratio of `new` to `old`,
+    /// which is the same shape as `diff_cost`.
+    ///
+    /// **Charged, not refused**, and deliberately: the bound below is computable in constant time and
+    /// the charge lands *before* the allocation, so the deploy's phlo budget is what stops it. That is
+    /// strictly less invasive than a size cap — no new constant, and no term that used to be accepted
+    /// is now rejected. Where a charge can bound the work, a refusal is not needed.
+    ///
+    /// **The ordering is the whole justification, and it is not pinned by a test.** A test was written
+    /// and removed: it could not discriminate, because the storage path also charges for the result
+    /// once it is produced, and that charge dominates every budget a rholang-level test can construct
+    /// — so the test refused the term with this charge reverted to its old form, and would have gone
+    /// on passing if the charge were deleted. What the charge uniquely buys is that the refusal
+    /// happens *before* the allocation rather than after it, which is the difference between a refused
+    /// deploy and a node that has just tried to build a 10 GB string; that is an ordering property and
+    /// a test would need to observe a non-allocation. Recorded here rather than left as a green test
+    /// that proves nothing — the same trade the DAG write-order fix made.
     pub fn string_replace_cost(input: i64, old: i64, new: i64) -> Cost {
-        Cost::new(input.saturating_add(old).saturating_add(new), "replace")
+        // `k <= input / old`, so this upper-bounds the result without building it. `old <= 0` cannot
+        // splice (the caller leaves the input as-is for an empty `old`), so it produces no growth.
+        let occurrences = if old <= 0 { 0 } else { input / old };
+        Cost::new(
+            input.saturating_add(occurrences.saturating_mul(new)),
+            "replace",
+        )
     }
     /// Cost of `split` (walk the input and the separator).
     pub fn string_split_cost(input: i64, sep: i64) -> Cost {

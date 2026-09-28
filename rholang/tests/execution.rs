@@ -915,6 +915,75 @@ async fn the_reported_cost_includes_the_parse() {
     );
 }
 
+/// **`indexOf` and `contains` are charged for a scan, not for their lengths** (AUDIT F-3).
+///
+/// Both walk the haystack a window at a time and compare each window against the needle, so the worst
+/// case is `n · m` — a haystack of `"aaa…a"` against a needle of `"aaa…b"` compares nearly the whole
+/// needle at every position. The charge was `n + m`. `startsWith`/`endsWith` really are `n + m` and
+/// keep that charge; the scanning pair does not.
+#[tokio::test]
+async fn a_substring_search_is_charged_for_its_worst_case() {
+    // 2 000 characters searched for a 1 000-character needle that matches everywhere but the last
+    // position: ~10⁶ comparisons, charged as 3 000 under the old `n + m`.
+    let hay = "a".repeat(2_000);
+    let needle = format!("{}b", "a".repeat(999));
+    let term = format!(r#"@"out"!("{hay}".indexOf("{needle}"))"#);
+
+    let tight = build_runtime(false).await;
+    tight.cost().set(Cost::new(500_000, "deploy"));
+    let refused = tight
+        .evaluate(&term, &fixed_rand())
+        .await
+        .expect("no node fault");
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|e| matches!(e, RholangError::OutOfPhlogistonsError)),
+        "a worst-case scan must be charged for its worst case: {:?}",
+        refused.errors
+    );
+}
+
+/// **A set difference is charged for the product of its operands, not one of them** (AUDIT F-3).
+///
+/// `a.diff(b)` filters `a` by `!b.contains(p)`, and `contains` on a set is a linear scan, so the work
+/// is `|a| · |b|` while the charge was `3 · |b|`. Two 500-element sets cost 1 500 phlo and compared
+/// 250 000 times: the amplification is unbounded in the sizes, and it is why the per-block phlo cap
+/// could not contain a block — a cap bounds work only when a phlo buys bounded work.
+///
+/// The budget sits above the old total and below the new one, which is what makes this a test of the
+/// diff charge rather than of the parse or the produce.
+#[tokio::test]
+async fn a_set_difference_is_charged_for_the_product() {
+    let join = |lo: i64| {
+        (lo..lo + 500)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let term = format!(
+        r#"@"out"!(([{}].toSet()).diff([{}].toSet()))"#,
+        join(0),
+        join(1_000)
+    );
+
+    let tight = build_runtime(false).await;
+    tight.cost().set(Cost::new(100_000, "deploy"));
+    let refused = tight
+        .evaluate(&term, &fixed_rand())
+        .await
+        .expect("no node fault");
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|e| matches!(e, RholangError::OutOfPhlogistonsError)),
+        "a 500 x 500 difference must be charged for the product: {:?}",
+        refused.errors
+    );
+}
+
 /// And the charge lands on the *budget*, not merely in the report: a deploy whose phlo limit cannot
 /// cover its own parse is refused before the term runs (AUDIT F-2).
 ///
