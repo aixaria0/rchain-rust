@@ -75,6 +75,30 @@ What this means for sizing:
   only grows with real traffic stays in the safe zone much longer. Steady-state production is cheap — the
   cost is all in start-up.
 
+**Correction, 2026-09-28: the per-block figures above are measurements, but the rule drawn from them is
+not linear, and the ceiling it implies is wrong at height.** Everything above is stated as a rate — "~0.25
+MB RSS and ~0.2 s per block" — which reads as a constant to multiply by a block count. It is not: the
+DAG's per-message ancestry sets are Θ(N²) in total, so the *marginal* cost of a block rises with how many
+blocks are already in the DAG. Three measured points, and they do not lie on a line:
+
+| measured | per block, resident |
+|---|---|
+| 131 produced blocks (the table above) | ~0.02 MB |
+| 100–300 blocks, fresh devnet, 2026-09-28 (`tools/devnet-bench.py`) | 0.16–0.23 MB |
+| **3 200 blocks** ([#68](https://github.com/rchain-community/rchain-rust/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** |
+
+So the third row is the one to size from, and it is why "≥ 2 GB for ~1k blocks" should not be extended by
+multiplication: 1.8 GB at 3 200 blocks is *below* a linear reading of that sentence, while a 10 000-block
+chain is not, and restart time grows faster than the height. What can be said honestly is what has been
+measured: **size for the peak at the height you intend to carry, expect start-up to get worse
+superlinearly, and treat a few thousand blocks as the point where this stops fitting a small host.**
+
+**And one line of the list above is now stale: there *is* progress output.** A node indexing its store
+logs a line every 250 blocks (`casper/src/merging.rs`, commit `43a549e9c`), and a node speaks as it starts
+serving — but **readiness is still only implicit**: the API binds after replay completes, so a client sees
+connection-refused, which is indistinguishable from a crash. Bounding the rebuild is tracked as #68; the
+start-up cost is otherwise unbounded and this section is the only place it is written down.
+
 Tracked as [#60](https://github.com/rchain-community/rchain-rust/issues/60), which carries a
 self-contained reproduction (a memory-capped `systemd-run` unit) and separates what is measured from what
 is still unattributed.

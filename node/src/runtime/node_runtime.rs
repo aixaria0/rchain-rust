@@ -559,6 +559,15 @@ impl NodeProgram {
             }
         });
 
+        // **The first moment a node can say the expensive part is over, and the expensive part is
+        // replay rather than the bind** (issue #60's observability half). Every costly step — the store
+        // rebuilds, the metadata and DAG indices, the block-index replay — completes *before* this
+        // function is called, so reaching here is the signal an operator greps for when a node looks
+        // hung on a long chain. It deliberately does not claim the API is answering: a bind failure is
+        // reported by `listener_stopped` below (AUDIT C142), and a line here claiming more than this
+        // could become a lie.
+        eprintln!("replay complete — starting listeners; the API answers once they are up");
+
         // Every one of these is an accept loop: it returns only when something has already gone
         // wrong (a failed bind, a panicking task, a listener closing), so the **first** completion is
         // the fact the operator needs. `join!` waited for all five instead, and since four of them

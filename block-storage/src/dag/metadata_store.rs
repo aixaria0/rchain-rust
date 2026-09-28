@@ -98,12 +98,22 @@ pub fn validate_dag_state(state: &DagState) -> Result<(), String> {
 }
 
 /// Rebuild in-memory state from a block-info map, then validate.
+///
+/// **In place, and that is the whole of its cost fix.** It used to fold through
+/// [`add_block_to_dag_state`], which is `state.clone()` and then the mutating form — so each of N
+/// blocks deep-cloned all three maps while the previous binding was still alive, and rebuilding a
+/// chain was O(N²) in allocations on the **start-up** path, where N is every block ever accepted.
+/// [`add_block_to_dag_state_mut`] is what the live path uses — the module doc above says why an
+/// unshared state is extended in place — and this is an unshared state by construction.
+///
+/// The equivalence is pinned rather than trusted: `the_in_place_rebuild_equals_the_cloning_one`
+/// asserts the two forms produce the same state, which is what made the change safe to make.
 pub fn recreate_in_memory_state(
     blocks: &BTreeMap<BlockHash, BlockInfo>,
 ) -> Result<DagState, String> {
     let mut state = DagState::empty();
     for block in blocks.values() {
-        state = add_block_to_dag_state(block, &state);
+        add_block_to_dag_state_mut(block, &mut state);
     }
     validate_dag_state(&state)?;
     Ok(state)
@@ -162,5 +172,44 @@ mod tests {
         assert_eq!(s2.child_map[&parent], [child].into_iter().collect());
         assert!(s2.child_map[&child].is_empty());
         assert_eq!(*s2.dag_set, [parent, child].into_iter().collect());
+    }
+
+    /// **The in-place rebuild is the same state as the cloning one, which is what made the change
+    /// safe to make.** `recreate_in_memory_state` folded through `add_block_to_dag_state` — `clone`
+    /// then mutate — so an N-block rebuild deep-cloned the whole `DagState` N times on the start-up
+    /// path; it now calls the mutating form directly. The two must agree exactly, over a chain with a
+    /// **fork**, because the maps built here are the ones the start-up path hands to the finalizer,
+    /// and a difference would surface as a finality disagreement rather than as a compile error.
+    ///
+    /// The fork is the load-bearing part of the fixture: a linear chain exercises `child_map` and
+    /// `height_map` one entry at a time, while two children under one parent is where a per-block
+    /// rebuild could put a set in the wrong place and still produce a state that validates.
+    #[test]
+    fn the_in_place_rebuild_equals_the_cloning_one() {
+        let mut blocks = BTreeMap::new();
+        let (h0, h1, h2, h2b, h3) = (hash(0), hash(1), hash(2), hash(3), hash(4));
+        blocks.insert(h0, info(h0, &[], 0));
+        blocks.insert(h1, info(h1, &[h0], 1));
+        blocks.insert(h2, info(h2, &[h1], 2));
+        blocks.insert(h2b, info(h2b, &[h1], 2));
+        blocks.insert(h3, info(h3, &[h2, h2b], 3));
+
+        let in_place = recreate_in_memory_state(&blocks).expect("the fork validates");
+
+        // The reference: the cloning fold this function used to be.
+        let mut cloning = DagState::empty();
+        for block in blocks.values() {
+            cloning = add_block_to_dag_state(block, &cloning);
+        }
+
+        assert_eq!(
+            in_place, cloning,
+            "the in-place rebuild must equal the cloning one, or the optimisation changed the state"
+        );
+        assert_eq!(
+            in_place.child_map[&h1],
+            [h2, h2b].into_iter().collect(),
+            "and the fork is what makes the equality above mean something"
+        );
     }
 }
