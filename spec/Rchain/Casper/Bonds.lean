@@ -26,7 +26,7 @@ state, at the one site the row's note names.
 
 ## What the state's own answer is, and the model finding this module rests on
 
-`pos:active` is a `BTreeMap<Validator, NonNegI64>` — **with stakes** (`native_state.rs:763-771`), written
+`pos:active` is a `BTreeMap<Validator, NonNegI64>` — **with stakes** (`native_state.rs:796-798`), written
 by `select_active(&pool, …)` at a boundary (`:1152-1157`), by genesis installation (`:937`) and by
 `slash` (`:1229`) — and **not** by `bond`. So between boundaries the pool's stakes move and the active
 map's do not: the map the finalizer's gates read is the *boundary snapshot*, which is law 44's own
@@ -45,7 +45,7 @@ is the content, because either half alone is a spelling. -/
 namespace Rchain
 
 /-- The port's `pos:active` leaf: the consensus set **with the stakes recorded when it was selected**
-    (`BTreeMap<Validator, NonNegI64>`, `native_state.rs:763-771`). Not a set of ids: the stakes are the
+    (`BTreeMap<Validator, NonNegI64>`, `native_state.rs:796-798`). Not a set of ids: the stakes are the
     whole point, and they are a boundary snapshot rather than a view of `pool`. -/
 abbrev ActiveBonds := List (Validator × Nat)
 

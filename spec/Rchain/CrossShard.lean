@@ -48,7 +48,7 @@ def ValidShardId (s : ShardId) : Prop := s ≠ ""
 /-! ## The transaction model -/
 
 /-- A transaction record's state, as the port has it: **three** variants
-    (`rholang/src/native_state.rs:106-111`). The coordinator's PR-style `proposed` this model used to
+    (`rholang/src/native_state.rs:151-155`). The coordinator's PR-style `proposed` this model used to
     carry was not a record state at all — a transaction with no record is `Ledger.record = none`, which
     is how the verbs below spell it (they return `"txn commit: unknown transaction"`). -/
 inductive TxnState where
@@ -340,12 +340,12 @@ theorem leg_idempotent (st : ShardId → Nat) (l : Leg) :
 
 `applyEffect` is the per-shard view, and the port's `prepare`/`commit`/`abort` are not pointwise
 updates: they read a record, decide, and write both a vault balance and a record
-(`rholang/src/native_state.rs:897-990`). Modelled here so the law is about those verbs: idempotence
+(`rholang/src/native_state.rs:1650-1743`). Modelled here so the law is about those verbs: idempotence
 comes from the **early return on an existing record** (which the port takes *before* the balance check,
-`:881-883`), and the fences — commit after abort is an error, abort after commit is an error
-(`:912`, `:944`) — are stated too, because idempotence alone would permit both. -/
+`:1658-1660`), and the fences — commit after abort is an error, abort after commit is an error
+(`:1689`, `:1721`) — are stated too, because idempotence alone would permit both. -/
 
-/-- A transaction record (the port's `TxnRecord`, `native_state.rs:135-141`). The coordinator key is
+/-- A transaction record (the port's `TxnRecord`, `native_state.rs:179-185`). The coordinator key is
     part of the port's record and is not modelled: no rule below reads it. -/
 structure TxnRecord where
   state : TxnState
@@ -355,21 +355,21 @@ structure TxnRecord where
   deriving Repr
 
 /-- The store the port keeps: vault balances under `PREFIX_VAULT` and transaction records under
-    `PREFIX_TXN`, both keyed by a hash (`native_state.rs:862-893`) — modelled as maps, with the
+    `PREFIX_TXN`, both keyed by a hash (`native_state.rs:135-138`, `:1499-1522`) — modelled as maps, with the
     transaction id a `Nat` as it is in `Txn.txn_id`. -/
 structure Ledger where
   vault : String → Nat
   txn : List (Nat × TxnRecord)
 
-/-- The record for a transaction id, if any (the port's `txn`, `native_state.rs:883-888`). -/
+/-- The record for a transaction id, if any (the port's `txn`, `native_state.rs:1635-1641`). -/
 def Ledger.record (g : Ledger) (id : Nat) : Option TxnRecord :=
   (g.txn.find? (fun p => p.1 == id)).map (fun p => p.2)
 
-/-- Write a record (the port's `set_txn`, `native_state.rs:891-893`). -/
+/-- Write a record (the port's `set_txn`, `native_state.rs:1643-1646`). -/
 def Ledger.setRecord (g : Ledger) (id : Nat) (r : TxnRecord) : Ledger :=
   { g with txn := (id, r) :: g.txn.filter (fun p => p.1 ≠ id) }
 
-/-- Write a vault balance (the port's `set_vault_balance`, `native_state.rs:862-868`). -/
+/-- Write a vault balance (the port's `set_vault_balance`, `native_state.rs:1516-1522`). -/
 def Ledger.setVault (g : Ledger) (a : String) (v : Nat) : Ledger :=
   { g with vault := fun x => if x = a then v else g.vault x }
 
@@ -378,7 +378,7 @@ theorem Ledger.record_setRecord (g : Ledger) (id : Nat) (r : TxnRecord) :
     (g.setRecord id r).record id = some r := by
   simp [Ledger.setRecord, Ledger.record]
 
-/-- `txn_prepare` (`native_state.rs:897-925`): escrow `amount` from the payer's vault. An existing record is
+/-- `txn_prepare` (`native_state.rs:1650-1679`): escrow `amount` from the payer's vault. An existing record is
     returned **before** the balance check — that early return *is* the idempotence, and its position is
     why a retry cannot fail on a state the first call already accepted. -/
 def txnPrepare (g : Ledger) (id : Nat) (payer payee : String) (amount : Nat) : Except String Ledger :=
@@ -390,7 +390,7 @@ def txnPrepare (g : Ledger) (id : Nat) (payer payee : String) (amount : Nat) : E
       .ok ((g.setVault payer (g.vault payer - amount)).setRecord id
         { state := .prepared, amount := amount, src := payer, dst := payee })
 
-/-- `txn_commit` (`native_state.rs:930-959`): pay the escrow to the payee. A committed record is
+/-- `txn_commit` (`native_state.rs:1683-1711`): pay the escrow to the payee. A committed record is
     returned unchanged; an aborted one is an error. -/
 def txnCommit (g : Ledger) (id : Nat) : Except String Ledger :=
   match g.record id with
@@ -402,7 +402,7 @@ def txnCommit (g : Ledger) (id : Nat) : Except String Ledger :=
     | .prepared =>
       .ok ((g.setVault r.dst (g.vault r.dst + r.amount)).setRecord id { r with state := .committed })
 
-/-- `txn_abort` (`native_state.rs:962-990`): return the escrow to the payer. An aborted record is
+/-- `txn_abort` (`native_state.rs:1715-1743`): return the escrow to the payer. An aborted record is
     returned unchanged; a committed one is an error. -/
 def txnAbort (g : Ledger) (id : Nat) : Except String Ledger :=
   match g.record id with
@@ -415,7 +415,7 @@ def txnAbort (g : Ledger) (id : Nat) : Except String Ledger :=
       .ok ((g.setVault r.src (g.vault r.src + r.amount)).setRecord id { r with state := .aborted })
 
 /-- A ledger that already holds a record for `id` is a **fixed point** of `prepare` — which is what the
-    port's early return *is* (`native_state.rs:905-907`). The idempotence below is its consequence. -/
+    port's early return *is* (`native_state.rs:1658-1660`). The idempotence below is its consequence. -/
 theorem txnPrepare_fixes (g : Ledger) (id : Nat) (payer payee : String) (amount : Nat)
     (r : TxnRecord) (h : g.record id = some r) : txnPrepare g id payer payee amount = .ok g := by
   simp [txnPrepare, h]
@@ -439,7 +439,7 @@ theorem txnPrepare_idempotent (g : Ledger) (id : Nat) (payer payee : String) (am
       subst h
       exact txnPrepare_fixes _ id payer payee amount _ (Ledger.record_setRecord _ id _)
 
-/-- A ledger holding a **committed** record is a fixed point of `commit` (`native_state.rs:934-936`). -/
+/-- A ledger holding a **committed** record is a fixed point of `commit` (`native_state.rs:1687-1691`). -/
 theorem txnCommit_fixes (g : Ledger) (id : Nat) (r : TxnRecord) (h : g.record id = some r)
     (hr : r.state = .committed) : txnCommit g id = .ok g := by
   simp [txnCommit, h, hr]
@@ -464,7 +464,7 @@ theorem txnCommit_idempotent (g : Ledger) (id : Nat) (g' : Ledger)
       subst h
       exact txnCommit_fixes _ id _ (Ledger.record_setRecord _ id _) rfl
 
-/-- A ledger holding an **aborted** record is a fixed point of `abort` (`native_state.rs:966-968`). -/
+/-- A ledger holding an **aborted** record is a fixed point of `abort` (`native_state.rs:1719-1723`). -/
 theorem txnAbort_fixes (g : Ledger) (id : Nat) (r : TxnRecord) (h : g.record id = some r)
     (hr : r.state = .aborted) : txnAbort g id = .ok g := by
   simp [txnAbort, h, hr]
@@ -489,13 +489,13 @@ theorem txnAbort_idempotent (g : Ledger) (id : Nat) (g' : Ledger)
       exact txnAbort_fixes _ id _ (Ledger.record_setRecord _ id _) rfl
 
 /-- **And the two fences**, which idempotence alone would not give: the terminal verbs refuse each
-    other, with the port's own message (`native_state.rs:936`). -/
+    other, with the port's own message (`native_state.rs:1689`). -/
 theorem commit_after_abort_is_an_error (g : Ledger) (id : Nat) (r : TxnRecord)
     (h : g.record id = some r) (hr : r.state = .aborted) :
     txnCommit g id = .error "txn commit: already aborted" := by
   simp [txnCommit, h, hr]
 
-/-- Aborting a committed transaction is an error (`native_state.rs:968`). -/
+/-- Aborting a committed transaction is an error (`native_state.rs:1721`). -/
 theorem abort_after_commit_is_an_error (g : Ledger) (id : Nat) (r : TxnRecord)
     (h : g.record id = some r) (hr : r.state = .committed) :
     txnAbort g id = .error "txn abort: already committed" := by
@@ -503,7 +503,7 @@ theorem abort_after_commit_is_an_error (g : Ledger) (id : Nat) (r : TxnRecord)
 
 /-- An overdraft is refused with the port's message, **and refused before any write**: the ledger is
     returned untouched only as an `Except.error`, so nothing was escrowed
-    (`native_state.rs:910`). -/
+    (`native_state.rs:1663`). -/
 theorem prepare_refuses_overdraft (g : Ledger) (id : Nat) (payer payee : String) (amount : Nat)
     (h : g.record id = none) (hb : g.vault payer < amount) :
     txnPrepare g id payer payee amount = .error "txn prepare: insufficient balance" := by

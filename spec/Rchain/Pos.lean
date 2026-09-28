@@ -10,7 +10,7 @@ refunded quarantined withdrawers and recomputed `pos:active` on *every* block, n
 replaces (`legacy/casper/src/main/resources/Pos.rhox`: `blockNumber % $$epochLength$$ == 0`, :517;
 rewards computed at the boundary, `getCurrentEpochRewards` :241-256, and committed,
 `commitCurrentEpochRewards` :568-576; only expired quarantines paid, :556-567, :592-621). The port
-keeps the contract's *meaning* for a zero epoch length (`native_state.rs:630-636`: the divisor is
+keeps the contract's *meaning* for a zero epoch length (`native_state.rs:632-647`: the divisor is
 `max(epoch_length, 1)`, so a zero means one-block epochs rather than a division fault).
 
 Laws 44 and 47 remain `open` for a different reason: what they name is the **state machine** the gate
@@ -149,7 +149,7 @@ the epoch it leaves.
 
 `totalRev` sums the **coin fields only**. The pool, the requests, the claims and the committed map are
 *liabilities against the staking vault* — ledger entries, not coins — which is why the Rust's own
-`total_rev` helper sums exactly the three coin fields (`native_state.rs:1611-1623`), and why the port's
+`total_value` helper sums exactly the three coin fields (`native_state.rs:915-961`), and why the port's
 `slash`-minted-before-`ba9e259a7` bug is this theorem's motivating counterexample: it credited the Coop
 vault without debiting the staking vault. Counting the ledgers in the sum would make the theorem false,
 not stronger.
@@ -158,7 +158,7 @@ not stronger.
 namespace Rchain
 
 /-- A validator's claim on the staking vault: the bond escrowed out of the pool, and the block at which it
-    may be paid (`Withdrawal`, `native_state.rs:388-392`). The struct stores the **bond only** — the
+    may be paid (`Withdrawal`, `native_state.rs:389-404`). The struct stores the **bond only** — the
     reward is read from the committed map at payment time, which is what lets a validator be paid for the
     epoch it left in. -/
 structure PosClaim where
@@ -168,7 +168,7 @@ structure PosClaim where
 deriving DecidableEq
 
 /-- A staged withdrawal: the validator and the block at which its quarantine expires
-    (`pos:pending_withdrawers`, `native_state.rs:90-92`). -/
+    (`pos:pending_withdrawers`, `native_state.rs:89-94`). -/
 structure PosRequest where
   who : Validator
   deadline : Nat
@@ -193,8 +193,8 @@ structure PosState where
   pool : List (Validator × Nat)
   /-- The active set (`pos:active`) — recomputed by step 4, never by `bond` — **carrying the stakes it
       selected**, because that is what the port's leaf holds: a `BTreeMap<Validator, NonNegI64>` with
-      stakes (`native_state.rs:763-771`), written by `select_active` at a boundary (`:1152-1157`), by
-      genesis (`:937`) and by `slash` (`:1229`). It is deliberately **not** a view of `pool`: between
+      stakes (`native_state.rs:796-798`), written by `select_active` at a boundary (`:1312-1317`), by
+      genesis (`:1061`) and by `slash` (`:1429`). It is deliberately **not** a view of `pool`: between
       boundaries the pool's stakes move and this one does not, which is law 44's own gate seen from the
       side the finalizer's bonds map is read on (AUDIT C92). -/
   active : List (Validator × Nat)
@@ -211,12 +211,12 @@ structure PosState where
 deriving DecidableEq
 
 /-- **The conserved quantity**: every user vault plus the staking vault plus the Coop vault — the sum the
-    Rust's `total_rev` computes (`native_state.rs:1611-1623`). The ledgers are deliberately outside it:
+    Rust's `total_value` computes (`native_state.rs:915-961`). The ledgers are deliberately outside it:
     they are claims *against* `vault`, and counting them would count the same REV twice. -/
 def totalRev (s : PosState) : Nat := s.vault + s.coop + s.user
 
 /-- A ledger lookup — `0` for an absent key, the port's `unwrap_or(NonNegI64::zero())`
-    (`native_state.rs:1133-1136`, `:1137`). -/
+    (`native_state.rs:1257-1260`, `:1290`). -/
 def lookup : List (Validator × Nat) → Validator → Nat
   | [], _ => 0
   | (w, x) :: rest, v => if w = v then x else lookup rest v
@@ -226,34 +226,34 @@ def setKey (l : List (Validator × Nat)) (v : Validator) (x : Nat) : List (Valid
   if l.any (fun p => p.1 = v) then l.map (fun p => if p.1 = v then (v, x) else p)
   else (v, x) :: l
 
-/-- **The epoch divisor**: `max(epoch_length, 1)` (`epoch_divisor`, `native_state.rs:608-614`). The
+/-- **The epoch divisor**: `max(epoch_length, 1)` (`epoch_divisor`, `native_state.rs:632-647`). The
     contract divides by `$$epochLength$$` directly and faults on zero; the port reads a zero as "every
     block is a boundary", which is what `epoch_length = 1` means to the contract. -/
 def divisor (s : PosState) : Nat := max s.epochLength 1
 
-/-- **The gate** (`is_epoch_boundary`, `native_state.rs:618-620`): an epoch runs exactly when the block
+/-- **The gate** (`is_epoch_boundary`, `native_state.rs:649-653`): an epoch runs exactly when the block
     number is a multiple of the divisor. -/
 def isBoundary (s : PosState) (n : Nat) : Bool := n % divisor s == 0
 
 /-- The deadline a withdrawal staged at block `n` is given:
-    `quarantineLength + epochLength * (1 + n / divisor)` (`native_state.rs:1075-1081`, `Pos.rhox:381`). -/
+    `quarantineLength + epochLength * (1 + n / divisor)` (`native_state.rs:1179-1184`, `Pos.rhox:381`). -/
 def withdrawDeadline (s : PosState) (n : Nat) : Nat :=
   s.quarantineLength + s.epochLength * (1 + n / divisor s)
 
-/-- **The withdrawal request** (`withdraw`, `native_state.rs:1066-1086`): the request records a deadline
+/-- **The withdrawal request** (`withdraw`, `native_state.rs:1151-1189`): the request records a deadline
     and changes **nothing else** — the validator stays in the pool and in the active set, still earning.
     This is law 47's first stage. -/
 def stage (s : PosState) (v : Validator) (n : Nat) : PosState :=
   { s with requests := ⟨v, withdrawDeadline s n⟩ :: s.requests }
 
-/-- **A bond** (`bond`, `native_state.rs:986-1051`): the stake moves from the user's vault into the
+/-- **A bond** (`bond`, `native_state.rs:1074-1149`): the stake moves from the user's vault into the
     staking vault and the validator joins the **pool** — and the active set is untouched. Activation is
     the boundary's step 4, which is law 44's "pooled but not activated". -/
 def bond (s : PosState) (v : Validator) (stake : Nat) : PosState :=
   { s with user := s.user - stake, vault := s.vault + stake, pool := (v, stake) :: s.pool }
 
 /-- Step 1 of `close_block`: the epoch's rewards are written into the **committed** ledger
-    (`native_state.rs:1128-1141`). The amounts are `Rchain.reward`'s (modelled above); the machine takes
+    (`native_state.rs:1252-1265`). The amounts are `Rchain.reward`'s (modelled above); the machine takes
     them as given, because no amount moves a coin — and *that* is what conservation claims. -/
 def commitRewards (r : Validator → Nat) (s : PosState) : PosState :=
   { s with
@@ -262,7 +262,7 @@ def commitRewards (r : Validator → Nat) (s : PosState) : PosState :=
         setKey l wb.1 (lookup l wb.1 + r wb.1)) s.committed }
 
 /-- Step 2: every staged request becomes an escrowed claim — its bond leaves the pool and its deadline is
-    recorded (`native_state.rs:1143-1154`). No coin moves: the escrowed bond is still in the vault and the
+    recorded (`native_state.rs:1267-1278`). No coin moves: the escrowed bond is still in the vault and the
     validator's own vault is still empty. Law 47's second stage. -/
 def movePending (s : PosState) : PosState :=
   { s with
@@ -273,12 +273,12 @@ def movePending (s : PosState) : PosState :=
     pool := s.pool.filter (fun wb => !(s.requests.any (fun r => r.who = wb.1))),
     requests := [] }
 
-/-- The claims a boundary pays: those whose quarantine has elapsed (`native_state.rs:1156-1161`, the
+/-- The claims a boundary pays: those whose quarantine has elapsed (`native_state.rs:1281-1285`, the
     filter `w.deadline <= block_number`). -/
 def dueClaims (s : PosState) (n : Nat) : List PosClaim := s.claims.filter (fun c => c.deadline ≤ n)
 
 /-- What one claim is paid: its bond **plus** its committed reward, read from the ledger at payment time
-    (`native_state.rs:1166-1167`; the contract's `bonds + committedRewards.getOrElse(pk, 0)`,
+    (`native_state.rs:1290-1291`; the contract's `bonds + committedRewards.getOrElse(pk, 0)`,
     `Pos.rhox:604`). -/
 def payoutOf (s : PosState) (c : PosClaim) : Nat := c.bond + lookup s.committed c.who
 
@@ -286,13 +286,13 @@ def payoutOf (s : PosState) (c : PosClaim) : Nat := c.bond + lookup s.committed 
 def duePayout (s : PosState) (n : Nat) : Nat := nsum ((dueClaims s n).map (payoutOf s))
 
 /-- Step 3: pay every due claim — debit the staking vault, credit the validator's vault, remove the claim
-    and its committed entry (`native_state.rs:1162-1177`). Written as one batch rather than a fold, which
+    and its committed entry (`native_state.rs:1286-1302`). Written as one batch rather than a fold, which
     is the same function whenever a validator has at most one claim: the port's `withdrawers` is a *map*,
     so that is an invariant of the mechanism rather than a coincidence.
 
     **`none` is the port's refusal, not a silent half-payment.** `debit_pos_vault` returns an error when
     the vault cannot cover the transfer and `close_block` propagates it, having persisted nothing (its
-    writes come after all four steps, `native_state.rs:1180-1186`). An unguarded `Nat` subtraction would
+    writes come after all four steps, `native_state.rs:1313-1317`). An unguarded `Nat` subtraction would
     instead truncate the debit and *mint* the difference — a model that quietly does the wrong thing,
     which is the failure mode this project's Rust avoids structurally and its models are supposed to as
     well. So the payment is partial on purpose, and the conservation theorem below carries no hypothesis:
@@ -307,14 +307,14 @@ def payDue (s : PosState) (n : Nat) : Option PosState :=
   else none
 
 /-- Step 4: the active set for the epoch that starts now — the pool's members **with their stakes**,
-    minus anyone whose bond is escrowed in a claim (`select_active`, `native_state.rs:547-566`). The
+    minus anyone whose bond is escrowed in a claim (`select_active`, `native_state.rs:558-618`). The
     stakes are kept rather than dropped: this is the `pos:active` map the finalizer's gates read, and a
     bond that arrives between boundaries must not move it (law 44, and AUDIT C92's finding). -/
 def reselect (s : PosState) : PosState :=
   { s with
     active := s.pool.filter (fun wb => !(s.claims.any (fun c => c.who = wb.1))) }
 
-/-- **The epoch transition**, in `close_block`'s order (`native_state.rs:1112-1187`): commit the rewards,
+/-- **The epoch transition**, in `close_block`'s order (`native_state.rs:1219-1354`): commit the rewards,
     move the staged withdrawals into claims, pay the claims whose quarantine elapsed, re-select the active
     set. The gate is *outside* this function (`closeBlock`), because a transition that branched on it
     would make "off a boundary nothing changes" a restatement of its own definition. -/
@@ -322,15 +322,15 @@ def epochStep (r : Validator → Nat) (s : PosState) (n : Nat) : Option PosState
   (payDue (movePending (commitRewards r s)) n).map reselect
 
 /-- `close_block`: at a boundary the epoch runs; off one, **nothing is written at all** — the port returns
-    before touching state (`native_state.rs:1112-1121`). -/
+    before touching state (`native_state.rs:1224-1225`). -/
 def closeBlock (r : Validator → Nat) (s : PosState) (n : Nat) : Option PosState :=
   if isBoundary s n then epochStep r s n else some s
 
 /-! ### Conservation -/
 
-/-- **A payout is a transfer, not a mint** — the property the port's `total_rev` helper exists to assert.
+/-- **A payout is a transfer, not a mint** — the property the port's `total_value` helper exists to assert.
     No hypothesis: the guard *is* the port's refusal (`debit_pos_vault` fails a transfer the vault cannot
-    cover, `native_state.rs:1168`, rather than half-paying it), so whatever the step returned conserves. -/
+    cover, `native_state.rs:1292`, rather than half-paying it), so whatever the step returned conserves. -/
 theorem payDue_conserves (s : PosState) (n : Nat) {s' : PosState} (h : payDue s n = some s') :
     totalRev s' = totalRev s := by
   unfold payDue at h
@@ -457,7 +457,7 @@ theorem a_boundary_activates_the_pool (r : Validator → Nat) (s : PosState) (n 
 /-- **The ordering the release rule depends on**: the move of step 2 leaves the committed ledger
     exactly as step 1 wrote it, so a validator that leaves the pool at this boundary is still paid
     against a reward committed for the epoch it was in. The two steps are ordered commit-then-move in
-    `epochStep` for this reason (`native_state.rs:1128-1154`, `Pos.rhox:568-588`). -/
+    `epochStep` for this reason (`native_state.rs:1252-1278`, `Pos.rhox:568-588`). -/
 theorem the_move_does_not_disturb_the_ledger (r : Validator → Nat) (s : PosState) (v : Validator) :
     lookup (movePending (commitRewards r s)).committed v
       = lookup (commitRewards r s).committed v := by

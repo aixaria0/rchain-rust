@@ -205,7 +205,11 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
             // A **system** deploy as well as a user one: the replay of a system deploy is a different
             // path (`RuntimeReplayOps::replay_block_system_deploy`, and the `eval_system_deploy`/
             // `consume_system_result` pair under it), and a block with none leaves it unreachable.
-            &[SystemDeploy::close_block(1, block_rand.clone())],
+            &[SystemDeploy::close_block(
+                1,
+                genesis_post,
+                block_rand.clone(),
+            )],
             &block_rand,
             BlockData::empty(),
         )

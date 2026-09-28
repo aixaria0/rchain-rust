@@ -169,6 +169,49 @@ concrete, auditable ways:
    deleted. It is not in the tree, and neither is the charge. A finding that does not survive being
    implemented is the finding that was wrong.
 
+12. **The active validator set is drawn, not ranked — the reference's own TODO, and the port adds the
+   entropy the reference does not have.** `Pos.rhox:718-726`'s `pickActiveValidators` takes the first
+   `$$numberOfActiveValidators$$` entries of the bonds map in *key* order and carries the comment
+   `// TODO: Randomly select 100 active validators once we have on-chain randomness`. The Scala
+   reference selects the highest-staked; the port now draws uniformly without replacement from the
+   eligible pool (`rholang/src/native_state.rs`'s `select_active`), seeded by an `pos:epoch_seed`
+   leaf written **one boundary ahead**, so the block that draws is not the block that chose the
+   entropy. The divergence is the reference's stated intent, and the part the reference lacks is the
+   seed: the port's `BlockRandomSeed` was `hash(shard_id, block_number, sender, pre_state_hash)`
+   computed *at the moment of use*, and all four inputs but the shard id are proposer-chosen — so the
+   pre-change rule was a free, unbounded reroll by the one party that also chose the sample frame.
+   The register row `spec/audit/passes.md:327` states the *reason* the cap exists (finality's
+   supermajority is stake-weighted, so membership decides who can finalise) and is kept, rewritten
+   rather than deleted.
+
+   **Residuals, named rather than implied.**
+   - **O1 — the seed-setter's influence.** The anchor is the writing boundary's pre-state hash, which
+     its own proposer influences through the justification set it chooses. What the rule removes is
+     the *drawing* block's reroll; a seed-setter can still steer by producing two conflicting blocks
+     at its own height and releasing one, which is an equivocation rather than a private choice. The
+     attribution path for that is not traced, so the honest claim is "requires equivocation", not "is
+     slashed".
+   - **O2 — capital can pre-position.** The seed is public before the boundary, so a validator can
+     bond to enter or stage a withdrawal to leave the pool in time for `B_k`. Neither this design nor
+     commit-reveal closes that without an extra rule (a withdrawal delay longer than the
+     seed→snapshot window, or an earlier snapshot). This is a design gap, not an implementation one.
+   - **O3 — uniform selection is sybil-sensitive.** Splitting a stake across `k` validators yields
+     roughly `k` times the expected slots of the same stake held whole, while a large honest
+     validator is no likelier to be drawn than a dust one. The cap (default 100) bites, so this is a
+     live exposure in the finality weight set. Weighted sampling without replacement — an
+     exact-integer walk of the pool in canonical order, no floats — is the drop-in alternative and
+     changes nothing else in the file.
+   - **O4 — the absolute security budget now fluctuates** epoch to epoch, more so with a cap. It
+     should be measured by simulation over many seeds with a stated tolerance rather than asserted.
+
+   **No law row changes.** Laws 44–47 constrain the epoch's timing, step order, conservation and the
+   withdrawal machine; none states a membership predicate, and `Rchain/Pos.lean`'s `reselect` is a
+   filter over the pool whose theorems are untouched — verified, not assumed. The model was already
+   more abstract than the code, and this widens that gap in degree rather than in kind.
+
+   Rationale, the reference point (`PatrickMockridge/Mudra`'s beacon, re-sourced from this chain's own
+   entropy), and the negative results: [`docs/src/node/security-audit.md`](../docs/src/node/security-audit.md) §8.
+
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely
 because they were faithful — and the remediation plan exists to convert those into Rust-strength

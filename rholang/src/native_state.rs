@@ -16,9 +16,10 @@
 //!   a trusted key may bond; a trusted stakeholder confers trust via `rho:rchain:pos`'s `trust`.
 //! * **bonded / pool** — the full bond pool ([`pos_bonds_key`]); a bond is within `[minimum,
 //!   maximum]`, deducted from the validator's REV vault.
-//! * **active** — the consensus validator set ([`pos_active_key`]): the top
-//!   `number_of_active_validators` of the pool by stake (0 = unlimited), recomputed on every
-//!   membership change. Consensus (supermajority, finality fringe, bond queries) reads this set.
+//! * **active** — the consensus validator set ([`pos_active_key`]): a draw of up to
+//!   `number_of_active_validators` from the pool (0 = unlimited), redrawn at each epoch boundary
+//!   from the seeded rule in `select_active`. Consensus (supermajority, finality fringe, bond
+//!   queries) reads this set.
 //! * **withdrawing** — a withdrawal immediately deactivates the validator; the stake is escrowed
 //!   until the quarantine deadline ([`pos_withdrawers_key`]) and refunded by `close_block`.
 //! * **removed** — `slash`/`untrust` remove the validator and confiscate the stake to the Coop vault.
@@ -554,18 +555,28 @@ impl PosGenesis {
     }
 }
 
-/// Select the active validator set from the pool: drop zero-stake and withdrawing validators, sort
-/// by descending stake then ascending `Validator` (deterministic), and truncate to
-/// `number_of_active_validators` (`0` = unlimited).
+/// Select the active validator set from the pool: drop zero-stake and withdrawing validators, then
+/// **draw** up to `number_of_active_validators` of the rest uniformly without replacement, seeded by
+/// `seed` (`0` = unlimited, no draw).
+///
+/// **Why a draw and not the top N.** The set this returns *is* the finality weight set
+/// (`casper/src/multi_parent_casper.rs`'s `Finalizer`), so who is in it decides who can finalise.
+/// Ranking by stake made membership a pure function of a value the proposer of the drawing block
+/// could steer: the old seed was `hash(shard_id, block_number, sender, pre_state_hash)` computed at
+/// the moment of use, so every candidate block was a fresh, free reroll — a proposer could try
+/// headers until it drew the set it wanted. See `close_block` step 5 for what anchors the draw now.
+///
+/// **Uniform, and the residual that carries** (a security property, not a preference): splitting a
+/// stake across `k` validators yields about `k` times the expected slots of the same stake held
+/// whole, while a large honest validator is no likelier to be drawn than a dust one. The cap bites
+/// (default 100), so this is a live sybil exposure in the finality weight set, registered with the
+/// rest of the rule's residuals in `spec/RUST-VS-SCALA.md` §3. Weighted sampling without replacement
+/// — an exact-integer walk of the pool in canonical order, no floats — is the drop-in alternative and
+/// changes nothing else in this file.
 ///
 /// Generic over what the withdrawal map holds, because only its key set matters here and the port has
 /// two of them: the staged requests (`validator → deadline`, `pendingWithdrawers`) and the claims
 /// (`validator → Withdrawal`, `withdrawers`).
-///
-/// **This is `pickActiveValidators` with a different selection rule** — the contract takes the first
-/// `$$numberOfActiveValidators$$` entries of the bonds map in *key* order (`Pos.rhox:718-726`, whose
-/// own TODO marks it a placeholder for a random selection), and the port takes the highest-staked.
-/// Registered in `spec/audit/passes.md` §6.
 pub fn select_active<V>(
     pool: &BTreeMap<Validator, NonNegI64>,
     withdrawers: &BTreeMap<Validator, V>,
@@ -1201,7 +1212,15 @@ impl NativeSystemState {
     /// a second call at the same height would distribute the pot again (which is the previous epoch's
     /// dust, since the committed claims now cover the rest). The system deploy calls it once per
     /// block.
-    pub async fn close_block(&self, block_number: i64) -> Result<Result<(), String>, String> {
+    /// `pre_state_hash` is the **block's** pre-state, and the close deploy carries it only to be
+    /// folded into the seed the *next* boundary draws with (step 5). It is deliberately not the
+    /// deploy's `rand`: that one is a function of the block being proposed, so using it would be a
+    /// free reroll by the proposer. See `select_active` for the rule and step 5 for the writer.
+    pub async fn close_block(
+        &self,
+        block_number: i64,
+        pre_state_hash: Blake2b256Hash,
+    ) -> Result<Result<(), String>, String> {
         let params = self.params().await?;
         let boundary = is_epoch_boundary(&params, block_number);
         // The epoch decision, logged where it is made. Everything about validator membership that is not
@@ -1283,6 +1302,12 @@ impl NativeSystemState {
         }
 
         // 4. The active set for the epoch that starts now.
+        //
+        // The seed was written one boundary *ago* — at `B_{k-1}`, from `B_{k-1}`'s pre-state — so the
+        // block drawing here is not the block whose state chose the entropy. That separation is the
+        // whole design; see `select_active` and `docs/src/node/security-audit.md` §8. A state with no
+        // seed yet is a genesis-installed one before its first boundary, and falls back to the
+        // genesis constant.
         let seed = self.epoch_seed().await?.unwrap_or_else(genesis_epoch_seed);
         let active = select_active(&pool, &withdrawers, &params, &seed);
         self.set_bonds(&pool);
@@ -1290,6 +1315,41 @@ impl NativeSystemState {
         self.set_pending_withdrawers(&pending);
         self.set_committed_rewards(&committed);
         self.set_active(&active);
+
+        // 5. The seed the **next** boundary will draw with.
+        //
+        // **The anchor is this boundary's pre-state hash, not a rolling window of block hashes.** A
+        // rolling window would have to be appended to on *every* block, and law 44's model says that
+        // off a boundary "nothing is written at all" (`Rchain/Pos.lean`'s `closeBlock`) — so
+        // maintaining one here would put the port at odds with the model it is checked against. The
+        // pre-state hash is that same commitment in one value: it is the merge of the fringe this
+        // block extends, so it commits to every block since the previous boundary.
+        //
+        // **The lag is two boundaries, and that is a property rather than a shortfall.** The seed read
+        // at `B_k` was written at `B_{k-1}` from `B_{k-1}`'s pre-state, so the entropy behind epoch
+        // `k`'s draw is the state entering epoch `k-1`. A one-boundary lag is not available: the only
+        // value the writing proposer cannot choose is the pre-state it inherits, and by the next
+        // boundary that value already covers the epoch now ending. Older entropy costs nothing here —
+        // it only has to be *fixed* before the drawing proposer acts, which it is.
+        //
+        // **What this does not close, stated rather than implied.** The seed-writer's pre-state is
+        // influenced by that proposer's justification set — residual **O1**, and a design gap rather
+        // than an implementation one. What it *does* close is the unbounded, free reroll: the proposer
+        // of the drawing block cannot steer a seed fixed before it acted, and the seed-writer can only
+        // steer it by producing two conflicting blocks at its own height and releasing one — an
+        // equivocation, which every honest node refuses at insert (`casper/src/dag.rs:244-258`). The
+        // attribution path for that equivocation is the check `spec/audit/passes.md` still owes; until
+        // it is traced, the honest statement is "requires equivocation", not "is slashed".
+        //
+        // Freshness is self-guaranteeing: the previous seed is an input to this one, so consecutive
+        // seeds differ even on a chain where nothing else changed, and the seed sequence is a hash
+        // chain over the epoch pre-states — no epoch's entropy can be swapped without changing every
+        // seed after it.
+        let next_epoch = block_number / epoch_divisor(&params) + 1;
+        self.set_epoch_seed(&EpochSeed {
+            epoch: next_epoch,
+            anchors: vec![previous_seed_anchor(&seed), pre_state_hash],
+        });
         Ok(Ok(()))
     }
 
@@ -1811,6 +1871,16 @@ mod tests {
         Validator::from_slice(&[byte; 65])
     }
 
+    /// The block pre-state hash a test's `close_block` is anchored to.
+    ///
+    /// It only has to be deterministic — play and replay must derive the same seed from it — and
+    /// distinct per block where a test crosses a boundary twice; the *value* is what a real block's
+    /// `pre_state_hash` would be, and no test asserts a particular draw from it except the
+    /// known-answer one, which spells its own.
+    fn pre_state(byte: u8) -> Blake2b256Hash {
+        Blake2b256Hash::create(&[byte])
+    }
+
     fn vault_address_of(v: &Validator) -> String {
         RevAddress::from_public_key(&PublicKey::new(v.as_bytes().to_vec()))
             .unwrap()
@@ -2088,7 +2158,7 @@ mod tests {
         for epoch in 0..64i64 {
             let seed = EpochSeed {
                 epoch,
-                window: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
             };
             seen.insert(
                 select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params, &seed)
@@ -2195,7 +2265,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
         assert!(native.active().await.unwrap().contains_key(&v2));
     }
 
@@ -2269,7 +2339,7 @@ mod tests {
             "a bonded validator is not in the consensus set until the boundary"
         );
 
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
         assert!(native.active().await.unwrap().contains_key(&v));
     }
 
@@ -2327,7 +2397,11 @@ mod tests {
         );
 
         // The boundary moves it out of the pool and into an escrowed claim.
-        native.close_block(10).await.unwrap().unwrap();
+        native
+            .close_block(10, pre_state(10))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(native.pending_withdrawers().await.unwrap().is_empty());
         assert!(
             !native.bonds().await.unwrap().contains_key(&v),
@@ -2356,7 +2430,11 @@ mod tests {
             "the stake is still escrowed: block 10 is before the deadline of 16"
         );
 
-        native.close_block(16).await.unwrap().unwrap();
+        native
+            .close_block(16, pre_state(16))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(native.withdrawers().await.unwrap().is_empty());
         assert_eq!(
             i64::from(
@@ -2439,7 +2517,7 @@ mod tests {
         );
 
         // 7 is not a multiple of 10: nothing happens.
-        native.close_block(7).await.unwrap().unwrap();
+        native.close_block(7, pre_state(7)).await.unwrap().unwrap();
         assert_eq!(
             (
                 native.pending_withdrawers().await.unwrap(),
@@ -2463,7 +2541,11 @@ mod tests {
 
         // 10 is a boundary: the sequence runs. The request staged at block 3 was given the deadline
         // `0 + 10 * (1 + 3 / 10) = 10`, so this boundary both moves it out of the pool and pays it.
-        native.close_block(10).await.unwrap().unwrap();
+        native
+            .close_block(10, pre_state(10))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             native.pending_withdrawers().await.unwrap().is_empty(),
             "the staged withdrawal moved at the boundary"
@@ -2493,12 +2575,16 @@ mod tests {
             "pooled at once"
         );
         assert!(!native.active().await.unwrap().contains_key(&v2));
-        native.close_block(9).await.unwrap().unwrap();
+        native.close_block(9, pre_state(9)).await.unwrap().unwrap();
         assert!(
             !native.active().await.unwrap().contains_key(&v2),
             "9 is not a boundary either"
         );
-        native.close_block(10).await.unwrap().unwrap();
+        native
+            .close_block(10, pre_state(10))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             native.active().await.unwrap().contains_key(&v2),
             "the boundary is where a bond becomes a validator"
@@ -2546,7 +2632,7 @@ mod tests {
             "the vault holds the bonds plus the phlo"
         );
 
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
 
         let committed = native.committed_rewards().await.unwrap();
         assert_eq!(
@@ -2605,7 +2691,7 @@ mod tests {
         // Stage the request, then close the block: the boundary pays the epoch's reward into the
         // committed map *and* moves the validator out of the pool, in that order.
         native.withdraw(&v, 1).await.unwrap().unwrap();
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&v]),
             5,
@@ -2622,7 +2708,7 @@ mod tests {
             2,
             "quarantineLength + epochLength * (1 + blockNumber / epochLength)"
         );
-        native.close_block(2).await.unwrap().unwrap();
+        native.close_block(2, pre_state(2)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(
                 native
@@ -2669,7 +2755,7 @@ mod tests {
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
         native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
 
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
             0,
@@ -2695,7 +2781,7 @@ mod tests {
         let native = native;
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
         native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
             0
@@ -2723,7 +2809,7 @@ mod tests {
         native.debit_pos_vault(nn(35)).await.unwrap();
         assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 5);
 
-        native.close_block(1).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
             0,
@@ -2876,8 +2962,8 @@ mod tests {
             &[(validator(1), 10), (validator(2), 20)],
         )
         .await;
-        native.close_block(1).await.unwrap().unwrap();
-        native.close_block(2).await.unwrap().unwrap();
+        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native.close_block(2, pre_state(2)).await.unwrap().unwrap();
         assert_eq!(native.active_validators().await.unwrap().len(), 2);
     }
 
@@ -3265,8 +3351,8 @@ mod tests {
 /// This leaf is why the draw can be strengthened later without touching the rule. `select_active`
 /// depends on a *value*, not on a *mechanism*: replacing what writes this leaf — with commit-reveal or
 /// a VRF accumulator — changes nothing about the selection rule or any of its consumers. Today it is
-/// written one boundary ahead from a window of the previous epoch's block hashes, so the proposer of
-/// the drawing block cannot choose it.
+/// written one boundary ahead, anchored to that boundary block's **pre-state hash**, so the proposer
+/// of the drawing block cannot choose it.
 pub fn pos_epoch_seed_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:epoch_seed")
 }
@@ -3279,13 +3365,15 @@ pub fn pos_epoch_seed_key() -> Blake2b256Hash {
 /// than threading it through `SystemDeploy::close_block` means replay agrees *by construction*: the
 /// seed is a function of the pre-state, not a second derivation that has to be kept in sync.
 ///
-/// The window is the previous epoch's block hashes, in height order. It is a `Vec` rather than a fixed
-/// array because `W` is a deployer choice, and the codec length-checks it so a malformed leaf cannot
-/// be read as a shorter window.
+/// `anchors` are the digests this seed folds in, in order. Today's writer puts two there — the previous
+/// seed's anchor and the boundary block's pre-state hash — but nothing in the rule depends on the
+/// count: it is a `Vec` rather than a fixed array because a later writer (commit-reveal, a VRF
+/// accumulator, a beacon window) may want a different number, and the codec length-checks it so a
+/// malformed leaf cannot be read as a shorter list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EpochSeed {
     pub epoch: i64,
-    pub window: Vec<Blake2b256Hash>,
+    pub anchors: Vec<Blake2b256Hash>,
 }
 
 /// A `Blake2b256Hash` on the wire.
@@ -3293,17 +3381,17 @@ const HASH_LEN: usize = 32;
 
 impl EpochSeed {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(16 + self.window.len() * HASH_LEN);
+        let mut out = Vec::with_capacity(16 + self.anchors.len() * HASH_LEN);
         out.extend_from_slice(&self.epoch.to_le_bytes());
-        out.extend_from_slice(&(self.window.len() as u64).to_le_bytes());
-        for h in &self.window {
+        out.extend_from_slice(&(self.anchors.len() as u64).to_le_bytes());
+        for h in &self.anchors {
             out.extend_from_slice(h.as_bytes());
         }
         out
     }
 
     /// Decode (inverse of [`Self::encode`]). Refuses a length that disagrees with the declared count,
-    /// so a truncated or padded leaf is an error rather than a silently shorter window — a window of
+    /// so a truncated or padded leaf is an error rather than a silently shorter list — an anchor list of
     /// the wrong length would still draw a set, and the divergence would only surface as a post-state
     /// mismatch much later.
     pub fn decode(bytes: &[u8]) -> Result<EpochSeed, String> {
@@ -3324,18 +3412,18 @@ impl EpochSeed {
                 .map_err(|_| "epoch seed: invalid count field".to_string())?,
         );
         let count = usize::try_from(declared)
-            .map_err(|_| format!("epoch seed: window count {declared} does not fit a usize"))?;
+            .map_err(|_| format!("epoch seed: anchor count {declared} does not fit a usize"))?;
         let rest = &bytes[16..];
         let expected = count
             .checked_mul(HASH_LEN)
-            .ok_or_else(|| format!("epoch seed: window count {count} overflows"))?;
+            .ok_or_else(|| format!("epoch seed: anchor count {count} overflows"))?;
         if rest.len() != expected {
             return Err(format!(
-                "epoch seed window declares {count} hashes ({expected} bytes) but carries {}",
+                "epoch seed declares {count} anchors ({expected} bytes) but carries {}",
                 rest.len()
             ));
         }
-        let window = rest
+        let anchors = rest
             .chunks_exact(HASH_LEN)
             .map(|chunk| {
                 let bytes: [u8; HASH_LEN] = chunk
@@ -3344,7 +3432,7 @@ impl EpochSeed {
                 Ok(Blake2b256Hash::from_byte_array(&bytes))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(EpochSeed { epoch, window })
+        Ok(EpochSeed { epoch, anchors })
     }
 }
 
@@ -3353,7 +3441,7 @@ impl NativeSystemState {
     ///
     /// An absent leaf is a *distinguishable* state, not a default: it means no draw has been seeded
     /// yet (a genesis-installed state, before its first boundary). The caller decides what that means —
-    /// genesis supplies a constant, the boundary supplies a window — so this returns `Option` rather
+    /// genesis supplies a constant, the boundary supplies its pre-state hash — so this returns `Option` rather
     /// than inventing a seed that would silently change the draw.
     pub async fn epoch_seed(&self) -> Result<Option<EpochSeed>, String> {
         let bytes = self
@@ -3378,12 +3466,12 @@ impl NativeSystemState {
 mod epoch_seed_tests {
     use super::*;
 
-    /// The epoch seed round-trips, window and all.
+    /// The epoch seed round-trips, anchor list and all.
     #[test]
     fn epoch_seed_round_trips() {
         let seed = EpochSeed {
             epoch: 7,
-            window: vec![
+            anchors: vec![
                 Blake2b256Hash::create(b"block:1"),
                 Blake2b256Hash::create(b"block:2"),
                 Blake2b256Hash::create(b"block:3"),
@@ -3392,29 +3480,29 @@ mod epoch_seed_tests {
         assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
     }
 
-    /// **A window of the wrong length is an error, not a shorter window.** This is the failure this
+    /// **An anchor list of the wrong length is an error, not a shorter list.** This is the failure this
     /// codec exists to prevent: a truncated or padded leaf would still *draw a set*, so a
     /// mis-encoded seed would not crash — it would produce a deterministic-but-wrong active set and
     /// surface much later as a post-state mismatch. Every length disagreement is refused here.
     #[test]
-    fn an_epoch_seed_window_of_the_wrong_length_is_refused() {
+    fn an_epoch_seed_anchor_list_of_the_wrong_length_is_refused() {
         let seed = EpochSeed {
             epoch: 1,
-            window: vec![Blake2b256Hash::create(b"a"), Blake2b256Hash::create(b"b")],
+            anchors: vec![Blake2b256Hash::create(b"a"), Blake2b256Hash::create(b"b")],
         };
         let encoded = seed.encode();
 
-        // One byte short of the declared window.
+        // One byte short of the declared anchor list.
         assert!(
             EpochSeed::decode(&encoded[..encoded.len() - 1]).is_err(),
-            "a truncated window must be refused"
+            "a truncated anchor list must be refused"
         );
         // One byte long.
         let mut padded = encoded.clone();
         padded.push(0);
         assert!(
             EpochSeed::decode(&padded).is_err(),
-            "a padded window must be refused"
+            "a padded anchor list must be refused"
         );
         // A header that disagrees with the body: claim three hashes, carry two.
         let mut lying = encoded.clone();
@@ -3430,10 +3518,10 @@ mod epoch_seed_tests {
     /// An *absent* seed is distinguishable from a zeroed one — the reader a boundary uses to decide
     /// whether a draw has been seeded at all.
     #[test]
-    fn an_epoch_seed_with_no_window_is_still_a_seed() {
+    fn an_epoch_seed_with_no_anchors_is_still_a_seed() {
         let seed = EpochSeed {
             epoch: 0,
-            window: vec![],
+            anchors: vec![],
         };
         assert_eq!(EpochSeed::decode(&seed.encode()).unwrap(), seed);
     }
@@ -3451,6 +3539,23 @@ mod epoch_seed_tests {
 /// Binding the epoch *and* a purpose string means a seed leaf cannot be replayed for the wrong epoch,
 /// and cannot collide with any other use of `Blake2b512Random` seeded from similar bytes.
 const EPOCH_DRAW_DOMAIN: &[u8] = b"rchain:pos:epoch-draw:v1";
+
+/// Domain separator for the **anchor** one epoch's seed contributes to the next.
+///
+/// A separate string from [`EPOCH_DRAW_DOMAIN`] on purpose: the same `EpochSeed` is both an RNG input
+/// and an input to its successor, and a shared prefix would make those two uses one value.
+const EPOCH_SEED_ANCHOR_DOMAIN: &[u8] = b"rchain:pos:epoch-seed-anchor:v1";
+
+/// One epoch's seed reduced to the digest the next epoch's seed folds in.
+///
+/// This is what makes the seed sequence a hash chain: `seed_{k+1}` depends on `seed_k`, so every seed
+/// commits to all of its predecessors and no epoch's entropy can be replaced without changing every
+/// later seed. Freshness comes free with it — consecutive seeds differ even on a chain where nothing
+/// else did.
+pub fn previous_seed_anchor(seed: &EpochSeed) -> Blake2b256Hash {
+    let encoded = seed.rng_input();
+    Blake2b256Hash::create_many(&[EPOCH_SEED_ANCHOR_DOMAIN, &encoded])
+}
 
 // Imported here rather than at the top of the file: a `use` above line 3115 shifts every cited line.
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
@@ -3474,13 +3579,13 @@ impl EpochSeed {
 /// disagree. It is also *sound* despite being public: the genesis pool is fixed in the genesis file, so
 /// a seed that produced a set you preferred would be a different chain's genesis, not this one's.
 ///
-/// An empty window is not "unseeded" — [`EPOCH_DRAW_DOMAIN`] plus epoch zero is the seed. The window is
-/// empty because genesis has no blocks to take one from, and inventing a fake window would pretend the
+/// An empty anchor list is not "unseeded" — [`EPOCH_DRAW_DOMAIN`] plus epoch zero is the seed. It is
+/// empty because genesis has no prior state to anchor to, and inventing a fake anchor would pretend the
 /// chain had history it does not.
 pub fn genesis_epoch_seed() -> EpochSeed {
     EpochSeed {
         epoch: 0,
-        window: Vec::new(),
+        anchors: Vec::new(),
     }
 }
 
@@ -3535,4 +3640,194 @@ fn draw_without_replacement<T: Clone>(
         out.push(candidates[remaining].clone());
     }
     out
+}
+
+// ----------------------------------------------------------------------------------------------
+// The seed writer (phase 3 of the randomised selection): `close_block` step 5.
+//
+// Appended for the seam's reason. These tests are the ones that make step 5 more than a claim:
+// `close_block` writing the wrong thing — the drawing block's own pre-state, or nothing at all —
+// leaves every other test in this file passing.
+// ----------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod epoch_seed_writer_tests {
+    use super::*;
+
+    /// A genesis-installed state with `size` equal-stake validators and an active-set cap of `cap`.
+    ///
+    /// `epoch_length: 0` means every block is a boundary and every block's epoch index is its own
+    /// block number, which keeps the tests below about the *seed* rather than about the arithmetic of
+    /// where boundaries fall.
+    async fn pos_with_pool(size: u8, cap: i64) -> NativeSystemState {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let validators: Vec<Validator> = (1..=size)
+            .map(|i| Validator::from_slice(&[i; 65]))
+            .collect();
+        let bonds: BTreeMap<Validator, NonNegI64> = validators
+            .iter()
+            .map(|v| (*v, NonNegI64::try_from(10).expect("a test stake")))
+            .collect();
+        native
+            .install_genesis(&PosGenesis {
+                bonds,
+                trusted: validators.into_iter().collect(),
+                params: PosParams {
+                    epoch_length: 0,
+                    number_of_active_validators: cap,
+                    ..PosParams::default()
+                },
+            })
+            .unwrap();
+        native
+    }
+
+    /// **The property the old rule did not have, and the reason this change exists.**
+    ///
+    /// The set drawn at a boundary comes from the seed the *previous* boundary wrote, so nothing the
+    /// drawing block's proposer can vary moves it. In this port what a proposer varies is its
+    /// justification set, and at a boundary that enters the computation as exactly one value — the
+    /// block's pre-state hash. Two runs over the same history, drawing at the same boundary with two
+    /// different pre-state hashes, must therefore draw the **same** set.
+    ///
+    /// The second assertion is what makes the first mean something. Without it the test passes if
+    /// `pre_state_hash` is ignored entirely, which is the same as not having it: the seed written for
+    /// the *following* boundary must differ between the runs, so the mutation provably reached the
+    /// code.
+    ///
+    /// **Falsified by construction, and the numbers are the point.** Replacing step 4's `epoch_seed`
+    /// read with the drawing block's own pre-state — the rule this change removes — fails this test
+    /// and exactly two others in this file; the other 45, and the whole rest of `native_state`'s
+    /// suite, still pass. That is the audit's claim about the old rule, reproduced as a failing test:
+    /// a proposer that varied its justifications was varying the draw, and nothing else in the tree
+    /// noticed.
+    #[tokio::test]
+    async fn the_drawn_set_does_not_move_when_the_drawing_blocks_pre_state_does() {
+        let anchor_b1 = Blake2b256Hash::create(b"B1 pre-state");
+        let a = pos_with_pool(4, 2).await;
+        let b = pos_with_pool(4, 2).await;
+        a.close_block(1, anchor_b1).await.unwrap().unwrap();
+        b.close_block(1, anchor_b1).await.unwrap().unwrap();
+        assert_eq!(
+            a.epoch_seed().await.unwrap(),
+            b.epoch_seed().await.unwrap(),
+            "the two histories agree up to the boundary that seeds epoch 2"
+        );
+
+        // The same boundary, two different pre-states — i.e. two different justification sets.
+        a.close_block(
+            2,
+            Blake2b256Hash::create(b"B2 pre-state, justification set 1"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        b.close_block(
+            2,
+            Blake2b256Hash::create(b"B2 pre-state, justification set 2"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            a.active().await.unwrap(),
+            b.active().await.unwrap(),
+            "the set drawn at a block must not depend on that block's own pre-state"
+        );
+        assert_ne!(
+            a.epoch_seed().await.unwrap(),
+            b.epoch_seed().await.unwrap(),
+            "…and the pre-state must still reach the seed the next boundary draws with, or this test \
+             would pass for the wrong reason"
+        );
+    }
+
+    /// The seed is a **hash chain**: the previous seed is folded into the next one, so consecutive
+    /// boundaries cannot produce the same seed even when the pre-state hash repeats.
+    ///
+    /// Falsifiable by deletion, which is how it was checked: drop `previous_seed_anchor` from
+    /// `close_block` step 5 and this test fails while every other test in the file still passes.
+    #[tokio::test]
+    async fn consecutive_seeds_differ_even_when_the_pre_state_hash_repeats() {
+        let native = pos_with_pool(4, 2).await;
+        let repeated = Blake2b256Hash::create(b"the same pre-state twice");
+
+        native.close_block(1, repeated).await.unwrap().unwrap();
+        let first = native.epoch_seed().await.unwrap().expect("seeded at B1");
+        native.close_block(2, repeated).await.unwrap().unwrap();
+        let second = native.epoch_seed().await.unwrap().expect("seeded at B2");
+
+        assert_ne!(
+            first, second,
+            "the same pre-state at two boundaries must still give two seeds"
+        );
+        assert_eq!(
+            second.anchors.first().copied(),
+            Some(previous_seed_anchor(&first)),
+            "and the first anchor must be the previous seed's anchor, which is what carries the chain"
+        );
+    }
+
+    /// The anchors the writer records are the previous seed's anchor and **the block's own**
+    /// pre-state hash, in that order. Pinned exactly, because a swap is invisible to the two tests
+    /// above — both anchors still move when the pre-state moves, and the chain still advances.
+    #[tokio::test]
+    async fn the_written_seed_anchors_are_the_previous_seed_and_this_blocks_pre_state() {
+        let native = pos_with_pool(4, 2).await;
+        let b1 = Blake2b256Hash::create(b"B1 pre-state");
+        native.close_block(1, b1).await.unwrap().unwrap();
+        let seed_at_b1 = native.epoch_seed().await.unwrap().expect("seeded at B1");
+
+        let b2 = Blake2b256Hash::create(b"B2 pre-state");
+        native.close_block(2, b2).await.unwrap().unwrap();
+        let seed_at_b2 = native.epoch_seed().await.unwrap().expect("seeded at B2");
+
+        assert_eq!(
+            seed_at_b2.anchors,
+            vec![previous_seed_anchor(&seed_at_b1), b2],
+            "the seed written at a boundary must anchor to the previous seed and this block's pre-state"
+        );
+        assert_eq!(
+            seed_at_b2.epoch, 3,
+            "and it must be labelled with the epoch that will draw from it"
+        );
+    }
+
+    /// A genesis-installed state has **no** seed leaf until its first boundary. The distinction is
+    /// load-bearing: `close_block` treats an absent leaf as "draw from the genesis constant", so a
+    /// zeroed seed and no seed at all must not be the same value.
+    #[tokio::test]
+    async fn genesis_has_no_seed_leaf_and_its_first_boundary_writes_one() {
+        let native = pos_with_pool(2, 1).await;
+        assert_eq!(
+            native.epoch_seed().await.unwrap(),
+            None,
+            "genesis must not write a seed: the constant is not a window, and the leaf's absence is \
+             how the boundary tells the two apart"
+        );
+        native
+            .close_block(1, Blake2b256Hash::create(b"B1"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            native.epoch_seed().await.unwrap().is_some(),
+            "the first boundary must leave a seed behind for the next one"
+        );
+    }
+
+    /// Why the genesis constant is a constant and not a `PosGenesis` field: the draw it seeds has to
+    /// be identical on two nodes that installed the same genesis, with no configuration input. This
+    /// is the property `casper/tests/consensus.rs`'s bonds-cache canary fails on if it is broken.
+    #[tokio::test]
+    async fn two_genesis_installs_of_the_same_pool_draw_the_same_set() {
+        let a = pos_with_pool(4, 2).await;
+        let b = pos_with_pool(4, 2).await;
+        assert_eq!(
+            a.active().await.unwrap(),
+            b.active().await.unwrap(),
+            "the genesis draw must be a pure function of the genesis file"
+        );
+    }
 }

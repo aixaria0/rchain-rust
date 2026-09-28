@@ -881,9 +881,10 @@ impl RuntimeManager {
             NativeSystemDeployOp::Refund { deployer, amount } => {
                 native.refund(deployer, *amount).await?
             }
-            NativeSystemDeployOp::CloseBlock { block_number } => {
-                native.close_block(*block_number).await?
-            }
+            NativeSystemDeployOp::CloseBlock {
+                block_number,
+                pre_state_hash,
+            } => native.close_block(*block_number, *pre_state_hash).await?,
             NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
         };
         let eval_result = EvaluateResult {

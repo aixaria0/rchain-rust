@@ -28,6 +28,23 @@ fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::from_init(&[0u8; 32])
 }
 
+/// The per-block data for a synthetic block at `height` — which must be the same number the block's
+/// close deploy carries.
+///
+/// The two are not decoration: `close_block` writes the *next* epoch's active-set seed labelled with
+/// the epoch index derived from the block number, so a close deploy numbered 1 played against
+/// `BlockData::empty()` (height 0) writes a different seed than the replayer derives, and the two
+/// post-state hashes diverge. That is what this test did until the seed writer landed and turned the
+/// disagreement into a visible mismatch. **A real block cannot be in that state** — the proposer and
+/// the replayer both read the number from the block — which is why the fix is to make the fixture
+/// consistent rather than to weaken the rule.
+fn block_data(height: i64) -> BlockData {
+    BlockData {
+        block_number: rchain_shared::refined::BlockHeight::try_from(height).expect("height"),
+        ..BlockData::empty()
+    }
+}
+
 /// A minimal signed deploy with the given term (signature verification is deferred to the
 /// deploy-acceptance path, so the sig/deployer fields are left empty here).
 fn deploy(term: &str) -> SignedDeployData {
@@ -239,14 +256,14 @@ async fn bond_deploy_updates_the_active_validator_set() {
     // active set is recomputed inside `closeBlock` (`:546`) — an epoch boundary, which with these
     // permissive parameters every block is. Without it the deploy would pool the stake and leave the
     // validator out of the consensus set.
-    let close = SystemDeploy::close_block(1, fixed_rand().split_byte(2));
+    let close = SystemDeploy::close_block(1, post, fixed_rand().split_byte(2));
     let (post_state, user_results, sys_results) = rm
         .compute_state(
             &post,
             &[deploy_with_key(term, vec![0u8; 65])],
             &[close],
             &rand,
-            BlockData::empty(),
+            block_data(1),
         )
         .await
         .expect("play compute_state");
@@ -274,7 +291,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
             &processed,
             &processed_sys,
             &rand,
-            BlockData::empty(),
+            block_data(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -336,9 +353,13 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
         .compute_state(
             &genesis_post,
             &[deploy_with_key(&trust_term, vec![1u8; 65])],
-            &[SystemDeploy::close_block(1, fixed_rand().split_byte(2))],
+            &[SystemDeploy::close_block(
+                1,
+                genesis_post,
+                fixed_rand().split_byte(2),
+            )],
             &rand,
-            BlockData::empty(),
+            block_data(1),
         )
         .await
         .expect("play block 1");
@@ -355,9 +376,13 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
         .compute_state(
             &state1,
             &[deploy_with_key(bond_term, vec![2u8; 65])],
-            &[SystemDeploy::close_block(2, fixed_rand().split_byte(3))],
+            &[SystemDeploy::close_block(
+                2,
+                state1,
+                fixed_rand().split_byte(3),
+            )],
             &rand,
-            BlockData::empty(),
+            block_data(2),
         )
         .await
         .expect("play block 2");

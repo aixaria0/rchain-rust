@@ -616,11 +616,15 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
     // reconstructs it from the block's `BlockData` (`runtime_replay.rs:426`). Passing a close deploy
     // whose number disagrees with the block's is not a state a real block can be in, and it is what
     // this test got wrong the first time it ran.
+    //
+    // The **pre-state hash** goes the same way and for the same reason: it is the seed anchor the
+    // close step writes for the next epoch, so the proposer's value and the replayer's must be the
+    // same number. Here that is `post`, the state this block extends.
     let block_data = BlockData {
         block_number: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
         ..BlockData::empty()
     };
-    let close = SystemDeploy::close_block(1, rand.split_byte(9));
+    let close = SystemDeploy::close_block(1, post, rand.split_byte(9));
     let (play_hash, user_results, sys_results) = rm
         .compute_state(&post, &[deploy(term)], &[close], &rand, block_data.clone())
         .await

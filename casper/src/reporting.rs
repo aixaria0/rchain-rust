@@ -228,12 +228,14 @@ async fn replay_deploys(
     }
 
     let terms_len = block.state.deploys.len();
+    let block_pre_state_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
     let mut system_results = Vec::new();
     for (i, sd) in block.state.system_deploys.iter().enumerate() {
         let r = ops
             .replay_block_system_deploy(
                 sd,
                 i64::from(block.block_number),
+                &block_pre_state_hash,
                 rand.split_byte(
                     u8::try_from(terms_len + i)
                         .map_err(|_| "deploy count exceeds 255".to_string())?,

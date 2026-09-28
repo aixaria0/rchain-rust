@@ -379,12 +379,22 @@ deliberately, and the close-out recorded them as an agenda rather than resolving
 A reader looking for what is *unfinished* should read this section; a reader looking for what was
 *found* should read §3 and §4, all of which closed the same day.
 
-**Active-validator-set selection has no oracle.** The set is chosen as the top N by descending stake
-with a key-ascending tie-break. The Scala contract returns the first N in map-key order and carries a
-TODO saying the real rule should be random selection once on-chain randomness exists. The law register
-pins the epoch-boundary *timing*, not the membership. If the rule is wrong, the epoch-boundary validator
-set differs from any other implementation — a chain split — with nothing in either oracle able to
-arbitrate. **This is the highest-consequence unverified item in the tree.**
+**Active-validator-set selection has no oracle — and the rule has now been changed, which is why this
+item was acted on rather than left listed.** The law register pins the epoch-boundary *timing*, not the
+membership: if the rule is wrong, the epoch-boundary validator set differs from any other
+implementation — a chain split — with nothing in either oracle able to arbitrate. That is still true of
+the rule that replaced the old one. What is *no longer* true is the specific defect the review found
+while reading it: the old seed, `hash(shard_id, block_number, sender, pre_state_hash)`, was computed at
+the moment of use, so the proposer of the drawing block could reroll the set freely by proposing a
+different block — a free, unbounded reroll by the one party that also chose the sample frame. As of
+2026-09-28 `select_active` draws uniformly without replacement from the pool, seeded by a
+`pos:epoch_seed` leaf written one boundary ahead, so the block that draws is not the block that chose
+the entropy. **The residuals are named in [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md)
+§3 item 12** — the seed-setter's influence through its justification set, capital pre-positioning
+before a public seed, the sybil exposure uniform sampling carries where stake-weighting does not, and a
+security budget that now fluctuates epoch to epoch — and the uniform draw is the one decision there
+worth revisiting. The membership predicate remains unverified by either oracle; it is now *different*
+and *documented*, which is not the same as *checked*.
 
 **Two permissive defaults define what the contract treats as an arithmetic fault.** An epoch length of
 zero and a minimum bond of zero make every block an epoch boundary and zero the reward, where the

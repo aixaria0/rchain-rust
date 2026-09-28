@@ -326,7 +326,7 @@ pending withdrawers, and moves its stake to the Coop multisig vault - confiscati
 Two consequences worth knowing before running a network.
 
 **A silent validator is not slashed; it is a drag instead.** One that never proposes keeps its bond, stays in
-the active set (the top-N is chosen by stake) and counts in the >2/3 denominator that finality needs. The
+the active set (drawn from the pool at the epoch boundary) and counts in the >2/3 denominator that finality needs. The
 protocol is asymmetric: going offline is free, while a block that *fails validation on another node* costs
 the sender its stake.
 

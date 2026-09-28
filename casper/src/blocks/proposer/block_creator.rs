@@ -119,7 +119,13 @@ impl BlockCreator {
             let close_seed = rand.split_byte(
                 u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,
             );
-            system_deploys.push(SystemDeploy::close_block(i64::from(block_num), close_seed));
+            // The block's pre-state hash goes in with the close deploy: it is what the *next* epoch's
+            // active-set draw is anchored to, and unlike `rand` it is not the proposer's to choose.
+            system_deploys.push(SystemDeploy::close_block(
+                i64::from(block_num),
+                pre_state_hash,
+                close_seed,
+            ));
 
             Some(
                 compute_deploys_checkpoint(
