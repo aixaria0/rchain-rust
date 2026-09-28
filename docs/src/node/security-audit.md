@@ -242,10 +242,18 @@ assumed rather than established. That is where assurance ends.
 
 ## 7. Comparison with other chains
 
-Four nodes were probed with the *same* question rather than by reading declared constants, because
-reading constants and calling them bounds is how a comparison goes wrong. The question was: **is there
-an operation reachable by an unauthenticated remote attacker whose cost to the node is superlinear in
-attacker input, while the charge to the attacker is flat or sublinear?**
+**Context first, because it is the most relevant fact in any comparison.** Solana, Sui and Bitcoin SV
+are live mainnet networks and have been for years; as of September 2026 their market capitalisations
+are on the order of $70bn, $5bn and $0.4bn respectively. This node is **pre-testnet**. It has had none
+of the adversarial exposure, external audit budget or years of production hardening those networks
+have absorbed. A comparison that omits that asymmetry is not neutral — it flatters the incumbents by
+grading a codebase that has never faced an attacker as though it had.
+
+With that stated, the comparison is worth making, and it is not made by reading declared limits. Four
+nodes were probed with the *same* question, because reading constants and calling them bounds is how a
+comparison goes wrong. The question was: **is there an operation reachable by an unauthenticated
+remote attacker whose cost to the node is superlinear in attacker input, while the charge to the
+attacker is flat or sublinear?**
 
 Every one of the four has such an operation. This is a defect class in the design of VM cost models
 generally, not a distinguishing weakness of any one chain.

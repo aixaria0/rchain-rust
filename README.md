@@ -61,42 +61,45 @@ The full argument — including the co-op lesson and the Rust → calculus → f
 table — is in [docs/src/contributor/why-rust.md](docs/src/contributor/why-rust.md). The prose
 documentation is also served as a book: `mdbook serve docs`.
 
-## Security
+## Comparative security audit
 
-An adversarial red-team review of the node was completed in September 2026, including a comparison
-against Solana, Sui and Bitcoin SV read from their own source. The full report — findings, method, and
-the properties that make defects *unrepresentable* rather than merely detected — is in
-[**docs/src/node/security-audit.md**](docs/src/node/security-audit.md). Its four headline results:
+**A pre-testnet node, measured against live mainnet chains — and ahead on structure.**
 
-**No `unsafe` anywhere, enforced by the compiler.** Every crate in the workspace begins with
-`#![forbid(unsafe_code)]`, and there are no `unsafe` blocks in the tree. This is not a convention: an
-`unsafe` block will not build. Neither Sui nor Solana carries that guarantee — Solana's loader alone has
-dozens of blocks — and Bitcoin SV is C++.
+Solana, Sui and Bitcoin SV are live networks. They have been for years, at a combined market
+capitalisation north of $75bn (September 2026), and they have had the adversarial exposure, audit
+budgets and production hardening that come with it. This node is **pre-testnet** and has had none of
+that. So the September 2026 review did not take the peers at their published word: it read all four
+from source at pinned revisions and probed them with the *same* adversarial tests. It found **no chain
+split, no fund loss and no remote code execution** here. On the structural axes below, the pre-testnet
+node leads.
 
-**Authority cannot be forged.** There is no grammar production that writes a private name, and no
-rholang operation destructures one. A name is allocated from a splittable hash-derived RNG and exists
-only to be *received*: "invoke on a channel you were not given" has no term in the language. The
-soundness of that rests on the crypto axioms (law 19), which is the correct place for the boundary —
-but it is an axiom, not a theorem, and we say so.
+| | **This node** (pre-testnet) | **Solana** (~$70bn) | **Sui** (~$5bn) | **Bitcoin SV** (~$400m) |
+|---|---|---|---|---|
+| **Memory safety** | No `unsafe` anywhere — `#![forbid(unsafe_code)]` in all thirteen crates | 52 `unsafe` blocks in the loader alone; forbidden in one crate | `unsafe` in `sui-types`; not forbidden | C++ — assertions cannot be compiled out |
+| **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name; a name exists only to be received | Checked — a program-derived address has no key, but granting the privilege is a runtime check | **Unrepresentable** — a linear `UID`, minted from the transaction digest | Absent as a concept — authority is a private key |
+| **Authority cannot be captured** | **Unrepresentable, and proved** — a COMM moves only the datum sent, into the receiver's own environment; closedness is a theorem | Checked at runtime | Unrepresentable — no dynamic dispatch | Moot — there are no calls to capture through |
+| **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->50 laws<!-- counts:end -->; every registered witness resolves; zero `#[ignore]`d tests; the gate refuses `sorry`/`admit`/`opaque` | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
+| **Peer identity** | Mutual TLS — the certificate's key is bound to the identity the peer claims in the message | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
+| **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
+| **Cost model bounds attacker work** | ✗ superlinear work charged at a flat rate | ✗ account copies are unbilled | Closest — instruction tiers, 128 KiB transaction bound | ✗ no step budget at all |
 
-**Authority cannot be captured across a call, and that one is proved.** A COMM step transfers exactly
-the datum that was sent into the *receiver's* body in the receiver's own environment; the sender's
-environment is never consulted. Reaching into a caller's variables or continuation is not guarded — it
-is unsayable. Closedness is a theorem, not a convention: a closed program cannot grow a free variable by
-reduction. Confused-deputy, in the sense of a deputy acting with borrowed authority, has no expression.
+**The last row is the one this node does not lead, and the review leads with it.** It is also a defect
+class **all four share** — every peer was probed with that same question, because reading declared
+constants and calling them bounds is how a comparison flatters the wrong party. This node's instance is
+a two-line fix against its own Scala oracle; Sui and Solana both contain a block's blast radius better
+than it does. It is on the list, and it is in the report.
 
-**Machine-checked semantics, with a register that does not overclaim.**
-<!-- counts:laws -->50 laws<!-- counts:end --> across Lean 4 and Coq. All 87 registered Rust witnesses
-resolve to real functions, there are **zero `#[ignore]`d tests** in the tree, and the formal gate
-refuses `sorry`, `admit` and `opaque`. That last property is the one most worth checking in projects
-that claim formal methods, so the audit checked it adversarially: Sui's Move Prover is absent from its
-tree and CI, and Solana's frozen-ABI digests are checksums rather than proofs.
+Two limits on the table. Two of the four trees could not be fully read — Solana's VM and bignum
+library, and Sui's crypto and P2P layers, are unvendored dependencies — so those columns are marked as
+traced or untraceable rather than cleared. And the review states where this node's assurance actually
+ends: the language and calculus are safe-by-structure and partly proved, the chain layer's authority
+distribution is access control by another name, and unforgeability is axiomatised at the crypto
+boundary (law 19) rather than proved.
 
-The same review is equally explicit about what it did *not* establish. Its one confirmed
-high-severity finding is that the phlo cost model does not bound the work a deploy causes — a
-superlinear `Set` dedup charged at a flat rate — and it records where the chain layer's authority is
-access control by another name rather than capability discipline. Read the report for those; they are
-the reason to trust the rest of it.
+Ten candidate findings were refuted during the pass, including the one it opened expecting to lead
+with. That discipline is what makes the rest of the numbers worth reading. **Full report, every
+citation, the refuted candidates and the open questions:**
+[**docs/src/node/security-audit.md**](docs/src/node/security-audit.md).
 
 ## Governance
 
