@@ -542,6 +542,16 @@ impl NodeProgram {
         // `grpc_transport_receiver` is the layer that would need one, AUDIT C144's residue), so it is
         // the one this arm is really for.
         let stopping = stop.clone();
+        // **Which listeners the `select!` has already seen finish**, so the drain below does not poll
+        // them a second time. A `tokio::task::JoinHandle` **panics** when it is polled after returning
+        // `Ready` ("JoinHandle polled after completion"), and those arms do exactly that — they poll
+        // `&mut handle` and take the output. The race is real rather than theoretical: the listeners
+        // are handed the *same* stop word, so one of them can drain and finish **before**
+        // `stop_requested` resolves and wins the select, and the drain would then await the handle the
+        // arm already consumed. `node/tests/shutdown.rs` asserts the serve task must not panic, which
+        // is how this surfaced (CI, 2026-09-28); it does not reproduce under a light local load,
+        // because there `stop_requested` wins.
+        let mut drained = [false; 4];
         let stopped = if let Some(protocol) = protocol_server {
             let mut protocol = tokio::spawn(async move {
                 protocol
@@ -550,19 +560,19 @@ impl NodeProgram {
                     .await
             });
             tokio::select! {
-                r = &mut grpc_external => Some(listener_stopped("deploy gRPC listener", r, *stopping.borrow())),
-                r = &mut grpc_internal => Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())),
-                r = &mut http => Some(listener_stopped("HTTP listener", r, *stopping.borrow())),
-                r = &mut admin => Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())),
+                r = &mut grpc_external => { drained[0] = true; Some(listener_stopped("deploy gRPC listener", r, *stopping.borrow())) },
+                r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
+                r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
+                r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
                 r = &mut protocol => Some(listener_stopped("protocol listener", r, *stopping.borrow())),
                 _ = stop_requested(stop) => None,
             }
         } else {
             tokio::select! {
-                r = &mut grpc_external => Some(listener_stopped("deploy gRPC listener", r, *stopping.borrow())),
-                r = &mut grpc_internal => Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())),
-                r = &mut http => Some(listener_stopped("HTTP listener", r, *stopping.borrow())),
-                r = &mut admin => Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())),
+                r = &mut grpc_external => { drained[0] = true; Some(listener_stopped("deploy gRPC listener", r, *stopping.borrow())) },
+                r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
+                r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
+                r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
                 _ = stop_requested(stop) => None,
             }
         };
@@ -574,12 +584,21 @@ impl NodeProgram {
         }
         // Wait for the listeners so the requests already in flight are answered rather than cut off —
         // bounded, because a listener that will not finish must not hold the process past the
-        // orchestrator's grace.
+        // orchestrator's grace. The ones the `select!` already completed are skipped: they have
+        // nothing left to drain, and polling them again is the panic above.
         let drain = async {
-            let _ = grpc_external.await;
-            let _ = grpc_internal.await;
-            let _ = http.await;
-            let _ = admin.await;
+            if !drained[0] {
+                let _ = grpc_external.await;
+            }
+            if !drained[1] {
+                let _ = grpc_internal.await;
+            }
+            if !drained[2] {
+                let _ = http.await;
+            }
+            if !drained[3] {
+                let _ = admin.await;
+            }
         };
         let _ = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await;
         Ok(())
