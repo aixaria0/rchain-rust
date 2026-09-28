@@ -85,6 +85,11 @@ Commands:
   faucet <rev-address>           transfer 0.3 REV from the funded dev wallet to <rev-address>
   propose [--admin]              force the bootstrap to propose (gRPC, or admin HTTP with --admin)
   demo                           deploy the complex wallet contract and assert its round-trip
+  bench [options]                benchmark the *running* devnet: block cost, deploy throughput and
+                                 inclusion latency, and the DAG's residency growth (see
+                                 `python3 tools/devnet-bench.py --help` for its options). It does not
+                                 start a node: run `up --validators 1 --no-autopropose` first, or the
+                                 block rate measures the autopropose timer rather than the node
   cli <node> <rnode subcommand…> run the Rust client inside a node container
   help                           this message
 
@@ -99,7 +104,12 @@ Commands:
                                  off for --nodes)
   --propose-on-deploy | --no-propose-on-deploy
                                  propose a block immediately after a deploy (default: on for devnet)
-  --admin | --no-admin           publish the admin HTTP API (40405) to the host (default: on for devnet)
+  --admin | --no-admin           publish the admin HTTP API (40405) to the host *and* opt the node's
+                                 admin listener back in to binding it. AUDIT C112 binds that listener
+                                 to loopback unless the operator asks, and without the opt-in the
+                                 published port accepts nothing from the host — so before this, a
+                                 published admin port was a port nothing could connect to
+                                 (default: on for devnet)
   --fresh                        discard the nodes' data volumes first, so the bootstrap creates the
                                  genesis rather than rebuilding its stored chain (a *restart* rebuilds
                                  and replays the accumulated chain; `up` says which one it is doing)
@@ -232,6 +242,13 @@ rnode_run_common() {
   if $AUTOPROPOSE; then flags="$flags --autopropose"; fi
   if $PROPOSE_ON_DEPLOY; then flags="$flags --propose-on-deploy"; fi
   if $ADMIN; then flags="$flags --api-enable-devnet-cors"; fi
+  # **The bind, not just the publish.** AUDIT C112 made the admin listener loopback-only unless the
+  # operator opts in, and `--admin` *is* that opt-in — but this flag only opened the firewall, so
+  # until this line the published port accepted nothing from the host and `propose --admin` (which
+  # curls `localhost:$ADMIN_BASE` from here) could never have worked. Found by the benchmark harness,
+  # whose first propose got `Connection reset by peer` in 10 ms: the node was healthy, autopropose was
+  # producing blocks and the port was mapped — the listener was bound to the container's loopback.
+  if $ADMIN; then flags="$flags --api-enable-devnet-admin-public"; fi
   if $DEPLOYER; then flags="$flags --dev-mode --deployer-private-key ${DEPLOYER_PRIV}"; fi
   # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
   # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
@@ -609,6 +626,15 @@ cmd_propose() {
   fi
 }
 
+cmd_bench() {
+  # Benchmark a **running** devnet. It deliberately does not start one: the numbers depend on the
+  # configuration under test (autopropose off, for rates that are the node's rather than the timer's;
+  # `--epoch-length 1`, to measure the boundary block), and that choice belongs to whoever started
+  # the node. `tools/devnet-bench.py` says so and fails with a clear message when nothing answers.
+  command -v python3 >/dev/null 2>&1 || { echo "bench needs python3" >&2; exit 2; }
+  exec python3 "$(cd "$(dirname "$0")" && pwd)/devnet-bench.py" "$@"
+}
+
 case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   up) shift; cmd_up "$@" ;;
@@ -622,6 +648,7 @@ case "${1:-}" in
   faucet) shift; cmd_faucet "$@" ;;
   demo) cmd_demo ;;
   propose) shift; cmd_propose "${1:-}" ;;
+  bench) shift; cmd_bench "$@" ;;
   cli) shift; cmd_cli "$@" ;;
   help|--help|-h) help ;;
   *) help ;;
