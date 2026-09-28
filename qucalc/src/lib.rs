@@ -516,9 +516,15 @@ pub mod gov {
         for m in universe {
             // Clamp: a caller-supplied negative trust level must not produce a
             // negative (or zero) base weight.
-            let base = (1 + trust.get(&m).copied().unwrap_or(0)).max(0);
+            //
+            // Saturating, not wrapping: `trust` comes straight off a deploy's arguments
+            // (`RhoNumber::unapply` yields any `i64`), so `1 + i64::MAX` used to wrap to `i64::MIN`,
+            // which the `.max(0)` then clamped to 0 — a maximum trust level silently scored as none.
+            // In release that was a wrong answer nobody could see; in debug it panicked the deploy.
+            let base = trust.get(&m).copied().unwrap_or(0).saturating_add(1).max(0);
             if dv.contains(&m) {
-                *weight.entry(m).or_insert(0) += base;
+                let w = weight.entry(m).or_insert(0);
+                *w = w.saturating_add(base);
                 continue;
             }
             let mut seen = BTreeSet::from([m.clone()]);
@@ -528,7 +534,8 @@ pub mod gov {
                     break; // dead-end -> abstain
                 };
                 if dv.contains(next) {
-                    *weight.entry(next.clone()).or_insert(0) += base;
+                    let w = weight.entry(next.clone()).or_insert(0);
+                    *w = w.saturating_add(base);
                     break;
                 }
                 if !seen.insert(next.clone()) {
@@ -643,7 +650,10 @@ pub mod gov {
                 for (v, e, s) in vouchers {
                     if e == m {
                         let cur = level.get(v).copied().unwrap_or(0);
-                        level.insert(v.clone(), (cur - *s).max(0));
+                        // Saturating: both operands come off a deploy's arguments, and the wrapping
+                        // case promoted a voucher from `i64::MIN` to `i64::MAX` — the floor turned
+                        // into a ceiling.
+                        level.insert(v.clone(), cur.saturating_sub(*s).max(0));
                     }
                 }
             }
@@ -665,7 +675,7 @@ pub mod gov {
             .keys()
             .map(|m| weights.get(m).copied().unwrap_or(0))
             .filter(|w| *w > 0)
-            .sum();
+            .fold(0i64, i64::saturating_add);
         if total <= 0 {
             return None;
         }
@@ -680,15 +690,15 @@ pub mod gov {
             let mut counts: BTreeMap<String, i64> = BTreeMap::new();
             for (m, r) in &rankings {
                 if let Some(first) = r.iter().find(|o| !eliminated.contains(*o)) {
-                    *counts.entry(first.clone()).or_insert(0) +=
-                        weights.get(m).copied().unwrap_or(0);
+                    let c = counts.entry(first.clone()).or_insert(0);
+                    *c = c.saturating_add(weights.get(m).copied().unwrap_or(0));
                 }
             }
             if counts.is_empty() {
                 return None;
             }
             let max = *counts.values().max()?;
-            if max * 2 > total {
+            if max.saturating_mul(2) > total {
                 return counts
                     .iter()
                     .filter(|(_, c)| **c == max)
@@ -715,7 +725,8 @@ pub mod gov {
         for (m, approved) in ballots {
             let w = weights.get(m).copied().unwrap_or(0);
             for opt in approved {
-                *counts.entry(opt.clone()).or_insert(0) += w;
+                let c = counts.entry(opt.clone()).or_insert(0);
+                *c = c.saturating_add(w);
             }
         }
         counts
