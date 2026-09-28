@@ -362,24 +362,31 @@ measured:
    ([#70](https://github.com/rchain-community/rchain-rust/issues/70)). Attesting also *is* proposing:
    the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with no node
    contributes nothing while still diluting A.
-3. **A fresh multi-validator network never forms at all.**
-   ([#100](https://github.com/rchain-community/rchain-rust/issues/100)). On
-   `tools/devnet.sh up --validators 3 --fresh`, the joining validators send a
-   `FinalizedFringeRequest` that **the bootstrap never receives** — it logs no fringe line at all —
-   and they stay at height 0 while the bootstrap counts `peers: 0` against their `peers: 1`. Nothing
-   finalises, so there is no finalized fringe for them to sync, and the deadlock is from genesis
-   rather than a slow start.
+3. ~~**A fresh multi-validator network never forms at all.**~~ **Fixed, 2026-09-29.** It was two
+   faults, both on the same path. First, a node recorded a peer only if its *reply* to that peer's
+   handshake succeeded — and a joining node dials before its own server binds, so the reply was
+   refused and the peer was lost permanently (`peers: 0` against the joiner's `peers: 1`). Second,
+   once the peer was registered, the joiner latched on the **genesis master's *announcement*** — an
+   empty `FinalizedFringe { hashes: [] }` broadcast as genesis is created — and discarded the answer
+   to its own request in silence, then "restored" nothing and ran on an empty DAG. See
+   [#100](https://github.com/rchain-community/rchain-rust/issues/100); `tools/devnet.sh` also now
+   waits for the bootstrap to have **committed genesis** before starting any node, which is what let
+   a joiner receive that announcement in the first place. **Verified:** a fresh two-validator devnet
+   syncs 27 history / 198 data items, the joiner tracks the bootstrap's height, and both finalise in
+   lockstep — 264/257, 286/278, 317/309 as the chain grew.
 
 The arithmetic of (2) is unchanged and still the reason the split is 1000 against 100: while A is the
 only proposer, A must hold **more than ⅔ of the whole pool** or nothing finalises. Anyone bonding on
 top takes A's share down, and at ⅔ or below finality stops with no automatic recovery. That is the
 2026-09-22 incident.
 
-**Before a validator is added: #100 must be fixed, and then #70's recovery case measured.** That test —
-three validators where the survivors hold > ⅔ of the pool, one killed, finality expected to continue —
-is now blocked by #100 rather than by #83: the network it needs cannot be built yet. `tools/devnet.sh`
-gained `--stakes A,B,C` for it, so the case is expressible as soon as a fresh three-validator net can
-form. Until then, add nothing: use the net as a single-proposer chain, and read or deploy against A.
+**Before a validator is added: #70's recovery case must be measured.** Both of the mechanical blockers
+are gone — the boundary panic (#83) and the network that never formed (#100) — so the test that has
+never run is now the *only* thing standing here: three validators where the survivors hold > ⅔ of the
+pool, one killed, finality expected to continue. `tools/devnet.sh up --validators 3 --stakes 100,100,50`
+is that case in one flag, and its arithmetic is unchanged (a silent validator keeps full weight, so
+three *equal* validators minus one is exactly ⅔ and does not recover). Until it has been run, add
+nothing to a live net: use it as a single-proposer chain and read or deploy against A.
 
 ## Onboarding an observer into the validator pool
 
