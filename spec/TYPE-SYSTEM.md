@@ -256,6 +256,13 @@ Each entry was a **production** panic source (test-only `assert!`/`assert_eq!`/`
 round-trip tests were excluded). The typed fix is either a proven-total refinement (per Part I) or an
 `Option`/`Except` at a declared boundary.
 
+**The line numbers are as of the sweep and are deliberately not maintained.** They are not citations to
+follow: most of the code they name has since been rewritten into its typed form, so a number here may
+resolve to the *fixed* site, to a renamed function, or to nothing. Re-pointing them at today's code
+would be the worse repair — it would make a record of a defect read as a list of current sites, which
+is the exact failure the paragraph above describes. The tree is the authority for where those functions
+are now, and the gate is the authority for what is partial in it.
+
 #### `models`
 | Site | Partiality | Typed fix |
 |---|---|---|

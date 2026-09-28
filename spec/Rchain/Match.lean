@@ -45,7 +45,7 @@ agreement with the node, a shape outside the boundary that the node *does* match
 failure rather than a silent over-claim.
 
 **A tuple was outside the boundary, and the port matches one** (AUDIT C44). The clauses had no `ETuple`
-arm, and `spatial_matcher.rs:496-501` has one, so a tuple pattern that the node matches read as
+arm, and `spatial_matcher.rs:538-544` has one, so a tuple pattern that the node matches read as
 "silence" in the model — the C19/C20/C22 shape, hidden this time behind the *documented* fact that
 unmodelled shapes fail closed. The corpus's cases 15/16 are what found it: a declared verdict of `true`
 for `@(1, 2)` against `(1, 2)` made `matchCases_decide` refuse to compile. The arm is added. The
@@ -255,7 +255,7 @@ mutual
         | [.elist ts _] => matchListPos f ps ts r.isSome
         | _ => false
       -- A **tuple** matches element-wise, with no remainder to absorb a tail — the port's arm
-      -- (`spatial_matcher.rs:496-501`, `fold_match(tlist, plist, None, …)`) which this clause set did
+      -- (`spatial_matcher.rs:538-544`, `fold_match(tlist, plist, None, …)`) which this clause set did
       -- not have. Its absence was invisible because the model *fails closed* (every unmodelled shape
       -- answers `false`), and a pattern that matches nothing produces silence rather than an error —
       -- the same shape as C19/C20/C22, where a missing clause read as a client bug. AUDIT C44; the
@@ -449,7 +449,7 @@ modules rather than reachable behaviour. -/
 abbrev FreeMap := List (Nat × Par)
 
 /-- Bind a level, replacing any previous binding — the port's `fm.insert(level, …)`
-    (`spatial_matcher.rs:477-480`). -/
+    (`spatial_matcher.rs:521-530`). -/
 def freeMapBind (fm : FreeMap) (l : Nat) (v : Par) : FreeMap :=
   (l, v) :: fm.filter (fun p => p.1 ≠ l)
 
@@ -490,7 +490,7 @@ theorem aggregateUpdates_rejects_double_bind (fm f g : FreeMap) (l : Nat)
 
 /-- **And this is what the other two paths do instead** — the element-pair and conjunction paths bind
     with no check, so a repeated level is **overwritten**: the later binding wins, whatever the base held
-    (`spatial_matcher.rs:477-480`, `:595-629`, `:325-334`). Reached only in the matcher's own terms — a
+    (`spatial_matcher.rs:521-530`, `:637-671`, `:366-375`). Reached only in the matcher's own terms — a
     parsed term cannot get here, because the normalizer refuses a twice-bound binder first (AUDIT C42). -/
 theorem freeMapMerge_overwrites (f : FreeMap) (l : Nat) (v' : Par) :
     (freeMapMerge f [(l, v')]).lookup l = some v' := by
@@ -696,7 +696,7 @@ to "the shapes the clauses have an arm for" — which is what the rows previousl
 
 Measured on the node, the same shape (AUDIT C60): `@Set(1 | 2)` against `Set(1 | 2)` **matches**
 (`true`), because the port's matcher does not reach its clauses for a concrete pattern at all — it
-short-circuits at `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:193-196`,
+short-circuits at `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:235-237`,
 which the port's own normalizer comment at `normalizer.rs:1601` names as "the `pattern == target`
 short-circuit"). So on that shape the model and the node disagree, in the *under*-claiming direction,
 and the disagreement is recorded rather than patched here: closing it means giving the model the port's

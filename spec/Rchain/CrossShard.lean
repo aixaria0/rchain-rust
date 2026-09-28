@@ -365,7 +365,7 @@ structure Ledger where
 def Ledger.record (g : Ledger) (id : Nat) : Option TxnRecord :=
   (g.txn.find? (fun p => p.1 == id)).map (fun p => p.2)
 
-/-- Write a record (the port's `set_txn`, `native_state.rs:1643-1646`). -/
+/-- Write a record (the port's `set_txn`, `native_state.rs:1654-1657`). -/
 def Ledger.setRecord (g : Ledger) (id : Nat) (r : TxnRecord) : Ledger :=
   { g with txn := (id, r) :: g.txn.filter (fun p => p.1 ≠ id) }
 
@@ -415,7 +415,7 @@ def txnAbort (g : Ledger) (id : Nat) : Except String Ledger :=
       .ok ((g.setVault r.src (g.vault r.src + r.amount)).setRecord id { r with state := .aborted })
 
 /-- A ledger that already holds a record for `id` is a **fixed point** of `prepare` — which is what the
-    port's early return *is* (`native_state.rs:1658-1660`). The idempotence below is its consequence. -/
+    port's early return *is* (`native_state.rs:1669-1671`). The idempotence below is its consequence. -/
 theorem txnPrepare_fixes (g : Ledger) (id : Nat) (payer payee : String) (amount : Nat)
     (r : TxnRecord) (h : g.record id = some r) : txnPrepare g id payer payee amount = .ok g := by
   simp [txnPrepare, h]

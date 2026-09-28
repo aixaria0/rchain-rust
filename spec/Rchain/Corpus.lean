@@ -59,7 +59,7 @@ def listPat (ps : List Par) (r : Option Var) : Par := one (.elist ps r)
 def setPat (ps : List Par) (r : Option Var) : Par := one (.eset ps r)
 
 /-- A tuple, as a pattern or as a datum — the shape whose matcher clause the model was missing
-    (AUDIT C44): the port's `spatial_match` has an `ETuple` arm (`spatial_matcher.rs:496-501`) and the
+    (AUDIT C44): the port's `spatial_match` has an `ETuple` arm (`spatial_matcher.rs:538-544`) and the
     model's clauses did not, so a tuple pattern matched nothing in the model while the node matches
     it. The cases below are what pins it. -/
 def tuplePat (ps : List Par) : Par := one (.etuple ps)
@@ -218,7 +218,7 @@ def matchCases : List MatchCase :=
       patternPar := mapOf [("a", namePar 1), ("b", namePar 2)] none,
       targetPar := mapOf [("a", intPar 1), ("b", intPar 2)] none, expected := true }
     -- 15. the shape the model's clauses had no arm for: a **tuple**. The port matches it
-    -- (`spatial_matcher.rs:496-501`), so an equal tuple must match — and until the arm was added the
+    -- (`spatial_matcher.rs:538-544`), so an equal tuple must match — and until the arm was added the
     -- model answered `false`, which is AUDIT C44.
   , { bind := "@(1, 2)", target := "(1, 2)",
       patternPar := tuplePat [intPar 1, intPar 2],

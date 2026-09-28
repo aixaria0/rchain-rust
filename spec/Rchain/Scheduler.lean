@@ -252,7 +252,7 @@ def GateAwaits (n : Nat) : Nat → Nat → Prop := fun j i => i < n ∧ j + 1 = 
 /-- **Law 21** — the immediate-predecessor chain is **transitively complete**: every task awaits
     every earlier task through it. This is exactly what the Rust's comment claims — "Awaiting the
     immediate predecessor alone suffices because that task itself awaits its own — a linear chain
-    of awaits, not the quadratic all-predecessors join" (`reduce.rs:2341-2345`) — and it is the
+    of awaits, not the quadratic all-predecessors join" (`reduce.rs:2573-2575`) — and it is the
     content the identification "the gate is the fold" lacks: the *transitive closure* of a linear
     dependency orders all earlier tasks, so no task can observe a missing dependency. A chain with
     a missing link (say `j + 2 = i` for even `i`) would leave odd-indexed tasks unordered, and this

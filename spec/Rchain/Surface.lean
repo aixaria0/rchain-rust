@@ -874,7 +874,7 @@ theorem a_scoped_name_occurrence_is_closed :
 /-! ## The induction's leaves
 
 Law 36's owed induction (`∀ e acc Γ, Closed acc → ScopedIn Γ e → ∀ p, normalizeAt e acc Γ = some p →
-Closed p`) reduces every arm to two things: `Closed_parMerge` (`Ty.lean:277`) and the closedness of the
+Closed p`) reduces every arm to two things: `Closed_parMerge` (`Ty.lean:289-290`) and the closedness of the
 `Par` that arm *builds*. These are the second things — one lemma per shape `normalizeAt` constructs.
 
 They are stated in the **`Bool` form** (`closed … = true`), which is what makes them usable: an arm

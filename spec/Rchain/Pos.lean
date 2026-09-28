@@ -253,7 +253,7 @@ def bond (s : PosState) (v : Validator) (stake : Nat) : PosState :=
   { s with user := s.user - stake, vault := s.vault + stake, pool := (v, stake) :: s.pool }
 
 /-- Step 1 of `close_block`: the epoch's rewards are written into the **committed** ledger
-    (`native_state.rs:1252-1265`). The amounts are `Rchain.reward`'s (modelled above); the machine takes
+    (`native_state.rs:1253-1266`). The amounts are `Rchain.reward`'s (modelled above); the machine takes
     them as given, because no amount moves a coin — and *that* is what conservation claims. -/
 def commitRewards (r : Validator → Nat) (s : PosState) : PosState :=
   { s with
@@ -262,7 +262,7 @@ def commitRewards (r : Validator → Nat) (s : PosState) : PosState :=
         setKey l wb.1 (lookup l wb.1 + r wb.1)) s.committed }
 
 /-- Step 2: every staged request becomes an escrowed claim — its bond leaves the pool and its deadline is
-    recorded (`native_state.rs:1267-1278`). No coin moves: the escrowed bond is still in the vault and the
+    recorded (`native_state.rs:1268-1279`). No coin moves: the escrowed bond is still in the vault and the
     validator's own vault is still empty. Law 47's second stage. -/
 def movePending (s : PosState) : PosState :=
   { s with
@@ -457,7 +457,7 @@ theorem a_boundary_activates_the_pool (r : Validator → Nat) (s : PosState) (n 
 /-- **The ordering the release rule depends on**: the move of step 2 leaves the committed ledger
     exactly as step 1 wrote it, so a validator that leaves the pool at this boundary is still paid
     against a reward committed for the epoch it was in. The two steps are ordered commit-then-move in
-    `epochStep` for this reason (`native_state.rs:1252-1278`, `Pos.rhox:568-588`). -/
+    `epochStep` for this reason (`native_state.rs:1253-1279`, `Pos.rhox:568-588`). -/
 theorem the_move_does_not_disturb_the_ledger (r : Validator → Nat) (s : PosState) (v : Validator) :
     lookup (movePending (commitRewards r s)).committed v
       = lookup (commitRewards r s).committed v := by

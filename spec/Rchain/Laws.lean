@@ -546,7 +546,7 @@ def laws : List Law := [
       law 37's and is **proved** there (`spatialMatches_iff_eq`) — the row is `proved-tied` on the \
       `match` corpus, whose three-valued verdicts are the node's half. \
       **A third thing this row's corpus found** (AUDIT C44): the clauses had no arm for a \
-      **tuple**, which the port matches (`spatial_matcher.rs:496-501`) — so a tuple pattern the node \
+      **tuple**, which the port matches (`spatial_matcher.rs:538-544`) — so a tuple pattern the node \
       matches read as silence here, and the law's own statement was false of the model until \
       `modelledPar` was added to it. Cases 15/16 of `spec/conformance/match.tsv` are the pair that \
       caught it; the arm is not an axiom, it is a clause. **A fourth thing, and it is the one that \
@@ -743,7 +743,7 @@ def laws : List Law := [
       `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
       else hashing to it. A serializer that dropped a field would falsify the first, and a second node \
       hashing to the empty root the second — which is why the store *refuses* a colliding write \
-      (`save_node`, `radix_tree.rs:239-248` — its collision assert is the refusal) rather than tolerating one. **And the canonicity axiom was \
+      (`save_node`, `radix_tree.rs:240-256` — its collision assert is the refusal) rather than tolerating one. **And the canonicity axiom was \
       itself falsified**: `the_encoder_is_not_canonical_over_the_models_types` exhibits two distinct \
       nodes with one encoding (a 35-byte value re-reads as a second item), which is why the axiom and \
       both theorems now carry `WellFormed` — the invariant the code carries in its types and the model \
@@ -794,7 +794,7 @@ def laws : List Law := [
       recomputed — the reverse half passes, the check fails). In the port, each half has its own error \
       that the Rust's tests assert fires: `ReplayCommNotInTrace` (`replay_rspace.rs:341-345`, \
       `a_rigged_replay_matches_its_recorded_trace` `:683-699`) and `Unused COMM event` \
-      (`check_replay_data`, `replay_rspace.rs:594-598`, `a_rig_whose_comm_never_happens_is_reported` `:711-744`)",
+      (`check_replay_data`, `replay_rspace.rs:616-626`, `a_rig_whose_comm_never_happens_is_reported` `:711-744`)",
     note := "**The modelling step the row previously owed, landed** (2026-09-23, Programme D unit 9). \
       The row was `vacuous` because \"recompute\" and \"record\" were the *same function* in the model, \
       so the claim was `rfl`. The record is now an **input** — `Replays recomputed recorded` — and the \
@@ -1286,7 +1286,7 @@ def laws : List Law := [
       removed nobody, and carrying the stakes makes the conclusion the filter itself, so that \
       hypothesis became *inert* rather than the claim becoming weaker. **What this row still does not \
       say**, stated rather than implied: nothing here proves the *port* reads `pos:active` — that is \
-      the Rust's own shape (`runtime_manager.rs:1360-1366`) — so this is a `proved-model` tie, and the \
+      the Rust's own shape (`runtime_manager.rs:1374-1380`) — so this is a `proved-model` tie, and the \
       model change carried laws 44-47 with it" },
   { number := 17, clause := "a", layer := "Casper",
     rustWitness := [
@@ -1636,15 +1636,19 @@ def laws : List Law := [
       iteration, exactly where a silently different order would bite — and the model's `ShardId` *is* a \
       `String`, so `decide` and `omega` see the same order the port derives. **And the witness this row \
       carried needed correcting, which is the part worth keeping**: `validShardId (s.child n) = \
-      validShardId s` is **false in both directions** — the port's `child` constructs the newtype \
-      **directly** (`refined.rs:397-401`), bypassing `TryFrom`, so a non-ASCII name yields an id \
-      `TryFrom` would have refused; and an invalid parent can have a valid child \
-      (`shardChild \"\" \"x\" = \"/x\"`). What holds instead is the characterisation in \
+      validShardId s` is **false in both directions** — the *model's* `shardChild` joins the path with \
+      no check, so a non-ASCII name yields an id `TryFrom` would have refused; and an invalid parent can \
+      have a valid child (`shardChild \"\" \"x\" = \"/x\"`), which holds of the port too. **The port's \
+      `child` did the same when this row was written** — it constructed the newtype **directly** \
+      (`refined.rs:398-425`), bypassing `TryFrom`, which is AUDIT C78 — **and no longer does**: it \
+      refuses an empty or non-ASCII name and returns `Result` (`shared/src/refined.rs:411-425`, whose \
+      own doc names C78). So the port-side reading of that identity is false for a different reason now, \
+      the constructor *refusing* where the model joins. What holds instead is the characterisation in \
       `validShardId_child`: given a **valid** parent, the child is valid exactly when the name is ASCII. \
-      AUDIT C78 records the constructor that does not maintain its type's invariant — a finding about the \
-      port's own refinement discipline rather than a deviation from the oracle — and this row states the \
-      corrected form rather than the convenient one, with the refuted version kept beside it so the \
-      next reader does not re-derive it. **And the order half's boundary is named with its cost**: \
+      AUDIT C78 was a finding about the port's own refinement discipline rather than a deviation from \
+      the oracle, and it is **closed**; this row states the corrected form rather than the convenient \
+      one, with the refuted version kept beside it so the next reader does not re-derive it. **And the \
+      order half's boundary is named with its cost**: \
       what the `BTreeMap` sites observe is `shardChild_prefix` (the child's path carries the parent's) \
       plus the two `decide`d instances; the general \"a child sorts after its parent\" is *statable*, \
       follows from this plus the lexicographic order's prefix property, and is **not a theorem here** \
@@ -2028,7 +2032,7 @@ def laws : List Law := [
     falsifiable := some "the corpus's 22 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
-      — a tuple pattern, which the port matches (`spatial_matcher.rs:496-501`) and the clauses had no \
+      — a tuple pattern, which the port matches (`spatial_matcher.rs:538-544`) and the clauses had no \
       arm for — made the `decide` refuse (AUDIT C44). Two further cases are the model's own defects, \
       one in each direction: case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) is a match the model \
       *under*-claimed because the fuel's measure counted an empty `Par` as zero nodes while the set \
@@ -2065,7 +2069,7 @@ def laws : List Law := [
       cannot — is pinned by `a_permuted_pattern_is_refused`. The tie's domain is therefore the \
       **canonical** shapes, where the walk and the port's backtracking assignment agree: not the \
       duplicate-element corner only (C54), but the sorted-and-duplicate-free form on both sides, \
-      which is what `sortPar` fixes for the model's collections and `par_set` for the node's.       **And the domain itself was wrong, not just unproved** (2026-09-24, AUDIT C60): `modelledPar` plus       a singleton expression list plus canonical contents still admits a shape the clauses reject —       nest a two-expression `Par` inside a collection and the *inner* list is not a singleton, so       `spatialMatch` answers `false` for the value against itself while it is modelled and       connective-free (`a_nested_multi_expression_par_is_outside_the_path_domain`). The hypothesis has       to hold at *every* level, and `pathPar` is that predicate — a `Par` whose fields but `exprs` are       empty, holding exactly one expression, that expression a ground or a collection of `pathPar`s       with no remainder. It is what \"the shapes the clauses cover\" was always meant to name, and       `linear_of_pathPar` is the free-level consequence the row used to leave implicit. **AUDIT C60       also measures what the domain leaves out, and it is not all unmodelled shapes**: the port's       matcher never reaches these clauses for a *concrete* pattern at all — it short-circuits at       `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:193-196`, named as such       in the port's own normalizer at `normalizer.rs:1601`) — and both sides of a real match are       already canonical, because the RSpace payload types are `Sorted<Par>`       (`models/src/runtime.rs:20-36`). Measured: the node **matches** `@Set(1 | 2)` against itself       (`true`) where the clauses here answer `false`. Closing that is a modelling change to       `spatialMatch` — the short-circuit and the canonicalization — rather than a clause, and it is       named as the row's next step instead of being assumed. **The tie is half proved** (2026-09-24): \
+      which is what `sortPar` fixes for the model's collections and `par_set` for the node's.       **And the domain itself was wrong, not just unproved** (2026-09-24, AUDIT C60): `modelledPar` plus       a singleton expression list plus canonical contents still admits a shape the clauses reject —       nest a two-expression `Par` inside a collection and the *inner* list is not a singleton, so       `spatialMatch` answers `false` for the value against itself while it is modelled and       connective-free (`a_nested_multi_expression_par_is_outside_the_path_domain`). The hypothesis has       to hold at *every* level, and `pathPar` is that predicate — a `Par` whose fields but `exprs` are       empty, holding exactly one expression, that expression a ground or a collection of `pathPar`s       with no remainder. It is what \"the shapes the clauses cover\" was always meant to name, and       `linear_of_pathPar` is the free-level consequence the row used to leave implicit. **AUDIT C60       also measures what the domain leaves out, and it is not all unmodelled shapes**: the port's       matcher never reaches these clauses for a *concrete* pattern at all — it short-circuits at       `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:235-237`, named as such       in the port's own normalizer at `normalizer.rs:1601`) — and both sides of a real match are       already canonical, because the RSpace payload types are `Sorted<Par>`       (`models/src/runtime.rs:20-36`). Measured: the node **matches** `@Set(1 | 2)` against itself       (`true`) where the clauses here answer `false`. Closing that is a modelling change to       `spatialMatch` — the short-circuit and the canonicalization — rather than a clause, and it is       named as the row's next step instead of being assumed. **The tie is half proved** (2026-09-24): \
       `spatialMatches_imp_eq` is the *soundness* direction — an accepted match forces equality — over
       `pathPar` on both sides. It rests on nothing but the clauses: a six-member `mutual` family in
       `Match.lean` (`eq_of_core`/`eq_of_exprs`/`eq_of_expr`/`eq_of_listPos`/`eq_of_listPar`/`eq_of_map`),
