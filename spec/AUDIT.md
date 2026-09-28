@@ -18,6 +18,86 @@ on this page, which costs 2.5 seconds.
 
 ---
 
+## What this page does not cover — the remainder
+
+**The check-off below counts two specific rosters, and neither is the tree.** The findings count is
+every finding the audit has filed; the coverage count is the ledger's **T1 rows** — the tier that can
+fork the chain or lose funds, which is **28 files, 60 law-register rows and one workflow**, not 89
+modules. Everything under that tier is the remainder, and the remainder is most of the ledger:
+`spec/review-ledger.tsv` carries **626 rows, 507 of them `deferred`**.
+
+| kind | deferred / rows | what a row is |
+|---|---|---|
+| `file` | **306 / 352** | a tracked source file — T1 28 (none deferred), T2 21 (18), T3 303 (288) |
+| `config` | 104 / 105 | an operator-facing knob: a CLI option or a `defaults.conf` key |
+| `ingress` | 40 / 45 | a wire or HTTP surface |
+| `process` | **30 / 30** | a system process the node installs under its `rho:` URN |
+| `tool` | 20 / 27 | a gate in `tools/` |
+| `class` | 6 / 6 | a mutation class in the type-system sweep |
+| `roster` | 1 / 1 | the ledger's own machinery, which is gone |
+| `law` | 0 / 60 | the law register's rows — closed |
+
+Two `file` rows moved from `deferred` to `exempt` on 2026-09-28 (the ZFA prototypes deleted under
+[#38](https://github.com/rchain-community/rchain-rust/issues/38)), which is why the file tile reads
+306 and not the 308 an earlier count carried. Four crates carry **no verdict at all** — `block-storage`
+(14 rows), `sdk` (10), `qucalc` (2), `graphz` (1) — and RSpace, the largest, carries 8 verdicts of 57.
+
+**Why "all 89 T1 modules read" and "306 deferred file rows" are both true.** The coverage line counts
+`deferred` rows *whose tier is T1*, and the tier cuts across kinds rather than being the file roster:
+those 89 rows are **28 files, 60 law-register rows and one workflow** (`coverage.yml`) — so the line
+narrows twice, once to a tier and then, inside the file roster, to 28 of 352. Neither narrowing is
+hidden, and `tools/audit-status.sh` prints the tier it applied. The sharpest true reading of the line
+is "every T1 row carries a verdict, and the T1 files are read"; a reader who takes it as a claim about
+the tree has taken it one roster too far. Nothing here is a rounding.
+
+**The reading order for what is left, and it is not a preference.** *RSpace first, then
+`block-storage/src/dag/*`.* RSpace holds the merge and the trie: all six `rspace/src/merger/*` rows are
+deferred (a `StateChange` merger and an event-log merger among them), as are ten of the fifteen under
+`rspace/src/history/*`. The merge is where the consensus laws (9, 19, 20, 21) are stated, and where the
+chain-halting duplicate-action panic of
+[#83](https://github.com/rchain-community/rchain-rust/issues/83) is assembled. Then
+`block-storage/src/dag/*`, where **all eight** rows are deferred — `finalizer.rs`, `representation.rs`
+and `message_state.rs` among them, the fringe and finality machinery. The order follows consequence,
+and it is corroborated rather than asserted: the one open defect that halts a chain points into the
+first of the two.
+
+**A clean read is a claim, not evidence.** §22 records the pass that read the T1 roster and got one
+file wrong — it read `casper/src/txn_coordinator.rs`, reported "Nothing found", and a second reader
+found C166 in it the same day, in a defect its own doc comment warned about six lines above. These
+files should be read the way that pass's other nineteen reads were *not*: with a second reader, or a
+probe, before a `cleared` verdict is written.
+
+**The process and config rows are not reading jobs — the decision [#94](https://github.com/rchain-community/rchain-rust/issues/94) asks for.**
+
+- A `process` row is an installed URN, not a file. What reaches a deploy is its **wire protocol** —
+  arity and reply shape — which is what `spec/conformance/protocol.tsv` holds, and
+  `every_catalog_urn_arity_matches_the_definition_the_node_installs` ties each row to the node's own
+  `Definition.arity` (C158, falsified by planting a drifted arity). **Nine of the thirty are in that
+  corpus.** The other twenty-one are closed by extending it, one row each, falsified the same way — not
+  by twenty-one adversarial reads. Their bodies live in `rholang/src/system_processes.rs`, a **T1 file
+  already read and carrying a finding**: the file-level question is answered, and what remains is
+  arithmetic.
+- A `config` row is a name in the operator-facing configuration surface — an `#[arg(...)]` in
+  `node/src/configuration/commandline/options.rs` or a `defaults.conf` key — and it is a roster of
+  **names rather than declarations**. Three of the rows say so in their own labels: `depth`, `content`
+  and `type` each carry a second entry labelled `@2`, and each of the three names is declared twice in
+  `options.rs` (`:168`/`:173`, `:184`/`:191`, `:182`/`:189`), so the suffix marks the second
+  declaration of one name. The seeding rule that wrote the roster was deleted with the emitter on
+  2026-09-27. So the first job is not a read but a **resolving pass** — each of the 105 names to the
+  declaration it means — and the second is the adversarial question C143 already worked for nine keys:
+  **is it enforced, or parsed and ignored?** Both halves are mechanical, and both are one unit with a
+  worked example in the register. Reading the rows one at a time would answer the same question 105
+  times, and for the three duplicates it could not be answered at all: `content@2` does not name a
+  declaration, so there is nothing to read.
+
+**Two things this note does not do.** It does not lower the declared ceiling: `unhousedCeiling` and the
+per-kind `ceiling` lines in `spec/review-ledger.tsv` stay where the 2026-09-27 measurement put them,
+because the historical backlog they count is a different question from what has been read. And it does
+not promise a schedule. What is here is a denominator, an order to work in, and the two decisions taken
+on the rows that are not reads.
+
+---
+
 <!--EMPTY: the emitter writes the check-off below this line-->
 
 ## Check-off

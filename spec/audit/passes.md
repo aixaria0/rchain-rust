@@ -4351,3 +4351,57 @@ self-reported clean is not**, which is why §21's method ran seven lenses and ha
 a second agent instructed to refute it. This pass had one reader per file and no refuter, and the
 one file where that mattered is this one.
 
+### The remainder: what this pass did not read, and what is owed for it
+
+**This pass closed the T1 roster and left everything under it exactly where it was, and #94 asks for
+that remainder to be written down rather than implied.** The count is now in `spec/AUDIT.md`'s own
+frame, above the generated check-off, so a reader meets it before the two headline counts rather than
+after. What follows is this pass's account of it.
+
+**The denominator, measured 2026-09-28.** `spec/review-ledger.tsv` holds **626 rows and 507
+`deferred`**: `file` 306 of 352 (T1 28 with none deferred, T2 21 with 18, T3 303 with 288), `config`
+104 of 105, `ingress` 40 of 45, `process` 30 of 30, `tool` 20 of 27, `class` 6 of 6, `roster` 1 of 1,
+`law` 0 of 60. Two `file` rows moved out of `deferred` this same day — the ZFA prototypes deleted
+under #38 — which is the difference between that 306 and the 308 an earlier count carried. **Four
+crates carry no verdict at all**: `block-storage` (14), `sdk` (10), `qucalc` (2), `graphz` (1). RSpace
+carries 8 verdicts of 57 — **49 rows still unread in the crate that holds the merge**.
+
+**The two numbers that look contradictory are not, and the resolution narrows the claim twice.** This
+pass's output is that every **T1 row** now carries a verdict, beside 306 deferred file rows.
+`tools/audit-status.sh` counts `deferred` rows whose *tier* is T1, and the T1 tier is **28 files, 60
+law-register rows and one workflow** — so the headline is a statement about a tier that happens to be
+mostly law rows, and, within the file roster, about 28 of 352 rows. The line §21 wrote — "17 of 350
+file rows carry a verdict and not one is `cleared`" — was about that same file roster, and the
+reconciliation belongs on the register's front page precisely because a reader who takes the headline
+as a statement about the tree has taken it one roster too far.
+
+**The reading order this pass hands forward: RSpace first, then `block-storage/src/dag/*`.** RSpace
+is the merge and the trie — all six `rspace/src/merger/*` rows are deferred, and ten of fifteen under
+`rspace/src/history/*` — and the merge is where laws 9, 19, 20 and 21 are stated and where #83's
+duplicate-action panic is assembled. `block-storage/src/dag/*` is next, with all eight rows deferred
+(`finalizer.rs`, `representation.rs`, `message_state.rs` among them). **This pass's own miss is why the
+order carries a rule with it**: the one file this pass read clean and got wrong was caught only
+because a second reader existed, so every row in that order wants a second reader or a probe before a
+`cleared` verdict is written. A pass that read the consensus core the way this one read
+`txn_coordinator.rs` would be the §21 coverage defect again, with a better denominator.
+
+**The decisions on the two kinds that are not reads, because #94 asks for a decision and not a plan to
+read 134 rows.** A `process` row is an installed URN: its reachable property is the wire protocol, the
+corpus at `spec/conformance/protocol.tsv` holds nine of the thirty, and C158's test ties a row's arity
+to the node's own `Definition.arity`. So the remaining twenty-one are closed by **extending the
+corpus**, falsified per row, rather than by twenty-one adversarial reads — and the bodies they name
+live in `rholang/src/system_processes.rs`, which this pass's predecessor read as a T1 file and put a
+finding on. A `config` row is a declaration in the operator-facing surface — an `#[arg(...)]` in
+`node/src/configuration/commandline/options.rs`, or a `defaults.conf` key — except that the roster
+records **names**, and three of its rows admit it: `depth`, `content` and `type` each carry an `@2`
+twin, and each name is declared twice in `options.rs`. The seeder that produced the roster went with
+the emitter on 2026-09-27. So the config rows are closed in two mechanical halves, neither a read: a
+**resolving pass** of 105 names to declarations, and then the adversarial question C143 already
+answered for nine keys — *enforced, or parsed and ignored?* — with that row as the worked example.
+
+**What the note deliberately does not do.** It does not lower `unhousedCeiling` or the per-kind
+`ceiling` lines. §21 already established the rule — "this pass houses its own numbers and does not
+lower the ceiling, because the historical backlog it counts is a separate question" — and a pass that
+shrank the ceiling while the denominator grew would be reporting coverage as reassurance, which is the
+defect class §21's completeness section is about.
+
