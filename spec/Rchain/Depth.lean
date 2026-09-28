@@ -438,28 +438,52 @@ def walkExceeds (limit : Nat) (p : Par) : Bool := walkPar limit p
 /-! ## What is discharged, and what is not
 
 The walk above is **defined** — an independent recursion, as law 50's row requires, so that the two
-directions are not `rfl`. The **proof** that it agrees with `parDepth` is still owed, and the row
-remains `owed` for it:
+directions are not `rfl`. The **proof** that it agrees with `parDepth` is still owed, and the row stays
+`owed` for it:
 
   * `walkPar n p = false → parDepth p ≤ n` — soundness, the direction that matters; and
   * `parDepth p ≤ n → walkPar n p = false` — completeness.
 
-The shape is `Rchain/FreeVars.lean`'s mutual theorem block, and the attempt that stopped here
-established three things a next pass should not have to rediscover:
+Two attempts have now been made at it, and the second got everything except the termination proof.
+What follows is what a third should not have to rediscover.
 
-  1. **The arithmetic step works**, and it is `Nat.succ_le_succ_iff` → `Nat.add_comm 1` →
-     `Nat.add_le_add_iff_right` → `Nat.max_le`, turning `1 + max A B ≤ m + 1` into `A ≤ m ∧ B ≤ m`
-     against the walk's `Bool.or_eq_false_iff` chain. `and_assoc` is needed as well: `parDepth`'s
-     eight-way `max` nests to the right and the `||` chain to the left.
-  2. **`termination_by` on a *theorem* block needs equation-style bodies** (`| Par.mk .. => by`), not
-     `cases … with` — a tactic-mode body binds no arguments as far as the clause is concerned, and a
-     `mutual` member with an unused clause makes Lean report the whole block non-recursive.
-  3. **The two multi-constructor types need per-constructor arms**, and the list members need
-     `decreasing_by all_goals (simp only [List.cons.sizeOf_spec]; omega)` — `sizeOf (a :: as)` has to
-     be reduced before the arithmetic is visible, and `simp_wf` alone does not do it.
+**Working, and verified by the second attempt's build**: the bodies themselves. Given a statement that
+type-checks, the proof of each case is one `simp only` — the arithmetic step is
+`Nat.succ_le_succ_iff` → `Nat.add_comm 1` → `Nat.add_le_add_iff_right` → `Nat.max_le`, turning
+`parDepth`'s `1 + max A B ≤ m + 1` into `A ≤ m ∧ B ≤ m` against the walk's `Bool.or_eq_false_iff`
+chain; `and_assoc` is needed because the `max` nests right and the `||` chain left, and `Nat.zero_le`
+closes the leaf arms, whose goal is `True ↔ 0 ≤ m`. Budget `0` is the separate case and needs the
+per-type positivity lemmas (`parDepth_pos` and its siblings — one unfold and `omega` each).
+**The run that stopped reported no error inside a theorem body**: every failure was in a
+`termination_by`/`decreasing_by` clause.
 
-Those three are the whole of what a finished proof adds; nothing about the statement is in doubt.
+**The obstruction, and it is a termination one.** A `mutual` *theorem* block puts the recursion
+through the equation compiler's well-founded fixpoint, and for the **list** members the termination
+goal is stated over the *statement's* binder rather than over the pattern the equation matched. The
+context carries a fresh `l : List T` beside the `a` and `as` the arm bound, and the goal is
+
+  `⊢ sizeOf l < 1 + sizeOf a + sizeOf as`
+
+— which is not provable as posed, because nothing in scope says `l = a :: as`. `simp_wf` reports
+"made no progress" on it (there is no `List.cons.sizeOf_spec` rewrite to make, the goal's `l` not
+being a cons), and `omega` cannot close it: it derives `sizeOf l ≥ 1 + sizeOf a + sizeOf as` from the
+constraints rather than refuting them. Reordering the list members so the list is the equation's
+first matched argument, and giving the block a stated `maxHeartbeats`, both left the goal unchanged.
+
+**So the next attempt should change the instrument, not the tactics.** Two routes, and both are
+whole-proof decisions rather than local fixes: (a) find what the equation compiler actually exposes
+about `l` in that context and put it into the `decreasing_by` scope explicitly — the alternative is
+that `termination_by` on a mutual *theorem* block cannot relate a measure to a matched pattern at all;
+or (b) avoid the mutual theorem block entirely and do **one well-founded induction on `sizeOf`** over
+a combined statement — a 24-way conjunction with a hand-written motive — which trades the equation
+compiler's termination machinery for the obligation to write the motive and the case splits by hand.
+Route (b) is the one this file's shape already suggests: the statements are stable, so the cost is
+mechanical rather than intellectual, where (a) is a question about Lean's behaviour that a
+twenty-minute experiment cannot answer.
+
+**Why the walk had to be an independent recursion**, restated because the proof is what cashes it:
+`decide (limit < parDepth p)` would make both directions `rfl` and prove nothing — the vacuity
+`Rchain/Laws.lean` records for law 22.
 -/
-
 
 end Rchain
