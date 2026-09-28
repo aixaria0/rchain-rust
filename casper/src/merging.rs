@@ -44,6 +44,44 @@ use crate::event_converter::to_rspace_event;
 use crate::interpreter_util::is_genesis_pre_state;
 use crate::runtime_manager::RuntimeManager;
 
+
+/// Canonicalize native mutations before folding them into one radix checkpoint.
+///
+/// Multiple accepted merge branches can carry the same native write. Passing those writes through
+/// unchanged produces duplicate `HistoryAction` keys and makes `RadixHistory::process` panic.
+/// Identical writes are idempotent and collapse to one action. Different writes to the same native
+/// key are a real merge conflict, so they fail closed instead of depending on branch iteration order.
+fn canonicalize_native_changes(
+    actions: &[NativeStoreAction],
+) -> Result<Vec<NativeStoreAction>, String> {
+    let mut by_key: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+
+    for action in actions {
+        let key = match action {
+            NativeStoreAction::Put { prefix, key, .. }
+            | NativeStoreAction::Delete { prefix, key } => (*prefix, *key),
+        };
+
+        match by_key.get(&key) {
+            None => {
+                by_key.insert(key, action.clone());
+            }
+            Some(existing) if existing == action => {
+                // Same state transition contributed by more than one accepted branch: idempotent.
+            }
+            Some(_) => {
+                return Err(format!(
+                    "conflicting native state changes for prefix 0x{:02x}, key {}",
+                    key.0,
+                    key.1.to_hex()
+                ));
+            }
+        }
+    }
+
+    Ok(by_key.into_values().collect())
+}
+
 /// A deploy id paired with its execution cost (port of `DeployIdWithCost`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeployIdWithCost {
@@ -857,6 +895,7 @@ impl MergeScope {
             }
         }
 
+        let native_changes = canonicalize_native_changes(&native_changes)?;
         let new_state = MergeScope::compute_merged_state(
             &to_merge,
             base_state,
@@ -1028,6 +1067,43 @@ mod tests {
         // Different cost — not equal.
         let c = chain(1, 6);
         assert_ne!(a, c);
+    }
+
+    fn native_put(prefix: u8, key: u8, value: u8) -> NativeStoreAction {
+        NativeStoreAction::Put {
+            prefix,
+            key: Blake2b256Hash::from_bytes([key; 32]),
+            value: vec![value],
+        }
+    }
+
+    #[test]
+    fn identical_native_merge_writes_are_deduplicated() {
+        let write = native_put(0x04, 7, 9);
+        let canonical = canonicalize_native_changes(&[write.clone(), write.clone()])
+            .expect("identical writes are idempotent");
+        assert_eq!(canonical, vec![write]);
+    }
+
+    #[test]
+    fn conflicting_native_merge_writes_fail_closed() {
+        let first = native_put(0x04, 7, 9);
+        let second = native_put(0x04, 7, 10);
+        let err = canonicalize_native_changes(&[first, second])
+            .expect_err("different values for one native key are a merge conflict");
+        assert!(err.contains("conflicting native state changes"), "{err}");
+    }
+
+    #[test]
+    fn native_put_delete_collision_fails_closed() {
+        let key = Blake2b256Hash::from_bytes([7; 32]);
+        let put = NativeStoreAction::Put {
+            prefix: 0x04,
+            key,
+            value: vec![9],
+        };
+        let delete = NativeStoreAction::Delete { prefix: 0x04, key };
+        assert!(canonicalize_native_changes(&[put, delete]).is_err());
     }
 
     #[test]
