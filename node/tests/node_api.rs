@@ -57,6 +57,13 @@ async fn http_surface_without_genesis() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert!(version.contains("RChain Node"), "version = {version}");
+    // A served node names the binary it is, not just its version number: `commit # unknown` is what
+    // this route answered before the build script existed, and this string is the one a room member
+    // reads to know which reducer produced an attestation (issue #32).
+    assert!(
+        !version.contains("commit # unknown"),
+        "the served version must carry the build commit, got {version}"
+    );
 
     // `/api/status` returns a JSON status document.
     let status = client
@@ -104,6 +111,10 @@ fn genesis_boot_exposes_block_over_http() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         assert!(version.contains("RChain Node"), "version = {version}");
+        assert!(
+            !version.contains("commit # unknown"),
+            "the served version must carry the build commit, got {version}"
+        );
 
         // `GET /api/blocks` returns the genesis block once the genesis ceremony completes.
         let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;

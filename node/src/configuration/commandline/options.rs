@@ -64,10 +64,18 @@ impl std::str::FromStr for EffectScheduler {
 }
 
 /// The CLI surface (port of the Scala `Options` scallop config).
+// `name` is the binary's own, not `rchain`: clap prints it before the version — `rnode 0.1.0
+// (<commit>)` — and the usage line already reads `rnode` because that is `argv[0]`, so `rchain` made
+// `--version` name a program the operator did not run.
+//
+// **This note is a `//` comment and not a `///` doc comment on purpose.** clap's derive turns a
+// multi-line doc comment into `long_about`, which `--help` prints — so writing the rationale as doc
+// text leaked it into the operator-facing help, and it had to be moved here. The `version` argument
+// is `cli_version()` rather than `node_version()` for the same class of reason: see that function.
 #[derive(Parser, Debug)]
 #[command(
-    name = "rchain",
-    version,
+    name = "rnode",
+    version = crate::web::version_info::cli_version(),
     about = "RChain node | gRPC client",
     disable_help_flag = true
 )]

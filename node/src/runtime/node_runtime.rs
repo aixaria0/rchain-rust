@@ -1846,7 +1846,7 @@ pub async fn setup_shard(
         network_id,
         shard_id.clone(),
         conf.casper.min_phlo_price,
-        env!("CARGO_PKG_VERSION").to_string(),
+        crate::web::version_info::node_version(),
         network_status,
         conf.casper.validator_private_key.is_none(),
         conf.api_server.max_blocks_limit,

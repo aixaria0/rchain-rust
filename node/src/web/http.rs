@@ -167,7 +167,7 @@ pub struct AdminState {
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
 pub async fn version() -> String {
-    version_info::get(env!("CARGO_PKG_VERSION"), None)
+    version_info::node_version()
 }
 
 /// `GET /metrics` (port of `NewPrometheusReporter.service`): the Prometheus scrape data.
@@ -189,7 +189,7 @@ pub async fn status(State(state): State<HttpState>) -> Response {
         Some(provider) => {
             let connections = provider.connections.read().await;
             let discovered = provider.discovery.peers();
-            let version = version_info::get(env!("CARGO_PKG_VERSION"), None);
+            let version = version_info::node_version();
             let status =
                 status_info::status(&version, &connections, &discovered, &provider.rp_conf);
             (StatusCode::OK, Json(status)).into_response()
@@ -1597,9 +1597,20 @@ mod tests {
         );
     }
 
+    /// The route serves the version **with its build commit**, because that is the surface a room
+    /// member reads to learn which binary produced an attestation (issue #32) — and `commit #
+    /// unknown` on a git checkout is exactly the failure this pins. `version_info`'s own test pins
+    /// that the build script's value is compiled in; this one pins that the *route* reads it rather
+    /// than formatting a version of its own, which is how the two drifted apart in the first place.
     #[tokio::test]
-    async fn version_returns_node_version() {
-        assert!(version().await.starts_with("RChain Node "));
+    async fn version_returns_node_version_with_its_build_commit() {
+        let v = version().await;
+        assert!(v.starts_with("RChain Node "), "{v}");
+        assert!(
+            !v.contains("commit # unknown"),
+            "the route must serve the build commit (built outside a git checkout? that is the one \
+             legitimate cause), got {v}"
+        );
     }
 
     #[tokio::test]

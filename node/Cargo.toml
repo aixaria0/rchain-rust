@@ -8,7 +8,11 @@ description = "Faithful and hardened Rust port of the RChain node module (glue: 
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
-clap = { version = "4", features = ["derive"] }
+# `string` is what lets `version = …` take the *computed* version string: clap's `Str` is a
+# `&'static str` by default, and the provenance commit is not known until the build script runs
+# (issue #32). Without it the only routes are leaking a `String` or leaving `--version` reporting a
+# bare version number while `/version` reports the commit.
+clap = { version = "4", features = ["derive", "string"] }
 futures-util = "0.3"
 hocon = { version = "0.9", default-features = false }
 linked-hash-map = "0.5"
