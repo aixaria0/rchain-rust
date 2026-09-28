@@ -406,3 +406,13 @@ pub fn txn_legs(destination: &str) -> Vec<GatewayLeg> {
         },
     ]
 }
+
+/// The state hash of the last finalised fringe as of a synthetic block — the value a block's close
+/// system deploy anchors the next epoch's active-set seed to.
+///
+/// A test supplies this to *both* the play and the replay of a block, exactly as a real node derives
+/// it once from its own DAG and passes it to both paths. It only has to be deterministic and, where a
+/// test means to move it, distinct.
+pub fn fringe_state(seed: u8) -> rchain_crypto::hash::blake2b256_hash::Blake2b256Hash {
+    rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::create(&[seed])
+}

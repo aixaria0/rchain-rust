@@ -883,8 +883,12 @@ impl RuntimeManager {
             }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
-                pre_state_hash,
-            } => native.close_block(*block_number, *pre_state_hash).await?,
+                fringe_state_hash,
+            } => {
+                native
+                    .close_block(*block_number, *fringe_state_hash)
+                    .await?
+            }
             NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
         };
         let eval_result = EvaluateResult {
@@ -961,6 +965,7 @@ impl RuntimeManager {
         system_deploys: &[SystemDeploy],
         rand: &Blake2b512Random,
         block_data: BlockData,
+        fringe_state_hash: &Blake2b256Hash,
     ) -> Result<
         (
             Blake2b256Hash,
@@ -1022,6 +1027,7 @@ impl RuntimeManager {
                     system_deploys,
                     rand,
                     &block_data,
+                    fringe_state_hash,
                     &processed_deploys,
                     &processed_system_deploys,
                     state_hash,
@@ -1100,6 +1106,7 @@ impl RuntimeManager {
         system_deploys: &[SystemDeploy],
         rand: &Blake2b512Random,
         block_data: &BlockData,
+        fringe_state_hash: &Blake2b256Hash,
         relaxed_user: &[UserDeployRuntimeResult],
         relaxed_sys: &[SystemDeployRuntimeResult],
         relaxed_hash: Blake2b256Hash,
@@ -1146,6 +1153,7 @@ impl RuntimeManager {
                         &processed_sys,
                         rand,
                         block_data.clone(),
+                        fringe_state_hash,
                         true,
                         // No PoS override on the backstop replay; the manager's genesis
                         // descriptors stand in for the (HEAD-era) empty bonds map.
@@ -1184,6 +1192,7 @@ impl RuntimeManager {
 
     /// Replay processed deploys + system deploys and verify the replayed state hash + mergeable
     /// channels (port of `replayComputeState`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn replay_compute_state(
         &self,
         start_hash: &Blake2b256Hash,
@@ -1191,6 +1200,7 @@ impl RuntimeManager {
         system_deploys: &[ProcessedSystemDeploy],
         rand: &Blake2b512Random,
         block_data: BlockData,
+        fringe_state_hash: &Blake2b256Hash,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -1202,6 +1212,7 @@ impl RuntimeManager {
             system_deploys,
             rand,
             block_data,
+            fringe_state_hash,
             with_cost_accounting,
             pos_genesis,
             vaults,
@@ -1220,6 +1231,7 @@ impl RuntimeManager {
         system_deploys: &[ProcessedSystemDeploy],
         rand: &Blake2b512Random,
         block_data: BlockData,
+        fringe_state_hash: &Blake2b256Hash,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -1233,6 +1245,7 @@ impl RuntimeManager {
                 terms,
                 system_deploys,
                 block_data,
+                fringe_state_hash,
                 with_cost_accounting,
                 pos_genesis,
                 vaults,
@@ -1443,6 +1456,7 @@ mod tests {
                 &[],
                 &Blake2b512Random::new_random(128),
                 BlockData::empty(),
+                &Blake2b256Hash::from_bytes([0u8; 32]),
                 false,
                 &PosGenesis::default(),
                 &[],

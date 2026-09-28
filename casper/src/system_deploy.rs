@@ -99,16 +99,16 @@ pub enum NativeSystemDeployOp {
         deployer: PublicKey,
         amount: NonNegI64,
     },
-    /// `pre_state_hash` is the **block's** pre-state, carried here rather than threaded through the
-    /// evaluation chain, and it is the entropy the *next* epoch's active-set draw is anchored to
-    /// (`rholang/src/native_state.rs`'s `close_block`, step 5). It is not the deploy's `rand`, and the
-    /// difference is the whole point: `rand` is `hash(shard_id, block_number, sender, pre_state_hash)`
-    /// computed at the moment of use, so a proposer can reroll it freely by proposing a different
-    /// block — it is the seed this change exists to stop using. A block's `pre_state_hash` cannot be
-    /// chosen at the height that draws: it is fixed by the block the drawing proposer is extending.
+    /// `fringe_state_hash` is the state hash of the **last finalised fringe** as of this block, and it
+    /// is the entropy the *next* epoch's active-set draw is anchored to (`rholang/src/native_state.rs`'s
+    /// `close_block`, step 5). It is neither the deploy's `rand` — `hash(shard_id, block_number, sender,
+    /// pre_state_hash)` computed at the moment of use, which a proposer rerolls freely by proposing a
+    /// different block — nor the block's pre-state, which a proposer influences through its
+    /// justification set. The fringe is the >2/3-agreed object, so a lone proposer does not move it.
+    /// Nothing is published and nothing is verified: every node derives it from its own DAG.
     CloseBlock {
         block_number: i64,
-        pre_state_hash: Blake2b256Hash,
+        fringe_state_hash: Blake2b256Hash,
     },
     Slash {
         validator: Validator,
@@ -144,7 +144,7 @@ impl SystemDeploy {
 
     pub fn close_block(
         block_number: i64,
-        pre_state_hash: Blake2b256Hash,
+        fringe_state_hash: Blake2b256Hash,
         rand: Blake2b512Random,
     ) -> SystemDeploy {
         SystemDeploy {
@@ -154,7 +154,7 @@ impl SystemDeploy {
             return_channel: Par::default(),
             op: Some(NativeSystemDeployOp::CloseBlock {
                 block_number,
-                pre_state_hash,
+                fringe_state_hash,
             }),
         }
     }

@@ -38,7 +38,7 @@ use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::base16;
 use rchain_shared::refined::NonNegI64;
 
-use common::build_runtime_manager;
+use common::{build_runtime_manager, fringe_state};
 
 fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::from_init(&[0u8; 32])
@@ -501,7 +501,14 @@ async fn two_shard_2pc_replay_rederives_the_post_state_hash() {
     ];
 
     let (post_state, user_results, sys_results) = shard
-        .compute_state(&post, &deploys, &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &deploys,
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     for (phase, result) in ["prepare", "commit"].iter().zip(&user_results) {
@@ -530,6 +537,7 @@ async fn two_shard_2pc_replay_rederives_the_post_state_hash() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],

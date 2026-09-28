@@ -109,6 +109,13 @@ async fn build_runtime_and_manager() -> (RuntimeManager, Arc<InMemoryStoreManage
     )
 }
 
+/// The state hash of the last finalised fringe as of a synthetic block — the value the block's close
+/// system deploy anchors the next epoch's active-set seed to. Supplied to both the play and the replay
+/// here, exactly as a node derives it once from its own DAG and gives it to both paths.
+fn fringe_state(seed: u8) -> rchain_crypto::hash::blake2b256_hash::Blake2b256Hash {
+    rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::create(&[seed])
+}
+
 fn deploy(term: &str) -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
@@ -207,11 +214,12 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
             // `consume_system_result` pair under it), and a block with none leaves it unreachable.
             &[SystemDeploy::close_block(
                 1,
-                genesis_post,
+                fringe_state(1),
                 block_rand.clone(),
             )],
             &block_rand,
             BlockData::empty(),
+            &fringe_state(1),
         )
         .await
         .expect("compute_state");
@@ -237,6 +245,10 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
             }
         },
         SortedProc::default(),
+        // A reporter has no DAG, so the fringe state hash the block's close deploy anchored the next
+        // epoch's seed to is supplied to it — here the same value the play above handed to
+        // `close_block`, which is what a node gets from the DAG's metadata for that block.
+        |_hash| async move { Ok(fringe_state(1)) },
     );
 
     let result = reporter

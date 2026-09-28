@@ -124,6 +124,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         terms: &[ProcessedDeploy],
         system_deploys: &[ProcessedSystemDeploy],
         block_data: BlockData,
+        fringe_state_hash: &Blake2b256Hash,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -136,6 +137,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             terms,
             system_deploys,
             block_number,
+            fringe_state_hash,
             with_cost_accounting,
             pos_genesis,
             vaults,
@@ -152,6 +154,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         terms: &[ProcessedDeploy],
         system_deploys: &[ProcessedSystemDeploy],
         block_number: i64,
+        fringe_state_hash: &Blake2b256Hash,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -230,7 +233,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 self.replay_block_system_deploy(
                     sd,
                     block_number,
-                    start_hash,
+                    fringe_state_hash,
                     rand.split_byte(u8::try_from(terms.len() + i).map_err(|_| {
                         ReplayFailure::internal_error("deploy count exceeds 255".to_string())
                     })?),
@@ -411,14 +414,15 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
 
     /// Replay a block-level system deploy (port of `replayBlockSystemDeploy`).
     ///
-    /// `start_hash` is the replayed block's `pre_state_hash` — the same value the proposer passed to
-    /// [`SystemDeploy::close_block`] when it built this deploy, which is what makes the close deploy's
-    /// seed anchor agree between play and replay by construction rather than by a second derivation.
+    /// `fringe_state_hash` is the state hash of the last finalised fringe as of this block — the value
+    /// its close deploy anchored the next epoch's seed to. It is *derived* (from the DAG, by the
+    /// caller) rather than read off the block, which is what makes play and replay agree by
+    /// construction rather than by a claim that would have to be verified.
     pub(crate) async fn replay_block_system_deploy(
         &self,
         processed: &ProcessedSystemDeploy,
         block_number: i64,
-        start_hash: &Blake2b256Hash,
+        fringe_state_hash: &Blake2b256Hash,
         rand: Blake2b512Random,
     ) -> Result<NumberChannelsDiff, ReplayFailure> {
         let system_deploy_data = match processed {
@@ -430,7 +434,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         let deploy = match system_deploy_data {
             SystemDeployData::Slash(validator) => SystemDeploy::slash(validator, rand),
             SystemDeployData::CloseBlock => {
-                SystemDeploy::close_block(block_number, *start_hash, rand)
+                SystemDeploy::close_block(block_number, *fringe_state_hash, rand)
             }
             SystemDeployData::Empty => {
                 return Err(ReplayFailure::internal_error("Expected system deploy"));
@@ -538,8 +542,12 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
-                pre_state_hash,
-            } => native.close_block(*block_number, *pre_state_hash).await?,
+                fringe_state_hash,
+            } => {
+                native
+                    .close_block(*block_number, *fringe_state_hash)
+                    .await?
+            }
             NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
         };
         let eval_result = EvaluateResult {

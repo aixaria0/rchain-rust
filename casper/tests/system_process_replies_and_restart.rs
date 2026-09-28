@@ -2,6 +2,7 @@
 //! post-state, and a runtime must be restartable on a chain containing an executed deploy.
 
 mod common;
+use common::fringe_state;
 
 use std::sync::Arc;
 
@@ -79,7 +80,14 @@ async fn system_process_replies_in_cost_accounted_block_and_restart_succeeds() {
 
     let term = r#"new zfa(`rho:qucalc:zfa`), ret in { zfa!([0, 1], *ret) | for (@v <- ret) { @"got-zfa"!(v) } }"#;
     let (post2, results, _) = rm
-        .compute_state(&post, &[deploy(term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("compute_state");
     assert!(

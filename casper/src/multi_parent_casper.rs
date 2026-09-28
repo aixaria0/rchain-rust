@@ -392,7 +392,17 @@ where
     }
 
     // Build/cache the block index.
-    let _ = BlockIndex::get_block_index(runtime, block_store, block.block_hash).await;
+    // `block_metadata` is the metadata this validation recomputed, whose `fringe_state_hash` came from
+    // the merge — the same value the block's own close deploy used, so the regeneration path below (if
+    // it is ever taken) replays to the same seed leaf. The index is best-effort here: a failure leaves
+    // it to be rebuilt on the next lookup, which is why the result is discarded.
+    let _ = BlockIndex::get_block_index(
+        runtime,
+        block_store,
+        block.block_hash,
+        Blake2b256Hash::from_byte_array(block_metadata.fringe_state_hash.as_bytes()),
+    )
+    .await;
 
     Ok(block_metadata)
 }

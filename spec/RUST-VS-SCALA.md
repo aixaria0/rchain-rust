@@ -174,9 +174,10 @@ concrete, auditable ways:
    `$$numberOfActiveValidators$$` entries of the bonds map in *key* order and carries the comment
    `// TODO: Randomly select 100 active validators once we have on-chain randomness`. The Scala
    reference selects the highest-staked; the port now draws uniformly without replacement from the
-   eligible pool (`rholang/src/native_state.rs`'s `select_active`), seeded by an `pos:epoch_seed`
-   leaf written **one boundary ahead**, so the block that draws is not the block that chose the
-   entropy. The divergence is the reference's stated intent, and the part the reference lacks is the
+   eligible pool (`rholang/src/native_state.rs`'s `select_active`), seeded by a `pos:epoch_seed`
+   leaf written **one boundary ahead** from the state hash of the last **finalised fringe**, so the
+   block that draws is not the block that chose the entropy — and the entropy itself is the
+   >2/3-agreed frontier rather than anything one proposer reaches. The divergence is the reference's stated intent, and the part the reference lacks is the
    seed: the port's `BlockRandomSeed` was `hash(shard_id, block_number, sender, pre_state_hash)`
    computed *at the moment of use*, and all four inputs but the shard id are proposer-chosen — so the
    pre-change rule was a free, unbounded reroll by the one party that also chose the sample frame.
@@ -185,19 +186,29 @@ concrete, auditable ways:
    rather than deleted.
 
    **Residuals, named rather than implied.**
-   - **O1 — the seed-setter's influence, reduced rather than closed.** The anchor is the writing
-     boundary's pre-state hash, and a proposer has some say in its own pre-state. The justification set
-     is *derived* from the DAG (`get_pre_state_for_new_block` reads `latest_msgs`), so a pre-state
-     cannot be invented — but nothing requires a block to justify everything it has seen
-     (`validate::check_justification_regression` forbids going *backwards* on the messages a block
-     carries, not omitting them). A seed-writer can therefore present a block that omits recent
-     messages, compute the seed that follows, and keep the one it likes: a search over the
-     justification-closed subsets of its own DAG rather than a reroll from nothing. It can publish one
-     candidate only — a second block at the same height and sequence number is refused at insert before
-     any write (`casper/src/dag.rs:243-257`) — and the proposer of the *drawing* block has no say at
-     all. Choosing a different anchor cannot close this: every recent state a boundary block can name is
-     a merge of justifications it chose. Removing the subset choice is what the deferred commit-reveal
-     or VRF writer is for.
+   - **O1 — the seed-setter's influence, and where the line now falls.** The anchor is the **last
+     finalised fringe's state hash**, and a lone proposer does not move the fringe: it is computed from
+     the parents' seen-sets (`message_map::latest_fringe` plus `MergeScope::merge`) and is what >2/3 of
+     the active set has agreed. What a proposer *can* still do is present a **stale** fringe — nothing
+     requires a block to justify everything it has seen (`validate::check_justification_regression`
+     forbids going *backwards* on the messages a block carries, not omitting them) — so the steering
+     space is the number of *distinct fringes* its feasible candidates induce, which is normally exactly
+     one. **The first version of this writer anchored on the writing block's pre-state and had the hole
+     in full**: a pre-state is one per justification subset, so the writer could enumerate the seeds,
+     evaluate the draws offline, and publish the block whose draw it liked. That is the measured
+     difference between the two anchors, and it is why the pre-state is *gone* from the seed rather than
+     kept beside the fringe. It can publish one candidate only — a second block at the same height and
+     sequence number is refused at insert before any write (`casper/src/dag.rs:243-257`) — and the
+     proposer of the *drawing* block has no say at all. A residual remains rather than a proof: closing
+     it outright needs the commitment of the deferred commit-reveal or VRF writer, which is what the
+     leaf is for. **Nothing about the anchor is published or verified** — each node derives it from its
+     own DAG (`pre_state.fringe_state` on the play and validation paths; the block's stored metadata for
+     the index and reporting paths) — so play and replay agree by construction rather than by a claim.
+     **Measured live**: a 2-validator devnet with `--epoch-length 2` crossed 57 epoch boundaries with
+     the anchor in place, every one of them evaluated twice — once by the proposer and once by
+     validation — and no block refused. That is the check this design rests on: a `fringe_state_hash`
+     that one path derived differently from the other would write a different seed leaf, and the second
+     evaluation of the boundary would refuse it.
    - **O2 — capital can pre-position.** The seed is public before the boundary, so a validator can
      bond to enter or stage a withdrawal to leave the pool in time for `B_k`. Neither this design nor
      commit-reveal closes that without an extra rule (a withdrawal delay longer than the
@@ -224,14 +235,22 @@ concrete, auditable ways:
    - The proposer's own `check_active_validator` reads the newest block's carried map, so a pool member
      that was not drawn reports `NotBonded` and declines to propose for that epoch. No state change, and
      the correct reading of "active" — but this is the one place where a validator *notices* the draw,
-     and **it is where the draw can cost liveness.** Measured on a 3-validator devnet with
-     `--epoch-length 3 --active-validators 2`: the chain ran to the boundary at block 30, the draw left
-     the only validator that could actually propose out of the set, and the chain halted — silently,
-     because `NotBonded` had no log at the point of decision (now it has one, at the return in
-     `blocks/proposer/proposer.rs`). **The draw did not cause that halt; a pre-existing 2-of-3 sync
-     stall did, and the draw made a latent one fatal** — with three working validators, two of three
-     are always drawn and the epoch always has a proposer. The decision this leaves open, deliberately
-     rather than by omission: the gate is *self-imposed* — a drawn-out validator's block would still be
+     and **it is where the draw can cost liveness.** Measured twice on devnets, and the second run
+     carries its own control.
+     *3 validators, `--epoch-length 3 --active-validators 2`*: the chain ran to the boundary at block
+     30, the draw left the only validator that could actually propose out of the set, and the chain
+     halted — silently, because `NotBonded` had no log at the point of decision (now it has one, at the
+     return in `blocks/proposer/proposer.rs`).
+     *2 validators, `--epoch-length 2 --active-validators 1`*: the same, with the mechanism visible from
+     both nodes — the boundary at block 4 drew `04dbe32c` in and `04f700a4` out; the drawn-*out* node
+     logged the refusal above, and the drawn-*in* node logged the same refusal, because its own view of
+     the active set was behind. Nothing proposed and the chain halted at block 5. **The control is the
+     same chain with the cap removed** (`--active-validators` left at its default, so nothing is
+     selected): 27 boundaries, no halt, and the same validator key in the set. So the *anchor* did not
+     break the boundary — the cap did, by handing the epoch to a node whose view is stale.
+     **The draw did not cause either halt; a pre-existing participation/state-staleness problem did, and
+     the draw makes it reachable** — with no cap every bonded validator is always in the set, so there
+     is always a proposer. The decision this leaves open, deliberately rather than by omission: the gate is *self-imposed* — a drawn-out validator's block would still be
      accepted by its peers, because no receiving-side rule tests the sender against the active set
      (`bonds_cache` compares the block's carried map to the state, which a non-active sender computes
      honestly) — so `check_active_validator` could ask "am I in the **pool**" instead and remove the
@@ -253,9 +272,9 @@ concrete, auditable ways:
    Rationale, the reference point (`PatrickMockridge/Mudra`'s beacon, re-sourced from this chain's own
    entropy), and the negative results: [`docs/src/node/security-audit.md`](../docs/src/node/security-audit.md) §8.
 
-   **What is deliberately not in this change: the beacon itself.** O1 is closed by removing the
-   seed-writer's subset choice — a commit-reveal round or a VRF accumulator — and both change what the
-   *writer* is, not what the *rule* is. The selection rule reads the `pos:epoch_seed` leaf and nothing
+   **What is deliberately not in this change: the beacon itself.** What remains of O1 is the
+   stale-fringe choice — a commit-reveal round or a VRF accumulator removes it, and both change what
+   the *writer* is, not what the *rule* is. The selection rule reads the `pos:epoch_seed` leaf and nothing
    else, so replacing the writer touches `close_block` step 5 and no consumer, no law, and no test of
    the draw. That separability is why the seed is a state leaf rather than a value threaded through the
    deploy, and it is the shape the next pass should take.

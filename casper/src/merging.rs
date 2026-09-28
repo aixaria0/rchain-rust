@@ -444,10 +444,17 @@ async fn get_block_unsafe(
 
 impl BlockIndex {
     /// Load (or compute + cache) a block index (port of `BlockIndex.getBlockIndex`).
+    ///
+    /// `fringe_state_hash` is the state hash of the last finalised fringe as of `block_hash`, and only
+    /// the sidecar-regeneration path below uses it: that path *replays* the block, and a replay of a
+    /// block that closes an epoch needs the value its close deploy anchored the next seed to. It is a
+    /// parameter rather than a DAG read because the callers differ in what they have — validation has
+    /// the value it just computed from the merge, and the node's indexing loops have the DAG.
     pub async fn get_block_index(
         runtime: &RuntimeManager,
         block_store: &BlockStore,
         block_hash: BlockHash,
+        fringe_state_hash: Blake2b256Hash,
     ) -> Result<BlockIndex, String> {
         INDEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -486,13 +493,27 @@ impl BlockIndex {
             Ok(channels) => match native_recorded {
                 Some(native) => (channels, native),
                 None => {
-                    regenerate_sidecars(runtime, &block, &sender, pre_state_hash, post_state_hash)
-                        .await?
+                    regenerate_sidecars(
+                        runtime,
+                        &block,
+                        &sender,
+                        pre_state_hash,
+                        post_state_hash,
+                        fringe_state_hash,
+                    )
+                    .await?
                 }
             },
             Err(err) if err.starts_with("Mergeable store invalid state hash") => {
-                regenerate_sidecars(runtime, &block, &sender, pre_state_hash, post_state_hash)
-                    .await?
+                regenerate_sidecars(
+                    runtime,
+                    &block,
+                    &sender,
+                    pre_state_hash,
+                    post_state_hash,
+                    fringe_state_hash,
+                )
+                .await?
             }
             Err(err) => return Err(err),
         };
@@ -557,6 +578,7 @@ async fn regenerate_sidecars(
     sender: &[u8],
     pre_state_hash: Blake2b256Hash,
     post_state_hash: Blake2b256Hash,
+    fringe_state_hash: Blake2b256Hash,
 ) -> Result<(Vec<NumberChannelsDiff>, Vec<NativeStoreAction>), String> {
     let seq_num = i64::from(block.seq_num);
     if block.justifications.is_empty()
@@ -595,6 +617,7 @@ async fn regenerate_sidecars(
             &block.state.system_deploys,
             &rand,
             BlockData::from_block(block),
+            &fringe_state_hash,
             with_cost_accounting,
             // Genesis PoS descriptors; consumed only on the genesis replay path
             // (`is_genesis_pre_state`). See `interpreter_util.rs`.

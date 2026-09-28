@@ -119,11 +119,13 @@ impl BlockCreator {
             let close_seed = rand.split_byte(
                 u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,
             );
-            // The block's pre-state hash goes in with the close deploy: it is what the *next* epoch's
-            // active-set draw is anchored to, and unlike `rand` it is not the proposer's to choose.
+            // The **fringe's** state hash goes in with the close deploy: it is what the next epoch's
+            // active-set draw is anchored to, and unlike `rand` (or the pre-state, which this
+            // proposer's own justification set determines) it is not this proposer's to choose — the
+            // fringe is the >2/3-agreed frontier.
             system_deploys.push(SystemDeploy::close_block(
                 i64::from(block_num),
-                pre_state_hash,
+                pre_state.fringe_state,
                 close_seed,
             ));
 
@@ -135,6 +137,10 @@ impl BlockCreator {
                     &rand,
                     block_data,
                     &pre_state_hash,
+                    // The fringe the new block extends, which is what its close deploy anchors the
+                    // *next* epoch's active-set seed to. Derived here from the DAG, not carried on the
+                    // block: every node computes it for itself, including the replayer.
+                    &pre_state.fringe_state,
                 )
                 .await?,
             )

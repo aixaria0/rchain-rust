@@ -16,7 +16,7 @@ use rchain_rholang::system_processes::BlockData;
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::refined::NonNegI64;
 
-use common::build_runtime_manager_with_mode;
+use common::{build_runtime_manager_with_mode, fringe_state};
 
 fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::from_init(&[0u8; 32])
@@ -177,6 +177,7 @@ async fn relaxed_validated_compute_state_matches_sequential() {
                 &[],
                 &rand,
                 BlockData::empty(),
+                &fringe_state(1),
             )
             .await
             .expect("validated compute_state");
@@ -187,6 +188,7 @@ async fn relaxed_validated_compute_state_matches_sequential() {
                 &[],
                 &rand,
                 BlockData::empty(),
+                &fringe_state(1),
             )
             .await
             .expect("sequential compute_state");
@@ -235,6 +237,7 @@ async fn relaxed_validated_never_diverges_from_sequential() {
                     &[],
                     &rand,
                     BlockData::empty(),
+                    &fringe_state(1),
                 )
                 .await
                 .expect("validated compute_state");
@@ -245,6 +248,7 @@ async fn relaxed_validated_never_diverges_from_sequential() {
                     &[],
                     &rand,
                     BlockData::empty(),
+                    &fringe_state(1),
                 )
                 .await
                 .expect("sequential compute_state");

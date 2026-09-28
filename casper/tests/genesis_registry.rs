@@ -21,7 +21,7 @@ use rchain_models::rholang::RhoType::{RhoList, RhoString};
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
 
-use common::build_runtime_manager;
+use common::{build_runtime_manager, fringe_state};
 
 fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::from_init(&[7u8; 32])
@@ -391,6 +391,7 @@ fn a_multisig_vault_spends_through_the_contract_that_holds_it() {
                 &[],
                 &rand,
                 BlockData::empty(),
+                &fringe_state(1),
             )
             .await
             .expect("the multi-signature deploy runs");

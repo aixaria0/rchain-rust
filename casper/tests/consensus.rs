@@ -19,12 +19,14 @@ use rchain_models::casper::protocol::casper_message::{
     SignedDeployData,
 };
 use rchain_models::validator::Validator;
-use rchain_rholang::native_state::{NativeSystemState, PosGenesis, PosParams};
+use rchain_rholang::native_state::{
+    previous_seed_anchor, NativeSystemState, PosGenesis, PosParams,
+};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::refined::NonNegI64;
 
-use common::build_runtime_manager;
+use common::{build_runtime_manager, fringe_state};
 
 fn fixed_rand() -> Blake2b512Random {
     Blake2b512Random::from_init(&[0u8; 32])
@@ -96,6 +98,7 @@ async fn genesis_deploy_replay_recomputes_state() {
             &[],
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             false,
             &PosGenesis::default(),
             &[],
@@ -187,6 +190,7 @@ async fn replay_matches_play_for_persistent_and_peek() {
             &[],
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             false,
             &PosGenesis::default(),
             &[],
@@ -258,7 +262,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
     // active set is recomputed inside `closeBlock` (`:546`) — an epoch boundary, which with these
     // permissive parameters every block is. Without it the deploy would pool the stake and leave the
     // validator out of the consensus set.
-    let close = SystemDeploy::close_block(1, post, fixed_rand().split_byte(2));
+    let close = SystemDeploy::close_block(1, fringe_state(1), fixed_rand().split_byte(2));
     let (post_state, user_results, sys_results) = rm
         .compute_state(
             &post,
@@ -266,6 +270,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
             &[close],
             &rand,
             block_data(1),
+            &fringe_state(1),
         )
         .await
         .expect("play compute_state");
@@ -294,6 +299,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
             &processed_sys,
             &rand,
             block_data(1),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -357,11 +363,12 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             &[deploy_with_key(&trust_term, vec![1u8; 65])],
             &[SystemDeploy::close_block(
                 1,
-                genesis_post,
+                fringe_state(1),
                 fixed_rand().split_byte(2),
             )],
             &rand,
             block_data(1),
+            &fringe_state(1),
         )
         .await
         .expect("play block 1");
@@ -380,11 +387,12 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             &[deploy_with_key(bond_term, vec![2u8; 65])],
             &[SystemDeploy::close_block(
                 2,
-                state1,
+                fringe_state(1),
                 fixed_rand().split_byte(3),
             )],
             &rand,
             block_data(2),
+            &fringe_state(1),
         )
         .await
         .expect("play block 2");
@@ -517,19 +525,21 @@ struct Played {
 /// Play one block at `height` on `rm` from `pre`: one user deploy, and the close deploy
 /// `block_creator` appends to every block.
 ///
-/// The close deploy carries `pre`, which is the block's own pre-state hash — the value the seed writer
-/// folds into the *next* epoch's seed. It has to be the same value the replayer derives from the block
-/// header, which is what `block_data(height)` and this argument are both for.
+/// The close deploy carries `fringe`, the state hash of the last finalised fringe as of this block —
+/// the entropy the seed writer folds into the *next* epoch's seed. Play and replay must be given the
+/// same value, which is what the parameter is for here and what every caller deriving it from the DAG
+/// gives them in production: nothing about it is published on the block.
 async fn play_block(
     rm: &RuntimeManager,
     pre: Blake2b256Hash,
     height: i64,
     term: &str,
     rand: &Blake2b512Random,
+    fringe: &Blake2b256Hash,
 ) -> Played {
     let close = SystemDeploy::close_block(
         height,
-        pre,
+        *fringe,
         rand.split_byte(u8::try_from(height).expect("a test height fits a byte")),
     );
     let (post, user, sys) = rm
@@ -539,6 +549,7 @@ async fn play_block(
             &[close],
             rand,
             block_data(height),
+            fringe,
         )
         .await
         .expect("play the block");
@@ -644,11 +655,13 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
         );
 
         // Blocks 1 and 2: identical on both nodes. Height 2 is the first boundary, and it writes the
-        // seed height 4 reads.
+        // seed height 4 reads — captured below *while the store is at height 2*, because reading it
+        // after height 4 would return the leaf height 4 wrote.
+        let mut seed_at_2 = None;
         for height in 1..=2i64 {
             let term = format!("@\"t{trial}h{height}\"!(1)");
-            let pa = play_block(&a, a_state, height, &term, &rand).await;
-            let pb = play_block(&b, b_state, height, &term, &rand).await;
+            let pa = play_block(&a, a_state, height, &term, &rand, &fringe_state(1)).await;
+            let pb = play_block(&b, b_state, height, &term, &rand, &fringe_state(1)).await;
             assert_eq!(
                 pa.post, pb.post,
                 "trial {trial}: two nodes playing the same chain must reach the same state at height \
@@ -665,12 +678,32 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
             );
             a_state = pa.post;
             b_state = pb.post;
+            if height == 2 {
+                let native = NativeSystemState::new(a.runtime().native_store());
+                seed_at_2 = native.epoch_seed().await.expect("read");
+            }
         }
 
         // Height 3: **not** a boundary, and where the two nodes diverge. This is the perturbation that
         // discriminates — it moves height 4's pre-state without moving the seed written at height 2.
-        let pa3 = play_block(&a, a_state, 3, &format!("@\"t{trial}h3a\"!(1)"), &rand).await;
-        let pb3 = play_block(&b, b_state, 3, &format!("@\"t{trial}h3b\"!(2)"), &rand).await;
+        let pa3 = play_block(
+            &a,
+            a_state,
+            3,
+            &format!("@\"t{trial}h3a\"!(1)"),
+            &rand,
+            &fringe_state(1),
+        )
+        .await;
+        let pb3 = play_block(
+            &b,
+            b_state,
+            3,
+            &format!("@\"t{trial}h3b\"!(2)"),
+            &rand,
+            &fringe_state(1),
+        )
+        .await;
         assert_ne!(
             pa3.post, pb3.post,
             "trial {trial}: the diverging deploys must reach different states"
@@ -678,21 +711,42 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
 
         // Height 4: the next boundary. Its own deploy differs too, so the states differ — but the draw
         // must not.
-        let pa4 = play_block(&a, pa3.post, 4, &format!("@\"t{trial}h4a\"!(1)"), &rand).await;
-        let pb4 = play_block(&b, pb3.post, 4, &format!("@\"t{trial}h4b\"!(2)"), &rand).await;
+        let pa4 = play_block(
+            &a,
+            pa3.post,
+            4,
+            &format!("@\"t{trial}h4a\"!(1)"),
+            &rand,
+            &fringe_state(1),
+        )
+        .await;
+        let pb4 = play_block(
+            &b,
+            pb3.post,
+            4,
+            &format!("@\"t{trial}h4b\"!(2)"),
+            &rand,
+            &fringe_state(1),
+        )
+        .await;
         assert_ne!(
             pa4.post, pb4.post,
             "trial {trial}: the boundary blocks differ, so their states must"
         );
         assert_eq!(
             pa4.bonds, pb4.bonds,
-            "trial {trial}: the set drawn at a boundary must come from the seed its *pre-state* \
-             carried, not from that pre-state — which is what the rule this replaces got wrong"
+            "trial {trial}: the set drawn at a boundary must come from the seed its *previous* \
+             boundary wrote, not from anything this block's own proposer varies — which is what the \
+             rule this replaces got wrong"
         );
         assert_eq!(pa4.bonds.len(), 2);
 
         if trial == 0 {
-            // The writer ran, and it is labelled for the epoch that will read it: `4 / 2 + 1`.
+            // The writer ran, and it is labelled for the epoch that will read it: `4 / 2 + 1`. Its two
+            // anchors are pinned exactly, because "it wrote *something*" is satisfied by a writer that
+            // drops the entropy input entirely — and the second anchor is the whole of the design: the
+            // fringe state hash, which this proposer did not choose.
+            let seed_at_2 = seed_at_2.expect("height 2 is a boundary and must have seeded epoch 3");
             let native = NativeSystemState::new(a.runtime().native_store());
             let seed = native
                 .epoch_seed()
@@ -700,9 +754,14 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
                 .expect("read the seed leaf")
                 .expect("a boundary must leave a seed behind for the next one");
             assert_eq!(seed.epoch, 3);
-            assert!(
-                !seed.anchors.is_empty(),
-                "and it must be anchored to something, or the next draw is the genesis constant again"
+            assert_eq!(
+                seed.anchors,
+                vec![
+                    previous_seed_anchor(&seed_at_2),
+                    fringe_state(1),
+                ],
+                "the seed written at a boundary anchors on the previous seed and on the fringe state \
+                 hash this block extends — in that order"
             );
 
             // Law 11 across the boundary. The replay path reads the seed leaf out of the state it
@@ -715,6 +774,7 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
                     &pa4.sys,
                     &rand,
                     block_data(4),
+                    &fringe_state(1),
                     true,
                     &pos_genesis,
                     &vaults,

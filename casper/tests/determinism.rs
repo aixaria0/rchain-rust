@@ -5,6 +5,7 @@
 //! and refund-amount fixes so future drift fails here instead of in consensus.
 
 mod common;
+use common::fringe_state;
 
 use rchain_casper::genesis::contracts::Vault;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
@@ -65,7 +66,14 @@ async fn play_and_replay_agree_for_deployer_id_binding_deploy() {
     let term = r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(true) }"#;
 
     let (post_state, user_results, sys_results) = rm
-        .compute_state(&post, &[deploy(term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -85,6 +93,7 @@ async fn play_and_replay_agree_for_deployer_id_binding_deploy() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -122,7 +131,14 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
     );
 
     let (post_state, user_results, sys_results) = rm
-        .compute_state(&post, &[deploy(&term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(&term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -142,6 +158,7 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -214,7 +231,14 @@ async fn a_minted_vault_handle_spends_in_the_deploy_that_minted_it() {
     );
 
     let (post_state, user_results, _) = rm
-        .compute_state(&post, &[deploy(&term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(&term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -270,7 +294,14 @@ async fn a_vault_handle_refuses_a_name_that_opens_no_vault() {
     );
 
     let (post_state, user_results, _) = rm
-        .compute_state(&post, &[deploy(&term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(&term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -316,7 +347,14 @@ async fn play_and_replay_agree_for_failed_user_deploy_with_recorded_error() {
     let term = r#"new return in { return!(1 + "not-a-number") }"#;
 
     let (post_state, user_results, sys_results) = rm
-        .compute_state(&post, &[deploy(term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(user_results[0].deploy.is_failed, "deploy must fail");
@@ -337,6 +375,7 @@ async fn play_and_replay_agree_for_failed_user_deploy_with_recorded_error() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -387,7 +426,14 @@ async fn play_and_replay_agree_for_escrow_round_trip_deploy() {
     .replace("__TARGET__", &target);
 
     let (play_hash, user_results, sys_results) = rm
-        .compute_state(&post, &[deploy(&term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(&term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -407,6 +453,7 @@ async fn play_and_replay_agree_for_escrow_round_trip_deploy() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -456,7 +503,14 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
 
     let term = r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(42) }"#;
     let (post_state, user_results, sys_results) = rm
-        .compute_state(&post, &[deploy(term)], &[], &rand, BlockData::empty())
+        .compute_state(
+            &post,
+            &[deploy(term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -477,6 +531,7 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -508,6 +563,7 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -543,6 +599,7 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             &processed_sys,
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             true,
             &PosGenesis::default(),
             &[],
@@ -624,9 +681,16 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
         block_number: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
         ..BlockData::empty()
     };
-    let close = SystemDeploy::close_block(1, post, rand.split_byte(9));
+    let close = SystemDeploy::close_block(1, fringe_state(1), rand.split_byte(9));
     let (play_hash, user_results, sys_results) = rm
-        .compute_state(&post, &[deploy(term)], &[close], &rand, block_data.clone())
+        .compute_state(
+            &post,
+            &[deploy(term)],
+            &[close],
+            &rand,
+            block_data.clone(),
+            &fringe_state(1),
+        )
         .await
         .expect("play compute_state");
     assert!(
@@ -647,6 +711,7 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
             &processed_sys,
             &rand,
             block_data,
+            &fringe_state(1),
             true,
             &pos_genesis,
             &[],
@@ -715,6 +780,7 @@ async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
             &[],
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             false,
             &PosGenesis::default(),
             &vaults,
@@ -735,6 +801,7 @@ async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
             &[],
             &rand,
             BlockData::empty(),
+            &fringe_state(1),
             false,
             &PosGenesis::default(),
             &[],

@@ -151,7 +151,11 @@ fn admin_bind_host(public_host: &str, enable_devnet_admin_public: bool) -> Strin
 /// Build the real block-reporting casper: each `trace` constructs a fresh, isolated reporting
 /// `ReplayRSpace` over the persistent store (the factory clones the store manager, which shares the
 /// underlying LMDB environments).
-fn reporting_casper(store_manager: &LmdbDirStoreManager, shard_id: &str) -> impl ReportingCasper {
+fn reporting_casper(
+    store_manager: &LmdbDirStoreManager,
+    shard_id: &str,
+    dag: Arc<dyn BlockDagStorage>,
+) -> impl ReportingCasper {
     let store_manager = store_manager.clone();
     let mergeable_tag_name =
         SortedProc::new(BlockRandomSeed::non_negative_mergeable_tag_name(shard_id));
@@ -161,7 +165,36 @@ fn reporting_casper(store_manager: &LmdbDirStoreManager, shard_id: &str) -> impl
             async move { create_reporting_rspace(&manager).await }
         },
         mergeable_tag_name,
+        // A reporter replays from a block message and has no DAG of its own, so the fringe state hash
+        // a boundary block anchored its successor's seed to is looked up here — from the metadata
+        // validation stored for that block, which is the recomputed value.
+        move |hash: BlockHash| {
+            let dag = dag.clone();
+            async move { fringe_state_of(&*dag, &hash).await }
+        },
     )
+}
+
+/// The state hash of the last finalised fringe as of a block — the value that block's close system
+/// deploy anchored the next epoch's active-set seed to.
+///
+/// Read from the DAG's block metadata, which for a validated block is built with
+/// `pre_state.fringe_state`: exactly the value the block's own play and validation used, so a replay
+/// driven by it reaches the same seed leaf. A missing metadata is an error rather than a default,
+/// because a zero would replay a boundary block to a different state.
+async fn fringe_state_of(
+    dag: &dyn BlockDagStorage,
+    hash: &BlockHash,
+) -> Result<rchain_crypto::hash::blake2b256_hash::Blake2b256Hash, String> {
+    dag.lookup(hash)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|m| {
+            rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_byte_array(
+                m.fringe_state_hash.as_bytes(),
+            )
+        })
+        .ok_or_else(|| format!("no block metadata for {}: cannot index it", hash.to_hex()))
 }
 
 /// The `BlockEventInfo` report-store codec (prost wire round-trip).
@@ -742,14 +775,21 @@ pub fn wire_block_processing(
     // Block processor: validate + insert into the DAG, then notify the validated queue.
     let block_index = {
         let runtime = parts.runtime_manager.clone();
+        let dag = parts.dag.clone();
         let block_store = parts.block_store.clone();
         let log = log.clone();
         move |hash: BlockHash| {
             let runtime = runtime.clone();
+            let dag = dag.clone();
             let block_store = block_store.clone();
             let log = log.clone();
             async move {
-                let result = BlockIndex::get_block_index(&runtime, &block_store, hash).await;
+                // A missing metadata is reported as the index error it is — the caller retries the
+                // lookup on the next index request, and the message names the block.
+                let fringe_state_hash = fringe_state_of(&*dag, &hash).await?;
+                let result =
+                    BlockIndex::get_block_index(&runtime, &block_store, hash, fringe_state_hash)
+                        .await;
                 // Indexing every stored block is the expensive half of a restart, and until now it was
                 // silent (#60): a node replaying its whole DAG looked exactly like a hung one, with the
                 // API down and nothing in the log. Report progress while it happens, so both the cost
@@ -1496,11 +1536,17 @@ async fn setup_shard_runtime(
     if let (Some(proposer_parts), Some(validator)) = (proposer_parts, validator) {
         let block_index = {
             let runtime = parts.runtime_manager.clone();
+            let dag = parts.dag.clone();
             let block_store = parts.block_store.clone();
             move |hash: BlockHash| {
                 let runtime = runtime.clone();
+                let dag = dag.clone();
                 let block_store = block_store.clone();
-                async move { BlockIndex::get_block_index(&runtime, &block_store, hash).await }
+                async move {
+                    let fringe_state_hash = fringe_state_of(&*dag, &hash).await?;
+                    BlockIndex::get_block_index(&runtime, &block_store, hash, fringe_state_hash)
+                        .await
+                }
             }
         };
         let propose_effect: Arc<
@@ -1815,7 +1861,11 @@ pub async fn setup_shard(
     );
     let block_report_api = Arc::new(BlockReportApi::new(
         block_store.clone(),
-        Arc::new(reporting_casper(&store_manager, &shard_id)),
+        Arc::new(reporting_casper(
+            &store_manager,
+            &shard_id,
+            block_dag_storage.clone(),
+        )),
         report_store,
         validator_opt.clone(),
     ));

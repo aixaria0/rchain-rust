@@ -1212,14 +1212,15 @@ impl NativeSystemState {
     /// a second call at the same height would distribute the pot again (which is the previous epoch's
     /// dust, since the committed claims now cover the rest). The system deploy calls it once per
     /// block.
-    /// `pre_state_hash` is the **block's** pre-state, and the close deploy carries it only to be
-    /// folded into the seed the *next* boundary draws with (step 5). It is deliberately not the
-    /// deploy's `rand`: that one is a function of the block being proposed, so using it would be a
-    /// free reroll by the proposer. See `select_active` for the rule and step 5 for the writer.
+    /// `fringe_state_hash` is the state hash of the **last finalised fringe** as of this block, and the
+    /// close deploy carries it only to be folded into the seed the *next* boundary draws with (step 5).
+    /// It is deliberately neither the deploy's `rand` — a function of the block being proposed, so a
+    /// free reroll — nor the block's pre-state, which the proposer influences through its justification
+    /// set. See `select_active` for the rule and step 5 for why the fringe is the value that closes it.
     pub async fn close_block(
         &self,
         block_number: i64,
-        pre_state_hash: Blake2b256Hash,
+        fringe_state_hash: Blake2b256Hash,
     ) -> Result<Result<(), String>, String> {
         let params = self.params().await?;
         let boundary = is_epoch_boundary(&params, block_number);
@@ -1318,43 +1319,47 @@ impl NativeSystemState {
 
         // 5. The seed the **next** boundary will draw with.
         //
-        // **The anchor is this boundary's pre-state hash, not a rolling window of block hashes.** A
-        // rolling window would have to be appended to on *every* block, and law 44's model says that
-        // off a boundary "nothing is written at all" (`Rchain/Pos.lean`'s `closeBlock`) — so
-        // maintaining one here would put the port at odds with the model it is checked against. The
-        // pre-state hash is that same commitment in one value: it is the merge of the fringe this
-        // block extends, so it commits to every block since the previous boundary.
+        // **The entropy is the last finalised fringe's state hash — not this block's pre-state.** The
+        // pre-state is a function of the justification set, and a proposer has some say in its own
+        // justification set: the set is *derived* from the DAG (`get_pre_state_for_new_block` reads
+        // `latest_msgs`), so a pre-state cannot be invented, but nothing requires a block to justify
+        // everything it has seen — `validate::check_justification_regression` forbids going
+        // *backwards* on the messages a block does carry, not omitting them. With the pre-state as an
+        // input, a seed-writer therefore enumerates the candidates its own omissions induce, computes
+        // the seed and the drawn set for each, and publishes the one it likes: a search, evaluated
+        // offline, invisible in the result. The first version of this step used the pre-state and had
+        // exactly that hole.
+        //
+        // The fringe state hash closes it because it is the **>2/3-agreed** object: it is computed from
+        // the parents' seen-sets (`message_map::latest_fringe` plus `MergeScope::merge`), so a lone
+        // proposer does not move it — omitting a message that has just arrived normally leaves the
+        // fringe exactly where it was, which makes the seed *constant* across the candidates the writer
+        // can actually choose between. **The residual, stated rather than implied:** the steering space
+        // is now the number of *distinct fringes* those candidates induce — normally one, occasionally
+        // a handful, if a proposer is willing to present a stale fringe. That is a reduction from "one
+        // per subset" to "one per reachable fringe", not a proof of closure, and it is registered with
+        // the rest of the rule's residuals in `spec/RUST-VS-SCALA.md` §3 item 12.
+        //
+        // **Nothing is published and nothing is verified**, which is the other half of the design: the
+        // value is derived by each node from its own DAG (`replay_block`'s caller passes
+        // `pre_state.fringe_state`; a replay that has no DAG reads the block's own metadata record), so
+        // play and replay agree *by construction* rather than by a claim that has to be checked. The
+        // block's header does not carry it, because a field the validator recomputes anyway is a second
+        // derivation waiting to fall out of step.
         //
         // **The lag is two boundaries, and that is a property rather than a shortfall.** The seed read
-        // at `B_k` was written at `B_{k-1}` from `B_{k-1}`'s pre-state, so the entropy behind epoch
-        // `k`'s draw is the state entering epoch `k-1`. A one-boundary lag is not available: the only
-        // value the writing proposer cannot choose is the pre-state it inherits, and by the next
-        // boundary that value already covers the epoch now ending. Older entropy costs nothing here —
-        // it only has to be *fixed* before the drawing proposer acts, which it is.
-        //
-        // **What this does not close, stated rather than implied.** The seed is a function of *this*
-        // block's pre-state, and a proposer has some say in that pre-state. The justification set is
-        // *derived*, not invented — `get_pre_state_for_new_block` reads the DAG's own `latest_msgs` —
-        // but nothing requires a block to justify everything it has seen:
-        // `validate::check_justification_regression` forbids going *backwards* on the messages a block
-        // does carry, not omitting them. So a seed-writer can present a block that omits recent
-        // messages, compute the seed that follows, and keep the one it likes: residual **O1**, and a
-        // search rather than a reroll-from-nothing. It can publish only one of its candidates — a
-        // second block at the same height and sequence number is refused at insert, before any write
-        // (`casper/src/dag.rs:243-257`) — and the proposer of the *drawing* block has no say at all,
-        // which is the property this step exists for. Closing O1 means removing the subset choice
-        // itself, which is what the deferred commit-reveal/VRF writer in `spec/RUST-VS-SCALA.md` §3
-        // item 12 is for; choosing a different anchor cannot do it, because every recent state a
-        // boundary block can name is a merge of justifications it chose.
+        // at `B_k` was written at `B_{k-1}`, so the entropy behind epoch `k`'s draw is the fringe as of
+        // `B_{k-1}`. A one-boundary lag is not available: the only values a writer cannot choose are
+        // the ones finality has already fixed, and by the next boundary those have moved on. Older
+        // entropy costs nothing — it only has to be *fixed* before the drawing proposer acts.
         //
         // Freshness is self-guaranteeing: the previous seed is an input to this one, so consecutive
-        // seeds differ even on a chain where nothing else changed, and the seed sequence is a hash
-        // chain over the epoch pre-states — no epoch's entropy can be swapped without changing every
-        // seed after it.
+        // seeds differ even on a chain whose fringe has not moved, and the seed sequence is a hash chain
+        // over the fringes — no epoch's entropy can be swapped without changing every seed after it.
         let next_epoch = block_number / epoch_divisor(&params) + 1;
         self.set_epoch_seed(&EpochSeed {
             epoch: next_epoch,
-            anchors: vec![previous_seed_anchor(&seed), pre_state_hash],
+            anchors: vec![previous_seed_anchor(&seed), fringe_state_hash],
         });
         Ok(Ok(()))
     }
@@ -1877,13 +1882,12 @@ mod tests {
         Validator::from_slice(&[byte; 65])
     }
 
-    /// The block pre-state hash a test's `close_block` is anchored to.
+    /// The **fringe** state hash a test's `close_block` is anchored to.
     ///
     /// It only has to be deterministic — play and replay must derive the same seed from it — and
-    /// distinct per block where a test crosses a boundary twice; the *value* is what a real block's
-    /// `pre_state_hash` would be, and no test asserts a particular draw from it except the
-    /// known-answer one, which spells its own.
-    fn pre_state(byte: u8) -> Blake2b256Hash {
+    /// distinct per boundary where a test crosses two; no test here asserts a particular draw from it
+    /// except the known-answer one, which spells its own.
+    fn fringe_state(byte: u8) -> Blake2b256Hash {
         Blake2b256Hash::create(&[byte])
     }
 
@@ -2271,7 +2275,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(native.active().await.unwrap().contains_key(&v2));
     }
 
@@ -2345,7 +2353,11 @@ mod tests {
             "a bonded validator is not in the consensus set until the boundary"
         );
 
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(native.active().await.unwrap().contains_key(&v));
     }
 
@@ -2404,7 +2416,7 @@ mod tests {
 
         // The boundary moves it out of the pool and into an escrowed claim.
         native
-            .close_block(10, pre_state(10))
+            .close_block(10, fringe_state(10))
             .await
             .unwrap()
             .unwrap();
@@ -2437,7 +2449,7 @@ mod tests {
         );
 
         native
-            .close_block(16, pre_state(16))
+            .close_block(16, fringe_state(16))
             .await
             .unwrap()
             .unwrap();
@@ -2523,7 +2535,11 @@ mod tests {
         );
 
         // 7 is not a multiple of 10: nothing happens.
-        native.close_block(7, pre_state(7)).await.unwrap().unwrap();
+        native
+            .close_block(7, fringe_state(7))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (
                 native.pending_withdrawers().await.unwrap(),
@@ -2548,7 +2564,7 @@ mod tests {
         // 10 is a boundary: the sequence runs. The request staged at block 3 was given the deadline
         // `0 + 10 * (1 + 3 / 10) = 10`, so this boundary both moves it out of the pool and pays it.
         native
-            .close_block(10, pre_state(10))
+            .close_block(10, fringe_state(10))
             .await
             .unwrap()
             .unwrap();
@@ -2581,13 +2597,17 @@ mod tests {
             "pooled at once"
         );
         assert!(!native.active().await.unwrap().contains_key(&v2));
-        native.close_block(9, pre_state(9)).await.unwrap().unwrap();
+        native
+            .close_block(9, fringe_state(9))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             !native.active().await.unwrap().contains_key(&v2),
             "9 is not a boundary either"
         );
         native
-            .close_block(10, pre_state(10))
+            .close_block(10, fringe_state(10))
             .await
             .unwrap()
             .unwrap();
@@ -2638,7 +2658,11 @@ mod tests {
             "the vault holds the bonds plus the phlo"
         );
 
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
 
         let committed = native.committed_rewards().await.unwrap();
         assert_eq!(
@@ -2697,7 +2721,11 @@ mod tests {
         // Stage the request, then close the block: the boundary pays the epoch's reward into the
         // committed map *and* moves the validator out of the pool, in that order.
         native.withdraw(&v, 1).await.unwrap().unwrap();
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&v]),
             5,
@@ -2714,7 +2742,11 @@ mod tests {
             2,
             "quarantineLength + epochLength * (1 + blockNumber / epochLength)"
         );
-        native.close_block(2, pre_state(2)).await.unwrap().unwrap();
+        native
+            .close_block(2, fringe_state(2))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             i64::from(
                 native
@@ -2761,7 +2793,11 @@ mod tests {
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
         native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
 
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
             0,
@@ -2787,7 +2823,11 @@ mod tests {
         let native = native;
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
         native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
             0
@@ -2815,7 +2855,11 @@ mod tests {
         native.debit_pos_vault(nn(35)).await.unwrap();
         assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 5);
 
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
             0,
@@ -2968,8 +3012,16 @@ mod tests {
             &[(validator(1), 10), (validator(2), 20)],
         )
         .await;
-        native.close_block(1, pre_state(1)).await.unwrap().unwrap();
-        native.close_block(2, pre_state(2)).await.unwrap().unwrap();
+        native
+            .close_block(1, fringe_state(1))
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .close_block(2, fringe_state(2))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(native.active_validators().await.unwrap().len(), 2);
     }
 
@@ -3691,15 +3743,15 @@ mod epoch_seed_writer_tests {
     /// **The property the old rule did not have, and the reason this change exists.**
     ///
     /// The set drawn at a boundary comes from the seed the *previous* boundary wrote, so nothing the
-    /// drawing block's proposer can vary moves it. In this port what a proposer varies is its
-    /// justification set, and at a boundary that enters the computation as exactly one value — the
-    /// block's pre-state hash. Two runs over the same history, drawing at the same boundary with two
-    /// different pre-state hashes, must therefore draw the **same** set.
+    /// drawing block's proposer can vary moves it. Under the rule this replaced the seed was the
+    /// drawing block's own pre-state, which the proposer reaches through its justification set; now the
+    /// block's contribution is the value it *writes* for the next boundary. Two runs over the same
+    /// history, drawing at the same boundary with two different values written there, must therefore
+    /// draw the **same** set.
     ///
-    /// The second assertion is what makes the first mean something. Without it the test passes if
-    /// `pre_state_hash` is ignored entirely, which is the same as not having it: the seed written for
-    /// the *following* boundary must differ between the runs, so the mutation provably reached the
-    /// code.
+    /// The second assertion is what makes the first mean something. Without it the test passes if the
+    /// value is ignored entirely, which is the same as not having it: the seed written for the
+    /// *following* boundary must differ between the runs, so the mutation provably reached the code.
     ///
     /// **Falsified by construction, and the numbers are the point.** Replacing step 4's `epoch_seed`
     /// read with the drawing block's own pre-state — the rule this change removes — fails this test
@@ -3708,7 +3760,7 @@ mod epoch_seed_writer_tests {
     /// a proposer that varied its justifications was varying the draw, and nothing else in the tree
     /// noticed.
     #[tokio::test]
-    async fn the_drawn_set_does_not_move_when_the_drawing_blocks_pre_state_does() {
+    async fn the_drawn_set_does_not_move_with_the_anchor_the_drawing_block_writes() {
         let anchor_b1 = Blake2b256Hash::create(b"B1 pre-state");
         let a = pos_with_pool(4, 2).await;
         let b = pos_with_pool(4, 2).await;
@@ -3775,11 +3827,11 @@ mod epoch_seed_writer_tests {
         );
     }
 
-    /// The anchors the writer records are the previous seed's anchor and **the block's own**
-    /// pre-state hash, in that order. Pinned exactly, because a swap is invisible to the two tests
+    /// The anchors the writer records are the previous seed's anchor and **the fringe state hash this
+    /// block extends**, in that order. Pinned exactly, because a swap is invisible to the two tests
     /// above — both anchors still move when the pre-state moves, and the chain still advances.
     #[tokio::test]
-    async fn the_written_seed_anchors_are_the_previous_seed_and_this_blocks_pre_state() {
+    async fn the_written_seed_anchors_are_the_previous_seed_and_this_blocks_fringe_state() {
         let native = pos_with_pool(4, 2).await;
         let b1 = Blake2b256Hash::create(b"B1 pre-state");
         native.close_block(1, b1).await.unwrap().unwrap();
@@ -3792,7 +3844,7 @@ mod epoch_seed_writer_tests {
         assert_eq!(
             seed_at_b2.anchors,
             vec![previous_seed_anchor(&seed_at_b1), b2],
-            "the seed written at a boundary must anchor to the previous seed and this block's pre-state"
+            "the seed written at a boundary must anchor to the previous seed and this block's fringe"
         );
         assert_eq!(
             seed_at_b2.epoch, 3,

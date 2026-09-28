@@ -31,10 +31,16 @@ pub fn mk_term(rho: &str, env: &BTreeMap<String, Par>) -> Result<Par, RholangErr
 
 /// Replay a block's deploys and return the computed state hash (port of `replayBlock`). The replay
 /// mutates only `replay_runtime` (a per-block fork); the mergeable-channel save uses `runtime`.
+/// `fringe_state_hash` is the state hash of the last finalised fringe as of `block` — the value its
+/// close system deploy anchored the next epoch's seed to. The caller computes it from the DAG
+/// (`pre_state.fringe_state`) rather than reading it off the block, because the block's header does
+/// not carry it: a field the validator recomputes anyway is a second derivation waiting to fall out
+/// of step, and one that a proposer would be choosing if it were on the wire.
 pub async fn replay_block(
     runtime: &RuntimeManager,
     replay_runtime: &ReplayRhoRuntime,
     block: &BlockMessage,
+    fringe_state_hash: &Blake2b256Hash,
     rand: &Blake2b512Random,
 ) -> Result<Blake2b256Hash, ReplayFailure> {
     let start_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
@@ -48,6 +54,7 @@ pub async fn replay_block(
             &block.state.system_deploys,
             rand,
             block_data,
+            fringe_state_hash,
             with_cost_accounting,
             // Genesis PoS descriptors (pool/trusted/params) come from the network's genesis
             // configuration; the trie is authoritative for every non-genesis block, so this value is
@@ -96,6 +103,7 @@ pub async fn compute_deploys_checkpoint(
     rand: &Blake2b512Random,
     block_data: BlockData,
     pre_state_hash: &Blake2b256Hash,
+    fringe_state_hash: &Blake2b256Hash,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -105,7 +113,14 @@ pub async fn compute_deploys_checkpoint(
     String,
 > {
     runtime
-        .compute_state(pre_state_hash, deploys, system_deploys, rand, block_data)
+        .compute_state(
+            pre_state_hash,
+            deploys,
+            system_deploys,
+            rand,
+            block_data,
+            fringe_state_hash,
+        )
         .await
 }
 
@@ -221,7 +236,8 @@ where
         let forked = runtime
             .fork_replay_runtime(pre_state.pre_state_hash)
             .await?;
-        let replay_result = replay_block(runtime, &forked, block, &rand).await;
+        let replay_result =
+            replay_block(runtime, &forked, block, &pre_state.fringe_state, &rand).await;
         let handled = handle_errors(&post_state_hash, replay_result)?;
         Ok(handled.is_some())
     };

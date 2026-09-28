@@ -15,6 +15,7 @@
 //! look like a merge bug.
 
 mod common;
+use common::fringe_state;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -135,6 +136,7 @@ async fn the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block() {
             &[],
             &block_rand,
             BlockData::empty(),
+            &fringe_state(1),
         )
         .await
         .expect("compute_state");
@@ -165,7 +167,7 @@ async fn the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block() {
         .await
         .expect("put the block");
 
-    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash)
+    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash, fringe_state(1))
         .await
         .expect("the block index regenerates the sidecar rather than failing");
 
@@ -253,6 +255,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
             &[],
             &block_rand,
             BlockData::from_block(&block),
+            &fringe_state(1),
         )
         .await
         .expect("compute_state");
@@ -291,7 +294,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         .await
         .expect("put the block");
 
-    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash)
+    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash, fringe_state(1))
         .await
         .expect("the block index");
     assert!(
