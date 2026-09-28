@@ -576,7 +576,11 @@ impl SystemProcesses {
             // Weak: the dispatch table lives inside the dispatcher, and each handler holds a
             // `ContractCall`. A strong self-reference there would keep the dispatcher (and with it
             // the whole forked runtime/hot store) alive forever (issues #18/#23).
-            contract_call: ContractCall::new(space, Arc::downgrade(&dispatcher)),
+            contract_call: ContractCall::new(
+                space.cost().clone(),
+                space,
+                Arc::downgrade(&dispatcher),
+            ),
             pretty_printer: PrettyPrinter::new(),
             block_data,
             native_state,
@@ -1154,6 +1158,52 @@ impl SystemProcesses {
 
     // --- governance (rho:gov:*) ------------------------------------------
 
+    /// The most members a `rho:gov:*` call may name (audit F-3).
+    ///
+    /// The four governance handlers fold over the union of their arguments — `censure` cubically, the
+    /// others superlinearly — and every one of them took its argument counts straight off a deploy with
+    /// no bound but the 16 MiB message cap. This is the same refusal-at-entry discipline the parser
+    /// already applies to terms (`MAX_AST_DEPTH`, `MAX_CHAIN_LENGTH`, `MAX_VALUE_DEPTH`): bound the
+    /// input rather than try to interrupt the work, which on this design is not possible.
+    ///
+    /// **Consensus-visible**: a call naming more members than this is now refused where it used to
+    /// run. Recorded as a deliberate divergence in `spec/RUST-VS-SCALA.md` §3.
+    ///
+    /// **Why 512 — measured, not chosen.** The first draft of this constant was 4096, on the
+    /// reasoning that a real governance set is tens of members and 4096 is far above any legitimate
+    /// call. The falsifier refuted the reasoning by timing the uncapped call: a 4097-member
+    /// `censure` fold takes **14.2 s**, of which ~9.8 s is fold and the rest harness. Measured at
+    /// the same harness offset, the fold alone is ~0.1 s at 256 members, ~0.36 s at 512 and ~1.15 s
+    /// at 1024 — near-quadratic in this range, so the cost of being generous is steep. 512 is the
+    /// largest round size whose fold is comfortably sub-second, and it is still an order of magnitude
+    /// above any real governance set (the genesis PoS set is 2).
+    ///
+    /// **What this number does not yet cover.** The measurement above drives the *quadratic* path —
+    /// empty censures, so the fixed point converges in one round. The cubic path (a full censure and
+    /// voucher list) is worse per member and was not measured at the bound. That is the reason to keep
+    /// the bound low rather than to raise it, and a later pass that wants a larger one should measure
+    /// the cubic case first.
+    const MAX_GOV_UNIVERSE: usize = 512;
+
+    /// Bound and charge a `rho:gov:*` fold (audit F-3).
+    ///
+    /// Shared by the four handlers because the defect was shared: each parsed its arguments and called
+    /// into `qucalc` with no charge at all, so the cost of a cubic fold was paid by the validator and
+    /// nothing by the deploy. The charge is the squared universe; the bound is the refusal above.
+    fn charge_gov_fold(
+        cc: &ContractCall<ChargingRSpace, std::sync::Weak<RholangAndScalaDispatcher>>,
+        universe: usize,
+    ) -> Result<(), RholangError> {
+        if universe > Self::MAX_GOV_UNIVERSE {
+            return Err(illegal_arg(&format!(
+                "governance input names {universe} members, over the {} limit",
+                Self::MAX_GOV_UNIVERSE
+            )));
+        }
+        cc.cost()
+            .charge(crate::accounting::Costs::gov_fold_cost(universe as i64))
+    }
+
     /// `rho:gov:resolveWeights(directVoters, delegations, trust, ret)` — resolve liquid-democracy
     /// weights: `Map<directVoter, weight>`. Pure and deterministic (see `qucalc::gov`).
     fn gov_resolve_weights(&self) -> ScalaBodyFn {
@@ -1172,6 +1222,7 @@ impl SystemProcesses {
                 let dv = parse_member_list(voters)?;
                 let del = parse_member_map(delegations)?;
                 let tr = parse_member_int_map(trust)?;
+                Self::charge_gov_fold(&cc, dv.len() + del.len() + tr.len())?;
                 let out = qucalc::gov::resolve_weights(&dv, &del, &tr);
                 cc.produce(&rand, &[member_int_map(&out)], ret, path).await
             })
@@ -1195,6 +1246,7 @@ impl SystemProcesses {
                 };
                 let r = parse_rating_list(ratings)?;
                 let a = parse_member_list(admins)?;
+                Self::charge_gov_fold(&cc, r.len() + a.len())?;
                 let out = qucalc::gov::trust_levels(&r, &a);
                 cc.produce(&rand, &[member_int_map(&out)], ret, path).await
             })
@@ -1221,6 +1273,7 @@ impl SystemProcesses {
                 let c = parse_censure_list(censures)?;
                 let lv = parse_member_int_map(levels)?;
                 let v = parse_voucher_list(vouchers)?;
+                Self::charge_gov_fold(&cc, c.len() + lv.len() + v.len())?;
                 let (disc, new_levels) = qucalc::gov::censure(&c, &lv, &v);
                 let disc_list: Vec<String> = disc.into_iter().collect();
                 let out =
@@ -1247,6 +1300,7 @@ impl SystemProcesses {
                 };
                 let b = parse_ranked_ballots(ballots)?;
                 let w = parse_member_int_map(weights)?;
+                Self::charge_gov_fold(&cc, b.len() + w.len())?;
                 let mode = RhoString::unapply(mode)
                     .ok_or_else(|| illegal_arg("gov:tally expects a mode string"))?;
                 let winner = match mode {
@@ -3488,7 +3542,56 @@ mod tests {
         assert_eq!(lv.get("C"), Some(&5));
     }
 
+    /// A governance call naming more members than the bound is refused (audit F-3).
+    ///
+    /// The four `rho:gov:*` handlers fold over the union of their arguments — `censure` cubically —
+    /// and took their counts straight off a deploy with no bound but the message cap. This is the
+    /// refusal-at-entry that replaces it: bound the input rather than interrupt the work, which on
+    /// this design is not possible (a builtin runs its CPU synchronously and cannot be preempted).
     #[tokio::test]
+    async fn a_governance_call_over_the_member_bound_is_refused() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+        let censure = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::GOV_CENSURE)
+            .expect("gov:censure definition");
+
+        let levels_of = |n: usize| {
+            RhoMap::apply(
+                (0..n)
+                    .map(|i| (RhoString::apply(format!("m{i}")), RhoNumber::apply(5)))
+                    .collect(),
+            )
+        };
+        let empty = RhoList::apply(vec![]);
+        let ack = FixedChannels::stdout();
+        let call = |levels| {
+            (censure.handler)(
+                vec![lpw(vec![empty.clone(), levels, empty.clone(), ack.clone()])],
+                DfsPath::root(),
+            )
+        };
+
+        // The control: a call at a realistic size runs, so the refusal below is about the bound and
+        // not about the fixture.
+        let small = call(levels_of(4)).await;
+        assert!(small.is_ok(), "a small governance call must run: {small:?}");
+
+        // One member past the bound.
+        let over = call(levels_of(MAX_UNIVERSE_PROBE + 1)).await;
+        assert!(
+            over.is_err(),
+            "a call naming more than the bound must be refused, not folded"
+        );
+    }
+
+    /// The bound as the test sees it — deliberately read from the same place the handler reads it, so
+    /// a change to either has to face the other.
+    const MAX_UNIVERSE_PROBE: usize = SystemProcesses::MAX_GOV_UNIVERSE;
+
     async fn gov_tally_ranked_returns_winner() {
         let mock = Arc::new(MockSpace {
             produced: Mutex::new(Vec::new()),

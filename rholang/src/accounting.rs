@@ -99,10 +99,32 @@ impl Costs {
     pub fn bytes_to_hex_cost(bytes: &[u8]) -> Cost {
         Cost::new(bytes.len() as i64, "bytes to hex")
     }
-    pub fn diff_cost(num_elements: i64) -> Cost {
+    /// The cost of a set/map difference, **proportional to the product of the two operands** (audit
+    /// F-3).
+    ///
+    /// This used to charge `3 · right`, the size of one operand, while `--` and `.diff` do
+    /// `left.iter().filter(|p| !right.contains(p))` — and `contains` on a set is a linear scan, so the
+    /// work is `left · right`. Charging one operand for a product is the sublinear-charge shape that
+    /// lets an attacker buy unbounded work: a `|left| = |right| = n` difference cost `3n` and did `n²`
+    /// comparisons, so a phlo bought an unbounded amount of work and the per-block cap could not
+    /// contain it. The constant stays 3 per comparison; what changes is that both factors are counted.
+    pub fn diff_cost(left: i64, right: i64) -> Cost {
         Cost::new(
-            Self::remove_cost().mul(num_elements).value,
-            format!("{num_elements} elements diff cost"),
+            Self::remove_cost().mul(left.saturating_mul(right)).value,
+            format!("{left} x {right} elements diff cost"),
+        )
+    }
+    /// The cost of a `rho:gov:*` fold, proportional to the square of the member universe (audit F-3).
+    ///
+    /// These four handlers were charging **nothing at all** — not the storage path (which charges for
+    /// what moves, and their output is proportional to their input, so it cannot see a cubic fold) and
+    /// not the reducer. `censure` was measured at 10.73 s for a universe of 8000. The squared term is
+    /// the leading term of the measured shape; the constant is the same 1-per-unit the table uses
+    /// elsewhere, so the charge is a count rather than a tuned number.
+    pub fn gov_fold_cost(universe: i64) -> Cost {
+        Cost::new(
+            universe.saturating_mul(universe),
+            format!("{universe}-member governance fold"),
         )
     }
     pub fn union_cost(num_elements: i64) -> Cost {

@@ -212,7 +212,7 @@ calls `securityCheck`, and the consumer path — `lookup!` → `(nonce, bundle)`
 - **The `rho:id`s above are constant** for every chain of this port: hardcoding them is safe (and
   means a `down && up` no longer invalidates them for this set). Anything registered *by a deploy*
   still shifts per chain — `rho:registry:insertArbitrary` derives its URI from a random seed
-  (`system_processes.rs:1284`), which is exactly why the rgov contracts need `insertSigned` to become
+  (`system_processes.rs:1338`), which is exactly why the rgov contracts need `insertSigned` to become
   genesis content (see below).
 - **`down && up` still regenerates the genesis address**, so a *recorded* master URI from a deployed
   bootstrap goes stale. With the blessed set installed, this no longer applies to the node's own

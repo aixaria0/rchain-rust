@@ -7,6 +7,9 @@ use rchain_models::rholang::RhoType::RhoName;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 
+use std::sync::Arc;
+
+use crate::accounting::CostAccounting;
 use crate::errors::RholangError;
 use crate::reduce::{Dispatch, Tuplespace};
 use crate::scheduler::DfsPath;
@@ -18,11 +21,31 @@ use crate::scheduler::DfsPath;
 pub struct ContractCall<T: Tuplespace, D: Dispatch> {
     space: T,
     dispatcher: D,
+    cost: Arc<CostAccounting>,
 }
 
 impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
-    pub fn new(space: T, dispatcher: D) -> Self {
-        ContractCall { space, dispatcher }
+    /// The cost cell comes first so a caller can build it from the space it is about to move in
+    /// (`ContractCall::new(space.cost().clone(), space, dispatcher)`), which is how the one production
+    /// call site does it — argument evaluation is left to right, so any later position would borrow
+    /// the space after it had moved.
+    pub fn new(cost: Arc<CostAccounting>, space: T, dispatcher: D) -> Self {
+        ContractCall {
+            space,
+            dispatcher,
+            cost,
+        }
+    }
+
+    /// The cost cell this call charges against (audit F-3).
+    ///
+    /// **Why a handler needs it.** Cost accounting charges on the *storage* path, proportional to the
+    /// serialized size of what moves — the right charge for a move, and the wrong one for a fold.
+    /// `rho:gov:censure` is cubic in its arguments and was charging nothing at all, so the per-block
+    /// phlo cap could not contain it: a cap only bounds work when a phlo buys bounded work. A handler
+    /// whose work outgrows its output has to charge for the work.
+    pub fn cost(&self) -> &Arc<CostAccounting> {
+        &self.cost
     }
 
     /// Send `values` through `ch`, dispatching any matched continuation (port of `produce`).
@@ -252,6 +275,15 @@ mod tests {
         }
     }
 
+    /// A cost cell for the tests below. `ContractCall` always carries one in production (the
+    /// system-process layer passes the `ChargingRSpace`'s); the tests only need a live cell so a
+    /// handler that charges has something to charge against (audit F-3).
+    fn test_cost() -> Arc<CostAccounting> {
+        Arc::new(CostAccounting::from_initial(
+            crate::accounting::Costs::unsafe_max(),
+        ))
+    }
+
     fn lpw(values: &[i64]) -> ListParWithRandom {
         ListParWithRandom {
             pars: values
@@ -279,6 +311,7 @@ mod tests {
     #[test]
     fn unapply_requires_exactly_one_argument() {
         let call = ContractCall::new(
+            test_cost(),
             Arc::new(RecordingSpace::default()),
             Arc::new(RecordingDispatch::default()),
         );
@@ -304,7 +337,7 @@ mod tests {
     async fn a_reply_with_no_match_dispatches_nothing() {
         let space = Arc::new(RecordingSpace::default());
         let dispatch = Arc::new(RecordingDispatch::default());
-        let call = ContractCall::new(space.clone(), dispatch.clone());
+        let call = ContractCall::new(test_cost(), space.clone(), dispatch.clone());
 
         call.produce(
             &Blake2b512Random::from_init(&[1u8; 32]),
@@ -346,7 +379,7 @@ mod tests {
             fail: None,
         });
         let dispatch = Arc::new(RecordingDispatch::default());
-        let call = ContractCall::new(space, dispatch.clone());
+        let call = ContractCall::new(test_cost(), space, dispatch.clone());
 
         call.produce(
             &Blake2b512Random::from_init(&[1u8; 32]),
@@ -381,6 +414,7 @@ mod tests {
     #[tokio::test]
     async fn a_produce_error_is_propagated() {
         let call = ContractCall::new(
+            test_cost(),
             Arc::new(RecordingSpace {
                 fail: Some("store is down".to_string()),
                 ..RecordingSpace::default()

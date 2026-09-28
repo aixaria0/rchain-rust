@@ -134,6 +134,22 @@ concrete, auditable ways:
    but needs a parent-block read the store API does not make obvious. Left for a decision rather than
    guessed at; the audit rated it P3 for the chain as it stands, since no default-genesis contract
    consumes the channel today.
+9. **A `rho:gov:*` call is bounded and charged; the Scala's is neither.** The four governance
+   handlers folded over the union of their arguments with **no charge at all** — neither the storage
+   path (which charges for what moves, and their output is proportional to their input, so it cannot
+   see a cubic fold) nor the reducer. `censure` was measured at 10.73 s for a universe of 8000, and
+   reachable from any deploy. Two changes, both deliberate divergences: a member bound
+   (`MAX_GOV_UNIVERSE`, 512, set from a measurement and not from a preference) and a charge
+   proportional to the squared universe. **The bound came down from 4096 after measuring** — an
+   uncapped 4097-member fold takes 14.2 s, and the fold alone is ~0.36 s at 512, which is the largest
+   round size comfortably sub-second. Recorded here because a call the reference accepts is now
+   refused, and because a call that used to fit under its phlo limit may now run out.
+
+10. **`--` and `.diff` are charged for the product of their operands, not one of them.** The Scala
+   charges `3 · |right|` while the work is `left.iter().filter(|p| !right.contains(p))` — a linear
+   scan per element, so `|left| · |right|`. Charging one factor for a product is the sublinear-charge
+   shape that lets a phlo buy unbounded work, and it is the shape that made the per-block phlo cap
+   inoperative: a cap bounds work only when the charge tracks it.
 
 The honest caveat is in §5: the port is not yet *done* surpassing Scala. Several Scala behaviors were
 initially carried over faithfully (the "deferred" surface, the panic-vs-exception sites) precisely

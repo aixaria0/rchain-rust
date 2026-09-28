@@ -166,6 +166,21 @@ impl ChargingRSpace {
         ChargingRSpace { space, cost }
     }
 
+    /// The cost cell this space charges against (audit F-3).
+    ///
+    /// **Why a handler needs it.** Cost accounting charges on the *storage* path, proportional to the
+    /// serialized size of what moves — the right charge for a move, and the wrong one for a fold.
+    /// `rho:gov:censure` is cubic in its arguments and was charging nothing at all, so the per-block
+    /// phlo cap could not contain it: a cap only bounds work when a phlo buys bounded work. A handler
+    /// whose work outgrows its output has to charge for the work.
+    ///
+    /// Inherent rather than a `Tuplespace` trait method: the trait lives in `reduce.rs`, whose line
+    /// numbers the law register cites by number, and the only consumer is the system-process layer,
+    /// which holds the concrete `ChargingRSpace`.
+    pub fn cost(&self) -> &Arc<CostAccounting> {
+        &self.cost
+    }
+
     /// The storage refunds a *matched* op is owed (port of `handleResult`'s `Some` arm, and of the two
     /// helpers it calls).
     ///
