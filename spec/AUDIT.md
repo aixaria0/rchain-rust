@@ -214,7 +214,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `R25` | global channel cache mutex held across an unbounded connect. `comm/src/transport/grpc_transport_client.rs:68-75` (`create_channel`) | connect_with_connector_lazy | §13 |
 | `R26` | `stream` size cap counts only data bytes. `grpc_transport_receiver.rs:173-184` — empty `Chunk.content_data` never advances `received`, so unbounded empty chunks grow the per-stream buffer | — | §13 |
 | `R27` | `phlo_price` checked after replay. `casper/src/multi_parent_casper.rs:298` (`block_summary`) — a below-min-price block is fully replayed before rejection, so `phlo_price=0` deploys give free … | validate_block_checkpoint | §13 |
-| `R28` | deploy pool never expires future-dated deploys. `casper/src/dag.rs:409-413` — the pool ingress never bounded `valid_after_block_number`, so deploys anchored at `i64::MAX` filled … | valid_after_block_number | §13 |
+| `R28` | deploy pool never expires future-dated deploys. `casper/src/dag.rs:428-432` — the pool ingress never bounded `valid_after_block_number`, so deploys anchored at `i64::MAX` filled … | valid_after_block_number | §13 |
 | `R29` | block-receiver maps unbounded. `casper/src/blocks/block_receiver.rs:101` — valid-signed blocks with unresolvable justifications are retained forever | — | §13 |
 | `R30` | `PeerRateLimiter` never evicts. `casper/src/engine/node_running.rs:106` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn | — | §13 |
 | `R31` | attacker-influenced UPnP gateway can set the advertised external host (hostname bypasses `is_ssrf_unsafe_host`). `comm/src/upnp/gateway.rs:119-136` | a_hostname_external_address_is_published_and_named_as_one | §13 |

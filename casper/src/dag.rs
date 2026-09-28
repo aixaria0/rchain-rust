@@ -257,29 +257,24 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             }
         }
 
-        // Add block metadata to the index.
-        self.block_metadata_store
-            .add(block_metadata.clone())
-            .await?;
-
-        // Index each deploy to this block, and remove it from the pending pool so
-        // `pooled_deploys` no longer lists it (a deploy leaves the pool once included).
-        let deploy_hashes: Vec<DeployId> = block
-            .state
-            .deploys
-            .iter()
-            .map(|d| d.deploy.sig.clone())
-            .collect();
-        if !deploy_hashes.is_empty() {
-            let pairs: Vec<(DeployId, BlockHash)> = deploy_hashes
-                .iter()
-                .map(|h| (h.clone(), block.block_hash))
-                .collect();
-            self.deploy_index.put(&pairs).await?;
-            self.deploy_store.delete(&deploy_hashes).await?;
-        }
-
-        // Compute fringe diff and store fringe data.
+        // Compute and store the fringe data **before** the block's own metadata (AUDIT F-5).
+        //
+        // The order is the whole of this fix. `block_metadata_store.add` below is what makes a block
+        // *known* — `contains` short-circuits a re-insert on the next call — so a crash between the two
+        // writes used to leave a block present with its fringe record missing, and nothing rebuilds
+        // that record: `create`'s fold skips a missing entry in silence while its three sibling arms
+        // fail closed, and `get_pre_state_for_parents` then refuses every block for which the torn one
+        // is the max-fringe parent. On a single-validator node that is permanent, and the only way back
+        // is deleting the shard data dir so `dag_set` empties and `NodeSyncing` runs.
+        //
+        // Writing the data first means a crash leaves an *orphan* fringe record instead, which
+        // `create` ignores because it folds over stored metadata. That is the same data-then-pointer
+        // order `rspace/src/history/roots_store.rs` already uses — the audit found the RSpace side
+        // getting this right and the DAG side getting it wrong.
+        //
+        // Safe to hoist: this computation reads only the in-memory representation and the incoming
+        // `block_metadata`, and `representation` is not updated until the write guard at the end of
+        // this function, so `add` has no effect on it.
         let fringe_hash = FringeData::fringe_hash_of(&block_metadata.fringe);
 
         // One read of the representation, and the guard is a *block expression* rather than a
@@ -327,6 +322,30 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         self.fringe_data_store
             .put(&[(fringe_hash, fringe_data.clone())])
             .await?;
+
+        // Only now make the block known. Everything above this line is data the block *refers to*;
+        // this is the pointer, and the crash window it opens is the one described at the top of this
+        // function — an orphan fringe record rather than a block with no fringe.
+        self.block_metadata_store
+            .add(block_metadata.clone())
+            .await?;
+
+        // Index each deploy to this block, and remove it from the pending pool so
+        // `pooled_deploys` no longer lists it (a deploy leaves the pool once included).
+        let deploy_hashes: Vec<DeployId> = block
+            .state
+            .deploys
+            .iter()
+            .map(|d| d.deploy.sig.clone())
+            .collect();
+        if !deploy_hashes.is_empty() {
+            let pairs: Vec<(DeployId, BlockHash)> = deploy_hashes
+                .iter()
+                .map(|h| (h.clone(), block.block_hash))
+                .collect();
+            self.deploy_index.put(&pairs).await?;
+            self.deploy_store.delete(&deploy_hashes).await?;
+        }
 
         // Mark the newly-finalized blocks' metadata with their member fringe.
         for h in &fringe_diff {

@@ -31,7 +31,7 @@ iterative because the depth is the thing a recursive walk cannot survive — is
 recursion** rather than `decide (limit < parDepth p)` — a walk defined as the depth it is checking
 would make both directions `rfl`, which is the vacuity `Rchain/Laws.lean` records for law 22.
 
-**Clause b is still owed** — see the closing note, which is also where the correction to this file's
+**Clause b is discharged too**, by `Rchain/ValueDepth.lean` — see the closing note, which is also where the correction to this file's
 earlier misdiagnosis of its own first two attempts lives, and where the reason clause b is harder than
 it looked is spelled out.
 
@@ -239,18 +239,23 @@ So 256 it is, and the two constants are kept apart deliberately.
 **What the Rust walk's accounting is, and the obligation that follows.** `exceeds_value_depth` is
 field-wise over the flat `Par` like `parDepth`, but it gives an `Expr` node **no level of its own**: a
 `Par`'s expression children are charged the same depth as its other fields. `parDepth` does count the
-`Expr` node, so the two functions are not equal and the owed directions are *not* the trivial ones:
+`Expr` node, so the two functions are not equal and the directions are *not* the trivial ones:
 
-  * `walkExceeds limit p = false → parDepth p ≤ limit + (the expression nesting the walk did not
+  * `walkExceeds limit p = false → parDepth p ≤ limit + (the element nesting the walk did not
     count)` — soundness with that slack, and the slack is what the proof has to bound; and its
     control, that the walk is not refusing by accident.
 
-The slack is bounded on this route for a reason worth stating rather than assuming: a *value's*
-expression nesting is syntax, and no runtime construction path builds `Expr` nodes — so on any value
-that reached the space through a parsed program the slack is at most the parser's own
-`MAX_PARSE_DEPTH` (128), and the space's values are bounded by `maxValueDepth + 128`. A value injected
-by a hand-built or wire-carried message is where that argument stops, which is why the row is `owed`
-and not tied.
+**This section's first draft understated the gap, and the correction is the whole of clause b's work**
+(2026-09-28, AUDIT C169). It said the walk gives an `Expr` node no level, so the slack is *that node
+alone*, bounded by `MAX_PARSE_DEPTH` (128) "because no runtime path builds `Expr` nodes". In fact the
+walk gives **no element node** a level — `push_value_fields` pushes its fields at the depth it was
+handed, as do `push_value_expr` and `push_value_connective`, so `Send`/`Receive`/`New`/`Match`/
+`Bundle`/`MatchCase`/`Connective` are transparent along with `Expr` — and a runtime path *does* build
+`Expr` nodes: `(a, b)` is `Expr::ETuple`, the shape `rholang/tests/deep_value_bound.rs` exists for. So
+the counted quantity is not `parDepth` at all but the number of **`Par` nodes** on the deepest
+`Par`-chain, and the gap is a factor: at most 3, and 3 is attained. **`Rchain/ValueDepth.lean` holds
+that quantity (`parNestDepth`), its walk, the agreement, the bridge `parDepth p ≤ 3 * parNestDepth p`
+and a machine-checked falsifier** — and the register's last two `owed` entries closed with it.
 -/
 
 /-- The bound the **space** applies to a produced value, `rholang/src/storage.rs::MAX_VALUE_DEPTH`.
@@ -817,16 +822,20 @@ tree, not the de Bruijn `Par` this file is about; the parser's own doc comment c
 modelling argument. The half no theorem can state — that the Rust walk descends into every `Proc`
 constructor — is pinned by `rholang/src/parser.rs`'s every-constructor test.
 
-**Clause b is still owed, and its statement as written is not true.** The value route's walk charges a
-level for **`Par` nodes only**: `models/src/types.rs`'s `push_value_fields`/`push_value_expr`/
-`push_value_connective` push every element at the *same* depth, so `Expr` and `Connective` are
-transparent along with `Send`/`Receive`/`New`/`Match`/`Bundle`/`MatchCase`. The counted quantity is
-therefore *the number of `Par` nodes on the deepest `Par`-chain* — not `parDepth`. Two consequences the
-row must carry: the row's "no runtime path builds `Expr` nodes" premise is false (`(a, b)` **is**
-`Expr::ETuple`, built by the reducer, and the fold test exists for that shape), and the slack is a
-*factor* that grows with nesting, not the constant 128 — at `maxValueDepth` the guard admits
-`pairsDepth 255`, whose `parDepth` is 511. Clause b's agreement needs a second quantity and a second
-walk; until it has them the row stays `owed`.
+**Clause b is discharged too, and it needed a second quantity to be.** Its statement as committed was
+*not true*: it said the value route's walk gives an `Expr` node no level of its own where `parDepth`
+counts it, and that soundness therefore carries a slack bounded by `MAX_PARSE_DEPTH` (128). The walk in
+fact charges a level for **`Par` nodes only** — `models/src/types.rs`'s
+`push_value_fields`/`push_value_expr`/`push_value_connective` push every *element* at the same depth
+they were handed, so `Expr` and `Connective` are transparent along with
+`Send`/`Receive`/`New`/`Match`/`Bundle`/`MatchCase` — and the counted quantity is the number of `Par`
+nodes on the deepest `Par`-chain, which is not `parDepth`. The "no runtime path builds `Expr` nodes"
+premise is false as well (`(a, b)` **is** `Expr::ETuple`, built by the reducer, and the fold test exists
+for that shape), and the gap is a *factor*, not a constant: at `maxValueDepth` the guard admits
+`pairsDepth 255`, whose `parDepth` is 511. **That second quantity and walk are `Rchain/ValueDepth.lean`
+— `parNestDepth` and `walkValuePar`, with the agreement, the bridge `parDepth p ≤ 3 * parNestDepth p`
+(three, and tight), and a machine-checked falsifier.** The register's last two `owed` entries closed
+together; `spec/LAWS.md` reads **0 owed**.
 
 **Why the walk had to be an independent recursion**, restated because the proof is what cashes it:
 `decide (limit < parDepth p)` would make both directions `rfl` and prove nothing — the vacuity
