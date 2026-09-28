@@ -16,27 +16,29 @@ a **process abort** at an AST depth of ~1,000 (a ~4 KB deploy) and 64 s of CPU a
 bound on the *term*, and this is the term's depth.
 
 **What is here, and what is owed.** `parDepth` below is the definition — the depth of a `Par` as a
-tree of subterms, field-wise on the flat `Par` exactly as `closed` and `freeVarOf` are. The obligation
-that is **not** yet discharged is the walk: `rholang/src/parser.rs::exceeds_ast_depth` tests
-`parDepth p ≤ MAX_AST_DEPTH` by an iterative, early-exiting traversal (iterative because the depth is
-the thing a recursive walk cannot survive), and what ties the two is
+tree of subterms, field-wise on the flat `Par` exactly as `closed` and `freeVarOf` are. What ties it to
+the parser's guard, `rholang/src/parser.rs::exceeds_ast_depth` — an iterative, early-exiting traversal,
+iterative because the depth is the thing a recursive walk cannot survive — is
 
   * `walkExceeds limit p = false → parDepth p ≤ limit` — the direction that matters: a **sound**
     refusal test, so a term the node accepts cannot be deeper than the bound; and its control,
   * `parDepth p ≤ limit → walkExceeds limit p = false` — completeness, so the walk is not refusing by
     accident.
 
-Both are owed; the row is `owed` for exactly that reason, and `spec/INDUCTIVE`-style recipes are not
-needed to say so. The shape to prove them in is `Rchain/FreeVars.lean`'s: one `mutual` block with a
-member per type and per `List`, `termination_by … => sizeOf …`, and a second `mutual` block for the
-walk so that the walk is an **independent recursion** rather than `decide (limit < parDepth p)` — a
-walk defined as the depth it is checking would make both directions `rfl`, which is the vacuity
-`Rchain/Laws.lean` records for law 22.
+**Clause a's two directions are proved** (2026-09-28), by the walk and theorem blocks below, in
+`Rchain/FreeVars.lean`'s shape: one `mutual` block with a member per type and per `List`,
+`termination_by … => sizeOf …`, and a second `mutual` block for the walk so that it is an **independent
+recursion** rather than `decide (limit < parDepth p)` — a walk defined as the depth it is checking
+would make both directions `rfl`, which is the vacuity `Rchain/Laws.lean` records for law 22.
 
-**The falsifier, when the proof lands**: dropping one arm of the walk's children function must make
-the soundness direction false on a concrete term — `a_dropped_arm_breaks_soundness`. The Rust half of
-that risk (a `Proc` constructor the walk does not descend into) is not a Lean claim at all: it is
-pinned by `rholang/tests`' exhaustive-construct depth test and by the parser's own refusal tests.
+**Clause b is still owed** — see the closing note, which is also where the correction to this file's
+earlier misdiagnosis of its own first two attempts lives, and where the reason clause b is harder than
+it looked is spelled out.
+
+**The Rust half of the same risk** (a `Proc` constructor the walk does not descend into) is not a Lean
+claim at all — the walk here is over the de Bruijn `Par`, while the parser's is over the surface
+`Proc`. It is pinned by `rholang/src/parser.rs`'s every-constructor test and by the parser's own
+refusal tests.
 -/
 
 namespace Rchain
@@ -197,18 +199,27 @@ law statement can speak about it rather than about a literal: the number is the 
 the law is that the walk and `parDepth` agree about it. -/
 def maxAstDepth : Nat := 768
 
-/-- A concrete term at a known depth — the witness shape the owed directions are stated over. A unit
-term is depth 1, and wrapping it in `n` unary nots gives depth `n + 1`, which is the arithmetic a
+/-- A concrete term at a known depth — the witness shape the falsifier is stated over. A unit term is
+depth 1, and nesting it under `n` unary nots gives depth `2 * n + 1`, which is the arithmetic a
 falsifying mutation has to break.
+
+**Each level costs two, not one, and this definition's first draft got that wrong** (found by this
+unit's review, 2026-09-28). A not sits in a `Par`'s `List Expr` field, so a level is `1` for the `enot`
+node (`exprDepth`) *and* `1` for the `Par` that holds it (`parDepth`). The first draft wrote
+`List.replicate n (.enot unit)` — `n` **siblings**, not `n` nested levels — which has `parDepth` `3`
+for every `n ≥ 1`. At budget `maxAstDepth` that term is accepted by the walk *and* by every mutant of
+it, so the mutation test this row's `falsifiable` cell names would have passed **vacuously** — the
+failure law 22 records, in the cell that cites law 22. Hence the nesting below, and hence `2 * n + 1`.
 
 **Why this is a definition and not a `decide`d example** — the trap `spec/STYLE.md` records, met here:
 `parDepth` is a `mutual` block over nested lists, so it needs `termination_by`, and a well-founded
-definition is **not kernel-reducible** — `decide` cannot evaluate `parDepth (notsDepth 767)`, and the
+definition is **not kernel-reducible** — `decide` cannot evaluate `parDepth (notsDepth 383)`, and the
 attempt reports `reduction got stuck`. So law 50's two directions are proofs by induction, not
-evaluations, and this term is their witness: `notsDepth n` has depth `n + 1`, so `notsDepth 767`
-reaches `maxAstDepth` exactly and `notsDepth 768` is the first term over it. -/
-def notsDepth (n : Nat) : Par :=
-  Par.mk [] [] [] (List.replicate n (.enot (Par.mk [] [] [] [] [] [] [] []))) [] [] [] []
+evaluations, and this term is their witness: `notsDepth n` has depth `2 * n + 1`, so `notsDepth 383`
+reaches 767 — under `maxAstDepth` — and `notsDepth 384` is 769, the first term over it. -/
+def notsDepth : Nat → Par
+  | 0 => Par.mk [] [] [] [] [] [] [] []
+  | n + 1 => Par.mk [] [] [] [Expr.enot (notsDepth n)] [] [] [] []
 
 /-! ## Clause 50b — the bound the *space* applies to a **runtime-built value**
 
@@ -277,237 +288,549 @@ root up.
 `sizeOf` comparisons over mutually-defined inductives, and `simp_wf` unfolds enough of the size table
 for the default 200,000 to expire on the list arms. The goals themselves are one-line arithmetic
 (`sizeOf a < 1 + sizeOf a + sizeOf as`); it is the unfolding that costs. -/
-set_option maxHeartbeats 1000000 in
+set_option maxHeartbeats 4000000 in
 mutual
-  def walkPar : Nat → Par → Bool
-    | 0, _ => true
-    | n + 1, Par.mk s r nw e m u b c =>
-        walkListSend n s || walkListReceive n r || walkListNew n nw || walkListExpr n e ||
-        walkListMatch n m || walkListGUnforgeable n u || walkListBundle n b ||
-        walkListConnective n c
-  termination_by _ x => sizeOf x
+  def walkPar : Par → Nat → Bool
+    | Par.mk s r nw e m u b c, k =>
+        (match k with
+         | 0 => true
+         | j + 1 =>
+             walkListSend s j || walkListReceive r j || walkListNew nw j || walkListExpr e j ||
+             walkListMatch m j || walkListGUnforgeable u j || walkListBundle b j ||
+             walkListConnective c j)
+  termination_by p _ => sizeOf p
 
-  def walkSend : Nat → Send → Bool
-    | 0, _ => true
-    | n + 1, Send.mk c d _ => walkPar n c || walkListPar n d
-  termination_by _ x => sizeOf x
+  def walkSend : Send → Nat → Bool
+    | Send.mk c d _, k => (match k with | 0 => true | j + 1 => walkPar c j || walkListPar d j)
+  termination_by s _ => sizeOf s
 
-  def walkReceiveBind : Nat → ReceiveBind → Bool
-    | 0, _ => true
-    | n + 1, ReceiveBind.mk ps s _ => walkListPar n ps || walkPar n s
-  termination_by _ x => sizeOf x
+  def walkReceiveBind : ReceiveBind → Nat → Bool
+    | ReceiveBind.mk ps s _, k => (match k with | 0 => true | j + 1 => walkListPar ps j || walkPar s j)
+  termination_by b _ => sizeOf b
 
-  def walkReceive : Nat → Receive → Bool
-    | 0, _ => true
-    | n + 1, Receive.mk bs b _ _ => walkListReceiveBind n bs || walkPar n b
-  termination_by _ x => sizeOf x
+  def walkReceive : Receive → Nat → Bool
+    | Receive.mk bs b _ _, k => (match k with | 0 => true | j + 1 => walkListReceiveBind bs j || walkPar b j)
+  termination_by r _ => sizeOf r
 
-  def walkNew : Nat → New → Bool
-    | 0, _ => true
-    | n + 1, New.mk _ b => walkPar n b
-  termination_by _ x => sizeOf x
+  def walkNew : New → Nat → Bool
+    | New.mk _ b, k => (match k with | 0 => true | j + 1 => walkPar b j)
+  termination_by n _ => sizeOf n
 
-  def walkMatchCase : Nat → MatchCase → Bool
-    | 0, _ => true
-    | n + 1, MatchCase.mk p s _ => walkPar n p || walkPar n s
-  termination_by _ x => sizeOf x
+  def walkMatchCase : MatchCase → Nat → Bool
+    | MatchCase.mk p s _, k => (match k with | 0 => true | j + 1 => walkPar p j || walkPar s j)
+  termination_by m _ => sizeOf m
 
-  def walkMatch : Nat → Match → Bool
-    | 0, _ => true
-    | n + 1, Match.mk t cs => walkPar n t || walkListMatchCase n cs
-  termination_by _ x => sizeOf x
+  def walkMatch : Match → Nat → Bool
+    | Match.mk t cs, k => (match k with | 0 => true | j + 1 => walkPar t j || walkListMatchCase cs j)
+  termination_by m _ => sizeOf m
 
-  def walkExpr : Nat → Expr → Bool
-    | 0, _ => true
-    | _ + 1, Expr.ground _ => false
-    | _ + 1, Expr.evar _ => false
-    | _ + 1, Expr.ebigint _ => false
-    | n + 1, Expr.eneg p => walkPar n p
-    | n + 1, Expr.enot p => walkPar n p
-    | n + 1, Expr.eplus p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eminus p q => walkPar n p || walkPar n q
-    | n + 1, Expr.emult p q => walkPar n p || walkPar n q
-    | n + 1, Expr.ediv p q => walkPar n p || walkPar n q
-    | n + 1, Expr.emod p q => walkPar n p || walkPar n q
-    | n + 1, Expr.elt p q => walkPar n p || walkPar n q
-    | n + 1, Expr.ele p q => walkPar n p || walkPar n q
-    | n + 1, Expr.egt p q => walkPar n p || walkPar n q
-    | n + 1, Expr.ege p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eeq p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eneq p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eand p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eor p q => walkPar n p || walkPar n q
-    | n + 1, Expr.ematches p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eshortand p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eshortor p q => walkPar n p || walkPar n q
-    | n + 1, Expr.elist ps _ => walkListPar n ps
-    | n + 1, Expr.etuple ps => walkListPar n ps
-    | n + 1, Expr.eset ps _ => walkListPar n ps
-    | n + 1, Expr.emap kvs _ => walkListPair n kvs
-    | n + 1, Expr.emethod _ p args => walkPar n p || walkListPar n args
-    | n + 1, Expr.epercentPercent p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eplusPlus p q => walkPar n p || walkPar n q
-    | n + 1, Expr.eminusMinus p q => walkPar n p || walkPar n q
-  termination_by _ x => sizeOf x
+  def walkExpr : Expr → Nat → Bool
+    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k =>
+        (match k with | 0 => true | _ + 1 => false)
+    | Expr.eneg p, k | Expr.enot p, k =>
+        (match k with | 0 => true | j + 1 => walkPar p j)
+    | Expr.eplus p q, k | Expr.eminus p q, k | Expr.emult p q, k | Expr.ediv p q, k
+    | Expr.emod p q, k | Expr.elt p q, k | Expr.ele p q, k | Expr.egt p q, k
+    | Expr.ege p q, k | Expr.eeq p q, k | Expr.eneq p q, k | Expr.eand p q, k
+    | Expr.eor p q, k | Expr.ematches p q, k | Expr.eshortand p q, k
+    | Expr.eshortor p q, k =>
+        (match k with | 0 => true | j + 1 => walkPar p j || walkPar q j)
+    | Expr.elist ps _, k | Expr.etuple ps, k | Expr.eset ps _, k =>
+        (match k with | 0 => true | j + 1 => walkListPar ps j)
+    | Expr.emap kvs _, k => (match k with | 0 => true | j + 1 => walkListPair kvs j)
+    | Expr.emethod _ p args, k =>
+        (match k with | 0 => true | j + 1 => walkPar p j || walkListPar args j)
+    | Expr.epercentPercent p q, k | Expr.eplusPlus p q, k | Expr.eminusMinus p q, k =>
+        (match k with | 0 => true | j + 1 => walkPar p j || walkPar q j)
+  termination_by e _ => sizeOf e
   -- A two-`Par` arm leaves `sizeOf p < 1 + sizeOf p + sizeOf q`, which the default tactic does not
   -- discharge: it is true but needs arithmetic on `sizeOf q ≥ 0`, not structural comparison.
 
-  def walkBundle : Nat → Bundle → Bool
-    | 0, _ => true
-    | n + 1, Bundle.mk p _ _ => walkPar n p
-  termination_by _ x => sizeOf x
+  def walkBundle : Bundle → Nat → Bool
+    | Bundle.mk p _ _, k => (match k with | 0 => true | j + 1 => walkPar p j)
+  termination_by b _ => sizeOf b
 
-  def walkGUnforgeable : Nat → GUnforgeable → Bool
-    | 0, _ => true
-    | _ + 1, _ => false
+  def walkGUnforgeable : GUnforgeable → Nat → Bool
+    | _, k => (match k with | 0 => true | _ + 1 => false)
 
-  def walkConnective : Nat → Connective → Bool
-    | 0, _ => true
-    | n + 1, Connective.connAnd ps => walkListPar n ps
-    | n + 1, Connective.connOr ps => walkListPar n ps
-    | n + 1, Connective.connNot p => walkPar n p
-    | _ + 1, Connective.connVarRef _ _ => false
-  termination_by _ x => sizeOf x
+  def walkConnective : Connective → Nat → Bool
+    | Connective.connAnd ps, k | Connective.connOr ps, k =>
+        (match k with | 0 => true | j + 1 => walkListPar ps j)
+    | Connective.connNot p, k => (match k with | 0 => true | j + 1 => walkPar p j)
+    | Connective.connVarRef _ _, k => (match k with | 0 => true | _ + 1 => false)
+  termination_by c _ => sizeOf c
 
-  def walkListPar : Nat → List Par → Bool
-    | _, [] => false
-    | n, a :: as => walkPar n a || walkListPar n as
-  termination_by _ x => sizeOf x
+  def walkListPar : List Par → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkPar a k || walkListPar as k
+  termination_by l _ => sizeOf l
 
-  def walkListPair : Nat → List (Par × Par) → Bool
-    | _, [] => false
-    | n, (a, b) :: as => walkPar n a || walkPar n b || walkListPair n as
-  termination_by _ x => sizeOf x
+  def walkListPair : List (Par × Par) → Nat → Bool
+    | [], _ => false
+    | (a, b) :: as, k => walkPar a k || walkPar b k || walkListPair as k
+  termination_by l _ => sizeOf l
 
-  def walkListSend : Nat → List Send → Bool
-    | _, [] => false
-    | n, a :: as => walkSend n a || walkListSend n as
-  termination_by _ x => sizeOf x
+  def walkListSend : List Send → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkSend a k || walkListSend as k
+  termination_by l _ => sizeOf l
 
-  def walkListReceive : Nat → List Receive → Bool
-    | _, [] => false
-    | n, a :: as => walkReceive n a || walkListReceive n as
-  termination_by _ x => sizeOf x
+  def walkListReceive : List Receive → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkReceive a k || walkListReceive as k
+  termination_by l _ => sizeOf l
 
-  def walkListReceiveBind : Nat → List ReceiveBind → Bool
-    | _, [] => false
-    | n, a :: as => walkReceiveBind n a || walkListReceiveBind n as
-  termination_by _ x => sizeOf x
+  def walkListReceiveBind : List ReceiveBind → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkReceiveBind a k || walkListReceiveBind as k
+  termination_by l _ => sizeOf l
 
-  def walkListNew : Nat → List New → Bool
-    | _, [] => false
-    | n, a :: as => walkNew n a || walkListNew n as
-  termination_by _ x => sizeOf x
+  def walkListNew : List New → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkNew a k || walkListNew as k
+  termination_by l _ => sizeOf l
 
-  def walkListMatch : Nat → List Match → Bool
-    | _, [] => false
-    | n, a :: as => walkMatch n a || walkListMatch n as
-  termination_by _ x => sizeOf x
+  def walkListMatch : List Match → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkMatch a k || walkListMatch as k
+  termination_by l _ => sizeOf l
 
-  def walkListMatchCase : Nat → List MatchCase → Bool
-    | _, [] => false
-    | n, a :: as => walkMatchCase n a || walkListMatchCase n as
-  termination_by _ x => sizeOf x
+  def walkListMatchCase : List MatchCase → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkMatchCase a k || walkListMatchCase as k
+  termination_by l _ => sizeOf l
 
-  def walkListExpr : Nat → List Expr → Bool
-    | _, [] => false
-    | n, a :: as => walkExpr n a || walkListExpr n as
-  termination_by _ x => sizeOf x
+  def walkListExpr : List Expr → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkExpr a k || walkListExpr as k
+  termination_by l _ => sizeOf l
 
-  def walkListBundle : Nat → List Bundle → Bool
-    | _, [] => false
-    | n, a :: as => walkBundle n a || walkListBundle n as
-  termination_by _ x => sizeOf x
+  def walkListBundle : List Bundle → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkBundle a k || walkListBundle as k
+  termination_by l _ => sizeOf l
 
-  def walkListGUnforgeable : Nat → List GUnforgeable → Bool
-    | _, [] => false
-    | n, a :: as => walkGUnforgeable n a || walkListGUnforgeable n as
-  termination_by _ x => sizeOf x
+  def walkListGUnforgeable : List GUnforgeable → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkGUnforgeable a k || walkListGUnforgeable as k
+  termination_by l _ => sizeOf l
 
-  def walkListConnective : Nat → List Connective → Bool
-    | _, [] => false
-    | n, a :: as => walkConnective n a || walkListConnective n as
-  termination_by _ x => sizeOf x
+  def walkListConnective : List Connective → Nat → Bool
+    | [], _ => false
+    | a :: as, k => walkConnective a k || walkListConnective as k
+  termination_by l _ => sizeOf l
 end
 
 /-- The node's own walk, as the parser applies it: `rholang/src/parser.rs::exceeds_ast_depth root limit`.
 The budget is the limit, so `walkExceeds limit p = false` is the parser's acceptance. -/
-def walkExceeds (limit : Nat) (p : Par) : Bool := walkPar limit p
+def walkExceeds (limit : Nat) (p : Par) : Bool := walkPar p limit
+
+/-! ## The agreement — the walk and `parDepth`
+
+The 23 theorems below are one `mutual` block, mirroring `Rchain/FreeVars.lean`'s `freeVarOf*_iff_closed`
+block member for member: each is the walk's own recursion, and each recursive call is discharged by
+`simp` rewriting with the *sibling theorem's statement*. The block carries **no `termination_by` and no
+`decreasing_by`** — the walk recurses on the term, so the equation compiler infers termination exactly
+as it does for `FreeVars`.
+
+**Why the definitions had to be reshaped for this**, since the module's earlier note got the cause
+wrong: the extra `Nat` is a *parameter* here (`walkPar : Par → Nat → Bool`, matched `| Par.mk …, k =>`),
+not a pattern-matched first argument. That is `FreeVars`' shape — it carries `termination_by` on its
+definitions *and* a theorem block with no termination clause, which is what falsified the earlier note's
+claim that `termination_by` was the obstacle. The budget test lives in the *body*, as a `match`, so `j`
+appears syntactically in the successor arm: no `if`, no `Decidable`, no `Nat.pred` ever reaches a goal,
+which is what the previous attempt's `if n = 0` version could not escape.
+
+**`omega` does the arithmetic, and the named lemmas do not.** Measured: `Nat.succ_le_succ_iff` cannot
+see through `1 + _` (`Nat.add` recurses on its second argument, so `1 + x` does not reduce to
+`Nat.succ x`), and `Nat.max_le`/`and_assoc`/`Bool.or_eq_false_iff` in a `simp only` set made no progress
+on the assembled goal. `omega` alone closes `A ≤ j ∧ B ≤ j ↔ 1 + max A B ≤ j + 1` and the eight-way
+nested `max`, so none of the twelve list members needs a `List.max` lemma.
+
+**No positivity lemma is needed**, which is what the second attempt expected to need: every
+zero-budget goal is over a *known constructor* — the arm's own pattern — so the depth reduces to a
+numeral-headed `1 + max …` and `simp` closes it. Positivity would be needed only against
+`walkPar.induct`, whose budget-0 case quantifies over an arbitrary term.
+
+**And `max` must be left alone.** An earlier draft added `max_def` to these sets, which turns `max` into
+an `if` — and `omega` then treats the branches as opaque variables and cannot relate them, which is
+what its counterexample reports. `omega` reads `max` natively; the temptation to normalise it away is
+the trap here.
+-/
+set_option maxHeartbeats 4000000 in
+mutual
+  theorem walkPar_iff_parDepth : (p : Par) → ∀ k, walkPar p k = false ↔ parDepth p ≤ k
+    | Par.mk s r nw e m u b c, k => by
+      cases k with
+      | zero => simp [walkPar, parDepth]
+      | succ j =>
+        simp only [walkPar, parDepth, Bool.or_eq_false_iff, and_assoc,
+          walkListSend_iff_listDepthSend, walkListReceive_iff_listDepthReceive,
+          walkListNew_iff_listDepthNew, walkListExpr_iff_listDepthExpr,
+          walkListMatch_iff_listDepthMatch, walkListGUnforgeable_iff_listDepthGUnforgeable,
+          walkListBundle_iff_listDepthBundle, walkListConnective_iff_listDepthConnective]
+        omega
+
+  theorem walkSend_iff_sendDepth : (s : Send) → ∀ k, walkSend s k = false ↔ sendDepth s ≤ k
+    | Send.mk c d _, k => by
+      cases k with
+      | zero => simp [walkSend, sendDepth]
+      | succ j =>
+        simp only [walkSend, sendDepth, Bool.or_eq_false_iff,
+          walkPar_iff_parDepth, walkListPar_iff_listDepthPar]
+        omega
+
+  theorem walkReceiveBind_iff_receiveBindDepth :
+      (b : ReceiveBind) → ∀ k, walkReceiveBind b k = false ↔ receiveBindDepth b ≤ k
+    | ReceiveBind.mk ps s _, k => by
+      cases k with
+      | zero => simp [walkReceiveBind, receiveBindDepth]
+      | succ j =>
+        simp only [walkReceiveBind, receiveBindDepth, Bool.or_eq_false_iff,
+          walkListPar_iff_listDepthPar, walkPar_iff_parDepth]
+        omega
+
+  theorem walkReceive_iff_receiveDepth :
+      (r : Receive) → ∀ k, walkReceive r k = false ↔ receiveDepth r ≤ k
+    | Receive.mk bs b _ _, k => by
+      cases k with
+      | zero => simp [walkReceive, receiveDepth]
+      | succ j =>
+        simp only [walkReceive, receiveDepth, Bool.or_eq_false_iff,
+          walkListReceiveBind_iff_listDepthReceiveBind, walkPar_iff_parDepth]
+        omega
+
+  theorem walkNew_iff_newDepth : (nw : New) → ∀ k, walkNew nw k = false ↔ newDepth nw ≤ k
+    | New.mk _ b, k => by
+      cases k with
+      | zero => simp [walkNew, newDepth]
+      | succ j =>
+        simp only [walkNew, newDepth, walkPar_iff_parDepth]
+        omega
+
+  theorem walkMatchCase_iff_matchCaseDepth :
+      (m : MatchCase) → ∀ k, walkMatchCase m k = false ↔ matchCaseDepth m ≤ k
+    | MatchCase.mk p s _, k => by
+      cases k with
+      | zero => simp [walkMatchCase, matchCaseDepth]
+      | succ j =>
+        simp only [walkMatchCase, matchCaseDepth, Bool.or_eq_false_iff,
+          walkPar_iff_parDepth]
+        omega
+
+  theorem walkMatch_iff_matchDepth :
+      (m : Match) → ∀ k, walkMatch m k = false ↔ matchDepth m ≤ k
+    | Match.mk t cs, k => by
+      cases k with
+      | zero => simp [walkMatch, matchDepth]
+      | succ j =>
+        simp only [walkMatch, matchDepth, Bool.or_eq_false_iff,
+          walkPar_iff_parDepth, walkListMatchCase_iff_listDepthMatchCase]
+        omega
+
+  theorem walkExpr_iff_exprDepth : (e : Expr) → ∀ k, walkExpr e k = false ↔ exprDepth e ≤ k
+    | Expr.ground _, k | Expr.evar _, k | Expr.ebigint _, k => by
+      cases k <;> simp [walkExpr, exprDepth]
+    | Expr.eneg p, k | Expr.enot p, k => by
+      cases k with
+      | zero => simp [walkExpr, exprDepth]
+      | succ j =>
+        simp only [walkExpr, exprDepth, walkPar_iff_parDepth]
+        omega
+    | Expr.eplus p q, k | Expr.eminus p q, k | Expr.emult p q, k | Expr.ediv p q, k
+    | Expr.emod p q, k | Expr.elt p q, k | Expr.ele p q, k | Expr.egt p q, k
+    | Expr.ege p q, k | Expr.eeq p q, k | Expr.eneq p q, k | Expr.eand p q, k
+    | Expr.eor p q, k | Expr.ematches p q, k | Expr.eshortand p q, k
+    | Expr.eshortor p q, k => by
+      cases k with
+      | zero => simp [walkExpr, exprDepth]
+      | succ j =>
+        simp only [walkExpr, exprDepth, Bool.or_eq_false_iff,
+          walkPar_iff_parDepth]
+        omega
+    | Expr.elist ps _, k | Expr.etuple ps, k | Expr.eset ps _, k => by
+      cases k with
+      | zero => simp [walkExpr, exprDepth]
+      | succ j =>
+        simp only [walkExpr, exprDepth, walkListPar_iff_listDepthPar]
+        omega
+    | Expr.emap kvs _, k => by
+      cases k with
+      | zero => simp [walkExpr, exprDepth]
+      | succ j =>
+        simp only [walkExpr, exprDepth, walkListPair_iff_listDepthPair]
+        omega
+    | Expr.emethod _ p args, k => by
+      cases k with
+      | zero => simp [walkExpr, exprDepth]
+      | succ j =>
+        simp only [walkExpr, exprDepth, Bool.or_eq_false_iff,
+          walkPar_iff_parDepth, walkListPar_iff_listDepthPar]
+        omega
+    | Expr.epercentPercent p q, k | Expr.eplusPlus p q, k | Expr.eminusMinus p q, k => by
+      cases k with
+      | zero => simp [walkExpr, exprDepth]
+      | succ j =>
+        simp only [walkExpr, exprDepth, Bool.or_eq_false_iff,
+          walkPar_iff_parDepth]
+        omega
+
+  theorem walkBundle_iff_bundleDepth :
+      (b : Bundle) → ∀ k, walkBundle b k = false ↔ bundleDepth b ≤ k
+    | Bundle.mk p _ _, k => by
+      cases k with
+      | zero => simp [walkBundle, bundleDepth]
+      | succ j =>
+        simp only [walkBundle, bundleDepth, walkPar_iff_parDepth]
+        omega
+
+  theorem walkGUnforgeable_iff_gUnforgeableDepth :
+      (u : GUnforgeable) → ∀ k, walkGUnforgeable u k = false ↔ gUnforgeableDepth u ≤ k
+    | GUnforgeable.gPrivate _, k => by cases k <;> simp [walkGUnforgeable, gUnforgeableDepth]
+    | GUnforgeable.gDeployId _, k => by cases k <;> simp [walkGUnforgeable, gUnforgeableDepth]
+    | GUnforgeable.gDeployerId, k => by cases k <;> simp [walkGUnforgeable, gUnforgeableDepth]
+    | GUnforgeable.gSysAuthToken, k => by cases k <;> simp [walkGUnforgeable, gUnforgeableDepth]
+
+  theorem walkConnective_iff_connectiveDepth :
+      (c : Connective) → ∀ k, walkConnective c k = false ↔ connectiveDepth c ≤ k
+    | Connective.connAnd ps, k | Connective.connOr ps, k => by
+      cases k with
+      | zero => simp [walkConnective, connectiveDepth]
+      | succ j =>
+        simp only [walkConnective, connectiveDepth, walkListPar_iff_listDepthPar]
+        omega
+    | Connective.connNot p, k => by
+      cases k with
+      | zero => simp [walkConnective, connectiveDepth]
+      | succ j =>
+        simp only [walkConnective, connectiveDepth, walkPar_iff_parDepth]
+        omega
+    | Connective.connVarRef _ _, k => by
+      cases k <;> simp [walkConnective, connectiveDepth]
+
+  theorem walkListPar_iff_listDepthPar :
+      (l : List Par) → ∀ k, walkListPar l k = false ↔ listDepthPar l ≤ k
+    | [], k => by simp [walkListPar, listDepthPar]
+    | a :: as, k => by
+      simp only [walkListPar, listDepthPar, Bool.or_eq_false_iff,
+        walkPar_iff_parDepth, walkListPar_iff_listDepthPar]
+      omega
+
+  theorem walkListPair_iff_listDepthPair :
+      (l : List (Par × Par)) → ∀ k, walkListPair l k = false ↔ listDepthPair l ≤ k
+    | [], k => by simp [walkListPair, listDepthPair]
+    | (a, b) :: as, k => by
+      simp only [walkListPair, listDepthPair, Bool.or_eq_false_iff,
+        walkPar_iff_parDepth, walkListPair_iff_listDepthPair]
+      omega
+
+  theorem walkListSend_iff_listDepthSend :
+      (l : List Send) → ∀ k, walkListSend l k = false ↔ listDepthSend l ≤ k
+    | [], k => by simp [walkListSend, listDepthSend]
+    | a :: as, k => by
+      simp only [walkListSend, listDepthSend, Bool.or_eq_false_iff,
+        walkSend_iff_sendDepth, walkListSend_iff_listDepthSend]
+      omega
+
+  theorem walkListReceive_iff_listDepthReceive :
+      (l : List Receive) → ∀ k, walkListReceive l k = false ↔ listDepthReceive l ≤ k
+    | [], k => by simp [walkListReceive, listDepthReceive]
+    | a :: as, k => by
+      simp only [walkListReceive, listDepthReceive, Bool.or_eq_false_iff,
+        walkReceive_iff_receiveDepth, walkListReceive_iff_listDepthReceive]
+      omega
+
+  theorem walkListReceiveBind_iff_listDepthReceiveBind :
+      (l : List ReceiveBind) → ∀ k, walkListReceiveBind l k = false ↔ listDepthReceiveBind l ≤ k
+    | [], k => by simp [walkListReceiveBind, listDepthReceiveBind]
+    | a :: as, k => by
+      simp only [walkListReceiveBind, listDepthReceiveBind, Bool.or_eq_false_iff,
+        walkReceiveBind_iff_receiveBindDepth, walkListReceiveBind_iff_listDepthReceiveBind]
+      omega
+
+  theorem walkListNew_iff_listDepthNew :
+      (l : List New) → ∀ k, walkListNew l k = false ↔ listDepthNew l ≤ k
+    | [], k => by simp [walkListNew, listDepthNew]
+    | a :: as, k => by
+      simp only [walkListNew, listDepthNew, Bool.or_eq_false_iff,
+        walkNew_iff_newDepth, walkListNew_iff_listDepthNew]
+      omega
+
+  theorem walkListMatch_iff_listDepthMatch :
+      (l : List Match) → ∀ k, walkListMatch l k = false ↔ listDepthMatch l ≤ k
+    | [], k => by simp [walkListMatch, listDepthMatch]
+    | a :: as, k => by
+      simp only [walkListMatch, listDepthMatch, Bool.or_eq_false_iff,
+        walkMatch_iff_matchDepth, walkListMatch_iff_listDepthMatch]
+      omega
+
+  theorem walkListMatchCase_iff_listDepthMatchCase :
+      (l : List MatchCase) → ∀ k, walkListMatchCase l k = false ↔ listDepthMatchCase l ≤ k
+    | [], k => by simp [walkListMatchCase, listDepthMatchCase]
+    | a :: as, k => by
+      simp only [walkListMatchCase, listDepthMatchCase, Bool.or_eq_false_iff,
+        walkMatchCase_iff_matchCaseDepth, walkListMatchCase_iff_listDepthMatchCase]
+      omega
+
+  theorem walkListExpr_iff_listDepthExpr :
+      (l : List Expr) → ∀ k, walkListExpr l k = false ↔ listDepthExpr l ≤ k
+    | [], k => by simp [walkListExpr, listDepthExpr]
+    | a :: as, k => by
+      simp only [walkListExpr, listDepthExpr, Bool.or_eq_false_iff,
+        walkExpr_iff_exprDepth, walkListExpr_iff_listDepthExpr]
+      omega
+
+  theorem walkListBundle_iff_listDepthBundle :
+      (l : List Bundle) → ∀ k, walkListBundle l k = false ↔ listDepthBundle l ≤ k
+    | [], k => by simp [walkListBundle, listDepthBundle]
+    | a :: as, k => by
+      simp only [walkListBundle, listDepthBundle, Bool.or_eq_false_iff,
+        walkBundle_iff_bundleDepth, walkListBundle_iff_listDepthBundle]
+      omega
+
+  theorem walkListGUnforgeable_iff_listDepthGUnforgeable :
+      (l : List GUnforgeable) → ∀ k, walkListGUnforgeable l k = false ↔ listDepthGUnforgeable l ≤ k
+    | [], k => by simp [walkListGUnforgeable, listDepthGUnforgeable]
+    | a :: as, k => by
+      simp only [walkListGUnforgeable, listDepthGUnforgeable, Bool.or_eq_false_iff,
+        walkGUnforgeable_iff_gUnforgeableDepth, walkListGUnforgeable_iff_listDepthGUnforgeable]
+      omega
+
+  theorem walkListConnective_iff_listDepthConnective :
+      (l : List Connective) → ∀ k, walkListConnective l k = false ↔ listDepthConnective l ≤ k
+    | [], k => by simp [walkListConnective, listDepthConnective]
+    | a :: as, k => by
+      simp only [walkListConnective, listDepthConnective, Bool.or_eq_false_iff,
+        walkConnective_iff_connectiveDepth, walkListConnective_iff_listDepthConnective]
+      omega
+end
+
+/-- **Soundness** — the direction the parser's budget exists for: a term the walk accepts is never
+deeper than the budget it was accepted at. -/
+theorem walkExceeds_sound (limit : Nat) (p : Par) : walkExceeds limit p = false → parDepth p ≤ limit :=
+  (walkPar_iff_parDepth p limit).mp
+
+/-- **Completeness** — the control: the walk is not refusing by accident, so the bound refuses exactly
+what is too deep and nothing else. -/
+theorem walkExceeds_complete (limit : Nat) (p : Par) : parDepth p ≤ limit → walkExceeds limit p = false :=
+  (walkPar_iff_parDepth p limit).mpr
+
+/-! ## The falsifier — a dropped arm must break soundness
+
+The register's `falsifiable` cell for law 50a names `a_dropped_arm_breaks_soundness` and says a walk
+that could not be broken by dropping one of its children arms "would be a restatement of the definition
+rather than a check of it". This is that theorem, machine-checked rather than recorded in a comment
+(`Rchain/Corpus.lean:664` is the lighter house form, and it is not enough here: the row names a theorem).
+
+The witness is `notsDepth 384`, whose depth is `2 * 384 + 1 = 769` — one past `maxAstDepth`. -/
+
+/-- `notsDepth`'s depth, so the falsifier's arithmetic is a theorem rather than a claim in a comment. -/
+theorem parDepth_notsDepth (n : Nat) : parDepth (notsDepth n) = 2 * n + 1 := by
+  induction n with
+  | zero =>
+      simp [notsDepth, parDepth, listDepthSend, listDepthReceive, listDepthNew, listDepthExpr,
+        listDepthMatch, listDepthGUnforgeable, listDepthBundle, listDepthConnective]
+  | succ k ih =>
+      simp [notsDepth, parDepth, exprDepth, listDepthExpr, listDepthSend, listDepthReceive,
+        listDepthNew, listDepthMatch, listDepthGUnforgeable, listDepthBundle, listDepthConnective, ih]
+      omega
+
+/-- **The walk with its `exprs` arm dropped** — the mutation the falsifier is about, as a definition
+rather than a described edit. The other seven children arms are the real walk's own list functions: the
+witness below has an empty `Send`/`Receive`/`New`/`Match`/`GUnforgeable`/`Bundle`/`Connective` field, so
+its value does not depend on that delegation — what it depends on is that the `e` field is never
+visited, which is exactly the arm deleted. -/
+def walkParDroppingExpr : Par → Nat → Bool
+  | Par.mk s r nw _ m u b c, k =>
+      (match k with
+       | 0 => true
+       | j + 1 =>
+           walkListSend s j || walkListReceive r j || walkListNew nw j || walkListMatch m j ||
+           walkListGUnforgeable u j || walkListBundle b j || walkListConnective c j)
+
+/-- The mutant accepts `notsDepth 384` at the budget of `maxAstDepth`. -/
+theorem mutant_accepts_nots384 : walkParDroppingExpr (notsDepth 384) 768 = false := by
+  change walkParDroppingExpr (Par.mk [] [] [] [Expr.enot (notsDepth 383)] [] [] [] []) 768 = false
+  simp [walkParDroppingExpr, walkListSend, walkListReceive, walkListNew, walkListMatch,
+    walkListGUnforgeable, walkListBundle, walkListConnective]
+
+/-- **The falsifier the row names.** The mutant is *unsound* at its witness: it accepts a term whose
+depth is 769 while claiming no term past 768 is accepted. So the agreement proved above is a check of
+the walk and not a restatement of the definition — the vacuity law 22 records is not what this is. -/
+theorem a_dropped_arm_breaks_soundness :
+    walkParDroppingExpr (notsDepth 384) 768 = false ∧ ¬ (parDepth (notsDepth 384) ≤ 768) := by
+  refine ⟨mutant_accepts_nots384, ?_⟩
+  rw [parDepth_notsDepth]
+  omega
+
+/-- The contrast, so the pair is a test rather than a slogan: the **real** walk refuses the very term
+the mutant admits, at the same budget. -/
+theorem the_walk_refuses_the_mutant_witness : ¬ (walkPar (notsDepth 384) 768 = false) := by
+  intro h
+  have hd := (walkPar_iff_parDepth (notsDepth 384) 768).mp h
+  rw [parDepth_notsDepth] at hd
+  omega
 
 
 /-! ## What is discharged, and what is not
 
-The walk above is **defined** — an independent recursion, as law 50's row requires, so that the two
-directions are not `rfl`. The **proof** that it agrees with `parDepth` is still owed, the row stays
-`owed`, and `LAWS.md` still reads **2 owed** for it.
+**Clause a is discharged** (2026-09-28). The walk above is an independent recursion, as law 50's row
+requires, so the two directions were never `rfl` — and the 23-member `mutual` block above now proves
+them: `walkPar_iff_parDepth` is the agreement, `walkExceeds_sound`/`walkExceeds_complete` are the two
+directions the row quotes, and `a_dropped_arm_breaks_soundness` is the falsifier the row names, as a
+theorem rather than a comment.
 
-**Two attempts have been made, and the second found the root cause and got within one theorem of the
-end.** What follows is what a third attempt needs, in the order it needs it.
+**The two earlier attempts misdiagnosed the wall, and the corrected cause is worth keeping.** The note
+this replaces claimed that budget-first recursion forces `termination_by`, and that a `termination_by`'d
+mutual definition drags its `mutual` *theorem* block into a well-founded fixpoint whose goals "are not
+provable as posed". `Rchain/FreeVars.lean` — the file the register itself names as the recipe —
+falsifies that: its definitions **do** carry `termination_by`, and its 23 `freeVarOf*_iff_closed`
+theorems sit in a block with **no `termination_by` and no `decreasing_by` at all**. The variable is
+where the extra `Nat` sits. `FreeVars` takes the recursed term first with the level as a *plain pattern
+variable*; the walk as first committed matched the budget *in the equation header*
+(`| 0, _ => true | n + 1, Par.mk …`), which is what routed it through a fixpoint. The reshape above —
+term first, budget a parameter covered by a body-level `match` — is `FreeVars`' shape, and it is why
+the theorem block needs no termination clause. Dropping `termination_by` was never necessary, and the
+attempt that did drop it paid for the privilege in `Decidable`.
 
-**1. The walk must recurse on the *term*, with the budget as a parameter.** This is the whole reason
-the first attempt hit a wall, and it is measured rather than guessed. The definitions above as
-committed take the budget **first** (`walkPar : Nat → Par → Bool`, matched `| 0, _ => true | n + 1,
-Par.mk …`), which makes the recursion decrease on the *budget* rather than on the term — so Lean needs
-`termination_by`, and every theorem about them inherits a well-founded fixpoint. In a `mutual` *theorem*
-block that fixpoint's termination goals are stated over the statement's binder rather than over the
-pattern the arm matched, and they are **not provable as posed** (the context carries a fresh
-`l : List T` beside the `a`/`as` the equation bound, with nothing saying they are equal).
+**Four things this cost, recorded because each one cost an attempt:**
 
-Rewriting them to `walkPar (n : Nat) : Par → Bool` with
+  * **The `match` must be parenthesised.** Written bare, Lean reads its arms as further *equations* of
+    the enclosing function: `incorrect number of patterns`, then `unknown identifier 'k'`.
+  * **A multi-line `|`-alternation must repeat the trailing pattern** in every alternative —
+    `| Expr.eneg p, k | Expr.enot p, k => …` works, `| Expr.eneg p | Expr.enot p, k =>` does not.
+  * **`max_def` must stay out of the `simp` set.** It rewrites `max` into an `if`, and `omega` then
+    treats the branches as opaque variables and cannot relate them. `omega` reads `max` natively.
+  * **`maxHeartbeats 4000000`**, on *both* blocks — the definitions and the theorems. 200,000 times out
+    on the 16-arm `walkExpr`; the scope of the earlier `1000000` did not cover the theorems at all.
 
-```
-  | Par.mk s r nw e m u b c => if n = 0 then true else walkListSend n.pred s || …
-```
+**And the witness the row's falsifier rests on was wrong.** `notsDepth` was `List.replicate n (enot unit)`
+— `n` *siblings*, so `parDepth` was `3` for every `n ≥ 1`, and at budget `maxAstDepth` both the walk and
+every mutant of it accepted the term. The mutation test would have passed **vacuously** — the failure
+law 22 records, in the cell that cites law 22. It now nests, `parDepth (notsDepth n) = 2 * n + 1`, and
+`parDepth_notsDepth` proves that rather than asserting it.
 
-— the budget as a parameter, `n.pred` at the recursive calls, the `0` case inside — makes the
-recursion **structural on the term**, and Lean then infers termination across the mutual block with
-**no `termination_by` and no `decreasing_by` at all**, exactly as `Rchain/FreeVars.lean` does. That
-version compiles cleanly, definitions and all. **It is the shape the next attempt should start from.**
+**What clause a does not claim.** `rholang/src/parser.rs::exceeds_ast_depth` walks the surface `Proc`
+tree, not the de Bruijn `Par` this file is about; the parser's own doc comment calls its count "a proxy
+— and a deliberate one", since the `Par` "adds a small constant per construct". So
+`walkPar_iff_parDepth` is an agreement *inside the model*, and the bridge to the parser's tree is a
+modelling argument. The half no theorem can state — that the Rust walk descends into every `Proc`
+constructor — is pinned by `rholang/src/parser.rs`'s every-constructor test.
 
-**2. The theorem bodies are then one `simp only` each, and they work.** With the structural definitions,
-23 of the 24 theorems proved, in `FreeVars.lean`'s equation style with no termination clauses:
+**Clause b is still owed, and its statement as written is not true.** The value route's walk charges a
+level for **`Par` nodes only**: `models/src/types.rs`'s `push_value_fields`/`push_value_expr`/
+`push_value_connective` push every element at the *same* depth, so `Expr` and `Connective` are
+transparent along with `Send`/`Receive`/`New`/`Match`/`Bundle`/`MatchCase`. The counted quantity is
+therefore *the number of `Par` nodes on the deepest `Par`-chain* — not `parDepth`. Two consequences the
+row must carry: the row's "no runtime path builds `Expr` nodes" premise is false (`(a, b)` **is**
+`Expr::ETuple`, built by the reducer, and the fold test exists for that shape), and the slack is a
+*factor* that grows with nesting, not the constant 128 — at `maxValueDepth` the guard admits
+`pairsDepth 255`, whose `parDepth` is 511. Clause b's agreement needs a second quantity and a second
+walk; until it has them the row stays `owed`.
 
-  * `if_neg`/`if_pos` discharge the budget test, and `Nat.pred_succ` and `Nat.add_one` normalise
-    `(m + 1).pred` to `m`;
-  * `Bool.or_eq_false_iff` turns the walk's `||` chain into a conjunction, `and_assoc` flattens the
-    eight-way case, `Nat.max_le` splits `parDepth`'s `max` the same way, and `Nat.succ_le_succ_iff`
-    relates `1 + max … ≤ m + 1` to `… ≤ m`;
-  * `Nat.zero_le` closes the leaf arms (`True ↔ 0 ≤ m`) and the empty-list arms.
-
-**3. The one that did not land, and it is a `Decidable` detail rather than a mathematical one.** The
-remaining theorem is `walkPar_iff_parDepth`, and its goal after `simp only` is
-
-```
-⊢ (if (m.succ == 0) = true then true else walkListSend m s || … ) = false ↔
-    listDepthSend s ≤ m ∧ … ∧ listDepthConnective c ≤ m
-```
-
-— the RHS is exactly right and the LHS is the right disjunction; all that is missing is discharging the
-`if`. The condition is the **`BEq` form** (`(m.succ == 0) = true`), so `Nat.succ_ne_zero` alone does
-not reach it, and the generic `beq_eq_false_iff_ne` makes `simp` report
-`typeclass instance problem is stuck … Preorder ?m` — it is polymorphic and cannot be instantiated at
-`Nat` from the goal. The next attempt should either give `simp` a **`Nat`-specific** form (or `decide`
-on the closed condition), or write the definition's test as a `match` on the budget so no `Decidable`
-enters at all:
-
-```
-  def walkPar : Par → Nat → Bool
-    | Par.mk s r nw e m u b c, 0 => true
-    | Par.mk s r nw e m u b c, k + 1 => walkListSend s k || …
-```
-
-That last form has `k` in the successor branch **syntactically**, which removes the `pred`, the
-`Decidable`, and the arithmetic normalisation together — and it is the change this note would make
-first.
-
-**4. Why the walk had to be an independent recursion**, restated because the proof is what cashes it:
+**Why the walk had to be an independent recursion**, restated because the proof is what cashes it:
 `decide (limit < parDepth p)` would make both directions `rfl` and prove nothing — the vacuity
 `Rchain/Laws.lean` records for law 22.
-
-**A note on the tooling, since it cost more than the mathematics**: two `replace_all` passes over this
-file corrupted the *definitions* while I was editing the theorems (a pattern that matched inside the
-`parDepth` block), and both were caught by the build and reverted. The committed state is the walk plus
-this record, and `lake build Rchain.Depth` succeeds.
 -/
 
 end Rchain
