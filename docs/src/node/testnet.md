@@ -239,9 +239,21 @@ Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 Genesis hash `6a6db0dbf47575d9c8e62935d8782bbd9d27ac6556f2fb0b518ea3d69b835b43`; A's node id
 `a014e1eee8dfcfcbe1cbe04641955d8c5941d709`, B's `d4434ebc582c09589d23acdc5aa56d0480a24cd5`.
 
-The genesis hash depends only on the genesis *inputs* (bonds, wallets, parameters), not on either node's
-identity, so it is stable across rebuilds but changes when the bonds change: the 2026-09-26 rebuilds that
-signed for one validator all produced `e525129d…`, and adding B's bond moved it to `6a6db0db…`.
+The genesis hash depends only on the genesis *inputs* — bonds, wallets, parameters **and the genesis
+content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
+those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, and adding
+B's bond moved it to `6a6db0db…`.
+
+**The content half of that list was missing until 2026-09-28, and it is the half that bites.** The
+blessed contract set and the governance deploys are genesis *state*, so a change to any of them moves the
+hash exactly as a bond change does — and unlike a bond change, nothing about it is obvious to a node
+operator. #71's fix is the worked example: publishing the master directory's grant capability (see
+[`spec/GENESIS.md`](https://github.com/rchain-community/rchain-rust/blob/dev/spec/GENESIS.md)) adds a
+registered capability and a native registry entry, so **every chain built from that commit onward has a
+different genesis hash, and the `6a6db0db…` above names a chain built before it.** An existing net is
+untouched — its genesis is already committed history — but a rebuilt data directory is a *different*
+chain, and a node pointed at the old bootstrap will not join it. Any change under
+`casper/src/genesis/` belongs on the hard-fork tracker before it lands for this reason.
 
 A node id is **not** derived from the validator key — a rebuilt data directory gets a fresh node
 identity, so any `--bootstrap` URI pointing at the master has to be updated after a rebuild. The
