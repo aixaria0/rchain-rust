@@ -159,6 +159,14 @@ jobs:
         # about the spec.
         run: tools/audit-vendored-sources.sh
 
+      - name: Workflow-pin gate
+        # A `uses:` that names a tag or a branch is a dependency whose content can change after review,
+        # and a workflow with no top-level `permissions:` gets a token that is broader than the job
+        # needs. Neither is visible in review, because both look like ordinary YAML. Seconds, and this
+        # is the check issue #91 owed — the pinning and the permission blocks were already right in
+        # every workflow; nothing refused a regression.
+        run: tools/check-workflow-pins.sh
+
       - name: Test
         run: cargo test --workspace --all-features
 

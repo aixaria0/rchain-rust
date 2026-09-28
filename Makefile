@@ -62,6 +62,7 @@ check-register:
 	tools/audit-status.sh --quiet
 	tools/audit-type-system.sh
 	tools/audit-vendored-sources.sh
+	tools/check-workflow-pins.sh
 
 # The formal gate: build the Lean and Coq specifications, refuse a stale or un-consumed conformance
 # corpus, and check the Rust 1:1 against it. `spec` (below) is only the Lean half — this is what CI
