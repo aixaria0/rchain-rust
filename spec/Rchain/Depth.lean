@@ -438,52 +438,76 @@ def walkExceeds (limit : Nat) (p : Par) : Bool := walkPar limit p
 /-! ## What is discharged, and what is not
 
 The walk above is **defined** — an independent recursion, as law 50's row requires, so that the two
-directions are not `rfl`. The **proof** that it agrees with `parDepth` is still owed, and the row stays
-`owed` for it:
+directions are not `rfl`. The **proof** that it agrees with `parDepth` is still owed, the row stays
+`owed`, and `LAWS.md` still reads **2 owed** for it.
 
-  * `walkPar n p = false → parDepth p ≤ n` — soundness, the direction that matters; and
-  * `parDepth p ≤ n → walkPar n p = false` — completeness.
+**Two attempts have been made, and the second found the root cause and got within one theorem of the
+end.** What follows is what a third attempt needs, in the order it needs it.
 
-Two attempts have now been made at it, and the second got everything except the termination proof.
-What follows is what a third should not have to rediscover.
+**1. The walk must recurse on the *term*, with the budget as a parameter.** This is the whole reason
+the first attempt hit a wall, and it is measured rather than guessed. The definitions above as
+committed take the budget **first** (`walkPar : Nat → Par → Bool`, matched `| 0, _ => true | n + 1,
+Par.mk …`), which makes the recursion decrease on the *budget* rather than on the term — so Lean needs
+`termination_by`, and every theorem about them inherits a well-founded fixpoint. In a `mutual` *theorem*
+block that fixpoint's termination goals are stated over the statement's binder rather than over the
+pattern the arm matched, and they are **not provable as posed** (the context carries a fresh
+`l : List T` beside the `a`/`as` the equation bound, with nothing saying they are equal).
 
-**Working, and verified by the second attempt's build**: the bodies themselves. Given a statement that
-type-checks, the proof of each case is one `simp only` — the arithmetic step is
-`Nat.succ_le_succ_iff` → `Nat.add_comm 1` → `Nat.add_le_add_iff_right` → `Nat.max_le`, turning
-`parDepth`'s `1 + max A B ≤ m + 1` into `A ≤ m ∧ B ≤ m` against the walk's `Bool.or_eq_false_iff`
-chain; `and_assoc` is needed because the `max` nests right and the `||` chain left, and `Nat.zero_le`
-closes the leaf arms, whose goal is `True ↔ 0 ≤ m`. Budget `0` is the separate case and needs the
-per-type positivity lemmas (`parDepth_pos` and its siblings — one unfold and `omega` each).
-**The run that stopped reported no error inside a theorem body**: every failure was in a
-`termination_by`/`decreasing_by` clause.
+Rewriting them to `walkPar (n : Nat) : Par → Bool` with
 
-**The obstruction, and it is a termination one.** A `mutual` *theorem* block puts the recursion
-through the equation compiler's well-founded fixpoint, and for the **list** members the termination
-goal is stated over the *statement's* binder rather than over the pattern the equation matched. The
-context carries a fresh `l : List T` beside the `a` and `as` the arm bound, and the goal is
+```
+  | Par.mk s r nw e m u b c => if n = 0 then true else walkListSend n.pred s || …
+```
 
-  `⊢ sizeOf l < 1 + sizeOf a + sizeOf as`
+— the budget as a parameter, `n.pred` at the recursive calls, the `0` case inside — makes the
+recursion **structural on the term**, and Lean then infers termination across the mutual block with
+**no `termination_by` and no `decreasing_by` at all**, exactly as `Rchain/FreeVars.lean` does. That
+version compiles cleanly, definitions and all. **It is the shape the next attempt should start from.**
 
-— which is not provable as posed, because nothing in scope says `l = a :: as`. `simp_wf` reports
-"made no progress" on it (there is no `List.cons.sizeOf_spec` rewrite to make, the goal's `l` not
-being a cons), and `omega` cannot close it: it derives `sizeOf l ≥ 1 + sizeOf a + sizeOf as` from the
-constraints rather than refuting them. Reordering the list members so the list is the equation's
-first matched argument, and giving the block a stated `maxHeartbeats`, both left the goal unchanged.
+**2. The theorem bodies are then one `simp only` each, and they work.** With the structural definitions,
+23 of the 24 theorems proved, in `FreeVars.lean`'s equation style with no termination clauses:
 
-**So the next attempt should change the instrument, not the tactics.** Two routes, and both are
-whole-proof decisions rather than local fixes: (a) find what the equation compiler actually exposes
-about `l` in that context and put it into the `decreasing_by` scope explicitly — the alternative is
-that `termination_by` on a mutual *theorem* block cannot relate a measure to a matched pattern at all;
-or (b) avoid the mutual theorem block entirely and do **one well-founded induction on `sizeOf`** over
-a combined statement — a 24-way conjunction with a hand-written motive — which trades the equation
-compiler's termination machinery for the obligation to write the motive and the case splits by hand.
-Route (b) is the one this file's shape already suggests: the statements are stable, so the cost is
-mechanical rather than intellectual, where (a) is a question about Lean's behaviour that a
-twenty-minute experiment cannot answer.
+  * `if_neg`/`if_pos` discharge the budget test, and `Nat.pred_succ` and `Nat.add_one` normalise
+    `(m + 1).pred` to `m`;
+  * `Bool.or_eq_false_iff` turns the walk's `||` chain into a conjunction, `and_assoc` flattens the
+    eight-way case, `Nat.max_le` splits `parDepth`'s `max` the same way, and `Nat.succ_le_succ_iff`
+    relates `1 + max … ≤ m + 1` to `… ≤ m`;
+  * `Nat.zero_le` closes the leaf arms (`True ↔ 0 ≤ m`) and the empty-list arms.
 
-**Why the walk had to be an independent recursion**, restated because the proof is what cashes it:
+**3. The one that did not land, and it is a `Decidable` detail rather than a mathematical one.** The
+remaining theorem is `walkPar_iff_parDepth`, and its goal after `simp only` is
+
+```
+⊢ (if (m.succ == 0) = true then true else walkListSend m s || … ) = false ↔
+    listDepthSend s ≤ m ∧ … ∧ listDepthConnective c ≤ m
+```
+
+— the RHS is exactly right and the LHS is the right disjunction; all that is missing is discharging the
+`if`. The condition is the **`BEq` form** (`(m.succ == 0) = true`), so `Nat.succ_ne_zero` alone does
+not reach it, and the generic `beq_eq_false_iff_ne` makes `simp` report
+`typeclass instance problem is stuck … Preorder ?m` — it is polymorphic and cannot be instantiated at
+`Nat` from the goal. The next attempt should either give `simp` a **`Nat`-specific** form (or `decide`
+on the closed condition), or write the definition's test as a `match` on the budget so no `Decidable`
+enters at all:
+
+```
+  def walkPar : Par → Nat → Bool
+    | Par.mk s r nw e m u b c, 0 => true
+    | Par.mk s r nw e m u b c, k + 1 => walkListSend s k || …
+```
+
+That last form has `k` in the successor branch **syntactically**, which removes the `pred`, the
+`Decidable`, and the arithmetic normalisation together — and it is the change this note would make
+first.
+
+**4. Why the walk had to be an independent recursion**, restated because the proof is what cashes it:
 `decide (limit < parDepth p)` would make both directions `rfl` and prove nothing — the vacuity
 `Rchain/Laws.lean` records for law 22.
+
+**A note on the tooling, since it cost more than the mathematics**: two `replace_all` passes over this
+file corrupted the *definitions* while I was editing the theorems (a pattern that matched inside the
+`parDepth` block), and both were caught by the build and reverted. The committed state is the walk plus
+this record, and `lake build Rchain.Depth` succeeds.
 -/
 
 end Rchain
