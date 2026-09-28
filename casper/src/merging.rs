@@ -867,18 +867,37 @@ impl MergeScope {
         // host-block order (a `BTreeSet` of `Blake2b256Hash`), and so deterministically across nodes.
         // A block contributes its native changes iff at least one of its chains is accepted - native
         // effects are per block, not per chain, so "some chain accepted" is the closest available
-        // attribution, and rejecting a branch drops its native writes with its tuple-space ones. When
-        // two accepted blocks write the same native key, the later one wins; in an honest DAG they do
-        // not (a PoS membership change is applied by one branch), and making that a conflict is the
-        // refinement recorded on the issue.
+        // attribution, and rejecting a branch drops its native writes with its tuple-space ones.
+        //
+        // **Deduplicated by slot, last host wins, and that is a fix rather than a tidy-up (issue
+        // #83).** This used to `extend` the per-block lists into one `Vec`, on the reading that "in
+        // an honest DAG they do not [write the same key]". They do: at an epoch boundary *every*
+        // proposer runs `close_block`, which writes the same five `PREFIX_POS` leaves from the same
+        // pre-state, so two accepted blocks at that height contribute the same slot twice and
+        // `RadixHistory::process` refuses the batch — `Cannot process duplicate actions on one key`
+        // — which kills the worker and freezes the chain (measured: every node, first boundary, three
+        // validators). A single block's own list is duplicate-free by construction
+        // (`InMemNativeStore::drain_changes` maps a `BTreeMap` keyed by the slot), so the batch is
+        // restored to the one-action-per-slot invariant the trie requires by taking, per slot, the
+        // write of the *last* accepted host in the ascending order above. "Last" is a
+        // `BTreeSet<Blake2b256Hash>` iteration, so every node picks the same winner; taking the first
+        // write, the last-arriving one, or a larger value would each be node-local and could fork.
+        //
+        // What this does *not* do is decide what a genuine disagreement means — two boundary blocks
+        // writing one slot with different values is resolved here by host order, not by a rule about
+        // which is right. That refinement is the one the issue records, and it is not needed for
+        // liveness: the panic is.
         let accepted_hosts: BTreeSet<Blake2b256Hash> =
             to_merge.iter().map(|c| c.host_block).collect();
-        let mut native_changes: Vec<NativeStoreAction> = Vec::new();
+        let mut by_slot: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
         for host in &accepted_hosts {
             if let Some(actions) = native_by_block.get(host) {
-                native_changes.extend(actions.iter().cloned());
+                for action in actions {
+                    by_slot.insert(action.slot(), action.clone());
+                }
             }
         }
+        let native_changes: Vec<NativeStoreAction> = by_slot.into_values().collect();
 
         let new_state = MergeScope::compute_merged_state(
             &to_merge,
@@ -1612,6 +1631,98 @@ mod native_merge_tests {
                 .is_some(),
             "and the base's native state must still be there"
         );
+    }
+
+    /// **The reproduction for #83, at the granularity the defect lives at.**
+    ///
+    /// `merge` concatenates the native effects of every accepted host block (`native_by_block` ->
+    /// `extend`). Each *block's* own list is duplicate-free by construction —
+    /// `InMemNativeStore::drain_changes` maps a `BTreeMap<(prefix, key), _>`, one action per slot,
+    /// and clears the overlay — but **two blocks at the same height can write the same slot**, and
+    /// at an epoch boundary that is not a rare race: *every* proposer runs `close_block`, which
+    /// writes the same five `PREFIX_POS` leaves (`bonds`, `active`, `withdrawers`,
+    /// `pending_withdrawers`, `committed_rewards`) from the same pre-state. Two of those blocks both
+    /// accepted into one merge produce the same key twice, and `RadixHistory::process` refuses the
+    /// batch with the panic the issue reports — on every node, at the same height, because the
+    /// inputs are identical.
+    ///
+    /// This is the deterministic half of the diagnosis: no devnet, no scheduler, two branches and
+    /// one slot. What it asserts is the contract a fix owes, which is *not* merely "does not panic":
+    /// the surviving value is the **last write in ascending host order**, a
+    /// `BTreeSet<Blake2b256Hash>` iteration and therefore the same on every node.
+    ///
+    /// The fixture is chosen so that assertion can discriminate. Host 2 is the later writer in both
+    /// rounds while the *values* are swapped, so a fix that took the first write, the last-arriving
+    /// write, or the numerically larger value fails one of the two rounds.
+    #[tokio::test]
+    async fn two_branch_blocks_writing_one_native_slot_do_not_panic_the_merge() {
+        let base_repo = empty_repo().await;
+        let base_state = base_repo.root();
+        let shared = key(9);
+
+        let branch = |host: u8, value: u8| BlockIndex {
+            block_hash: BlockHash::new([host; 32]),
+            deploy_chains: vec![DeployChainIndex {
+                host_block: key(host),
+                deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                    id: vec![host],
+                    cost: 0,
+                }]),
+                pre_state_hash: base_state,
+                post_state_hash: base_state,
+                event_log_index: EventLogIndex::empty(),
+                state_changes: StateChange::empty(),
+            }],
+            native_changes: vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: shared,
+                value: vec![value],
+            }],
+        };
+        let hosts = [BlockHash::new([1u8; 32]), BlockHash::new([2u8; 32])];
+
+        for (first_value, second_value) in [(99u8, 22u8), (22u8, 99u8)] {
+            let indexes: BTreeMap<BlockHash, BlockIndex> = [
+                (hosts[0], branch(1, first_value)),
+                (hosts[1], branch(2, second_value)),
+            ]
+            .into_iter()
+            .collect();
+            let block_index = move |h: BlockHash| {
+                let index = indexes.get(&h).cloned();
+                async move { index.ok_or_else(|| format!("no index for {h:?}")) }
+            };
+            let scope = MergeScope {
+                final_scope: BTreeSet::new(),
+                conflict_scope: BTreeSet::from(hosts),
+            };
+
+            let (merged, _) = MergeScope::merge(
+                &scope,
+                base_state,
+                &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+                &base_repo,
+                &block_index,
+                |_| 0,
+            )
+            .await
+            .expect(
+                "two accepted blocks writing one native slot must merge rather than panic (#83): \
+                 an epoch boundary puts several `close_block`s at one height by construction",
+            );
+
+            let reader = base_repo.get_history_reader(merged).await;
+            assert_eq!(
+                reader
+                    .get_native(PREFIX_POS, shared)
+                    .await
+                    .expect("a readable native leaf"),
+                Some(vec![second_value]),
+                "host 2 is the later writer in ascending host order and its value must survive — \
+                 whatever it wrote. Host order is what decides, not arrival order or magnitude: \
+                 both are node-local, and a merge that used either would fork"
+            );
+        }
     }
 }
 
