@@ -1,14 +1,10 @@
-# RChain — a hardened Rust node
+# RChain in Rust: a language with a theorem, not a test suite
 
-A Rust implementation of the [RChain](https://rchain.coop) node: **faithful to the calculus, and
-hardened past the original.** The language, the consensus and the
-<!-- counts:laws -->50 laws<!-- counts:end --> are the same, and the laws are machine-checked rather
-than asserted. Beyond fidelity, classes of defect the Scala cannot exclude are *unrepresentable*
-here — there is no `unsafe` in any of the thirteen crates, so a memory-safety defect is not mitigated
-but **unwritable**; private-name authority has no syntax to be spelled in; and an adversarial pass
-that read this node and three live mainnet chains from source found no chain split, no fund loss and
-no remote code execution here. The Rust implementation is a Cargo workspace at the top level (one
-crate per original sbt module); the upstream Scala fork is preserved for reference at
+Rholang's <!-- counts:laws -->50 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
+its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
+
+The node is a Cargo workspace at the top level (one crate per original sbt module); the upstream Scala
+fork is preserved for reference at
 [`1b7583649`](https://github.com/rchain-community/rchain-rust/tree/1b7583649/legacy) — see
 [Where the Scala went](#where-the-scala-went) for why it is a revision rather than a directory.
 
