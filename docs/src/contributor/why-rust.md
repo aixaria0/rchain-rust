@@ -26,12 +26,19 @@ statically checked property rather than a runtime, best-effort one.
 
 ### The practical upshot — a validator on modest hardware
 
-The payoff is operational, not just theoretical. Roughly **122,000 lines of Rust** across 358 source
-files compile to a single tight **native binary** — no JVM to boot, no tracing GC to pause, no
+The payoff is operational, not just theoretical. Roughly **138,000 lines of Rust** across 400 source
+files compile to a single **37 MB native binary** — no JVM to boot, no tracing GC to pause, no
 `-Xmx4g -Xss2m` to tune. The stop-the-world pauses and heap pressure that made the JVM node's runtime
 heavy and its latency unpredictable are gone by construction, so a validator runs comfortably — and
 with deterministic resource use — on any reasonably modern desktop PC or high-performance laptop with
 an NVMe SSD. See [Running a validator: hardware requirements](../node/validator-requirements.md).
+
+*(Both figures are counted, not remembered: the line and file totals are
+`git ls-files '*.rs' | xargs wc -l` over the workspace, and the binary is `/usr/local/bin/rnode` as
+the release image ships it — unstripped, with no `[profile.release]` tuning. They are rounded because
+they move with every commit, which is also why they are not wrapped in a `<!-- counts:… -->` marker:
+that mechanism exists so a reader can trust a number that is stable between emissions, and a marker on
+a figure that changes weekly would fail the conformance gate every night instead.)*
 
 The consequence is structural: **validator operation genuinely decentralizes.** The requirements sit
 within consumer-grade hardware, not a datacenter, so the barrier to running a validating node is a
