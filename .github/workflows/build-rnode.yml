@@ -46,9 +46,29 @@ jobs:
       - name: Build rnode (release, musl)
         run: cargo build --locked --release --target x86_64-unknown-linux-musl -p rchain-node --bin rnode
 
+      - name: Checksum the artifact
+        # AUDIT F-13: this workflow produced a bare binary and nothing else — no checksum, no
+        # signature, no SBOM, no provenance — so an operator had nothing to check a download against,
+        # and anyone able to write to the artifact store, compromise a runner or MITM the download
+        # could substitute a binary undetectably.
+        #
+        # A checksum is the cheapest control here and the only one that needs no key decision. It does
+        # not make the artifact *trustworthy* — same channel, same author — but it makes a substituted
+        # one *detectable* for anyone who obtains the digest through a second channel, which is the
+        # property that was entirely absent.
+        #
+        # Signing (cosign/sigstore) and an SBOM are the next steps, and both need a decision this
+        # change should not make silently: signing needs a key and a trust root, an SBOM needs a tool
+        # choice (`cargo-sbom` vs `cargo-cyclonedx`). Recorded as owed in
+        # `docs/src/node/security-audit.md` rather than guessed at here.
+        working-directory: target/x86_64-unknown-linux-musl/release
+        run: sha256sum rnode | tee rnode.sha256
+
       - name: Upload rnode artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rnode-x86_64-unknown-linux-musl
-          path: target/x86_64-unknown-linux-musl/release/rnode
+          path: |
+            target/x86_64-unknown-linux-musl/release/rnode
+            target/x86_64-unknown-linux-musl/release/rnode.sha256
           if-no-files-found: error
