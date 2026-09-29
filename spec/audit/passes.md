@@ -346,6 +346,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | `Secp256k1::verify_bytes` **refuses a message that is not the 32-byte prehash** (a named `PREHASH_LEN`), where the dependency truncates a longer one to its leftmost 32 bytes | `Secp256k1.scala` / `NativeSecp256k1` take exactly 32 bytes and the Scala's doc warns of an **assertion exception** on other lengths, so the oracle either asserts (a crash, if the JNI assertion is enabled) or its C++ truncates — the ambiguity is C134's and is unresolved in the oracle | the truncation made this function answer for a *prefix* of its message, which on `rho:crypto:secp256k1Verify` is a verdict a contract can receive for a message nobody signed. The port refuses: a defined `false` for an input that is not a prehash, which is neither the crash nor the silent truncation the oracle offers, and is the same preference this register records elsewhere — a refusal at the boundary rather than a value from a failure. Safe for every caller because `signature_hash` produces 32 bytes for `secp256k1` and `secp256k1:eth` alike (AUDIT C134). **Hard fork:** a deploy whose contract verified a suffixed message was answered `true` before and `false` now, so a chain upgrading in place diverges on it; lockstep upgrade is the practice, and this is the row that says so |
 | **Native writes join the merge's conflict relation** (issue #83): two chains of different blocks that wrote a common native key conflict when neither block has seen the other, and depend on each other when one has; a native-writing block's chains are accepted or rejected together; the accepted writes are applied ancestors first (`NativeRelations`, `casper/src/merging.rs`) | — (no Scala counterpart: the Scala's PoS and vault state is tuple-space data, so `deploysAreConflicting` sees it through the event logs; the port's native state has no event log) | a native write is an absolute value from its block's own pre-state, so two concurrent writers can be neither concatenated (duplicate keys: every node panicked at the first epoch boundary with two sibling blocks) nor de-duplicated (two equal phlo charges write equal vault balances, and keeping one destroys the other's REV). **Behaviour change:** concurrent blocks that both write a native key - both boundary blocks at one height, or both charging phlo - now conflict, so one is rejected exactly as a tuple-space conflict would be, where before the merge panicked. Tests: `boundary_merge_tests` |
 | **An empty `FinalizedFringe` is refused as a sync target**, and a finished LFS walk that received no block fails the attempt | `NodeSyncing.scala:124-128` — `startRequester.modify { case true if isValid => (false, true); … }` — latches on the **first** fringe from the bootstrap and inspects nothing about its contents, so it starts the sync on an empty one and `requestApprovedState` then reports the state restored | the genesis master **broadcasts** `FinalizedFringe { hashes: Vec::new() }` as it creates genesis (`node_launch.rs::create_store_broadcast_genesis`) — an announcement that the approved state *is* the genesis, not a sync target. A node already connected receives it **before** the answer to its own request: measured on a devnet, 34 ms after the announcement and 83 ms *before* the master had even seen the request, so the trigger was consumed by the announcement, the correct answer was discarded in silence (a later fringe from the bootstrap logs nothing at all), and the node logged `LFS state is successfully restored.` having restored nothing, then ran on an empty DAG and rejected every block it heard about (#100). Under the oracle's shape a fresh multi-validator network never forms at all. **Not a hard fork**: it changes which fringe a *joining* node acts on, not any block's validity, and no block or deploy changes meaning. One thing keeps the refusal narrow: the responder can never emit an empty fringe — both of its branches return at least one hash — so the only producer of one is the genesis broadcast, and this refuses exactly the input the oracle mishandles. **The companion guard is defence in depth, not the fix**: `run_approved_state_sync` also fails a walk that finishes with an empty `height_map`, which the empty fringe is the only way to reach, because `LfsState::received` writes a `height_map` entry only for a key it actually requested. Witnesses: `an_empty_fringe_does_not_consume_the_sync_trigger` (the regression pin — fails with the check disabled) and `an_empty_fringe_finishes_the_walk_at_once_with_nothing_in_it` (the premise, in the block requester) |
+| `check_min_messages` requires the minimum-message **sender set** to equal the bonded set, where the oracle compares counts (issue #97) | `legacy/block-storage/src/main/scala/coop/rchain/blockstorage/dag/Finalizer.scala:64-66` — the identical body, and the identical TODO above it: *"add support for epoch changes, simple comparison for senders count is not enough"* | count-only coverage admitted `[A, A, B]` for bonds `{A, B, C}`: `calculate_next_layer` collapses the duplicate sender into one entry, so the published fringe **omitted bonded validator `C`** while presenting A's stake twice — 90 of 100 support on the contributing change's own fixture, a malformed fringe a byzantine proposer can present as a supermajority. **Stricter than the oracle, and not a hard fork**: the only newly refused case is equal count with a different sender set, and that case used to publish a fringe no honest node could derive from the same justifications — no block or deploy changes meaning. The oracle has *not* made this decision (the TODO is upstream's, open), so this row is a deliberate departure rather than a divergence by oversight, and the register's law 14a/14b rows plus `spec/Rchain/Casper/Dag.lean`'s `checkMinMessages` carry the same change. Falsified both ways: `check_min_messages_needs_all_bonded_senders` and `calculate_finalization_requires_exact_sender_coverage` fail against the count-only body, and the model's `the_gate_demands_the_bonded_senders` fails against the count-only model |
 
 ---
 
@@ -4406,4 +4407,131 @@ answered for nine keys — *enforced, or parsed and ignored?* — with that row 
 lower the ceiling, because the historical backlog it counts is a separate question" — and a pass that
 shrank the ceiling while the denominator grew would be reporting coverage as reassurance, which is the
 defect class §21's completeness section is about.
+
+## 23. The attestation guard: #70's two defects, one layer below where the issue looks
+
+[#70] is titled *"Resilience: finality needs quorum stake, not live nodes — an absent validator blocks
+it, and attesting requires proposing"*, and it locates the problem in the weight layer: an absent
+validator keeps full weight, and only a proposer may attest. A design pass over the tree on 2026-09-29
+found the first symptom **one layer lower** — in the proposer's attestation guard, which no comment on
+the issue names — and a second defect beside it. Both were red first, each against its own mutation,
+and both are the *opposite* of what the guard's shipped comment and the docs said.
+
+[#70]: https://github.com/rchain-community/rchain-rust/issues/70
+
+### C170 — the guard counted a validator that had *ever* spoken, and could not suppress in the case it exists for
+
+`suppress_attestation` (`casper/src/blocks/proposer/proposer.rs`) decides whether a proposer folds an
+empty attestation into the block it is building. It had two independent defects, and neither is visible
+from the issue's own arithmetic:
+
+- **F4 — "moving" meant "has ever spoken".** The stake counted toward the quorum was summed over the
+  senders of `pre_state.justifications`, which is `latest_msgs` — a map that **keeps a silent sender's
+  last message indefinitely**. Three equal validators with one dead therefore summed 200 (the live
+  peer's message *plus* the dead one's stale one), and adding `own_stake`'s 100 made it 300 of 300: a
+  supermajority that does not exist. The guard was reading liveness of *the past*.
+- **F3 — the supermajority clause could not suppress in the case it exists for.** Suppression was
+  `nothing_to_finalize || !(new_state_transition || quorum_reachable)` with
+  `new_state_transition = parents.iter().any(has_deploys)`. A deploy-bearing parent is the *ordinary*
+  case on a chain with traffic, and it was OR-ed **inside** the quorum test, so it short-circuited that
+  test to `false`; suppression then collapsed to `nothing_to_finalize`, which was `false` too because
+  the deploy-bearing block was unfinalized. **A node that had lost over a third of its stake attested
+  at every height** — the 276-blocks-in-a-minute storm recorded on the issue — and the comment at
+  `attest_warranted` (`node/src/runtime/node_runtime.rs:2590`) stating that such a chain "does not
+  spin" was not what the code did. The comment is corrected in the same change rather than left
+  claiming more than the code does: a stale contract comment is F3's own defect class.
+
+**The fix is two named predicates rather than inline arithmetic.** `moving_attestation_stake`
+(`:1044`) drops any sender whose latest message is further than `ATTESTATION_WINDOW` (`:1024`, 5
+heights) behind the tip, the tip being the newest height among the pre-state justifications — so the
+recency check needs no new state leaf, no DAG scan and no genesis field, and a returning validator's
+justification height jumps to the tip and its stake re-enters. `attestation_suppressed` (`:1093`) takes
+`(nothing_to_finalize, new_state_transition, quorum_reachable, cadence_due)`: suppress on nothing to
+finalize; attest immediately when the quorum is reachable; and while it is **un**reachable, attest only
+if a state transition exists *and* this node has itself been quiet past the window. A deploy-bearing
+parent still licenses an attestation; it no longer licenses an unbounded rate of them. The cadence is
+what keeps the repair from being a blanket suppress, which would trap liveness: no messages → no tip
+movement → no fresh justifications → a peer that came back is never seen. `cadence_due` (`:1064`) reads
+our own latest message's height against the tip, so the pace bound needs no counter and no persistence.
+
+**Falsified both ways, per defect.** Restoring the recency-free body to `moving_attestation_stake`
+makes `a_silent_validators_stale_message_does_not_carry_the_quorum` fail with `left: 200, right: 100` —
+the dead validator's stake, summed; restoring the old `nothing_to_finalize || !(new_state_transition ||
+quorum_reachable)` makes `an_unreachable_supermajority_suppresses_even_with_a_deploy_bearing_parent`
+fail on its own assertion. **The other five tests in the module stay green under both mutations**, so
+each falsifier pins its own defect and neither is satisfied by the other's removal. With the fix in
+place, `cargo test -p rchain-casper --lib` is 321 passed.
+
+**What this does not fix, and it is why #70 stays open.** The storm in the case where the quorum *is*
+reachable is untouched: nothing here bounds the rate at which an all-live net attests, because C170's
+own repair deliberately keeps the reachable case immediate. The 2026-09-29 measurement below reproduced
+that storm with autopropose **off**, so the fuel is the attestation tap and not the dummy-deploy
+injector. And the weight layer the issue names — one liveness predicate shared by the proposer and the
+finalizer — is a separate increment, not this one.
+
+### C171 — an all-live net attesting on every remote block runs a block storm, and the pace bound is owed
+
+Measured 2026-09-29, three validators at 100/100/50, `--no-autopropose --propose-on-deploy`,
+`--epoch-length 10`: **four deploys produced 126 blocks in about three minutes** (~2/s) while finality
+stayed at 8, and the height ran to 126. Attestation is the fuel — each attestation is itself a remote
+block for the peers, which attest in turn — so it is the tap, not the dummy-`Nil` injector, that makes
+the chain grow. The shape was already recorded twice on a two-validator net (23 blocks from six
+deploys) and on the issue itself (276 blocks in about a minute, finalised only to 11).
+
+`suppress_attestation` cannot bound this: the quorum *is* reachable, so its suppression clause is
+deliberately inert, C170's repair included. The bound has to be on **our own quiet** — this node's
+latest message at least `k` heights behind the tip — which is where `attest_warranted`
+(`node/src/runtime/node_runtime.rs:2590`) already computes a per-remote-height rule that is real but
+insufficient, because heights keep advancing on a chain that cannot finalise. Recorded as `todo`
+rather than folded into C170 because it is open, and the `owes` cell names the falsifier that would
+close it.
+
+## 24. The DAG index and the store it indexes: the same measurement's other failure
+
+The same 2026-09-29 run produced a second, independent finding one layer down, and it is the one that
+keeps a joiner from ever catching up: the validator that stalled at the first epoch boundary never
+recovered, because a block can be **in the DAG index and not in the store the index is built from**.
+
+### C172 — `BlockMetadataStore::add` writes the index before the store, and two readers ask different sides
+
+`add` (`casper/src/block_metadata_store.rs:41-52`) updates the in-memory `DagState` **first** and
+writes the persisted store **second**, with an `await` between them. Two readers want the same fact
+and ask different questions: `has_all_deps` (`casper/src/blocks/block_receiver.rs:455`) and
+`not_validated` (`:245-255`) ask the **index** (`DagRepresentation::contains` → `dag_set`,
+`block-storage/src/dag/representation.rs:73-75`), while the whole of `block_summary` —
+`get_parents_metadata` (`casper/src/proto_util.rs:26-36`), `block_number` and `sequence_number`
+(`casper/src/validate.rs:220-236`) — asks the **store** (`dag.lookup` →
+`block_metadata_store.get`, `casper/src/dag.rs:419-421`). Inside that window a child's dependencies
+look satisfied, the child is queued, and validation then cannot resolve its parent: `missing
+justification …` → `block summary failed: …` (`casper/src/multi_parent_casper.rs:338-342`) →
+`ValidateError::Internal`.
+
+**`Internal` is terminal in a way `ValidationFailed` is not**: it is logged and `continue`d
+(`casper/src/blocks/block_processor.rs:124-130`), so the block never reaches `validated_tx`, so
+`BlockReceiver` never sees it *finish*, so every block waiting on it stays in `state` forever. That is
+the observed cascade (three failures, each naming the previous block) and why only a restart
+recovers: `BlockMetadataStore::create` rebuilds the index from the store. The retriever's log
+contradicts the processor's for the same reason — `ack_received` fires on the **block-store** write
+(`block_receiver.rs:452`), before validation, and removes the hash from the map `request_all`
+re-requests from (`block_retriever.rs:252-263`).
+
+**`dag.rs:260-262` makes this order the whole of a previous fix** (AUDIT F-5): *"Compute and store the
+fringe data **before** the block's own metadata… The order is the whole of this fix"* — chose so a torn
+write leaves orphan *data* rather than a pointer to data that is not there. `add` does the reverse for
+the pointer and the contents it points at. Same class, one layer down, and this is C164's shape again:
+the discipline existed, was pinned, and was not applied where the same fact is read.
+
+**Recorded `todo`, not `done`, and the distinction matters.** The observation (the log sequence, the
+terminal cascade, the restart recovering) is evidence; the *mechanism* is read out of the tree and is
+consistent with it, but **not reproduced** — the window is one `await` wide and needs a validation
+running inside it, and which of the concurrent validators (the processor's own spawned batch, the
+proposer's parent validation at `proposer.rs:385`, the LFS syncer) lands in it is owed. The
+store-write-*failure* path is the same divergence with no window at all: `add` returns `Err` after the
+index was updated, so the index keeps an entry the store never got until a restart. Filed as [#103],
+with three fix options and their trade-offs (the straight reorder wants a compensating delete, or
+`create` would refuse to rebuild at the next start). The `owes` cell names the gate the falsifier
+needs: a metadata store over a `KeyValueStore` whose `put` parks, with `contains` asserted false while
+it is parked.
+
+[#103]: https://github.com/rchain-community/rchain-rust/issues/103
 

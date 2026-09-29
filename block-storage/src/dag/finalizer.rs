@@ -95,14 +95,27 @@ where
         chain
     }
 
-    /// Whether the minimum messages are enough for the next-fringe calculation.
+    /// Whether the minimum messages are enough for the next-fringe calculation: their **sender set**
+    /// must be the bonded set, not merely as many senders as there are bonds.
+    ///
+    /// A count comparison — which is what the Scala oracle has, with the epoch TODO saying so
+    /// (`Finalizer.scala:64-66`, *"simple comparison for senders count is not enough"*) — admitted
+    /// `[A, A, B]` for bonds `{A, B, C}`: `calculate_next_layer` collapses the duplicate sender into one
+    /// entry, so the published fringe **omitted bonded validator `C`** while presenting A's stake
+    /// twice. **This is a deliberate departure from the oracle** — upstream has not made the decision —
+    /// and it is registered with its reason in `spec/audit/passes.md` §6; `spec/Rchain/Casper/Dag.lean`
+    /// models the same gate, and law 14b's statement of "one message per bonded validator" rests on it.
+    /// The length clause is kept because it is the oracle's own first conjunct; the set comparison
+    /// subsumes it.
     pub fn check_min_messages(
         &self,
         min_msgs: &[Message<M, S>],
         bonds_map: &BTreeMap<S, NonNegI64>,
     ) -> bool {
-        // TODO: epoch changes need more than a sender-count comparison.
-        min_msgs.len() == bonds_map.len()
+        let minimum_senders: BTreeSet<&S> =
+            min_msgs.iter().map(|message| &message.sender).collect();
+        let bonded_senders: BTreeSet<&S> = bonds_map.keys().collect();
+        min_msgs.len() == bonds_map.len() && minimum_senders == bonded_senders
     }
 
     /// Find the top (most recent) message referenced from the minimum messages, per sender.
@@ -323,6 +336,28 @@ mod tests {
             ],
             &bonds
         ));
+
+        // Matching the bond count is insufficient: duplicate sender 0 leaves
+        // bonded sender 2 uncovered.
+        assert!(!finalizer.check_min_messages(
+            &[
+                msg(0, 0, 0, &[], &[]),
+                msg(3, 0, 1, &[], &[]),
+                msg(1, 1, 0, &[], &[])
+            ],
+            &bonds
+        ));
+
+        // A non-bonded sender cannot substitute for a missing bonded sender.
+        assert!(!finalizer.check_min_messages(
+            &[
+                msg(0, 0, 0, &[], &[]),
+                msg(1, 1, 0, &[], &[]),
+                msg(99, 99, 0, &[], &[])
+            ],
+            &bonds
+        ));
+
         assert!(!finalizer.check_min_messages(&[msg(0, 0, 0, &[], &[])], &bonds));
     }
 
@@ -350,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn calculate_finalization_advances_fringe_on_fork() {
+    fn calculate_finalization_requires_exact_sender_coverage() {
         // Genesis by a non-bonded sender (99); three bonded senders 0/1/2.
         let genesis = msg(99, 99, 0, &[], &[99]);
         // Layer 1: a three-way fork — each sees only genesis.
@@ -364,6 +399,7 @@ mod tests {
         let a3 = msg(30, 0, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 30]);
         let b3 = msg(31, 1, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 31]);
         let c3 = msg(32, 2, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 32]);
+        let a3_duplicate = msg(33, 0, 4, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 33]);
 
         let map: BTreeMap<i32, Message<i32, i32>> = [
             genesis.clone(),
@@ -376,17 +412,32 @@ mod tests {
             a3.clone(),
             b3.clone(),
             c3.clone(),
+            a3_duplicate.clone(),
         ]
         .into_iter()
         .map(|m| (m.id, m))
         .collect();
-        let bonds: BTreeMap<i32, NonNegI64> = [(0, 10), (1, 10), (2, 10)]
+        let bonds: BTreeMap<i32, NonNegI64> = [(0, 80), (1, 10), (2, 10)]
             .into_iter()
             .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
             .collect();
 
-        let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
+
+        // Count-only coverage accepted these three messages even though sender 0
+        // appeared twice and bonded sender 2 was absent. With 90/100 represented
+        // stake, the malformed candidate could advance the fringe.
+        let duplicate_justifications: BTreeSet<Message<i32, i32>> =
+            [a3.clone(), a3_duplicate, b3.clone()].into_iter().collect();
+        let (_parent, duplicate_fringe) =
+            finalizer.calculate_finalization(&duplicate_justifications, &bonds);
+        assert!(
+            duplicate_fringe.is_none(),
+            "duplicate sender must not substitute for a missing bonded sender"
+        );
+
+        // Exact coverage by all bonded senders still advances the fringe.
+        let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
         let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
         let ids: BTreeSet<i32> = new_fringe
             .expect("fringe should advance")
