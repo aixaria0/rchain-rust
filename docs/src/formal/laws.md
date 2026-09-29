@@ -11,9 +11,9 @@ saying **what it is about**.
 > carry a part of it). It counts *clauses* rather than laws and separates **`proved-tied`** (proved *and*
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
-> disagree, the register is right. Its total is **<!-- counts:proved-laws -->45<!-- counts:end --> of
-> <!-- counts:laws -->50 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
-> <!-- counts:proved-model-laws -->30<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
+> disagree, the register is right. Its total is **<!-- counts:proved-laws -->49<!-- counts:end --> of
+> <!-- counts:laws -->54 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:proved-model-laws -->34<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
 > definition, and the register has a word for that).
 
 ## The set, and what each part of it is about
@@ -29,6 +29,7 @@ saying **what it is about**.
 | 30–43 | **The surface** | what a client writes and a matcher reads: grammar, lexing, normalization, matching, reply shapes, the JSON envelope | *(below)* |
 | 44–47 | **The validator lifecycle** | the Proof-of-Stake epoch: the boundary gate, the reward split, its conservation, staged withdrawal | *(below)* |
 | 48–49 | **Charging** | what a denied deploy does to the merged state, and what a matched deploy is charged | *(below)* |
+| 51–54 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), the two answers finality's gate must give (52: the partition may shrink, the quorum denominator may not), one attribution that is terminal (53: the refusal persists and the rule refuses its children), and which view a rule reads (54) | [Progress: the shapes of non-progress](progress.md) |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
 defect that started the formalisation programme (AUDIT C9–C22) lived there and **nothing errored**: an
@@ -237,6 +238,81 @@ ported.
 Law 49 is also a **hard fork**: the refund changes the recorded `PCost` of every deploy that matches, so a
 chain that accepted such a block under the old (over-charging) rule diverges on it. Registered in
 `spec/audit/passes.md` §6 with the reason the old value was already wrong.
+
+---
+
+## Progress — the shapes of non-progress (Law 51)
+
+**What it is about.** The same *kind* of defect arrived four times in two days under four names — a
+fringe partition no state could satisfy (C174), a refusal no rule clears (C173), steps forever with the
+finality measure flat (C171), a liveness predicate read off a map that keeps history (C170) — and each
+was argued in prose and fixed alone. Law 51 is the general statement they were instances of: a
+vocabulary for non-progress, parameterised over a transition system, so one set of definitions serves
+the reducer and the protocol built on it.
+
+**Three shapes, two causes.** The *shape* says why the obligation cannot be met, and therefore what kind
+of repair applies:
+
+| shape | form | C-finding | the fix it implies |
+|---|---|---|---|
+| `Void` | no state satisfies the requirement | C174 | change the requirement |
+| `Terminal` | a satisfying state was left **and** no rule restores it | C173, C172 | give the refused state an inverse |
+| `Drift` | a run's measure never moves, however long it runs | C171 | bound the rate — but read the cause first |
+
+The *cause* says where the fix goes: a `Historic` predicate (C170's guard counted a validator that had
+*ever* spoken) or a `Split` between two readers of one state (C172's index and store). The causes produce
+the shapes — the historic predicate is what let the guard's suppression never fire, which is C171's
+drift — and that pairing is what makes the vocabulary diagnostic rather than taxonomic.
+
+**What it deliberately does not model.** Starvation — "an enabled step that no schedule takes" — is
+unstatable over a transition *relation*, and this tree's own `reduce_not_deterministic`
+(`Rchain/Concurrent.lean`) proves the flat calculus fixes no schedule at all; the shape is registered
+`open`, with that reason, rather than defined. The protocol's inactivity leak is out of scope for the
+same kind of honesty: it needs a state change (burning a silent validator's stake) this layer does not
+have — #24, #39.
+
+**What is shared with the calculus, and how the sharing is checked.** A `System` is a step relation plus
+a decidable "is a step available now" predicate, *tied to the relation by the structure's own field*. The
+calculus supplies that field with `takesStep`/`ReduceP` (`spec/Rchain/Silence.lean`), so silence in the
+calculus **is** stuckness by the tie (`Rchain.a_silent_term_is_stuck`) rather than by a claim. The layers
+differ in exactly one way, and it is the distinction the vocabulary exists to keep sharp: in the closed
+calculus nothing outside the term can add a send, so a lone receive is silent forever, while at the
+protocol level delivery is itself a step — a blocked wait and a permanent stall must not share a name.
+
+Its register row is `51a`–`51c` (`spec/LAWS.md`), its model is `spec/Rchain/Progress.lean`, and
+[Progress: the shapes of non-progress](progress.md) is the triage table an agent reads before proposing
+a fix.
+
+### The finality instance (Law 52)
+
+The first instance of law 51 is the one the vocabulary was written for, and it is the law this
+repository needed on 2026-09-29 and did not have: the increment-2 plan proposed handing the *live* weight
+set to the finalizer as **both** the set a candidate must be seen by and the set the supermajority is
+measured against — "so a silent validator leaves numerator and denominator together" — and nothing in the
+tree could refuse it.
+
+**Clause a — the denominator is the whole bonded stake.** Two disjoint groups cannot each hold a strict
+supermajority of one total: `3·s₁ > 2·t` and `3·s₂ > 2·t` force `t < s₁ + s₂`
+(`supermajorities_overlap`). So a denominator taken from the live set makes *any* self-consistent subset
+a supermajority of itself, and under a network partition each side would finalise its own view — two
+conflicting finalisations. The falsifier is two-sided on one fixture: the two disjoint sides each advance
+at their own denominator (200 of 200) and both are refused at the bonded one (200 of 400), while the
+*full* partition advances there (300 of 400), so the result cannot be read as "the gate never fires".
+What the clause does **not** claim: that two conflicting *messages* cannot be supported — the step from
+"the supporting sets overlap" to "the chain cannot fork" is Law 15's, named as a hook rather than proved
+here.
+
+**Clause b — the requirement must be one a reachable state can satisfy.** With the whole bonded set as
+the *partition*, a validator that produces no message makes the full-partition filter unsatisfiable — not
+slow, **empty** — because `allBonded` demands that every seer's seen set equal the bonded set and no seer
+can have seen a validator that never spoke. That is the `Void` shape of Law 51 with its proof obligation
+discharged: the emptiness is derived from the predicate rather than observed on a fixture, and the
+fixture instance is two-sided as well (three speaking validators refused at 300 of 400; the identical
+fixture advancing once the fourth speaks). The hypotheses are named in the instance module
+(`Participation`, `Delivery`, `StalenessBound`) because a liveness claim without its hypothesis is Law
+20's trap. What it still does not fix, plainly: a net that stays below two thirds **permanently** still
+cannot finalise, and the honest repair there is an inactivity leak — a state change that burns a silent
+validator's stake — which belongs with #24 and #39, not with a recency window.
 
 ---
 

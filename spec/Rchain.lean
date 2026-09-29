@@ -18,6 +18,7 @@ import Rchain.Json
 import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Concurrent
+import Rchain.Progress
 import Rchain.Tree
 import Rchain.FreeVars
 import Rchain.Depth
@@ -35,6 +36,9 @@ import Rchain.Proto
 import Rchain.Casper.Dag
 import Rchain.Casper.Fringe
 import Rchain.Casper.Validate
+import Rchain.Casper.Liveness
+import Rchain.Casper.Stranding
+import Rchain.Casper.Views
 import Rchain.Casper.Bonds
 import Rchain.Pos
 import Rchain.Charging
