@@ -33,7 +33,7 @@ hosts, the genesis, the wallets, and the incident record.
 | Validators | genesis signed for **one** — A (`0410b8c5…`, stake **1000**). B (`04675f16…`) runs as a plain **observer**: it carried a 100 bond on the 2026-09-27 chain and withdrew from it, and the 2026-09-29 rebuild gave it no bond at all, so the pool and the active set are A alone. **No validator is to be added — see below.** |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `94ea0a1d2`, static musl, `sha256:d37c4068dd62…`, on both hosts |
+| Binary | rchain-rust `dev` @ `f36312a55`, static musl, `sha256:3cd2b4152f5a…`, on both hosts |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
@@ -237,7 +237,7 @@ Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 ```
 
 Genesis hash `9f09e7a02d17ef41e40dd3b170dc67c73b9e61b493883bf8b86caa356b3981dc`; A's node id
-`875f523b412b4a2a40e2f47bb550aa24ddb1a822`, B's `2129c7448c1d67da2f8d85f0d88c276ea711bdce`.
+`8996205a6b4092b55a4fd36beed878e3ebac83a0`, B's `1af8fe3bf05fe72048efd6dc66f341343b40e568`.
 
 The genesis hash depends only on the genesis *inputs* — bonds, wallets, parameters **and the genesis
 content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
@@ -324,7 +324,7 @@ anywhere:
 ```bash
 rnode --profile docker run --host <its-ip> --data-dir /var/lib/rnode \
   --pos-multi-sig-public-keys <dave pubkey> --pos-multi-sig-quorum 1 \
-  --bootstrap rnode://875f523b412b4a2a40e2f47bb550aa24ddb1a822@164.90.140.144?protocol=40400&discovery=40404
+  --bootstrap rnode://8996205a6b4092b55a4fd36beed878e3ebac83a0@164.90.140.144?protocol=40400&discovery=40404
 ```
 
 (The multi-sig flags must match the genesis master's, or the joiner's own view of the genesis PoS
@@ -425,6 +425,26 @@ computes the expected height, so once a node has failed one block no higher-numb
 to it. That is #103's theme — one unprocessable block is permanent — reached by a different mechanism,
 and it is why this chain is **single-bond** rather than two-bond: the two-bond rebuild could not
 finalise at all on the current binary.
+
+**Re-measured on 2026-09-29 on `f36312a55`, which carries #104, #106, #107 and #108 — and this is where
+the picture above changes.** On the live two-host net, both shapes now behave differently:
+
+- **Two bonds (A 1000 / B 100, both attesting) finalise normally**: height 39, finalised 32, both nodes
+  in lockstep, **zero validation failures on either** — where the same shape on `94ea0a1d2` had failed
+  five blocks with `InvalidStateHash` and frozen finality at block 8. [#105] still reproduces *nothing*
+  here, though I did not bisect which commit removed it (#106's ordering fix is the likely candidate for
+  the cascade half; it does not obviously explain the state-hash disagreement itself).
+- **The three-validator measurement moved for the first time.** Bonds A 100 / B 100 / C 50, all three
+  live: height 47, finalised 40, all three in lockstep, no failures, epoch boundaries 10/20/30/40
+  crossed. Then C was killed: the survivors **finalised past the kill — 40 → 44** — and then stopped,
+  while the chain produced ~160 more blocks and settled idle at 204. So #108's live-weight partition
+  does what it says, and a second stop sits behind the first: either the non-finalised region has no
+  full-coverage layer (160 blocks of attestation storm) or the proposer and the finalizer disagree about
+  the live set. The full transcript is on
+  [#70](https://github.com/rchain-community/rchain-rust/issues/70#issuecomment-5890809631).
+
+**So "do not onboard a validator yet" is still the rule, but not for the reason blocker 2 gives**: the
+partition is no longer what stops it, and the survivors now finalise past a kill before stopping.
 
 ## Onboarding an observer into the validator pool
 
@@ -539,7 +559,7 @@ Two easy-to-miss details:
 
 #### Current chain — rebuilt 2026-09-29, single-bond
 
-A `875f523b…`, B `2129c744…`, genesis `9f09e7a0…`, binary `sha256:d37c4068dd62…` (`dev` @ `94ea0a1d2`).
+A `8996205a…`, B `1af8fe3b…`, genesis `9f09e7a0…`, binary `sha256:3cd2b4152f5a…` (`dev` @ `f36312a55`).
 Genesis signed for **one** validator (A, stake 1000) and B runs as a plain observer with no bond. Height 8,
 finalised block 4, `GET /api/status` → `peers: 1`, `/health` → `ok: true`, `api_reachable: true`,
 `finalized_fringe: true`, and neither node has failed a block.
@@ -665,7 +685,7 @@ specified" and resolves it from the node's own status, which already carries `la
 the same thing the faucet, the browser client, `gateway::current_height` and
 `txn_coordinator::run_phase_at` do. The fix is merged to `dev` as
 [#58](https://github.com/rchain-community/rchain-rust/pull/58), and both nodes run a binary that
-includes it (`d37c4068dd62…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
+includes it (`3cd2b4152f5a…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
 with no extra flags. Rollbacks are kept in place as `/usr/local/bin/rnode.old-<sha>`.
 **A binary built before that commit still needs `--valid-after-block-number <height>`.**
 
@@ -704,7 +724,7 @@ so that its return value is stored and handed back. That is how the
 An earlier revision warned that this read-back "lags by about one deploy". That was wrong: the lag was
 dev's registry-lookup divergence (C18 — the native handler wrapped its reply in `(uri, value)` while
 the genesis `Registry.rho` forwards it unwrapped, so a client's `for (X <- ch) { X!(…) }` silently did
-nothing, with no error and no result). It is fixed in the binary these nodes run (`d37c4068dd62…`), and
+nothing, with no error and no result). It is fixed in the binary these nodes run (`3cd2b4152f5a…`), and
 with it deploy result values are readable — which is what unblocked the whole diagnosis.
 
 **K5 — disk and memory growth.** Disk now grows only with real usage (~6.6 KB/block) since the injector
