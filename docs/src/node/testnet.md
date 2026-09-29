@@ -236,8 +236,11 @@ Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 /etc/rnode/deployer.env             DEPLOYER_PRIVATE_KEY=… (kept on disk, now unused: no injector)
 ```
 
-Genesis hash `9f09e7a02d17ef41e40dd3b170dc67c73b9e61b493883bf8b86caa356b3981dc`; A's node id
-`8996205a6b4092b55a4fd36beed878e3ebac83a0`, B's `1af8fe3bf05fe72048efd6dc66f341343b40e568`.
+Genesis hash `9f09e7a02d17ef41e40dd3b170dc67c73b9e61b493883bf8b86caa356b3981dc`.
+
+**Node ids are deliberately not written down here.** A rebuild regenerates them — both changed twice on
+2026-09-29 alone — so a page that pins them is wrong within the hour. Read the live ones per host from
+`GET /api/status` → `address`.
 
 The genesis hash depends only on the genesis *inputs* — bonds, wallets, parameters **and the genesis
 content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
@@ -258,9 +261,9 @@ chain, and a node pointed at the old bootstrap will not join it. Any change unde
 `casper/src/genesis/` belongs on the hard-fork tracker before it lands for this reason.
 
 A node id is **not** derived from the validator key — a rebuilt data directory gets a fresh node
-identity, so any `--bootstrap` URI pointing at the master has to be updated after a rebuild. The
-2026-09-26 rebuild with the dependency-bump binary is the most recent instance: A's id changed, so B's
-`--bootstrap` was retargeted, and genesis artefacts are produced once, at genesis.
+identity, so any `--bootstrap` URI pointing at the master has to be updated after a rebuild, and genesis
+artefacts are produced once, at genesis. **This page named both ids until 2026-09-29 and stopped after
+they changed twice in one day**; expect to retarget B's `--bootstrap` on every rebuild.
 
 Both nodes start with `--pos-multi-sig-public-keys <dave's pubkey> --pos-multi-sig-quorum 1`, which
 puts **dave** — a `wallets.txt`-funded key that can actually pay phlo — into the trusted set at
@@ -324,7 +327,7 @@ anywhere:
 ```bash
 rnode --profile docker run --host <its-ip> --data-dir /var/lib/rnode \
   --pos-multi-sig-public-keys <dave pubkey> --pos-multi-sig-quorum 1 \
-  --bootstrap rnode://8996205a6b4092b55a4fd36beed878e3ebac83a0@164.90.140.144?protocol=40400&discovery=40404
+  --bootstrap rnode://<A's node id from /api/status>@164.90.140.144?protocol=40400&discovery=40404
 ```
 
 (The multi-sig flags must match the genesis master's, or the joiner's own view of the genesis PoS
@@ -437,14 +440,26 @@ the picture above changes.** On the live two-host net, both shapes now behave di
 - **The three-validator measurement moved for the first time.** Bonds A 100 / B 100 / C 50, all three
   live: height 47, finalised 40, all three in lockstep, no failures, epoch boundaries 10/20/30/40
   crossed. Then C was killed: the survivors **finalised past the kill — 40 → 44** — and then stopped,
-  while the chain produced ~160 more blocks and settled idle at 204. So #108's live-weight partition
-  does what it says, and a second stop sits behind the first: either the non-finalised region has no
-  full-coverage layer (160 blocks of attestation storm) or the proposer and the finalizer disagree about
-  the live set. The full transcript is on
-  [#70](https://github.com/rchain-community/rchain-rust/issues/70#issuecomment-5890809631).
+  while the chain produced ~160 more blocks and settled idle at 204.
+- **And a follow-up probe says why: with a validator absent, block production is unbounded.** Same key
+  set, all three live and the chain idle: it plateaus about **seven blocks behind the tip** (height 17,
+  finalised 10, stable over four samples in a minute) — a residual that does not close on its own. Kill
+  C, deploy nothing for three and a half minutes, and it stays exactly there. Then **one deploy**, sampled
+  every five seconds: height 17 → 56 → 198 → 342 and **finality advanced 10 → 14 and froze**, with no
+  validation failures on either survivor. That is **351 blocks in about two minutes, ~4 blocks/second**,
+  halted there deliberately because these hosts are 1 GB (see [#60](#known-issues) and #68 — a chain at
+  that rate cannot be restarted here). The mechanism the guard's own shape suggests is a **loop**:
+  `suppress_attestation = nothing_to_finalize || waiting_for_supermajority`, so the storm is bounded by
+  finality catching up — a validator that cannot finalise keeps attesting, every attestation is a block,
+  and every block is a reason for the other survivor to attest. Absent validator → no finality →
+  unbounded production → a DAG widening faster than any fringe can close. It is a liveness **and** a
+  resource hazard. Transcripts:
+  [#70](https://github.com/rchain-community/rchain-rust/issues/70#issuecomment-5890809631) and
+  [#70](https://github.com/rchain-community/rchain-rust/issues/70#issuecomment-5891685869).
 
-**So "do not onboard a validator yet" is still the rule, but not for the reason blocker 2 gives**: the
-partition is no longer what stops it, and the survivors now finalise past a kill before stopping.
+**So "do not onboard a validator yet" is still the rule, for a third reason again**: not blocker 2's
+unsatisfiable partition (fixed by #108), but **the unattested storm an absent validator lets run** — and
+behind that, whatever bounds the storm while every validator is live.
 
 ## Onboarding an observer into the validator pool
 
@@ -559,7 +574,7 @@ Two easy-to-miss details:
 
 #### Current chain — rebuilt 2026-09-29, single-bond
 
-A `8996205a…`, B `1af8fe3b…`, genesis `9f09e7a0…`, binary `sha256:3cd2b4152f5a…` (`dev` @ `f36312a55`).
+Genesis `9f09e7a0…`, binary `sha256:3cd2b4152f5a…` (`dev` @ `f36312a55`).
 Genesis signed for **one** validator (A, stake 1000) and B runs as a plain observer with no bond. Height 8,
 finalised block 4, `GET /api/status` → `peers: 1`, `/health` → `ok: true`, `api_reachable: true`,
 `finalized_fringe: true`, and neither node has failed a block.
