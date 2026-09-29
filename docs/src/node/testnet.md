@@ -8,9 +8,9 @@ The **generalised** procedure — standing up a testnet of your own, from the st
 is [Running a public testnet](running-a-public-testnet.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets, and the incident record.
 
-> **Status: reads, writes and the documented single-validator shape all work — re-verified on the
-> current chain on 2026-09-27** (evidence in [Status](#status-of-the-verified-path); the chain was
-> rebuilt that day, so the older transcripts there are labelled as such). A brand-new key can be funded by transfer, deploy,
+> **Status: reads, writes and the single-validator shape all work — re-verified on the current chain
+> on 2026-09-29** (evidence in [Status](#status-of-the-verified-path); the chain was rebuilt that day and
+> on 2026-09-27 before it, so the older transcripts there are labelled as such). A brand-new key can be funded by transfer, deploy,
 > be trusted, and bond into the validator pool — **but do not add one to this net yet**: see
 > [Do not onboard a validator yet](#do-not-onboard-a-validator-yet). `/api/status`, `/api/explore-deploy`, `getBonds`,
 > `getActiveValidators`, `/health`, and `rnode deploy` with no extra flags all work — note that a CLI
@@ -29,11 +29,11 @@ hosts, the genesis, the wallets, and the incident record.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard `/root`, genesis `6a6db0db…5b43` |
-| Validators | genesis signed for **two** — A (`0410b8c5…`, stake **1000**) and B (`04675f16…`, stake 100). B withdrew at the first epoch boundary (block 10) of the 2026-09-27 rebuild, so the pool and the active set are A alone and B's 100 is escrowed. **No further validator is to be added — see below.** |
+| Chain | `testnet` network id, shard `/root`, genesis `9f09e7a0…81dc` |
+| Validators | genesis signed for **one** — A (`0410b8c5…`, stake **1000**). B (`04675f16…`) runs as a plain **observer**: it carried a 100 bond on the 2026-09-27 chain and withdrew from it, and the 2026-09-29 rebuild gave it no bond at all, so the pool and the active set are A alone. **No validator is to be added — see below.** |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `3dd21e705`, static musl, `sha256:e82be7e3805c…`, on both hosts |
+| Binary | rchain-rust `dev` @ `94ea0a1d2`, static musl, `sha256:d37c4068dd62…`, on both hosts |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
@@ -236,13 +236,15 @@ Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 /etc/rnode/deployer.env             DEPLOYER_PRIVATE_KEY=… (kept on disk, now unused: no injector)
 ```
 
-Genesis hash `6a6db0dbf47575d9c8e62935d8782bbd9d27ac6556f2fb0b518ea3d69b835b43`; A's node id
-`a014e1eee8dfcfcbe1cbe04641955d8c5941d709`, B's `d4434ebc582c09589d23acdc5aa56d0480a24cd5`.
+Genesis hash `9f09e7a02d17ef41e40dd3b170dc67c73b9e61b493883bf8b86caa356b3981dc`; A's node id
+`875f523b412b4a2a40e2f47bb550aa24ddb1a822`, B's `2129c7448c1d67da2f8d85f0d88c276ea711bdce`.
 
 The genesis hash depends only on the genesis *inputs* — bonds, wallets, parameters **and the genesis
 content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
-those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, and adding
-B's bond moved it to `6a6db0db…`.
+those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, adding B's
+bond moved it to `6a6db0db…`, and the 2026-09-29 rebuild — one bond *and* the content change below —
+produced `9f09e7a0…`. **The old single-bond hash is not reachable again**: #71's fix moved the content, so
+the same bond set no longer gives the same block.
 
 **The content half of that list was missing until 2026-09-28, and it is the half that bites.** The
 blessed contract set and the governance deploys are genesis *state*, so a change to any of them moves the
@@ -250,7 +252,7 @@ hash exactly as a bond change does — and unlike a bond change, nothing about i
 operator. #71's fix is the worked example: publishing the master directory's grant capability (see
 [`spec/GENESIS.md`](https://github.com/rchain-community/rchain-rust/blob/dev/spec/GENESIS.md)) adds a
 registered capability and a native registry entry, so **every chain built from that commit onward has a
-different genesis hash, and the `6a6db0db…` above names a chain built before it.** An existing net is
+different genesis hash, and the `e525129d…`/`6a6db0db…` hashes above name chains built before it.** An existing net is
 untouched — its genesis is already committed history — but a rebuilt data directory is a *different*
 chain, and a node pointed at the old bootstrap will not join it. Any change under
 `casper/src/genesis/` belongs on the hard-fork tracker before it lands for this reason.
@@ -322,7 +324,7 @@ anywhere:
 ```bash
 rnode --profile docker run --host <its-ip> --data-dir /var/lib/rnode \
   --pos-multi-sig-public-keys <dave pubkey> --pos-multi-sig-quorum 1 \
-  --bootstrap rnode://a014e1eee8dfcfcbe1cbe04641955d8c5941d709@164.90.140.144?protocol=40400&discovery=40404
+  --bootstrap rnode://875f523b412b4a2a40e2f47bb550aa24ddb1a822@164.90.140.144?protocol=40400&discovery=40404
 ```
 
 (The multi-sig flags must match the genesis master's, or the joiner's own view of the genesis PoS
@@ -368,7 +370,9 @@ measured:
    `--stakes 100,100,50`: the survivors at **80 %** did not resume finality. Attesting also *is*
    proposing: the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with
    no node contributes nothing while still being counted
-   ([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
+   ([#70](https://github.com/rchain-community/rchain-rust/issues/70)). **Confirmed from the other side
+   on the live two-host net the same day:** with B stopped and A holding **91 %** of the pool, finality
+   did not resume either — so the survivors' share is not the variable, the partition filter is.
 3. ~~**A fresh multi-validator network never forms at all.**~~ **Fixed, 2026-09-29.** It was two
    faults, both on the same path. First, a node recorded a peer only if its *reply* to that peer's
    handshake succeeded — and a joining node dials before its own server binds, so the reply was
@@ -400,6 +404,17 @@ and nothing re-queues it ([#103](https://github.com/rchain-community/rchain-rust
 order is #103, then a weight set the finalizer and the proposer share (a liveness predicate, #70's
 increment 2), then this measurement again. Until then, add nothing to a live net: use it as a
 single-proposer chain and read or deploy against A.
+
+**A second, independent way for a live net to lose a validator:**
+[#105](https://github.com/rchain-community/rchain-rust/issues/105). On 2026-09-29 the two-bond shape was
+rebuilt on this net itself (genesis A 1000 / B 100, both attesting) and **node B failed five blocks with
+`InvalidStateHash` and four with `InvalidBlockNumber` while A failed none**; finality froze at block 8 —
+the last block B proposed — while the height reached 25, and stopping B did not restore it. The wedge
+there is the height rule (`casper/src/validate.rs:221-241`), which *skips failed justifications* when it
+computes the expected height, so once a node has failed one block no higher-numbered block is ever valid
+to it. That is #103's theme — one unprocessable block is permanent — reached by a different mechanism,
+and it is why this chain is **single-bond** rather than two-bond: the two-bond rebuild could not
+finalise at all on the current binary.
 
 ## Onboarding an observer into the validator pool
 
@@ -512,13 +527,19 @@ Two easy-to-miss details:
 
 ### Status of the verified path
 
-#### Current chain — rebuilt 2026-09-27
+#### Current chain — rebuilt 2026-09-29, single-bond
 
-A `a014e1ee…`, B `d4434ebc…`, genesis `6a6db0db…`, binary `sha256:e82be7e3805c…` (`dev` @ `3dd21e705`).
-Genesis signed for A 1000 + B 100; B withdrew at the first epoch boundary (block 10), so the pool and
-the active set are A alone. `GET /api/status` → `peers: 1`, and `/health` → `ok: true`,
-`api_reachable: true`; neither running node has panicked. The 2026-09-26 transcript below describes the
-previous chain, reproduced on this one, and is kept as history.
+A `875f523b…`, B `2129c744…`, genesis `9f09e7a0…`, binary `sha256:d37c4068dd62…` (`dev` @ `94ea0a1d2`).
+Genesis signed for **one** validator (A, stake 1000) and B runs as a plain observer with no bond. Height 8,
+finalised block 4, `GET /api/status` → `peers: 1`, `/health` → `ok: true`, `api_reachable: true`,
+`finalized_fringe: true`, and neither node has failed a block.
+
+This is the third shape of the day, and the reason is worth keeping: the 2026-09-27 chain had two bonds
+with B withdrawn; the 2026-09-29 rebuild went back to two bonds to make the #70 measurement on this net,
+and it **could not finalise with two bonded validators at all** —
+[#105](https://github.com/rchain-community/rchain-rust/issues/105) — so the bond was dropped and
+the chain rebuilt single-bond, which finalises normally. The 2026-09-26 transcript below is kept as
+history.
 
 #### Re-verified on the current chain — 2026-09-26, genesis `6a6db0db…`, height 0 → 23
 
@@ -634,7 +655,7 @@ specified" and resolves it from the node's own status, which already carries `la
 the same thing the faucet, the browser client, `gateway::current_height` and
 `txn_coordinator::run_phase_at` do. The fix is merged to `dev` as
 [#58](https://github.com/rchain-community/rchain-rust/pull/58), and both nodes run a binary that
-includes it (`e82be7e3805c…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
+includes it (`d37c4068dd62…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
 with no extra flags. Rollbacks are kept in place as `/usr/local/bin/rnode.old-<sha>`.
 **A binary built before that commit still needs `--valid-after-block-number <height>`.**
 
@@ -673,7 +694,7 @@ so that its return value is stored and handed back. That is how the
 An earlier revision warned that this read-back "lags by about one deploy". That was wrong: the lag was
 dev's registry-lookup divergence (C18 — the native handler wrapped its reply in `(uri, value)` while
 the genesis `Registry.rho` forwards it unwrapped, so a client's `for (X <- ch) { X!(…) }` silently did
-nothing, with no error and no result). It is fixed in the binary these nodes run (`e82be7e3805c…`), and
+nothing, with no error and no result). It is fixed in the binary these nodes run (`d37c4068dd62…`), and
 with it deploy result values are readable — which is what unblocked the whole diagnosis.
 
 **K5 — disk and memory growth.** Disk now grows only with real usage (~6.6 KB/block) since the injector
