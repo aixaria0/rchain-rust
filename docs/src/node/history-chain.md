@@ -37,8 +37,13 @@ the two agree by construction:
 ```bash
 ADDR=11112We8VJbQ…                 # any REV address
 
-printf '"new return, vault(`rho:rchain:revVault`), ret in { vault!(\"getBalance\", \"%s\", *ret) | for (@b <- ret) { return!(b) } }"' \
-  "$ADDR" > /tmp/balance.json
+# The body is a bare JSON *string*, so the term's quotes are escaped — and the heredoc
+# delimiter is quoted, so the shell leaves the backslashes exactly as written. (A
+# `printf` with the same format string does *not* work: it reads `\"` as `"`, the body
+# stops being valid JSON, and the node answers `expected variable, got Eof`.)
+sed "s/ADDRESS/$ADDR/" > /tmp/balance.json <<'EOF'
+"new return, vault(`rho:rchain:revVault`), ret in { vault!(\"getBalance\", \"ADDRESS\", *ret) | for (@b <- ret) { return!(b) } }"
+EOF
 
 curl -s -X POST https://history.rhobot.net/api/explore-deploy \
   -H 'Content-Type: application/json' --data-binary @/tmp/balance.json
@@ -56,8 +61,10 @@ curl -s https://history.rhobot.net/api/status
 curl -s https://history.rhobot.net/api/blocks/1
 ```
 
-`0` means the address has **no vault** — it is an answer, not an error. Note the JSON body is a *bare
-string* (the rholang term), not an object; posting an object gets `invalid type: map, expected a string`.
+`0` means the address has **no vault** — it is an answer, not an error. Also: post the body as a *bare JSON
+string* (the rholang term); an object gets `invalid type: map, expected a string`. **The command above is
+the one that was run** — the earlier `printf` form on this page looked right and produced a body that was
+not valid JSON, which is the sort of thing only running it verbatim catches.
 
 **Verified on 2026-09-30:** 8 of 8 sampled addresses return the sheet's own numbers — random draws plus
 the largest allocation, the smallest non-zero, a balance of `1` and two zero balances — and a valid REV
