@@ -25,6 +25,34 @@ IMAGE="${RNODE_IMAGE:-rnode:local}"
 PREFIX="${DEVNET_PREFIX:-devnet}"
 NETWORK="${DEVNET_NETWORK:-devnet}"
 BOOTSTRAP="${PREFIX}-bootstrap"
+
+# Per-node memory ceiling, applied as `--memory` on every container this script starts. What it
+# protects is the *host*: a devnet is usually one of several heavy jobs on a workstation, and an
+# unconstrained node that goes wrong takes the machine with it. That is not hypothetical — on
+# 2026-09-29 a three-validator devnet under a four-way deploy storm ran beside two other heavy jobs,
+# the kernel logged `fill_page_cache_func hogged CPU for >10000us` and then `Under memory pressure,
+# flushing caches.`, and the machine froze: 47 GiB of RAM against 2 GiB of swap, so there was no
+# reclaim to fall back on. The unconstrained containers were the part of that this script could have
+# prevented, and nothing here stopped them.
+#
+# **The ceiling does bind under load, and that is the designed trade.** Measured the same day, after
+# this flag went in: with `4g`, two of three nodes were OOM-killed (exit 137, `oom=true`) *seventeen
+# seconds* into the four-way storm, at height ~13. The image is ~132 MiB; a node mid-storm is not. The
+# host stayed up with 37 GiB free, which is the outcome this flag is for. A measurement that needs a
+# node to *survive* a storm must raise this (`DEVNET_NODE_MEMORY=8g`), lower the storm's concurrency,
+# or count the OOM kill as one of its results — a node killed this way ends the run early and, from a
+# sampler's side, is indistinguishable from one that merely stopped answering.
+#
+# `--memory-swap` is set *equal* to `--memory` deliberately: that turns swap off for the node, so a
+# node that exceeds its ceiling is OOM-killed inside its own cgroup rather than pushing the host into
+# the thrash that makes a freeze a freeze. A killed node costs one run; a thrashed host costs the
+# session, and the evidence of what the run was doing.
+#
+# CPU is deliberately **not** capped. The block timing a devnet measurement observes is the thing
+# under test (issue #105's storm is a latency phenomenon), so constraining the scheduler would change
+# what is measured. Memory headroom does not. Set to the empty string to opt out of the memory cap.
+DEVNET_NODE_MEMORY="${DEVNET_NODE_MEMORY:-4g}"
+
 # The bootstrap's data volume, when a measurement must run against an existing artifact rather than
 # `${BOOTSTRAP}-data` (set by `up --data-volume`). Empty means the default.
 
@@ -163,6 +191,17 @@ cmd_build() {
   if [[ -n "$commit" ]]; then
     opts+=(--build-arg "GIT_HEAD_COMMIT=$commit")
   fi
+  # Profiling passthroughs (#117): `RNODE_BUILD_FEATURES=dhat-heap` installs the heap profiler, and
+  # `RNODE_BUILD_RUSTFLAGS='-C debuginfo=1'` is what makes its output nameable — the release profile
+  # is `debug = 0`, so without it the profile is addresses with no symbols. Read from the environment
+  # rather than flags for the same reason the node's diagnostic knobs are: they change the *artifact*
+  # under investigation, not the network being started.
+  if [[ -n "${RNODE_BUILD_FEATURES:-}" ]]; then
+    opts+=(--build-arg "CARGO_FEATURES=$RNODE_BUILD_FEATURES")
+  fi
+  if [[ -n "${RNODE_BUILD_RUSTFLAGS:-}" ]]; then
+    opts+=(--build-arg "RUSTFLAGS=$RNODE_BUILD_RUSTFLAGS")
+  fi
   docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
 }
 
@@ -279,7 +318,22 @@ docker_opts() {
   # long chain that measurements run against is the bootstrap's, and pointing every node at one
   # directory would have them fight over the same LMDB environments.
   if [[ "$name" == "$BOOTSTRAP" && -n "$BOOTSTRAP_DATA_VOLUME" ]]; then data="$BOOTSTRAP_DATA_VOLUME"; fi
-  echo "-d --name $name --network $NETWORK $ports \
+  # See `DEVNET_NODE_MEMORY` at the top of this file: the ceiling and the no-swap pair are what keep
+  # a runaway node inside its own cgroup instead of in the host's swap.
+  local limits=""
+  if [[ -n "$DEVNET_NODE_MEMORY" ]]; then
+    limits="--memory $DEVNET_NODE_MEMORY --memory-swap $DEVNET_NODE_MEMORY"
+  fi
+  # Extra container environment, comma-separated `KEY=VALUE` pairs (`DEVNET_NODE_ENV`). The allocator
+  # knobs are why this exists: a node's footprint under fork load is allocator-shaped — one worker per
+  # core means one glibc arena per worker, each holding its own high-water mark — and
+  # `MALLOC_ARENA_MAX=2` / `MALLOC_TRIM_THRESHOLD_` are how that is tested **without a rebuild**, which
+  # matters because a rebuild changes the binary under test (#117).
+  local envs="" pair
+  if [[ -n "${DEVNET_NODE_ENV:-}" ]]; then
+    for pair in ${DEVNET_NODE_ENV//,/ }; do envs="$envs -e $pair"; done
+  fi
+  echo "-d --name $name --network $NETWORK $ports $limits $envs \
     -v ${data}:/var/lib/rnode \
     -v ${CONTRACTS_DIR}:/contracts:ro"
 }
@@ -308,6 +362,13 @@ rnode_run_common() {
   # node with a height that does not move. Read from the environment rather than a flag, because it is
   # a diagnostic knob rather than a property of the network being started.
   if [[ -n "${DEVNET_LOG_LEVEL:-}" ]]; then flags="$flags --log-level $DEVNET_LOG_LEVEL"; fi
+  # The scheduler's worker count, from the environment rather than a flag, for the same reason as the
+  # log level: it is a diagnostic knob, not a property of the network being started. It is also a
+  # memory knob — the worker threads are where allocation happens, and glibc gives each one its own
+  # arena that holds its own high-water mark, so the count bounds the *sum* of those peaks (#117).
+  if [[ -n "${DEVNET_THREAD_POOL_SIZE:-}" ]]; then
+    flags="$flags --thread-pool-size $DEVNET_THREAD_POOL_SIZE"
+  fi
   # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
   # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
   # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting
