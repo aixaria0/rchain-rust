@@ -20,27 +20,49 @@ Short hashes here are the first twelve hex characters of the value they name. **
 down** — a rebuild regenerates it, which is why [the testnet page](testnet.md) stopped naming its own; read
 it from `GET /api/status` → `address`.
 
-## Reading it
+## Reading it: r-wallet
 
-The read surface is the node's ordinary one, and `explore-deploy` works because the genesis block is a
-usable block:
+**R Wallet has this chain in its node dropdown** — choose **RChain → History (REV allocation)**. The
+wallet talks to `https://history.rhobot.net` directly, so its Balance page answers for whatever address
+is active; there is nothing to configure and no custom node to add.
+
+What does *not* work there is deploying, by design: the deploy is refused with `403` and a plain-text
+reason, because this chain has no proposer. Pick it to read an allocation, not to write one.
+
+## Reading it: curl
+
+The term below is **the wallet's own** (`src/utils/rho.ts`, `fn_check_balance` in the r-wallet repo), so
+the two agree by construction:
 
 ```bash
-# what the chain is
-curl -s https://history.rhobot.net/api/status
+ADDR=11112We8VJbQ…                 # any REV address
 
-# the genesis block
-curl -s https://history.rhobot.net/api/blocks/1
+printf '"new return, vault(`rho:rchain:revVault`), ret in { vault!(\"getBalance\", \"%s\", *ret) | for (@b <- ret) { return!(b) } }"' \
+  "$ADDR" > /tmp/balance.json
 
-# one address's allocation (the vault's balance; 0 for an address with no vault)
 curl -s -X POST https://history.rhobot.net/api/explore-deploy \
-  -H 'Content-Type: application/json' \
-  -d '"new return, vault(`rho:rchain:revVault`), ret in { vault!(\"getBalance\", \"11112We8VJbQ…\", *ret) | for (@b <- ret) { return!(b) } }"'
+  -H 'Content-Type: application/json' --data-binary @/tmp/balance.json
 ```
 
-**Verified on 2026-09-30:** the largest allocation in the sheet reads back as the sheet's own number
-(`13016096534027600`), and a valid REV address that is not in the sheet reads `0`. Both answers come from
-the genesis block (`blockNumber: 0`).
+The answer is `{"expr":[{"ExprInt":<balance>}],"block":{…"blockNumber":0…}}`:
+
+```bash
+# just the number (in the chain's smallest unit, 1e-8 REV)
+curl -s -X POST https://history.rhobot.net/api/explore-deploy \
+  -H 'Content-Type: application/json' --data-binary @/tmp/balance.json | jq '.expr[0].ExprInt'
+
+# what the chain is, and the genesis block
+curl -s https://history.rhobot.net/api/status
+curl -s https://history.rhobot.net/api/blocks/1
+```
+
+`0` means the address has **no vault** — it is an answer, not an error. Note the JSON body is a *bare
+string* (the rholang term), not an object; posting an object gets `invalid type: map, expected a string`.
+
+**Verified on 2026-09-30:** 8 of 8 sampled addresses return the sheet's own numbers — random draws plus
+the largest allocation, the smallest non-zero, a balance of `1` and two zero balances — and a valid REV
+address that is *not* in the sheet returns `0`. Every answer comes from the genesis block
+(`blockNumber: 0`).
 
 ## What "read-only" means here, precisely
 
