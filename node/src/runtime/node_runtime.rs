@@ -728,19 +728,63 @@ pub fn wire_block_processing(
     mpsc::Sender<BlockMessage>,
     mpsc::UnboundedSender<BlockMessage>,
 ) {
+    wire_block_processing_observed(
+        comm_state,
+        parts,
+        shard_id,
+        min_phlo_price,
+        log,
+        autopropose,
+        attest_on_new_blocks,
+        None,
+    )
+}
+
+fn wire_block_processing_observed(
+    comm_state: &CommState,
+    parts: &ShardParts,
+    shard_id: &str,
+    min_phlo_price: i64,
+    log: Arc<dyn Log>,
+    autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
+    attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
+    queue_metrics: Option<(Arc<MetricsRegistry>, usize)>,
+) -> (
+    mpsc::Sender<BlockMessage>,
+    mpsc::UnboundedSender<BlockMessage>,
+) {
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::unbounded_channel();
 
     // Tap the validated-blocks stream: for autopropose (propose on each validated block) and, when
-    // `--attest-on-new-blocks` is on, for attestation (propose on each *remote* block that carries
-    // deploys). The taps compose — each forwards the stream after firing.
+    // `--attest-on-new-blocks` is on, for attestation (propose on each *remote* block).
+    // The taps compose — each forwards the stream after firing.
     let autopropose_tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> =
         autopropose.map(|tap| {
             Arc::new(move |_: &BlockMessage| tap()) as Arc<dyn Fn(&BlockMessage) + Send + Sync>
         });
-    let validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, autopropose_tap);
-    let validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, attest_on_new_blocks);
+    let queue_observer = |stage: &str| {
+        queue_metrics.as_ref().map(|(metrics, index)| {
+            metrics.queue_observer(
+                rchain_shared::metrics::Source::base()
+                    .sub("block_pipeline")
+                    .sub(&format!("shard_{index}"))
+                    .sub(stage),
+            )
+        })
+    };
+    let mut validated_blocks_rx = validated_blocks_rx;
+    let mut observer = queue_observer("validated");
+    if autopropose_tap.is_some() {
+        validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, autopropose_tap, observer);
+        observer = queue_observer("autopropose");
+    }
+    if attest_on_new_blocks.is_some() {
+        validated_blocks_rx =
+            tap_validated_blocks(validated_blocks_rx, attest_on_new_blocks, observer);
+        observer = queue_observer("attestation");
+    }
 
     // Block receiver: incoming + validated blocks → a queue of dependency-free block hashes.
     let receiver_state = Arc::new(tokio::sync::Mutex::new(
@@ -752,7 +796,7 @@ pub fn wire_block_processing(
             let _ = incoming_blocks_tx.try_send(block);
         }
     });
-    let validation_rx = block_receiver::apply(
+    let validation_rx = block_receiver::apply_with_queue_observer(
         receiver_state,
         incoming_blocks_rx,
         validated_blocks_rx,
@@ -762,6 +806,7 @@ pub fn wire_block_processing(
         comm_state.block_retriever.clone(),
         put_to_incoming_queue,
         log.clone(),
+        observer,
     );
 
     // Load each validated hash's block from the store and feed the processor (port of
@@ -1393,7 +1438,7 @@ async fn setup_shard_runtime(
         comm_state.connections.clone(),
         comm_state.discovery.clone(),
         validator_opt.clone(),
-        metrics,
+        metrics.clone(),
     )
     .await?;
     // LFS sync is shard-blind: the fringe exchange carries no shard id, so a multi-shard node could
@@ -1540,7 +1585,7 @@ async fn setup_shard_runtime(
     };
 
     // Block receiver + processor streams (spawned internally).
-    let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing(
+    let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing_observed(
         comm_state,
         &parts,
         &shard_id,
@@ -1548,6 +1593,7 @@ async fn setup_shard_runtime(
         log.clone(),
         autopropose,
         attest_on_new_blocks,
+        Some((metrics, index)),
     );
 
     // This shard's slice of the peer-message stream (fed by the router).
@@ -2550,18 +2596,24 @@ mod dummy_deploy_tests {
 fn tap_validated_blocks(
     rx: mpsc::UnboundedReceiver<BlockMessage>,
     tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
+    observer: Option<block_receiver::QueueObserver>,
 ) -> mpsc::UnboundedReceiver<BlockMessage> {
     let Some(tap) = tap else {
         return rx;
     };
     let (tap_tx, tap_rx) = mpsc::unbounded_channel();
-    let mut rx = rx;
-    tokio::spawn(async move {
-        while let Some(block) = rx.recv().await {
-            tap(&block);
-            let _ = tap_tx.send(block);
-        }
-    });
+    tokio::spawn(block_receiver::consume_observed_queue(
+        rx,
+        observer,
+        move |block| {
+            let tap = tap.clone();
+            let tap_tx = tap_tx.clone();
+            async move {
+                tap(&block);
+                let _ = tap_tx.send(block);
+            }
+        },
+    ));
     tap_rx
 }
 

@@ -5,7 +5,7 @@
 //! backend with a `Mutex`-guarded `BTreeMap` accumulator.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rchain_shared::metrics::{Metrics, Source};
@@ -40,6 +40,33 @@ pub struct MetricsRegistry {
 impl MetricsRegistry {
     pub fn new() -> Self {
         MetricsRegistry::default()
+    }
+
+    /// Observe a queue without retaining its sender or receiver. All quantities
+    /// are gauges: this registry's reporters accumulate counters across snapshots.
+    /// The peak is sampled, not an exact enqueue-time high-water mark.
+    pub fn queue_observer(
+        self: &Arc<Self>,
+        source: Source,
+    ) -> Arc<dyn Fn(usize, bool) + Send + Sync> {
+        let registry = self.clone();
+        let mut_stats = Mutex::new((0_i64, 0_i64));
+        Arc::new(move |depth, active| {
+            let depth = i64::try_from(depth).unwrap_or(i64::MAX);
+            let mut stats = mut_stats.lock().unwrap_or_else(|p| p.into_inner());
+            stats.0 = stats.0.max(depth);
+            stats.1 = stats.1.saturating_add(1);
+            // Update together so one scrape cannot mix values from two samples.
+            let mut inner = registry.lock();
+            for (name, value) in [
+                ("depth", depth),
+                ("sampled_peak", stats.0),
+                ("observations", stats.1),
+                ("consumer_active", i64::from(active)),
+            ] {
+                inner.gauges.insert(Self::key(&source, name), value);
+            }
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -232,6 +259,33 @@ mod tests {
         assert_eq!(hist.distribution.sum, 500);
         assert_eq!(hist.distribution.min, 100);
         assert_eq!(hist.distribution.max, 300);
+    }
+
+    #[test]
+    fn queue_samples_keep_the_peak_and_separate_stages() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let a = registry.queue_observer(Source::base().sub("queue_a"));
+        let b = registry.queue_observer(Source::base().sub("queue_b"));
+        a(7, true);
+        a(2, true);
+        b(3, true);
+        a(0, false);
+        let snap = registry.snapshot();
+        let gauge = |name: &str| {
+            snap.metrics
+                .gauges
+                .iter()
+                .find(|g| g.name == name)
+                .unwrap()
+                .value
+        };
+        assert_eq!(gauge("rchain.queue_a.depth"), 0);
+        assert_eq!(gauge("rchain.queue_a.sampled_peak"), 7);
+        assert_eq!(gauge("rchain.queue_a.consumer_active"), 0);
+        assert_eq!(gauge("rchain.queue_a.observations"), 3);
+        assert_eq!(gauge("rchain.queue_b.depth"), 3);
+        assert_eq!(gauge("rchain.queue_b.sampled_peak"), 3);
+        assert_eq!(gauge("rchain.queue_b.consumer_active"), 1);
     }
 
     #[test]
