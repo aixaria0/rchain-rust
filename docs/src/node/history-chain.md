@@ -1,0 +1,107 @@
+# The history chain
+
+**A genesis-only, read-only chain carrying the REV allocation — dated 13 May 2026, frozen at that state
+until it is updated with the documented final transactions.**
+
+Unlike [the public testnet](testnet.md), this chain has **one block and never produces another**. It is a
+public, queryable record rather than a network: no proposer, no peers, no finality, and no way to write to
+it. It exists so that an address's allocation can be read from a chain instead of from a spreadsheet.
+
+| | |
+|---|---|
+| Endpoint | **https://history.rhobot.net** (nginx → the node's HTTP API on the loopback) |
+| Network id | `history` (its own, so it cannot be confused with `testnet`) |
+| Chain | genesis block `f6aaa149…`, block number **0**, and nothing above it |
+| Wallets | **13,946** REV addresses, **908,962,714 REV** in total (at 1e-8 precision) |
+| Source of the allocation | [the allocation spreadsheet](https://docs.google.com/spreadsheets/d/1bLEn7WpgESNp8Hp8N9_-5Yf6XXRBMM5KbsH_-G4Fhks/edit) — `address, balance` |
+| Host | `rhobot-2` (`138.197.65.34`), unit `rnode-history.service`, data `/var/lib/rnode-history` |
+
+Short hashes here are the first twelve hex characters of the value they name. **The node id is not written
+down** — a rebuild regenerates it, which is why [the testnet page](testnet.md) stopped naming its own; read
+it from `GET /api/status` → `address`.
+
+## Reading it
+
+The read surface is the node's ordinary one, and `explore-deploy` works because the genesis block is a
+usable block:
+
+```bash
+# what the chain is
+curl -s https://history.rhobot.net/api/status
+
+# the genesis block
+curl -s https://history.rhobot.net/api/blocks/1
+
+# one address's allocation (the vault's balance; 0 for an address with no vault)
+curl -s -X POST https://history.rhobot.net/api/explore-deploy \
+  -H 'Content-Type: application/json' \
+  -d '"new return, vault(`rho:rchain:revVault`), ret in { vault!(\"getBalance\", \"11112We8VJbQ…\", *ret) | for (@b <- ret) { return!(b) } }"'
+```
+
+**Verified on 2026-09-30:** the largest allocation in the sheet reads back as the sheet's own number
+(`13016096534027600`), and a valid REV address that is not in the sheet reads `0`. Both answers come from
+the genesis block (`blockNumber: 0`).
+
+## What "read-only" means here, precisely
+
+Three separate things, and it is worth knowing which one is doing the work:
+
+1. **The node has no proposer.** It runs as genesis master (`-s`) exactly once, to build the block from
+   the wallets file, and then never again: no `--propose-on-deploy`, no `--autopropose`. Nothing is ever
+   mined, so a deploy would sit in the pool forever. This is the real mechanism.
+2. **The edge refuses the write routes.** nginx answers `403` for `/api/deploy`, `/api/faucet`,
+   `/api/txn` and `/api/v1/deploy`, so a caller is told the chain is read-only rather than being left to
+   infer it from a deploy that never completes. `explore-deploy` and `data-at-name` are exploratory and
+   change nothing, so they stay.
+3. **There is no finality.** `GET /api/last-finalized-block` answers
+   `"Finalized fringe is not available."` and always will — finality needs blocks to finalise and there
+   are none. Reads anchor to the genesis block, which is the whole state.
+
+So the chain is not a small testnet with writes switched off; it is a **snapshot with a read API**.
+
+## How it was built
+
+`wallets.txt` is derived from the allocation spreadsheet, in the form
+[the vault parser](https://github.com/rchain-community/rchain-rust/blob/dev/casper/src/vault_parser.rs)
+accepts — `<REV_address>,<balance>`, one per line:
+
+- the sheet's `balance` column carries **thousands separators** (`1,000,000`); the parser wants bare
+  digits, so the commas are stripped;
+- the sheet's third column (`$0.004`) is not part of the chain;
+- balances are used **as they are** — no scaling. The total is 908,962,714 REV at 1e-8 precision, which is
+  the sanity check that the column is already in the chain's smallest unit;
+- 13,946 addresses, all unique, all matching the parser's `[1-9A-Za-z]+` address rule; 209 of them have a
+  zero balance and get an empty vault.
+
+The genesis inputs are the ordinary two files:
+
+```
+/var/lib/rnode-history/genesis/wallets.txt   13,946 lines, from the spreadsheet
+/var/lib/rnode-history/genesis/bonds.txt     one validator, stake 1000
+```
+
+and the validator key is a raw 64-hex secret at `/etc/rnode-history/validator.key` (the format the port
+reads: `rnode keygen` cannot be used non-interactively — it loops on a password prompt and segfaults
+without a TTY — so the key was generated directly and the public half derived from it).
+
+PoS parameters: `--epoch-length 10 --quarantine-length 10 --bond-minimum 1 --bond-maximum 1000000
+--number-of-active-validators 10`. They are written into the genesis block and, on a chain that never
+advances, nothing reads them again.
+
+A 13,946-vault genesis builds in well under a minute: the data directory is 3.7 MB and the node settles at
+~54 MB RSS.
+
+## Operating it
+
+```
+systemctl status rnode-history      # on rhobot-2
+tail -f /var/log/rnode-history.log  # the node's log (this host's journald does not capture it)
+```
+
+Ports are **43400-based** (`--protocol-port 43400`, `--api-port-http 43403`, …) because the playground node
+on the same host holds the whole 40400 family and the testnet join holds 42400. Only 80/443 are exposed;
+nginx proxies the API from `127.0.0.1:43403`.
+
+To rebuild the chain — which produces a **different genesis block**, and therefore a different chain —
+stop the unit, replace `genesis/wallets.txt`, and delete `/var/lib/rnode-history` so the node starts from
+an empty data directory. Then re-point anything holding the old genesis hash.
