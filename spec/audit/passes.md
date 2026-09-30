@@ -351,6 +351,8 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **The merge search is bounded, and an exceeded search is refused rather than answered** (`SearchBudget`, `sdk/src/dag/merging.rs`; the node's policy is `SearchBudget::NODE`) | `ConflictResolutionLogic.scala`'s `computeRejectionOptions` enumerates unconditionally — the oracle has no bound at all, and its cost is exponential in the conflict set's size, which the DAG decides | **Node-local, not a fork**, and the distinction is exact rather than hopeful: an exceeded search returns *no answer*, the merge is refused, and the error reaches `ValidateError::Internal` (`multi_parent_casper.rs:361`) — a drop, which inserts no metadata. It must never become `mark_failed_attributable`, because nothing clears that record (C173) and a local resource policy would then estrange a node from a proposer for ever. Every node that *does* finish the search gets the identical option set, so no block hash moves. Measured: the widest single merge observed was **2,026,511 steps** over nine node-runs, and the enumerated worst case is `2^43 = 8.8e12`. AUDIT C184; `candidate:bounded-work-per-step` (C180) gains its first held member. |
 | **The LFS block walk gives up when it stops completing blocks**: `request_blocks` fails after `MAX_IDLE_ROUNDS` (3) **consecutive** idle resend intervals in which `LfsState::finished` did not grow (`casper/src/engine/lfs_block_requester.rs`, issue #102) | `LfsBlockRequester.scala:309-312` — `requestStream.evalOnIdle(resendRequests, requestTimeout).terminateAfter(_.isFinished) concurrently responseStream`: the **only** termination condition is `isFinished`, so a fringe naming state no peer has retries forever. Nothing upstream bounds the walk: `requestTimeout` is the *resend* interval, not a deadline | the port did the same, and the consequence is #102's first defect rather than a theoretical one: `run_approved_state_sync` `join!`s the block walk with the tuple-space request, so a walk that never ends is a **sync attempt that never ends** — the spawned task never returns, `notify_when_restored` never fires, and the node sits in `NodeSyncing` for good **with a serving API and no error line**, which is the "silently stuck" class this register keeps finding. **Why a pace rule and not a deadline**: a long chain legitimately takes longer than any fixed duration, so a wall-clock bound would abandon a walk that is *long* rather than *stuck*; the quantity that distinguishes them is whether blocks are still being completed, and `finished` is monotone (`done` only adds, `add` refuses an existing key), which is what makes "did it move" well-formed — **Law 51a**'s `Drift`, the same shape as C171 and refused by the same `Paced`. **Pace, not a rate**: a slow peer that needs several resends per block is untouched, because the counter resets on every completed block. Falsified in both directions: deleting the give-up leaves the walk hanging (`a_walk_nobody_serves_fails_rather_than_hangs` reports #102's exact symptom after its 2 s harness bound), and deleting the reset abandons a progressing walk (`a_slow_but_progressing_walk_is_not_abandoned` fails on the second block) — the two mutations cannot both be satisfied by a rule that is not this one |
 
+| **A new block justifies the `latest_msgs` as of the last round boundary, not `latest_msgs`** (`DagMessageState::round_parents`, `block-storage/src/dag/message_state.rs`; the proposer reads it in `get_pre_state_for_new_block`) | `BlockCreator`'s `getPreStateForNewBlock` builds the parent set as `dag.latestMessages.map(_.id)`, every sender's newest message | the oracle's parent set is one its **own** finalizer cannot advance on. `calculate_next_fringe_support_map` derives each candidate's `seen_by` from `parents ∖ next_layer`, so a parent set that *is* every sender's newest message has almost no remainder: the head of each round has an empty one and the later movers have seen a prefix. Measured in-process through the production entry point with three live validators at the devnet's `100/100/50`: `Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }`, refusing before the quorum is ever consulted. With the round snapshot the same chain publishes a fringe and tracks the tip at a constant 12-height lag (48/60, 168/180, 348/360). Nothing else moves: heights stay `max + 1`, the validity rules are untouched, and the gate is unchanged. **What this is not:** not a validation fork — a block justifying a snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's blocks — but it *is* a proposer divergence, because the two produce different blocks on the same history, which is why it is registered rather than assumed. The `150 of 250` the devnet logged is this defect's half-fixed shape, reproduced in-process on the way to the correction. AUDIT C185; pass §35. |
+
 ---
 
 ## 7. Verification
@@ -5268,3 +5270,220 @@ mostly never reaches its quorum test. Two mechanisms produce that and want diffe
 *every* live seer has seen *every* next-layer message, and `calculate_next_fringe_support_map` resolving
 `mv.parents` through the full `msg_map` (`finalizer.rs:185-193`) so a non-live sender can land in a `seen_by`
 value. C185's `owes` names the fixture that separates them, and it is unchanged.
+
+## 35. The pin is the parent set the proposer builds, and the file said so all along (C185, #126)
+
+§34 left the mechanism unestablished and named three candidates. The in-process fixture it asked for was
+built (`the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe`), and it settles which — by
+**driving the production entry point** rather than modelling it.
+
+### The measurement
+
+Three validators at the devnet's own `100/100/50`, all live, no kill, no stopped validator, 60 blocks
+through `DagMessageState::create_msg_and_update_sender` — the call the block creator makes:
+
+```
+Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }
+```
+
+`supporting: 0` is **not a stake shortfall**: `calculate_fringe` sums the stake of the candidates whose
+`seen_by` values all equal the live partition, and no candidate qualifies, so the numerator is zero *before*
+the quorum is consulted. The live set is all three validators, asserted in the fixture.
+
+### Why, and what the gate is actually asking for
+
+`create_msg_and_update_sender` sets a block's height to `max(latest_msgs) + 1` and justifies **every**
+`latest_msgs` entry, one per sender. The chain is therefore *totally connected* — every block sees every
+validator's most recent block. `calculate_next_fringe_support_map` builds each candidate's `seen_by` from
+`mv.parents ∖ next_layer`: the justifications **beyond** the candidate next layer. A block whose
+justifications *are* the next layer credits nobody with having seen it, so the mover at the head of each
+round has an empty remainder and the later movers have seen a prefix, never the whole partition.
+
+**So the shape this gate accepts is the fork** that the other four tests in that file construct — and a
+proposer justifying `latest_msgs` never builds one. This is not a defect in the arithmetic, in the live
+window, or in `inPartition`; the rule and the proposer ask for different DAGs.
+
+### The sentence that was already there
+
+`casper/tests/finalization.rs`'s module header, since the file was written: *"The `Finalizer` only advances
+the fringe on a **fork** structure ... so a lockstep DAG — which the full block pipeline's `latest_msgs`
+proposer always produces, and which the Scala `MultiParentCasperFinalizationSpec` round-robin scenario built
+— never finalizes. That Scala spec is itself `ignore`d."* The mechanism was documented, in the file, the
+whole time. What had never been done is connect it to a devnet's stalled finality — which is what §31–§34
+were chasing, through three devnet runs and a fixed derivation, at a gate whose input the node never
+produces.
+
+### Corrections this forces
+
+- §34's *"`150 = 100 + 50`: the bootstrap's stake plus the killed validator's"* — retracted there, and the
+  reason is sharper here: **10 of the instrumented run's `150 of 250` lines are pre-kill.**
+- C185's three named candidates ("whether the stale sender enters `live_weight_set`, or the support map is
+  keyed on a set the derivation no longer uses, or the two sides disagree after `inPartition`") — **none of
+  them**. The live set is correct, the map's keys are correct, and the two sides agree.
+- The stall line's dominant form, `0 of 250 (0 full partition(s) among N candidate(s))`, is exactly this
+  shape. With `N = 0` — the campaign's line on all three nodes in all three attempts — the support map
+  never got built at all. `NoAdvance::Support`'s doc reads "a layer exists whose candidates were seen by the
+  whole partition, but the stake behind them is not a supermajority", which describes neither case.
+
+### What it does not settle, and this is the decision
+
+Two corrections are available and they are **not** equivalent:
+
+| | what changes | a fork? |
+|---|---|---|
+| **the proposer's parent set** — build the fork the gate wants, instead of `latest_msgs` | which blocks a node *makes*. `latest_msgs` is a proposer heuristic, not a validity rule, and a block justifying a stale set is accepted by every existing check | **no** — an unpatched node accepts a patched node's blocks |
+| **the gate's seeing relation** — count a candidate's *direct* justification of a next-layer message as having seen it, instead of only the ancestry past that layer | which fringe every node *agrees*. It moves the merge base and every block hash after it | **yes** — §6 row, #51 category A |
+
+The fixture is written to pin the defect, so it is the falsifier's premise for either: corrected, it fails,
+and the fix inverts it to assert that the derivation publishes a fringe on the chain the proposer builds.
+
+### §35, continued: the fix, and the shape that produced the devnet's number
+
+**The correction is in the proposer.** `DagMessageState` carries `round_parents` — the `latest_msgs` as of
+the last **round boundary** — and both the block creator (`create_msg_and_update_sender`) and the proposer
+(`get_pre_state_for_new_block`) justify that instead of `latest_msgs`. A boundary is the first message at
+which every bonded sender has advanced past the previous one; a sender silent past `LIVENESS_WINDOW` is
+retired, so the boundary cannot freeze — the same window, the same rule the fringe gate already uses.
+
+**Nothing else moves.** Heights stay `max + 1`; no validity rule and no gate changes; a block justifying a
+snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's
+blocks. It *is* a proposer divergence — the two produce different blocks on the same history — and that is
+why it is registered in §6 rather than assumed.
+
+Measured, in-process, through the production entry point: the same three live validators at the devnet's
+`100/100/50` now publish a fringe at a **constant** 12-height lag — 48/60, 168/180, 348/360 — where before
+they never advanced at all. A constant lag is the unfinalized region the rule needs; a growing one would be
+the rate problem this is not.
+
+**The intermediate deserves recording, because it is the devnet's own line.** The first version of the
+boundary closed as soon as the *currently live* set advanced — and `live_weight_set` drops a bonded sender
+that has not spoken *yet*, so on a fresh chain the boundary closed after the very first message and
+`round_parents` held a single message instead of a set. That produced, with all three validators live and
+nothing stopped:
+
+```
+Support { supporting: 150, total: 250, full_partitions: 2, candidates: 3 }
+```
+
+— which is character for character the line `n127-liveness/*/stall-*.txt` carries, and C185 spent two
+devnet runs reading it as a fact about the killed validator. It is the parent set, two-thirds fixed.
+
+**What is owed and not done here.** The pre-registration's own falsifier — the survivor's finality resuming
+on the campaign's rig — is the *next* measurement, not this one. The in-process falsifier is in place and
+two-way: `the_chain_the_nodes_own_proposer_builds_reaches_a_fringe` asserts the production path publishes
+and keeps the `latest_msgs` shape inline as the control that still refuses with
+`Support { supporting: 0, full_partitions: 0 }`.
+
+## 36. The proposer fix on the node: the pin is gone, and the next stop is a different one (C185, C186)
+
+§35 ended with the fix made and the node unmeasured. It is measured now
+(`spec/audit/evidence/n127-proposer-fix-results.md`), on the campaign's own rig, against the fixed build —
+and the result is two findings rather than one.
+
+### The pin is gone
+
+| arm | finality @T+120 | height @T+120 | gap | finality last advanced |
+|---|---|---|---|---|
+| before-arm (`c5442ee1f`) | 14, 17, 10 | 27, 32, 23 | 13–15 | T+111s, T+55s, T+17s |
+| broken after-arm (`ef412ef84`) | 13, 4, 18 | 28, 65, 32 | **15–61** | T+33s, T+19s, T+128s |
+| **fixed (`de4e9af02`)** | **72, 90, 105** | 76, 94, 109 | **3–4** | **T+120s — still advancing at the kill** |
+
+Three to four heights behind, in all three attempts, and still moving at the kill instant. The chain runs at
+~38 blocks/min against the campaign's 12–16. The stall line has effectively disappeared: six lines per
+attempt against seventy-five, and all six are the boundary warming up at genesis. The C184 budget control is
+still empty.
+
+That closes the question §31 opened with a devnet run and §32 answered with a wrong cause: the two earlier
+arms' last advance 87–104 seconds *before* the kill was the parent set, and the rig was reporting it as a
+fact about a killed validator for three runs.
+
+### The second stop, isolated and not explained
+
+**The chain stops producing the moment a validator is killed** — flat height in all three attempts across
+the 180 seconds after the kill, both survivors alive and serving. It is *not* the proposer's idle contract,
+which would be correct: the discriminator is a deploy **after** the kill, and 4 of 4 submitted at T+201 left
+the height at 100 for the rest of the window. Work available, nothing produced for 180 seconds.
+
+**Filed as C186, `todo`, law 51a** — it is a progress failure, not a safety one. What is owed is the
+instrument: the proposer logs only a self-created block that fails its own validation, so a proposer that
+*declines* to propose says nothing, and the run could not have produced the line that explains it. Node logs
+at WARN and above are captured from the next run onward (`logs-<node>-a<N>.txt`); if the suppressing path
+has no line at all, the missing log line is the first change — a proposer that declines must say why, which
+is the class this register keeps finding (C176).
+
+### What this does not settle
+
+- Three attempts plus one diagnostic, one configuration, one machine. Not a proof.
+- **A mixed network is untested.** §6's classification — an unpatched node accepts a patched node's blocks —
+  is argued from the validation rules and not measured, and a patched node beside an unpatched one is the
+  measurement that would test it.
+
+### §36 correction (2026-09-30, same day): the second stop was this branch's own bug
+
+**The halt is real, the discriminator stands, and the cause was the round snapshot's first version — not a
+property of a killed validator.** One more run captured node logs at WARN and above, and the node said what
+it had been unable to say:
+
+```text
+ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block into
+      DAG: equivocation detected: sender produced two blocks with the same sequence number
+```
+
+`block_creator.rs:58-75` derives **both** the new block's `block_num` and its `seq_num` **from the parent
+set**, so the first version of `parents_for_new_block` — a cross-sender snapshot that omitted the proposer's
+own newest message — made a second proposal in a round reuse its `(sender, seq_num)`. The DAG refused it,
+correctly, three times, and `consecutive_failures >= AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES` broke the
+autopropose timer (`node_runtime.rs:1504`). Nothing produced, work available. That is the whole signature.
+
+**The fix and its falsifier.** `parents_for_new_block(sender)` keeps the sender's own entry current; the
+first block of a round is unaffected, because the sender's newest *is* the snapshot's entry, so the
+cross-sender snapshot the gate needs is untouched.
+`a_validator_proposing_twice_in_one_round_keeps_its_sequence` derives its `seq_num` and `block_num` the way
+the block creator does and proposes twice from one validator inside a round — **observed red with the
+substitution disabled**, failing with the node's own sentence. C186 is `done` and rewritten to what it
+actually is.
+
+**The lesson is the one worth carrying, and it is not about this fix.** Three fixtures and a policy
+comparison all agreed the chain was linked while the node disagreed, because every one of them supplied its
+own `sender_seq` and `create_msg_and_update_sender` takes its `seq_num` from `latest_msgs` rather than from
+the parent set. **A fixture that owns the counter it is testing cannot test the rule that computes it** —
+and the instrument that found it was not a better fixture but a log capture, added one commit earlier for a
+different reason.
+
+## 37. The pin is fixed on the node, and two designs died getting there (C185, C186, C187)
+
+§35 found the defect, §36 found its first repair wrong. This is the one that holds, and the two failures in
+between are the part worth keeping — each is a measurement, and each would have been a plausible "obvious"
+fix.
+
+The governing constraint came out of the second failure and closes the design space: **`validate.rs:236`
+requires `max(justifications) + 1 == block_number` and `:259` requires `creator_latest_seq + 1 == seq_num`**.
+Both numbers are determined by the justification set and checked by every validator, so the parent set must
+carry the proposer's own newest message — while the fringe gate needs it not to. The tension is structural.
+Any repair that moves the derivation is a category A change, not a proposer-local one.
+
+| design | pin fixed | equivocates against itself | keeps producing after a kill |
+|---|---|---|---|
+| `latest_msgs` (the state before) | no | — | no |
+| pure round snapshot | **yes** | yes, and three halt autopropose | no |
+| + refuse a second proposal in a round | yes | no | **no — deadlocks** |
+| + escape, bounded by a local clock | **yes** | **no** | **yes** |
+
+The deadlock is worth naming precisely because it is the kind of thing that looks like a hang: the round
+closes only when every bonded sender has advanced past the boundary, a quiet sender stops holding it back
+only once `LIVENESS_WINDOW` heights have passed above its last message, and that is measured from the tip —
+which the refusal is what freezes. A validator killed inside the window is never retired and the round never
+closes. The escape's clock therefore had to be **local** (the proposer's own count of declined attempts),
+which is the one clock in this design that is not derived from the DAG.
+
+**On the node, tree `e7967ed35`, all three attempts** (`n127-proposer-fix-results.md`): finality 4 heights
+behind the tip at the kill — 80 of 84, 111 of 115, 127 of 131 — against 15–61 behind and last advancing
+87–104 seconds *before* the kill in the two earlier arms; production continuing for +12 heights over the 180
+seconds after the kill; **zero equivocation lines on any survivor in any attempt**; 12 / 32 / 12 stall lines
+against 75; the C184 control empty.
+
+**And one caveat, in the results file and repeated here because it is the difference between verified and
+almost:** the killed node logged ten equivocations pre-kill in one of the three attempts, traced to the guard
+comparing heights rather than sequence numbers. That predicate is now exact, and the change is covered by the
+fixtures **and not by this run** — the binary measured is the one with the height comparison.
+

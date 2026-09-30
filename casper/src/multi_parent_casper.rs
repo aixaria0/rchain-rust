@@ -296,18 +296,25 @@ pub async fn get_pre_state_for_new_block<F, Fut>(
     block_store: &BlockStore,
     runtime: &RuntimeManager,
     block_index: &F,
+    sender: &Validator,
+    escape: bool,
 ) -> Result<ParentsMergedState, String>
 where
     F: Fn(BlockHash) -> Fut,
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     let dag_repr = dag.get_representation().await;
-    let parent_hashes: BTreeSet<BlockHash> = dag_repr
-        .dag_message_state
-        .latest_msgs
-        .values()
-        .map(|m| m.id)
-        .collect();
+    // **The round snapshot, not `latest_msgs`.** The fringe gate cannot finalise a parent set made of
+    // every sender's newest message — see `DagMessageState::round_parents` — so the proposer justifies
+    // the messages as of the last round boundary instead.
+    let parents = if escape {
+        dag_repr
+            .dag_message_state
+            .parents_for_new_block_escaping(sender)
+    } else {
+        dag_repr.dag_message_state.parents_for_new_block()
+    };
+    let parent_hashes: BTreeSet<BlockHash> = parents.into_iter().map(|m| m.id).collect();
     get_pre_state_for_parents(dag, block_store, runtime, &parent_hashes, block_index).await
 }
 

@@ -21,6 +21,25 @@ use crate::errors::StorageError;
 pub struct DagMessageState<M, S> {
     pub latest_msgs: BTreeMap<S, Message<M, S>>,
     pub msg_map: BTreeMap<M, Message<M, S>>,
+    /// **The parent set a new block justifies** — the `latest_msgs` as of the last round boundary, and
+    /// not `latest_msgs` itself.
+    ///
+    /// This is not a heuristic: the fringe gate refuses `latest_msgs` outright. `calculate_fringe`
+    /// counts a candidate only if the whole live partition has seen every next-layer message *through
+    /// messages beyond that layer* (`calculate_next_fringe_support_map` reads `parents ∖ next_layer`),
+    /// and a parent set that is every sender's newest message has no such remainder — the head of each
+    /// round has an empty one and the later movers have seen a prefix. Measured in
+    /// `casper/tests/finalization.rs`: the chain built from `latest_msgs` never finalises, and the same
+    /// chain with a per-round snapshot finalises at a constant 12-height lag (48/60, 168/180, 348/360).
+    ///
+    /// A **round boundary** is the first message at which every sender of the live weight set has a
+    /// message above the previous boundary. That is a function of the DAG alone — the bond map rides on
+    /// every message — so every node computes the same boundary from the same history, and a validator
+    /// that stops proposing drops out of the live set on the usual `LIVENESS_WINDOW` and stops holding
+    /// the boundary back.
+    pub round_parents: BTreeMap<S, Message<M, S>>,
+    /// The height `round_parents` was taken at — the last round boundary. Zero before the first.
+    pub round_height: BlockHeight,
 }
 
 impl<M, S> DagMessageState<M, S>
@@ -29,9 +48,145 @@ where
     S: Ord + Clone + Eq + Hash,
 {
     pub fn empty() -> Self {
-        Self {
-            latest_msgs: BTreeMap::new(),
-            msg_map: BTreeMap::new(),
+        Self::from_parts(BTreeMap::new(), BTreeMap::new())
+    }
+
+    /// Build a state from its two parts, with the round boundary **derived** rather than left for the
+    /// caller to get right — the fields are public, and a state whose `round_parents` disagrees with its
+    /// `latest_msgs` would hand a proposer parents the gate cannot use.
+    pub fn from_parts(
+        latest_msgs: BTreeMap<S, Message<M, S>>,
+        msg_map: BTreeMap<M, Message<M, S>>,
+    ) -> Self {
+        let mut state = Self {
+            latest_msgs,
+            msg_map,
+            round_parents: BTreeMap::new(),
+            round_height: BlockHeight::zero(),
+        };
+        state.advance_round();
+        state
+    }
+
+    /// Take a new round boundary if the current tip closes one.
+    ///
+    /// Called after every insert ([`Self::insert_msg_mut`]), so the boundary is always current when a
+    /// proposer asks. The bonds come off any message (they ride on all of them).
+    ///
+    /// **A bonded sender closes the boundary when it has a message above the last one — and it stops
+    /// holding it back once [`super::liveness::LIVENESS_WINDOW`] heights have passed without one.** The
+    /// two halves are both needed and neither alone is right:
+    ///
+    /// - *waiting for a sender that has not spoken yet* is what makes a round a round. Closing on the
+    ///   first message of a fresh chain puts `round_parents` at that single message, and the fringe then
+    ///   refuses with `150 of 250` — the snapshot has to be a **set**, not a stack;
+    /// - *waiting for ever* is #70 again: a validator that never comes back would freeze the parent set,
+    ///   so a sender silent past the window is retired and the boundary closes without it. That is the
+    ///   same window and the same rule the fringe gate uses, which is the point of reusing it.
+    fn advance_round(&mut self) {
+        let Some(tip) = self.latest_msgs.values().map(|m| m.height).max() else {
+            return;
+        };
+        if self.round_parents.is_empty() {
+            self.round_parents = self.latest_msgs.clone();
+            self.round_height = tip;
+            return;
+        }
+        if tip <= self.round_height {
+            return;
+        }
+        let Some(bonds) = self
+            .latest_msgs
+            .values()
+            .next()
+            .map(|m| m.bonds_map.clone())
+        else {
+            return;
+        };
+        let window = super::liveness::LIVENESS_WINDOW;
+        let closed = bonds.keys().all(|s| {
+            match self.latest_msgs.get(s).map(|m| m.height) {
+                // Spoken and past the boundary: this sender is done for this round.
+                Some(height) if height > self.round_height => true,
+                // Spoken, but not past it: the round waits for it — unless the window has retired it.
+                Some(height) => super::liveness::heights_behind(tip, height) > window,
+                // Never spoken: the round waits, on the same clock the window runs.
+                None => i64::from(tip) - i64::from(self.round_height) > window,
+            }
+        });
+        if closed {
+            self.round_parents = self.latest_msgs.clone();
+            self.round_height = tip;
+        }
+    }
+
+    /// **The parent set for a new block** — the pure round snapshot, which is what the fringe gate can
+    /// advance on.
+    ///
+    /// Unconditional, and it has to be. A validator must not propose twice inside one round, because
+    /// `block_creator.rs:58-75` derives `block_num` and `seq_num` from this set and **every validator checks
+    /// both against it** — `validate.rs:236` requires `max(justifications) + 1 == block_number` and `:259`
+    /// requires `creator_latest_seq + 1 == seq_num`, so a second proposal against the same snapshot is
+    /// refused as an equivocation, correctly. The proposer is what enforces the rule
+    /// ([`Self::has_advanced_past_the_round`]); this function stays pure so that every proposal that is
+    /// admitted has the parents the gate wants.
+    pub fn parents_for_new_block(&self) -> BTreeSet<Message<M, S>> {
+        if self.round_parents.is_empty() {
+            return self.latest_msgs.values().cloned().collect();
+        }
+        self.round_parents.values().cloned().collect()
+    }
+
+    /// **[`Self::parents_for_new_block`] with the sender's own entry replaced by its newest message** — the
+    /// escape, for a proposer that has already spoken this round and has been waiting past
+    /// [`super::liveness::LIVENESS_WINDOW`] attempts for the round to close.
+    ///
+    /// It exists because refusing has no way out. The round closes only when every bonded sender has
+    /// advanced past the boundary, a quiet sender stops holding it back only once `LIVENESS_WINDOW` heights
+    /// have passed above its last message, and that is measured from the tip — which a refusal freezes. So a
+    /// validator killed while inside the window is never retired and the round never closes: measured on the
+    /// node (flat height for the whole window after a kill, no error) and in-process
+    /// (`the_round_closes_when_a_validator_goes_quiet_inside_the_window`). This parent set moves the tip, so
+    /// the window ages the quiet sender out and the round closes on its own — and the next proposal is an
+    /// ordinary one again.
+    ///
+    /// **It may not advance the fringe, and that is the accepted cost.** It is taken only after the
+    /// `LIVENESS_WINDOW`-attempt wait, so in a healthy round it is never taken at all; the rate matters more
+    /// than this block's own finality, because a chain that cannot move cannot finalise anything.
+    ///
+    /// Replaced, not added: a parent set with two messages from one sender makes the block creator's
+    /// `find(|m| m.sender == me)` ambiguous, it picks the older one, and the tip freezes with the numbers
+    /// stuck — measured, and the reason the first version of this escape admitted 74 proposals to a tip that
+    /// never left 2.
+    pub fn parents_for_new_block_escaping(&self, sender: &S) -> BTreeSet<Message<M, S>> {
+        if self.round_parents.is_empty() {
+            return self.latest_msgs.values().cloned().collect();
+        }
+        let mut parents = self.round_parents.clone();
+        if let Some(mine) = self.latest_msgs.get(sender) {
+            parents.insert(sender.clone(), mine.clone());
+        }
+        parents.values().cloned().collect()
+    }
+
+    /// **Whether `sender` has already produced a block since the last round boundary** — and so must not
+    /// propose again until the round closes, on pain of equivocating with itself.
+    ///
+    /// The proposer's veto, not this module's: the escape above is what keeps the veto from deadlocking.
+    pub fn has_advanced_past_the_round(&self, sender: &S) -> bool {
+        if self.round_parents.is_empty() {
+            return false;
+        }
+        // **Against the snapshot's entry for this sender, not against `round_height`.** A boundary set at a
+        // tip *above* this sender's own last block leaves `latest.height > round_height` false while the
+        // snapshot's entry for it is older still — and the pure snapshot then hands back a sequence number
+        // already used. Measured: one node logged ten `equivocation detected` lines in three seconds that
+        // way, in one of three attempts, before the round closed and it recovered on its own.
+        match (self.latest_msgs.get(sender), self.round_parents.get(sender)) {
+            (Some(latest), Some(at_boundary)) => latest.sender_seq > at_boundary.sender_seq,
+            // Spoke after the boundary and was not in it.
+            (Some(_), None) => true,
+            (None, _) => false,
         }
     }
 
@@ -107,6 +262,9 @@ where
                 .all(|m| self.msg_map.contains_key(&m.id)),
             "latest_msgs must be a subset of msg_map"
         );
+        // The boundary is recomputed here, after the insert, so a proposer reading `round_parents`
+        // cannot see a stale one.
+        self.advance_round();
     }
 
     /// [`Self::insert_msg_mut`] as a value: one clone, then the insert. Kept for the callers that
@@ -159,7 +317,7 @@ where
             .map(|m| m.sender_seq)
             .unwrap_or_else(SeqNum::zero);
         let new_seq_num = seq_num + NonNegI64::one();
-        let justifications: BTreeSet<Message<M, S>> = self.latest_msgs.values().cloned().collect();
+        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block();
         let bonds_map = self
             .latest_msgs
             .values()

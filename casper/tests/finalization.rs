@@ -477,3 +477,557 @@ fn the_devnet_stake_split_finalises_with_one_validator_stopped() {
         "and it reports no stall reason at all"
     );
 }
+/// **The chain the node's own block creator builds now reaches a fringe — and it did not.**
+///
+/// Driven through the production entry point, `DagMessageState::create_msg_and_update_sender`, with three
+/// validators at the devnet's own `100/100/50`, all live, no kill and no stopped validator. Before the
+/// round snapshot this refused and never advanced:
+///
+/// ```text
+/// Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }
+/// ```
+///
+/// **`supporting: 0` was not a stake shortfall.** `calculate_fringe` sums the stake of the candidates whose
+/// `seen_by` values all equal the live partition, and no candidate qualified, so the numerator was zero
+/// before the quorum was ever consulted. `calculate_next_fringe_support_map` builds each candidate's
+/// `seen_by` from `mv.parents ∖ next_layer` — the justifications *beyond* the candidate next layer — so a
+/// block whose justifications **are** every sender's newest message credits nobody with having seen
+/// anything: the head of each round has an empty remainder and the later movers have seen a prefix.
+///
+/// **This file's own header has said so since it was written**: "a lockstep DAG — which the full block
+/// pipeline's `latest_msgs` proposer always produces, and which the Scala `MultiParentCasperFinalizationSpec`
+/// round-robin scenario built — never finalizes. That Scala spec is itself `ignore`d." What had never been
+/// done is connect that sentence to a devnet's stalled finality. Three devnet runs and a fixed derivation
+/// went into chasing a gate whose input the node never produced.
+///
+/// The fix is the parent set and nothing else: `create_msg_and_update_sender` now justifies
+/// `DagMessageState::round_parents` — the `latest_msgs` as of the last round boundary — while the height
+/// rule (`max + 1`), the validity rules and the gate all stay as they were. **The control is inline**: the
+/// same chain built with `latest_msgs` as parents still does not advance, so this test is red if the round
+/// snapshot is dropped.
+#[test]
+fn the_chain_the_nodes_own_proposer_builds_reaches_a_fringe() {
+    use rchain_block_storage::dag::finalizer::{Finalizer, NoAdvance};
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+    fn byte_of(v: &Validator) -> u8 {
+        (0u8..=255)
+            .find(|b| Validator::new([*b; 65]) == *v)
+            .expect("a validator this fixture built")
+    }
+
+    let vs = [validator(0), validator(1), validator(2)];
+    let g = validator(255);
+    // The devnet's own genesis split, and no validator is ever stopped.
+    let bonds: std::collections::BTreeMap<Validator, Stake> = [
+        (vs[0].clone(), Stake::try_from(100).unwrap()),
+        (vs[1].clone(), Stake::try_from(100).unwrap()),
+        (vs[2].clone(), Stake::try_from(50).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    for height in 1..=60_i64 {
+        let v = vs[(height as usize - 1) % 3].clone();
+        let (next, _m) = state
+            .create_msg_and_update_sender(&v, |snd, ht| id(byte_of(snd), i64::from(ht)))
+            .expect("a message");
+        state = next;
+    }
+
+    let justifications: std::collections::BTreeSet<_> =
+        state.latest_msgs.values().cloned().collect();
+    let tip = justifications
+        .iter()
+        .map(|m| m.height)
+        .max()
+        .expect("a tip");
+    let live = liveness::live_weight_set(
+        &bonds,
+        &liveness::latest_heights(justifications.iter().map(|m| (m.sender.clone(), m.height))),
+        tip,
+        liveness::LIVENESS_WINDOW,
+    );
+    assert_eq!(
+        live.len(),
+        3,
+        "all three validators are live at the tip, so nothing here is a retired validator or a rate"
+    );
+
+    let finalizer = Finalizer::new(&state.msg_map);
+    let (_parent, fringe, why) =
+        liveness::calculate_finalization_detailed(&finalizer, &justifications, &bonds);
+    let fringe = fringe.unwrap_or_else(|| {
+        panic!(
+            "the chain the block creator builds must publish a fringe now that it justifies the round \
+             snapshot instead of `latest_msgs` — got {why:?}"
+        )
+    });
+    let finalized = fringe
+        .iter()
+        .map(|m| m.height)
+        .max()
+        .expect("a published fringe is non-empty");
+    assert!(
+        finalized < tip,
+        "and the fringe trails the tip rather than claiming it: {finalized:?} of {tip:?}"
+    );
+
+    // **The control, and it is what makes this test a falsifier.** The same three validators on the same
+    // chain, with `latest_msgs` as the parent set — the shape before the round snapshot — do not advance.
+    let st2: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis2 = st2.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state2 = st2.insert_msg(&genesis2);
+    for height in 1..=60_i64 {
+        let v = vs[(height as usize - 1) % 3].clone();
+        let max = state2
+            .latest_msgs
+            .values()
+            .map(|m| m.height)
+            .max()
+            .expect("a tip");
+        let parents: std::collections::BTreeSet<_> = state2.latest_msgs.values().cloned().collect();
+        let m = state2.create_message(
+            id((height - 1) as u8 % 3, height),
+            max + rchain_shared::refined::NonNegI64::one(),
+            v,
+            s(height),
+            bonds.clone(),
+            &parents,
+        );
+        state2 = state2.insert_msg(&m);
+    }
+    let justifications2: std::collections::BTreeSet<_> =
+        state2.latest_msgs.values().cloned().collect();
+    let finalizer2 = Finalizer::new(&state2.msg_map);
+    let (_p2, fringe2, why2) =
+        liveness::calculate_finalization_detailed(&finalizer2, &justifications2, &bonds);
+    assert!(
+        fringe2.is_none(),
+        "`latest_msgs` as the parent set still refuses — this is the shape the round snapshot replaced, \
+         and if it starts advancing the snapshot is not what fixed this (got {why2:?})"
+    );
+    assert!(
+        matches!(
+            why2,
+            Some(NoAdvance::Support {
+                supporting: 0,
+                full_partitions: 0,
+                ..
+            })
+        ),
+        "and it refuses for the recorded reason: no candidate is a full partition, so the numerator is \
+         zero before any quorum is consulted — got {why2:?}"
+    );
+}
+
+/// **What the gate needs from the proposer, measured rather than reasoned: the parent set, not the
+/// heights and not the rule.**
+///
+/// The fixture above shows the chain the node builds (`latest_msgs`) is refused. This one shows what
+/// changes it, by holding everything else fixed — the same three validators, the same stakes, the same
+/// height rule (`max + 1`, one message per height), the same round-robin order — and varying **only which
+/// messages a block justifies**:
+///
+/// | parent set | result |
+/// |---|---|
+/// | the current `latest_msgs` | refuses, `Support { supporting: 0, … }`, and never advances |
+/// | the `latest_msgs` **as of the start of the round** | publishes a fringe, and keeps up |
+///
+/// The second row is the finding. At 20, 60 and 120 rounds the fringe sits exactly **12 heights** behind
+/// the tip — 48/60, 168/180, 348/360 — so it advances with the chain rather than falling further behind.
+/// The lag is the structure the gate asks for (a candidate needs, for every live sender, a parent that is
+/// not that sender's *oldest* unfinalized message, which needs at least two unfinalized layers), not a
+/// rate.
+///
+/// So the correction lives in the proposer's parent set. Heights are untouched, no validity rule is
+/// touched, and an unpatched node accepts a patched node's blocks — the blocks are ordinary blocks that
+/// justify a snapshot instead of the newest message of every sender.
+#[test]
+fn a_round_snapshot_of_the_latest_messages_is_what_the_gate_needs() {
+    use rchain_block_storage::dag::finalizer::Finalizer;
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    /// -> (tip height, fringe height if any, the refusal if any). `snapshot` is the parent policy:
+    /// `false` justifies the current `latest_msgs`, `true` the set that was latest when the round began.
+    fn drive(snapshot: bool, rounds: i64) -> (i64, Option<i64>, Option<String>) {
+        let vs = [validator(0), validator(1), validator(2)];
+        let g = validator(255);
+        let bonds: std::collections::BTreeMap<Validator, Stake> = [
+            (vs[0].clone(), Stake::try_from(100).unwrap()),
+            (vs[1].clone(), Stake::try_from(100).unwrap()),
+            (vs[2].clone(), Stake::try_from(50).unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+        let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+        let mut state = st.insert_msg(&genesis);
+        let mut round_parents: std::collections::BTreeSet<_> =
+            [genesis.clone()].into_iter().collect();
+
+        for round in 1..=rounds {
+            let at_round_start: std::collections::BTreeSet<_> =
+                state.latest_msgs.values().cloned().collect();
+            for (i, v) in vs.iter().enumerate() {
+                let max = state
+                    .latest_msgs
+                    .values()
+                    .map(|m| m.height)
+                    .max()
+                    .expect("a tip");
+                let parents: std::collections::BTreeSet<_> = if snapshot {
+                    round_parents.clone()
+                } else {
+                    state.latest_msgs.values().cloned().collect()
+                };
+                let m = state.create_message(
+                    id(i as u8, round * 3 + i as i64),
+                    max + rchain_shared::refined::NonNegI64::one(),
+                    v.clone(),
+                    s(round * 3 + i as i64),
+                    bonds.clone(),
+                    &parents,
+                );
+                state = state.insert_msg(&m);
+            }
+            round_parents = at_round_start;
+        }
+
+        let justifications: std::collections::BTreeSet<_> =
+            state.latest_msgs.values().cloned().collect();
+        let tip = justifications
+            .iter()
+            .map(|m| m.height)
+            .max()
+            .expect("a tip");
+        let finalizer = Finalizer::new(&state.msg_map);
+        let (_p, fringe, why) =
+            liveness::calculate_finalization_detailed(&finalizer, &justifications, &bonds);
+        (
+            i64::from(tip),
+            fringe
+                .as_ref()
+                .and_then(|f| f.iter().map(|m| m.height).max())
+                .map(i64::from),
+            why.map(|w| format!("{w:?}")),
+        )
+    }
+
+    // 1. The node's parent set: nothing is ever published.
+    let (tip, fringe, why) = drive(false, 20);
+    assert_eq!(
+        (tip, fringe),
+        (60, None),
+        "the current `latest_msgs` parent set never advances — got {fringe:?}, {why:?}"
+    );
+
+    // 2. A round snapshot: it publishes, and the lag does not grow with the chain.
+    let mut lags = Vec::new();
+    for rounds in [20, 60, 120] {
+        let (tip, fringe, why) = drive(true, rounds);
+        let fringe = fringe.unwrap_or_else(|| panic!("no fringe at {rounds} rounds: {why:?}"));
+        lags.push(tip - fringe);
+    }
+    assert_eq!(
+        lags,
+        vec![12, 12, 12],
+        "the fringe tracks the tip at a constant distance — a lag that grew with the chain would be a \
+         rate problem, and a lag that is constant is the unfinalized region the gate's rule needs"
+    );
+}
+/// **The guard's deadlock, and it is a real one: the round cannot close if the tip cannot advance.**
+///
+/// `has_advanced_past_the_round` blocks a validator that has already spoken this round, which is what
+/// removes the self-equivocation. But the boundary only closes when every bonded sender has advanced — and a
+/// sender stops holding it back only once `LIVENESS_WINDOW` heights have passed **above its last message**.
+/// That is measured from the tip, and the guard is what stops the tip advancing. So with a validator killed
+/// while still inside the window:
+///
+/// ```text
+/// v2 killed, latest at 89, tip 91  ->  heights_behind(91, 89) = 2 <= 5, v2 not retired
+/// v0 and v1 have both spoken this round      ->  both blocked by the guard
+/// nobody proposes                            ->  tip stays 91
+/// heights_behind never grows                 ->  v2 never retires, the round never closes
+/// ```
+///
+/// **Measured on the node**: after the kill the height is flat for the whole remaining window, and the
+/// node logs no equivocation and no error — it is not failing, it is waiting for a round that cannot close.
+///
+/// This test is that scenario, in-process, and it is **red today**: the tip goes 1 -> 2 over thirty-seven
+/// further rounds of attempts and then nothing is admitted again. It is `#[ignore]`d rather than deleted so
+/// that the guard's redesign is aimed by it — a fix is done when this test runs green without the ignore.
+#[test]
+fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    let vs = [validator(0), validator(1), validator(2)];
+    let g = validator(255);
+    let bonds: std::collections::BTreeMap<Validator, Stake> = [
+        (vs[0].clone(), Stake::try_from(100).unwrap()),
+        (vs[1].clone(), Stake::try_from(100).unwrap()),
+        (vs[2].clone(), Stake::try_from(50).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    let mut declined_since_advance = 0i64;
+    let mut propose = |state: &DagMessageState<BlockHash, Validator>, who: usize, step: i64| {
+        let v = vs[who].clone();
+        // **The proposer's rule, mirrored from `proposer.rs`**: refuse while the round can still close, and
+        // take the escape only after `LIVENESS_WINDOW` consecutive declines. The clock is local on purpose —
+        // every DAG-derived clock here is measured from a tip the refusal freezes.
+        let escaping = if state.has_advanced_past_the_round(&v) {
+            declined_since_advance += 1;
+            if declined_since_advance <= rchain_block_storage::dag::liveness::LIVENESS_WINDOW {
+                return None;
+            }
+            true
+        } else {
+            declined_since_advance = 0;
+            false
+        };
+        let parents: BTreeSet<_> = if escaping {
+            state.parents_for_new_block_escaping(&v)
+        } else {
+            state.parents_for_new_block()
+        };
+        let block_num = parents
+            .iter()
+            .map(|m| m.height)
+            .max()
+            .map(|m| m + rchain_shared::refined::NonNegI64::one())
+            .unwrap_or_else(BlockHeight::zero);
+        let seq_num = parents
+            .iter()
+            .find(|m| m.sender == v)
+            .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+            .unwrap_or_else(SeqNum::zero);
+        Some(state.create_message(
+            id(who as u8, i64::from(block_num) * 16 + step),
+            block_num,
+            v,
+            seq_num,
+            bonds.clone(),
+            &parents,
+        ))
+    };
+
+    // One full round, then `v2` — the 50 — goes quiet. `v0` and `v1` keep asking.
+    for step in 0..3 {
+        let m = propose(&state, step, step as i64)
+            .expect("the first round admits every validator once");
+        state = state.insert_msg(&m);
+    }
+    let frozen_tip = state.latest_msgs.values().map(|m| m.height).max().unwrap();
+    let mut admitted = 0;
+    for step in 3..40 {
+        for who in [0usize, 1] {
+            if let Some(m) = propose(&state, who, step as i64) {
+                state = state.insert_msg(&m);
+                admitted += 1;
+            }
+        }
+    }
+    let final_tip = state.latest_msgs.values().map(|m| m.height).max().unwrap();
+    // **Not `admitted > 0`**: the first round admits three proposals and would satisfy that on its own —
+    // which is how the first version of this test passed while measuring nothing. What matters is whether
+    // production *continues* after `v2` goes quiet, so the bar is real growth.
+    assert!(
+        i64::from(final_tip) > i64::from(frozen_tip) + 5,
+        "with `v2` quiet but inside `LIVENESS_WINDOW`, `v0` and `v1` must keep the chain moving: the \
+         boundary has to close so they are not blocked for ever. The tip went {frozen_tip:?} -> \
+         {final_tip:?} over 37 further steps with {admitted} proposal(s) admitted — the guard blocks both \
+         survivors, and the frozen tip is what keeps `v2` inside the window, so the round never closes"
+    );
+}
+
+/// **The exception in `parents_for_new_block`, and the equivocation it exists for.**
+///
+/// `block_creator.rs:58-75` derives both the new block's `block_num` and its `seq_num` **from the
+/// justification set**, so a second proposal in one round against the pure snapshot reuses the proposer's
+/// own `(sender, seq_num)` — and the DAG refuses the block, correctly:
+///
+/// ```text
+/// ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
+///       into DAG: equivocation detected: sender produced two blocks with the same sequence number
+/// ```
+///
+/// After three of those `consecutive_failures` halts the autopropose timer (`node_runtime.rs:1504`) and the
+/// chain stops with deploys in the pool. Every fixture in this file supplied its own `sender_seq`, which is
+/// why none of them could see it; the node's own log is what named it.
+///
+/// The exception is a **replacement**: for the one proposal a validator has already spoken for, its own
+/// entry in the snapshot becomes its newest message, so the numbers stay monotone. One entry per sender —
+/// adding a second makes the block creator's `find(|m| m.sender == me)` ambiguous, and it picks the older
+/// one and freezes the tip, which is measured too.
+///
+/// The control is inline: against the pure snapshot the same two proposals **do** repeat, so this test is
+/// red if the exception is removed.
+#[test]
+fn a_second_proposal_in_a_round_keeps_its_sequence() {
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    /// Two proposals from `vs[0]` in a row, with `use_library` choosing the rule under test.
+    fn two_proposals(use_library: bool) -> Vec<SeqNum> {
+        let vs = [validator(0), validator(1), validator(2)];
+        let g = validator(255);
+        let bonds: std::collections::BTreeMap<Validator, Stake> = [
+            (vs[0].clone(), Stake::try_from(100).unwrap()),
+            (vs[1].clone(), Stake::try_from(100).unwrap()),
+            (vs[2].clone(), Stake::try_from(50).unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+        let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+        let mut state = st.insert_msg(&genesis);
+
+        // One full round, so `vs[0]` is a validator that has already spoken this round.
+        for (who, step) in [0usize, 1, 2].into_iter().enumerate() {
+            let v = vs[who].clone();
+            let parents = state.parents_for_new_block();
+            let seq = parents
+                .iter()
+                .find(|m| m.sender == v)
+                .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+                .unwrap_or_else(SeqNum::zero);
+            let m = state.create_message(
+                id(who as u8, step as i64 + 1),
+                h(step as i64 + 1),
+                v,
+                seq,
+                bonds.clone(),
+                &parents,
+            );
+            state = state.insert_msg(&m);
+        }
+
+        let v = vs[0].clone();
+        let mut seqs = Vec::new();
+        for step in 0..2 {
+            let parents: std::collections::BTreeSet<_> = if use_library {
+                state.parents_for_new_block_escaping(&v)
+            } else {
+                // The control: the pure snapshot, which is what the first version of the parent set was.
+                state.round_parents.values().cloned().collect()
+            };
+            let seq = parents
+                .iter()
+                .find(|m| m.sender == v)
+                .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+                .unwrap_or_else(SeqNum::zero);
+            seqs.push(seq);
+            // Heights stay contiguous with the round above: a jump would age the other validators past
+            // `LIVENESS_WINDOW`, close the boundary, and hand the control a fresh snapshot — which is how
+            // the first version of this control failed to reproduce the case it exists for.
+            let m = state.create_message(
+                id(0, 4 + step),
+                h(4 + step),
+                v.clone(),
+                seq,
+                bonds.clone(),
+                &parents,
+            );
+            state = state.insert_msg(&m);
+        }
+        seqs
+    }
+
+    let with_library = two_proposals(true);
+    assert!(
+        with_library[0] < with_library[1],
+        "the second proposal must advance the sequence — got {with_library:?}, which is the equivocation \
+         the node logged"
+    );
+    let control = two_proposals(false);
+    assert_eq!(
+        control[0], control[1],
+        "against the pure snapshot the two proposals must repeat the sequence — if they do not, this test \
+         does not reach the case and proves nothing"
+    );
+}
