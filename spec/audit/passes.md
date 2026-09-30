@@ -4880,14 +4880,70 @@ been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` 
 `rejection_options_are_not_the_closure` and the enumeration it refutes is still in the tree, as the
 fallback path.
 
-**The end-to-end number, with its missing control.** With the fix in place, no node crossed 3000 MiB in
-three attempts of the frozen reproduction (peaks 918–1869 MiB). That is not yet evidence that the fix
-removed the ramp: the pre-fix runs on record crossed at a **4 GiB** cap and a different window, so they
-are a different experiment, and the controlled baseline — the parent commit through the same script — has
-not been run. Owed, and named rather than assumed.
+**The end-to-end number, with its missing control — and a correction to how this sentence first read.**
+With the fix in place, **one of three attempts of the frozen reproduction still ramps**: attempts 1 and 2
+did not cross 3000 MiB (peaks 1647/1674/63 and 918/1869/65 MiB), and attempt 3 crossed **twice** (1943 /
+**3014** / **5273** MiB, validators 1 and 2). It is also the attempt with the largest expansion counts
+(1,663,395 states on bootstrap and on v2), which is the correlation the run's own pre-registered rule asks
+for. **This paragraph said "no node crossed 3000 MiB in three attempts (peaks 918–1869 MiB)" and that was
+wrong** — it was written from a summary that contradicted the raw log tracked beside it, and it is the
+same defect this section is about (C176: a measurement's artifacts cannot say what they measured),
+committed inside the fix for it. The corrected reading is also the stronger one for C178: the mechanism is
+unbounded, and the run says so. What is still **not** established is the size of the fix's effect — the
+pre-fix runs on record crossed at a **4 GiB** cap and a different window, so they are a different
+experiment, and the controlled baseline (the parent commit through the same script) has not been run.
+Owed, and named rather than assumed.
 
 C175 — the unbounded ingress queue §27 could not rule out — is not this defect. Its observation half
 landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so
 a drained queue is not what held the memory. The profile and the census agree on which path did.
 
 [#117]: https://github.com/rchain-community/rchain-rust/issues/117
+
+## 29. The tracker consolidated onto the register's causes — and the rule that says which issues can close
+
+Nine issues were open and tracked by symptom. Six of them already opened with a classification naming
+their shape or cause in laws 51–54's vocabulary — the previous pass put those there — and each then sat in
+the tracker as its own incident. This section records the consolidation, because it produced two rows
+(C180, C181) and because its first attempt was **wrong in a way worth stating**.
+
+### What was done
+
+Three cause-issues now hold the classes, each founded on clauses that are `proved-model`:
+
+- **`Terminal`** — law 51a's shape, with 53a as its Casper instance (`#102` closed into it; `#105`'s
+  estrangement strand linked, the issue itself kept open for its `Split` divergence).
+- **The liveness path** — 52b/52a/51a/54a (`#70` linked, not closed: its `Closes when` has three conjuncts
+  and none is met).
+- **Unbounded work per step** — the class with *no* law; **C180** proposes `candidate:bounded-work-per-step`
+  (`#117` and `#68` linked, both open).
+
+`#71` closed into `#99` rather than into `Terminal`, because its writability half landed and what remains is
+a naming defect that thread's design already owns. `#99`, `#98` and `#51` stay open untouched: a design, a
+portability boundary, and a tracker.
+
+### The rule the first attempt got wrong
+
+**An issue closes into a successor only when the successor owns the issue's *unmet* close condition.**
+Five issues were closed in the first pass; **four were reopened**, because their conditions name work no
+successor held: #105's `InvalidStateHash` divergence is undiagnosed and has no other home; #70's second
+stop, once its discriminator was built, was never read; #68's condition is a re-measurement it can satisfy
+by itself, and closing it into a class decision made a measurable task depend on a consensus change. The
+successors now carry each open condition **verbatim**, and the members stay open until they are met. The
+alternative — a tidy tracker with four untrue `NOT_PLANNED` closures — is the same defect class as the rest
+of this pass: an artifact saying something the evidence does not.
+
+### The vocabulary that would have been lost
+
+`candidate:` slugs live in the register's `laws` column and, until this pass, in issue prose alone. Closing
+#102 into `Terminal` would have deleted `candidate:lfs-sync-recovery` with it, so **C181** files it — the
+latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes. The other four
+(`candidate:inactivity-leak`, `candidate:rooted-namespace`, `candidate:startup-rebuild-envelope`,
+`candidate:host-supplied-clock`) stay where they are, on issues that remain open.
+
+### And a register row corrected in passing
+
+**C68** is `done` on the *other* fault of the LFS thread — a failed sync wrongly signalling the node out of
+syncing — and its `evidence` names two tests that assert the node **stays** in `NodeSyncing` after a
+failure. That is the residual defect, not a contract: a recovery rule changes exactly those assertions, so
+C68's row now says they are the tests the fix must replace.
