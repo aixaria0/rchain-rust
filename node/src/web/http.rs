@@ -1597,6 +1597,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_metrics_route_serves_queue_depth_and_sampled_peak() {
+        let state = state();
+        let observe = state.metrics.queue_observer(
+            rchain_shared::metrics::Source::base()
+                .sub("block_pipeline")
+                .sub("shard_0")
+                .sub("validated"),
+        );
+        observe(9, true);
+        let body = metrics(State(state.clone())).await;
+        assert!(
+            body.contains("rchain_block_pipeline_shard_0_validated_depth 9"),
+            "{body}"
+        );
+        observe(2, true);
+        let body = metrics(State(state.clone())).await;
+        assert!(
+            body.contains("rchain_block_pipeline_shard_0_validated_depth 2"),
+            "{body}"
+        );
+        assert!(
+            body.contains("rchain_block_pipeline_shard_0_validated_sampled_peak 9"),
+            "{body}"
+        );
+        observe(0, false);
+        let body = metrics(State(state)).await;
+        assert!(
+            body.contains("rchain_block_pipeline_shard_0_validated_depth 0"),
+            "{body}"
+        );
+        assert!(
+            body.contains("rchain_block_pipeline_shard_0_validated_consumer_active 0"),
+            "{body}"
+        );
+        assert!(
+            body.contains("rchain_block_pipeline_shard_0_validated_sampled_peak 9"),
+            "{body}"
+        );
+    }
+
     /// The route serves the version **with its build commit**, because that is the surface a room
     /// member reads to learn which binary produced an attestation (issue #32) — and `commit #
     /// unknown` on a git checkout is exactly the failure this pins. `version_info`'s own test pins

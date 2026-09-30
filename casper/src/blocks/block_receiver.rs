@@ -492,34 +492,96 @@ async fn incoming_blocks(
     }
 }
 
+/// A sampled queue depth and whether its consumer is alive. Depth excludes the
+/// item currently being processed and does not measure the payload's heap bytes.
+pub type QueueObserver = Arc<dyn Fn(usize, bool) + Send + Sync>;
+
+struct QueueObservation(QueueObserver);
+
+impl Drop for QueueObservation {
+    fn drop(&mut self) {
+        // The receiver is being dropped: any remaining queued items are discarded.
+        (self.0)(0, false);
+    }
+}
+
+/// Consume the original queue without introducing a forwarding queue or copying
+/// items. Sample every 100 ms, including while asynchronous processing waits.
+/// Synchronous work that blocks this executor can delay sampling; the maximum
+/// reported by the observer must therefore be described as a sampled maximum.
+pub async fn consume_observed_queue<T, F, Fut>(
+    mut rx: mpsc::UnboundedReceiver<T>,
+    observer: Option<QueueObserver>,
+    mut consume: F,
+) where
+    T: Send,
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let Some(observer) = observer else {
+        while let Some(item) = rx.recv().await {
+            consume(item).await;
+        }
+        return;
+    };
+    let _observation = QueueObservation(observer.clone());
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        observer(rx.len(), true);
+        let item = tokio::select! {
+            item = rx.recv() => item,
+            _ = interval.tick() => continue,
+        };
+        let Some(item) = item else {
+            break;
+        };
+        let work = consume(item);
+        tokio::pin!(work);
+        loop {
+            tokio::select! {
+                _ = &mut work => break,
+                _ = interval.tick() => observer(rx.len(), true),
+            }
+        }
+    }
+}
+
 /// Process validated blocks (port of `validatedBlocks`): update state and forward the next
 /// dependency-free blocks to the output queue.
 async fn validated_blocks(
-    mut finished_processing_rx: mpsc::UnboundedReceiver<BlockMessage>,
+    finished_processing_rx: mpsc::UnboundedReceiver<BlockMessage>,
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     out_tx: mpsc::UnboundedSender<BlockHash>,
     log: Arc<dyn Log>,
+    observer: Option<QueueObserver>,
 ) {
     let source = LogSource::new("casper.blocks.BlockReceiver");
-    while let Some(block) = finished_processing_rx.recv().await {
-        let parents: BTreeSet<BlockHash> = block.justifications.iter().copied().collect();
-        let next = {
-            let mut guard = state.lock().await;
-            match guard.finished(block.block_hash, parents) {
-                Ok((new_state, next)) => {
-                    *guard = new_state;
-                    next
+    consume_observed_queue(finished_processing_rx, observer, move |block| {
+        let state = state.clone();
+        let out_tx = out_tx.clone();
+        let log = log.clone();
+        async move {
+            let parents: BTreeSet<BlockHash> = block.justifications.iter().copied().collect();
+            let next = {
+                let mut guard = state.lock().await;
+                match guard.finished(block.block_hash, parents) {
+                    Ok((new_state, next)) => {
+                        *guard = new_state;
+                        next
+                    }
+                    Err(e) => {
+                        log.error(source, &e);
+                        return;
+                    }
                 }
-                Err(e) => {
-                    log.error(source, &e);
-                    continue;
-                }
+            };
+            for hash in next {
+                let _ = out_tx.send(hash);
             }
-        };
-        for hash in next {
-            let _ = out_tx.send(hash);
         }
-    }
+    })
+    .await;
 }
 
 /// Wire the incoming and validated block streams to a shared validation queue (port of
@@ -535,6 +597,33 @@ pub fn apply(
     put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
     log: Arc<dyn Log>,
 ) -> mpsc::UnboundedReceiver<BlockHash> {
+    apply_with_queue_observer(
+        state,
+        incoming_blocks_rx,
+        finished_processing_rx,
+        conf_shard_name,
+        block_store,
+        dag,
+        block_retriever,
+        put_to_incoming_queue,
+        log,
+        None,
+    )
+}
+
+/// The existing receiver wiring, with optional validated-queue depth observation.
+pub fn apply_with_queue_observer(
+    state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
+    incoming_blocks_rx: mpsc::Receiver<BlockMessage>,
+    finished_processing_rx: mpsc::UnboundedReceiver<BlockMessage>,
+    conf_shard_name: String,
+    block_store: BlockStore,
+    dag: Arc<dyn BlockDagStorage>,
+    block_retriever: Arc<BlockRetriever>,
+    put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync>,
+    log: Arc<dyn Log>,
+    observer: Option<QueueObserver>,
+) -> mpsc::UnboundedReceiver<BlockHash> {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<BlockHash>();
 
     tokio::spawn(incoming_blocks(
@@ -548,7 +637,13 @@ pub fn apply(
         out_tx.clone(),
         log.clone(),
     ));
-    tokio::spawn(validated_blocks(finished_processing_rx, state, out_tx, log));
+    tokio::spawn(validated_blocks(
+        finished_processing_rx,
+        state,
+        out_tx,
+        log,
+        observer,
+    ));
 
     out_rx
 }
@@ -556,6 +651,119 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn queue_observer_sees_backlog_while_processing_waits_and_keeps_order() {
+        use std::sync::Mutex;
+        use std::time::Duration;
+        let (tx, rx) = mpsc::unbounded_channel::<usize>();
+        let samples = Arc::new(Mutex::new(Vec::new()));
+        let backlog_seen = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let observer: QueueObserver = Arc::new({
+            let samples = samples.clone();
+            let backlog_seen = backlog_seen.clone();
+            move |depth, active| {
+                samples.lock().unwrap().push((depth, active));
+                if depth == 5 && active {
+                    backlog_seen.notify_one();
+                }
+            }
+        });
+        let task = tokio::spawn(consume_observed_queue(rx, Some(observer), {
+            let started = started.clone();
+            let release = release.clone();
+            let received = received.clone();
+            move |item| {
+                let started = started.clone();
+                let release = release.clone();
+                let received = received.clone();
+                async move {
+                    if item == 0 {
+                        started.notify_one();
+                        let permit = release.acquire().await.unwrap();
+                        permit.forget();
+                    }
+                    received.lock().unwrap().push(item);
+                }
+            }
+        }));
+        tx.send(0).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        for item in 1..=5 {
+            tx.send(item).unwrap();
+        }
+        // The consumer is still blocked; this must be a timer sample, not a dequeue sample.
+        tokio::time::timeout(Duration::from_secs(2), backlog_seen.notified())
+            .await
+            .unwrap();
+        assert!(received.lock().unwrap().is_empty());
+        release.add_permits(1);
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*received.lock().unwrap(), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(samples.lock().unwrap().last(), Some(&(0, false)));
+    }
+
+    #[tokio::test]
+    async fn queue_observer_marks_cancelled_consumer_inactive() {
+        use std::sync::Mutex;
+        use std::time::Duration;
+        let (tx, rx) = mpsc::unbounded_channel::<usize>();
+        let latest = Arc::new(Mutex::new((0, false)));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let observer: QueueObserver = Arc::new({
+            let latest = latest.clone();
+            move |depth, active| {
+                *latest.lock().unwrap() = (depth, active);
+            }
+        });
+        let task = tokio::spawn(consume_observed_queue(rx, Some(observer), {
+            let started = started.clone();
+            move |_| {
+                let started = started.clone();
+                async move {
+                    started.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            }
+        }));
+        tx.send(1).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(*latest.lock().unwrap(), (0, false));
+        assert!(tx.send(2).is_err());
+    }
+
+    #[tokio::test]
+    async fn queue_observer_disabled_preserves_delivery() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        drop(tx);
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        consume_observed_queue(rx, None, {
+            let received = received.clone();
+            move |item| {
+                let received = received.clone();
+                async move {
+                    received.lock().unwrap().push(item);
+                }
+            }
+        })
+        .await;
+        assert_eq!(*received.lock().unwrap(), vec![1, 2]);
+    }
 
     /// A block store whose every read fails, so a read error is observable as one.
     struct FailingBlockStore;
