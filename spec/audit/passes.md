@@ -347,7 +347,8 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **Native writes join the merge's conflict relation** (issue #83): two chains of different blocks that wrote a common native key conflict when neither block has seen the other, and depend on each other when one has; a native-writing block's chains are accepted or rejected together; the accepted writes are applied ancestors first (`NativeRelations`, `casper/src/merging.rs`) | — (no Scala counterpart: the Scala's PoS and vault state is tuple-space data, so `deploysAreConflicting` sees it through the event logs; the port's native state has no event log) | a native write is an absolute value from its block's own pre-state, so two concurrent writers can be neither concatenated (duplicate keys: every node panicked at the first epoch boundary with two sibling blocks) nor de-duplicated (two equal phlo charges write equal vault balances, and keeping one destroys the other's REV). **Behaviour change:** concurrent blocks that both write a native key - both boundary blocks at one height, or both charging phlo - now conflict, so one is rejected exactly as a tuple-space conflict would be, where before the merge panicked. Tests: `boundary_merge_tests` |
 | **An empty `FinalizedFringe` is refused as a sync target**, and a finished LFS walk that received no block fails the attempt | `NodeSyncing.scala:124-128` — `startRequester.modify { case true if isValid => (false, true); … }` — latches on the **first** fringe from the bootstrap and inspects nothing about its contents, so it starts the sync on an empty one and `requestApprovedState` then reports the state restored | the genesis master **broadcasts** `FinalizedFringe { hashes: Vec::new() }` as it creates genesis (`node_launch.rs::create_store_broadcast_genesis`) — an announcement that the approved state *is* the genesis, not a sync target. A node already connected receives it **before** the answer to its own request: measured on a devnet, 34 ms after the announcement and 83 ms *before* the master had even seen the request, so the trigger was consumed by the announcement, the correct answer was discarded in silence (a later fringe from the bootstrap logs nothing at all), and the node logged `LFS state is successfully restored.` having restored nothing, then ran on an empty DAG and rejected every block it heard about (#100). Under the oracle's shape a fresh multi-validator network never forms at all. **Not a hard fork**: it changes which fringe a *joining* node acts on, not any block's validity, and no block or deploy changes meaning. One thing keeps the refusal narrow: the responder can never emit an empty fringe — both of its branches return at least one hash — so the only producer of one is the genesis broadcast, and this refuses exactly the input the oracle mishandles. **The companion guard is defence in depth, not the fix**: `run_approved_state_sync` also fails a walk that finishes with an empty `height_map`, which the empty fringe is the only way to reach, because `LfsState::received` writes a `height_map` entry only for a key it actually requested. Witnesses: `an_empty_fringe_does_not_consume_the_sync_trigger` (the regression pin — fails with the check disabled) and `an_empty_fringe_finishes_the_walk_at_once_with_nothing_in_it` (the premise, in the block requester) |
 | `check_min_messages` requires the minimum-message **sender set** to equal the bonded set, where the oracle compares counts (issue #97) | `legacy/block-storage/src/main/scala/coop/rchain/blockstorage/dag/Finalizer.scala:64-66` — the identical body, and the identical TODO above it: *"add support for epoch changes, simple comparison for senders count is not enough"* | count-only coverage admitted `[A, A, B]` for bonds `{A, B, C}`: `calculate_next_layer` collapses the duplicate sender into one entry, so the published fringe **omitted bonded validator `C`** while presenting A's stake twice — 90 of 100 support on the contributing change's own fixture, a malformed fringe a byzantine proposer can present as a supermajority. **Stricter than the oracle, and not a hard fork**: the only newly refused case is equal count with a different sender set, and that case used to publish a fringe no honest node could derive from the same justifications — no block or deploy changes meaning. The oracle has *not* made this decision (the TODO is upstream's, open), so this row is a deliberate departure rather than a divergence by oversight, and the register's law 14a/14b rows plus `spec/Rchain/Casper/Dag.lean`'s `checkMinMessages` carry the same change. Falsified both ways: `check_min_messages_needs_all_bonded_senders` and `calculate_finalization_requires_exact_sender_coverage` fail against the count-only body, and the model's `the_gate_demands_the_bonded_senders` fails against the count-only model |
-| **The finality gate's partition is the *live weight set***: `calculate_fringe` takes the set a candidate must have been seen by and the quorum's denominator as **separate maps**, and the node passes the bonded validators whose latest message is within `LIVENESS_WINDOW` (5) heights of the tip as the partition, and the whole bonded map as the quorum (issue #70) | `Finalizer.scala`'s `calculateFinalization` takes one `bonds_map` and uses it for both the full-partition filter and `totalStake`; there is **no liveness predicate anywhere upstream** — a validator that stops producing messages keeps blocking the fringe | with one map, a bonded validator that produces no message can never be "seen by every seer", so the partition is unsatisfiable and finality stops **whatever share of the stake the survivors hold**: measured on a three-validator devnet at `100/100/50` on 2026-09-29, the two survivors at 80 % of the pool did not resume finality after the third was stopped, and the same shape froze #105's two-validator chain with the survivor holding 91 %. **Shrinking only the *partition* is what keeps the safety property**: a quorum measured over the live set instead would be reached by *any* self-consistent subset — `3·F > 2·L` with `F ≤ L` over the live set is unconditional — so under a partition each side would finalise its own view and two conflicting finalisations would exist. "Finality needs quorum stake, not live nodes" is the requirement, and the denominator is what keeps it. **Hard fork** (#51 category A): which fringe is agreed changes, hence the merge base and every block hash after it. Falsified both ways by `a_silent_bonded_validator_does_not_cap_the_fringe`, and the predicate itself by the `liveness` unit tests |
+| **The finality gate's partition is the *live weight set***: `calculate_fringe` takes the set a candidate must have been seen by and the quorum's denominator as **separate maps**, and the node passes the bonded validators whose latest message is within `LIVENESS_WINDOW` (5) heights of the tip as the partition, and the whole bonded map as the quorum (issue #70) | `Finalizer.scala`'s `calculateFinalization` takes one `bonds_map` and uses it for both the full-partition filter and `totalStake`; there is **no liveness predicate anywhere upstream** — a validator that stops producing messages keeps blocking the fringe | with one map, a bonded validator that produces no message can never be "seen by every seer", so the partition is unsatisfiable and finality stops **whatever share of the stake the survivors hold**: measured on a three-validator devnet at `100/100/50` on 2026-09-29, the two survivors at 80 % of the pool did not resume finality after the third was stopped, and the same shape froze #105's two-validator chain with the survivor holding 91 %. **Shrinking only the *partition* is what keeps the safety property**: a quorum measured over the live set instead would be reached by *any* self-consistent subset — `3·F > 2·L` with `F ≤ L` over the live set is unconditional — so under a partition each side would finalise its own view and two conflicting finalisations would exist. "Finality needs quorum stake, not live nodes" is the requirement, and the denominator is what keeps it. **Hard fork** (#51 category A): which fringe is agreed changes, hence the merge base and every block hash after it. Falsified both ways by `a_silent_bonded_validator_does_not_cap_the_fringe`, and the predicate itself by the `liveness` unit tests **And the partition is what the derivation ranges over** (`block-storage/src/dag/liveness.rs`, the port's `live_justifications`; `inPartition` in `spec/Rchain/Casper/Dag.lean`): the justifications handed to the finalizer are first restricted to senders still in the live set. C174 narrowed the partition and left this half standing, and the two disagreed — `latest_msgs` keeps a departed validator's last message for ever, so candidates go on justifying it while the window has already retired it, and the coverage gate was asked to compare four messages against three bonded senders. That is the second stop of #70: the fringe advances a few heights after a validator is killed and then pins. AUDIT C183. |
+| **The merge search is bounded, and an exceeded search is refused rather than answered** (`SearchBudget`, `sdk/src/dag/merging.rs`; the node's policy is `SearchBudget::NODE`) | `ConflictResolutionLogic.scala`'s `computeRejectionOptions` enumerates unconditionally — the oracle has no bound at all, and its cost is exponential in the conflict set's size, which the DAG decides | **Node-local, not a fork**, and the distinction is exact rather than hopeful: an exceeded search returns *no answer*, the merge is refused, and the error reaches `ValidateError::Internal` (`multi_parent_casper.rs:361`) — a drop, which inserts no metadata. It must never become `mark_failed_attributable`, because nothing clears that record (C173) and a local resource policy would then estrange a node from a proposer for ever. Every node that *does* finish the search gets the identical option set, so no block hash moves. Measured: the widest single merge observed was **2,026,511 steps** over nine node-runs, and the enumerated worst case is `2^43 = 8.8e12`. AUDIT C184; `candidate:bounded-work-per-step` (C180) gains its first held member. |
 | **The LFS block walk gives up when it stops completing blocks**: `request_blocks` fails after `MAX_IDLE_ROUNDS` (3) **consecutive** idle resend intervals in which `LfsState::finished` did not grow (`casper/src/engine/lfs_block_requester.rs`, issue #102) | `LfsBlockRequester.scala:309-312` — `requestStream.evalOnIdle(resendRequests, requestTimeout).terminateAfter(_.isFinished) concurrently responseStream`: the **only** termination condition is `isFinished`, so a fringe naming state no peer has retries forever. Nothing upstream bounds the walk: `requestTimeout` is the *resend* interval, not a deadline | the port did the same, and the consequence is #102's first defect rather than a theoretical one: `run_approved_state_sync` `join!`s the block walk with the tuple-space request, so a walk that never ends is a **sync attempt that never ends** — the spawned task never returns, `notify_when_restored` never fires, and the node sits in `NodeSyncing` for good **with a serving API and no error line**, which is the "silently stuck" class this register keeps finding. **Why a pace rule and not a deadline**: a long chain legitimately takes longer than any fixed duration, so a wall-clock bound would abandon a walk that is *long* rather than *stuck*; the quantity that distinguishes them is whether blocks are still being completed, and `finished` is monotone (`done` only adds, `add` refuses an existing key), which is what makes "did it move" well-formed — **Law 51a**'s `Drift`, the same shape as C171 and refused by the same `Paced`. **Pace, not a rate**: a slow peer that needs several resends per block is untouched, because the counter resets on every completed block. Falsified in both directions: deleting the give-up leaves the walk hanging (`a_walk_nobody_serves_fails_rather_than_hangs` reports #102's exact symptom after its 2 s harness bound), and deleting the reset abandons a progressing walk (`a_slow_but_progressing_walk_is_not_abandoned` fails on the second block) — the two mutations cannot both be satisfied by a rule that is not this one |
 
 ---
@@ -5006,3 +5007,224 @@ count* in this tree — only the four closed forms `compute_rejection_options`'s
 `n`; no-conflicts `2^n − 1`; fork `2^(p+1) − 2`; matching `3^m − 1`). So the priced and gated quantity is a
 **proxy** — scope width, conflict-pair count, asymmetry — and any claim that the proxy predicts the cost
 must be measured on the distribution rather than asserted. Stage 2 inherits that.
+
+## 31. Stage 1's distribution was measured, and the endpoint does not carry it (C182, #126, #127)
+
+§30 above ends by saying Stage 1's distribution "is not yet measured". It was measured within the hour, and
+the sentence is corrected here rather than edited there, because the run changed what the change order can
+do next. This section is the campaign's record; the artifacts are
+`spec/audit/evidence/n127-campaign-results.md` and `target/n127-campaign/c5442ee1f-20260930T163518Z/`, and
+the pre-registration it was frozen against is `n127-campaign-preregistration.md`.
+
+### What the run was
+
+Phase 0 of the programme for the three causes (#125, #126, #127): three readings off one rig, because they
+want the same devnet — the block rate and what a validator's death does to finality (C171's baseline), the
+merge scope-width and state-count distributions (C182's re-run, and the input Stage 2's **N** is read from),
+and which `NoAdvance` variant a stall carries (#70's second stop). Three attempts, 3 validators at
+100/100/50, an 8 GiB cgroup, a 300 s window, four deploys at T+30 s, `validator-2` stopped at T+120 s;
+`rust_diff_vs_1732306c7` is empty in the manifest, so the binary under test is the tree the artifacts name.
+
+### What it found
+
+**0.2 — the endpoint does not carry the census's distribution, and that is a third defect in this
+instrument.** The node's own log line is self-consistent (`101 merges`, width buckets
+`[38, 55, 8, 0, 0]`, summing to `MERGES`) while `/metrics`, scraped at the same moment, renders `_count
+7617` — a factor of ~75 — and its low bucket (`le="16"` → 13) is **below** the census's 38, so what is
+published is not a rescaling of the truth. The mechanism was separated in-process rather than argued:
+`report_period_snapshot` merges every snapshot into a **five-year** accumulator
+(`prometheus_reporter.rs:155-171`) while this registry's histograms are cumulative, so each reporting period
+adds the running total to itself. The guard is
+`re_reporting_a_snapshot_does_not_double_a_histogram_count` (`node/src/runtime/node_runtime.rs`), ignored
+until the fix lands and runnable with `--ignored`; it renders `_count 2.0` for one merge reported twice.
+**Blast radius: exactly two metrics** — `casper/src/dag.rs:272,283` are the only `Metrics::record` call
+sites in the workspace, and the queue depths C175 observes are gauges, which the accumulator replaces.
+
+**The row that should have caught this is the lesson.** "The histogram's boundaries are 16/32/64/128, not
+the registry's defaults" passed, correctly — the boundaries *are* the shape's. Stage 1's defect had been the
+boundaries; fixing them did not make the counts right, and the row certified the half that was visible. **A
+row that guards an instrument must cross-check a second, independent rendering of the same quantity** — a
+gauge beside the histogram, or the process's own log line — not a property of one rendering's shape.
+
+**The honest envelope, read from the census's log line** (the only correct rendering until the endpoint is
+fixed): nine node-runs, **median bucket 32 chains** (>half of every node's merges have a scope of 17–32),
+mean width 15.7–19.6, widest 32–37, and **2,026,511 states expanded on one merge** — *more* than the census
+run's 1,663,395, on a chain whose block rate is lower. Load is not the only thing that moves the cost.
+
+**0.1 — the storm is a post-kill phenomenon in this configuration, and the pre-registration did not foresee
+the rate it found.** All three validators live: 12–16 blocks/min, one block per 4–5 s, *slower* than the 2 s
+autopropose timer and an order of magnitude below the recorded 276/min storm — a case the frozen table has
+no row for, so it is a correction to the pre-registration rather than a reading. After the kill, finality did
+not resume in **3 of 3** attempts: two froze completely (height and finality both stopped for 180 s) and one
+kept producing at ~18 blocks/min while finality moved +4 heights. The chain that runs while finality is
+pinned is the one an absent validator creates — C171's own mechanism, and #70's second stop.
+
+**0.3 — void, by construction at this scale.** Every stall line carries `at tip 0`: the line is rate-limited
+to one per 100 heights (`interpreter_util.rs:197`) and the tip never left the low thirties, so the
+genesis-time line suppressed every later one. The reading needs a longer chain or a smaller interval.
+
+### What it changes for the change order
+
+Stage 2's **N** cannot be read from this run's endpoint, and the distribution is readable only from the
+census's log until the endpoint's counts are fixed — which makes that fix a prerequisite for Stage 2 rather
+than a follow-up, and `C182` stays `in progress` with its `owes` naming all three. The numbers above are what
+a threshold is weighed against, with the caveat attached. Nothing here bounds or prices anything.
+
+### Correction (2026-09-30, after the panel)
+
+Three claims in this section are wrong, and the panel that re-derived the plan found them by reading the
+artifacts rather than the summary. They are corrected here rather than deleted, because the failure mode is
+the one this register exists to record.
+
+- **"the storm is a post-kill phenomenon here" is not supported by the run.** v1 in attempt 2 made
+  **17.6 blocks/min** after the kill against **16.1** before it. What the kill does is *decouple height from
+  finality* — the chain keeps producing while the fringe stops advancing — and the rate is the same on both
+  sides. Calling that a storm stretches the word past the 276 blocks/min the storm is recorded at.
+- **"~75 is the number of reporting periods" is wrong: there is no period.** The only production caller of
+  `report_period_snapshot` is the `/metrics` handler, **once per request** (`node/src/web/http.rs:180-184`);
+  the oracle's route returns a cached string instead. So the factor is the *scrape count* — and this
+  campaign's own sampler curled `/metrics` once a second, which means **the instrument was inflated by the
+  measurement**. The pre-registration's "scraped twice" describes a protocol that did not run.
+- **The envelope's "storm" label was mine and it was wrong.** This section's 0.2 heading reports the
+  *pre-kill* scrapes, and they show all three validators live at 12–16 blocks/min with widest scopes of
+  **30–36 chains and up to 985,391 states**. The kill did not widen the scope; it changed the *cost* on the
+  survivors. `n127-shape-distribution-results.md` had already called its 43-chain point "the quiet devnet".
+
+And one claim the section makes that is a **tautology**, not evidence: `summary()`'s width buckets summing
+to `MERGES` cannot fail, because `MERGES` and `WIDTH_COUNTS` are incremented in one function
+(`casper/src/merging.rs:148-159`) and `bucket_index` returns `0..=4`.
+
+**What the section got right, and it is the thing that mattered:** the endpoint did not carry the census.
+That was found by reading the artifact, and Unit 2 of the programme fixed it — `HistogramAcc` had no bucket
+map at all, and the endpoint accumulated on every request. See
+`spec/audit/evidence/n127-endpoint-vs-census-results.md`: 200 scrapes now read `_count 93` against the
+census's `93 merges`, with every boundary equal.
+
+## 32. The second stop of #70: the derivation did not range over the partition (C183)
+
+§31's campaign measured it and read it as a rate: after killing the 50-stake validator, the survivors
+advanced **+4 heights and then stopped**. Two independent runs showed the same small delta — the 2026-09-29
+testnet run went 40 → 44, the campaign's attempt 2 went 14 → 18 — and `LIVENESS_WINDOW` is 5. That is not
+what a rate bound looks like; it is what a window expiry looks like.
+
+### The mechanism, derived and then reproduced in-process
+
+A validator that stops is dropped from the partition after five heights. Its **last message does not go
+anywhere**: `latest_msgs` holds one entry per sender with no bond check and no eviction
+(`block-storage/src/dag/message_state.rs:90-102`), so every later candidate still justifies it, and the
+justification set handed to the finalizer carries it. `check_min_messages` then compares that set against
+the **live** partition by size as well as by coverage:
+
+```
+min_msgs   = [v0@8, v1@8, v2@8, stopped@1]   -> 4 entries
+partition  = {v0, v1, v2}                    -> 3 bonded senders
+```
+
+`4 == 3` is false and the sender sets differ, so `NoAdvance::Coverage` is returned and the fringe never
+advances again. C174 narrowed the partition to the live weight set and left the *other* side standing: the
+messages the gate is asked to compare are still drawn from the whole justification set.
+
+**The fixture could not see it, and that is the reason it survived.** `a_silent_bonded_validator_does_not_cap_the_fringe`
+(`casper/tests/finalization.rs`) builds a validator that **never speaks** — so it is absent from
+`latest_heights`, absent from the justifications, and the gate's two sides agree at three. The only case a
+real net produces is "spoke, then stopped", which the fixture does not build.
+`a_validator_that_spoke_and_then_stopped_does_not_cap_the_fringe` does: a validator that speaks at height 1
+and stops while the survivors run to height 8, each layer justifying the stale message as `latest_msgs`
+hands it to them. It failed in 0.02 s, with no devnet, and passes with the fix.
+
+### The fix, and the model
+
+The derivation ranges over the partition: the justifications are restricted to senders still in the live set
+before the gate sees them (`block-storage/src/dag/liveness.rs`, `live_justifications`). The model moves with
+it — `inPartition` in `spec/Rchain/Casper/Dag.lean`, applied at `derivedFringe`'s gate and layer. **The gate
+itself is unchanged**, which is why law 14b's statement stands: `derivedFringe_holds_one_per_bonded` is
+stated over what the gate guarantees, and the gate guarantees the same thing about a smaller input. The
+restriction is a deliberate departure from the Scala — which compares counts and has the epoch TODO saying
+so — and it sits inside the §6 row this register already carries for the live partition.
+
+**Classification:** it changes which fringe is agreed, hence the merge base and every hash after it — the
+same **hard fork, #51 category A, coordinated upgrade** as the partition rule it completes. Not a new row.
+
+## 33. The merge's work is bounded where it is spent (C184)
+
+`candidate:bounded-work-per-step` (C180) named the class and had **no member held to it** — which is why it
+was still a candidate rather than a law. This is the first: the merge search now carries a budget.
+
+### Why a budget and not a threshold
+
+The plan's Stage 2 was a threshold on **scope width** enforced in `block_summary`. Two independent things
+are wrong with it, and the second is fatal:
+
+- **Width does not predict the cost.** Nine node-runs at 30–37 chains produced 389,977 / 442,202 / 985,391 /
+  1,726,295 / 2,026,511 steps, and the earlier runs put 43 chains at 899,236 against 35 chains at
+  1,663,395. Both a width threshold and a conflict-count threshold would be keyed on a quantity that does
+  not carry the number.
+- **The scope is node-relative.** `interpreter_util.rs:265-277` builds the merge's parent set from the
+  justifications filtered by the *local* DAG, so two nodes can disagree about whether the same block
+  exceeds N — and a `block_summary` refusal runs through `mark_failed_attributable`, which nothing clears.
+  A threshold there **manufactures** the C173 wedge.
+
+So the bound is applied where the work is counted — `SearchCensus::expanded`, the queue pops and recursion
+nodes the cost is actually made of — and the two properties that make it honest are asserted:
+
+- **an exceeded search refuses and carries no answer.** A truncated enumeration that still answered would
+  pick a different rejection from the full one, because the option set is what
+  `compute_optimal_rejection` minimises over. That would be a consensus change, not a resource policy
+  (law 17a);
+- **a budget that is not hit does not change the answer.** The node's budget and the exact search return
+  the identical option set on all four extreme shapes — complete, no-conflicts, fork, matching.
+
+Both are in `a_budget_refuses_without_answering_and_never_changes_the_answer`, which was **observed red** by
+disabling the two bound checks (the zero-budget case then answers instead of refusing).
+
+### The refusal's path, which is the whole safety argument
+
+`Err` from the search → `Err(String)` from `MergeScope::merge` → `validate_block_checkpoint`'s `?` →
+**`ValidateError::Internal`** (`multi_parent_casper.rs:361`), which inserts **no metadata**. So the block is
+dropped exactly as a missing dependency drops it: no `mark_failed_attributable`, no permanent record, no
+wedge. That is what makes this a node-local policy rather than a fork, and it is why it could ship before
+C173's restoring rule rather than after it.
+
+### The budget's number, and how provisional it is
+
+`SearchBudget::NODE` is **10,000,000 steps and 1,000,000 options** — roughly 5× the largest single merge
+observed (2,026,511), so it would have refused nothing in any run on record, while capping an attack at a
+bounded multiple of the honest cost instead of `2^43`. **That number is provisional and is stated as
+such**: it must be re-read from a campaign on C171's own arm (`--no-autopropose --propose-on-deploy`),
+which is the arm the previous campaign did not run. The type's doc comment says so where a reader meets it.
+
+## 34. The second stop is in the support arithmetic, and it has a number (C185)
+
+§32 fixed the derivation and the devnet did not move: finality advanced **+1 height in 1 of 3 attempts**
+against the before-arm's **+4**. In-process, with the devnet's own stake split (100/100/50, the 50 killed),
+the derivation publishes a fringe — so the fix is right and it is not the remaining stop
+(`the_devnet_stake_split_finalises_with_one_validator_stopped`).
+
+### The instrument that had never been read
+
+The node's own `NoAdvance` reason (PR #115) was gated at **one line per 100 heights**
+(`interpreter_util.rs:197`), and a 300 s devnet's tip never leaves the low twenties — so the only line a run
+could emit was the genesis-tip one. That is why §31's campaign measured a pin it could not explain. The gate
+now also fires **when the rendered reason changes**, which for this pin means the *numbers* in it, because
+the variant is `Support` from genesis onward and a variant-keyed gate never re-fires. It produced **75
+lines** in one attempt where the previous campaign produced three genesis ones.
+
+### What it says
+
+Every node's last line before teardown:
+
+```
+finality did not advance at tip 19: a layer exists but its supporting stake is not a
+supermajority — 150 of 250 (2 full partition(s) among 3 candidate(s))
+```
+
+**150 of 250 is 60 %**, below the 2/3 threshold — and `150 = 100 + 50`: the bootstrap's stake plus **the
+killed validator's**. The supporting figure climbs `0 → 100 → 150` and pins there. So the departed
+validator's 50 is being counted while a live validator's 100 is not. This is not `Coverage` (the C183
+path), and it is not the rate (C171); it is the **partition the fringe's support is measured against**.
+
+**What is known and what is not.** The observation is a number off the node's own log, reproduced within one
+attempt. The mechanism is *not* established: whether the stale sender is entering `live_weight_set`, or
+`calculate_fringe`'s support map is keyed on a set the derivation no longer uses, or the two sides of the
+comparison disagree after `inPartition` filtered one of them, is unmeasured. The next step is the
+in-process fixture that reproduces `150 of 250`, not a third devnet run.
