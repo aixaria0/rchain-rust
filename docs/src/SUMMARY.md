@@ -43,6 +43,7 @@
 - [Local devnet (Docker)](node/devnet.md)
 - [The public testnet](node/testnet.md)
 - [Running a public testnet of your own](node/running-a-public-testnet.md)
+- [The history chain](node/history-chain.md)
 - [Security audit (September 2026)](node/security-audit.md)
 
 # Part IV — Building applications
