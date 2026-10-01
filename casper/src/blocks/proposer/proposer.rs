@@ -1271,7 +1271,9 @@ fn cadence_due(justifications: &[BlockMetadata], own: &Validator, tip: BlockHeig
 /// A pair of bounds, and the order matters:
 ///
 /// - nothing to finalise → suppress. An idle chain must not grow.
-/// - the quorum is reachable → attest now. The ordinary case, unchanged.
+/// - the quorum is reachable → attest a deploy-bearing block promptly (it needs the quorum), and an
+///   attestation only while this node is itself behind (C171: the #70 storm is attesting to every
+///   remote block, each an attestation that is in turn a remote block for the next).
 /// - the quorum is unreachable, but a state transition exists to attest to **and** this node has itself
 ///   been quiet for longer than `ATTESTATION_WINDOW` → attest anyway, at that reduced cadence.
 /// - otherwise → suppress.
@@ -1297,7 +1299,12 @@ fn attestation_suppressed(
         return true;
     }
     if quorum_reachable {
-        return false;
+        // A deploy licenses a prompt attestation — it is the thing that needs the quorum — but an
+        // attestation *without* a deploy is the #70 storm (C171): one empty block per remote block,
+        // each an attestation that is in turn a remote block for the next. Gate that case on our own
+        // quiet, so a caught-up node does not re-attest to its peers' attestations while a node left
+        // behind still catches up.
+        return !(new_state_transition || cadence_due);
     }
     !(new_state_transition && cadence_due)
 }
@@ -1477,11 +1484,17 @@ mod attestation_suppression_tests {
         );
     }
 
-    /// The ordinary case, unchanged: a reachable quorum attests immediately, whatever the cadence.
+    /// **The C171 fix.** A deploy-bearing block is attested promptly even with the quorum reachable — it
+    /// is the thing that needs the quorum — but an attestation *without* a deploy is the #70 storm and
+    /// is gated by our own quiet: a caught-up node withholds, a node left behind still speaks.
     #[test]
-    fn a_reachable_quorum_attests_without_waiting_for_the_cadence() {
+    fn a_reachable_quorum_attests_a_deploy_promptly_but_gates_the_storm() {
+        // A deploy licenses an immediate attestation.
         assert!(!attestation_suppressed(false, true, true, false));
-        assert!(!attestation_suppressed(false, false, true, false));
+        // An attestation without a deploy, while caught up, is the storm and is withheld.
+        assert!(attestation_suppressed(false, false, true, false));
+        // But a node left behind still attests, so a stalled chain can discover a peer returned.
+        assert!(!attestation_suppressed(false, false, true, true));
     }
 
     /// And an idle chain still produces nothing: suppression outranks every other term.
