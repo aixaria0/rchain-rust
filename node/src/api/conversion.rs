@@ -48,6 +48,7 @@ pub fn to_api_status(status: &Status, caps: &Capabilities, health: &ProposerHeal
         dev_mode: caps.dev_mode,
         consecutive_self_validation_failures: health.consecutive_self_validation_failures,
         autopropose_timer_halted: health.autopropose_timer_halted,
+        stale_snapshot_self_equivocations: health.stale_snapshot_self_equivocations,
     }
 }
 
@@ -219,6 +220,7 @@ mod tests {
         let health = ProposerHealth {
             consecutive_self_validation_failures: 3,
             autopropose_timer_halted: true,
+            stale_snapshot_self_equivocations: 5,
         };
         let api = to_api_status(&status, &caps, &health);
         assert_eq!(api.version.api, "1.0");
@@ -230,6 +232,8 @@ mod tests {
         // the configured mode above says nothing about whether the proposer is failing.
         assert_eq!(api.consecutive_self_validation_failures, 3);
         assert!(api.autopropose_timer_halted);
+        // #156: the stale-snapshot count is carried too, distinct from the halt.
+        assert_eq!(api.stale_snapshot_self_equivocations, 5);
     }
 
     #[test]

@@ -122,6 +122,7 @@ pub struct Proposer {
     validator: ValidatorIdentity,
     log: Arc<dyn Log>,
     consecutive_failures: Arc<AtomicU64>,
+    stale_snapshot_equivocations: Arc<AtomicU64>,
 }
 
 impl Proposer {
@@ -143,6 +144,7 @@ impl Proposer {
         validator: ValidatorIdentity,
         log: Arc<dyn Log>,
         consecutive_failures: Arc<AtomicU64>,
+        stale_snapshot_equivocations: Arc<AtomicU64>,
     ) -> Self {
         Proposer {
             get_latest_seq_number,
@@ -153,6 +155,7 @@ impl Proposer {
             validator,
             log,
             consecutive_failures,
+            stale_snapshot_equivocations,
         }
     }
 
@@ -234,6 +237,30 @@ impl Proposer {
                         seq = block.seq_num,
                     ))
                 }
+                Err(ValidateError::SelfEquivocation) => {
+                    // A stale-snapshot self-equivocation (§48): the DAG advanced between the
+                    // parent-set read and the insert, so the node's own earlier block already holds
+                    // the sequence number it derived. Not a self-validation failure — do NOT count it
+                    // toward the halt — and not due: the next tick re-derives from the now-current DAG.
+                    // Counted separately so a node that never recovers is still visible on `/metrics`.
+                    self.stale_snapshot_equivocations
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.log.warn(
+                        LogSource::new("casper.blocks.Proposer"),
+                        &format!(
+                            "Self-created block #{} (seq {}) collided with this node's own \
+                             already-synced block — a stale parent-set snapshot, not a validation \
+                             failure. Re-deriving next round (AUDIT §48).",
+                            block.block_number, block.seq_num
+                        ),
+                    );
+                    Ok((
+                        ProposeResult {
+                            propose_status: ProposeStatus::NotEnoughNewBlocks,
+                        },
+                        None,
+                    ))
+                }
                 Err(ValidateError::Internal(e)) => {
                     self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
                     self.log.error(
@@ -308,6 +335,7 @@ impl Proposer {
         propose_effect: Arc<dyn Fn(&BlockMessage) -> BoxFuture<()> + Send + Sync>,
         log: Arc<dyn Log>,
         consecutive_failures: Arc<AtomicU64>,
+        stale_snapshot_equivocations: Arc<AtomicU64>,
     ) -> Proposer
     where
         F: Fn(BlockHash) -> Fut + Send + Sync + 'static,
@@ -430,9 +458,18 @@ impl Proposer {
                                 ValidateError::Internal(format!("failed to store block body: {e}"))
                             })?;
                             dag.insert(meta, block.clone()).await.map_err(|e| {
-                                ValidateError::Internal(format!(
-                                    "failed to insert block into DAG: {e}"
-                                ))
+                                // A stale-snapshot self-equivocation (§48): the DAG advanced between
+                                // the parent-set read and this insert, so the node's own earlier block
+                                // already holds the sequence number it derived. Distinguish it from a
+                                // genuine insert failure so `do_propose` does not count it toward the
+                                // halt — it is "not due", not "invalid".
+                                if e.contains(crate::dag::EQUIVOCATION_PREFIX) {
+                                    ValidateError::SelfEquivocation
+                                } else {
+                                    ValidateError::Internal(format!(
+                                        "failed to insert block into DAG: {e}"
+                                    ))
+                                }
                             })?;
                             Ok(())
                         }
@@ -451,6 +488,7 @@ impl Proposer {
             validator_identity,
             log,
             consecutive_failures,
+            stale_snapshot_equivocations,
         )
     }
 }
@@ -1069,6 +1107,7 @@ mod tests {
         .unwrap();
         let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
         let consecutive_failures = Arc::new(AtomicU64::new(0));
+        let stale_snapshot_equivocations = Arc::new(AtomicU64::new(0));
         Proposer::new(
             get_seq,
             check_active,
@@ -1078,6 +1117,7 @@ mod tests {
             validator,
             log,
             consecutive_failures,
+            stale_snapshot_equivocations,
         )
     }
 
@@ -1121,6 +1161,68 @@ mod tests {
         assert_eq!(result.propose_status, ProposeStatus::ProposeSuccess);
         assert!(block_opt.is_some());
         assert!(matches!(rx.await.unwrap(), ProposerResult::Success { .. }));
+    }
+
+    /// **The falsifier for the §48 race fix.** A self-created block whose insert collides as an
+    /// equivocation is a stale-snapshot race, not a self-validation failure: it must *not* count toward
+    /// the timer halt (`consecutive_failures` stays 0), it must be counted on its own gauge, and it
+    /// must read as "not due" (`NotEnoughNewBlocks`) so the next tick re-derives and succeeds.
+    #[tokio::test]
+    async fn a_stale_snapshot_self_equivocation_is_not_counted_as_a_failure() {
+        let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
+            Arc::new(|_v| Box::pin(async { 0i64 }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
+        let create_block: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(BlockCreatorResult::Created(block())) }));
+        let validate: Arc<
+            dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
+        > = Arc::new(|_b| Box::pin(async { Err(ValidateError::SelfEquivocation) }));
+        let effect: Arc<dyn Fn(&BlockMessage) -> BoxFuture<()> + Send + Sync> =
+            Arc::new(|_b| Box::pin(async {}));
+        let validator = ValidatorIdentity::from_hex(
+            "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530",
+        )
+        .unwrap();
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let consecutive_failures = Arc::new(AtomicU64::new(0));
+        let stale_snapshot_equivocations = Arc::new(AtomicU64::new(0));
+
+        let p = Proposer::new(
+            get_seq,
+            check_active,
+            create_block,
+            validate,
+            effect,
+            validator,
+            log,
+            consecutive_failures.clone(),
+            stale_snapshot_equivocations.clone(),
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (result, block_opt) = p.propose(false, tx).await.unwrap();
+        assert_eq!(
+            result.propose_status,
+            ProposeStatus::NotEnoughNewBlocks,
+            "a self-equivocation is 'not due', not 'invalid'"
+        );
+        assert!(block_opt.is_none());
+        assert_eq!(
+            consecutive_failures.load(Ordering::Relaxed),
+            0,
+            "the race must not count toward the timer halt"
+        );
+        assert_eq!(
+            stale_snapshot_equivocations.load(Ordering::Relaxed),
+            1,
+            "the race is counted on its own gauge, so a stuck node is still visible"
+        );
+        assert!(matches!(rx.await.unwrap(), ProposerResult::Failure { .. }));
     }
 }
 

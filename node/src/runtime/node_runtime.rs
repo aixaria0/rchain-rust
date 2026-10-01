@@ -1465,6 +1465,11 @@ fn push_proposer_health(metrics: &MetricsRegistry, source: &Source, health: &Pro
         "autopropose_timer_halted",
         i64::from(health.autopropose_timer_halted),
     );
+    metrics.set_gauge(
+        source,
+        "stale_snapshot_self_equivocations",
+        i64::try_from(health.stale_snapshot_self_equivocations).unwrap_or(i64::MAX),
+    );
 }
 
 /// Wire one shard's block pipeline, `NodeLaunch` and proposer stream (port of the per-shard part of
@@ -1529,6 +1534,7 @@ async fn setup_shard_runtime(
     // registry: a value pushed only at setup would read `0` for ever. No cell is created here: the one
     // handed to `setup_shard` above is the same cell, which is why it is created before that call.
     let consecutive_failures = propose_health.failures();
+    let stale_snapshot_equivocations = propose_health.stale_snapshot_equivocations();
     let health_source = Source::base()
         .sub("proposer")
         .sub(&format!("shard_{index}"));
@@ -1777,6 +1783,7 @@ async fn setup_shard_runtime(
             propose_effect,
             log.clone(),
             consecutive_failures.clone(),
+            stale_snapshot_equivocations.clone(),
         );
         let proposer_stream = proposer_instance::create(
             proposer_parts.queue_rx,
@@ -3007,12 +3014,20 @@ mod proposer_health_metric_tests {
             quiet.contains("rchain_proposer_shard_0_autopropose_timer_halted 0"),
             "{quiet}"
         );
+        assert!(
+            quiet.contains("rchain_proposer_shard_0_stale_snapshot_self_equivocations 0"),
+            "{quiet}"
+        );
 
-        // Three self-validation failures, then the timer's own halt.
+        // Three self-validation failures, then the timer's own halt — and, separately, one
+        // stale-snapshot self-equivocation, which must NOT read as a failure.
         let counter = health.failures();
         counter.fetch_add(1, Ordering::Relaxed);
         counter.fetch_add(1, Ordering::Relaxed);
         counter.fetch_add(1, Ordering::Relaxed);
+        health
+            .stale_snapshot_equivocations()
+            .fetch_add(1, Ordering::Relaxed);
         health.note_timer_halted();
 
         let halted = scrape(&health, &source);
@@ -3023,6 +3038,10 @@ mod proposer_health_metric_tests {
         assert!(
             halted.contains("rchain_proposer_shard_0_autopropose_timer_halted 1"),
             "{halted}"
+        );
+        assert!(
+            halted.contains("rchain_proposer_shard_0_stale_snapshot_self_equivocations 1"),
+            "the race is reported on its own gauge, beside the failure count that caused the halt:\n{halted}"
         );
 
         // **The case that makes the pair worth having.** The node recovers and proposes: the count

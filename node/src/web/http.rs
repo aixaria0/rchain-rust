@@ -772,7 +772,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
-          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" }
+          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
+          "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64", "description": "Times the node's own block collided with its already-synced block at a sequence number derived from a stale parent set. Not a self-validation failure, so it does not halt the timer" }
         }
       },
       "DeployData": {
@@ -1375,6 +1376,7 @@ mod tests {
             dev_mode: true,
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
+            stale_snapshot_self_equivocations: 0,
         }
     }
 

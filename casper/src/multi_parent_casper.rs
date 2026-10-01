@@ -34,6 +34,12 @@ pub struct ParsingError(pub String);
 #[derive(Clone, Debug)]
 pub enum ValidateError {
     ValidationFailed(BlockMetadata, BlockStatus),
+    /// A self-created block was refused on insert as an equivocation: the sequence number it derived
+    /// from a now-stale parent-set snapshot is already taken by its own earlier block. Not a
+    /// validation failure — the block is internally consistent, the DAG just advanced under it — so
+    /// the proposer treats it as "not due" rather than counting it toward the halt (§48). Only the
+    /// proposer's self-insert produces this; `validate` itself never returns it.
+    SelfEquivocation,
     Internal(String),
 }
 
@@ -904,6 +910,9 @@ mod tests {
                 );
             }
             ValidateError::Internal(_) => panic!("a validation failure must not read as internal"),
+            ValidateError::SelfEquivocation => {
+                panic!("a validation failure must not read as a self-equivocation")
+            }
         }
 
         let internal = ValidateError::Internal("store unavailable".to_string());

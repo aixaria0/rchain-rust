@@ -98,6 +98,11 @@ pub struct ApiStatus {
     /// Deliberately not called `halted`: the tap and the admin `POST /api/propose` keep running, so a
     /// node can have a stopped timer and still be producing blocks.
     pub autopropose_timer_halted: bool,
+    /// #156: stale-snapshot self-equivocations — the node's own block collided with its already-synced
+    /// block at a sequence number derived from a stale parent set. Not a self-validation failure, so it
+    /// does not count toward the timer halt; it is reported so a node that never recovers from the race
+    /// is still visible.
+    pub stale_snapshot_self_equivocations: u64,
 }
 
 /// The node's capabilities, returned by `GET /api/v1/capabilities` (the app-facing "can I propose /
@@ -220,6 +225,7 @@ mod tests {
             dev_mode: true,
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
+            stale_snapshot_self_equivocations: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

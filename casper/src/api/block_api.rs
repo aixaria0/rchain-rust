@@ -60,6 +60,10 @@ pub struct ProposerHealth {
     /// The shard's autopropose timer has stopped. Nothing restarts it but the process, and the value
     /// is therefore sticky: a later success does **not** clear it.
     pub autopropose_timer_halted: bool,
+    /// Stale-snapshot self-equivocations (§48): the node's own block collided with its already-synced
+    /// block at the sequence number it derived. Not a self-validation failure — the DAG advanced under
+    /// the proposal — so it is counted separately and does **not** halt the timer.
+    pub stale_snapshot_self_equivocations: u64,
 }
 
 /// The per-shard cell behind [`ProposerHealth`]: the proposer bumps the counter, the autopropose loop
@@ -69,6 +73,7 @@ pub struct ProposerHealth {
 pub struct ProposeHealth {
     failures: Arc<AtomicU64>,
     timer_halted: Arc<AtomicBool>,
+    stale_snapshot_equivocations: Arc<AtomicU64>,
 }
 
 impl ProposeHealth {
@@ -83,17 +88,26 @@ impl ProposeHealth {
         self.failures.clone()
     }
 
+    /// The counter the proposer bumps on a stale-snapshot self-equivocation (§48) — observable so a
+    /// node that never recovers from the race is still visible, without counting toward the halt.
+    pub fn stale_snapshot_equivocations(&self) -> Arc<AtomicU64> {
+        self.stale_snapshot_equivocations.clone()
+    }
+
     /// Record that the autopropose timer has stopped, called once immediately before its `break`.
     pub fn note_timer_halted(&self) {
         self.timer_halted.store(true, Ordering::Relaxed);
     }
 
-    /// Both values as one observation, so a reader cannot see a count from one instant and a flag from
-    /// another.
+    /// All three values as one observation, so a reader cannot see a count from one instant and a flag
+    /// from another.
     pub fn snapshot(&self) -> ProposerHealth {
         ProposerHealth {
             consecutive_self_validation_failures: self.failures.load(Ordering::Relaxed),
             autopropose_timer_halted: self.timer_halted.load(Ordering::Relaxed),
+            stale_snapshot_self_equivocations: self
+                .stale_snapshot_equivocations
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -327,6 +341,7 @@ mod tests {
             ProposerHealth {
                 consecutive_self_validation_failures: 0,
                 autopropose_timer_halted: true,
+                stale_snapshot_self_equivocations: 0,
             }
         );
     }

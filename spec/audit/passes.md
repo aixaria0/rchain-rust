@@ -6196,4 +6196,14 @@ edit.
 by genuine divergence, and C190's repair covers it there), or that the node stays halted (it recovered once
 synced).
 
+**Fixed 2026-10-01.** The second of §48's own two options — *catch a self-equivocation and retry rather than
+counting it as a self-validation failure* — landed. `dag.insert`'s H-1 rejection is now a
+`ValidateError::SelfEquivocation` (matched on the shared `EQUIVOCATION_PREFIX`), and `do_propose` treats it
+as **not due** (`NotEnoughNewBlocks`) instead of incrementing `consecutive_failures`, so the timer no longer
+halts on the race; the next tick re-derives from the now-current DAG and succeeds. The equivocation is still
+counted, on its own gauge — `stale_snapshot_self_equivocations`, published on `/metrics` and carried in
+`/api/status` — so a node that never recovers remains visible rather than silently quiet. Falsifier:
+`a_stale_snapshot_self_equivocation_is_not_counted_as_a_failure` (`consecutive_failures` stays 0, the gauge
+bumps, the status reads `NotEnoughNewBlocks`). Node-local, so §6 and `#51` §A are not engaged.
+
 

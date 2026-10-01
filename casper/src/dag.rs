@@ -101,7 +101,7 @@ impl BlockDagKeyValueStorage {
                 .ok_or_else(|| "justification not present in message map".to_string())?;
             if let Some(previous) = claimed_by.insert((msg.sender, msg.sender_seq), msg.id) {
                 return Err(format!(
-                    "equivocation detected in the stored DAG: sender {} reuses sequence number {} \
+                    "{EQUIVOCATION_PREFIX} in the stored DAG: sender {} reuses sequence number {} \
                      for blocks {} and {}",
                     rchain_shared::base16::encode(msg.sender.as_bytes()),
                     i64::from(msg.sender_seq),
@@ -305,6 +305,12 @@ impl BlockDagKeyValueStorage {
     }
 }
 
+/// The shared prefix of the two equivocation rejections — the H-1 gate on `insert`, and the
+/// stored-DAG restore check. The proposer matches it to tell a benign stale-snapshot
+/// self-equivocation (§48) from a genuine insert failure: the block is internally consistent, the DAG
+/// just advanced under it. Defined beside the rejections so the string and the check cannot drift.
+pub const EQUIVOCATION_PREFIX: &str = "equivocation detected";
+
 #[async_trait]
 impl BlockDagStorage for BlockDagKeyValueStorage {
     async fn get_representation(&self) -> Arc<DagRepresentation> {
@@ -336,10 +342,9 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 m.sender == block_metadata.sender && m.sender_seq == block_metadata.seq_num
             });
             if equivocating {
-                return Err(
-                    "equivocation detected: sender produced two blocks with the same sequence number"
-                        .to_string(),
-                );
+                return Err(format!(
+                    "{EQUIVOCATION_PREFIX}: sender produced two blocks with the same sequence number"
+                ));
             }
         }
 
