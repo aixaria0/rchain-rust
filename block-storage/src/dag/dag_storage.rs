@@ -37,6 +37,32 @@ pub trait BlockDagStorage: Send + Sync {
         block: BlockMessage,
     ) -> Result<(), String>;
 
+    /// **Update the record of a block the DAG already holds** — the write the restoring rule needs, and
+    /// `insert` is not it (AUDIT C193).
+    ///
+    /// `insert`'s contract is to *add* a block, and a re-insert of a hash it already holds is a no-op —
+    /// which is right for that contract and wrong for this one. `restore_divergent_justifications`
+    /// re-validates a stored justification and writes back the **same block's** record with
+    /// `validation_failed` cleared; through `insert` that returned `Ok(())` without writing, so the rule
+    /// logged *"cleared the failure record"* while the store kept the failure and the in-memory
+    /// representation was never touched. The rule has never cleared anything.
+    ///
+    /// An update also has to undo the two structures that excluded the block while it was failed: the
+    /// height map (which does not count a failed block) and `latest_msgs` (H-2, so a failed block cannot
+    /// be a parent — and therefore cannot advance the proposer's arithmetic, which is the sequence-number
+    /// wedge that made this visible).
+    ///
+    /// **The default refuses rather than silently doing nothing.** A no-op default is the defect this
+    /// method exists to fix — a write that returns `Ok` and changes nothing is precisely what the
+    /// restoring rule has been doing — so a backend that cannot update says so, and the failure is
+    /// visible in the log that names the block.
+    async fn update_metadata(&self, block_metadata: BlockMetadata) -> Result<(), String> {
+        Err(format!(
+            "this DAG storage cannot update the record of {} (no `update_metadata` impl)",
+            block_metadata.block_hash.to_hex()
+        ))
+    }
+
     async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String>;
 
     /// Look up a block hash by the deploy id included in the DAG.

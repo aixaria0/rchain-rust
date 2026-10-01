@@ -6126,3 +6126,84 @@ on, which is exactly why it cannot be read against this one.
 **Row C189: `todo` → `done`.** Its close condition was the re-scope, and the re-scope is this section plus
 the sizing point. #68's condition, carried into #154 verbatim, is satisfied by the same act: the document
 now carries the statement where the figure was.
+
+## 47. The self-clearing step lands: the proposer clears its own spent record before it derives a number (C190)
+
+The §43 addendum settled the decision — keep the gate, fix the proposer, self-clearing — and named the
+prerequisite as C193's update path. That path landed first (a real `update_metadata`, §45), and this is the
+step it was owed to.
+
+**The shape.** `clear_own_failure_record` (`multi_parent_casper.rs`) is called at the top of
+`proposer.rs::create_block`, before anything is derived from the parent set. It scans the node's own messages
+for the one H-2 left out of `latest_msgs` — a record *newer* than the sender's latest message — re-validates it,
+and on a pass clears it through the same `update_metadata` the restoring rule now uses, which promotes the block
+back into the arithmetic `block_creator.rs` derives `seq_num` from. A peer's failed record is not a candidate,
+and a record already reflected in `latest_msgs` is already visible, so neither is touched.
+
+**Two guardrails make the repair a repair rather than a relabel.** The result is deliberately ignored: if the
+clear succeeded, the parent set below sees the block and the arithmetic advances; if it did not, the refusal
+that follows is the *counted* one (`consecutive_failures`), so #157's halt stays visible on `/api/status` and
+`/metrics` rather than becoming a silent decline. And only a `Divergence` record with attempts left is
+re-validated — the cause-gating the restoring rule already has — so the step narrows to the view-dependent
+case a re-read can settle, and a record that keeps failing stops being retried at `RESTORE_ATTEMPT_LIMIT`.
+
+**Falsified.** `the_node_targets_only_its_own_spent_record` (`casper/tests/restoring_rule.rs`) builds a message
+state where the node has a visible message at seq 1 and a spent record at seq 2, plus a peer's own spent record,
+and asserts exactly one `update_metadata` write — for the node's record — and none for the peer's. The success
+path (the clear) is covered at the level where it is exact: `revalidated_record` clears the refusal, and §45's
+`an_update_clears_the_failure_record_and_promotes_the_block` shows the write reaches the store and the block
+returns to `latest_msgs`. The reproduction test
+(`the_failed_record_is_invisible_to_the_proposer_and_visible_to_the_gate`) is **not** inverted: the fix clears
+the record rather than changing either structure, so the structural disagreement it pins remains true.
+
+**What is not claimed.** That this is what fired in #145's fifth attempt, or that the node observes the clear
+on a devnet — the in-process mechanism is shape-matched, not yet the instrumented run #156 asks for, and that
+run is worth doing now that the decision says what to assert.
+
+## 48. The instrumented run: the equivocation reproduces, and it is a race, not the failed record
+
+§47 left the devnet run owed. It has now been run, and it settled the sentence §43's addendum could not —
+in the opposite direction: **the reachable shape is not the failed record C190 named.**
+
+**The run.** `devnet.sh up --validators 2` against a 289-round chain, then `reset 1` — validator 1 re-syncs a
+chain carrying its own blocks (it had produced seq 1..292). Result and artifacts:
+`spec/audit/evidence/n156-instrumented-results.md` and `n156-instrumented/validator-1.log.txt`.
+
+**The observation.** The self-equivocation reproduced — **11** `equivocation detected` lines, and the #157
+halt fired once (`halted after 3 consecutive self-validation failures`) before the node recovered once
+synced. **And the C190 instrument never fired**: `msg_map but not latest_msgs` **0**, `cleared this node`
+**0**, and no `validation failed` record anywhere. There is no failed record; the colliding block is the
+node's *own old block, inserted validly by the sync*.
+
+**The mechanism is a proposer/sync TOCTOU window.** `proposer.rs::propose` reads `latest_msgs` into
+`next_seq` (`:263`), `create_block` derives the parent set from a snapshot of the same structures
+(`:583`), and inserts the block much later (`dag.insert`, `:432`). The sync (`populate_dag`) inserts the
+node's own old blocks into that window, each taking its `(sender, seq_num)` in `msg_map` — so a proposal
+derived against a snapshot that predates the sync's advance collides on insert. `insert_msg_mut` writes
+both maps correctly; the two structures never disagree, the proposer is just reading one that is already
+out of date when it writes.
+
+**What this corrects.** §43's addendum named the reachable shape *"a node that receives and records one of
+its own blocks as failed"*; this run shows no failed record is involved. C190's repair is not wrong, but on
+this tree it defends a shape the sync no longer produces (#139's `InvalidStateHash` was that shape's cause,
+and it is fixed); it remains correct for a genuine `Divergence` self-record. The defect this run found — a
+stale-snapshot self-equivocation during re-sync, producing the #156 symptom and the #157 halt — is distinct
+and registered as **C194**. A fix is a decision (re-derive the seq against the DAG's current state at insert, or
+catch a self-equivocation and retry rather than counting it as a self-validation failure), not a one-line
+edit.
+
+**Not claimed.** That the race is the only remaining path (a `Divergence` self-record may still be reachable
+by genuine divergence, and C190's repair covers it there), or that the node stays halted (it recovered once
+synced).
+
+**Fixed 2026-10-01.** The second of §48's own two options — *catch a self-equivocation and retry rather than
+counting it as a self-validation failure* — landed. `dag.insert`'s H-1 rejection is now a
+`ValidateError::SelfEquivocation` (matched on the shared `EQUIVOCATION_PREFIX`), and `do_propose` treats it
+as **not due** (`NotEnoughNewBlocks`) instead of incrementing `consecutive_failures`, so the timer no longer
+halts on the race; the next tick re-derives from the now-current DAG and succeeds. The equivocation is still
+counted, on its own gauge — `stale_snapshot_self_equivocations`, published on `/metrics` and carried in
+`/api/status` — so a node that never recovers remains visible rather than silently quiet. Falsifier:
+`a_stale_snapshot_self_equivocation_is_not_counted_as_a_failure` (`consecutive_failures` stays 0, the gauge
+bumps, the status reads `NotEnoughNewBlocks`). Node-local, so §6 and `#51` §A are not engaged.
+
+

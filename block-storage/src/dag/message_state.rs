@@ -288,6 +288,34 @@ where
         self.msg_map.insert(msg.id.clone(), msg.clone());
     }
 
+    /// **[`Self::insert_msg_mut`] for a message the map already holds** — the promotion a *cleared*
+    /// failure record needs (AUDIT C193).
+    ///
+    /// H-2 records a validation-failed block through [`Self::insert_msg_without_latest_mut`], which is
+    /// what keeps it out of a proposer's parent set — and therefore out of `latest_msgs`, and therefore
+    /// out of the arithmetic `block_creator.rs` derives `seq_num` from. When the restoring rule clears
+    /// that record the block becomes usable again, and this is the other half of the exclusion:
+    /// `insert_msg_mut` returns early for an id it already holds (right for its own contract — a message
+    /// is inserted once), so without this the block stays out of `latest_msgs` for ever, and the
+    /// proposer keeps deriving a sequence number it has already spent.
+    ///
+    /// A no-op for an id the map does *not* hold: that is an insertion, and `insert_msg_mut` is the
+    /// function for it.
+    pub fn promote_msg_mut(&mut self, msg: &Message<M, S>) {
+        if !self.msg_map.contains_key(&msg.id) {
+            return;
+        }
+        let replace = self
+            .latest_msgs
+            .get(&msg.sender)
+            .map(|cur| msg.sender_seq > cur.sender_seq)
+            .unwrap_or(true);
+        if replace {
+            self.latest_msgs.insert(msg.sender.clone(), msg.clone());
+        }
+        self.advance_round();
+    }
+
     /// [`Self::insert_msg_without_latest_mut`] as a value: one clone, then the insert.
     pub fn insert_msg_without_latest(&self, msg: &Message<M, S>) -> Self {
         let mut next = self.clone();

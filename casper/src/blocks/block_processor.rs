@@ -54,6 +54,9 @@ where
     let (block_meta, status) = match result {
         Ok(meta) => (meta, Ok(())),
         Err(ValidateError::ValidationFailed(meta, status)) => (meta, Err(status)),
+        Err(ValidateError::SelfEquivocation) => {
+            return Err("self-equivocation is a proposer-only outcome".to_string())
+        }
         Err(ValidateError::Internal(e)) => return Err(e),
     };
     dag.insert(block_meta, block).await?;
@@ -129,6 +132,16 @@ pub async fn apply<F, Fut>(
             let (block_meta, status) = match result {
                 Ok(meta) => (meta, Ok(())),
                 Err(ValidateError::ValidationFailed(meta, status)) => (meta, Err(status)),
+                Err(ValidateError::SelfEquivocation) => {
+                    log.error(
+                        source,
+                        &format!(
+                            "Block {} processing error: self-equivocation is a proposer-only outcome",
+                            block.block_hash.to_hex()
+                        ),
+                    );
+                    continue;
+                }
                 Err(ValidateError::Internal(e)) => {
                     log.error(
                         source,

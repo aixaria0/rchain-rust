@@ -34,6 +34,12 @@ pub struct ParsingError(pub String);
 #[derive(Clone, Debug)]
 pub enum ValidateError {
     ValidationFailed(BlockMetadata, BlockStatus),
+    /// A self-created block was refused on insert as an equivocation: the sequence number it derived
+    /// from a now-stale parent-set snapshot is already taken by its own earlier block. Not a
+    /// validation failure — the block is internally consistent, the DAG just advanced under it — so
+    /// the proposer treats it as "not due" rather than counting it toward the halt (§48). Only the
+    /// proposer's self-insert produces this; `validate` itself never returns it.
+    SelfEquivocation,
     Internal(String),
 }
 
@@ -381,6 +387,145 @@ fn restore_is_warranted(stored: &BlockMetadata) -> bool {
         && stored.restore_attempts < RESTORE_ATTEMPT_LIMIT
 }
 
+/// **Clear this node's own spent failure record, if it has one** — C190's repair, and the other half of
+/// what the update path (C193) made possible.
+///
+/// **The shape.** H-2 records a validation-failed block in the message map and keeps it out of
+/// `latest_msgs` — so the proposer's parent set cannot see it — and the block creator derives `seq_num`
+/// from that parent set. A node holding a failure record of *its own* block therefore derives a sequence
+/// number it has already spent, and the H-1 gate refuses the block it built; three refusals halt the
+/// autopropose timer. Reproduced in `finalization.rs` and registered as C190.
+///
+/// **Why the node has to do it itself.** The restoring rule fires on an *incoming* block's justifications
+/// (`restore_divergent_justifications`), and `neglected_invalid_block` refuses every child of a failed
+/// bonded block — so no inbound block will ever justify the node's own failed record, and the record is
+/// otherwise permanent for the process's lifetime. The node is the only party that can clear it.
+///
+/// **The guard keeps the trigger narrow.** Only a `Divergence` record with attempts left is revalidated
+/// (`restore_is_warranted`) — the cause whose whole meaning is "this node's view was wrong", which is the
+/// one a re-read can settle. An `Attributable` failure is the block's own fault and stays.
+///
+/// **Cost**: one message-map scan per proposal, O(N) in the number of messages, on a 2-second timer. It is
+/// not free and it is deliberate — the alternative is an index nothing else needs, for a defect that is
+/// otherwise unreachable from the proposer's side.
+///
+/// Returns whether a record was **cleared**, which is the caller's signal that the block is visible to the
+/// arithmetic again and a re-derived parent set will advance.
+#[allow(clippy::too_many_arguments)]
+pub async fn clear_own_failure_record<F, Fut>(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    runtime: &RuntimeManager,
+    shard_id: &str,
+    min_phlo_price: i64,
+    max_number_of_parents: i32,
+    block_index: &F,
+    sender: &Validator,
+    log: &Arc<dyn Log>,
+) -> bool
+where
+    F: Fn(BlockHash) -> Fut,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
+{
+    let source = LogSource::new("casper.interpreter.restore");
+    // The candidates are this sender's messages that its own arithmetic cannot see: in the message map,
+    // *newer* than its latest message, and therefore absent from the round snapshot the parent set is
+    // built from. `latest` is kept beside the list so the instrument below can name the two structures.
+    let (candidates, latest) = {
+        let repr = dag.get_representation().await;
+        let latest = repr
+            .dag_message_state
+            .latest_msgs
+            .get(sender)
+            .map(|m| m.sender_seq);
+        let candidates = repr
+            .dag_message_state
+            .msg_map
+            .values()
+            .filter(|m| {
+                m.sender == *sender
+                    && match latest {
+                        Some(l) => m.sender_seq > l,
+                        None => true,
+                    }
+            })
+            .map(|m| m.id)
+            .collect::<Vec<BlockHash>>();
+        (candidates, latest)
+    };
+
+    for hash in candidates {
+        let Ok(Some(stored)) = dag.lookup(&hash).await else {
+            continue;
+        };
+        if !restore_is_warranted(&stored) {
+            continue;
+        }
+        // The instrument for C190's owed run. The audit named the two structures — `block_creator.rs`
+        // derives `seq_num` from the parent set built from `latest_msgs`, while the H-1 gate scans
+        // `msg_map` — but had only shape-matched them, and no recorded line said which one the arithmetic
+        // read. This is that line: the node holds its own block at a sequence number its `latest_msgs`
+        // entry does not carry, so the next proposal's derivation cannot see the number it already spent.
+        log.warn(
+            source,
+            &format!(
+                "this node's own block {} (seq {}) is in msg_map but not latest_msgs (latest seq {}): the \
+                 next proposal derives its sequence number without seeing the one this record spent \
+                 (AUDIT C190)",
+                hash.to_hex(),
+                stored.seq_num,
+                latest.map(|l| l.to_string()).unwrap_or_else(|| "none".to_string()),
+            ),
+        );
+        let Some(msg) = block_store
+            .get(&[hash])
+            .await
+            .ok()
+            .and_then(|mut v| v.pop().flatten())
+        else {
+            continue;
+        };
+        let outcome = validate_checks(
+            dag,
+            block_store,
+            runtime,
+            &msg,
+            shard_id,
+            min_phlo_price,
+            max_number_of_parents,
+            block_index,
+            log,
+        )
+        .await;
+        let record = revalidated_record(&stored, outcome.ok());
+        let cleared = !record.validation_failed;
+        match dag.update_metadata(record).await {
+            Ok(()) if cleared => {
+                log.warn(
+                    source,
+                    &format!(
+                        "cleared this node's own failure record for {}: the block validates now, so the \
+                         proposer can advance past the sequence number it had spent (AUDIT C190)",
+                        hash.to_hex()
+                    ),
+                );
+                return true;
+            }
+            // The attempt is spent either way (`revalidated_record` counts it), so a record that keeps
+            // failing stops being retried at `RESTORE_ATTEMPT_LIMIT` rather than on every proposal.
+            Ok(()) => continue,
+            Err(e) => log.error(
+                source,
+                &format!(
+                    "could not clear this node's own failure record for {}: {e}",
+                    hash.to_hex()
+                ),
+            ),
+        }
+    }
+    false
+}
+
 /// The record to store after one revalidation attempt: `Some(fresh)` when the block passed, `None`
 /// when it did not.
 ///
@@ -468,11 +613,17 @@ async fn restore_divergent_justifications<F, Fut>(
         let record = revalidated_record(&stored, outcome.ok());
         let restored = !record.validation_failed;
 
-        // **Store and index together, or neither.** `insert` runs `BlockMetadataStore::add`, whose
+        // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
+        // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
+        // anything: the rule logged "cleared the failure record" while the store kept the failure, and
+        // the failure it exists to clear was never cleared. The update path also takes the block back
+        // into the height map and into `latest_msgs`, which H-2 had excluded it from.
+        //
+        // **Store and index together, or neither.** The update runs `BlockMetadataStore::add`, whose
         // contiguity check a *restored* block can legitimately fail: a failed block is excluded from
         // the height map and a restored one enters it. A refusal leaves the store as it was and spends
         // the attempt — it must never leave the store and the index disagreeing (AUDIT C172's shape).
-        if let Err(e) = dag.insert(record, msg).await {
+        if let Err(e) = dag.update_metadata(record).await {
             log.error(
                 source,
                 &format!(
@@ -759,6 +910,9 @@ mod tests {
                 );
             }
             ValidateError::Internal(_) => panic!("a validation failure must not read as internal"),
+            ValidateError::SelfEquivocation => {
+                panic!("a validation failure must not read as a self-equivocation")
+            }
         }
 
         let internal = ValidateError::Internal("store unavailable".to_string());

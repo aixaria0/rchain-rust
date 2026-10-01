@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
-use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
+use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities, ProposerHealth};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
@@ -113,6 +113,14 @@ impl ShardRoutingBlockApi {
 impl BlockApi for ShardRoutingBlockApi {
     async fn status(&self) -> Status {
         self.primary_api().status().await
+    }
+
+    /// #157: the primary shard's proposer health, read live from the cell its proposer writes. The
+    /// trait default (all zeros) is for stubs, and the router is not one — leaving it to fall back to
+    /// the default made `/api/status` report a healthy proposer for ever (§48 exposed this when a
+    /// third field was added beside the two #157 ones).
+    async fn proposer_health(&self) -> ProposerHealth {
+        self.primary_api().proposer_health().await
     }
 
     /// Dispatch by the shard named in the deploy; reject a non-member shard outright.
@@ -365,6 +373,24 @@ mod tests {
                 nodes: 0,
                 min_phlo_price: 1,
                 latest_block_number: 1,
+            }
+        }
+        async fn proposer_health(&self) -> ProposerHealth {
+            self.record("proposer_health");
+            // A non-zero count on the primary only, so the router test can prove the primary answered
+            // rather than the trait default (which is all zeros and records nothing).
+            ProposerHealth {
+                consecutive_self_validation_failures: if self.shard_id.ends_with("root") {
+                    7
+                } else {
+                    0
+                },
+                autopropose_timer_halted: false,
+                stale_snapshot_self_equivocations: if self.shard_id.ends_with("root") {
+                    5
+                } else {
+                    0
+                },
             }
         }
         async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
@@ -692,9 +718,9 @@ mod tests {
         );
     }
 
-    /// The other **fourteen** `BlockApi` methods are not shard-selecting: they answer for the
+    /// The other **fifteen** `BlockApi` methods are not shard-selecting: they answer for the
     /// primary. The test asserts that by *which stub recorded the call* — the only way to tell when
-    /// both members would answer with something plausible. (`exploratory_deploy` is the fifteenth
+    /// both members would answer with something plausible. (`exploratory_deploy` is the sixteenth
     /// unrouted call but only when it carries no block hash, so it has its own test above.)
     #[tokio::test]
     async fn the_primary_answers_every_unrouted_method() {
@@ -703,6 +729,13 @@ mod tests {
         // Each entry drives one method and asserts the primary's marker comes back (where the shape
         // carries one) — and, for all of them, that the child was never called.
         assert_eq!(api.status().await.shard_id, "/root");
+        assert_eq!(
+            api.proposer_health()
+                .await
+                .consecutive_self_validation_failures,
+            7,
+            "proposer health must reach the primary, not the trait's zero default"
+        );
         assert_eq!(api.pooled_deploys().await.unwrap()[0].data.term, "/root");
         assert!(api.capabilities().await.autopropose, "the primary's value");
         assert_eq!(api.create_block(true).await.unwrap(), "/root");
@@ -747,7 +780,7 @@ mod tests {
         );
         assert_eq!(
             primary.calls().len(),
-            14,
+            15,
             "every unrouted method reached the primary exactly once: {:?}",
             primary.calls()
         );
