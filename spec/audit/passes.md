@@ -5799,3 +5799,46 @@ gap C189 records from the other end.
 job. It was written **red** and deliberately unwired, so that the row's own close condition could not be
 satisfied by editing a comment; the script's header now records that history, because a reader who finds a
 `--gate` invocation should be able to tell whether it was ever failing.
+
+## 41. The class has a law: bounded work per step (C180 → Law 55, #127)
+
+**What was missing, and what it cost.** C180 was filed as `candidate:bounded-work-per-step` — *work whose
+cost grows with an input nothing bounds, and where a bound exists it is applied **after** the cost* — and
+the reason it was needed is that the register had no law that named what three rows shared. The merge's
+conflict search (C178), the ingress queue (C175) and the start-up envelope (#68) were each tracked with a
+different slug or an unrelated law, which is how one cause came to be tracked as three. A candidate slug is
+a row saying *the law this needs does not exist*; the row closes when it can cite an id.
+
+**Law 55** (`spec/Rchain/Bounded.lean`, `proved-model`, two clauses):
+
+- **55a — the guard is before the work.** `spendStep` charges one unit only while `spent < limit`: the
+  bound is a **hypothesis of the step**, so `the_work_never_exceeds_the_budget` holds in every reachable
+  state and `an_exhausted_budget_enables_no_step` says there is nothing left to take. **The defect has a
+  shape rather than only symptoms**, and it is in the same model: `lateGuardStep` charges the step and
+  *then* asks whether it was allowed, and `the_late_guard_overspends` exhibits a state one unit past the
+  budget reachable in one step. That the two relations differ is what makes the clause a claim rather than
+  a definition — every row of the class had the late guard.
+- **55b — the bound cannot change an answer.** `a_larger_budget_does_not_change_an_answer`: a run that
+  completes within `fuel` returns the same answer within every larger budget, so two nodes that both
+  complete compute the identical result however different their budgets are. `a_spent_budget_carries_no_answer`
+  is the other half. **The clause is stated over a *schedule* rather than a counter for a reason that is
+  the port's own type**: `SearchBudgetExceeded` carries two counters and deliberately no option set, so
+  "all-or-nothing" is a fact the code cannot express otherwise rather than a policy it documents. That is
+  what makes the bound a resource policy and not a fork (Law 17).
+
+**The slug is promoted, not deleted.** C180 closed citing `55a, 55b`, and the rows that cited the candidate
+as a stand-in — C182, C184, C189 — now cite the law. The candidate's history lives in Law 55's own `note`,
+so nothing the slug carried went silent.
+
+**The members, and one that is not held.** The merge search bounded by its **output** is C178: gated in
+process (observed red with the quotient disabled, 16,383 states for one option at fourteen keys) and
+measured on a live fork (161–174 chains expanding **153–290** states against the pre-quotient tree's
+**650,159** at 29 chains). The ingress queue is C175, bounded with the type carrying it and the gate wired.
+The third — the start-up envelope — is **C189**: its measurement does not reproduce on the current build,
+which is a fact about the rig and not about this law. The register says so rather than implying the class
+is discharged in every member.
+
+**What the law does not claim.** That the cost is *small*. A bound that fires is not a bound that is
+cheap, and below it the work may still be exponential — the honest sentence every row of this class
+carries, and the reason Stage 2 of #127's change order (a threshold **N**) and Stage 3 (a price) remain the
+approver's decisions rather than the implementation's.

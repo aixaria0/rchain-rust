@@ -41,6 +41,7 @@ import Rchain.Casper.Stranding
 import Rchain.Casper.Views
 import Rchain.Casper.Bonds
 import Rchain.Pos
+import Rchain.Bounded
 import Rchain.Charging
 import Rchain.Crypto.Random
 import Rchain.Crypto.Spec
