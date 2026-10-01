@@ -120,6 +120,37 @@ specification disagree, the specification is correct and the code is brought int
 Scala bug (e.g. wrapping a negative cost into a `uint64`) is **not** preserved; such deviations are
 recorded in the Scala-deviation register, [`spec/audit/passes.md`](spec/audit/passes.md) §6.
 
+## The target, and how work is tracked
+
+**The oracle is done.** `spec/laws.tsv` reads **0 `owed`, 0 `open`** across 71 rows — 46 `proved-model`, 19
+`proved-tied`, 10 declared axioms (9 crypto by design, 1 named) — so the mathematical programme the prime
+directive sets is finished. Adding a law, or re-opening a proof, is a deliberate act rather than the default
+next step.
+
+**What remains is operational, and it is one sentence:** `docs/src/node/testnet.md` says *"this net takes one
+validator on purpose, and adding a second is unsafe today"*. The target is to lift that — **a net of ≥2
+validators that finalises.** Four registered defects stand in the way: **C171** (the all-live attestation
+storm), **C192** (a round that comes to rest at one height is sealed), **C190 + C193** (a validator refuses
+its own block, because the restoring rule that should clear the record never writes), and **C173** behind
+them.
+
+**Four rules, because the register and the tracker had grown into two records of one thing.**
+
+1. **A close condition names an observable behaviour** — a test, a measurement, a run. Paperwork — a register
+   entry, a proof, a "decision recorded" — is evidence *for* the row, never a conjunct of the condition. A
+   condition that conjoins the two cannot be closed by finishing the work, which is how #70 came to be
+   closed, reopened, and rolled forward.
+2. **A finding goes to the register.** An issue is opened only when someone commits to the work, and it names
+   the owner and the next action. A finding never spawns an issue by itself.
+3. **A finding has one home** — its row in `spec/findings.tsv`, rendered into `spec/AUDIT.md`. A
+   `spec/audit/passes.md` entry is optional and **short**: the mechanism, the evidence, what it rules out.
+4. **Reserve the C-number when the branch is opened, not when the finding is written**, and let
+   `tools/next-audit-number.sh` read the remote branches. A number taken from one tree is a reservation, not
+   a fact — four pull requests in one day were the same work re-filed under a new number.
+
+**Every open issue names the target it advances, or it closes.** The register is the record; the tracker is
+the worklist.
+
 ## How to use this file
 
 For any component you are about to write in Rust:

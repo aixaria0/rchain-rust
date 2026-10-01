@@ -7,7 +7,8 @@
 # cross-check of the *tree*, and belongs at the boundary, not in front of every edit.
 #
 # Measured: ~2.5 s warm, dominated by the emitter's evidence check (one pass over the tracked tree,
-# ~1.5 s). The `review-ledger` join this deliberately does not run is 46 s of the register gate's 78.
+# ~1.5 s). The ledger's own check (`tools/check-review-ledger.sh`, sub-second) is the cheap
+# replacement for the 46-second join this deliberately does not run.
 # If this ever takes more than about five seconds, that number is the thing to look at -- it is here in
 # the header so a regression is visible rather than felt.
 #
