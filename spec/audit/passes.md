@@ -4501,6 +4501,15 @@ insufficient, because heights keep advancing on a chain that cannot finalise. Re
 rather than folded into C170 because it is open, and the `owes` cell names the falsifier that would
 close it.
 
+**Fixed 2026-10-01.** The pace half lives in `attestation_suppressed` (the proposer's suppression
+clause reads `cadence_due`, the "our own quiet" term — the §23 body's `attest_warranted` citation was
+one layer off). A reachable quorum now attests a deploy-bearing block promptly (it needs the quorum)
+but gates an attestation-without-a-deploy on `cadence_due`, so a caught-up node does not re-attest to
+its peers' attestations — the storm's fuel. Falsifier:
+`a_reachable_quorum_attests_a_deploy_promptly_but_gates_the_storm` (red when the pace term is deleted).
+The devnet block-growth re-measurement is not re-run; the unit falsifier pins the decision that the
+126-blocks figure was the symptom of. C171 → `done`.
+
 ## 24. The DAG index and the store it indexes: the same measurement's other failure
 
 The same 2026-09-29 run produced a second, independent finding one layer down, and it is the one that
