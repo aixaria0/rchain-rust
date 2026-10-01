@@ -2769,6 +2769,7 @@ mod index_stats_tests {
             replay_save_failures: 1,
             cache_len: 3,
             cache_pruned: 2,
+            cache_capacity_evicted: 4,
         };
         let line = stats.summary();
         for needle in [
@@ -2778,6 +2779,7 @@ mod index_stats_tests {
             "1 not persisted",
             "index cache 3 entries",
             "2 pruned",
+            "4 capacity evicted",
         ] {
             assert!(
                 line.contains(needle),
