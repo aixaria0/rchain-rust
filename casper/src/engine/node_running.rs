@@ -19,8 +19,8 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    BlockMessage, BlockRequest, CasperMessage, FinalizedFringe, HasBlock, HasBlockRequest,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    BlockFringe, BlockMessage, BlockRequest, CasperMessage, FinalizedFringe, HasBlock,
+    HasBlockRequest, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_models::fringe_data::FringeData;
@@ -292,6 +292,64 @@ pub async fn handle_fork_choice_tip_request(
 }
 
 /// Stream a finalized fringe to a peer (port of `handleFinalizedFringeRequest`).
+/// **The per-block fringe state of a fringe's ancestry** (AUDIT C188, #139).
+///
+/// A node that *restores* a chain rather than validating it cannot derive this for itself: `fringe`
+/// and `fringeStateHash` are the node's own recomputation, produced when it validates or creates a
+/// block, and they are not block fields — so a restored node has no fringe to replay from, and every
+/// block whose `close_block` anchors the epoch seed to the fringe state replays to a different
+/// post-state. Measured before the fix: the joiner takes the LFS path and then stops at the height it
+/// synced to, logging `regenerated mergeable channels for block … but replay computed … instead of …`.
+///
+/// The walk follows the message map's **parent links from the fringe itself**, which is the same set
+/// the joiner restores — its block walk follows justifications from the same place. A block reached
+/// without metadata is skipped and named in the log rather than silently omitted: the joiner then
+/// falls back to its own derivation for that block, which is the pre-#139 behaviour for that block
+/// alone, and the operator can see which one it was.
+async fn collect_fringe_ancestry(
+    dag: &dyn BlockDagStorage,
+    fringe_hashes: &BTreeSet<BlockHash>,
+    log: &dyn Log,
+    source: LogSource,
+) -> Vec<BlockFringe> {
+    let mut seen: BTreeSet<BlockHash> = BTreeSet::new();
+    let mut queue: Vec<BlockHash> = fringe_hashes.iter().copied().collect();
+    let mut out: Vec<BlockFringe> = Vec::new();
+    while let Some(h) = queue.pop() {
+        if !seen.insert(h) {
+            continue;
+        }
+        match dag.lookup(&h).await {
+            Ok(Some(meta)) => {
+                out.push(BlockFringe {
+                    block_hash: h,
+                    fringe: meta.fringe.clone(),
+                    fringe_state_hash: meta.fringe_state_hash,
+                });
+                queue.extend(meta.justifications.iter().copied());
+            }
+            Ok(None) => log.warn(
+                source,
+                &format!(
+                    "fringe ancestry (#139): no metadata for {} — the joiner will derive its own \
+                     fringe for this block, which is the pre-#139 behaviour for it alone",
+                    h.to_hex()
+                ),
+            ),
+            Err(e) => log.warn(
+                source,
+                &format!(
+                    "fringe ancestry (#139): lookup failed for {}: {e}",
+                    h.to_hex()
+                ),
+            ),
+        }
+    }
+    // Deterministic order (the message is serialized and compared in tests): by block hash.
+    out.sort_by_key(|b| b.block_hash);
+    out
+}
+
 pub async fn handle_finalized_fringe_request(
     transport: &dyn TransportLayer,
     conf: &RPConf,
@@ -722,7 +780,7 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 )
                 .await;
             }
-            CasperMessage::FinalizedFringeRequest(_) => {
+            CasperMessage::FinalizedFringeRequest(req) => {
                 let repr = self.dag.get_representation().await;
                 let latest_fringe_hashes: BTreeSet<BlockHash> =
                     repr.latest_fringe().iter().map(|m| m.id).collect();
@@ -745,6 +803,7 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                             .map(|b| FinalizedFringe {
                                 hashes: vec![genesis_hash],
                                 state_hash: b.post_state_hash,
+                                ancestry: Vec::new(),
                             }),
                         None => None,
                     }
@@ -754,7 +813,34 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         .map(|fringe_data| FinalizedFringe {
                             hashes: latest_fringe_hashes.iter().copied().collect(),
                             state_hash: StateHash::from_slice(fringe_data.state_hash.as_bytes()),
+                            ancestry: Vec::new(),
                         })
+                };
+                // **Filled only when the requester asks** (#139): a bounded addition to a message
+                // that already exists, so a requester or responder that does not know the field
+                // simply gets the pre-#139 exchange rather than a failed sync.
+                let fringe_response = match fringe_response {
+                    Some(mut f) => {
+                        if req.include_fringe_metadata {
+                            let hashes: BTreeSet<BlockHash> = f.hashes.iter().copied().collect();
+                            f.ancestry = collect_fringe_ancestry(
+                                self.dag.as_ref(),
+                                &hashes,
+                                self.log.as_ref(),
+                                self.log_source,
+                            )
+                            .await;
+                            self.log.info(
+                                self.log_source,
+                                &format!(
+                                    "Included {} block fringe(s) in the fringe response (#139).",
+                                    f.ancestry.len()
+                                ),
+                            );
+                        }
+                        Some(f)
+                    }
+                    None => None,
                 };
                 if let Some(fringe_response) = fringe_response {
                     handle_finalized_fringe_request(

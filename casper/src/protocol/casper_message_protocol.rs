@@ -142,6 +142,7 @@ mod tests {
                 rchain_models::block_hash::BlockHash::new([2u8; 32]),
             ],
             state_hash,
+            ancestry: Vec::new(),
         };
         let page = StoreItemsMessage {
             start_path: vec![],

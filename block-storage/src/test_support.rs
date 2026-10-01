@@ -59,6 +59,7 @@ pub fn fringe() -> FinalizedFringe {
     FinalizedFringe {
         hashes: vec![BlockHash::new([6u8; 32]), BlockHash::new([7u8; 32])],
         state_hash: StateHash::new([8u8; 32]),
+        ancestry: Vec::new(),
     }
 }
 

@@ -1,0 +1,3 @@
+==> reset devnet-validator-1: empty store, syncing the chain from devnet-bootstrap
+b5d66362b3abf29d0abc276768007fcb3b5b1c096ec44b1c2213734ac604367f
+reset devnet-validator-1: back up with an empty store; it will LFS-sync the chain from devnet-bootstrap

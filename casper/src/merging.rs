@@ -231,6 +231,17 @@ pub struct ParentsMergedState {
     pub max_seq_nums: BTreeMap<Validator, i64>,
     pub fringe: BTreeSet<BlockHash>,
     pub fringe_state: Blake2b256Hash,
+    /// **The fringe this computation started from, and the cache key it looked up** (#139).
+    ///
+    /// `fringe_state` above is where the merge *ended*; these two are where it began, and they are
+    /// what makes a state disagreement legible: the replay's `close_block` anchors the next epoch's
+    /// seed to the fringe state, so two nodes that began from different fringes replay the same block
+    /// to different post-states. `prev_fringe` empty with `prev_fringe_lookup == hash(∅)` is the
+    /// signature of a node whose restored blocks carry no fringe at all
+    /// (`node_syncing.rs`'s `populate_dag`), and that is a fact about this node rather than about the
+    /// block — which is why it is reported and not inferred.
+    pub prev_fringe: BTreeSet<BlockHash>,
+    pub prev_fringe_lookup: Blake2b256Hash,
     pub fringe_bonds_map: BTreeMap<Validator, NonNegI64>,
     pub fringe_rejected_deploys: BTreeSet<Vec<u8>>,
     pub pre_state_hash: Blake2b256Hash,

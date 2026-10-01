@@ -15,6 +15,7 @@ use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::{BlockMetadata, FailureCause};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
+use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::runtime::ReplayRhoRuntime;
@@ -231,6 +232,90 @@ fn short_id(v: &Validator) -> String {
 /// logging them rather than "finality stalled": a partition no layer covers is a different defect from a
 /// layer whose stake is short, and both differ from "the derivation would publish what is already
 /// finalised".
+/// **The deploy identity of a block, for a state-hash disagreement** (#139).
+///
+/// The two hash values say a disagreement happened; this says *which deploy* was in flight when it
+/// did, which is what the issue's close condition asks for ("names the deploy and the two hashes").
+/// On this path the deploy that consumes the fringe is the `CloseBlock` system deploy — it anchors the
+/// next epoch's seed to the fringe state — so whether one is present is said explicitly rather than
+/// left for a reader to infer from a list of kinds.
+fn describe_deploys(block: &BlockMessage) -> String {
+    let user: Vec<String> = block
+        .state
+        .deploys
+        .iter()
+        .map(|d| {
+            format!(
+                "sig={} deployer={}",
+                rchain_shared::base16::encode(&d.deploy.sig),
+                rchain_shared::base16::encode(&d.deploy.deployer)
+            )
+        })
+        .collect();
+    let kinds: Vec<String> = block
+        .state
+        .system_deploys
+        .iter()
+        .map(|sd| format!("{:?}", sd))
+        .collect();
+    let close_block = block
+        .state
+        .system_deploys
+        .iter()
+        .any(|sd| format!("{sd:?}").contains("CloseBlock"));
+    format!(
+        "user_deploys={} [{}] system_deploys=[{}] close_block={}",
+        user.len(),
+        user.join(", "),
+        kinds.join(", "),
+        if close_block { "yes" } else { "no" }
+    )
+}
+
+/// One line naming a state-hash disagreement and every input that could explain it (#139).
+///
+/// **Why this exists.** The failure reached an operator as
+/// `Block <hex> failed validation: InvalidStateHash` — the variant name, no hashes, and no way to tell
+/// a pre-state disagreement (this node's merge produced a different state) from a post-state one (the
+/// merge agreed and the replay diverged). Those point at different causes, so a reproduction could not
+/// "name the deploy and the two hashes" until this line existed.
+///
+/// The fringe fields are the load-bearing ones: the replay's `close_block` anchors the next epoch's
+/// seed to the fringe state, and a node derives that state from **its own** DAG — it is not on the
+/// wire (`validate_block_checkpoint`'s doc). So an empty `prev_fringe` with a `prev_fringe_lookup` of
+/// the empty fringe is the signature of blocks that were *restored* rather than validated, and it
+/// belongs in the line that is read when two nodes disagree.
+#[allow(clippy::too_many_arguments)]
+fn describe_state_mismatch(
+    block: &BlockMessage,
+    pre_state: &ParentsMergedState,
+    predicate: &str,
+    declared: &Blake2b256Hash,
+    recomputed: Option<&Blake2b256Hash>,
+) -> String {
+    format!(
+        "state-hash disagreement on {predicate}: block #{} {} by {} — declared {} vs recomputed {} \
+         (pre_state={} fringe_state={} prev_fringe_lookup={} prev_fringe={:?}) {}",
+        block.block_number,
+        block.block_hash.to_hex(),
+        short_id(&block.sender),
+        declared.to_hex(),
+        match recomputed {
+            Some(h) => h.to_hex(),
+            None => "none (the replay did not reach a state)".to_string(),
+        },
+        pre_state.pre_state_hash.to_hex(),
+        pre_state.fringe_state.to_hex(),
+        pre_state.prev_fringe_lookup.to_hex(),
+        pre_state
+            .prev_fringe
+            .iter()
+            .map(|h| h.to_hex())
+            .collect::<Vec<_>>(),
+        describe_deploys(block),
+    )
+}
+
 fn describe_no_advance(reason: &NoAdvance<Validator>) -> String {
     match reason {
         NoAdvance::Coverage { missing, senders } => format!(
@@ -343,6 +428,11 @@ where
             max_seq_nums: BTreeMap::from([(block.sender, 0)]),
             fringe: BTreeSet::new(),
             fringe_state: genesis_pre_state_hash,
+            // The genesis has no parents, so the fringe it begins from is the empty one — the same
+            // key a restored node's blocks carry, which is why the two are worth telling apart by the
+            // *block number* in the log rather than by this field alone (#139).
+            prev_fringe_lookup: FringeData::fringe_hash_of(&BTreeSet::new()),
+            prev_fringe: BTreeSet::new(),
             fringe_bonds_map: block.bonds.clone(),
             fringe_rejected_deploys: BTreeSet::new(),
             pre_state_hash: genesis_pre_state_hash,
@@ -351,8 +441,24 @@ where
     };
 
     let incoming_pre_state_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
+    // **Its own status, not a second way to say `InvalidStateHash`** (#139). `Ok(false)` reaches
+    // `multi_parent_casper`'s `InvalidStateHash`, and so did this arm until it was split: an operator
+    // could not tell a *pre*-state disagreement — this node's merge over the block's justifications
+    // produced a different state — from a *post*-state one, where the merge agreed and the replay then
+    // diverged. Those point at different causes, and naming which one fired is the first thing #139's
+    // close condition asks for.
     let result: Result<bool, BlockStatus> = if incoming_pre_state_hash != pre_state.pre_state_hash {
-        Ok(false)
+        log.warn(
+            source,
+            &describe_state_mismatch(
+                block,
+                &pre_state,
+                "pre-state",
+                &incoming_pre_state_hash,
+                Some(&pre_state.pre_state_hash),
+            ),
+        );
+        Err(BlockStatus::InvalidPreStateHash)
     } else if pre_state.fringe_rejected_deploys != block.rejected_deploys {
         Err(BlockStatus::InvalidRejectedDeploy)
     } else if slash_is_unjustified(dag, block).await? {
@@ -367,7 +473,22 @@ where
             .await?;
         let replay_result =
             replay_block(runtime, &forked, block, &pre_state.fringe_state, &rand).await;
+        // Read the recomputed hash *before* `handle_errors` consumes the result, so the disagreement
+        // can be reported with both sides (#139).
+        let recomputed = replay_result.as_ref().ok().cloned();
         let handled = handle_errors(&post_state_hash, replay_result)?;
+        if handled.is_none() {
+            log.warn(
+                source,
+                &describe_state_mismatch(
+                    block,
+                    &pre_state,
+                    "post-state",
+                    &post_state_hash,
+                    recomputed.as_ref(),
+                ),
+            );
+        }
         Ok(handled.is_some())
     };
 
@@ -401,6 +522,90 @@ mod tests {
 
     fn hash(byte: u8) -> Blake2b256Hash {
         Blake2b256Hash::from_bytes([byte; 32])
+    }
+
+    /// **The disagreement line names both hashes, the predicate, and whether a `CloseBlock` is
+    /// present** (#139). Those three are the whole of what the issue's close condition asks a
+    /// reproduction to produce, so the line that carries them is pinned rather than assumed: a later
+    /// campaign reads *this* string out of a node's log, and a field silently dropped here would make
+    /// every run's evidence unreadable in the same way, months after the change.
+    ///
+    /// The `close_block=yes` arm is deliberate: that is the system deploy that anchors the next
+    /// epoch's seed to the fringe state, so it is the deploy a fringe-derived divergence appears on.
+    #[test]
+    fn the_disagreement_line_names_both_hashes_and_the_predicate() {
+        let block = BlockMessage {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: BlockHash::new([0xab; 32]),
+            block_number: 42.try_into().unwrap(),
+            sender: Validator::new([1u8; 65]),
+            seq_num: 0.try_into().unwrap(),
+            pre_state_hash: rchain_models::block::state_hash::StateHash::new([0x11; 32]),
+            post_state_hash: rchain_models::block::state_hash::StateHash::new([0x22; 32]),
+            justifications: vec![],
+            bonds: BTreeMap::new(),
+            rejected_deploys: BTreeSet::new(),
+            rejected_blocks: BTreeSet::new(),
+            rejected_senders: BTreeSet::new(),
+            state: rchain_models::casper::protocol::casper_message::RholangState {
+                deploys: vec![],
+                system_deploys: vec![
+                    rchain_models::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
+                        event_list: vec![],
+                        system_deploy:
+                            rchain_models::casper::protocol::casper_message::SystemDeployData::CloseBlock,
+                    },
+                ],
+            },
+            sig_algorithm: "secp256k1".to_string(),
+            sig: vec![1],
+            timestamp: 0,
+        };
+
+        let pre_state = ParentsMergedState {
+            finality_stall: None,
+            justifications: vec![],
+            max_block_num: 41,
+            max_seq_nums: BTreeMap::new(),
+            fringe: BTreeSet::new(),
+            fringe_state: hash(0x33),
+            prev_fringe_lookup: hash(0x44),
+            prev_fringe: BTreeSet::new(),
+            fringe_bonds_map: BTreeMap::new(),
+            fringe_rejected_deploys: BTreeSet::new(),
+            pre_state_hash: hash(0x11),
+            rejected_deploys: BTreeSet::new(),
+        };
+
+        let line = describe_state_mismatch(
+            &block,
+            &pre_state,
+            "post-state",
+            &hash(0x22),
+            Some(&hash(0x55)),
+        );
+
+        // Both sides of the disagreement.
+        assert!(line.contains(&hash(0x22).to_hex()), "declared: {line}");
+        assert!(line.contains(&hash(0x55).to_hex()), "recomputed: {line}");
+        // Which comparison failed, and which block it was.
+        assert!(line.contains("post-state"), "{line}");
+        assert!(line.contains("#42"), "{line}");
+        // The fringe inputs, without which a fringe-derived divergence cannot be read.
+        assert!(line.contains(&hash(0x33).to_hex()), "fringe_state: {line}");
+        assert!(
+            line.contains(&hash(0x44).to_hex()),
+            "prev_fringe_lookup: {line}"
+        );
+        // The deploy that consumes the fringe.
+        assert!(line.contains("close_block=yes"), "{line}");
+
+        // A replay that never produced a value is still a readable line rather than a panic or a
+        // missing field — `handle_errors` returns `Ok(None)` for a soft failure as well as for a
+        // mismatch.
+        let none = describe_state_mismatch(&block, &pre_state, "post-state", &hash(0x22), None);
+        assert!(none.contains("did not reach a state"), "{none}");
     }
 
     #[test]

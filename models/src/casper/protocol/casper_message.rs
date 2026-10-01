@@ -6,7 +6,7 @@
 //! deterministic serialization (Law 16) happens here, at the domain layer, using `BTreeSet`/`BTreeMap`
 //! (see `BlockMessage::to_proto`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use prost::Message as _;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
@@ -738,11 +738,54 @@ impl BlockMessage {
 // Approved block + tips + request messages
 // -------------------------------------------------------------------------------------------------
 
+/// **The fringe state of one block, carried on the wire for a restoring node** (AUDIT C188, #139).
+///
+/// `fringe` and `fringe_state_hash` are not block fields and are not covered by the block hash: they
+/// are the *node's own* derivation, produced when it validates or creates the block. A node that
+/// LFS-syncs a mature chain never validates what it restores, so without these it has no fringe to
+/// replay from — and every block whose `close_block` anchors the epoch seed to the fringe state then
+/// replays to a different post-state. Measured, 2 of 2 devnet attempts: the joiner stops at the
+/// height it synced to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockFringe {
+    pub block_hash: BlockHash,
+    pub fringe: BTreeSet<BlockHash>,
+    pub fringe_state_hash: StateHash,
+}
+
+impl BlockFringe {
+    pub fn from_proto(
+        f: &crate::proto::casper::BlockFringeProto,
+    ) -> Result<Self, crate::errors::ModelsError> {
+        Ok(BlockFringe {
+            block_hash: BlockHash::try_from(f.block_hash.as_slice())?,
+            fringe: f
+                .fringe
+                .iter()
+                .map(|h| BlockHash::try_from(h.as_slice()))
+                .collect::<Result<BTreeSet<BlockHash>, crate::errors::ModelsError>>()?,
+            fringe_state_hash: StateHash::try_from(f.fringe_state_hash.as_slice())?,
+        })
+    }
+
+    pub fn to_proto(&self) -> crate::proto::casper::BlockFringeProto {
+        crate::proto::casper::BlockFringeProto {
+            block_hash: self.block_hash.as_bytes().to_vec(),
+            fringe: self.fringe.iter().map(|h| h.as_bytes().to_vec()).collect(),
+            fringe_state_hash: self.fringe_state_hash.as_bytes().to_vec(),
+        }
+    }
+}
+
 /// A finalized fringe (port of `FinalizedFringe`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalizedFringe {
     pub hashes: Vec<BlockHash>,
     pub state_hash: StateHash,
+    /// The fringe state of each block in this fringe's ancestry, when the requester asked for it
+    /// (#139). Empty means "not sent": either the requester did not ask, or the responder does not
+    /// know the field — both of which are the pre-#139 behaviour rather than an error.
+    pub ancestry: Vec<BlockFringe>,
 }
 
 impl FinalizedFringe {
@@ -754,12 +797,18 @@ impl FinalizedFringe {
                 .map(|h| BlockHash::try_from(h.as_slice()))
                 .collect::<Result<Vec<BlockHash>, crate::errors::ModelsError>>()?,
             state_hash: StateHash::try_from(f.state_hash.as_slice())?,
+            ancestry: f
+                .ancestry
+                .iter()
+                .map(BlockFringe::from_proto)
+                .collect::<Result<Vec<BlockFringe>, crate::errors::ModelsError>>()?,
         })
     }
     pub fn to_proto(&self) -> FinalizedFringeProto {
         FinalizedFringeProto {
             hashes: self.hashes.iter().map(|h| h.as_bytes().to_vec()).collect(),
             state_hash: self.state_hash.as_bytes().to_vec(),
+            ancestry: self.ancestry.iter().map(BlockFringe::to_proto).collect(),
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -777,6 +826,10 @@ impl FinalizedFringe {
 pub struct FinalizedFringeRequest {
     pub identifier: String,
     pub trim_state: bool,
+    /// Ask the responder to fill the fringe's `ancestry` with the per-block fringe state a restoring
+    /// node cannot derive for itself (#139). A responder that does not know the field ignores it, so
+    /// a mixed pair degrades to the pre-#139 behaviour rather than failing.
+    pub include_fringe_metadata: bool,
 }
 
 /// A fork-choice tip request (port of `ForkChoiceTipRequest`).
@@ -819,12 +872,14 @@ impl FinalizedFringeRequest {
         FinalizedFringeRequest {
             identifier: m.identifier.clone(),
             trim_state: m.trim_state,
+            include_fringe_metadata: m.include_fringe_metadata,
         }
     }
     pub fn to_proto(&self) -> FinalizedFringeRequestProto {
         FinalizedFringeRequestProto {
             identifier: self.identifier.clone(),
             trim_state: self.trim_state,
+            include_fringe_metadata: self.include_fringe_metadata,
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1148,6 +1203,7 @@ impl CasperMessage {
                 CasperMessage::FinalizedFringeRequest(FinalizedFringeRequest {
                     identifier: m.identifier.clone(),
                     trim_state: m.trim_state,
+                    include_fringe_metadata: m.include_fringe_metadata,
                 }),
             ),
             CasperMessageProto::StoreItemsMessageRequest(m) => Ok(
@@ -1179,6 +1235,7 @@ impl CasperMessage {
                 CasperMessageProto::FinalizedFringeRequest(FinalizedFringeRequestProto {
                     identifier: m.identifier.clone(),
                     trim_state: m.trim_state,
+                    include_fringe_metadata: m.include_fringe_metadata,
                 })
             }
             CasperMessage::StoreItemsMessageRequest(m) => {
@@ -1252,10 +1309,12 @@ mod tests {
             CasperMessage::FinalizedFringe(FinalizedFringe {
                 hashes: vec![block_hash(1), block_hash(2)],
                 state_hash: StateHash::new([3u8; 32]),
+                ancestry: Vec::new(),
             }),
             CasperMessage::FinalizedFringeRequest(FinalizedFringeRequest {
                 identifier: "peer-1".to_string(),
                 trim_state: true,
+                include_fringe_metadata: true,
             }),
             CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest {
                 start_path: vec![(Blake2b256Hash::from_bytes([4u8; 32]), Some(2))],
@@ -1425,9 +1484,60 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![block_hash(1), block_hash(2)],
             state_hash: StateHash::new([7u8; 32]),
+            ancestry: Vec::new(),
         };
         let decoded = FinalizedFringe::from_bytes(&fringe.to_bytes()).unwrap();
         assert_eq!(decoded, fringe);
+    }
+
+    /// **The per-block fringe state survives the wire** (AUDIT C188, #139).
+    ///
+    /// A joining node cannot derive `fringe`/`fringe_state_hash` for the blocks it restores — they are
+    /// the *proposer's* own recomputation and are not block fields — so this field is the whole of what
+    /// makes a mature join replayable. A codec that dropped it would put every joiner back at the
+    /// pre-#139 behaviour with no other symptom, which is why it is pinned as a round trip rather than
+    /// left to the devnet to notice.
+    ///
+    /// The request flag is pinned with it: a responder reads *that* to decide whether to send the
+    /// ancestry at all, so a codec that dropped the flag would silently turn the addition off.
+    #[test]
+    fn the_fringe_ancestry_round_trips() {
+        let fringe = FinalizedFringe {
+            hashes: vec![block_hash(2)],
+            state_hash: StateHash::new([7u8; 32]),
+            ancestry: vec![
+                BlockFringe {
+                    block_hash: block_hash(1),
+                    fringe: BTreeSet::new(),
+                    fringe_state_hash: StateHash::new([9u8; 32]),
+                },
+                BlockFringe {
+                    block_hash: block_hash(2),
+                    fringe: [block_hash(1)].into_iter().collect(),
+                    fringe_state_hash: StateHash::new([8u8; 32]),
+                },
+            ],
+        };
+        let decoded = FinalizedFringe::from_bytes(&fringe.to_bytes()).unwrap();
+        assert_eq!(decoded, fringe, "the ancestry must survive the wire");
+
+        let req = FinalizedFringeRequest {
+            identifier: "joiner".to_string(),
+            trim_state: false,
+            include_fringe_metadata: true,
+        };
+        let decoded = FinalizedFringeRequest::from_bytes(&req.to_bytes()).unwrap();
+        assert_eq!(decoded, req, "and so must the flag that asks for it");
+
+        // The default is **off**: a requester that does not know the field sends `false`, and the
+        // responder then sends no ancestry — which is what makes this a non-breaking addition rather
+        // than a change every node has to make at once.
+        let proto = FinalizedFringeRequestProto {
+            identifier: "old".to_string(),
+            trim_state: false,
+            ..Default::default()
+        };
+        assert!(!FinalizedFringeRequest::from_proto(&proto).include_fringe_metadata);
     }
 
     #[test]

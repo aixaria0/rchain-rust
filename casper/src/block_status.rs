@@ -13,6 +13,17 @@ pub enum BlockStatus {
     JustificationRegression,
     NeglectedInvalidBlock,
     InvalidStateHash,
+    /// **The block's declared `pre_state_hash` is not the pre-state this node computed** (#139).
+    ///
+    /// Its own status because the two hash mismatches were one status and are two different facts. A
+    /// **pre**-state mismatch says this node's merge over the block's justifications produced a
+    /// different state — the block's justification set, or this node's view of the parents, differs.
+    /// A **post**-state mismatch (`InvalidStateHash`) says the merge agreed and the *replay* then
+    /// diverged, which points at a deploy or at an input the replay derives locally rather than at the
+    /// block's parents. Until this variant existed, an operator reading
+    /// `Block <hex> failed validation: InvalidStateHash` could not tell which of the two had happened,
+    /// which is exactly what issue #139 has to name.
+    InvalidPreStateHash,
     InvalidBondsCache,
     InvalidRejectedDeploy,
     ContainsExpiredDeploy,
@@ -101,6 +112,7 @@ impl BlockStatus {
             // Decided by this node's state or replay, so a node with a different view reaches the
             // same verdict for a block that is valid elsewhere.
             BlockStatus::InvalidStateHash
+            | BlockStatus::InvalidPreStateHash
             | BlockStatus::InvalidRejectedDeploy
             | BlockStatus::InvalidBondsCache
             | BlockStatus::UnjustifiedSlash => FailureCause::Divergence,
@@ -143,6 +155,11 @@ impl std::fmt::Display for BlockStatus {
                  replaying its deploys — a node state-accounting inconsistency, not an error in your \
                  deploy or API call"
             }
+            BlockStatus::InvalidPreStateHash => {
+                "the block's declared pre-state hash is not the state this node computed from its \
+                 justifications — this node's view of the parents differs from the proposer's, so the \
+                 disagreement is about the merge rather than about the block's deploys"
+            }
             BlockStatus::InvalidBondsCache => "invalid bonds cache",
             BlockStatus::InvalidRejectedDeploy => "the block's rejected-deploy set does not match its parents",
             BlockStatus::ContainsExpiredDeploy => "a deploy has expired",
@@ -174,7 +191,7 @@ mod tests {
     use super::*;
 
     /// Every status, so a variant added without a message (or with a copy-pasted one) fails here.
-    const ALL: [BlockStatus; 19] = [
+    const ALL: [BlockStatus; 20] = [
         BlockStatus::Valid,
         BlockStatus::InvalidBlockNumber,
         BlockStatus::InvalidRepeatDeploy,
@@ -183,6 +200,7 @@ mod tests {
         BlockStatus::JustificationRegression,
         BlockStatus::NeglectedInvalidBlock,
         BlockStatus::InvalidStateHash,
+        BlockStatus::InvalidPreStateHash,
         BlockStatus::InvalidBondsCache,
         BlockStatus::InvalidRejectedDeploy,
         BlockStatus::ContainsExpiredDeploy,
@@ -256,8 +274,9 @@ mod tests {
     /// does not compile, because [`BlockStatus::failure_cause`] matches on all of them.
     #[test]
     fn the_causes_partition_the_statuses() {
-        const DIVERGENCE: [BlockStatus; 4] = [
+        const DIVERGENCE: [BlockStatus; 5] = [
             BlockStatus::InvalidStateHash,
+            BlockStatus::InvalidPreStateHash,
             BlockStatus::InvalidRejectedDeploy,
             BlockStatus::InvalidBondsCache,
             BlockStatus::UnjustifiedSlash,

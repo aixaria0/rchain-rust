@@ -207,9 +207,17 @@ impl CommUtil {
     }
 
     /// Request the finalized fringe from the bootstrap node (port of `requestFinalizedFringe`).
+    ///
+    /// `include_fringe_metadata` asks the responder to attach the per-block fringe state of the
+    /// fringe's ancestry (AUDIT C188, #139). A joining node cannot derive it — it is a node's own
+    /// recomputation and not a block field — so without it every block it restores whose
+    /// `close_block` anchors the epoch seed to the fringe state replays to a different post-state,
+    /// and the node never catches up. A responder that does not know the field ignores it, so a
+    /// mixed pair falls back to the pre-#139 behaviour rather than failing to sync.
     pub async fn request_finalized_fringe(
         &self,
         trim_state: bool,
+        include_fringe_metadata: bool,
     ) -> Result<(), StandaloneNodeSendToBootstrapError> {
         let bootstrap = self
             .conf
@@ -219,6 +227,7 @@ impl CommUtil {
         let msg = FinalizedFringeRequest {
             identifier: String::new(),
             trim_state,
+            include_fringe_metadata,
         };
         let packet = FinalizedFringeRequestSerde.mk_packet(&msg);
         self.send_with_retry(
@@ -351,7 +360,7 @@ mod tests {
         let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
 
         let err = comm
-            .request_finalized_fringe(false)
+            .request_finalized_fringe(false, false)
             .await
             .expect_err("a standalone node has no bootstrap to ask");
         assert_eq!(err, StandaloneNodeSendToBootstrapError);
@@ -374,7 +383,7 @@ mod tests {
             Vec::new(),
         );
 
-        comm.request_finalized_fringe(true)
+        comm.request_finalized_fringe(true, false)
             .await
             .expect("a bootstrap");
         let sends = transport.sends.lock().unwrap();
