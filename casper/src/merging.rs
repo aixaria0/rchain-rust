@@ -615,11 +615,9 @@ impl BlockIndexCache {
     /// bound holds. Cache order is not consensus state, and unlike a finality-derived prune this
     /// bound keeps working while finality is stalled.
     fn insert(&mut self, hash: BlockHash, index: Arc<BlockIndex>) -> usize {
-        let is_new = !self.entries.contains_key(&hash);
         self.entries.insert(hash, index);
         self.insertion_order.retain(|queued| queued != &hash);
         self.insertion_order.push_back(hash);
-        let _ = is_new; // kept explicit: replacing an existing key must not create a second queue entry.
 
         let mut evicted = 0usize;
         while self.entries.len() > BLOCK_INDEX_CACHE_MAX_ENTRIES {
