@@ -79,7 +79,49 @@ derive from, and there is a local fix for that. So the preregistration's decisio
   block; this is one node failing on its own restored chain. They share the mechanism and the status
   family, and #105's specific case is not what was reproduced here.
 - **The fix's shape is not decided by this run.** Re-deriving a restored block's fringe means replaying
-  the restored ancestry, which is the work LFS sync exists to avoid — so the fix is a real cost decision
-  and is left to the next unit rather than chosen here.
+  the restored ancestry, which is the work LFS sync exists to avoid — so the fix is a real cost decision.
+  *(Decided after this was written, and not by this arm: the fringe is carried on the sync instead, so
+  nothing is replayed. See the section at the end.)*
 - Two attempts of one configuration on one machine: this is the measurement the register asks for before
   a claim is written down, not a proof.
+
+---
+
+## After the fix (`dbaa5529d`): the same rig, run again
+
+The falsifier the row owed. **4 of 5 attempts green** — the joiner syncs a mature chain and *follows*
+it, with **zero** state-hash disagreements (against 93 and 92 before):
+
+| attempt | joiner synced to | joiner reached | bootstrap reached | disagreement lines |
+|---|---|---|---|---|
+| 1 | 26 | **116** | 123 | 0 |
+| 2 | 27 | **98** | 104 | 0 |
+| 3 | 26 | **97** | 103 | 0 |
+| 4 | 29 | **101** | 107 | 0 |
+
+(The fifth attempt froze — see below — and the pre-fix attempts froze at 27 and 23 with 93 and 92
+errors. The joiner tracking a few blocks behind the bootstrap is the ordinary shape: it validates what
+it is sent rather than proposing ahead of it.)
+
+### The fifth attempt, which is not this defect
+
+```
+propose failed with an internal error: the node rejected its own block #N (seq M) with an internal
+error: failed to insert block into DAG: equivocation detected: sender produced two blocks with the
+same sequence number
+… block production for shard /root halted after 4 consecutive self-validation failures
+```
+
+**Zero** state-hash disagreement lines. A re-syncing validator proposing under an identity whose blocks
+are already in the chain it restored — a shape `tools/devnet.sh reset` creates and a first-time joiner
+does not. **The pre-fix runs froze before reaching it**, so this is the next thing showing through a
+working fix rather than a regression from it.
+
+It has no diagnosis yet, so it has no row: a `todo` row's `owes` must be actionable, and this one needs
+an hour of work before it can be classified. It is recorded in `spec/audit/passes.md` §38 and here.
+
+### What the fix changed, in one line
+
+`fringe`/`fringe_state_hash` now ride the `FinalizedFringe` the joiner already receives — a field on an
+existing message, so an old node ignores it rather than erroring on an unknown packet tag, and a mixed
+pair degrades to the pre-#139 behaviour with the fallback logged per block.
