@@ -40,7 +40,7 @@ use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
 use rchain_shared::typed_store::KeyValueTypedStoreCodec;
 
 use rchain_casper::multi_parent_casper::{
-    validate, RESTORE_ATTEMPT_LIMIT, RESTORE_BUDGET_PER_BLOCK,
+    clear_own_failure_record, validate, RESTORE_ATTEMPT_LIMIT, RESTORE_BUDGET_PER_BLOCK,
 };
 
 /// A DAG storage that records what `validate` writes, so the restoring rule's effect is observable.
@@ -51,6 +51,7 @@ use rchain_casper::multi_parent_casper::{
 struct RecordingDag {
     metadata: Mutex<BTreeMap<BlockHash, BlockMetadata>>,
     inserts: Mutex<Vec<BlockMetadata>>,
+    message_state: Mutex<DagMessageState<BlockHash, Validator>>,
 }
 
 impl RecordingDag {
@@ -58,7 +59,13 @@ impl RecordingDag {
         Arc::new(RecordingDag {
             metadata: Mutex::new(metadata),
             inserts: Mutex::new(Vec::new()),
+            message_state: Mutex::new(DagMessageState::empty()),
         })
+    }
+
+    /// Swap in a populated message state — what `clear_own_failure_record`'s candidate scan reads.
+    fn with_message_state(&self, state: DagMessageState<BlockHash, Validator>) {
+        *self.message_state.lock().expect("message state") = state;
     }
 
     /// The insert trace, keyed by block hash, for the records this DAG's `insert` was handed.
@@ -80,7 +87,7 @@ impl BlockDagStorage for RecordingDag {
             dag_set: Arc::new(BTreeSet::new()),
             child_map: Arc::new(BTreeMap::new()),
             height_map: Arc::new(BTreeMap::new()),
-            dag_message_state: DagMessageState::empty(),
+            dag_message_state: self.message_state.lock().expect("message state").clone(),
             fringe_states: BTreeMap::new(),
         })
     }
@@ -365,5 +372,112 @@ async fn one_block_budget_bounds_the_revalidations() {
         total, RESTORE_BUDGET_PER_BLOCK,
         "one child may provoke at most a constant number of revalidations, however many of its \
          justifications carry an eligible record"
+    );
+}
+
+/// **The falsifier for C190's repair: the node targets its own spent record, and only its own.**
+///
+/// `clear_own_failure_record` is the proposer-side self-clearing step. Its new behaviour — the part the
+/// defect's reproduction test (`finalization.rs::the_failed_record_is_invisible_…`) cannot see — is the
+/// *candidate scan*: of everything in `msg_map`, the records worth re-validating are exactly this
+/// node's, and exactly the ones **newer** than its `latest_msgs` entry — the ones H-2 left out of the
+/// arithmetic `block_creator.rs` derives `seq_num` from. A peer's failed record is not this node's
+/// business, and a record already reflected in `latest_msgs` is already visible to the arithmetic, so
+/// neither may be touched.
+///
+/// The revalidation *fails* here — the stored block is a stub that carries no valid state — so the
+/// observable is the **attempt** (one `update_metadata` write for the node's record, none for the
+/// peer's) rather than the clear. The clear itself is covered where it is exact: `revalidated_record`
+/// clears the refusal, and C193's `an_update_clears_the_failure_record_and_promotes_the_block` shows the
+/// write reaches the store and takes the block back into `latest_msgs`.
+#[tokio::test]
+async fn the_node_targets_only_its_own_spent_record() {
+    let node = validator(1);
+    let peer = validator(2);
+    let target = hash(0x11);
+    let peer_hash = hash(0x12);
+
+    let h = |n: i64| BlockHeight::try_from(n).expect("height");
+    let s = |n: i64| SeqNum::try_from(n).expect("seq num");
+
+    // The DAG's message state: `node` has a visible message at seq 1, then a spent record at seq 2
+    // recorded the H-2 way (into `msg_map`, not `latest_msgs`). `peer` has its own spent record at
+    // seq 1. Only `node`'s seq-2 record is newer than `latest_msgs` and therefore a candidate.
+    let empty: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let visible = empty.create_message(
+        hash(0x10),
+        h(1),
+        node.clone(),
+        s(1),
+        BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    let state = empty.insert_msg(&visible);
+    let spent = state.create_message(
+        target,
+        h(2),
+        node.clone(),
+        s(2),
+        BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    let mut state = state;
+    state.insert_msg_without_latest_mut(&spent);
+    let peer_spent = state.create_message(
+        peer_hash,
+        h(1),
+        peer.clone(),
+        s(1),
+        BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    state.insert_msg_without_latest_mut(&peer_spent);
+
+    let dag = RecordingDag::new(BTreeMap::from([
+        (
+            target,
+            record(target, node.clone(), FailureCause::Divergence, 0),
+        ),
+        (
+            peer_hash,
+            record(peer_hash, peer.clone(), FailureCause::Divergence, 0),
+        ),
+    ]));
+    dag.with_message_state(state);
+
+    let rm = common::build_runtime_manager().await;
+    let shared: Arc<tokio::sync::Mutex<Box<dyn KeyValueStore + Send + Sync>>> = Arc::new(
+        tokio::sync::Mutex::new(Box::new(InMemoryKeyValueStore::default())),
+    );
+    let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+        shared,
+        Arc::new(BlockHashCodec),
+        Arc::new(BlockMessageCodec),
+    ));
+    for (h, sender) in [(target, node.clone()), (peer_hash, peer.clone())] {
+        store
+            .put(&[(h, stored_block(h, sender))])
+            .await
+            .expect("store the failed block");
+    }
+
+    let log: Arc<dyn Log> = Arc::new(NopLog);
+    let index = |_h: BlockHash| async move { Err("no index in this test".to_string()) };
+
+    let cleared =
+        clear_own_failure_record(&*dag, &store, &rm, "root", 0, 0, &index, &node, &log).await;
+
+    assert!(
+        !cleared,
+        "the stub block does not validate, so nothing is cleared — the attempt is the observable"
+    );
+    assert_eq!(
+        dag.inserts_for(&target).len(),
+        1,
+        "the node's own spent record is the one the self-clearing step re-validates"
+    );
+    assert!(
+        dag.inserts_for(&peer_hash).is_empty(),
+        "a peer's failed record is not this node's business, however restorable it looks"
     );
 }

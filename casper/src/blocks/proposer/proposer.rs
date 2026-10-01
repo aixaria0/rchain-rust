@@ -352,6 +352,7 @@ impl Proposer {
             let block_store = block_store.clone();
             let block_index = block_index.clone();
             let shard_id = shard_id.clone();
+            let log = log.clone();
             let dummy_deploy_opt = dummy_deploy_opt.clone();
             // **How many proposals this validator has declined waiting for the round to close.** Local to
             // the proposer on purpose: the round's own clock is DAG-derived and measured from a tip that a
@@ -367,6 +368,7 @@ impl Proposer {
                 let shard_id = shard_id.clone();
                 let blocked_since_advance = blocked_since_advance.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
+                let log = log.clone();
                 let max_number_of_parents = max_number_of_parents;
                 Box::pin(async move {
                     create_block(
@@ -376,6 +378,8 @@ impl Proposer {
                         block_index.as_ref(),
                         &vi,
                         &shard_id,
+                        min_phlo_price,
+                        &log,
                         max_number_of_parents,
                         epoch_length,
                         dummy_deploy_opt.as_ref(),
@@ -517,6 +521,8 @@ async fn create_block<'a, F, Fut>(
     block_index: &'a F,
     validator_identity: &ValidatorIdentity,
     shard_id: &str,
+    min_phlo_price: i64,
+    log: &'a Arc<dyn Log>,
     max_number_of_parents: i32,
     epoch_length: i32,
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
@@ -528,6 +534,29 @@ where
 {
     let creators_validator_for_parents =
         Validator::from_slice(validator_identity.public_key.bytes());
+
+    // **C190's repair, before anything is derived from the parent set.** A node holding a failure record of
+    // its *own* block at a sequence number its arithmetic cannot see (H-2 keeps the record out of
+    // `latest_msgs`) will build a block reusing that number, and the H-1 gate will refuse it — three times,
+    // and the autopropose timer halts. Nothing else clears such a record: the restoring rule fires on an
+    // *incoming* block's justifications and no inbound block can justify the node's own failed record.
+    //
+    // The result is deliberately ignored. If the clear succeeded, the parent set read below simply sees the
+    // block and the arithmetic advances; if it did not, the refusal that follows is the *counted* one
+    // (`consecutive_failures`), so the halt stays visible on `/api/status` and `/metrics` rather than
+    // becoming a silent decline.
+    let _ = crate::multi_parent_casper::clear_own_failure_record(
+        dag,
+        block_store,
+        runtime,
+        shard_id,
+        min_phlo_price,
+        max_number_of_parents,
+        block_index,
+        &creators_validator_for_parents,
+        log,
+    )
+    .await;
     // **One block per validator per round, with a way out.** Every validator enforces the rule the numbers
     // imply: `validate.rs:236` requires `max(justifications) + 1 == block_number` and `:259` requires
     // `creator_latest_seq + 1 == seq_num`, so a second proposal against the same snapshot is an

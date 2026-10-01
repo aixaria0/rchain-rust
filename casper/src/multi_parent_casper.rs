@@ -381,6 +381,127 @@ fn restore_is_warranted(stored: &BlockMetadata) -> bool {
         && stored.restore_attempts < RESTORE_ATTEMPT_LIMIT
 }
 
+/// **Clear this node's own spent failure record, if it has one** — C190's repair, and the other half of
+/// what the update path (C193) made possible.
+///
+/// **The shape.** H-2 records a validation-failed block in the message map and keeps it out of
+/// `latest_msgs` — so the proposer's parent set cannot see it — and the block creator derives `seq_num`
+/// from that parent set. A node holding a failure record of *its own* block therefore derives a sequence
+/// number it has already spent, and the H-1 gate refuses the block it built; three refusals halt the
+/// autopropose timer. Reproduced in `finalization.rs` and registered as C190.
+///
+/// **Why the node has to do it itself.** The restoring rule fires on an *incoming* block's justifications
+/// (`restore_divergent_justifications`), and `neglected_invalid_block` refuses every child of a failed
+/// bonded block — so no inbound block will ever justify the node's own failed record, and the record is
+/// otherwise permanent for the process's lifetime. The node is the only party that can clear it.
+///
+/// **The guard keeps the trigger narrow.** Only a `Divergence` record with attempts left is revalidated
+/// (`restore_is_warranted`) — the cause whose whole meaning is "this node's view was wrong", which is the
+/// one a re-read can settle. An `Attributable` failure is the block's own fault and stays.
+///
+/// **Cost**: one message-map scan per proposal, O(N) in the number of messages, on a 2-second timer. It is
+/// not free and it is deliberate — the alternative is an index nothing else needs, for a defect that is
+/// otherwise unreachable from the proposer's side.
+///
+/// Returns whether a record was **cleared**, which is the caller's signal that the block is visible to the
+/// arithmetic again and a re-derived parent set will advance.
+#[allow(clippy::too_many_arguments)]
+pub async fn clear_own_failure_record<F, Fut>(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    runtime: &RuntimeManager,
+    shard_id: &str,
+    min_phlo_price: i64,
+    max_number_of_parents: i32,
+    block_index: &F,
+    sender: &Validator,
+    log: &Arc<dyn Log>,
+) -> bool
+where
+    F: Fn(BlockHash) -> Fut,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
+{
+    let source = LogSource::new("casper.interpreter.restore");
+    // The candidates are this sender's messages that its own arithmetic cannot see: in the message map,
+    // *newer* than its latest message, and therefore absent from the round snapshot the parent set is
+    // built from.
+    let candidates: Vec<BlockHash> = {
+        let repr = dag.get_representation().await;
+        let latest = repr
+            .dag_message_state
+            .latest_msgs
+            .get(sender)
+            .map(|m| m.sender_seq);
+        repr.dag_message_state
+            .msg_map
+            .values()
+            .filter(|m| {
+                m.sender == *sender
+                    && match latest {
+                        Some(l) => m.sender_seq > l,
+                        None => true,
+                    }
+            })
+            .map(|m| m.id)
+            .collect()
+    };
+
+    for hash in candidates {
+        let Ok(Some(stored)) = dag.lookup(&hash).await else {
+            continue;
+        };
+        if !restore_is_warranted(&stored) {
+            continue;
+        }
+        let Some(msg) = block_store
+            .get(&[hash])
+            .await
+            .ok()
+            .and_then(|mut v| v.pop().flatten())
+        else {
+            continue;
+        };
+        let outcome = validate_checks(
+            dag,
+            block_store,
+            runtime,
+            &msg,
+            shard_id,
+            min_phlo_price,
+            max_number_of_parents,
+            block_index,
+            log,
+        )
+        .await;
+        let record = revalidated_record(&stored, outcome.ok());
+        let cleared = !record.validation_failed;
+        match dag.update_metadata(record).await {
+            Ok(()) if cleared => {
+                log.warn(
+                    source,
+                    &format!(
+                        "cleared this node's own failure record for {}: the block validates now, so the \
+                         proposer can advance past the sequence number it had spent (AUDIT C190)",
+                        hash.to_hex()
+                    ),
+                );
+                return true;
+            }
+            // The attempt is spent either way (`revalidated_record` counts it), so a record that keeps
+            // failing stops being retried at `RESTORE_ATTEMPT_LIMIT` rather than on every proposal.
+            Ok(()) => continue,
+            Err(e) => log.error(
+                source,
+                &format!(
+                    "could not clear this node's own failure record for {}: {e}",
+                    hash.to_hex()
+                ),
+            ),
+        }
+    }
+    false
+}
+
 /// The record to store after one revalidation attempt: `Some(fresh)` when the block passed, `None`
 /// when it did not.
 ///

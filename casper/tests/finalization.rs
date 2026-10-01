@@ -1063,8 +1063,11 @@ fn a_second_proposal_in_a_round_keeps_its_sequence() {
 ///    refuse. Node-local and not consensus-visible, but it converts the equivocation-and-halt into a
 ///    refusal-and-quiet, which is a different liveness failure wearing a better label.
 ///
-/// The assertion below is what a fix **inverts**: change `taken` to `!taken` (or `derived != failed_seq`)
-/// when the decision lands, and this test is the falsifier for whichever one it is. Observed red in that
+/// The decision that landed (§43 addendum) is a third option, neither of the two below: **the proposer
+/// clears its own record** before deriving a number. It does **not** invert this assertion — it leaves both
+/// structures as they are and clears the record at the proposer level, so `taken` stays `true` — and this
+/// test remains the defect's structural pin. The fix's falsifier is
+/// `the_node_targets_only_its_own_spent_record` (`casper/tests/restoring_rule.rs`). Observed red in the
 /// inverted form before landing, with the message quoting `SeqNum(1)` for both — the run that produced it
 /// is recorded in the commit and on #156.
 #[test]
