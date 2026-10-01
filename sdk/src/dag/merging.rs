@@ -254,8 +254,9 @@ where
 /// after it*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchBudget {
-    /// Search steps: queue pops on the enumeration path, recursion nodes on the fast path. This is
-    /// `SearchCensus::expanded`, the quantity #117's memory is a function of.
+    /// Search steps: distinct rejected-set queue pops on the directed path, recursion nodes on the
+    /// symmetric maximal-independent-set path. This is `SearchCensus::expanded`, the quantity the
+    /// budget is applied to before each unit of search work.
     pub max_steps: usize,
     /// Distinct rejection options. This is what bounds **memory** on the fast path, which has no frontier
     /// at all — its residency is the option set, and a perfect matching of `m` pairs has `2^m` of them.
@@ -300,15 +301,16 @@ pub struct SearchCensus {
     /// **Zero means the relation restricted to the keys is symmetric**, which is what decides the
     /// algorithm: it makes a state's reachability exactly "independent set" and a terminal state exactly
     /// a **maximal independent set**, so `maximal_independent_sets` applies and the 2^n intermediate
-    /// states are never touched. Non-zero falls back to the enumeration, which is correct for any map.
+    /// states are never touched. Non-zero takes the exact rejected-set quotient, which is correct for
+    /// arbitrary directed/self-conflicting maps without retaining one state per accepted subset.
     /// (Pairs where `y` is not a key are excluded deliberately: `y` can never be accepted, so it
     /// changes only what a rejection option *contains*, not which sets are reachable.)
     pub asymmetric: usize,
     /// Keys that conflict with themselves. The fast path declines these: a self-conflict is a one-cycle,
     /// so the key is never acceptable, which the maximal-independent-set form cannot express.
     pub self_conflicts: usize,
-    /// Search steps taken. **This is the search's cost**, and the only thing #117's memory is a function
-    /// of: queue pops on the enumeration path, recursion nodes on the maximal-independent-set path.
+    /// Search steps taken. **This is the search's counted cost**: distinct rejected-set queue pops on
+    /// the directed path, recursion nodes on the maximal-independent-set path.
     pub expanded: usize,
     /// The largest the queue ever grew. Always 0 on the maximal-independent-set path, which has no
     /// frontier — memory there is the recursion depth and the option set.
@@ -328,41 +330,32 @@ impl SearchCensus {
 
 /// All rejection combinations (sets of rejected items) that resolve the conflict map.
 ///
-/// This is the Scala `computeRejectionOptions` search: a breadth-first enumeration over acceptance
-/// states, kept *result-identical* to the Scala while visiting each state once.
+/// This returns the Scala `computeRejectionOptions` result exactly, but the shipped search no longer
+/// enumerates every accepted subset.
 ///
-/// **A state is the accepted set alone.** The rejected set is not independent information — the only
-/// way a key enters it is as the conflict of an accepted one, so `rejected = ⋃{conflicts(x) : x ∈
-/// accepted}` after every step, and `rejected` is a pure function of `accepted`. The ported search
-/// carried both sets in each queue entry anyway, which made it re-visit a state once per **ordering**
-/// that reaches it, and clone two sets per visit: `20 chains in two branches: 19,728,200 expansions for
-/// 2,046 states` (measured; `sdk/tests/merging_scaling.rs`). Those clones are **97 % of the live heap**
-/// of a node at its cgroup ceiling, grown 343 -> 1488 MiB within one run (#117).
+/// The original port carried both accepted and rejected sets and revisited one logical state per
+/// acceptance ordering. C177 removed the redundant rejected copy and cut a 20-chain fork from
+/// 19,728,200 queue entries to 2,046 accepted-set states. C178's remaining directed case was still
+/// exponential for the opposite reason: many *different accepted sets produce the same rejected set*.
 ///
-/// Carrying `accepted` alone collapses that to one visit per state, which is what the search's own
-/// state graph always was. It is exact rather than a heuristic: the successor set and the answer both
-/// depend on the state only through `accepted`, so skipping a state already expanded cannot remove a
-/// reachable answer.
+/// The directed path now quotients those states by `R(A) = union(conflicts(a), a in A)`. Once `R` is
+/// fixed, any non-rejected key whose conflicts are already contained in `R` is a zero-delta accept:
+/// taking it changes neither the result nor any future rejection, so all such accepts may be saturated
+/// immediately. Every transition that matters therefore **strictly grows the rejected set**, and a
+/// quotient state is terminal exactly when no non-rejected key can grow it. The literal accepted-set
+/// enumeration remains test-only below and the property differential in `sdk/src/property_tests.rs`
+/// compares the shipped function against the Scala-shaped oracle on symmetric and arbitrary directed
+/// maps.
 ///
-/// **The residual, stated exactly — because "fork" was too narrow a word for it.** A set `S` of keys is
-/// reachable iff its keys can be added one at a time with each new key absent from the conflicts of
-/// those already accepted, i.e. iff the conflicts *within* `S` have no directed cycle. So the search
-/// expands **one state per nonempty subset that induces an acyclic subgraph** (the empty set is never a
-/// state — the seeds are singletons), and:
+/// The symmetric/irreflexive case keeps the still-cheaper Bron-Kerbosch path: its terminal states are
+/// maximal independent sets, so it can enumerate outputs directly. The directed quotient is the general
+/// exact fallback, including self-conflicts.
 ///
-/// | conflict map | states expanded | rejection options |
-/// |---|---|---|
-/// | complete (`K \ {k}` for each `k`) | `n` | `n` |
-/// | **no conflicts at all** | **`2^n - 1`** | **1** |
-/// | two branches, complete across (`fork`) | `2^(p+1) - 2` | `2` |
-/// | a perfect matching of `m` pairs | `3^m - 1` | `2^m` |
-///
-/// The first row is why the 1000-node full-graph oracle passes while the node grows to gigabytes; the
-/// **second is the node's normal case** — chains that do not conflict cost `2^n` states to report a
-/// single option — and it is worse than the fork shape this defect was first described with. `2^n` states
-/// each holding a cloned set is the astonishing bloat, and it is not a leak, a cache, or an allocator
-/// policy: it is this enumeration, deterministically. Pinned by
-/// `the_search_expands_one_state_per_acyclic_subset` and its siblings, which assert these four counts.
+/// The historical accepted-set counts remain pinned by
+/// `the_enumeration_expands_one_state_per_acyclic_subset` as the negative control. In particular, a
+/// one-way 12-key star has 4,095 reachable accepted subsets but only **two** distinct rejected-set states;
+/// `the_directed_path_quotients_states_by_their_rejection_union` pins both the identical option set and
+/// that reduction.
 ///
 /// **A least-fixed-point rewrite was attempted and is wrong.** It is tempting to compute
 /// `rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` directly, on the reasoning that every key not rejected is
@@ -430,7 +423,7 @@ fn search<D: Ord + Clone>(
     // **The fix.** When the relation on the keys is symmetric and irreflexive, a reachable state is an
     // independent set and a terminal state is exactly a *maximal* one, so the answer can be read off
     // maximal independent sets directly — never touching the 2^n intermediate states, which is where
-    // #117's memory went. Otherwise the enumeration below, which is correct for any relation.
+    // #117's memory went. Directed/self-conflicting inputs take the exact rejection-set quotient below.
     if census.keys_are_a_symmetric_irreflexive_relation() {
         let (result, nodes) = maximal_independent_sets(conflicts_map, &all_keys, budget)?;
         census.expanded = nodes;
@@ -1463,8 +1456,8 @@ mod tests {
         assert_eq!(census.options, options.len());
         assert!(census.expanded > 0 && census.max_frontier <= census.expanded);
 
-        // Asymmetric on the keys (1 conflicts with 3, 3 does not conflict with 1), so this is the
-        // enumeration: a non-zero count in this field is what sends a map down that path.
+        // Asymmetric on the keys (1 conflicts with 3, 3 does not conflict with 1), so this takes the
+        // directed rejection-set quotient: a non-zero count in this field is what selects that path.
         let asymmetric = map([(1, set([2])), (2, set([1])), (3, set([1]))]);
         let (_, census) = exact_with_census(&asymmetric);
         assert_eq!(census.asymmetric, 1, "3 -> 1 with no edge back");
