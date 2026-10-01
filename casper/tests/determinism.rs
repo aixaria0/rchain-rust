@@ -725,6 +725,153 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
     );
 }
 
+/// **Arm A of #139's campaign: the post-state is a function of the fringe state, so two nodes that
+/// derive different fringes disagree about the same block.**
+///
+/// This is the primitive the whole campaign rests on, and it is the cheapest thing here. A block's
+/// `fringe_state_hash` is **not carried on the block** — every node derives it from its own DAG
+/// (`validate_block_checkpoint`'s doc says so) — and the replay hands it to the `CloseBlock` system
+/// deploy, which anchors the *next* epoch's seed to it. So if the two values differ, the same block
+/// replays to two different post-states, and the validator's `handle_errors` sees
+/// `computed != declared` and refuses with `InvalidStateHash`.
+///
+/// **The falsifiable statement, exactly:** play the block against one fringe, then replay it twice —
+/// once against the proposer's fringe (must agree) and once against another (must not). The first
+/// replay is the control that the fixture is sound; the second is the mechanism. If both replays
+/// agree, the fringe cannot be the cause of any observed divergence and the campaign's hypothesis is
+/// refuted before any devnet run is paid for.
+#[tokio::test]
+async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_state() {
+    use rchain_casper::system_deploy::SystemDeploy;
+    use std::collections::BTreeSet;
+
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let validator = rchain_models::validator::Validator::new([0u8; 65]);
+    let pos_genesis = PosGenesis {
+        bonds: [(validator, NonNegI64::try_from(40).unwrap())]
+            .into_iter()
+            .collect(),
+        trusted: BTreeSet::from([validator]),
+        // `epoch_length: 1` makes this block a boundary, which is the case the divergence is confined
+        // to: a non-boundary block whose close step writes no seed change would be a control that
+        // cannot fail.
+        params: rchain_rholang::native_state::PosParams {
+            epoch_length: 1,
+            quarantine_length: 0,
+            minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
+            ..Default::default()
+        },
+    };
+    let (_pre, genesis_post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &pos_genesis,
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let term = r#"new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("withdraw", *deployerId, *ret) |
+  for (_ <- ret) { @"after"!(1) }
+}"#;
+    let block_data = BlockData {
+        block_number: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
+        ..BlockData::empty()
+    };
+
+    // What the **proposer** had: its own derived fringe.
+    let proposer_fringe = fringe_state(1);
+    let close = SystemDeploy::close_block(1, proposer_fringe, rand.split_byte(9));
+    let (declared_post_state, user_results, sys_results) = rm
+        .compute_state(
+            &genesis_post,
+            &[deploy(term)],
+            &[close],
+            &rand,
+            block_data.clone(),
+            &proposer_fringe,
+        )
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "the staged withdrawal must succeed: {:?}",
+        user_results[0].eval_result.errors
+    );
+    let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+    let processed_sys: Vec<ProcessedSystemDeploy> =
+        sys_results.into_iter().map(|r| r.deploy).collect();
+
+    // The **control**: a validator that derived the proposer's fringe agrees, so the fixture is sound
+    // and the difference below is the fringe rather than a replay that never agrees with anything.
+    let (same_fringe, _) = rm
+        .replay_compute_state(
+            &genesis_post,
+            &processed,
+            &processed_sys,
+            &rand,
+            block_data.clone(),
+            &proposer_fringe,
+            true,
+            &pos_genesis,
+            &[],
+        )
+        .await
+        .expect("replay under the proposer's fringe");
+    assert_eq!(
+        same_fringe, declared_post_state,
+        "a validator that derives the proposer's fringe must agree — without this the arm below \
+         proves nothing about the fringe"
+    );
+
+    // The **mechanism**: a validator whose own DAG named a different fringe replays the same deploys
+    // to a different post-state. `handle_errors` compares this value with the declared one and
+    // returns `None`, which is `InvalidStateHash`.
+    let other_fringe = fringe_state(2);
+    assert_ne!(
+        other_fringe, proposer_fringe,
+        "the fixture needs two distinct fringe states"
+    );
+    let (different_fringe, _) = rm
+        .replay_compute_state(
+            &genesis_post,
+            &processed,
+            &processed_sys,
+            &rand,
+            block_data,
+            &other_fringe,
+            true,
+            &pos_genesis,
+            &[],
+        )
+        .await
+        .expect("replay under a different fringe");
+    assert_ne!(
+        different_fringe, declared_post_state,
+        "the `CloseBlock` system deploy anchors the next epoch's seed to the fringe state, so a \
+         validator that derived a different fringe must NOT reproduce the proposer's post-state — \
+         this inequality is the whole mechanism #139 is about"
+    );
+
+    // And the comparison the node actually makes (`interpreter_util::handle_errors`) is the one that
+    // refuses: named here so the arm's result and the production status are the same fact.
+    assert_eq!(
+        rchain_casper::interpreter_util::handle_errors(
+            &rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_byte_array(
+                declared_post_state.as_bytes()
+            ),
+            Ok(different_fringe),
+        )
+        .expect("handle_errors runs"),
+        None,
+        "the divergence above is exactly what `handle_errors` reports as `Ok(None)`"
+    );
+}
+
 /// **A genesis replay that omits the genesis vaults does not reproduce the genesis** (finding,
 /// 2026-09-23; fixed 2026-09-24, Programme F).
 ///
