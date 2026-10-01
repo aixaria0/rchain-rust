@@ -147,6 +147,11 @@ where
         })?;
     let prev_fringe_state = fringe_record.state_hash;
     let prev_fringe_rejected_deploys = fringe_record.rejected_deploys.clone();
+    // Captured here rather than at the struct literal, because `prev_fringe_hashes` is moved into
+    // `new_fringe` below (#139). These two are what a state disagreement is reported with: the fringe
+    // the node began from, and the key it looked that fringe up under.
+    let prev_fringe_for_report = prev_fringe_hashes.clone();
+    let prev_fringe_lookup = FringeData::fringe_hash_of(&prev_fringe_hashes);
 
     // Bonds map: from the newest justification's *state* while nothing has finalised, else from the PoS
     // contract at the fringe.
@@ -282,6 +287,10 @@ where
         max_seq_nums,
         fringe: new_fringe,
         fringe_state,
+        // Where this computation started (#139): the fringe the node's own DAG named, and the cache
+        // key it looked that fringe up under. `prev_fringe` empty is the restore-shape signature.
+        prev_fringe_lookup,
+        prev_fringe: prev_fringe_for_report,
         fringe_bonds_map: bonds_map,
         fringe_rejected_deploys,
         pre_state_hash,
@@ -594,6 +603,9 @@ where
             ))
         }
         Ok(true) => {}
+        // `Ok(false)` is now **only** the post-state predicate: the pre-state mismatch has its own
+        // status (#139), so this arm and `Err(status)` above are no longer two spellings of one
+        // failure.
         Ok(false) => {
             return Err(ValidateError::ValidationFailed(
                 mark_failed(&block_metadata, FailureCause::Divergence),

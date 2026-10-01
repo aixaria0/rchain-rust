@@ -107,6 +107,8 @@ Commands:
   stop <node>                    stop ONE node and leave the rest running — a validator's death, so a
                                  liveness measurement can ask what the survivors do (#70)
   start <node>                   start a node that `stop` stopped (data volume intact)
+  reset <node>                   discard ONE node's container and store, so the next bring-up must
+                                 rebuild it by LFS-syncing a chain that is already mature (#139)
   status                         docker ps for the network
   logs <node>                    tail a node's logs
   diagnose                       per-node health check (PASS/WARN/FAIL)
@@ -621,6 +623,30 @@ cmd_start() {
   echo "started $name"
 }
 
+# reset <node>: discard ONE node's store, so that the next bring-up must rebuild it by **syncing**.
+#
+# **Why this exists as a command.** A node only LFS-syncs when its DAG is empty at start
+# (`NodeLaunch` syncs on a fresh store), so "join a chain that is already mature" is not something `up`
+# can stage — it starts every node at genesis and the joiner restores block 0 alone. The experiment is
+# therefore *wipe one node's store and let it rejoin*, and the two docker commands it takes
+# (`rm -f` the container, `volume rm` its `${name}-data`) are exactly the ones a campaign should not be
+# hand-typing: the volume's name is derived, and `stop`/`start` cannot substitute — `docker start`
+# reuses the volume, so the node would rebuild its stored chain and never sync at all.
+#
+# **The bring-back is `down` then `up` with the same flags**, not `up` alone: `cmd_up` starts every node
+# with `docker run --name`, which refuses a name that already exists, so a container left running beside
+# this one makes `up` fail. `down` removes containers and keeps the other nodes' volumes, so the nodes
+# that were not reset come back against their own stores — announced by `up` as a restart.
+cmd_reset() {
+  local name; name="$(node_container "${1:-}")"
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker volume rm "${name}-data" >/dev/null 2>&1 || true
+  echo "reset $name: container and ${name}-data discarded"
+  echo "  bring the network back with:"
+  echo "    tools/devnet.sh down && tools/devnet.sh up <the same flags>"
+  echo "  $name will start with an empty store and LFS-sync the chain from $BOOTSTRAP."
+}
+
 cmd_logs() {
   docker logs -f "${1:?node name required}"
 }
@@ -811,6 +837,7 @@ case "${1:-}" in
   down) cmd_down "${2:-}" ;;
   stop) cmd_stop "${2:-}" ;;
   start) cmd_start "${2:-}" ;;
+  reset) cmd_reset "${2:-}" ;;
   status) cmd_status ;;
   logs) cmd_logs "${2:-}" ;;
   diagnose) cmd_diagnose ;;

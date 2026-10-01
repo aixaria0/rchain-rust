@@ -147,11 +147,18 @@ pub async fn apply<F, Fut>(
                         .send_block_hash(&block.block_hash, block.sender.as_bytes())
                         .await;
                 }
+                // **The `Display` sentence, not the `Debug` variant name** (#139). `{status:?}` printed
+                // `InvalidStateHash` and nothing else, so an operator could not tell a pre-state
+                // disagreement from a post-state one — the two are now different statuses — nor read
+                // what either means. The hash-carrying line is the interpreter's
+                // (`casper.interpreter.validate`); this one says which block and who sent it.
                 Err(status) => log.warn(
                     source,
                     &format!(
-                        "Block {} failed validation: {status:?}",
-                        block.block_hash.to_hex()
+                        "Block #{} {} from {} failed validation: {status}",
+                        block.block_number,
+                        block.block_hash.to_hex(),
+                        rchain_shared::base16::encode(&block.sender.as_bytes()[..8])
                     ),
                 ),
             }
