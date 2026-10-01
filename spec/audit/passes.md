@@ -5652,3 +5652,38 @@ with the falsifier it must satisfy.
 - Arms C (two honest views) and D (the historical three-validator shape) were **not run**. C would test
   whether two honest nodes can also diverge — #105's actual case — and D is the only arm that could
   reproduce it. They remain available; nothing here depends on their absence.
+
+### The fix, and what it looks like when it works
+
+`FinalizedFringeProto` gained `repeated BlockFringeProto ancestry` and the request gained
+`includeFringeMetadata`; the bootstrap fills the ancestry (a parent-link walk from the fringe — the
+same set the joiner restores) and `populate_dag` inserts each block with the fringe a validating node
+would have derived. **The falsifier is the rig that reproduced it, run again**: the joiner syncs a
+mature chain and *follows* it — measured 98, 97 and 101 against the bootstrap's 104, 103 and 107, with
+**zero** state-hash disagreements, against **93 and 92** before. Four of five attempts came out that
+way.
+
+**Why a field on an existing message rather than a new message type**, because that is the whole
+compatibility story: the `CasperMessage` sum is hand-written and dispatched on a wire `type_id`, and an
+older node that receives an unknown tag answers `Unrecognized packet typeId` and drops the packet. A
+field is silently ignored by an older decoder. So a mixed pair degrades — a new joiner against an old
+bootstrap gets no ancestry and says so per block, in the log, rather than silently restoring a chain it
+cannot replay.
+
+### And a second defect the fix exposed, named rather than folded in
+
+**One attempt in five still froze**, and it is **not** this cause: the joiner rejected its **own** block —
+
+```
+propose failed with an internal error: the node rejected its own block #N (seq M) with an internal
+error: failed to insert block into DAG: equivocation detected: sender produced two blocks with the
+same sequence number
+… block production for shard /root halted after 4 consecutive self-validation failures
+```
+
+with **zero** state-hash disagreement lines. This is a re-syncing validator proposing under an identity
+whose blocks are already in the chain it restored — a shape `tools/devnet.sh reset` creates and a
+genuine first-time joiner does not, which is why it was invisible before: **the pre-fix runs froze
+before reaching it.** It is recorded here rather than as a row because it has no diagnosis yet, and a
+`todo` row's `owes` is supposed to be something a reader can act on; classifying it needs the first
+hour of the next unit, not a guess in this one.
