@@ -350,10 +350,47 @@ where
         }
     };
 
+    // Keep checkpoint failure evidence before handle_errors collapses a mismatch to None (#139).
+    // Format only on failure, and omit deploy terms and error payloads from the diagnostic.
+    let checkpoint_context = || {
+        format!(
+            "block={} height={} seq={} incoming_pre={} derived_pre={} fringe_state={} \
+             fringe_count={} justifications={} included_parents={} deploys={}",
+            base16::encode(block.block_hash.as_bytes()),
+            block.block_number,
+            block.seq_num,
+            base16::encode(block.pre_state_hash.as_bytes()),
+            base16::encode(pre_state.pre_state_hash.as_bytes()),
+            base16::encode(pre_state.fringe_state.as_bytes()),
+            pre_state.fringe.len(),
+            block.justifications.len(),
+            parents_set.len(),
+            block.state.deploys.len(),
+        )
+    };
+
     let incoming_pre_state_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
     let result: Result<bool, BlockStatus> = if incoming_pre_state_hash != pre_state.pre_state_hash {
+        log.warn(
+            source,
+            &format!(
+                "checkpoint mismatch: phase=pre-state expected={} computed={} {}",
+                base16::encode(incoming_pre_state_hash.as_bytes()),
+                base16::encode(pre_state.pre_state_hash.as_bytes()),
+                checkpoint_context(),
+            ),
+        );
         Ok(false)
     } else if pre_state.fringe_rejected_deploys != block.rejected_deploys {
+        log.warn(
+            source,
+            &format!(
+                "checkpoint mismatch: phase=rejected-deploys claimed_count={} computed_count={} {}",
+                block.rejected_deploys.len(),
+                pre_state.fringe_rejected_deploys.len(),
+                checkpoint_context(),
+            ),
+        );
         Err(BlockStatus::InvalidRejectedDeploy)
     } else if slash_is_unjustified(dag, block).await? {
         Err(BlockStatus::UnjustifiedSlash)
@@ -367,6 +404,35 @@ where
             .await?;
         let replay_result =
             replay_block(runtime, &forked, block, &pre_state.fringe_state, &rand).await;
+        match &replay_result {
+            Ok(computed) if *computed != post_state_hash => log.warn(
+                source,
+                &format!(
+                    "checkpoint mismatch: phase=post-state expected={} computed={} {}",
+                    base16::encode(post_state_hash.as_bytes()),
+                    base16::encode(computed.as_bytes()),
+                    checkpoint_context(),
+                ),
+            ),
+            Err(failure) => {
+                let kind = match failure {
+                    ReplayFailure::InternalError(_) => "InternalError",
+                    ReplayFailure::ReplayStatusMismatch { .. } => "ReplayStatusMismatch",
+                    ReplayFailure::UnusedCommEvent(_) => "UnusedCommEvent",
+                    ReplayFailure::ReplayCostMismatch { .. } => "ReplayCostMismatch",
+                    ReplayFailure::SystemDeployErrorMismatch { .. } => "SystemDeployErrorMismatch",
+                };
+                log.warn(
+                    source,
+                    &format!(
+                        "checkpoint replay failed: kind={kind} expected_post={} {}",
+                        base16::encode(post_state_hash.as_bytes()),
+                        checkpoint_context(),
+                    ),
+                );
+            }
+            _ => {}
+        }
         let handled = handle_errors(&post_state_hash, replay_result)?;
         Ok(handled.is_some())
     };
