@@ -1,13 +1,20 @@
 # The review ledger — one row per item, authored.
 #
-# **Nothing regenerates this file any more, and nothing checks it against the tree.**
-# It used to be re-seeded by `tools/emit-review-ledger.sh --seed` and joined against the tree's
-# rosters in both directions by `tools/audit-test-register.sh`'s check 15; both were deleted
-# 2026-09-27 with the rest of the gate apparatus. The writers left are `tools/todo.sh read|found`;
-# the readers are `tools/audit-status.sh` and `tools/emit-findings-register.sh`, which count the
-# `tier`/`verdict` columns for the T1 headline and read nothing else. So the `ceiling` lines below
-# are **hand-maintained and unenforced** — corrected when they drift, with nothing to refuse a
-# drift. Four rows still name files that no longer exist (marked in their notes).
+# **The `ceiling` rows below are machine-enforced by `tools/check-review-ledger.sh`.** They were
+# comments until 2026-10-01, and the gap cost something real: `tool` had drifted from 23 to 27 with
+# nothing refusing it. That check is the *cheap* replacement for the join `tools/audit-test-register.sh`
+# used to run (1,453 lines, 78 s), which was deleted 2026-09-27 with the rest of the gate apparatus —
+# and behind it this census went stale.
+#
+# What the check enforces: each `ceiling <kind> <n>` equals the number of rows of that kind, and every
+# **T1** row names something that exists — a tracked path, or a law id in `spec/laws.tsv` — so that
+# "all N T1 modules read" is a count of real things rather than of names. What it *reports* and does not
+# refuse: tracked `.rs` files with no row at all (62 of 412 on 2026-10-01), because a gate satisfiable
+# only by bookkeeping is the thing the check exists to avoid.
+#
+# `unhousedCeiling` remains hand-maintained: it counts C-numbers no row names, which is not a row count.
+# The writers are `tools/todo.sh read|found`; the readers are `tools/audit-status.sh` and
+# `tools/emit-findings-register.sh`, which count the `tier`/`verdict` columns for the T1 headline.
 # Columns: kind	id	tier	verdict	depth	sample	reason	evidence	registers	note
 # verdict vocabulary: cleared finding sampled exempt deferred unreachable
 # tier vocabulary: T1 T2 T3   |   depth vocabulary: shallow medium deep -
@@ -15,10 +22,10 @@
 #   `deleted` was added 2026-09-28: the other five say what a file *is*, and a file removed
 #   from the tree is none of them. The note carries what it was and why it went.
 # reason vocabulary (unreachable): peer-bound harness-bound
-# ceiling	ingress	45
-# ceiling	process	30
-# ceiling	config	105
-# ceiling	tool	23
+ceiling	ingress	45
+ceiling	process	30
+ceiling	config	105
+ceiling	tool	27
 # unhousedCeiling	117   (measured 2026-09-27: 164 allocated C-numbers, 47 named by a finding row)
 class	cast	T3	deferred	-	-	-	-	-	-
 class	div	T3	deferred	-	-	-	-	-	-
