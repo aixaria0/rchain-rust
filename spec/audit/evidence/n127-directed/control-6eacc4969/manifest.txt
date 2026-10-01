@@ -1,0 +1,6 @@
+arm=control
+image=rnode:control-6eacc4969
+image_id=sha256:b3411e185fa1ddb9775098b2f27f6f9196581914f0c04583e4d1a6c85db20bac
+tree=865e8137e
+started=2026-10-01T12:00:25Z
+finished=2026-10-01T12:16:11Z rc=0
