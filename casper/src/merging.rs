@@ -1720,6 +1720,51 @@ mod tests {
         assert!(Arc::ptr_eq(&cached_last, &last));
     }
 
+    /// A hit refreshes recency. This distinguishes the shipped policy from FIFO: after filling the
+    /// cache, touching the oldest entry must keep it resident when one new entry arrives, and the
+    /// second-oldest entry is the one evicted.
+    #[test]
+    fn a_cache_hit_refreshes_lru_recency() {
+        let mut cache = BlockIndexCache::default();
+        for id in 0..u16::try_from(BLOCK_INDEX_CACHE_MAX_ENTRIES)
+            .expect("cache bound fits in u16")
+        {
+            let hash = block_hash(id);
+            cache.insert(
+                hash,
+                Arc::new(BlockIndex {
+                    block_hash: hash,
+                    deploy_chains: Vec::new(),
+                    native_changes: Vec::new(),
+                }),
+            );
+        }
+
+        let oldest = block_hash(0);
+        let second_oldest = block_hash(1);
+        let _ = cache.get(&oldest).expect("oldest entry is resident");
+
+        let newcomer = block_hash(
+            u16::try_from(BLOCK_INDEX_CACHE_MAX_ENTRIES).expect("cache bound fits in u16"),
+        );
+        cache.insert(
+            newcomer,
+            Arc::new(BlockIndex {
+                block_hash: newcomer,
+                deploy_chains: Vec::new(),
+                native_changes: Vec::new(),
+            }),
+        );
+
+        assert!(cache.get(&oldest).is_some(), "the refreshed entry stays resident");
+        assert!(
+            cache.get(&second_oldest).is_none(),
+            "the least-recently-used entry is evicted"
+        );
+        assert!(cache.get(&newcomer).is_some());
+        assert_eq!(cache.len(), BLOCK_INDEX_CACHE_MAX_ENTRIES);
+    }
+
     /// Explicit finality pruning must also remove its bookkeeping entry; otherwise the queue used to
     /// enforce the hard bound would become the new unbounded structure.
     #[test]
