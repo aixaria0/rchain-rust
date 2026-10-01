@@ -2836,27 +2836,73 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs", "casper/src/dag.rs", "casper/src/multi_parent_casper.rs"],
     witness := [`Rchain.the_refusal_is_persistent, `Rchain.a_neglected_block_is_detected,
       `Rchain.a_refused_validator_is_never_followed],
-    falsifiable := some "**the falsifier is a rule that restores, and the port has none**: \
+    falsifiable := some "**the falsifier is a rule that restores, and the port now has one.** \
       `Rchain.the_refusal_is_persistent` is proved from the modelled step relation, so a step that \
       unmarked a sender — a revalidation of failed metadata, or a bounded re-fetch — makes it false *by \
-      construction*. That makes this theorem a **guard on the fix**: the row is stated so that the red it \
-      produces when C173's decision lands is read as the guard firing rather than as a regression. The \
-      rule half is non-vacuous on the model's own fixture (`Rchain.a_neglected_block_is_detected`: a block \
-      justifying a failed bonded sender's block is neglected, one justifying a failed *unbonded* sender's \
-      is not), which is why the reachable route to a failed parent is the unbonded one",
+      construction*. That is exactly what happened: clause **b** models the port's restoring rule as \
+      `Rchain.restoreStep`, and `Rchain.the_refusal_is_not_persistent_once_a_rule_restores` **is this \
+      cell executed** — the red the guard was stated to produce, read off the elaborated environment \
+      rather than asserted. This clause is therefore stated over the rule set *without* the restoring \
+      rule, and is the guard that fired. The rule half is non-vacuous on the model's own fixture \
+      (`Rchain.a_neglected_block_is_detected`: a block justifying a failed bonded sender's block is \
+      neglected, one justifying a failed *unbonded* sender's is not) — which is also why option (a) of \
+      C173's decision, counting failed justifications in `block_number`'s maximum, ships as well: the \
+      unbonded route is the one `neglected_invalid_block` cannot close",
     note := "This is C173, filed as #105 from a live-testnet run on 2026-09-29: a two-validator chain \
       froze with the survivor holding 91 % of the stake, and the reason was not the quorum — the \
       survivor had marked the other's block failed, so it refused every block above it for good. **Both \
-      rules are the oracle's**, which is why the law is a *decision* rather than a bug fix: `block_number` \
-      skips failed justifications (the port's own note cites the Scala's `if (!m.validationFailed)`) and \
-      `neglectedInvalidBlock` is a straight port. **What is not upstream is the consequence**: the failure \
-      is attributed (`mark_failed_attributable`, reached by every `ValidateError::ValidationFailed`), so \
-      the block is recorded failed *and* slashable, and the one-block-per-node divergence becomes a \
-      deterministic estrangement with slash evidence attached — the mutual-blame shape #70's own comment \
-      of 2026-09-24 describes. The fix is a fork decision and is recorded as such in AUDIT C173 \
-      (`spec/audit/passes.md` §25): count failed justifications in the height maximum, or give a stranded \
-      node an explicit path back. **Independent of C172's fix**, which is a dropped `Internal` rather than \
-      a recorded `ValidationFailed` and does not touch this path" },
+      rules are the oracle's**, which is why the law was a *decision* rather than a bug fix: `block_number` \
+      skipped failed justifications (the Scala's `if (!m.validationFailed)`) and `neglectedInvalidBlock` \
+      is a straight port. **What was not upstream is the consequence**: the failure is attributed \
+      (reached by every `ValidateError::ValidationFailed`), so the block was recorded failed *and* \
+      slashable, and the one-block-per-node divergence became a deterministic estrangement with slash \
+      evidence attached. **The decision was taken on 2026-10-01 and both halves shipped** — clause b's \
+      restoring rule, and option (a), which is now a registered §6 divergence from the Scala (the \
+      maximum counts failed justifications). **Independently of C172's fix**, which is a dropped \
+      `Internal` rather than a recorded `ValidationFailed` and does not touch this path" },
+  { number := 53, clause := "b", layer := "Casper",
+    rustWitness := [
+      "casper/src/multi_parent_casper.rs:only_a_divergence_is_restorable",
+      "casper/tests/restoring_rule.rs:only_a_divergence_is_revalidated",
+      "casper/tests/restoring_rule.rs:one_block_budget_bounds_the_revalidations",
+      "casper/tests/restoring_rule.rs:a_record_at_the_attempt_limit_is_not_revalidated_again"],
+    statement := "**A refusal has an inverse, and the inverse is bounded.** Clause a's `Terminal` is \
+      repaired by a rule that *unmarks*: a node re-validates a failed record against its current view, \
+      and a record that now passes is cleared — so the block above it is admitted rather than refused. \
+      This is `restore_divergent_justifications` (`casper/src/multi_parent_casper.rs`), and it is \
+      `Rchain.restoreStep`, the exact inverse of `strandStep`. **What makes it a rule and not a retry \
+      loop is that its work is bounded by three quantities the protocol bounds**: it is keyed on the \
+      *cause* (only a view-dependent `Divergence` is eligible — an `Attributable` failure is the \
+      block's own fault and is permanent, a `Cascade` is not about that block at all); it is capped per \
+      record by a count that is *persisted*, so a restart does not refresh the budget; and it is \
+      budgeted per incoming block, so the work one block can provoke is a constant times the cost the \
+      protocol already pays to validate it. Clearing a record keeps `slashable` exactly as it was — the \
+      refusal has an inverse, attribution does not",
+    status := .provedModel,
+    declarations := [`Rchain.Strand, `Rchain.restoreStep, `Rchain.strandSystemRestoring],
+    axioms := [],
+    rust := ["casper/src/multi_parent_casper.rs", "casper/tests/restoring_rule.rs"],
+    witness := [`Rchain.the_refusal_is_not_persistent_once_a_rule_restores,
+      `Rchain.a_restoring_step_removes_a_refusal],
+    falsifiable := some "**the falsifier is the absence of the step**: delete `restoreStep` from \
+      `strandSystemRestoring`'s relation and the reachable set is clause a's again, so \
+      `the_refusal_is_not_persistent_once_a_rule_restores` cannot be proved — persistence returns. On \
+      the Rust side it is the three bounds: `only_a_divergence_is_restorable` (the cause key), \
+      `a_record_at_the_attempt_limit_is_not_revalidated_again` (the cap, and that it is spent), and \
+      `one_block_budget_bounds_the_revalidations` (the budget), each observed red by deleting the clause \
+      it names — which is what keeps this out of `candidate:bounded-work-per-step`'s class (C180): work \
+      whose cost grows with an input nothing bounds. **What the clause does not claim**: it does not \
+      promise the inverse always fires — a node whose own view is still divergent re-validates to the \
+      same refusal, and is right to keep refusing a block it cannot verify. The rule gives the refused \
+      state an inverse, which is what `Terminal` demands; the refutation theorem is a statement about \
+      the relation, not a liveness promise about any particular run",
+    note := "C173's fix, #125, landed 2026-10-01. The name is deliberately a *clause* rather than a \
+      new number: it is not a new shape but the other half of clause a's — `Persistent` and its dual \
+      (`Rchain.System.Unrestorable`) are what Law 51's vocabulary exists to tell apart, and a \
+      refusal that its own fault cannot clear is exactly the case where the two must be stated \
+      together. The three Rust bounds are the ones the register's C180 class asks for, because a \
+      restoring rule that re-validated on every child would be an unbounded re-fetch triggered by an \
+      input nothing bounds" },
   { number := 54, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/blocks/proposer/proposer.rs:a_silent_validators_stale_message_does_not_carry_the_quorum",

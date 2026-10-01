@@ -87,7 +87,7 @@ pub struct BlockMetadata {
     /// hard-coded `false`, and every read of a stored metadata goes back through this codec, so the flag was
     /// false for *every* metadata any caller could see — not merely after a restart, as this comment used to
     /// claim, and not only for the round trip the in-memory writers took. The writers
-    /// (`validate_block_checkpoint`, `mark_failed_attributable`) set it before `dag.insert` and nothing ever
+    /// (`validate_block_checkpoint`, `mark_failed`) set it before `dag.insert` and nothing ever
     /// read back a `true`, so a proposer's `to_slash` was always empty and `slash_is_unjustified` treated
     /// every `Slash` as unjustified. The comment was also wrong that `validation_failed` is not carried: it
     /// is, at `casper.proto:201`.
