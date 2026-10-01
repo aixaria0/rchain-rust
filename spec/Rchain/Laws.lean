@@ -2968,7 +2968,83 @@ def laws : List Law := [
       same block — and it *produces* a `Terminal` stall, because the reader that disagrees feeds \
       validation, the failure is attributed, and Law 53's refusal then makes the stall permanent. The \
       diagnosis is what links them: a rule read a view that was not the authoritative one. **Independent \
-      of clause a**: there the fix is to read the view, here it is to have one" }
+      of clause a**: there the fix is to read the view, here it is to have one" },
+  { number := 55, clause := "a", layer := "Casper",
+    rustWitness := [
+      "sdk/src/dag/merging.rs:a_budget_refuses_without_answering_and_never_changes_the_answer",
+      "sdk/tests/merging_scaling.rs:rejection_options_are_bounded_on_a_directed_shape"],
+    statement := "**The guard is before the work.** Every step the protocol takes has a cost bounded by a \
+      quantity the protocol bounds, and the bound is a **hypothesis of the step** rather than a check \
+      after it: `spendStep` charges one unit only while `spent < limit`, so `the_work_never_exceeds_the_ \
+      budget` holds in every reachable state and `an_exhausted_budget_enables_no_step` says there is \
+      nothing to take once the budget is gone. **The defect this is the inverse of has a shape, not just \
+      a symptom**, and it is in the same model: `lateGuardStep` charges the step and *then* asks whether \
+      it was allowed, and `the_late_guard_overspends` exhibits a state one unit past the budget reachable \
+      in a single step from an exhausted start. That the two relations differ is what makes this clause a \
+      claim rather than a definition — every row of the class AUDIT C180 names had the late guard",
+    status := .provedModel,
+    declarations := [`Rchain.Work, `Rchain.spendStep, `Rchain.workSystem, `Rchain.lateGuardStep,
+      `Rchain.lateGuardSystem],
+    axioms := [],
+    rust := ["sdk/src/dag/merging.rs", "casper/src/merging.rs",
+      "casper/src/blocks/block_receiver.rs", "casper/src/blocks/block_processor.rs"],
+    witness := [`Rchain.the_work_never_exceeds_the_budget, `Rchain.an_exhausted_budget_enables_no_step,
+      `Rchain.the_late_guard_overspends],
+    falsifiable := some "**the falsifier is a relation, not a schedule**: `Rchain.the_late_guard_overspends` \
+      derives an over-budget state from a step relation that carries no guard, so a port whose bound sat \
+      after the work would make `Rchain.the_work_never_exceeds_the_budget` unprovable by construction — \
+      the budget would be a counter, not a bound. On the Rust side the pair is \
+      `a_budget_refuses_without_answering_and_never_changes_the_answer` (the refusal fires) and \
+      `rejection_options_are_bounded_on_a_directed_shape` (the work counting toward the budget is bounded \
+      by the **output** rather than by the width — observed red with the quotient disabled: 16,383 states \
+      for one option at fourteen keys, where the bounded search expands fourteen)",
+    note := "**This is the class statement AUDIT C180 asked for, and C178 is its first held member.** \
+      C180 was filed as `candidate:bounded-work-per-step` with three symptoms — the merge search \
+      (C178), the unbounded ingress queue (C175) and the start-up envelope (#68) — because the register \
+      had no law that named what they shared, which is how one cause came to be tracked as three. The \
+      `rust` cell is the merge search and the ingress path, and the two bounds landed on 2026-10-01 \
+      (#147, #151); the third member is #68's envelope, and C189 records that its measurement no longer \
+      reproduces on the current build, which is a fact about the rig rather than about this clause. \
+      **What the clause does not claim**: that the cost is *small*, only that it is bounded by something \
+      the protocol bounds. Raising the cost of an attack is not the same as removing it, and the \
+      honest sentence every row of this class carries is that below the bound the work may still be \
+      exponential" },
+  { number := 55, clause := "b", layer := "Casper",
+    rustWitness := [
+      "sdk/src/dag/merging.rs:a_budget_refuses_without_answering_and_never_changes_the_answer"],
+    statement := "**The bound cannot change an answer.** A run whose budget suffices returns what the work \
+      produced, and **every larger budget returns the same thing** — \
+      `a_larger_budget_does_not_change_an_answer` — so two nodes that both complete compute the identical \
+      answer however different their budgets are. A spent budget carries **nothing** \
+      (`a_spent_budget_carries_no_answer`), which is the port's shape rather than an analogy: \
+      `SearchBudgetExceeded` carries two counters and deliberately no option set, because a truncated \
+      option set would pick a different rejection. Together the two make the bound a **resource policy \
+      and not a consensus change** — which is what Law 17's determinism requires of anything that can \
+      stop a search early, and what the class's rows could not state while the law was missing",
+    status := .provedModel,
+    declarations := [`Rchain.boundedRun],
+    axioms := [],
+    rust := ["sdk/src/dag/merging.rs", "casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.a_spent_budget_carries_no_answer,
+      `Rchain.a_larger_budget_does_not_change_an_answer,
+      `Rchain.a_completion_within_the_budget_is_returned],
+    falsifiable := some "**the falsifier is a refusal that carries a partial answer**, and it is the shape \
+      the port's type refuses: `a_spent_budget_carries_no_answer` is the empty case, so a `Refused` \
+      constructor holding a truncated accumulation would have no model here — which is why \
+      `SearchBudgetExceeded` has fields `steps` and `options` and no set. \
+      `a_completion_within_the_budget_is_returned` is the non-vacuity witness: the clause is about a run \
+      that *does* answer, not about one that never does. The Rust side is \
+      `a_budget_refuses_without_answering_and_never_changes_the_answer`, which asserts both halves on the \
+      port's own fixtures: an exceeded search returns an `Err` with no option set, and a budget that is \
+      not hit returns the identical set the unbounded search returns",
+    note := "**Why the clause is stated over a schedule and not over a counter.** The claim is \
+      *all-or-nothing*, and in the port that is a fact about a type: the refusal has no field to put a \
+      partial answer in, so a caller cannot mistake a truncated search for a result. A model that \
+      carried a counter and an accumulator would make the property a policy the code documents rather \
+      than a thing the code cannot express — which is the difference between a law and a comment, and \
+      the reason Law 51's vocabulary exists one level up. **What it does not claim**: that any \
+      particular budget is safe. `SearchBudget::NODE` is a provisional number (C184) and this clause \
+      says only that whatever it is, two nodes that finish with it agree" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
