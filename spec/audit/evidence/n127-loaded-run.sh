@@ -57,6 +57,11 @@ docker tag "$IMAGE" rnode:local
 deploys=$DEPLOYS at T+${DEPLOY_AT}s kill=v2 at T+${KILL_AT}s min_scope=$MIN_SCOPE"
   echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$OUT/manifest.txt"
+# **Everything this run prints also lands in the arm directory.** The peaks and the crossing counts exist
+# only on stdout — they are computed here and nowhere else — so a caller that pipes this script through
+# `tail` (or a terminal that scrolls) would leave the memory half of the measurement unrecorded. The
+# process substitution keeps the console readable and the artifact complete at the same time.
+exec > >(tee "$OUT/run.log") 2>&1
 cat "$OUT/manifest.txt"
 
 declare -A CONTAINERS=([bootstrap]=devnet-bootstrap [v1]=devnet-validator-1 [v2]=devnet-validator-2)

@@ -1,0 +1,8 @@
+arm=fixed
+image=rnode:fixed-865e8137e
+image_id=sha256:46658753477f940d879932ba579ffdf9cdab6f0472838e76a143ef20503fb93e
+arm_tree=865e8137e
+harness_tree=5bca6f9aa
+rig=n127-loaded-run.sh cap=8g threshold=3000MiB window=300s attempts=3 deploys=4 at T+30s kill=v2 at T+120s min_scope=20
+started=2026-10-01T12:56:56Z
+finished=2026-10-01T13:12:39Z
