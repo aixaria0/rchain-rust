@@ -5012,6 +5012,42 @@ syncing — and its `evidence` names two tests that assert the node **stays** in
 failure. That is the residual defect, not a contract: a recovery rule changes exactly those assertions, so
 C68's row now says they are the tests the fix must replace.
 
+### C181 closed, 2026-10-01: the replacement this section anticipated
+
+That replacement is the unit that closed this row, and it is worth recording what the anticipation got
+right and what it did not.
+
+**Right about the tests, and about the shape.** `a_failed_sync_leaves_the_node_in_syncing` is gone; its
+invariant is not. The failure it described — a node that stays in `NodeSyncing` after a failed attempt —
+is now *half* true: the node still does not enter `NodeRunning` on that attempt (C68's point, re-pinned),
+but it no longer stays there for ever, because the attempt is retried and the retries end in a **terminal
+signal** rather than in no signal at all. The replacement test
+(`a_failed_attempt_is_retried_and_the_retries_end_in_a_terminal_signal`) asserts both halves together,
+which is the only way to say it: the fix must not be "signal success on failure", and C68's regression is
+exactly that.
+
+**Wrong about the retry being ~a re-armed trigger.** The issue's own "hand the importer and receivers
+back, re-arm the trigger" was not implementable, and the 2026-09-30 panel said so before this unit
+started: the spawned task never receives `self`, its only channel back is a payload-less `Notify`, and the
+two receivers have **no consumer in the engine** — it holds only the senders. So the retry is a loop
+**inside** the task with the importer and receivers borrowed by `&mut`, and the one thing it needed was a
+**shared latest-fringe slot**, because a later bootstrap answer is both the retry's trigger and a *newer*
+target. The engine threw that away twice over: the fringe was kept only when an attempt was about to
+start, and the line that logged it lived inside that same branch — so the second and later answers were
+dropped **and** logged nowhere.
+
+**The terminal action is a signal, and that is not a style choice.** `std::process::exit` inside the sync
+task would take any in-process test binary with it, and there is no `process::exit` anywhere in `casper`
+today. `node_launch` selects on the new handle beside `finished` and stops the node; the two signals mean
+different facts and `finished` keeps its meaning exactly.
+
+**Falsifiers, both observed red.** The terminal signal removed: the waiter times out. The pre-fix latch
+restored (the slot written only once the attempt starts): the retry test fails with `the retries took
+19.999969689s` — two `SYNC_RETRY_DELAY`s, i.e. the retries waited out the timeout instead of waking on
+the later fringes, which is the timing form of "the fringe was not kept". The second test pins the
+*silence* half only, and its own doc says so, because a log line says the fringe reached the handler and
+not that the sync task can still see it.
+
 ## 30. The merge's shape is a distribution now, and the change that would price it (C182, #127)
 
 C180 proposed the law this class lacks — `candidate:bounded-work-per-step` — and #127 owns the work. This
