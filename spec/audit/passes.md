@@ -6207,3 +6207,24 @@ counted, on its own gauge — `stale_snapshot_self_equivocations`, published on 
 bumps, the status reads `NotEnoughNewBlocks`). Node-local, so §6 and `#51` §A are not engaged.
 
 
+
+## 49. The routing layer reported a healthy proposer for ever (C195, #157)
+
+§48's devnet re-verification exposed a second defect behind the first: `/metrics` reported
+`stale_snapshot_self_equivocations` live (12), but `/api/status` answered `0` — and the two #157 fields
+beside it had been equally dead the whole time. `ShardRoutingBlockApi` implements `BlockApi` but never
+overrode `proposer_health()`, so it fell back to the trait's all-zero default, and the status surface read
+"healthy" regardless of the proposer. "Quiet" and "broken" are the two states #157 exists to tell apart, and
+the routing layer had collapsed them.
+
+**The fix is one delegated method** — `proposer_health()` resolves to the primary like `status()` — plus a
+router test that proves the primary's marker reaches the caller rather than the default
+(`the_primary_answers_every_unrouted_method`, now fifteen unrouted methods). **Re-verified on the devnet**,
+the thing the first run could not: after `reset 1`, the race fired once (`collided with this node's own
+already-synced block`), the halt stayed at **0**, and `/metrics` and `/api/status` now agree —
+`stale_snapshot_self_equivocations` reads **1** on both surfaces.
+
+**What this was.** Not a consensus defect and not a new bug the race introduced — a pre-existing gap in
+#157's own deliverable, visible only once a third field was added beside the two dead ones. It is C195
+(law 26a, the routing layer's invariant that a request naming neither shard nor key resolves to the
+primary), fixed in `8b2a6b282`.
