@@ -70,6 +70,25 @@ DEVNET_NODE_MEMORY="${DEVNET_NODE_MEMORY:-4g}"
 #                              them and the network they ran on (~40 MiB total)
 BOOTSTRAP_DATA_VOLUME=""
 
+# --- mode globals, defaulted at script scope ------------------------------------------------
+#
+# `cmd_up` sets these before parsing, and `reset` needs them too: it rebuilds a node with the same
+# `docker_opts`/`rnode_run_common` the network was started with, and under `set -u` an unbound one is
+# fatal rather than merely wrong. They were `cmd_up`'s alone until `reset` landed (#139) and the first
+# run died at `EFFECT_SCHEDULER: unbound variable`. `up` still overrides them; `reset` restores them
+# from the state file `up` wrote.
+AUTOPROPOSE=true
+PROPOSE_ON_DEPLOY=true
+ADMIN=true
+DEPLOYER=true
+EFFECT_SCHEDULER=""
+POS_EPOCH_LENGTH=""
+POS_ACTIVE_VALIDATORS=""
+POS_STAKES=""
+FRESH=false
+N=1
+M=0
+
 # Throwaway validator keypairs (secp256k1, base16). validator[0] also funds the deployer wallet, so
 # the deployer private key is validator[0]'s private key.
 VALIDATOR_PRIV=(
@@ -107,8 +126,8 @@ Commands:
   stop <node>                    stop ONE node and leave the rest running — a validator's death, so a
                                  liveness measurement can ask what the survivors do (#70)
   start <node>                   start a node that `stop` stopped (data volume intact)
-  reset <node>                   discard ONE node's container and store, so the next bring-up must
-                                 rebuild it by LFS-syncing a chain that is already mature (#139)
+  reset <i>                      discard validator i's container and store and start it again at once,
+                                 so it must LFS-sync the chain the bootstrap is already serving (#139)
   status                         docker ps for the network
   logs <node>                    tail a node's logs
   diagnose                       per-node health check (PASS/WARN/FAIL)
@@ -558,6 +577,9 @@ cmd_up() {
         --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404"
   done
 
+  # Recorded so `reset` can rebuild ONE node against the same flags (#139). Written after the nodes are
+  # up, so a state file never describes a network that failed to start.
+  write_up_state "$n" "$m"
   wait_for_http
 
   echo ""
@@ -623,28 +645,94 @@ cmd_start() {
   echo "started $name"
 }
 
-# reset <node>: discard ONE node's store, so that the next bring-up must rebuild it by **syncing**.
+# up-state file — what the last `up` started, so `reset` can rebuild ONE node against it.
+#
+# **Why a file and not `docker inspect`.** The obvious source is the removed container's own spec, but
+# that dies with the container, and `reset` has to remove it. The alternatives were both worse: making
+# `up` tolerant of existing containers does not help, because `up` also restarts the *bootstrap*, and a
+# joiner that syncs while the bootstrap is replaying its own store is syncing a chain that is still
+# being rebuilt — measured, 2026-10-01: the joiner took the LFS path (its log says so) and still saw
+# nothing, because the chain it restored was the bootstrap's half-replayed one.
+UP_STATE="target/devnet-up-state"   # relative: this script cd's to the repo root at the top
+
+write_up_state() { # <n> <m>
+  mkdir -p "$(dirname "$UP_STATE")"
+  {
+    echo "N=$1"
+    echo "M=$2"
+    echo "AUTOPROPOSE=$AUTOPROPOSE"
+    echo "PROPOSE_ON_DEPLOY=$PROPOSE_ON_DEPLOY"
+    echo "ADMIN=$ADMIN"
+    echo "DEPLOYER=$DEPLOYER"
+    echo "POS_EPOCH_LENGTH=$POS_EPOCH_LENGTH"
+    echo "POS_ACTIVE_VALIDATORS=$POS_ACTIVE_VALIDATORS"
+    echo "POS_STAKES=$POS_STAKES"
+    echo "EFFECT_SCHEDULER=$EFFECT_SCHEDULER"
+  } > "$UP_STATE"
+}
+
+read_up_state() {
+  [[ -f "$UP_STATE" ]] || {
+    echo "reset: no $UP_STATE — run 'tools/devnet.sh up ...' first, so the flags to rebuild against are known" >&2
+    exit 1
+  }
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      N) N="$v" ;; M) M="$v" ;;
+      AUTOPROPOSE) AUTOPROPOSE="$v" ;; PROPOSE_ON_DEPLOY) PROPOSE_ON_DEPLOY="$v" ;;
+      ADMIN) ADMIN="$v" ;; DEPLOYER) DEPLOYER="$v" ;;
+      POS_EPOCH_LENGTH) POS_EPOCH_LENGTH="$v" ;;
+      POS_ACTIVE_VALIDATORS) POS_ACTIVE_VALIDATORS="$v" ;;
+      POS_STAKES) POS_STAKES="$v" ;;
+      EFFECT_SCHEDULER) EFFECT_SCHEDULER="$v" ;;
+    esac
+  done < "$UP_STATE"
+}
+
+# reset <i>: discard validator `i`'s container and store, and start it again **now**, so it must sync.
 #
 # **Why this exists as a command.** A node only LFS-syncs when its DAG is empty at start
 # (`NodeLaunch` syncs on a fresh store), so "join a chain that is already mature" is not something `up`
-# can stage — it starts every node at genesis and the joiner restores block 0 alone. The experiment is
-# therefore *wipe one node's store and let it rejoin*, and the two docker commands it takes
-# (`rm -f` the container, `volume rm` its `${name}-data`) are exactly the ones a campaign should not be
-# hand-typing: the volume's name is derived, and `stop`/`start` cannot substitute — `docker start`
-# reuses the volume, so the node would rebuild its stored chain and never sync at all.
-#
-# **The bring-back is `down` then `up` with the same flags**, not `up` alone: `cmd_up` starts every node
-# with `docker run --name`, which refuses a name that already exists, so a container left running beside
-# this one makes `up` fail. `down` removes containers and keeps the other nodes' volumes, so the nodes
-# that were not reset come back against their own stores — announced by `up` as a restart.
+# can stage: `up` starts every node at once, from genesis, and the joiner restores block 0 alone — and
+# the genesis goes in through `insert_genesis` with the correct fringe, which is why this has never been
+# observed. The experiment is therefore *wipe one node's store while the rest of the network keeps
+# running*, and neither existing command does it: `stop`/`start` reuse the volume (the node would
+# rebuild its stored chain and never sync), and `down`/`up` restarts the bootstrap too, which was
+# measured to make the arm say nothing.
 cmd_reset() {
-  local name; name="$(node_container "${1:-}")"
+  local idx="${1:-}"
+  case "$idx" in
+    1|2|3) ;;
+    *) echo "reset: takes a validator number (1..3); the bootstrap and observers are not supported" >&2; exit 2 ;;
+  esac
+  read_up_state
+  # The joiner is only meaningfully "joining" a chain the bootstrap is already serving, so refuse rather
+  # than produce a run that looks like a null result and is really a missing precondition.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$BOOTSTRAP" 2>/dev/null)" != "true" ]]; then
+    echo "reset: $BOOTSTRAP is not running — the point is to join a chain that is already there" >&2
+    exit 1
+  fi
+
+  local name; name="$(validator_name "$idx")"
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker volume rm "${name}-data" >/dev/null 2>&1 || true
-  echo "reset $name: container and ${name}-data discarded"
-  echo "  bring the network back with:"
-  echo "    tools/devnet.sh down && tools/devnet.sh up <the same flags>"
-  echo "  $name will start with an empty store and LFS-sync the chain from $BOOTSTRAP."
+
+  local genesis_dir; genesis_dir="$(mktemp -d)"
+  genesis_files "$genesis_dir" "$N"
+  local id; id="$(bootstrap_id)"
+  local host_port=$((GRPC_BASE + idx * 1000))
+  local http_port=$((HTTP_BASE + idx * 1000))
+  local admin_port=$((ADMIN_BASE + idx * 1000))
+  echo "==> reset $name: empty store, syncing the chain from $BOOTSTRAP"
+  # shellcheck disable=SC2046
+  docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
+    -v "${genesis_dir}:/genesis:ro" \
+    "$IMAGE" $(rnode_run_common "$name") \
+      --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
+      --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
+      --validator-private-key "${VALIDATOR_PRIV[$idx]}"
+  echo "reset $name: back up with an empty store; it will LFS-sync the chain from $BOOTSTRAP"
 }
 
 cmd_logs() {
