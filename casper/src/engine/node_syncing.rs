@@ -996,7 +996,10 @@ mod tests {
             }
 
             async fn put(&self, pairs: &[(u8, FinalizedFringe)]) -> Result<(), String> {
-                if self.fail_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if self
+                    .fail_next
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
                     return Err("approved store write unavailable".to_string());
                 }
                 self.inner.put(pairs).await
