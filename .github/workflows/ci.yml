@@ -178,6 +178,17 @@ jobs:
         # when it regresses rather than in the tree waiting to be run.
         run: tools/check-bounded-ingress-queues.sh --gate
 
+      - name: Review-ledger coverage gate
+        # The audit's own limit statement — `all N T1 modules read`, printed by `audit-status.sh` and
+        # rendered into `AUDIT.md` — is a claim about *modules that can fork the chain or lose funds*,
+        # and nothing checked it after its checker (`audit-test-register.sh`, 78 s) was deleted
+        # 2026-09-27. Behind that deletion the census went stale: `tool` had drifted from 23 rows to 27
+        # with nothing refusing it, and 62 tracked `.rs` files carry no row at all. This is the cheap
+        # half of the old join — the ceilings against their rows, and every T1 row against the tree —
+        # and it deliberately *reports* the roster gap rather than gating on it, because a gate that can
+        # only be satisfied by adding bookkeeping rows is the thing it exists to avoid.
+        run: tools/check-review-ledger.sh --gate
+
       - name: Test
         run: cargo test --workspace --all-features
 

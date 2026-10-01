@@ -201,10 +201,11 @@ if [[ "$fail" == "1" ]]; then exit 1; fi
 
 # --- the coverage half ---------------------------------------------------------------------------
 #
-# Read straight from `spec/review-ledger.tsv`, which since 2026-09-27 is the only half that exists:
-# its emitter and the 46-second join that proved its rows and the tree's rosters agreed were deleted
-# with the rest of `tools/audit-test-register.sh`. What the check-off needs is a count over 624 rows,
-# which is an awk, and that is all there is.
+# Read straight from `spec/review-ledger.tsv`. Its emitter and the 46-second join that proved its rows
+# and the tree's rosters agreed were deleted 2026-09-27 with the rest of the gate apparatus; since
+# 2026-10-01 a cheap replacement (`tools/check-review-ledger.sh`) enforces the `ceiling` rows against
+# the counts and every T1 row against the tree, so the headline below is a count of real things. What
+# *this* needs is a count over the rows, which is an awk, and that is all there is.
 t1_total=$(awk -F'\t' '$3 == "T1"' "$LEDGER" 2>/dev/null | wc -l)
 t1_deferred=$(awk -F'\t' '$3 == "T1" && $4 == "deferred"' "$LEDGER" 2>/dev/null | wc -l)
 
