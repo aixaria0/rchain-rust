@@ -18,6 +18,49 @@ use crate::casper::protocol::casper_message::BlockMessage;
 use crate::proto::casper::{BlockMetadataProto, BondProto};
 use crate::validator::Validator;
 
+/// **Why** a block was marked failed, which decides whether a restoring rule may clear the record and
+/// whether the failure is the block's own fault (AUDIT C173).
+///
+/// The three cases are the ones the register's row separates, and they drive two decisions that were
+/// previously the same bit: whether to set [`BlockMetadata::slashable`], and whether a later child's
+/// arrival may re-validate the record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailureCause {
+    /// A property of the block itself: a structural fault, a missing/forged signature, a deploy the
+    /// block may not carry. Permanent and attributable — the only case a proposer may slash for.
+    Attributable,
+    /// **This node's replay disagreed**: a state-hash mismatch, a rejected-deploy set, a bonds cache
+    /// that did not recompute. The block may be perfectly valid elsewhere, so the failure is not
+    /// attributable — and it is the one cause a restoring rule may clear, because the divergence can
+    /// be repaired by moving this node's view rather than by changing the block.
+    Divergence,
+    /// Refused **because a justification failed** (`NeglectedInvalidBlock`, and the `InvalidBlockNumber`
+    /// that follows from a failed parent). Not this block's fault: without this case, one transient
+    /// failure fabricates slash evidence against every validator above it.
+    Cascade,
+}
+
+impl FailureCause {
+    /// The protobuf code for this cause (see `BlockMetadataProto.failureCause`).
+    pub fn to_code(self) -> i32 {
+        match self {
+            FailureCause::Attributable => 1,
+            FailureCause::Divergence => 2,
+            FailureCause::Cascade => 3,
+        }
+    }
+
+    /// Read a cause back from its protobuf code. `0` (and anything unrecognised) is `None`.
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            1 => Some(FailureCause::Attributable),
+            2 => Some(FailureCause::Divergence),
+            3 => Some(FailureCause::Cascade),
+            _ => None,
+        }
+    }
+}
+
 /// A block's metadata (the block-storage DAG index entry).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMetadata {
@@ -44,11 +87,29 @@ pub struct BlockMetadata {
     /// hard-coded `false`, and every read of a stored metadata goes back through this codec, so the flag was
     /// false for *every* metadata any caller could see — not merely after a restart, as this comment used to
     /// claim, and not only for the round trip the in-memory writers took. The writers
-    /// (`validate_block_checkpoint`, `mark_failed_attributable`) set it before `dag.insert` and nothing ever
+    /// (`validate_block_checkpoint`, `mark_failed`) set it before `dag.insert` and nothing ever
     /// read back a `true`, so a proposer's `to_slash` was always empty and `slash_is_unjustified` treated
     /// every `Slash` as unjustified. The comment was also wrong that `validation_failed` is not carried: it
     /// is, at `casper.proto:201`.
     pub slashable: bool,
+
+    /// **Why** the block failed, not merely that it did (AUDIT C173).
+    ///
+    /// `validation_failed` says "unusable here" and `slashable` says "the block's own fault"; neither
+    /// says whether the failure is *this node's* view of the world or the block's own property. A
+    /// restoring rule has to be keyed on exactly that difference, or it is an unbounded re-fetch
+    /// (AUDIT C180's class).
+    ///
+    /// `None` means **no cause was recorded** — a record written before this field existed, or one
+    /// that never carried a failure. It is not an assertion that the block did not fail, so a reader
+    /// must consult `validation_failed` for that; the restoring rule treats an absent cause as
+    /// ineligible, which is the safe direction.
+    pub failure_cause: Option<FailureCause>,
+
+    /// How many times this node has re-validated the record in an attempt to clear it. Persisted so
+    /// [`FailureCause::Divergence`]'s attempt cap survives a restart rather than resetting to zero.
+    pub restore_attempts: u32,
+
     pub fringe: BTreeSet<BlockHash>,
     pub fringe_state_hash: StateHash,
     pub member_of_fringe: Option<Blake2b256Hash>,
@@ -88,6 +149,8 @@ impl BlockMetadata {
             validated: b.validated,
             validation_failed: b.validation_failed,
             slashable: b.slashable,
+            failure_cause: FailureCause::from_code(b.failure_cause),
+            restore_attempts: b.restore_attempts,
             fringe: b
                 .fringe
                 .iter()
@@ -131,6 +194,8 @@ impl BlockMetadata {
             validated: self.validated,
             validation_failed: self.validation_failed,
             slashable: self.slashable,
+            failure_cause: self.failure_cause.map(|c| c.to_code()).unwrap_or(0),
+            restore_attempts: self.restore_attempts,
             fringe: self.fringe.iter().map(|f| f.as_bytes().to_vec()).collect(),
             fringe_state_hash: self.fringe_state_hash.as_bytes().to_vec(),
             member_of_fringe: self
@@ -163,6 +228,8 @@ impl BlockMetadata {
             validated: false,
             validation_failed: false,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -191,14 +258,65 @@ mod tests {
             justifications: [block_hash(2), block_hash(1)].into_iter().collect(),
             bonds_map: BTreeMap::from([(validator(2), 100.try_into().unwrap())]),
             validated: true,
-            validation_failed: false,
+            validation_failed: true,
             slashable: false,
+            failure_cause: Some(FailureCause::Divergence),
+            restore_attempts: 2,
             fringe: [block_hash(5)].into_iter().collect(),
             fringe_state_hash: StateHash::new([9u8; 32]),
             member_of_fringe: Some(Blake2b256Hash::from_bytes([8u8; 32])),
         };
         let decoded = BlockMetadata::from_bytes(&meta.to_bytes()).unwrap();
         assert_eq!(decoded, meta);
+    }
+
+    /// **The failure cause and the attempt count survive the codec, and an absent cause decodes as
+    /// `None`.** The restoring rule (AUDIT C173) is keyed on the cause, so a codec that dropped it —
+    /// the way `slashable` was once dropped (C122) — would leave every stored record unrestorable
+    /// after a restart while the in-memory writers looked correct.
+    #[test]
+    fn the_failure_cause_survives_the_store_round_trip() {
+        let base = crate::casper::protocol::casper_message::BlockMessage {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: block_hash(1),
+            block_number: 1.try_into().unwrap(),
+            sender: validator(2),
+            seq_num: 0.try_into().unwrap(),
+            pre_state_hash: StateHash::new([0u8; 32]),
+            post_state_hash: StateHash::new([0u8; 32]),
+            justifications: vec![],
+            bonds: BTreeMap::new(),
+            rejected_deploys: Default::default(),
+            rejected_blocks: Default::default(),
+            rejected_senders: Default::default(),
+            state: Default::default(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: vec![],
+            timestamp: 0,
+        };
+
+        for cause in [
+            FailureCause::Attributable,
+            FailureCause::Divergence,
+            FailureCause::Cascade,
+        ] {
+            let meta = BlockMetadata {
+                validation_failed: true,
+                failure_cause: Some(cause),
+                restore_attempts: 1,
+                ..BlockMetadata::from_block(&base)
+            };
+            let decoded = BlockMetadata::from_bytes(&meta.to_bytes()).unwrap();
+            assert_eq!(decoded.failure_cause, Some(cause), "{cause:?} was lost");
+            assert_eq!(decoded.restore_attempts, 1);
+        }
+
+        // Zero — the protobuf default, and what every writer that knows no cause emits — is `None`.
+        let no_cause = BlockMetadata::from_block(&base);
+        let decoded = BlockMetadata::from_bytes(&no_cause.to_bytes()).unwrap();
+        assert_eq!(decoded.failure_cause, None);
+        assert_eq!(decoded.restore_attempts, 0);
     }
 
     #[test]

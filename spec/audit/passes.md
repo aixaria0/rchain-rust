@@ -341,6 +341,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **Equivocating blocks are refused** — at `insert` (H-1) and at restore (H1c) — where the oracle has no such gate | `legacy/block-storage/.../dag/BlockMetadataStore.scala:118-124` — `validateDagState` asserts only that the height map's numbers are contiguous, never `(sender, seq_num)`, so a forked store restores silently; and the Scala tree contains no equivocation check at all | an equivocating validator can neither enter the DAG nor stall finalization — the H-1 stall is a liveness failure the Scala admits, so the premise law 15's proof needs is **guaranteed here and only observed there** (AUDIT C84, and H1a's note) |
 | An **empty window** in `visualizeDag` renders an empty graph where the oracle raises | `legacy/casper/.../api/GraphGenerator.scala:39` — `timeseries.head` on a `List` built from a `Set` throws on empty | the endpoint is a *view*, and a graph of nothing is the honest rendering of an empty DAG; refusing would turn a visualization request into an error (AUDIT C85) |
 | **A resolved parent at or above the block's number is refused** — the **failed** ones included (H1b, `casper/src/validate.rs:152-154`, test `h1b_a_failed_parent_above_the_childs_height_is_refused` at `casper/src/dag.rs:1287`) | `legacy/casper/src/main/scala/coop/rchain/casper/Validate.scala:178-198` — `blockNumber` maps the justifications through `lookupUnsafe` and then `.filter(!_.validationFailed)`, so a failed parent is discarded before the maximum and **no resolved parent's height is compared against the block's number at all**; it admits the block | `Descends` (`spec/Rchain/Casper/Dag.lean:296-297`) is the premise law 15's proof consumes, and the laws are the port's oracle where they outrank the reference — a premise the port *guarantees* is worth a refusal a byzantine peer can trigger and **no honest proposer can**: justifications are `latest_msgs.values()` (`multi_parent_casper.rs:293-300`) and a failed block never enters `latest_msgs` (`block-storage/src/dag/message_state.rs:118-128`, the H-2 exclusion), so the operator consequence is a validator-side divergence on byzantine input only (AUDIT C82, C83) |
+| **The height maximum counts failed justifications** — a child numbered above a failed parent is admitted to the other checks (`casper/src/validate.rs:232-234`, test `a_failed_parent_still_sets_its_childs_height`) | `legacy/casper/src/main/scala/coop/rchain/casper/Validate.scala:178-198` — `blockNumber` filters failed justifications out before the maximum (`.filter(!_.validationFailed)`), so a child numbered above a failed parent is refused `InvalidBlockNumber` | **C173's decision, option (a), and it is the laws' call rather than the reference's**: law 53a's `falsifiable` cell names this rule as one of the two repairs for `Terminal`, and C173's `owes` carried both. Skipping the failed parent made a failure *hide its own block* — and the reader that hides it is inside `block_summary`, which runs **before** `neglected_invalid_block`, so the child never reached the rule that could refuse it on other grounds nor the restoring rule's revalidation. **Operator consequence: a port validator admits a block a Scala validator refuses** — the opposite direction from the row above, and a validator-side divergence on this check alone. The risk is bounded the same way: no honest proposer can produce such a block (a failed block is kept out of `latest_msgs`, H-2), so the route is byzantine-only. **AUDIT C173**; the account and the falsifier are in §25 |
 | The block path **verifies every deploy's signature** — `validate::deploy_signatures` in `block_summary`'s pure list, refusing with `InvalidDeploySignature` before any replay | `legacy/casper/src/main/scala/coop/rchain/casper/Validate.scala:92-116` — `blockSummary` validates the deploy's shard, window and dedup and **never its signature**; `legacy/models/src/main/scala/coop/rchain/models/NormalizerEnv.scala:33-36` binds `deployerId` from `deploy.pk` with nothing having checked it either. So the oracle has the *same* defect on both paths, which is why this row records a **shared defect** rather than a port divergence — the port simply closes it in the stricter of the two trees | a deploy's `deployer` is the field the replay reads to decide whose vault is charged and paid, so an unauthenticated one is an authorization claim rather than a malformed datum: a bonded proposer could name any account, put arbitrary bytes in `sig`, and have every validator debit that account and pay the proposer's term, with a post-state hash the proposer computed honestly — the block was **valid and unattributable** (AUDIT C120). The check belongs in `block_summary` beside `phloLimit`, for the reason that list's own comment gives, and it is the second instance of the port choosing to be stricter there than the oracle (the first is that `blockSummary` here checks `phloPrice` and `phloLimit` at all, which the Scala does not). **Hard fork:** a block whose deploy signature does not verify was accepted before and is refused now, so a chain upgrading in place diverges on such a block — and the honest reading of that is that only a proposer which *forged* the deploy could have produced one, which is the point of the refusal rather than a cost of it |
 | The node's own block metadata **carries the `slashable` flag** (`BlockMetadataProto.slashable = 22`), where the port dropped it | — (no Scala counterpart: `BlockMetadata.slashable` is this port's own distinction, and the Scala has neither the field nor the rule that reads it) | the flag is the input to C110's slash rule, and the port hard-coded it to `false` in `from_proto` while writing it into every stored metadata — so the rule had no reachable input, a proposer's `to_slash` was always empty, and the **receiving** side refused *every* `Slash` as unjustified (`slash_is_unjustified` is `!slashed.is_subset(&justified)`, and `justified` was always empty). Carrying it restores the economic consequence of an attributable failure, which C111 left as the only seizure rule in the tree (AUDIT C122). **Hard fork:** a proposer on a fixed node may include a `Slash` an unfixed one would not, and a fixed node accepts a justified `Slash` that an unfixed one refuses with `UnjustifiedSlash` — so a chain upgrading in place diverges on any block containing one; lockstep upgrade is the practice, and this is the row that says so. The metadata is node-local and never on the wire, so the field itself changes no format and no state hash |
 | `Secp256k1::verify_bytes` **refuses a message that is not the 32-byte prehash** (a named `PREHASH_LEN`), where the dependency truncates a longer one to its leftmost 32 bytes | `Secp256k1.scala` / `NativeSecp256k1` take exactly 32 bytes and the Scala's doc warns of an **assertion exception** on other lengths, so the oracle either asserts (a crash, if the JNI assertion is enabled) or its C++ truncates — the ambiguity is C134's and is unresolved in the oracle | the truncation made this function answer for a *prefix* of its message, which on `rho:crypto:secp256k1Verify` is a verdict a contract can receive for a message nobody signed. The port refuses: a defined `false` for an input that is not a prehash, which is neither the crash nor the silent truncation the oracle offers, and is the same preference this register records elsewhere — a refusal at the boundary rather than a value from a failure. Safe for every caller because `signature_hash` produces 32 bytes for `secp256k1` and `secp256k1:eth` alike (AUDIT C134). **Hard fork:** a deploy whose contract verified a suffixed message was answered `true` before and `false` now, so a chain upgrading in place diverges on it; lockstep upgrade is the practice, and this is the row that says so |
@@ -4607,6 +4608,67 @@ re-fetch), and then the falsifier is a node that has marked one block failed and
 next block above it. Independent of C172's fix, which is `ValidateError::Internal` → dropped where this is
 `ValidationFailed` → recorded, and does not touch this path.
 
+### The decision, taken 2026-10-01: both halves, with the restoring rule as the fix
+
+**Which fork, and why it was not a free choice.** Option (a) alone cannot close the row. Counting failed
+justifications in the maximum removes the height rule as a reader, but for a **bonded** sender
+`neglected_invalid_block` is still there — and counting the parent in the maximum actually makes it
+*fire*, because the child now reaches that check instead of being refused earlier by `block_summary`. So
+(a) is a prerequisite for a child to be looked at, and the law's inverse is what admits it: the restoring
+rule. Both landed.
+
+**(a) is a §6 deviation, and it is registered**: the Scala's `blockNumber` filters failed justifications
+out of the maximum, so a port validator now *admits* a block a Scala validator refuses — the opposite
+direction from C83's row. The entry is in the Scala-deviation register (`## 6.`), beside that one, with
+the operator consequence and the bound on how the refused state is reachable.
+
+**The refusal has four readers, not the three this pass named.** A panel re-derived C173 from the code on
+2026-09-30 and found `get_parents_metadata` (`casper/src/proto_util.rs:33`), which filters failed
+justifications out of the parent list `repeat_deploy` and `get_parent_metadatas_above_block_number`
+walk. It matters for exactly this reason: the readers are not in one place, so a restoring rule has to run
+**before the checks**, not inside one of them, and the code says so where it is called.
+
+**The record itself was the first defect, and it was two flags pretending to be one.**
+`mark_failed_attributable` was reached by *every* `ValidateError::ValidationFailed`, `NeglectedInvalidBlock`
+included, so a child refused **because a justification failed** was marked `validation_failed` *and*
+`slashable` — one transient failure fabricated slash evidence against every validator above it, and
+propagated. `BlockMetadata` now carries a `failure_cause` (proto `failureCause = 23`), classified once in
+`BlockStatus::failure_cause`: `Attributable` (the block's own fault, and the only slashable case),
+`Divergence` (this node's state or replay disagreed — the measured `InvalidStateHash`), `Cascade` (refused
+because a justification failed). `mark_failed(meta, cause)` is now the single place attribution comes
+from. It also carries `restore_attempts` (`= 24`), so the restoring rule's per-record cap survives a
+restart.
+
+**The restoring rule, and the three bounds that make it a rule** (`restore_divergent_justifications`,
+`casper/src/multi_parent_casper.rs`): keyed on the cause — only a `Divergence` is eligible;
+capped per record by the persisted count; budgeted per incoming block. A revalidation costs one merge plus
+one replay, the same order as validating the block, so the work one block can provoke is a constant — the
+property C180's class is about, and the reason the unbounded version was not on the table. A successful
+revalidation clears `validation_failed` and the cause and **keeps `slashable` exactly as it was**.
+
+**The guard fired, as it was stated to.** Law 53a's `falsifiable` cell said a restoring rule makes
+`Rchain.the_refusal_is_persistent` false *by construction* and that the theorem is a guard on this fix.
+Clause **53b** now models the rule as `restoreStep` — the exact inverse of `strandStep` — and
+`Rchain.the_refusal_is_not_persistent_once_a_rule_restores` is that cell **executed**, not asserted. 53a
+is retained, stated over the rule set without the inverse.
+
+**What is not claimed.** The rule re-runs the checks against the current DAG; it does not manufacture
+agreement. A node whose view is *still* divergent re-validates to the same refusal and is right to keep
+refusing a block it cannot verify. `Terminal` demands an inverse, not that the inverse always fires — and
+the `InvalidStateHash` divergence that made B refuse the block in the first place remains undetermined,
+which is #105's open half and not this row's.
+
+**Falsifiers, each observed red by deleting the clause it names.** `only_an_attributable_failure_is_slashable`
+and `the_causes_partition_the_statuses` (the split — red with the unconditional `slashable: true` restored);
+`a_failed_parent_still_sets_its_childs_height` (option (a) — red with the `if !meta.validation_failed`
+guard restored); `only_a_divergence_is_revalidated`, `a_record_at_the_attempt_limit_is_not_revalidated_again`
+and `one_block_budget_bounds_the_revalidations` (the rule's three bounds, driven through the real
+`validate`); `only_a_divergence_is_restorable` and `a_successful_revalidation_clears_the_refusal_and_keeps_attribution`
+(the record's transformation). **What is not pinned end to end**: an accepted child after a restore needs
+a genuinely valid chain, so the clearing branch is covered at the record-transition level and the
+two-node devnet in #125's thread is the end-to-end measurement — the `restoring_rule.rs` header says so
+rather than leaving the gap to be assumed.
+
 [#105]: https://github.com/rchain-community/rchain-rust/issues/105
 ## 26. The fringe gate asked two questions of one map: a silent validator capped finality at any stake share (#70)
 
@@ -4955,6 +5017,42 @@ latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes
 syncing — and its `evidence` names two tests that assert the node **stays** in `NodeSyncing` after a
 failure. That is the residual defect, not a contract: a recovery rule changes exactly those assertions, so
 C68's row now says they are the tests the fix must replace.
+
+### C181 closed, 2026-10-01: the replacement this section anticipated
+
+That replacement is the unit that closed this row, and it is worth recording what the anticipation got
+right and what it did not.
+
+**Right about the tests, and about the shape.** `a_failed_sync_leaves_the_node_in_syncing` is gone; its
+invariant is not. The failure it described — a node that stays in `NodeSyncing` after a failed attempt —
+is now *half* true: the node still does not enter `NodeRunning` on that attempt (C68's point, re-pinned),
+but it no longer stays there for ever, because the attempt is retried and the retries end in a **terminal
+signal** rather than in no signal at all. The replacement test
+(`a_failed_attempt_is_retried_and_the_retries_end_in_a_terminal_signal`) asserts both halves together,
+which is the only way to say it: the fix must not be "signal success on failure", and C68's regression is
+exactly that.
+
+**Wrong about the retry being ~a re-armed trigger.** The issue's own "hand the importer and receivers
+back, re-arm the trigger" was not implementable, and the 2026-09-30 panel said so before this unit
+started: the spawned task never receives `self`, its only channel back is a payload-less `Notify`, and the
+two receivers have **no consumer in the engine** — it holds only the senders. So the retry is a loop
+**inside** the task with the importer and receivers borrowed by `&mut`, and the one thing it needed was a
+**shared latest-fringe slot**, because a later bootstrap answer is both the retry's trigger and a *newer*
+target. The engine threw that away twice over: the fringe was kept only when an attempt was about to
+start, and the line that logged it lived inside that same branch — so the second and later answers were
+dropped **and** logged nowhere.
+
+**The terminal action is a signal, and that is not a style choice.** `std::process::exit` inside the sync
+task would take any in-process test binary with it, and there is no `process::exit` anywhere in `casper`
+today. `node_launch` selects on the new handle beside `finished` and stops the node; the two signals mean
+different facts and `finished` keeps its meaning exactly.
+
+**Falsifiers, both observed red.** The terminal signal removed: the waiter times out. The pre-fix latch
+restored (the slot written only once the attempt starts): the retry test fails with `the retries took
+19.999969689s` — two `SYNC_RETRY_DELAY`s, i.e. the retries waited out the timeout instead of waking on
+the later fringes, which is the timing form of "the fringe was not kept". The second test pins the
+*silence* half only, and its own doc says so, because a log line says the fringe reached the handler and
+not that the sync task can still see it.
 
 ## 30. The merge's shape is a distribution now, and the change that would price it (C182, #127)
 

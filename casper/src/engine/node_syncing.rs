@@ -50,7 +50,35 @@ pub struct NodeSyncing<I: RSpaceImporter> {
     tuple_space_rx: Option<tokio::sync::mpsc::Receiver<StoreItemsMessage>>,
     start_requester: bool,
     finished: Arc<tokio::sync::Notify>,
+    /// **The shared latest-fringe slot** (AUDIT C181, #125). The retry a failed attempt needs is a
+    /// *newer* fringe to sync to, and this is where it comes from: `on_finalized_fringe_message`
+    /// writes every bootstrap answer here, so a later one is kept rather than discarded, and the
+    /// spawned task reads it between attempts.
+    latest_fringe: Arc<tokio::sync::Mutex<Option<FinalizedFringe>>>,
+    /// Signalled whenever the slot above is written, so the retry wakes on a new fringe instead of
+    /// polling for one.
+    fringe_arrived: Arc<tokio::sync::Notify>,
+    /// **The terminal action's signal** (AUDIT C181). `finished` means "the state was restored";
+    /// this means "the retries are spent and this node cannot be synced" — a state the protocol can
+    /// otherwise never leave, which is the defect. It is a signal rather than a `std::process::exit`
+    /// so the *caller* owns what to do, and so an exit inside the sync task cannot take a test
+    /// binary with it.
+    terminal: Arc<tokio::sync::Notify>,
 }
+
+/// How many times one sync attempt is retried before the node gives up and signals terminal.
+///
+/// The count is a bound and not a policy: each attempt already gives up on its own after
+/// `lfs_block_requester::MAX_IDLE_ROUNDS` idle rounds, so this caps the *retries*, and the total
+/// wait is bounded by the product of the two.
+pub const MAX_SYNC_ATTEMPTS: u32 = 3;
+
+/// How long a retry waits for a newer fringe before re-attempting the one it has.
+///
+/// A new fringe is the trigger worth waiting for — a later bootstrap answer names a state nearer the
+/// tip — but waiting for one *only* would turn a bootstrap that has stopped answering into the same
+/// latch this fixes, one level up.
+const SYNC_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
     #[allow(clippy::too_many_arguments)]
@@ -86,6 +114,9 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             tuple_space_rx: Some(tuple_space_rx),
             start_requester: true,
             finished: Arc::new(tokio::sync::Notify::new()),
+            latest_fringe: Arc::new(tokio::sync::Mutex::new(None)),
+            fringe_arrived: Arc::new(tokio::sync::Notify::new()),
+            terminal: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -98,6 +129,18 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
     /// `handle` loop without holding the engine's mutex.
     pub fn finished_handle(&self) -> Arc<tokio::sync::Notify> {
         self.finished.clone()
+    }
+
+    /// A cloneable handle to the **terminal** signal: the retries are spent and this node cannot be
+    /// synced (AUDIT C181). `node_launch` selects on it beside `finished`, because without it the
+    /// node sits in `NodeSyncing` for good with a serving API — the state C68's sequencing was
+    /// careful to keep *out* of `NodeRunning` but never gave a way *out of*.
+    ///
+    /// **Deliberately not `finished`.** That one means "the state was restored", and firing it here
+    /// would move the node into `NodeRunning` on a partial DAG, which is the outcome C68 exists to
+    /// prevent. The two are different facts and they get different signals.
+    pub fn terminal_handle(&self) -> Arc<tokio::sync::Notify> {
+        self.terminal.clone()
     }
 
     /// Handle an incoming casper message (port of `handle`).
@@ -177,45 +220,58 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             return Ok(());
         }
 
-        let start = if self.start_requester {
-            if sender_is_bootstrap {
-                self.start_requester = false;
-                true
-            } else {
-                false
+        // **Every bootstrap answer reaches the slot, not only the first** (AUDIT C181, #125). The
+        // old code kept the fringe only when it was about to start a request, so a later — and
+        // necessarily *newer* — answer was dropped in silence, which is precisely the thing a retry
+        // has to have. The slot is written before the start check, so a fringe arriving mid-attempt
+        // is already there when the attempt fails and the loop looks for one.
+        {
+            let mut slot = self.latest_fringe.lock().await;
+            let is_new = slot.as_ref() != Some(fringe);
+            *slot = Some(fringe.clone());
+            drop(slot);
+            if is_new {
+                self.fringe_arrived.notify_waiters();
             }
-        } else {
-            false
-        };
+        }
+
+        // The task is spawned once; the *retry* lives inside it, because the importer and both
+        // receivers are moved into it and nothing downstream can hand them back (AUDIT C181).
+        let start = self.start_requester;
+        self.start_requester = false;
+
+        // **Every bootstrap fringe is logged, not only the one that starts an attempt.** This line
+        // used to live inside the `if start` branch, so the second and later answers produced no log
+        // line at all — the repo's own note calls that "a later fringe from the bootstrap logs nothing
+        // at all", and it is half of the silence this row is about: an operator cannot see a fringe
+        // that was received and dropped (AUDIT C181).
+        //
+        // **The oracle puts the state hash in the parentheses and the hashes after**
+        // (`NodeSyncing.scala`: `s"Received finalized fringe from bootstrap node
+        // ($fringeStateHashStr) $fringeHashesStr."`). The port had the hashes in the parentheses and
+        // the state hash nowhere — and the state hash is the one field that tells the genesis master's
+        // *announcement* from the *answer* to a request, because the announcement carries the genesis
+        // **pre**-state and the response the genesis **post**-state. Diagnosing issue #100 meant
+        // distinguishing exactly those two, and this line could not show it.
+        self.log.info(
+            self.log_source,
+            &format!(
+                "Received finalized fringe from bootstrap node ({}) {}.",
+                rchain_shared::base16::encode(fringe.state_hash.as_bytes()),
+                fringe
+                    .hashes
+                    .iter()
+                    .map(|h| h.to_hex())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        );
 
         if start {
-            self.log.info(
-                self.log_source,
-                // **The oracle puts the state hash in the parentheses and the hashes after**
-                // (`NodeSyncing.scala`: `s"Received finalized fringe from bootstrap node
-                // ($fringeStateHashStr) $fringeHashesStr."`). The port had the hashes in the
-                // parentheses and the state hash nowhere — and the state hash is the one field that
-                // tells the genesis master's *announcement* from the *answer* to a request, because
-                // the announcement carries the genesis **pre**-state and the response the genesis
-                // **post**-state. Diagnosing issue #100 meant distinguishing exactly those two, and
-                // this line could not show it.
-                &format!(
-                    "Received finalized fringe from bootstrap node ({}) {}.",
-                    rchain_shared::base16::encode(fringe.state_hash.as_bytes()),
-                    fringe
-                        .hashes
-                        .iter()
-                        .map(|h| h.to_hex())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
-            );
-
             // Spawn the LFS sync in the background. Awaiting it here deadlocks: the sync drains
             // `tuple_space_rx`/`incoming_blocks_rx`, which are only fed by `handle` (the
             // StoreItemsMessage/BlockMessage branches) running in this same dispatch loop, which is
             // currently blocked inside this call. Spawning lets `handle` return and keep routing.
-            let fringe = fringe.clone();
             let transport = self.transport.clone();
             let conf = self.conf.clone();
             let block_store = self.block_store.clone();
@@ -224,6 +280,9 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             let comm_util = self.comm_util.clone();
             let log = self.log.clone();
             let finished = self.finished.clone();
+            let latest_fringe = self.latest_fringe.clone();
+            let fringe_arrived = self.fringe_arrived.clone();
+            let terminal = self.terminal.clone();
             let importer = match self.importer.take() {
                 Some(importer) => importer,
                 None => {
@@ -259,34 +318,89 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                     );
                 }
             };
+            // **The retry lives inside the task, because nothing outside it can re-arm the attempt.**
+            // The importer and both receivers are moved in here and have no inverse: `handle` holds
+            // only the senders, `self` never reaches the task, and `finished` carries no payload.
+            // So the loop takes them by `&mut` across attempts instead of re-taking them (AUDIT C181).
             tokio::spawn(async move {
                 let source = LogSource::new("casper.engine.NodeSyncing");
-                let outcome = run_approved_state_sync(
-                    &fringe,
-                    transport,
-                    conf,
-                    block_store,
-                    dag,
-                    comm_util,
-                    log.clone(),
-                    importer,
-                    incoming_blocks_rx,
-                    tuple_space_rx,
-                )
-                .await;
-                match &outcome {
-                    Ok(()) => {
-                        if let Err(e) = approved_store
-                            .put(&[(FINALIZED_FRINGE_KEY, fringe.clone())])
-                            .await
-                        {
-                            log.error(source, &format!("Failed to store approved block: {e}"));
+                let mut importer = importer;
+                let mut incoming_blocks_rx = incoming_blocks_rx;
+                let mut tuple_space_rx = tuple_space_rx;
+                let mut attempts: u32 = 0;
+
+                loop {
+                    // The target is re-read every attempt: a later bootstrap answer is newer, and
+                    // syncing to the newest known state is the point of retrying at all.
+                    let target = latest_fringe.lock().await.clone();
+                    let Some(target) = target else {
+                        // Nothing to sync to at all. This is not a failure to signal terminal for:
+                        // the slot is written before the task is spawned, so it is unreachable in
+                        // practice, and a node with no fringe is one that never received a request.
+                        log.error(source, "LFS sync task started with no fringe to sync to");
+                        return;
+                    };
+
+                    let outcome = run_approved_state_sync(
+                        &target,
+                        transport.clone(),
+                        conf.clone(),
+                        block_store.clone(),
+                        dag.clone(),
+                        comm_util.clone(),
+                        log.clone(),
+                        &mut importer,
+                        &mut incoming_blocks_rx,
+                        &mut tuple_space_rx,
+                    )
+                    .await;
+
+                    match &outcome {
+                        Ok(()) => {
+                            if let Err(e) = approved_store
+                                .put(&[(FINALIZED_FRINGE_KEY, target.clone())])
+                                .await
+                            {
+                                log.error(source, &format!("Failed to store approved block: {e}"));
+                            }
+                            log.info(source, "LFS state is successfully restored.");
+                            notify_when_restored(&outcome, &finished);
+                            return;
                         }
-                        log.info(source, "LFS state is successfully restored.");
+                        Err(e) => {
+                            attempts += 1;
+                            log.error(
+                                source,
+                                &format!(
+                                    "LFS state sync failed (attempt {attempts} of \
+                                     {MAX_SYNC_ATTEMPTS}): {e}"
+                                ),
+                            );
+                            if attempts >= MAX_SYNC_ATTEMPTS {
+                                // **The terminal state** (AUDIT C181). The retries are spent and this
+                                // node cannot reach the approved state, so it stops rather than
+                                // serving from a DAG it never populated. The signal is the caller's,
+                                // not a `process::exit` here, so the test binary survives and the
+                                // node owns the policy.
+                                log.error(
+                                    source,
+                                    "LFS state sync is terminal: no attempt restored the approved \
+                                     state and the retries are spent. Signalling shutdown — a node in \
+                                     this state cannot serve a chain it never synced.",
+                                );
+                                terminal.notify_waiters();
+                                return;
+                            }
+                            // Wait for a newer fringe, or a bounded pause, then try again. The two
+                            // are both needed: a new fringe is the better target, and waiting only
+                            // for one turns a bootstrap that has stopped answering into the same
+                            // latch one level up.
+                            let _ =
+                                tokio::time::timeout(SYNC_RETRY_DELAY, fringe_arrived.notified())
+                                    .await;
+                        }
                     }
-                    Err(e) => log.error(source, &format!("LFS state sync failed: {e}")),
                 }
-                notify_when_restored(&outcome, &finished);
             });
         }
         Ok(())
@@ -317,14 +431,17 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     dag: Arc<dyn BlockDagStorage>,
     comm_util: Arc<CommUtil>,
     log: Arc<dyn Log>,
-    mut importer: I,
-    mut incoming_blocks_rx: tokio::sync::mpsc::Receiver<BlockMessage>,
-    mut tuple_space_rx: tokio::sync::mpsc::Receiver<StoreItemsMessage>,
+    // **Borrowed, not moved** (AUDIT C181): the retry loop owns the importer and both receivers and
+    // an attempt must leave them usable for the next one. They have no inverse — `handle` holds only
+    // the senders — so an attempt that consumed them would latch the node exactly as the old code did.
+    importer: &mut I,
+    incoming_blocks_rx: &mut tokio::sync::mpsc::Receiver<BlockMessage>,
+    tuple_space_rx: &mut tokio::sync::mpsc::Receiver<StoreItemsMessage>,
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeSyncing");
     let block_fut = request_blocks(
         fringe,
-        &mut incoming_blocks_rx,
+        incoming_blocks_rx,
         Duration::from_secs(30),
         &block_store,
         comm_util.as_ref(),
@@ -332,11 +449,11 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     );
     let tuple_fut = request_tuple_space(
         fringe,
-        &mut tuple_space_rx,
+        tuple_space_rx,
         Duration::from_secs(120),
         transport.as_ref(),
         &conf,
-        &mut importer,
+        importer,
         log.as_ref(),
     );
 
@@ -383,11 +500,11 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         );
         request_tuple_space_roots(
             &extra_roots,
-            &mut tuple_space_rx,
+            tuple_space_rx,
             Duration::from_secs(120),
             transport.as_ref(),
             &conf,
-            &mut importer,
+            importer,
             log.as_ref(),
         )
         .await
@@ -702,6 +819,62 @@ mod tests {
         }
     }
 
+    /// The fixture the retry tests share (AUDIT C181): a block store whose reads fail — the walk's
+    /// first store touch is a `contains`, so an attempt fails at once and for a reason the log names,
+    /// rather than waiting out the walk's idle timeout — an importer that refuses every root, and a
+    /// transport that answers nothing.
+    async fn failing_engine(
+        log: &Arc<RecordingLog>,
+    ) -> (NodeSyncing<RefusingImporter>, PeerNode, ApprovedStore) {
+        let bootstrap = peer("bootstrap");
+        let inner_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let block_store: BlockStore = Arc::new(UnreadableBlockStore { inner: inner_store });
+        let dag = build_dag().await;
+        let approved_store: ApprovedStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(ByteCodec),
+            Arc::new(FringeCodec),
+        ));
+
+        let transport: Arc<dyn TransportLayer> = Arc::new(SilentTransport);
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: Some(bootstrap.clone()),
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![bootstrap.clone()]));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf.clone(),
+            connections,
+            log.clone(),
+        ));
+
+        let engine = NodeSyncing::new(
+            transport,
+            conf,
+            block_store,
+            dag,
+            approved_store.clone(),
+            comm_util,
+            log.clone(),
+            None,
+            false,
+            RefusingImporter,
+        );
+        (engine, bootstrap, approved_store)
+    }
+
     /// Regression test for the LFS-sync "justification not present in message map" failure: the
     /// DAG must be populated parents-before-children, i.e. in ascending block height order. The
     /// prior code reversed the height map and inserted the newest block first, whose justification
@@ -775,22 +948,23 @@ mod tests {
             "a restored state must signal the node out of syncing"
         );
     }
-    /// **U16 / AUDIT C68, end to end: a failed sync must leave the node in syncing.**
+    /// **U16 / AUDIT C68 *and* C181, end to end: a failed attempt is retried, the retries are bounded,
+    /// and the bound has a terminal state.**
     ///
-    /// The unit-level test pins the decision (`notify_when_restored`); this pins the *transition* the
-    /// decision exists for. `node_launch` waits on the `finished` handle as the only signal to leave
-    /// `NodeSyncing` for `NodeRunning`, so "the node stayed out of running" is exactly "the handle was
-    /// never notified" — asserted here through the real handler, with a real sync attempt that really
-    /// fails (which the recording log proves, so the assertion cannot pass because nothing ran).
+    /// Two properties, and the old version of this test pinned only the first — under a name that
+    /// asserted the *defect*. C68: `node_launch` waits on the `finished` handle as the only signal to
+    /// leave `NodeSyncing` for `NodeRunning`, so "the node stayed out of running" is exactly "that
+    /// handle was never notified"; the attempt must really run and really fail (the recording log
+    /// proves it, so the assertion cannot pass because nothing ran). C181: the node must not sit there
+    /// for ever — the retries end in a **terminal** signal, which is the state this row is about ("a
+    /// serving API and no error line").
     ///
-    /// Falsified both directions against this tree: with the unconditional `finished.notify_waiters()`
-    /// restored, this fails — the waiter wakes on a failed attempt. (The positive direction, that a
-    /// *successful* attempt does notify, is pinned by
-    /// `a_failed_sync_does_not_signal_the_node_out_of_syncing`'s `Ok` half; a full successful sync
-    /// through this fixture would need a transport that serves the whole state, which is the next
-    /// unit's work rather than this one's.)
+    /// Falsified against this tree by restoring the pre-fix latch (the attempt takes the importer and
+    /// both receivers with no retry): the attempt counter never reaches [`MAX_SYNC_ATTEMPTS`] and the
+    /// terminal assertion hangs out its bound. The second half — that `finished` still never fires —
+    /// is what keeps the fix from being "signal success on failure", which is the C68 regression.
     #[tokio::test]
-    async fn a_failed_sync_leaves_the_node_in_syncing() {
+    async fn a_failed_attempt_is_retried_and_the_retries_end_in_a_terminal_signal() {
         let bootstrap = peer("bootstrap");
         let log = Arc::new(RecordingLog::default());
 
@@ -840,6 +1014,11 @@ mod tests {
             RefusingImporter,
         );
         let finished = engine.finished_handle();
+        // Both waiters exist before anything can signal: `Notify::notify_waiters` only wakes waiters
+        // already registered, so a tripwire created after the fact observes nothing (the comment
+        // below is this test's own history of getting exactly that wrong).
+        let terminal = engine.terminal_handle();
+        let mut terminal_waiter = std::pin::pin!(terminal.notified());
 
         let fringe = FinalizedFringe {
             hashes: vec![hash(7)],
@@ -861,27 +1040,33 @@ mod tests {
         // failure rather than a missed defect). Both are the same lesson: what a tripwire observes,
         // and when it starts observing, are part of its calibration.
         let mut waiter = std::pin::pin!(finished.notified());
-        let handle = async {
-            engine
-                .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe))
-                .await
-        };
-        tokio::pin!(handle);
-        let mut handled = false;
-        // Drive the handler to completion; a generous bound, because this waits on the *fixture*
-        // (a spawned task's failure path), not on anything about the code under test.
+        // A generous bound, because this waits on the *fixture* (a spawned task's failure path), not
+        // on anything about the code under test — and it is declared here because the retry drive
+        // below shares it.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !handled {
-            tokio::select! {
-                result = &mut handle => {
-                    result.expect("the fringe message is handled");
-                    handled = true;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the fringe handler never returned"
-                    );
+        // **Scoped on purpose.** The pinned future borrows `engine` mutably for as long as it lives,
+        // and the retry below has to call `handle` again on the same engine; a future that outlives
+        // its driving loop would keep the borrow open.
+        {
+            let handle = async {
+                engine
+                    .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe))
+                    .await
+            };
+            tokio::pin!(handle);
+            let mut handled = false;
+            while !handled {
+                tokio::select! {
+                    result = &mut handle => {
+                        result.expect("the fringe message is handled");
+                        handled = true;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the fringe handler never returned"
+                        );
+                    }
                 }
             }
         }
@@ -918,6 +1103,104 @@ mod tests {
                 .expect("approved store readable")[0],
             None,
             "a failed sync must not record the fringe as approved"
+        );
+
+        // --- C181: the attempt is retried, and the retries are bounded. ------------------------
+        //
+        // Each further bootstrap fringe triggers the next attempt without waiting out
+        // `SYNC_RETRY_DELAY`, which is also the property the slot exists for: a later answer is a
+        // *newer* target, so it is both the retry's trigger and the better thing to sync to. The
+        // **timing assertion at the end of this test is what pins that**: retries driven by the
+        // timeout alone would spend two `SYNC_RETRY_DELAY`s here, so a fringe that was received and
+        // thrown away — the pre-fix behaviour — cannot get under the bound.
+        let retry_started = std::time::Instant::now();
+        for attempt in 1..=MAX_SYNC_ATTEMPTS {
+            while !log.contains(&format!("attempt {attempt} of {MAX_SYNC_ATTEMPTS}")) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the fixture never reached attempt {attempt}: the attempt was not retried, which \
+                     is the latch this row is about"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if attempt < MAX_SYNC_ATTEMPTS {
+                engine
+                    .handle(
+                        &bootstrap,
+                        &CasperMessage::FinalizedFringe(FinalizedFringe {
+                            hashes: vec![hash(7 + attempt as u8)],
+                            state_hash: StateHash::new([7 + attempt as u8; 32]),
+                        }),
+                    )
+                    .await
+                    .expect("a later bootstrap fringe is handled");
+            }
+        }
+
+        // The bound is reached and it has a state to reach: `terminal` fires.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), &mut terminal_waiter)
+                .await
+                .is_ok(),
+            "the retries were spent and nothing signalled terminal: the node is left in the state \
+             this row names — a serving API and no way out"
+        );
+        assert!(
+            log.contains("is terminal"),
+            "the terminal state must be logged, not only signalled"
+        );
+
+        // **The retries were driven by the fringes, not by the timeout.** Two `SYNC_RETRY_DELAY`s
+        // would be 20 s; anything under one of them means the later fringes were received *and kept*,
+        // which is the half the log line alone cannot show. A 2× margin over a path that fails in
+        // milliseconds is wide enough for a loaded runner and far too narrow to be satisfied by the
+        // timeout.
+        assert!(
+            retry_started.elapsed() < SYNC_RETRY_DELAY,
+            "the retries took {:?}: they waited out the retry delay instead of waking on the later \
+             fringes, which means the fringes were not kept",
+            retry_started.elapsed()
+        );
+    }
+
+    /// **AUDIT C181: a later bootstrap fringe is not discarded in silence — the *silence* half.**
+    ///
+    /// The pre-fix code logged the received fringe *inside* the `if start` branch, so once the trigger
+    /// was consumed a later — and necessarily newer — answer produced no log line at all. The repo's
+    /// own note calls that "a later fringe from the bootstrap logs nothing at all", and an operator
+    /// cannot diagnose a fringe that was received and dropped: this pins that half, and only that half.
+    ///
+    /// **The "and kept" half is the retry test's timing assertion**, not this one: a log line says the
+    /// fringe reached the handler, not that the sync task can still see it. Falsified against this
+    /// tree by moving the log back inside the start branch: the second state hash appears nowhere.
+    #[tokio::test]
+    async fn a_later_bootstrap_fringe_is_not_discarded_in_silence() {
+        let log = Arc::new(RecordingLog::default());
+        let (mut engine, bootstrap, _approved) = failing_engine(&log).await;
+
+        let first = FinalizedFringe {
+            hashes: vec![hash(1)],
+            state_hash: StateHash::new([1u8; 32]),
+        };
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(first))
+            .await
+            .expect("the first fringe is handled");
+
+        let second = FinalizedFringe {
+            hashes: vec![hash(2)],
+            state_hash: StateHash::new([2u8; 32]),
+        };
+        let second_state = rchain_shared::base16::encode(second.state_hash.as_bytes());
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(second))
+            .await
+            .expect("the second fringe is handled");
+
+        assert!(
+            log.contains(&second_state),
+            "the second bootstrap fringe was not even logged: it was discarded in silence, which is \
+             exactly what a retry has to have and what this row is about"
         );
     }
 

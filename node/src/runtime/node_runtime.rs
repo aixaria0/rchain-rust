@@ -2491,6 +2491,8 @@ mod tests {
                     validated: true,
                     validation_failed: false,
                     slashable: false,
+                    failure_cause: None,
+                    restore_attempts: 0,
                     member_of_fringe: None,
                     fringe: std::collections::BTreeSet::new(),
                     fringe_state_hash: foreign.post_state_hash,

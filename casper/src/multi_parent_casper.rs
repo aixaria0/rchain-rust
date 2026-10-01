@@ -11,12 +11,12 @@ use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::BlockMetadata;
+use rchain_models::block_metadata::{BlockMetadata, FailureCause};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::validator::Validator;
-use rchain_shared::log::Log;
+use rchain_shared::log::{Log, LogSource};
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::validate_block_checkpoint;
@@ -318,9 +318,229 @@ where
     get_pre_state_for_parents(dag, block_store, runtime, &parent_hashes, block_index).await
 }
 
-/// Validate a block: block summary, replay checkpoint, bonds cache, neglected-invalid-block, and
-/// phlo price (port of `MultiParentCasper.validate`).
+/// How many times one record may be re-validated before the node gives up on it.
+///
+/// The count is **persisted** on the metadata ([`BlockMetadata::restore_attempts`]), so a restart
+/// resumes the budget rather than handing the record a fresh one.
+pub const RESTORE_ATTEMPT_LIMIT: u32 = 3;
+
+/// How many records **one incoming block** may cause a revalidation of.
+///
+/// This is the bound that keeps the rule out of C180's class: a revalidation costs one merge plus one
+/// replay, the same order as validating the block itself, so the work a single block can provoke is
+/// this constant times a cost the protocol already pays.
+pub const RESTORE_BUDGET_PER_BLOCK: usize = 2;
+
+/// **The restoring rule — law 53a's missing inverse** (AUDIT C173, #125).
+///
+/// A justification this node recorded failed for a **view-dependent** reason gets one bounded chance
+/// to clear, re-running the ordinary checks against this node's *current* DAG. This is the "revalidation
+/// of the failed metadata" that C173's `owes` names, and it is what makes law 53a's
+/// `the_refusal_is_persistent` false — the guard the law states is meant to fire when this lands.
+///
+/// **What makes it a rule and not a retry loop is the bound, and the bound has three parts.** Without
+/// all three it is C180's class, work whose cost grows with an input nothing bounds:
+///
+/// - **keyed on the cause.** Only [`FailureCause::Divergence`] is eligible — a refusal that followed
+///   from this node's own state or replay, where a block valid everywhere else reaches the same
+///   verdict. An `Attributable` record is the block's own fault and is never re-validated; a `Cascade`
+///   record is not about this block at all, and it clears when its parent's does.
+/// - **capped per record**, at [`RESTORE_ATTEMPT_LIMIT`], and the count survives a restart.
+/// - **budgeted per incoming block**, at [`RESTORE_BUDGET_PER_BLOCK`].
+///
+/// A successful revalidation clears `validation_failed` and the cause while keeping `slashable`
+/// **exactly as the record had it** — the attribution split the issue asks for ("clearing the record
+/// must not clear `slashable`"). For a `Divergence` record that is `false` by construction, so the
+/// restore cannot mint slash evidence either way. A failed one spends an attempt and leaves the record.
+///
+/// **What this does not do, said plainly so it is not mistaken for more.** It re-runs the checks
+/// against the current DAG; it does not manufacture agreement. A node whose view has converged restores
+/// the block. A node whose view is *still* divergent does not, and is right to keep refusing a block it
+/// cannot verify. The rule gives the refused state an inverse, which is what `Terminal` demands; it
+/// does not promise the inverse always fires, and no rule could.
+/// Whether a stored record is one the restoring rule may re-validate.
+///
+/// The **first** of the rule's three bounds, and the one that makes it reason-keyed rather than a
+/// retry loop: only a `Divergence` — a refusal that came from this node's own state or replay, where a
+/// block valid everywhere else reaches the same verdict — may be re-validated. An `Attributable`
+/// record is the block's own fault and is permanent; a `Cascade` record is not about this block at all
+/// and clears when its parent's does. The attempt cap is the second bound; the caller applies the
+/// third (a budget per incoming block).
+fn restore_is_warranted(stored: &BlockMetadata) -> bool {
+    stored.validation_failed
+        && stored.failure_cause == Some(FailureCause::Divergence)
+        && stored.restore_attempts < RESTORE_ATTEMPT_LIMIT
+}
+
+/// The record to store after one revalidation attempt: `Some(fresh)` when the block passed, `None`
+/// when it did not.
+///
+/// **`slashable` is carried, not recomputed.** Clearing the refusal must not clear attribution — the
+/// restore gives the refused state an inverse, it does not withdraw the verdict about whose fault the
+/// failure was. For a `Divergence` record the carried value is `false` by construction, so the restore
+/// cannot mint slash evidence in either direction.
+///
+/// The attempt is spent either way, which is what makes the cap a cap: a record that keeps failing to
+/// restore stops being re-validated rather than being retried on every block that justifies it.
+fn revalidated_record(stored: &BlockMetadata, fresh: Option<BlockMetadata>) -> BlockMetadata {
+    let attempts = stored.restore_attempts + 1;
+    match fresh {
+        Some(fresh) => BlockMetadata {
+            validation_failed: false,
+            failure_cause: None,
+            slashable: stored.slashable,
+            restore_attempts: attempts,
+            ..fresh
+        },
+        None => BlockMetadata {
+            restore_attempts: attempts,
+            ..stored.clone()
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn restore_divergent_justifications<F, Fut>(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    runtime: &RuntimeManager,
+    block: &BlockMessage,
+    shard_id: &str,
+    min_phlo_price: i64,
+    block_index: &F,
+    log: &Arc<dyn Log>,
+) where
+    F: Fn(BlockHash) -> Fut,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
+{
+    let source = LogSource::new("casper.interpreter.restore");
+    let mut budget = RESTORE_BUDGET_PER_BLOCK;
+
+    for j in &block.justifications {
+        if budget == 0 {
+            return;
+        }
+        let stored = match dag.lookup(j).await {
+            Ok(Some(meta)) => meta,
+            // A missing or unreadable justification is not this rule's business: the checks refuse the
+            // block and name the reason more precisely than a restore failure could.
+            Ok(None) | Err(_) => continue,
+        };
+        if !restore_is_warranted(&stored) {
+            continue;
+        }
+
+        let Some(msg) = block_store
+            .get(&[*j])
+            .await
+            .ok()
+            .and_then(|mut v| v.pop().flatten())
+        else {
+            // The record says the block failed here, but the block itself is gone (a pruned store).
+            // There is nothing to re-validate, and the budget is for revalidations.
+            continue;
+        };
+
+        budget -= 1;
+        let attempts = stored.restore_attempts + 1;
+        let outcome = validate_checks(
+            dag,
+            block_store,
+            runtime,
+            &msg,
+            shard_id,
+            min_phlo_price,
+            block_index,
+            log,
+        )
+        .await;
+        let record = revalidated_record(&stored, outcome.ok());
+        let restored = !record.validation_failed;
+
+        // **Store and index together, or neither.** `insert` runs `BlockMetadataStore::add`, whose
+        // contiguity check a *restored* block can legitimately fail: a failed block is excluded from
+        // the height map and a restored one enters it. A refusal leaves the store as it was and spends
+        // the attempt — it must never leave the store and the index disagreeing (AUDIT C172's shape).
+        if let Err(e) = dag.insert(record, msg).await {
+            log.error(
+                source,
+                &format!(
+                    "could not {} {} after revalidation: {e}",
+                    if restored { "restore" } else { "record" },
+                    j.to_hex()
+                ),
+            );
+            continue;
+        }
+
+        if restored {
+            log.warn(
+                source,
+                &format!(
+                    "cleared the failure record for {} on attempt {attempts}: the block validates \
+                     against this node's view again",
+                    j.to_hex()
+                ),
+            );
+        }
+    }
+}
+
+/// Validate a block, giving a refused one its inverse first (port of `MultiParentCasper.validate`).
+///
+/// **The restoring rule runs here, and the position is the point (AUDIT C173, #125).** Law 53a is
+/// `Terminal`: the record `mark_failed` writes is never cleared, and the rules then refuse every block
+/// above it, so a node that marked one block failed is estranged from its sender for good. The fix is
+/// a rule that restores, and it has to run **before** the checks, because the record has four readers
+/// and they are not in one place: `block_number` (inside `block_summary`), `neglected_invalid_block`,
+/// the merge's parent set in `interpreter_util.rs`, and `get_parents_metadata` in `proto_util.rs`.
 pub async fn validate<F, Fut>(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    runtime: &RuntimeManager,
+    block: &BlockMessage,
+    shard_id: &str,
+    min_phlo_price: i64,
+    block_index: &F,
+    log: &Arc<dyn Log>,
+) -> Result<BlockMetadata, ValidateError>
+where
+    F: Fn(BlockHash) -> Fut,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
+{
+    restore_divergent_justifications(
+        dag,
+        block_store,
+        runtime,
+        block,
+        shard_id,
+        min_phlo_price,
+        block_index,
+        log,
+    )
+    .await;
+
+    validate_checks(
+        dag,
+        block_store,
+        runtime,
+        block,
+        shard_id,
+        min_phlo_price,
+        block_index,
+        log,
+    )
+    .await
+}
+
+/// The checks themselves, with no restoring: block summary, replay checkpoint, bonds cache,
+/// neglected-invalid-block, and phlo price (port of the body of `MultiParentCasper.validate`).
+///
+/// Split out from [`validate`] so the restoring rule can re-run **exactly these** on a stored block
+/// without recursing into another restore — a revalidation that could itself revalidate would make
+/// [`RESTORE_BUDGET_PER_BLOCK`] a bound on nothing.
+#[allow(clippy::too_many_arguments)]
+async fn validate_checks<F, Fut>(
     dag: &dyn BlockDagStorage,
     block_store: &BlockStore,
     runtime: &RuntimeManager,
@@ -350,7 +570,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&init_block_meta),
+                mark_failed(&init_block_meta, status.failure_cause()),
                 status,
             ))
         }
@@ -369,14 +589,14 @@ where
     match validated {
         Err(status) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, status.failure_cause()),
                 status,
             ))
         }
         Ok(true) => {}
         Ok(false) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, FailureCause::Divergence),
                 BlockStatus::InvalidStateHash,
             ))
         }
@@ -387,7 +607,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, status.failure_cause()),
                 status,
             ))
         }
@@ -399,7 +619,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, status.failure_cause()),
                 status,
             ))
         }
@@ -426,33 +646,29 @@ where
     Ok(block_metadata)
 }
 
-/// Mark a block unusable here, **preserving whatever attribution the metadata already carries**.
+/// Mark a block unusable here, recording **why** (AUDIT C173).
 ///
-/// This helper only says "validation failed"; it does not decide whose fault the failure is. That is
-/// [`BlockMetadata::slashable`], and it is set where the evidence is: the replay path sets it in
-/// `validate_block_checkpoint`, the structural checks set it through [`mark_failed_attributable`].
+/// The cause decides attribution, so this is the single place a failure's `slashable` bit comes from:
+/// only [`FailureCause::Attributable`] is the block's own fault. Before this split every
+/// `ValidateError::ValidationFailed` went through a `mark_failed_attributable` that set `slashable`
+/// unconditionally — including `NeglectedInvalidBlock`, a refusal of a child *because a justification
+/// failed* — so one transient failure fabricated slash evidence against every validator above it
+/// (#125).
 ///
-/// The distinction matters because `mark_failed` is *not* only the "could not run the replay" path.
-/// In this code it is reached by every `ValidateError::ValidationFailed` - a rejected status, a
-/// state-hash disagreement, a structural fault - all of which a completed validation attributes to the
-/// block. The genuinely unattributable case (an unreadable pre-state, a store error, an unrecoverable
-/// mergeable-channel sidecar) surfaces as `ValidateError::Internal` and inserts **no** metadata at all,
-/// so it cannot become an offender whether or not this helper clears the flag (#70, #76).
-fn mark_failed(meta: &BlockMetadata) -> BlockMetadata {
+/// The genuinely unattributable case (an unreadable pre-state, a store error, an unrecoverable
+/// mergeable-channel sidecar) still surfaces as `ValidateError::Internal` and inserts **no** metadata
+/// at all, so it cannot become an offender (#70, #76).
+///
+/// `restore_attempts` is carried over rather than reset, so the cap in
+/// [`restore_divergent_justifications`] is a per-block-lifetime budget: a record that flaps between
+/// restored and failed cannot buy unlimited revalidations.
+fn mark_failed(meta: &BlockMetadata, cause: FailureCause) -> BlockMetadata {
     BlockMetadata {
         validated: true,
         validation_failed: true,
+        slashable: matches!(cause, FailureCause::Attributable),
+        failure_cause: Some(cause),
         ..meta.clone()
-    }
-}
-
-/// Mark a block failed **and** attribute the failure to it: a completed validation that reached a
-/// rejectable status, disagreed on the pre/post state, found the bonds cache wrong, or saw an invalid
-/// block neglected. These are the blocks a proposer may slash for.
-fn mark_failed_attributable(meta: &BlockMetadata) -> BlockMetadata {
-    BlockMetadata {
-        slashable: true,
-        ..mark_failed(meta)
     }
 }
 
@@ -503,6 +719,8 @@ mod tests {
             validated: false,
             validation_failed: true,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),
             fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
@@ -564,6 +782,8 @@ mod newest_justification_tests {
             validated: true,
             validation_failed: false,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -607,15 +827,137 @@ mod newest_justification_tests {
 }
 
 #[cfg(test)]
-mod mark_failed_tests {
-    use super::{mark_failed, mark_failed_attributable};
+mod restore_tests {
+    use super::{restore_is_warranted, revalidated_record, RESTORE_ATTEMPT_LIMIT};
     use rchain_models::block_hash::BlockHash;
-    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::block_metadata::{BlockMetadata, FailureCause};
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, SeqNum};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn meta(slashable: bool) -> BlockMetadata {
+    fn meta(failed: bool, cause: Option<FailureCause>, attempts: u32) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: BlockHash::new([1u8; 32]),
+            block_num: BlockHeight::try_from(1).unwrap(),
+            sender: Validator::new([1u8; 65]),
+            seq_num: SeqNum::zero(),
+            justifications: BTreeSet::new(),
+            bonds_map: BTreeMap::new(),
+            validated: true,
+            validation_failed: failed,
+            slashable: false,
+            failure_cause: cause,
+            restore_attempts: attempts,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    /// **The rule is keyed on the reason, and that is what keeps it out of C180's class.**
+    ///
+    /// A `Divergence` — this node's own state or replay disagreeing with a block that is valid
+    /// elsewhere — is the only restorable cause. An `Attributable` refusal is the block's own fault
+    /// and stays; a `Cascade` is not about the block at all. A record with no cause at all (one
+    /// written before the field existed) is ineligible too, which is the safe direction.
+    #[test]
+    fn only_a_divergence_is_restorable() {
+        assert!(restore_is_warranted(&meta(
+            true,
+            Some(FailureCause::Divergence),
+            0
+        )));
+        assert!(
+            !restore_is_warranted(&meta(true, Some(FailureCause::Attributable), 0)),
+            "the block's own fault is permanent, however many children justify it"
+        );
+        assert!(
+            !restore_is_warranted(&meta(true, Some(FailureCause::Cascade), 0)),
+            "a cascade is not about this block; it clears when its parent's record does"
+        );
+        assert!(
+            !restore_is_warranted(&meta(true, None, 0)),
+            "an unknown cause must not be re-validated"
+        );
+        assert!(
+            !restore_is_warranted(&meta(false, None, 0)),
+            "a record that did not fail is not a refusal"
+        );
+    }
+
+    /// The attempt cap is a budget, not a latch: at the limit the record stops being re-validated.
+    #[test]
+    fn the_attempt_cap_is_reached_not_exceeded() {
+        assert!(restore_is_warranted(&meta(
+            true,
+            Some(FailureCause::Divergence),
+            RESTORE_ATTEMPT_LIMIT - 1
+        )));
+        assert!(
+            !restore_is_warranted(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "a record at the limit must not be re-validated again"
+        );
+    }
+
+    /// **The falsifier's unit: a successful revalidation clears the refusal** — which is the step
+    /// law 53a's `the_refusal_is_persistent` says does not exist, and whose absence is the
+    /// estrangement.
+    ///
+    /// `slashable` is carried rather than recomputed: clearing the record must not clear attribution.
+    #[test]
+    fn a_successful_revalidation_clears_the_refusal_and_keeps_attribution() {
+        let stored = BlockMetadata {
+            slashable: true,
+            ..meta(true, Some(FailureCause::Divergence), 1)
+        };
+        let fresh = meta(false, None, 0);
+
+        let record = revalidated_record(&stored, Some(fresh));
+        assert!(
+            !record.validation_failed,
+            "the restoring rule's whole point: the record is cleared"
+        );
+        assert_eq!(record.failure_cause, None, "and the cause with it");
+        assert_eq!(record.restore_attempts, 2, "the attempt is spent");
+        assert!(
+            record.slashable,
+            "clearing the record must not clear attribution"
+        );
+        // The revalidation's own metadata is what is stored — its fringe and pre-state are the fresh
+        // ones, not the ones from the failed attempt.
+        assert!(record.validated);
+    }
+
+    /// A revalidation that fails leaves the refusal. Without this the rule would clear a record on
+    /// any child arriving, which would be worse than not clearing it: the node would then accept the
+    /// child of a block it still cannot verify.
+    #[test]
+    fn a_failed_revalidation_keeps_the_record_and_spends_the_attempt() {
+        let stored = meta(true, Some(FailureCause::Divergence), 1);
+        let record = revalidated_record(&stored, None);
+
+        assert!(record.validation_failed, "still refused");
+        assert_eq!(record.failure_cause, Some(FailureCause::Divergence));
+        assert_eq!(record.restore_attempts, 2);
+        // Everything else is untouched — the failure is the same failure it was.
+        assert_eq!(record.block_hash, stored.block_hash);
+    }
+}
+
+#[cfg(test)]
+mod mark_failed_tests {
+    use super::mark_failed;
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::{BlockMetadata, FailureCause};
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn meta() -> BlockMetadata {
         BlockMetadata {
             block_hash: BlockHash::new([0u8; 32]),
             block_num: BlockHeight::try_from(1).unwrap(),
@@ -625,40 +967,51 @@ mod mark_failed_tests {
             bonds_map: BTreeMap::new(),
             validated: false,
             validation_failed: false,
-            slashable,
+            slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
         }
     }
 
-    /// `mark_failed` marks the block unusable and **does not erase attribution**. That is the bug this
-    /// correction fixes: #76 had it clear `slashable`, and because every `ValidateError::ValidationFailed`
-    /// path goes through it - the state-hash disagreement and the rejectable status included - slashing was
-    /// disabled entirely rather than narrowed.
+    /// `mark_failed` marks the block unusable and records the cause it was given.
     #[test]
-    fn mark_failed_preserves_the_attribution_it_was_given() {
-        let already_attributed = mark_failed(&meta(true));
-        assert!(already_attributed.validation_failed, "still unusable here");
-        assert!(
-            already_attributed.slashable,
-            "a caller that attributed the failure must not lose it"
-        );
-        assert!(
-            !mark_failed(&meta(false)).slashable,
-            "and a caller that did not must not gain one"
-        );
+    fn mark_failed_marks_the_block_and_records_the_cause() {
+        let marked = mark_failed(&meta(), FailureCause::Attributable);
+        assert!(marked.validation_failed, "still unusable here");
+        assert_eq!(marked.failure_cause, Some(FailureCause::Attributable));
+        assert!(marked.validated);
     }
 
-    /// A completed validation that disagreed is attributable to the block, so it is slashable. This is the
-    /// case the state-hash mismatch (`Ok(false)`) and a rejectable status (`Err(status)`) take.
+    /// **Only an attributable failure is the block's fault.** This is the split AUDIT C173 asks for:
+    /// before it, every `ValidateError::ValidationFailed` went through a single marker that set
+    /// `slashable`, so a `NeglectedInvalidBlock` — a child refused *because a justification failed* —
+    /// was marked as an offender, and one transient failure fabricated slash evidence against every
+    /// validator above it.
+    ///
+    /// Red before the split: `NeglectedInvalidBlock` was slashable.
     #[test]
-    fn a_completed_disagreement_is_slashable() {
-        let marked = mark_failed_attributable(&meta(false));
-        assert!(marked.validation_failed);
+    fn only_an_attributable_failure_is_slashable() {
         assert!(
-            marked.slashable,
-            "a replay that ran and disagreed is the block's fault"
+            mark_failed(&meta(), FailureCause::Attributable).slashable,
+            "the block's own fault is what a proposer may slash for"
+        );
+
+        let cascaded = mark_failed(&meta(), FailureCause::Cascade);
+        assert!(cascaded.validation_failed, "still unusable here");
+        assert_eq!(cascaded.failure_cause, Some(FailureCause::Cascade));
+        assert!(
+            !cascaded.slashable,
+            "a child refused because its parent failed is not an offender"
+        );
+
+        let diverged = mark_failed(&meta(), FailureCause::Divergence);
+        assert!(diverged.validation_failed);
+        assert!(
+            !diverged.slashable,
+            "a node whose state differs is not evidence that the block is at fault"
         );
     }
 }

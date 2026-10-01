@@ -1251,10 +1251,11 @@ impl MergeScope {
             // **The bound, and where its refusal goes.** `SearchBudget::NODE` is node-local policy, not
             // a protocol constant: an exceeded search returns **no answer**, this refuses the merge, and
             // the `Err` travels as `String` to `ValidateError::Internal` — a *drop*, which is the same
-            // class as a missing dependency. It must never become `mark_failed_attributable`: nothing
-            // clears that record, so a budget would otherwise estrange a node from a proposer for ever
-            // (C173), turning a local resource policy into a permanent wedge. Every node that does run
-            // the search interior its budget gets the identical answer.
+            // class as a missing dependency. It must never become a `ValidationFailed`: a budget is this
+            // node's own resource policy, and marking the *block* for it would estrange the node from a
+            // proposer for a local problem (C173). The restoring rule C173's fix added is keyed on a
+            // view-dependent `Divergence` and does not cover a local budget — so the drop stays a drop,
+            // and every node that does run the search inside its budget gets the identical answer.
             SearchBudget::NODE,
         )
         .map_err(|e| {

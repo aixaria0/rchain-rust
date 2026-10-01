@@ -203,17 +203,28 @@ pub type ValidBlockProcessing = Result<(), BlockStatus>;
 ///   state the port admitted. The witness is `dag.rs`'s
 ///   `h1b_a_failed_parent_above_the_childs_height_is_refused`, which was the *reproduction* of that
 ///   admitted violation before this check existed.
-/// - **The maximum, by contrast, still skips failed justifications**: a failed block must not raise the
-///   height its child claims. That is the oracle's own `if (!m.validationFailed)` and it stays.
+/// - **The maximum counts every resolved parent too, failed or not.** The Scala skips a failed
+///   justification here (`if (!m.validationFailed)`), and the port copied that — which made a failure
+///   *hide* its own block: a child justifying the failed parent was refused `InvalidBlockNumber` for
+///   the sole reason that this node had marked the parent failed, and it was refused *here*, in
+///   `block_summary`, before `neglected_invalid_block` could even run. That is the second of the
+///   readers that turn one attributable failure into a permanently estranged node (AUDIT C173, #125).
 ///
-/// The bound on failed parents is a **deliberate divergence from the Scala**, which skips them for the
-/// height check too and so admits a block this refuses. The laws are the port's oracle, so the premise
-/// the model needs is *guaranteed* here rather than assumed; the divergence is registered in §6 (a
-/// peer sending such a block is refused — see the audit entry for the operator consequence).
+///   Counting it lets the child reach the other checks — a **prerequisite for the restoring rule, not
+///   a substitute for it**. The child's own pre-state still merges the failed parent out (the
+///   non-failed parent set in `interpreter_util.rs`), so this admits the block to validation rather
+///   than promising it passes: with the parent still recorded, the child of a *bonded* sender now
+///   fails `neglected_invalid_block` instead, and the child of an *unbonded* one reaches the replay
+///   and fails a `Divergence` — the cause the restore may clear.
+///
+/// Both halves are therefore **deliberate divergences from the Scala**, which skips failed parents for
+/// the height check entirely and so admits a block this refuses. The laws are the port's oracle, so the
+/// premise the model needs is *guaranteed* here rather than assumed; the divergences are registered in
+/// §6 (a peer sending such a block is refused — see the audit entry for the operator consequence).
 ///
 /// Related, and unchanged: `neglected_invalid_block` refuses a block that justifies a failed **bonded**
 /// validator's block (`h1b_a_justified_bonded_failed_block_is_refused_rather_than_forced`), so the
-/// reachable route to a failed parent is the unbonded one.
+/// route this change opens is the unbonded one.
 pub async fn block_number(
     dag: &dyn BlockDagStorage,
     b: &BlockMessage,
@@ -228,10 +239,9 @@ pub async fn block_number(
         if i64::from(meta.block_num) >= i64::from(b.block_number) {
             return Ok(Err(BlockStatus::InvalidBlockNumber));
         }
-        // The maximum, which skips failed justifications: they cannot raise the claimed height.
-        if !meta.validation_failed {
-            max_block_number = max_block_number.max(i64::from(meta.block_num));
-        }
+        // The maximum, over **every** resolved parent. A failed block still counts: skipping it made
+        // the failure hide the block, refusing its child for the parent's record alone (AUDIT C173).
+        max_block_number = max_block_number.max(i64::from(meta.block_num));
     }
     if max_block_number + 1 == i64::from(b.block_number) {
         Ok(Ok(()))
@@ -1005,6 +1015,8 @@ mod effectful_tests {
             validated: true,
             validation_failed: failed,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -1091,6 +1103,56 @@ mod effectful_tests {
         let bad = block(2, 6, 0, vec![parent]);
         assert_eq!(
             block_number(&dag, &bad).await.unwrap(),
+            Err(BlockStatus::InvalidBlockNumber)
+        );
+    }
+
+    /// **A failed parent still sets the height its child claims to build on** (AUDIT C173, #125).
+    ///
+    /// Skipping the failed justification made a failure hide its own block: the child was refused
+    /// `InvalidBlockNumber` for the parent's *record* alone, here in `block_summary`, before
+    /// `neglected_invalid_block` could run. That refusal is what estranged a node from a bonded peer
+    /// permanently on the 2026-09-29 testnet run — the child of the failed block could not be admitted
+    /// at all, whatever else was true of it.
+    ///
+    /// Red before the change: with the failed parent at height 4, this child was refused because the
+    /// maximum over non-failed parents was -1.
+    #[tokio::test]
+    async fn a_failed_parent_still_sets_its_childs_height() {
+        let failed_parent = hash(1);
+        let dag = mock(BTreeMap::from([(
+            failed_parent,
+            meta(failed_parent, 4, 1, 0, true),
+        )]));
+
+        // The child of the failed parent, claiming the height its parent implies, is admitted to the
+        // other checks rather than refused here.
+        let child = block(2, 5, 0, vec![failed_parent]);
+        assert_eq!(block_number(&dag, &child).await.unwrap(), Ok(()));
+
+        // And the claim is still checked: one above it is wrong, and still refused.
+        let too_high = block(2, 6, 0, vec![failed_parent]);
+        assert_eq!(
+            block_number(&dag, &too_high).await.unwrap(),
+            Err(BlockStatus::InvalidBlockNumber)
+        );
+    }
+
+    /// The **H1b descent bound is unchanged**: a failed parent at or above the child's own height is
+    /// refused, whether or not the maximum now counts it. The two rules are separate, and this pins
+    /// that counting failed justifications did not quietly widen the bound that refuses a failed parent
+    /// *above* its child — the property `dag.rs`'s `h1b_…` witness exists for.
+    #[tokio::test]
+    async fn a_failed_parent_at_or_above_the_child_is_still_refused() {
+        let failed_parent = hash(1);
+        let dag = mock(BTreeMap::from([(
+            failed_parent,
+            meta(failed_parent, 7, 1, 0, true),
+        )]));
+
+        let child = block(2, 5, 0, vec![failed_parent]);
+        assert_eq!(
+            block_number(&dag, &child).await.unwrap(),
             Err(BlockStatus::InvalidBlockNumber)
         );
     }

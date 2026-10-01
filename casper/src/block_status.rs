@@ -1,5 +1,7 @@
 //! Block validation status (port of `BlockStatus.scala`).
 
+use rchain_models::block_metadata::FailureCause;
+
 /// The outcome of validating a block (port of `BlockStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BlockStatus {
@@ -74,6 +76,55 @@ pub enum BlockStatus {
 impl BlockStatus {
     pub fn is_valid(&self) -> bool {
         matches!(self, BlockStatus::Valid)
+    }
+
+    /// **Why** this refusal happened, which decides whether it may be attributed to the block and
+    /// whether a restoring rule may later clear the record (AUDIT C173).
+    ///
+    /// The principle, stated once so a new status has somewhere to be classified rather than
+    /// somewhere to be guessed: a refusal is [`FailureCause::Attributable`] when it follows from the
+    /// block itself together with the DAG's **structure** (heights, justification sets, the deploys'
+    /// own fields), and [`FailureCause::Divergence`] when it follows from this node's **state or
+    /// replay** — the merge, the fringe, the replayed post-state, this node's own metadata. Only the
+    /// first is the block's fault, because a node whose state differs would reach the second for a
+    /// block that is valid everywhere else; that is the measured `InvalidStateHash` divergence on
+    /// #105, and it is why the second class is the one a restore may clear.
+    ///
+    /// [`FailureCause::Cascade`] is the third case and it is not about this block at all: a child
+    /// refused *because a justification failed*.
+    ///
+    /// `Valid` is never a refusal — the checks return it as `Ok(())`, not as a failure — but it is
+    /// classified anyway so that adding a variant forces a decision here rather than inheriting a
+    /// default.
+    pub fn failure_cause(&self) -> FailureCause {
+        match self {
+            // Decided by this node's state or replay, so a node with a different view reaches the
+            // same verdict for a block that is valid elsewhere.
+            BlockStatus::InvalidStateHash
+            | BlockStatus::InvalidRejectedDeploy
+            | BlockStatus::InvalidBondsCache
+            | BlockStatus::UnjustifiedSlash => FailureCause::Divergence,
+
+            // Refused because a justification failed. One transient failure must not fabricate slash
+            // evidence against every validator above it (#125).
+            BlockStatus::NeglectedInvalidBlock => FailureCause::Cascade,
+
+            // The block's own fault, or the structural consequence of a claim it made about the DAG.
+            BlockStatus::Valid
+            | BlockStatus::InvalidBlockNumber
+            | BlockStatus::InvalidRepeatDeploy
+            | BlockStatus::InvalidSequenceNumber
+            | BlockStatus::InvalidDeployShardId
+            | BlockStatus::JustificationRegression
+            | BlockStatus::ContainsExpiredDeploy
+            | BlockStatus::ContainsFutureDeploy
+            | BlockStatus::ContainsLowCostDeploy
+            | BlockStatus::InvalidPhloLimit
+            | BlockStatus::InvalidDeploySignature
+            | BlockStatus::TooManyDeploys
+            | BlockStatus::ExceedsBlockPhloLimit
+            | BlockStatus::InvalidVersion => FailureCause::Attributable,
+        }
     }
 }
 
@@ -192,6 +243,51 @@ mod tests {
             BlockStatus::ContainsLowCostDeploy.to_string(),
             "a deploy's phlo price is below the minimum"
         );
+    }
+
+    /// **The three causes partition the statuses, and the split is the one AUDIT C173 asks for.**
+    ///
+    /// The cascade case is the load-bearing one: `NeglectedInvalidBlock` refuses a child *because a
+    /// justification failed*, so attributing it to the child is what let one transient failure
+    /// fabricate slash evidence against every validator above it. The divergence case is the measured
+    /// one: `InvalidStateHash` is this node disagreeing with the producer, not the block being wrong.
+    ///
+    /// This also keeps the classification exhaustive-by-construction: a status added without a cause
+    /// does not compile, because [`BlockStatus::failure_cause`] matches on all of them.
+    #[test]
+    fn the_causes_partition_the_statuses() {
+        const DIVERGENCE: [BlockStatus; 4] = [
+            BlockStatus::InvalidStateHash,
+            BlockStatus::InvalidRejectedDeploy,
+            BlockStatus::InvalidBondsCache,
+            BlockStatus::UnjustifiedSlash,
+        ];
+
+        for status in ALL {
+            let cause = status.failure_cause();
+            let want_divergence = DIVERGENCE.contains(&status);
+            assert_eq!(
+                cause == FailureCause::Divergence,
+                want_divergence,
+                "{status:?} was classified {cause:?}"
+            );
+            assert_eq!(
+                cause == FailureCause::Cascade,
+                status == BlockStatus::NeglectedInvalidBlock,
+                "{status:?} was classified {cause:?}"
+            );
+        }
+
+        // A refusal of a child *because its parent failed* must not be slashable, and a disagreement
+        // with this node's own state must not be either. Everything else is the block's own fault.
+        assert!(matches!(
+            BlockStatus::NeglectedInvalidBlock.failure_cause(),
+            FailureCause::Cascade
+        ));
+        assert!(matches!(
+            BlockStatus::InvalidVersion.failure_cause(),
+            FailureCause::Attributable
+        ));
     }
 
     /// The status is a small `Copy` value that hashes: the block processor keeps it in maps and
