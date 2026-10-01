@@ -254,8 +254,15 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             .await
             .map_err(|e| e.to_string())?;
 
-        // Handle packets concurrently with the syncing-finished signal.
+        // Handle packets concurrently with the syncing-finished signal, and with the **terminal**
+        // one (AUDIT C181, #125). `finished` is the successful exit — the state was restored, go on
+        // to `NodeRunning`. `terminal` is the other one: the sync retries are spent and this node
+        // cannot reach the approved state, so it stops serving rather than sitting in `NodeSyncing`
+        // for good, which is the state no rule left. Signalling `finished` here instead would move
+        // the node into `NodeRunning` on a DAG it never populated, which is what C68 exists to
+        // prevent — the two facts are different and get different signals.
         let finished = { engine.lock().await.finished_handle() };
+        let terminal = { engine.lock().await.terminal_handle() };
         let handle_loop = async {
             while let Some(pm) = packet_rx.recv().await {
                 let mut guard = engine.lock().await;
@@ -270,6 +277,14 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         tokio::select! {
             _ = handle_loop => {}
             _ = finished.notified() => {}
+            _ = terminal.notified() => {
+                return Err(
+                    "LFS state sync is terminal: the approved state could not be restored and the \
+                     retries are spent, so this node is stopping rather than serving a chain it \
+                     never synced"
+                        .to_string(),
+                );
+            }
         }
     } else {
         log.info(source, "Reconnecting to existing network...");
