@@ -757,10 +757,8 @@ impl BlockIndex {
             (guard.len() as u64, capacity_evicted as u64)
         };
         if capacity_evicted > 0 {
-            INDEX_CACHE_CAPACITY_EVICTED.fetch_add(
-                capacity_evicted,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            INDEX_CACHE_CAPACITY_EVICTED
+                .fetch_add(capacity_evicted, std::sync::atomic::Ordering::Relaxed);
         }
         INDEX_CACHE_LEN.store(cache_len, std::sync::atomic::Ordering::Relaxed);
         Ok(shared)
@@ -1709,7 +1707,10 @@ mod tests {
         }
 
         assert_eq!(cache.len(), BLOCK_INDEX_CACHE_MAX_ENTRIES);
-        assert!(cache.get(&first_hash).is_none(), "the least-recently-used cache entry is evicted");
+        assert!(
+            cache.get(&first_hash).is_none(),
+            "the least-recently-used cache entry is evicted"
+        );
         assert_eq!(
             first.block_hash, first_hash,
             "an in-flight Arc remains valid after cache eviction"
@@ -1726,8 +1727,7 @@ mod tests {
     #[test]
     fn a_cache_hit_refreshes_lru_recency() {
         let mut cache = BlockIndexCache::default();
-        for id in 0..u16::try_from(BLOCK_INDEX_CACHE_MAX_ENTRIES)
-            .expect("cache bound fits in u16")
+        for id in 0..u16::try_from(BLOCK_INDEX_CACHE_MAX_ENTRIES).expect("cache bound fits in u16")
         {
             let hash = block_hash(id);
             cache.insert(
@@ -1756,7 +1756,10 @@ mod tests {
             }),
         );
 
-        assert!(cache.get(&oldest).is_some(), "the refreshed entry stays resident");
+        assert!(
+            cache.get(&oldest).is_some(),
+            "the refreshed entry stays resident"
+        );
         assert!(
             cache.get(&second_oldest).is_none(),
             "the least-recently-used entry is evicted"
