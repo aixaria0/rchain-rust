@@ -5842,3 +5842,104 @@ is discharged in every member.
 cheap, and below it the work may still be exponential — the honest sentence every row of this class
 carries, and the reason Stage 2 of #127's change order (a threshold **N**) and Stage 3 (a price) remain the
 approver's decisions rather than the implementation's.
+
+## 42. The halt becomes readable, and the issue's premise is corrected by the code (#157)
+
+**#157 files two defects in one sentence**: a proposer whose own block fails validation three times halts
+its autopropose timer, and the halt is visible only in a log line. The second half is the one that matters
+on a net nobody watches continuously, and reading the code narrowed it in three ways that the issue's own
+text gets wrong.
+
+**1. What halts is the timer, and only the timer.** The `break` is in the timer task
+(`node_runtime.rs:1590`, guarded by `AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES` at `:147`), and that task is one
+of **three** triggers into the proposer queue, not the only one: the autopropose tap
+(`node_runtime.rs:1532`), the attest-on-new-blocks tap (`:1614`) and the admin `POST /api/propose`
+(`node/src/web/http.rs:1004` → `trigger_propose`, `node_runtime.rs:1967`) all keep enqueueing. So "the
+shard stops producing blocks" holds only for a chain with no inbound blocks and no deploys, and the issue's
+"there is no command to resume block production (`rnode propose` requires a manual-propose mode the net
+does not run)" is **false** — `POST /api/propose` reaches `create_block` regardless of the halt. The consequence is naming, and the naming is not cosmetic: a boolean
+called `halted` on `/api/status` would be its own misleading signal, claiming the node had stopped when one
+trigger had. The surfaces report the **counter** and `autopropose_timer_halted`, and the counter can clear
+under a stopped timer (the proposer stores `0` on a success), which is exactly the state a reader must not
+mistake for health.
+
+**2. Nothing restarts it, and that is recorded as a decision rather than fixed.** The task `break`s with no
+`JoinHandle` kept. A resume path that quietly restarts a proposer whose state accounting is inconsistent is
+the failure the constant exists to prevent, so #157's second exit is taken — permanence stated, with the
+reason, at the constant itself.
+
+**3. The consequence is now observable on both surfaces.** `consecutive_failures` and
+`autopropose_timer_halted` are gauges under `rchain.proposer.shard_<i>` on `/metrics`, pushed from the two
+paths that can still change the values after the halt (the timer's tick, and the tap, which is what
+notices a recovery), and the same cell feeds two fields on `ApiStatus`. The observation is a *push* because
+`/metrics` renders a snapshot of a push-populated registry — a value pushed once at setup would read `0`
+for ever and look healthy, which is the defect restated.
+
+**The envelope half is law 43's, and it moved with its checked data.** `ApiStatus` is one of the rows
+`spec/Rchain/Envelope.lean` pins, so the change touched the catalog, the re-emitted
+`spec/conformance/envelope.tsv`, the hand-written `OPENAPI_JSON` schema and the DTO together — the three
+parties law 43 holds equal, and the check that caught C29's stale document. It was **observed red for the
+right reason** before landing: with only the served schema reverted, the test fails naming both keys.
+
+**Why this is not a C-row.** The defect's record already exists — C186 carries the halt and the failure
+that triggers it, and C187 the round-snapshot trade-off that causes it. What was missing was not a number
+but a *witness*, and where the earlier rows say the chain "produces nothing" this pass records the narrower
+truth their text implies: the timer produces nothing, and the node around it is still working. That
+sentence is left in C186 as written rather than rewritten, because it is the consequence that was measured,
+and the correction belongs where a reader hits it — the constant, and here.
+
+**What this does not claim.** That the halt is *right* in every case it fires: the failures that reach the
+threshold need not be state-accounting failures at all — #145's occurrence came from a self-equivocation
+(#156), so a liveness failure in the proposer silences its timer. Turning the halt into a signal is what
+makes that visible; it does not make the trigger correct.
+
+## 43. The second mismatch, and why the reproduction stops short of a fix (C190, #156)
+
+**#156 arrived without a diagnosis and without a row** — §38 recorded the self-equivocation as the next
+thing showing through #139's fix and deliberately refused it a number, because a `todo` row's `owes` has
+to be actionable. This pass is that hour of work, and it found the mechanism in process, with no devnet.
+
+**The claim, and it is not C186's.** C186 fixed the *round snapshot* against `latest_msgs` — the parent set
+omitted the proposer's own newest message, and `parents_for_new_block(sender)` now keeps it current. This
+is the next structure along, and the two are distinguishable:
+
+- the H-1 gate scans **`msg_map`**: `casper/src/dag.rs:335` refuses a block when *any* stored message
+  already carries its `(sender, seq_num)`;
+- `block_creator.rs:71` derives `seq_num` from its **parent set**, which is the round snapshot built from
+  `latest_msgs`;
+- `insert_msg_without_latest_mut` (`block-storage/src/dag/message_state.rs:284`) is the **one writer that
+  touches `msg_map` and not `latest_msgs`**, by design — H-2, so a validation-failed block cannot become a
+  parent — and it is reached from exactly one branch: `dag.rs`'s `validation_failed` arm.
+
+So a validator whose own block failed validation has spent a sequence number its own arithmetic cannot see.
+Its next proposal derives that number again, and the DAG refuses the node's own block. The **escaping** rule
+does not save it either: it also reads `latest_msgs`. Three refusals halt the timer (#157).
+
+**The reproduction is in the tree and needs no node.**
+`finalization.rs::the_failed_record_is_invisible_to_the_proposer_and_visible_to_the_gate` builds one round,
+records `vs[0]`'s next block through the without-latest path, and shows the derivation returns the spent
+number while the gate's predicate is true of it. **Observed red in the inverted form** before landing, with
+both sides `SeqNum(1)`; the assertion was then inverted so the defect is *pinned* rather than left failing —
+the shape C186's own fixture control uses.
+
+**Why the fix is not in this pass.** The two repairs are different kinds of change, and the first is not
+the implementation's to make:
+
+1. **Make the gate consistent with the rest of the DAG's state.** `add_block_to_dag_state_mut` already
+   excludes a `validation_failed` block from `height_map` (`block-storage/src/dag/metadata_store.rs:79`),
+   with a comment naming a failed block with a later block above it as the reachable case — so a failed
+   block is non-occupying in the DAG's own state everywhere *except* this gate. The asymmetry is the
+   argument for repairing it, and the repair **changes which blocks are admitted**: a block refused today
+   as an equivocation would be accepted. That is a validation rule, which is §6 and `#51` §A — the same
+   handling #127's Stage 2 (a bound on the justification set) is given, and for the same reason.
+2. **A proposer-side rule.** Treat a spent-but-invisible sequence number as "already spoken" and refuse.
+   Node-local and invisible to consensus, so it is *available* here — but it converts an equivocation and
+   a halt into a refusal and a quiet, which is a different liveness failure wearing a better label, and it
+   is the wrong repair if (1) is the right reading.
+
+**What is not claimed.** That this is what fired in #145's fifth attempt. The mechanism is *sufficient* and
+the shape matches the recorded log exactly — a re-syncing validator whose own blocks are in the chain it
+restored is precisely a node with `validation_failed` records of its own — but the recorded run carries no
+line saying which structure the arithmetic read. Naming that needs the instrumentation #156 asks for, and
+it is worth doing **after** the decision, because it is the decision that determines what the instrument
+should assert.
