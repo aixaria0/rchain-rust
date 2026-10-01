@@ -503,6 +503,48 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         Ok(())
     }
 
+    /// **The update `insert` cannot be** (AUDIT C193) — see the trait's doc for why the restoring rule
+    /// needs it. The narrow shape is the point: the block's fringe data is already stored, its hash is
+    /// already in `dag_set` and `child_map`, and the *only* thing an update carries is a record whose
+    /// `validation_failed` has been cleared. Two structures excluded it while it was failed, and both
+    /// have to take it back:
+    ///
+    /// - **the height map**, which does not count a failed block — re-read from the store after `add`,
+    ///   so the store's own contiguity check (Law 18) is the one that decides, rather than a second
+    ///   implementation here;
+    /// - **`latest_msgs`**, through [`DagMessageState::promote_msg_mut`] — H-2 is what kept the block
+    ///   out, and a proposer that never sees it keeps deriving a sequence number it has already spent.
+    ///
+    /// The H-1 gate is deliberately **not** re-run: this is not an insertion, so there is no second block
+    /// claiming the `(sender, seq_num)` — the block was admitted under that rule when it was first
+    /// inserted, and the gate's `contains` short-circuit (which made this a no-op) is what the update
+    /// exists to step around.
+    async fn update_metadata(&self, block_metadata: BlockMetadata) -> Result<(), String> {
+        let _guard = self.lock.lock().await;
+        let hash = block_metadata.block_hash;
+        if !self.block_metadata_store.contains(&hash).await {
+            return Err(format!(
+                "no block {} to update — `insert` is the call for one that is not there",
+                hash.to_hex()
+            ));
+        }
+        // The store first, so a refusal (its contiguity check) leaves the representation untouched —
+        // the same order `insert` uses, and for the same reason (AUDIT C172's shape).
+        self.block_metadata_store
+            .add(block_metadata.clone())
+            .await?;
+
+        let mut guard = self.representation.write().await;
+        let repr = Arc::make_mut(&mut *guard);
+        let msg = message_from_block_metadata(&block_metadata, &repr.dag_message_state.msg_map)
+            .ok_or_else(|| "justification not present in message map".to_string())?;
+        repr.dag_message_state.promote_msg_mut(&msg);
+        // Re-read rather than patch: the store has just applied its own contiguity rule, and reading
+        // back is what makes this and `insert` agree by construction rather than by two implementations.
+        repr.height_map = self.block_metadata_store.height_map().await;
+        Ok(())
+    }
+
     async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String> {
         self.block_metadata_store.get(block_hash).await
     }
@@ -1515,6 +1557,68 @@ mod tests {
         };
         assert!(err.contains("equivocation"), "{err}");
         assert!(err.contains("sequence number"), "{err}");
+    }
+
+    /// **The falsifier for C193's fix.** The restoring rule's write must reach the store *and* take the
+    /// block back into the two structures H-2 excluded it from — which is what makes the rule a rule.
+    ///
+    /// Every assertion here is one the old path failed: the store kept `validation_failed: true`, and
+    /// `latest_msgs` never gained the block, so a proposer kept deriving the sequence number it had
+    /// already spent (C190's wedge, which is why these two rows travel together).
+    #[tokio::test]
+    async fn an_update_clears_the_failure_record_and_promotes_the_block() {
+        let storage = build_storage().await;
+        let genesis = hash(0);
+        storage
+            .insert(meta(genesis, &[], 0), block(genesis))
+            .await
+            .unwrap();
+
+        let failed = hash(1);
+        let mut failed_meta = meta_by(1, 0, failed, &[genesis], 1);
+        failed_meta.validation_failed = true;
+        storage
+            .insert(failed_meta.clone(), block(failed))
+            .await
+            .unwrap();
+        assert!(
+            !storage
+                .get_representation()
+                .await
+                .dag_message_state
+                .latest_msgs
+                .values()
+                .any(|m| m.id == failed),
+            "the control: H-2 keeps a failed block out of `latest_msgs` to begin with"
+        );
+
+        // What the restoring rule now writes on a successful revalidation.
+        let cleared = BlockMetadata {
+            validation_failed: false,
+            failure_cause: None,
+            ..failed_meta.clone()
+        };
+        storage.update_metadata(cleared).await.unwrap();
+
+        let stored = storage.lookup(&failed).await.unwrap().unwrap();
+        assert!(
+            !stored.validation_failed,
+            "the update must reach the store — the old path returned Ok without writing"
+        );
+        let after = storage.get_representation().await;
+        assert!(
+            after
+                .dag_message_state
+                .latest_msgs
+                .values()
+                .any(|m| m.id == failed),
+            "and the block must be the sender's latest message again: this is what advances the proposer's \
+             arithmetic past the sequence number it had spent (C190)"
+        );
+        assert!(
+            after.height_map.values().any(|s| s.contains(&failed)),
+            "and it returns to the height map, which does not count a failed block"
+        );
     }
 
     /// **`insert` is not an update — and the restoring rule uses it as one.**

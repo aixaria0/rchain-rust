@@ -92,6 +92,18 @@ impl BlockDagStorage for RecordingDag {
             .insert(m.block_hash, m);
         Ok(())
     }
+    /// **The record of a block this DAG already holds** — what the restoring rule writes, and what it
+    /// used to route through `insert` (AUDIT C193). Recorded in the same trace, because from these
+    /// tests' point of view both are "the rule wrote this record"; the difference the fix makes is that
+    /// the real storage now distinguishes them.
+    async fn update_metadata(&self, m: BlockMetadata) -> Result<(), String> {
+        self.inserts.lock().expect("inserts").push(m.clone());
+        self.metadata
+            .lock()
+            .expect("metadata")
+            .insert(m.block_hash, m);
+        Ok(())
+    }
     async fn lookup(&self, h: &BlockHash) -> Result<Option<BlockMetadata>, String> {
         Ok(self.metadata.lock().expect("metadata").get(h).cloned())
     }

@@ -468,11 +468,17 @@ async fn restore_divergent_justifications<F, Fut>(
         let record = revalidated_record(&stored, outcome.ok());
         let restored = !record.validation_failed;
 
-        // **Store and index together, or neither.** `insert` runs `BlockMetadataStore::add`, whose
+        // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
+        // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
+        // anything: the rule logged "cleared the failure record" while the store kept the failure, and
+        // the failure it exists to clear was never cleared. The update path also takes the block back
+        // into the height map and into `latest_msgs`, which H-2 had excluded it from.
+        //
+        // **Store and index together, or neither.** The update runs `BlockMetadataStore::add`, whose
         // contiguity check a *restored* block can legitimately fail: a failed block is excluded from
         // the height map and a restored one enters it. A refusal leaves the store as it was and spends
         // the attempt — it must never leave the store and the index disagreeing (AUDIT C172's shape).
-        if let Err(e) = dag.insert(record, msg).await {
+        if let Err(e) = dag.update_metadata(record).await {
             log.error(
                 source,
                 &format!(
