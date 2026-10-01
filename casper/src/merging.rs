@@ -588,11 +588,12 @@ fn sys_deploy_id(block_hash: &BlockHash, prefix: u8) -> Vec<u8> {
 /// Measured under a devnet fork storm (#117): ~750 requests over one stall with 711 of them hits, and
 /// a heap profile put `DeployChainIndex::clone`/`Vec::clone` under this frame among the largest
 /// allocating sites. Sharing is safe because an index is immutable once built.
-/// Hard bound independent of finality. The widest measured merge scope in #117 was 43 chains; 256
-/// leaves almost six times that working set resident while preventing a stalled fringe from making
-/// this advisory cache a monotone memory owner. Eviction changes recomputation cost only: an index is
-/// reproducible from the block/store, and in-flight users hold their own `Arc`.
-const BLOCK_INDEX_CACHE_MAX_ENTRIES: usize = 256;
+/// Hard bound independent of finality. The widest measured merge scope in #117 was 43 chains, while
+/// the 2026-09-29 incident restarted into 250 cached indices and was killed in the same second. Keep
+/// only 64 strong entries: enough to cover the measured working set with headroom, while making a
+/// catch-up burst unable to retain hundreds of large historical indices. A larger scope is still
+/// correct — an evicted index is simply recomputed — and in-flight users hold their own `Arc`.
+const BLOCK_INDEX_CACHE_MAX_ENTRIES: usize = 64;
 
 #[derive(Default)]
 struct BlockIndexCache {
@@ -601,20 +602,24 @@ struct BlockIndexCache {
 }
 
 impl BlockIndexCache {
-    fn get(&self, hash: &BlockHash) -> Option<Arc<BlockIndex>> {
-        self.entries.get(hash).map(Arc::clone)
+    fn get(&mut self, hash: &BlockHash) -> Option<Arc<BlockIndex>> {
+        let index = self.entries.get(hash).map(Arc::clone)?;
+        // Tiny (<=64) LRU queue: keep the blocks merges are actually reusing resident instead of
+        // evicting a hot old entry merely because it was inserted before a cold one.
+        self.insertion_order.retain(|queued| queued != hash);
+        self.insertion_order.push_back(*hash);
+        Some(index)
     }
 
-    /// Insert one immutable index and evict the oldest cached entries until the hard bound holds.
-    ///
-    /// FIFO is intentional here: cache order is not consensus state, hits stay allocation-free, and
-    /// unlike a finality-derived prune this bound keeps working while finality is stalled.
+    /// Insert one immutable index and evict the least-recently-used cached entries until the hard
+    /// bound holds. Cache order is not consensus state, and unlike a finality-derived prune this
+    /// bound keeps working while finality is stalled.
     fn insert(&mut self, hash: BlockHash, index: Arc<BlockIndex>) -> usize {
         let is_new = !self.entries.contains_key(&hash);
-        self.entries.insert(hash.clone(), index);
-        if is_new {
-            self.insertion_order.push_back(hash);
-        }
+        self.entries.insert(hash, index);
+        self.insertion_order.retain(|queued| queued != &hash);
+        self.insertion_order.push_back(hash);
+        let _ = is_new; // kept explicit: replacing an existing key must not create a second queue entry.
 
         let mut evicted = 0usize;
         while self.entries.len() > BLOCK_INDEX_CACHE_MAX_ENTRIES {
@@ -1706,7 +1711,7 @@ mod tests {
         }
 
         assert_eq!(cache.len(), BLOCK_INDEX_CACHE_MAX_ENTRIES);
-        assert!(cache.get(&first_hash).is_none(), "the oldest cache entry is evicted");
+        assert!(cache.get(&first_hash).is_none(), "the least-recently-used cache entry is evicted");
         assert_eq!(
             first.block_hash, first_hash,
             "an in-flight Arc remains valid after cache eviction"
