@@ -62,7 +62,7 @@ where
 /// notify the validated queue, and broadcast the block hash (port of `BlockProcessor.apply`).
 pub async fn apply<F, Fut>(
     mut input_blocks: mpsc::Receiver<BlockMessage>,
-    validated_tx: mpsc::UnboundedSender<BlockMessage>,
+    validated_tx: mpsc::Sender<BlockMessage>,
     shard_id: String,
     min_phlo_price: i64,
     dag: Arc<dyn BlockDagStorage>,
@@ -142,7 +142,12 @@ pub async fn apply<F, Fut>(
             }
             match status {
                 Ok(()) => {
-                    let _ = validated_tx.send(block.clone());
+                    // **Awaiting, so a full queue backpressures this processor instead of growing**
+                    // (C175). The queue is what the block receiver consumes to advance the round/fringe
+                    // state, and the producer here is CPU-bound replay validation — exactly the shape R15
+                    // bounded on the other half of this pipeline. `let _ =` stays: a send fails only when
+                    // every receiver is gone, which is shutdown, and the block is already in the DAG.
+                    let _ = validated_tx.send(block.clone()).await;
                     comm_util
                         .send_block_hash(&block.block_hash, block.sender.as_bytes())
                         .await;

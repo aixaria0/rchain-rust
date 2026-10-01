@@ -167,6 +167,17 @@ jobs:
         # every workflow; nothing refused a regression.
         run: tools/check-workflow-pins.sh
 
+      - name: Ingress-queue bound gate
+        # Every queue on the ingress -> validate -> process path must be bounded, because a peer streams
+        # valid-signed blocks into it and an unbounded hop lets that peer fill memory faster than the
+        # node drains it. The defect this guards (AUDIT C175) was invisible in review — an
+        # `unbounded_channel()` beside a `channel(N)` reads as ordinary wiring — and the check is a
+        # **source** check rather than a test because the fact is in the type: a unit test could only
+        # assert the boundedness by failing to compile against the signature, and a test that does not
+        # compile is not a test. It is the check C175 closes on, so it belongs in the job that fails
+        # when it regresses rather than in the tree waiting to be run.
+        run: tools/check-bounded-ingress-queues.sh --gate
+
       - name: Test
         run: cargo test --workspace --all-features
 

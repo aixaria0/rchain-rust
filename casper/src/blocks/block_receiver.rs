@@ -505,15 +505,50 @@ impl Drop for QueueObservation {
     }
 }
 
+/// The two things [`consume_observed_queue`] asks of a queue: how deep it is, and the next item.
+///
+/// **Why this exists rather than a concrete receiver type.** `tokio::mpsc::Receiver` and
+/// `UnboundedReceiver` share no public trait — `recv` and `len` are inherent on each — and the ingress path
+/// uses both: C175 bounded the validated-blocks queue and the tap beside it, while the queue observers'
+/// own unit tests drive unbounded ones. Without this, the observation loop would be written twice and the
+/// two copies would drift, which is the failure mode the observer exists to prevent one level up.
+///
+/// The trait is public because a public generic function cannot name a private bound.
+pub trait ObservedQueue<T> {
+    /// How many items are waiting: a *sample*, not a guarantee.
+    fn depth(&self) -> usize;
+    /// The next item, or `None` once every sender is gone.
+    fn recv(&mut self) -> impl std::future::Future<Output = Option<T>> + Send;
+}
+
+impl<T: Send> ObservedQueue<T> for mpsc::Receiver<T> {
+    fn depth(&self) -> usize {
+        self.len()
+    }
+    async fn recv(&mut self) -> Option<T> {
+        mpsc::Receiver::recv(self).await
+    }
+}
+
+impl<T: Send> ObservedQueue<T> for mpsc::UnboundedReceiver<T> {
+    fn depth(&self) -> usize {
+        self.len()
+    }
+    async fn recv(&mut self) -> Option<T> {
+        mpsc::UnboundedReceiver::recv(self).await
+    }
+}
+
 /// Consume the original queue without introducing a forwarding queue or copying
 /// items. Sample every 100 ms, including while asynchronous processing waits.
 /// Synchronous work that blocks this executor can delay sampling; the maximum
 /// reported by the observer must therefore be described as a sampled maximum.
-pub async fn consume_observed_queue<T, F, Fut>(
-    mut rx: mpsc::UnboundedReceiver<T>,
+pub async fn consume_observed_queue<R, T, F, Fut>(
+    mut rx: R,
     observer: Option<QueueObserver>,
     mut consume: F,
 ) where
+    R: ObservedQueue<T> + Send,
     T: Send,
     F: FnMut(T) -> Fut,
     Fut: std::future::Future<Output = ()>,
@@ -528,7 +563,7 @@ pub async fn consume_observed_queue<T, F, Fut>(
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        observer(rx.len(), true);
+        observer(rx.depth(), true);
         let item = tokio::select! {
             item = rx.recv() => item,
             _ = interval.tick() => continue,
@@ -541,7 +576,7 @@ pub async fn consume_observed_queue<T, F, Fut>(
         loop {
             tokio::select! {
                 _ = &mut work => break,
-                _ = interval.tick() => observer(rx.len(), true),
+                _ = interval.tick() => observer(rx.depth(), true),
             }
         }
     }
@@ -550,7 +585,7 @@ pub async fn consume_observed_queue<T, F, Fut>(
 /// Process validated blocks (port of `validatedBlocks`): update state and forward the next
 /// dependency-free blocks to the output queue.
 async fn validated_blocks(
-    finished_processing_rx: mpsc::UnboundedReceiver<BlockMessage>,
+    finished_processing_rx: mpsc::Receiver<BlockMessage>,
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     out_tx: mpsc::UnboundedSender<BlockHash>,
     log: Arc<dyn Log>,
@@ -589,7 +624,7 @@ async fn validated_blocks(
 pub fn apply(
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     incoming_blocks_rx: mpsc::Receiver<BlockMessage>,
-    finished_processing_rx: mpsc::UnboundedReceiver<BlockMessage>,
+    finished_processing_rx: mpsc::Receiver<BlockMessage>,
     conf_shard_name: String,
     block_store: BlockStore,
     dag: Arc<dyn BlockDagStorage>,
@@ -615,7 +650,7 @@ pub fn apply(
 pub fn apply_with_queue_observer(
     state: Arc<tokio::sync::Mutex<BlockReceiverState<BlockHash>>>,
     incoming_blocks_rx: mpsc::Receiver<BlockMessage>,
-    finished_processing_rx: mpsc::UnboundedReceiver<BlockMessage>,
+    finished_processing_rx: mpsc::Receiver<BlockMessage>,
     conf_shard_name: String,
     block_store: BlockStore,
     dag: Arc<dyn BlockDagStorage>,
@@ -763,6 +798,62 @@ mod tests {
         })
         .await;
         assert_eq!(*received.lock().unwrap(), vec![1, 2]);
+    }
+
+    /// **The bounded half of `ObservedQueue`, which no other test in this file reaches.** Every other test
+    /// here drives `consume_observed_queue` with an unbounded channel, so without this the `mpsc::Receiver`
+    /// arm added for C175 would run only in production — the shape of green test that measures the path the
+    /// node does not take.
+    ///
+    /// The assertion is the *producer's* wait, because that is the whole content of the bound: a queue that
+    /// never makes its sender wait would be bounded in name only. The consumer is held inside its closure
+    /// while the queue is filled, and the send past the bound must not complete.
+    #[tokio::test]
+    async fn a_bounded_queue_makes_its_producer_wait() {
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        let (tx, rx) = mpsc::channel::<usize>(2);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let task = tokio::spawn(consume_observed_queue(rx, None, {
+            let received = received.clone();
+            let started = started.clone();
+            let release = release.clone();
+            move |item| {
+                let received = received.clone();
+                let started = started.clone();
+                let release = release.clone();
+                async move {
+                    if item == 0 {
+                        started.notify_one();
+                        let permit = release.acquire().await.unwrap();
+                        permit.forget();
+                    }
+                    received.lock().unwrap().push(item);
+                }
+            }
+        }));
+
+        tx.send(0).await.unwrap(); // taken by the consumer, which then blocks inside the closure
+        started.notified().await;
+        tx.send(1).await.unwrap(); // one slot left
+        tx.send(2).await.unwrap(); // and now the queue is full
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), tx.send(3))
+                .await
+                .is_err(),
+            "a full queue must make its producer wait; this one did not"
+        );
+
+        release.add_permits(1);
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*received.lock().unwrap(), vec![0, 1, 2]);
     }
 
     /// A block store whose every read fails, so a read error is observable as one.

@@ -7,8 +7,12 @@
 # so a unit test could only assert the boundedness by failing to compile against today's signature, and
 # a test that does not compile is not a test. The function's other arguments need `CommState`/`ShardParts`
 # fixtures, which makes a runtime test expensive for a fact that is textual. So the assertion lives here,
-# in the repo's `tools/check-*.sh` idiom, and it is deliberately **red until C175 is fixed**: this is the
-# gate that fix has to satisfy, not a check looking for work.
+# in the repo's `tools/check-*.sh` idiom.
+#
+# **It was written red, and it is green now** (C175 landed 2026-10-01): all four queues on the path are
+# bounded, and the check runs in the lint job with `--gate`, so this is a gate rather than a report. The
+# history is kept because a reader who finds a `--gate` invocation should know whether it was always
+# satisfied; it was not, and the four bindings below are the ones that changed.
 #
 # What it looks for, and why each is on this path: a peer streams valid-signed blocks, so any unbounded
 # queue between the transport and the processor lets a peer fill memory faster than the node drains it.
@@ -69,10 +73,10 @@ pattern: bound the queue with backpressure -- \`mpsc::channel(N)\` and an awaiti
 
 **The observation half landed in #120** (a queue observer at the validated, autopropose and attestation
 stages), so the depth is readable for the first time and the queue is no longer unmeasured. What C175
-still owes is the bound itself, which is why this check is still red and why it is the check that row
-closes.
+owed was the bound itself, and this is the check that row closes on.
 
-When the bound lands, wire this script into the lint job with --gate.
+The bound is `mpsc::channel(N)` plus an awaiting `send`, which is what makes the producer wait rather
+than the queue grow. If this fires again, that is what to restore.
 EOF
   [[ "${1:-}" == "--gate" ]] && exit 1
   exit 0
