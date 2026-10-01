@@ -5585,3 +5585,70 @@ almost:** the killed node logged ten equivocations pre-kill in one of the three 
 comparing heights rather than sequence numbers. That predicate is now exact, and the change is covered by the
 fixtures **and not by this run** — the binary measured is the one with the height comparison.
 
+
+## 38. The state-hash divergence is a restore-path defect, reproduced (C188, #139)
+
+#139's close condition was *"a reproduction (devnet or in-process) that names the deploy and the two
+hashes, and then either a fix or a §6 row"*, and it said the issue "should not be worked" until one
+existed. One does, and it is committed with its artifacts
+(`spec/audit/evidence/n139-mature-join-results.md`, `target/n139-mature-join/<tree>-<utc>/` copied under
+`spec/audit/evidence/`). The campaign was preregistered before it ran
+(`spec/audit/evidence/n139-fringe-divergence-preregistration.md`), so every arm's acceptance row was
+written before any of them had a result.
+
+### What the mechanism is, in three arms
+
+- **Arm A** (`casper/tests/determinism.rs`, in process): the post-state **is** a function of the fringe
+  state. A boundary block played against one fringe and replayed against another produces two different
+  post-states, and `interpreter_util::handle_errors` returns `Ok(None)` for that pair — which is
+  `InvalidStateHash`. The reason is not subtle once seen: the fringe state hash is **not on the wire**
+  (`validate_block_checkpoint`'s doc says so), each node derives it from its own DAG, and the replay hands
+  it to `close_block`, which anchors the *next* epoch's seed to it.
+- **Arm B** (`casper/tests/fringe_restore.rs`, in process): the **restore path** produces exactly that
+  input difference. `populate_dag` inserts every non-genesis restored block through
+  `BlockMetadata::from_block`, which cannot know a block's fringe — it is a local recomputation. So
+  `BlockDagKeyValueStorage::insert` writes `fringe_states[fringe_hash_of(∅)] = 0` for every restored
+  block, they overwrite each other, and the chain's **real** fringe key is never written at all. The
+  contrast arm shows the same block under the validating path landing on a different key with a
+  non-zero state.
+- **Arm D'** (devnet, `n139-mature-join-run.sh`): the consequence on a live network. **2 of 2 attempts**:
+  a joiner that LFS-syncs a mature chain takes the sync path (`LFS state is successfully restored.`),
+  then stops at the height it synced to (27, 23) while the bootstrap runs on (127, 123), logging 93 and
+  92 `regenerated mergeable channels for block … but replay computed … instead of …` errors. The
+  bootstrap logs nothing: the divergence is entirely on the joiner.
+
+The close condition's two halves are both satisfied by the run rather than argued: the line names the
+block it was validating, the block whose replay diverged, and **both hashes**; and the joiner's log
+repeats `[pos] close_block 20 boundary=true` against a chain whose boundaries are at 10, 20 and 30 —
+the **epoch-boundary** close deploy, which is the deploy the mechanism predicts.
+
+### Why this had never been seen, and why the rig had to be built
+
+A joiner syncing at *genesis* restores block 0 alone, and the genesis goes in through `insert_genesis`
+with the **correct** fringe. The defect needs a joiner syncing an already-mature chain, and neither
+existing devnet command stages that: `stop`/`start` reuses the volume (the node rebuilds its stored
+chain and never syncs), and `down`/`up` restarts the **bootstrap** too, so the joiner syncs a chain that
+is still being replayed — measured on this rig's first version, where the joiner logged a successful
+restore and the arm said nothing. `tools/devnet.sh reset <i>` is the command that was missing: it
+recreates one node in place against the flags `up` recorded, with the bootstrap left running.
+
+### The disposition
+
+**A fix, not a §6 row.** The design departure — the seed is derived per node and "nothing is published
+and nothing is verified" — is what makes a divergence *possible*; what makes it *happen* is that a
+restored node has no correct fringe to derive from, and that has a local fix. The chosen direction is to
+**carry the fringe on the wire**, so the sync delivers each block's fringe set and fringe state hash and
+a restored node need not replay its restored ancestry to recover them. That is a protocol change, which
+makes it pre-launch work of the RCHIP class (#51) rather than a bug fix; the row's `owes` records it
+with the falsifier it must satisfy.
+
+### What this does not claim
+
+- **It is not #105's incident.** That was two *peers* disagreeing about a proposer's block; this is one
+  node failing on its own restored chain. Same mechanism and same status family, different incident, and
+  the results file says so rather than letting the arms stand in for a case they do not cover.
+- **Two attempts of one configuration on one machine**, which is the measurement the register asks for
+  before a claim is written down, not a proof.
+- Arms C (two honest views) and D (the historical three-validator shape) were **not run**. C would test
+  whether two honest nodes can also diverge — #105's actual case — and D is the only arm that could
+  reproduce it. They remain available; nothing here depends on their absence.
