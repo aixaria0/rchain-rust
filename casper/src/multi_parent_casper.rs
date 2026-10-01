@@ -424,15 +424,16 @@ where
     let source = LogSource::new("casper.interpreter.restore");
     // The candidates are this sender's messages that its own arithmetic cannot see: in the message map,
     // *newer* than its latest message, and therefore absent from the round snapshot the parent set is
-    // built from.
-    let candidates: Vec<BlockHash> = {
+    // built from. `latest` is kept beside the list so the instrument below can name the two structures.
+    let (candidates, latest) = {
         let repr = dag.get_representation().await;
         let latest = repr
             .dag_message_state
             .latest_msgs
             .get(sender)
             .map(|m| m.sender_seq);
-        repr.dag_message_state
+        let candidates = repr
+            .dag_message_state
             .msg_map
             .values()
             .filter(|m| {
@@ -443,7 +444,8 @@ where
                     }
             })
             .map(|m| m.id)
-            .collect()
+            .collect::<Vec<BlockHash>>();
+        (candidates, latest)
     };
 
     for hash in candidates {
@@ -453,6 +455,22 @@ where
         if !restore_is_warranted(&stored) {
             continue;
         }
+        // The instrument for C190's owed run. The audit named the two structures — `block_creator.rs`
+        // derives `seq_num` from the parent set built from `latest_msgs`, while the H-1 gate scans
+        // `msg_map` — but had only shape-matched them, and no recorded line said which one the arithmetic
+        // read. This is that line: the node holds its own block at a sequence number its `latest_msgs`
+        // entry does not carry, so the next proposal's derivation cannot see the number it already spent.
+        log.warn(
+            source,
+            &format!(
+                "this node's own block {} (seq {}) is in msg_map but not latest_msgs (latest seq {}): the \
+                 next proposal derives its sequence number without seeing the one this record spent \
+                 (AUDIT C190)",
+                hash.to_hex(),
+                stored.seq_num,
+                latest.map(|l| l.to_string()).unwrap_or_else(|| "none".to_string()),
+            ),
+        );
         let Some(msg) = block_store
             .get(&[hash])
             .await
