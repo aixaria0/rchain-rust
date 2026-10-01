@@ -11,7 +11,7 @@ use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::BlockMetadata;
+use rchain_models::block_metadata::{BlockMetadata, FailureCause};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
@@ -350,7 +350,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&init_block_meta),
+                mark_failed(&init_block_meta, status.failure_cause()),
                 status,
             ))
         }
@@ -369,14 +369,14 @@ where
     match validated {
         Err(status) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, status.failure_cause()),
                 status,
             ))
         }
         Ok(true) => {}
         Ok(false) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, FailureCause::Divergence),
                 BlockStatus::InvalidStateHash,
             ))
         }
@@ -387,7 +387,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, status.failure_cause()),
                 status,
             ))
         }
@@ -399,7 +399,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed_attributable(&block_metadata),
+                mark_failed(&block_metadata, status.failure_cause()),
                 status,
             ))
         }
@@ -426,33 +426,29 @@ where
     Ok(block_metadata)
 }
 
-/// Mark a block unusable here, **preserving whatever attribution the metadata already carries**.
+/// Mark a block unusable here, recording **why** (AUDIT C173).
 ///
-/// This helper only says "validation failed"; it does not decide whose fault the failure is. That is
-/// [`BlockMetadata::slashable`], and it is set where the evidence is: the replay path sets it in
-/// `validate_block_checkpoint`, the structural checks set it through [`mark_failed_attributable`].
+/// The cause decides attribution, so this is the single place a failure's `slashable` bit comes from:
+/// only [`FailureCause::Attributable`] is the block's own fault. Before this split every
+/// `ValidateError::ValidationFailed` went through a `mark_failed_attributable` that set `slashable`
+/// unconditionally — including `NeglectedInvalidBlock`, a refusal of a child *because a justification
+/// failed* — so one transient failure fabricated slash evidence against every validator above it
+/// (#125).
 ///
-/// The distinction matters because `mark_failed` is *not* only the "could not run the replay" path.
-/// In this code it is reached by every `ValidateError::ValidationFailed` - a rejected status, a
-/// state-hash disagreement, a structural fault - all of which a completed validation attributes to the
-/// block. The genuinely unattributable case (an unreadable pre-state, a store error, an unrecoverable
-/// mergeable-channel sidecar) surfaces as `ValidateError::Internal` and inserts **no** metadata at all,
-/// so it cannot become an offender whether or not this helper clears the flag (#70, #76).
-fn mark_failed(meta: &BlockMetadata) -> BlockMetadata {
+/// The genuinely unattributable case (an unreadable pre-state, a store error, an unrecoverable
+/// mergeable-channel sidecar) still surfaces as `ValidateError::Internal` and inserts **no** metadata
+/// at all, so it cannot become an offender (#70, #76).
+///
+/// `restore_attempts` is carried over rather than reset, so the cap in
+/// [`restore_divergent_justifications`] is a per-block-lifetime budget: a record that flaps between
+/// restored and failed cannot buy unlimited revalidations.
+fn mark_failed(meta: &BlockMetadata, cause: FailureCause) -> BlockMetadata {
     BlockMetadata {
         validated: true,
         validation_failed: true,
+        slashable: matches!(cause, FailureCause::Attributable),
+        failure_cause: Some(cause),
         ..meta.clone()
-    }
-}
-
-/// Mark a block failed **and** attribute the failure to it: a completed validation that reached a
-/// rejectable status, disagreed on the pre/post state, found the bonds cache wrong, or saw an invalid
-/// block neglected. These are the blocks a proposer may slash for.
-fn mark_failed_attributable(meta: &BlockMetadata) -> BlockMetadata {
-    BlockMetadata {
-        slashable: true,
-        ..mark_failed(meta)
     }
 }
 
@@ -503,6 +499,8 @@ mod tests {
             validated: false,
             validation_failed: true,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),
             fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
@@ -564,6 +562,8 @@ mod newest_justification_tests {
             validated: true,
             validation_failed: false,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -608,14 +608,14 @@ mod newest_justification_tests {
 
 #[cfg(test)]
 mod mark_failed_tests {
-    use super::{mark_failed, mark_failed_attributable};
+    use super::mark_failed;
     use rchain_models::block_hash::BlockHash;
-    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::block_metadata::{BlockMetadata, FailureCause};
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, SeqNum};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn meta(slashable: bool) -> BlockMetadata {
+    fn meta() -> BlockMetadata {
         BlockMetadata {
             block_hash: BlockHash::new([0u8; 32]),
             block_num: BlockHeight::try_from(1).unwrap(),
@@ -625,40 +625,51 @@ mod mark_failed_tests {
             bonds_map: BTreeMap::new(),
             validated: false,
             validation_failed: false,
-            slashable,
+            slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
         }
     }
 
-    /// `mark_failed` marks the block unusable and **does not erase attribution**. That is the bug this
-    /// correction fixes: #76 had it clear `slashable`, and because every `ValidateError::ValidationFailed`
-    /// path goes through it - the state-hash disagreement and the rejectable status included - slashing was
-    /// disabled entirely rather than narrowed.
+    /// `mark_failed` marks the block unusable and records the cause it was given.
     #[test]
-    fn mark_failed_preserves_the_attribution_it_was_given() {
-        let already_attributed = mark_failed(&meta(true));
-        assert!(already_attributed.validation_failed, "still unusable here");
-        assert!(
-            already_attributed.slashable,
-            "a caller that attributed the failure must not lose it"
-        );
-        assert!(
-            !mark_failed(&meta(false)).slashable,
-            "and a caller that did not must not gain one"
-        );
+    fn mark_failed_marks_the_block_and_records_the_cause() {
+        let marked = mark_failed(&meta(), FailureCause::Attributable);
+        assert!(marked.validation_failed, "still unusable here");
+        assert_eq!(marked.failure_cause, Some(FailureCause::Attributable));
+        assert!(marked.validated);
     }
 
-    /// A completed validation that disagreed is attributable to the block, so it is slashable. This is the
-    /// case the state-hash mismatch (`Ok(false)`) and a rejectable status (`Err(status)`) take.
+    /// **Only an attributable failure is the block's fault.** This is the split AUDIT C173 asks for:
+    /// before it, every `ValidateError::ValidationFailed` went through a single marker that set
+    /// `slashable`, so a `NeglectedInvalidBlock` — a child refused *because a justification failed* —
+    /// was marked as an offender, and one transient failure fabricated slash evidence against every
+    /// validator above it.
+    ///
+    /// Red before the split: `NeglectedInvalidBlock` was slashable.
     #[test]
-    fn a_completed_disagreement_is_slashable() {
-        let marked = mark_failed_attributable(&meta(false));
-        assert!(marked.validation_failed);
+    fn only_an_attributable_failure_is_slashable() {
         assert!(
-            marked.slashable,
-            "a replay that ran and disagreed is the block's fault"
+            mark_failed(&meta(), FailureCause::Attributable).slashable,
+            "the block's own fault is what a proposer may slash for"
+        );
+
+        let cascaded = mark_failed(&meta(), FailureCause::Cascade);
+        assert!(cascaded.validation_failed, "still unusable here");
+        assert_eq!(cascaded.failure_cause, Some(FailureCause::Cascade));
+        assert!(
+            !cascaded.slashable,
+            "a child refused because its parent failed is not an offender"
+        );
+
+        let diverged = mark_failed(&meta(), FailureCause::Divergence);
+        assert!(diverged.validation_failed);
+        assert!(
+            !diverged.slashable,
+            "a node whose state differs is not evidence that the block is at fault"
         );
     }
 }

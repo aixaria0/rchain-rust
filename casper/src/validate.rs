@@ -1005,6 +1005,8 @@ mod effectful_tests {
             validated: true,
             validation_failed: failed,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,

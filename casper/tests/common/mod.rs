@@ -285,6 +285,8 @@ impl BlockApi for TestShardApi {
             validated: true,
             validation_failed: false,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),
             fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(

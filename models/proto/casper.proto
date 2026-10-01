@@ -200,6 +200,13 @@ message BlockMetadataProto {
   bool validated                = 20;
   bool validationFailed         = 21;
   bool slashable                = 22;
+  // Why the block failed, so a restoring rule can be keyed on the reason rather than on the bare
+  // flag (AUDIT C173): 0 = none, 1 = attributable to the block, 2 = this node's view diverged,
+  // 3 = refused because a justification failed. Kept as an int32 because this proto has no enums.
+  int32 failureCause            = 23;
+  // How many times this node has tried to restore the record. Persisted so the attempt cap in
+  // `restore_divergent_justifications` survives a restart.
+  uint32 restoreAttempts        = 24;
   repeated bytes fringe         = 30;
   bytes fringeStateHash         = 31;
   bytes memberOfFringe          = 40;

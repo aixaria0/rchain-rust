@@ -13,7 +13,7 @@ use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::Par;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::BlockMetadata;
+use rchain_models::block_metadata::{BlockMetadata, FailureCause};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::validator::Validator;
 use rchain_rholang::errors::RholangError;
@@ -378,10 +378,15 @@ where
     let bmd = BlockMetadata {
         validated: true,
         validation_failed,
-        // A completed validation: the disagreement is between the block and the state, so it is
-        // attributable to the block. Where a replay cannot be run at all, `mark_failed` is used and
-        // sets this false instead.
-        slashable: validation_failed,
+        // **The cause is not `mark_failed`'s to decide here.** Everything this function can refuse for
+        // is a disagreement between the block and *this node's* state or replay — a pre-state hash it
+        // did not derive, a rejected-deploy set from its own merge, a post-state it recomputed — so
+        // the cause is `Divergence` and the failure is not the block's own fault (AUDIT C173). The
+        // attribution is left unset (`mark_failed` sets both `slashable` and the cause from the
+        // status; setting it here as well is what once made the flag survive a disagreement it did
+        // not describe).
+        failure_cause: validation_failed.then_some(FailureCause::Divergence),
+        slashable: false,
         fringe: pre_state.fringe,
         fringe_state_hash: StateHash::from_slice(pre_state.fringe_state.as_bytes()),
         ..BlockMetadata::from_block(block)

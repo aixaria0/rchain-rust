@@ -571,6 +571,8 @@ mod tests {
             validated: true,
             validation_failed: false,
             slashable: false,
+            failure_cause: None,
+            restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: StateHash::new([0u8; 32]),
             member_of_fringe: None,
