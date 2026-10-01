@@ -301,9 +301,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                 // If a newer/re-issued fringe arrived while the failed attempt was running, consume
                 // it immediately. Otherwise wait without spinning. `watch` deliberately retains only
                 // the latest value: retry needs the newest sync target, not an unbounded queue.
-                if !fringe_rx.has_changed().unwrap_or(false)
-                    && fringe_rx.changed().await.is_err()
-                {
+                if !fringe_rx.has_changed().unwrap_or(false) && fringe_rx.changed().await.is_err() {
                     log.error(
                         source,
                         "LFS sync recovery stopped: finalized-fringe update channel closed",
