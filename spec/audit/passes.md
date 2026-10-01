@@ -5751,3 +5751,51 @@ which exist only on stdout, land in the arm directory rather than being lost to 
 control attempt was aborted two minutes in for exactly that reason and produced no reading. The edit
 touches no experiment parameter: shape, cap, threshold, window, attempt count and load offsets are the
 frozen ones.
+
+## 40. The ingress pipeline's second half is bounded, and the queue it bounds was never the mechanism (C175, #127)
+
+**What was unbounded.** R15 bounded the processor-input half of the ingress path
+(`MAX_PENDING_BLOCKS`); the **validated-blocks** half was missed, so a peer streaming valid-signed blocks
+grew the node's heap with full `BlockMessage`s on a queue nothing drained under backpressure — and the tap
+beside it (`tap_validated_blocks`, which carries the autopropose and attestation callbacks) was unbounded in
+the same way, so bounding one hop and not the other would have moved the unboundedness downstream rather
+than removing it.
+
+**What landed.** `mpsc::channel(MAX_VALIDATED_BLOCKS)` at both sites with an **awaiting `send`** at each
+producer, so a full queue backpressures the CPU-bound replay validation instead of accumulating. The
+**type carries the bound**: `wire_block_processing` and `wire_block_processing_observed` now return
+`mpsc::Sender<BlockMessage>` for that half and `block_processor::apply` takes one, which is R15's own
+idiom — a caller cannot reach an unbounded path without changing a signature.
+
+One structural consequence worth naming: `consume_observed_queue` is generic over the queue it drains, via
+a small `ObservedQueue` trait, because `mpsc::Receiver` and `UnboundedReceiver` share no public trait and
+the observer's own tests drive the unbounded one. Without it the observation loop would exist twice and
+the copies would drift — the failure mode the observer exists to prevent one level up. The trait is public
+because a public generic function cannot name a private bound.
+
+**The number is a policy, and the row says so rather than implying calibration.** `MAX_VALIDATED_BLOCKS`
+is 1024, the depth the processor input beside it already uses. Nothing measured says this queue needs *that
+much* room: the observable landed in #120 and read depth **0.0 at every sample** on the frozen
+reproduction while `anon` climbed to the cgroup ceiling. What says it needs a bound at all is that it had
+none, on the half of the pipeline a peer writes into.
+
+**The falsifier, observed red.** `a_bounded_queue_makes_its_producer_wait` holds the consumer inside its
+closure, fills the queue, and asserts the next `send` does not complete — the whole content of a bound
+being that the producer *waits*. With the capacity widened to 16 it fails, which is how it was checked.
+It exists because every other test in that file drives the unbounded arm, so without it the `mpsc::Receiver`
+impl would run only in production.
+
+**The liveness half, and it is a different question.** A bound's risk is a stalled pipeline, not a wrong
+answer. A three-validator devnet with the default autopropose **and** the default
+`attest_on_new_blocks: true` — so both taps are live — ran 2 → **73** blocks in 120 s in lock-step across
+all three nodes, across seven epoch boundaries, with no `ERROR` in any node's log
+(`spec/audit/evidence/n127-c175/liveness.txt`).
+
+**What it does not show.** The bound under *saturation*, which is the case it exists for: a peer filling
+the queue faster than replay validation drains it. No rig in this repository produces that yet — the same
+gap C189 records from the other end.
+
+**The gate is wired, not merely present.** `tools/check-bounded-ingress-queues.sh --gate` runs in the lint
+job. It was written **red** and deliberately unwired, so that the row's own close condition could not be
+satisfied by editing a comment; the script's header now records that history, because a reader who finds a
+`--gate` invocation should be able to tell whether it was ever failing.

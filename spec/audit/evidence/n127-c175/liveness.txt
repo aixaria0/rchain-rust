@@ -1,0 +1,33 @@
+# C175's end-to-end check: does the bounded ingress pipeline still run?
+#
+# The bound's risk is not a wrong answer, it is a stalled pipeline: an awaiting `send` on a full queue
+# backpressures its producer, so a consumer that never drains would stop the node instead of growing it.
+# The unit test pins the *bound*; this is the liveness half.
+#
+#   tools/devnet.sh up --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh
+#   (4 GiB cgroup; autopropose on and `attest_on_new_blocks` at its default `true`, so BOTH taps in
+#    `tap_validated_blocks` are live — the autopropose tap and the attestation tap.)
+#
+# `latestBlockNumber` sampled from each node's API, every 12 s:
+t=12s  bootstrap=2  v1=2  v2=2
+t=24s  bootstrap=7  v1=7  v2=7
+t=36s  bootstrap=11 v1=12 v2=11
+t=48s  bootstrap=17 v1=17 v2=17
+t=60s  bootstrap=25 v1=25 v2=25
+t=72s  bootstrap=32 v1=32 v2=32
+t=84s  bootstrap=42 v1=42 v2=41
+t=96s  bootstrap=52 v1=52 v2=52
+t=108s bootstrap=61 v1=61 v2=61
+t=120s bootstrap=73 v1=72 v2=73
+#
+# 2 -> 73 blocks in 120 s, lock-step across all three nodes, across seven epoch boundaries (10, 20, ...
+# 70). No stall, no divergence.
+#
+# The node logs carry no `ERROR`, and the only `WARN`s are the startup handshake race between the
+# containers ("Could not answer ... Connection refused (os error 111); it is recorded as a peer anyway
+# and will retry") — 28 / 25 / 25 lines on bootstrap / v1 / v2, all in the first two seconds.
+#
+# What this does NOT show: the bound under *saturation*. A peer filling the queue faster than replay
+# validation drains it is the case the bound exists for, and no rig in this repository produces it — the
+# #120 observer read depth 0.0 at every sample on the frozen reproduction, which is why
+# `MAX_VALIDATED_BLOCKS` is documented as a policy number rather than a measured envelope.

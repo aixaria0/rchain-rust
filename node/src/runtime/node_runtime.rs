@@ -716,6 +716,19 @@ pub(crate) async fn pump_validated_blocks(
     }
 }
 
+/// How many validated blocks may wait for the block receiver's round/fringe consumer, and — through the
+/// taps — for the proposer and attestation callbacks (AUDIT C175).
+///
+/// **A policy number, not a measured envelope.** The queue observer landed in #120 and read depth **0.0 at
+/// every sample** on the frozen reproduction while the node's anonymous memory climbed to its cgroup
+/// ceiling, so nothing measured here says this queue needs *this much* room. What says it needs a bound at
+/// all is that it had none, on the half of the pipeline a peer streams valid-signed blocks into: a peer
+/// that fills it faster than the CPU-bound replay validation drains it grew the node's heap with block
+/// messages. 1024 is the depth the processor input beside it already uses
+/// (`rchain_casper::engine::node_running::MAX_PENDING_BLOCKS`); the point of the number is that the queue
+/// is bounded and its producer *waits*, not that 1024 is the correct depth.
+const MAX_VALIDATED_BLOCKS: usize = 1024;
+
 pub fn wire_block_processing(
     comm_state: &CommState,
     parts: &ShardParts,
@@ -724,10 +737,7 @@ pub fn wire_block_processing(
     log: Arc<dyn Log>,
     autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
-) -> (
-    mpsc::Sender<BlockMessage>,
-    mpsc::UnboundedSender<BlockMessage>,
-) {
+) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
     wire_block_processing_observed(
         comm_state,
         parts,
@@ -749,13 +759,10 @@ fn wire_block_processing_observed(
     autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     queue_metrics: Option<(Arc<MetricsRegistry>, usize)>,
-) -> (
-    mpsc::Sender<BlockMessage>,
-    mpsc::UnboundedSender<BlockMessage>,
-) {
+) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
-    let (validated_blocks_tx, validated_blocks_rx) = mpsc::unbounded_channel();
+    let (validated_blocks_tx, validated_blocks_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
 
     // Tap the validated-blocks stream: for autopropose (propose on each validated block) and, when
     // `--attest-on-new-blocks` is on, for attestation (propose on each *remote* block).
@@ -2641,14 +2648,17 @@ fn prometheus_scrape_config() -> crate::diagnostics::scrape_data_builder::Config
 
 /// Forward a validated-blocks stream, running `tap` on each block first (when there is one).
 fn tap_validated_blocks(
-    rx: mpsc::UnboundedReceiver<BlockMessage>,
+    rx: mpsc::Receiver<BlockMessage>,
     tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     observer: Option<block_receiver::QueueObserver>,
-) -> mpsc::UnboundedReceiver<BlockMessage> {
+) -> mpsc::Receiver<BlockMessage> {
     let Some(tap) = tap else {
         return rx;
     };
-    let (tap_tx, tap_rx) = mpsc::unbounded_channel();
+    // **The tap's own hand-off is bounded for the same reason the queue it reads is** (C175): a tap is a
+    // proposer/attestation callback that does real work, so leaving this hop unbounded would move the
+    // unboundedness one step downstream instead of removing it from the path.
+    let (tap_tx, tap_rx) = mpsc::channel(MAX_VALIDATED_BLOCKS);
     tokio::spawn(block_receiver::consume_observed_queue(
         rx,
         observer,
@@ -2657,7 +2667,7 @@ fn tap_validated_blocks(
             let tap_tx = tap_tx.clone();
             async move {
                 tap(&block);
-                let _ = tap_tx.send(block);
+                let _ = tap_tx.send(block).await;
             }
         },
     ));
