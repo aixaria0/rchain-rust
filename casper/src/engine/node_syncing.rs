@@ -48,7 +48,10 @@ pub struct NodeSyncing<I: RSpaceImporter> {
     incoming_blocks_rx: Option<tokio::sync::mpsc::Receiver<BlockMessage>>,
     tuple_space_tx: tokio::sync::mpsc::Sender<StoreItemsMessage>,
     tuple_space_rx: Option<tokio::sync::mpsc::Receiver<StoreItemsMessage>>,
-    start_requester: bool,
+    // The background sync worker owns the importer and both receivers after the first attempt.
+    // A watch channel is the re-arm: later bootstrap fringes replace the pending target instead of
+    // being discarded while those one-owner resources are already in the worker (AUDIT C181).
+    sync_fringe_tx: Option<tokio::sync::watch::Sender<FinalizedFringe>>,
     finished: Arc<tokio::sync::Notify>,
 }
 
@@ -84,7 +87,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             incoming_blocks_rx: Some(incoming_blocks_rx),
             tuple_space_tx,
             tuple_space_rx: Some(tuple_space_rx),
-            start_requester: true,
+            sync_fringe_tx: None,
             finished: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -177,118 +180,147 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             return Ok(());
         }
 
-        let start = if self.start_requester {
-            if sender_is_bootstrap {
-                self.start_requester = false;
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        if !sender_is_bootstrap {
+            return Ok(());
+        }
 
-        if start {
+        self.log.info(
+            self.log_source,
+            // **The oracle puts the state hash in the parentheses and the hashes after**
+            // (`NodeSyncing.scala`: `s"Received finalized fringe from bootstrap node
+            // ($fringeStateHashStr) $fringeHashesStr."`). The port had the hashes in the
+            // parentheses and the state hash nowhere — and the state hash is the one field that
+            // tells the genesis master's *announcement* from the *answer* to a request.
+            &format!(
+                "Received finalized fringe from bootstrap node ({}) {}.",
+                rchain_shared::base16::encode(fringe.state_hash.as_bytes()),
+                fringe
+                    .hashes
+                    .iter()
+                    .map(|h| h.to_hex())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        );
+
+        // A sync attempt owns the importer and both inbound receivers, so those resources cannot be
+        // taken again after a failure. The old one-shot `start_requester` therefore latched the node
+        // in NodeSyncing forever: every later fringe was silently discarded. Keep one worker alive
+        // instead and give it a watch slot containing the latest bootstrap fringe. Re-issuing a fringe
+        // after a failed attempt now starts a fresh attempt with the same owned resources (AUDIT C181).
+        if let Some(fringe_tx) = &self.sync_fringe_tx {
+            fringe_tx.send_replace(fringe.clone());
             self.log.info(
                 self.log_source,
-                // **The oracle puts the state hash in the parentheses and the hashes after**
-                // (`NodeSyncing.scala`: `s"Received finalized fringe from bootstrap node
-                // ($fringeStateHashStr) $fringeHashesStr."`). The port had the hashes in the
-                // parentheses and the state hash nowhere — and the state hash is the one field that
-                // tells the genesis master's *announcement* from the *answer* to a request, because
-                // the announcement carries the genesis **pre**-state and the response the genesis
-                // **post**-state. Diagnosing issue #100 meant distinguishing exactly those two, and
-                // this line could not show it.
-                &format!(
-                    "Received finalized fringe from bootstrap node ({}) {}.",
-                    rchain_shared::base16::encode(fringe.state_hash.as_bytes()),
-                    fringe
-                        .hashes
-                        .iter()
-                        .map(|h| h.to_hex())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
+                "Updated the pending finalized fringe; the sync worker will retry after the current attempt.",
             );
+            return Ok(());
+        }
 
-            // Spawn the LFS sync in the background. Awaiting it here deadlocks: the sync drains
-            // `tuple_space_rx`/`incoming_blocks_rx`, which are only fed by `handle` (the
-            // StoreItemsMessage/BlockMessage branches) running in this same dispatch loop, which is
-            // currently blocked inside this call. Spawning lets `handle` return and keep routing.
-            let fringe = fringe.clone();
-            let transport = self.transport.clone();
-            let conf = self.conf.clone();
-            let block_store = self.block_store.clone();
-            let dag = self.dag.clone();
-            let approved_store = self.approved_store.clone();
-            let comm_util = self.comm_util.clone();
-            let log = self.log.clone();
-            let finished = self.finished.clone();
-            let importer = match self.importer.take() {
-                Some(importer) => importer,
-                None => {
-                    self.log.error(
-                        self.log_source,
-                        "LFS sync requested twice; importer already taken",
-                    );
-                    return Err("LFS sync already started: importer already taken".to_string());
-                }
-            };
-            let incoming_blocks_rx = match self.incoming_blocks_rx.take() {
-                Some(rx) => rx,
-                None => {
-                    self.log.error(
-                        self.log_source,
-                        "LFS sync requested twice; incoming-blocks receiver already taken",
-                    );
-                    return Err(
-                        "LFS sync already started: incoming-blocks receiver already taken"
-                            .to_string(),
-                    );
-                }
-            };
-            let tuple_space_rx = match self.tuple_space_rx.take() {
-                Some(rx) => rx,
-                None => {
-                    self.log.error(
-                        self.log_source,
-                        "LFS sync requested twice; tuple-space receiver already taken",
-                    );
-                    return Err(
-                        "LFS sync already started: tuple-space receiver already taken".to_string(),
-                    );
-                }
-            };
-            tokio::spawn(async move {
-                let source = LogSource::new("casper.engine.NodeSyncing");
+        // Spawn the LFS sync worker in the background. Awaiting it here deadlocks: the sync drains
+        // `tuple_space_rx`/`incoming_blocks_rx`, which are only fed by `handle` in this same
+        // dispatch loop. The worker persists across failed attempts so those one-owner resources do
+        // not need an impossible inverse move back into `NodeSyncing`.
+        let transport = self.transport.clone();
+        let conf = self.conf.clone();
+        let block_store = self.block_store.clone();
+        let dag = self.dag.clone();
+        let approved_store = self.approved_store.clone();
+        let comm_util = self.comm_util.clone();
+        let log = self.log.clone();
+        let finished = self.finished.clone();
+        let mut importer = match self.importer.take() {
+            Some(importer) => importer,
+            None => {
+                self.log.error(
+                    self.log_source,
+                    "LFS sync worker could not start; importer already taken",
+                );
+                return Err("LFS sync worker already owns the importer".to_string());
+            }
+        };
+        let mut incoming_blocks_rx = match self.incoming_blocks_rx.take() {
+            Some(rx) => rx,
+            None => {
+                self.log.error(
+                    self.log_source,
+                    "LFS sync worker could not start; incoming-blocks receiver already taken",
+                );
+                return Err("LFS sync worker already owns the incoming-blocks receiver".to_string());
+            }
+        };
+        let mut tuple_space_rx = match self.tuple_space_rx.take() {
+            Some(rx) => rx,
+            None => {
+                self.log.error(
+                    self.log_source,
+                    "LFS sync worker could not start; tuple-space receiver already taken",
+                );
+                return Err("LFS sync worker already owns the tuple-space receiver".to_string());
+            }
+        };
+        let (fringe_tx, mut fringe_rx) = tokio::sync::watch::channel(fringe.clone());
+        self.sync_fringe_tx = Some(fringe_tx);
+
+        tokio::spawn(async move {
+            let source = LogSource::new("casper.engine.NodeSyncing");
+            let mut target = fringe_rx.borrow_and_update().clone();
+
+            loop {
                 let outcome = run_approved_state_sync(
-                    &fringe,
-                    transport,
-                    conf,
-                    block_store,
-                    dag,
-                    comm_util,
+                    &target,
+                    transport.clone(),
+                    conf.clone(),
+                    block_store.clone(),
+                    dag.clone(),
+                    comm_util.clone(),
                     log.clone(),
-                    importer,
-                    incoming_blocks_rx,
-                    tuple_space_rx,
+                    &mut importer,
+                    &mut incoming_blocks_rx,
+                    &mut tuple_space_rx,
                 )
                 .await;
+
                 match &outcome {
                     Ok(()) => {
                         if let Err(e) = approved_store
-                            .put(&[(FINALIZED_FRINGE_KEY, fringe.clone())])
+                            .put(&[(FINALIZED_FRINGE_KEY, target.clone())])
                             .await
                         {
                             log.error(source, &format!("Failed to store approved block: {e}"));
                         }
                         log.info(source, "LFS state is successfully restored.");
+                        notify_when_restored(&outcome, &finished);
+                        break;
                     }
-                    Err(e) => log.error(source, &format!("LFS state sync failed: {e}")),
+                    Err(e) => {
+                        log.error(source, &format!("LFS state sync failed: {e}"));
+                    }
                 }
-                notify_when_restored(&outcome, &finished);
-            });
-        }
+
+                // If a newer/re-issued fringe arrived while the failed attempt was running, consume
+                // it immediately. Otherwise wait without spinning. `watch` deliberately retains only
+                // the latest value: retry needs the newest sync target, not an unbounded queue.
+                if !fringe_rx.has_changed().unwrap_or(false)
+                    && fringe_rx.changed().await.is_err()
+                {
+                    log.error(
+                        source,
+                        "LFS sync recovery stopped: finalized-fringe update channel closed",
+                    );
+                    break;
+                }
+                target = fringe_rx.borrow_and_update().clone();
+                log.info(
+                    source,
+                    &format!(
+                        "Retrying LFS state sync from finalized fringe ({}) after the previous attempt failed.",
+                        rchain_shared::base16::encode(target.state_hash.as_bytes())
+                    ),
+                );
+            }
+        });
+
         Ok(())
     }
 }
@@ -317,14 +349,14 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     dag: Arc<dyn BlockDagStorage>,
     comm_util: Arc<CommUtil>,
     log: Arc<dyn Log>,
-    mut importer: I,
-    mut incoming_blocks_rx: tokio::sync::mpsc::Receiver<BlockMessage>,
-    mut tuple_space_rx: tokio::sync::mpsc::Receiver<StoreItemsMessage>,
+    importer: &mut I,
+    incoming_blocks_rx: &mut tokio::sync::mpsc::Receiver<BlockMessage>,
+    tuple_space_rx: &mut tokio::sync::mpsc::Receiver<StoreItemsMessage>,
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeSyncing");
     let block_fut = request_blocks(
         fringe,
-        &mut incoming_blocks_rx,
+        incoming_blocks_rx,
         Duration::from_secs(30),
         &block_store,
         comm_util.as_ref(),
@@ -332,11 +364,11 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     );
     let tuple_fut = request_tuple_space(
         fringe,
-        &mut tuple_space_rx,
+        tuple_space_rx,
         Duration::from_secs(120),
         transport.as_ref(),
         &conf,
-        &mut importer,
+        importer,
         log.as_ref(),
     );
 
@@ -383,11 +415,11 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         );
         request_tuple_space_roots(
             &extra_roots,
-            &mut tuple_space_rx,
+            tuple_space_rx,
             Duration::from_secs(120),
             transport.as_ref(),
             &conf,
-            &mut importer,
+            importer,
             log.as_ref(),
         )
         .await
