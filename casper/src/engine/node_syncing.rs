@@ -281,16 +281,17 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                 )
                 .await;
 
+                // A downloaded state is not a completed initialization until its approved fringe
+                // is saved too. A failed write must enter the same retry path as a failed download,
+                // rather than announcing success and losing the worker-owned recovery resources.
+                let outcome = match outcome {
+                    Ok(()) => commit_synced_fringe(&approved_store, &target, &finished).await,
+                    Err(error) => Err(error),
+                };
+
                 match &outcome {
                     Ok(()) => {
-                        if let Err(e) = approved_store
-                            .put(&[(FINALIZED_FRINGE_KEY, target.clone())])
-                            .await
-                        {
-                            log.error(source, &format!("Failed to store approved block: {e}"));
-                        }
                         log.info(source, "LFS state is successfully restored.");
-                        notify_when_restored(&outcome, &finished);
                         break;
                     }
                     Err(e) => {
@@ -321,6 +322,24 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
 
         Ok(())
     }
+}
+
+/// Commit the restored state's restart checkpoint before publishing initialization success.
+///
+/// This node-local completion gate also requires the approved-store write to succeed. Downloaded
+/// blocks and tuple-space data alone must not wake the launcher when that write fails: the worker
+/// still owns the resources needed to retry after a re-issued fringe.
+async fn commit_synced_fringe(
+    approved_store: &ApprovedStore,
+    fringe: &FinalizedFringe,
+    finished: &tokio::sync::Notify,
+) -> Result<(), String> {
+    approved_store
+        .put(&[(FINALIZED_FRINGE_KEY, fringe.clone())])
+        .await
+        .map_err(|error| format!("Failed to store approved block: {error}"))?;
+    notify_when_restored(&Ok(()), finished);
+    Ok(())
 }
 
 /// Signal the syncing-finished handle **only when the state was actually restored** (AUDIT C68).
@@ -957,6 +976,87 @@ mod tests {
                 .expect("approved store readable")[0],
             None,
             "a failed sync must not record the fringe as approved"
+        );
+    }
+
+    /// A downloaded state must not release the launcher if its restart checkpoint cannot be saved.
+    /// Fault injection distinguishes a real retry from a notification-only fix: the first write fails,
+    /// the store stays empty, and the same store succeeds on the second write before the waiter wakes.
+    #[tokio::test]
+    async fn an_approved_store_failure_keeps_completion_pending_until_retry_commits() {
+        struct FailFirstWrite {
+            inner: ApprovedStore,
+            fail_next: std::sync::atomic::AtomicBool,
+        }
+
+        #[async_trait]
+        impl KeyValueTypedStore<u8, FinalizedFringe> for FailFirstWrite {
+            async fn get(&self, keys: &[u8]) -> Result<Vec<Option<FinalizedFringe>>, String> {
+                self.inner.get(keys).await
+            }
+
+            async fn put(&self, pairs: &[(u8, FinalizedFringe)]) -> Result<(), String> {
+                if self.fail_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    return Err("approved store write unavailable".to_string());
+                }
+                self.inner.put(pairs).await
+            }
+
+            async fn delete(&self, keys: &[u8]) -> Result<usize, String> {
+                self.inner.delete(keys).await
+            }
+
+            async fn contains(&self, keys: &[u8]) -> Result<Vec<bool>, String> {
+                self.inner.contains(keys).await
+            }
+
+            async fn to_map(&self) -> Result<BTreeMap<u8, FinalizedFringe>, String> {
+                self.inner.to_map().await
+            }
+        }
+
+        let inner: ApprovedStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(ByteCodec),
+            Arc::new(FringeCodec),
+        ));
+        let approved_store: ApprovedStore = Arc::new(FailFirstWrite {
+            inner,
+            fail_next: std::sync::atomic::AtomicBool::new(true),
+        });
+        let fringe = FinalizedFringe {
+            hashes: vec![hash(7)],
+            state_hash: StateHash::new([7u8; 32]),
+        };
+        let finished = tokio::sync::Notify::new();
+        let mut waiter = std::pin::pin!(finished.notified());
+
+        let error = commit_synced_fringe(&approved_store, &fringe, &finished)
+            .await
+            .expect_err("the injected first write must fail");
+        assert!(error.contains("approved store write unavailable"));
+        assert_eq!(
+            approved_store.get(&[FINALIZED_FRINGE_KEY]).await.unwrap(),
+            vec![None],
+            "the failed write must not publish a restart checkpoint"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "an approved-store failure must not signal initialization success"
+        );
+
+        commit_synced_fringe(&approved_store, &fringe, &finished)
+            .await
+            .expect("the same resources can commit on retry");
+        tokio::time::timeout(Duration::from_secs(1), &mut waiter)
+            .await
+            .expect("a committed checkpoint must release the launcher");
+        assert_eq!(
+            approved_store.get(&[FINALIZED_FRINGE_KEY]).await.unwrap(),
+            vec![Some(fringe)],
+            "the successfully committed fringe must be readable from the approved store"
         );
     }
 

@@ -284,6 +284,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | Deviation | Oracle location | Reason |
 |---|---|---|
+| LFS initialization completion also waits for the approved-fringe checkpoint write | `casper/.../engine/NodeSyncing.scala` `requestApprovedState` completes `finished` after the stream drain, before its caller writes `ApprovedStore.putApprovedBlock` | Node-local recovery hardening: a failed checkpoint write must not announce restored initialization or exit the retry worker. `commit_synced_fringe` propagates the store error and notifies only after a successful write; a re-issued fringe can retry with the retained resources. `an_approved_store_failure_keeps_completion_pending_until_retry_commits` injects one failed write, asserts the checkpoint stays absent and completion pending, then commits using the same store and observes completion. This is a completion-boundary test, not a full successful LFS wire-recovery test or a physical-fsync guarantee; no block-validity rule changes. |
 | `New.injections` sorted by key (determinism) | `models/.../rholang/*` | `HashMap` order is non-deterministic in Rust |
 | `locally_free` excluded from `Eq`/`Hash` (`AlwaysEqual`) | `models/.../Par.scala` | the cache field is not part of structural identity |
 | Negative deploy cost **rejected** (not wrapped to `uint64`) | `accounting/Costs.scala` `toProto` = `PCost(c.value)` | Scala wraps a negative `Long` into `uint64` (latent bug); reject is safer |
