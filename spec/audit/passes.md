@@ -6126,3 +6126,37 @@ on, which is exactly why it cannot be read against this one.
 **Row C189: `todo` → `done`.** Its close condition was the re-scope, and the re-scope is this section plus
 the sizing point. #68's condition, carried into #154 verbatim, is satisfied by the same act: the document
 now carries the statement where the figure was.
+
+## 47. The self-clearing step lands: the proposer clears its own spent record before it derives a number (C190)
+
+The §43 addendum settled the decision — keep the gate, fix the proposer, self-clearing — and named the
+prerequisite as C193's update path. That path landed first (a real `update_metadata`, §45), and this is the
+step it was owed to.
+
+**The shape.** `clear_own_failure_record` (`multi_parent_casper.rs`) is called at the top of
+`proposer.rs::create_block`, before anything is derived from the parent set. It scans the node's own messages
+for the one H-2 left out of `latest_msgs` — a record *newer* than the sender's latest message — re-validates it,
+and on a pass clears it through the same `update_metadata` the restoring rule now uses, which promotes the block
+back into the arithmetic `block_creator.rs` derives `seq_num` from. A peer's failed record is not a candidate,
+and a record already reflected in `latest_msgs` is already visible, so neither is touched.
+
+**Two guardrails make the repair a repair rather than a relabel.** The result is deliberately ignored: if the
+clear succeeded, the parent set below sees the block and the arithmetic advances; if it did not, the refusal
+that follows is the *counted* one (`consecutive_failures`), so #157's halt stays visible on `/api/status` and
+`/metrics` rather than becoming a silent decline. And only a `Divergence` record with attempts left is
+re-validated — the cause-gating the restoring rule already has — so the step narrows to the view-dependent
+case a re-read can settle, and a record that keeps failing stops being retried at `RESTORE_ATTEMPT_LIMIT`.
+
+**Falsified.** `the_node_targets_only_its_own_spent_record` (`casper/tests/restoring_rule.rs`) builds a message
+state where the node has a visible message at seq 1 and a spent record at seq 2, plus a peer's own spent record,
+and asserts exactly one `update_metadata` write — for the node's record — and none for the peer's. The success
+path (the clear) is covered at the level where it is exact: `revalidated_record` clears the refusal, and §45's
+`an_update_clears_the_failure_record_and_promotes_the_block` shows the write reaches the store and the block
+returns to `latest_msgs`. The reproduction test
+(`the_failed_record_is_invisible_to_the_proposer_and_visible_to_the_gate`) is **not** inverted: the fix clears
+the record rather than changing either structure, so the structural disagreement it pins remains true.
+
+**What is not claimed.** That this is what fired in #145's fifth attempt, or that the node observes the clear
+on a devnet — the in-process mechanism is shape-matched, not yet the instrumented run #156 asks for, and that
+run is worth doing now that the decision says what to assert.
+
