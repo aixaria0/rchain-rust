@@ -246,12 +246,12 @@ where
 /// option set is what `compute_optimal_rejection` minimises over, so a short set can pick a different
 /// rejection (law 17a).
 ///
-/// **Why a budget and not a predictor.** There is no cheap scalar that predicts the cost: at 30–37 chains
-/// the same width produced 389,977 / 442,202 / 985,391 / 1,726,295 / 2,026,511 states across nine node
-/// runs, so both a width threshold and a conflict-count threshold would be keyed on the wrong quantity.
-/// The cost is counted where it is spent — `SearchCensus::expanded` — and bounded there, which is what
-/// `candidate:bounded-work-per-step` asks for: *where a bound exists it is applied before the work, not
-/// after it*.
+/// **Why a budget and not a predictor.** Historical accepted-set campaigns showed that there is no cheap
+/// scalar that predicts this cost: at 30–37 chains the same width produced 389,977 / 442,202 / 985,391 /
+/// 1,726,295 / 2,026,511 expanded accepted-set states across nine node runs. Those counts pre-date the
+/// directed rejected-set quotient below and therefore are **not calibration data for the new step unit**.
+/// The shipped search still counts work where it is spent — `SearchCensus::expanded` — and applies the
+/// bound before each unit, which is what `candidate:bounded-work-per-step` requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchBudget {
     /// Search steps: distinct rejected-set queue pops on the directed path, recursion nodes on the
@@ -271,11 +271,12 @@ impl SearchBudget {
         max_options: usize::MAX,
     };
 
-    /// The node's own budget. Provisional, and stated as such: the honest envelope measured so far is a
-    /// largest single merge of **2,026,511 steps** (nine node-runs, 2026-09-30), so this is ~5× the worst
-    /// honest case observed and it must be re-read from a campaign on C171's own arm before it is relied
-    /// on. It caps an attack at a bounded multiple of the honest cost, where the enumerated case is
-    /// `2^43 = 8.8e12`.
+    /// The node's own budget. Provisional, deliberately: `max_steps` was chosen against campaigns of
+    /// the former accepted-set enumeration (largest observed: **2,026,511** expansions on 2026-09-30).
+    /// The directed quotient changes what one `expanded` step means, so the old "~5× honest cost" reading
+    /// must not be carried forward as if it were measured on this algorithm. Keep the same conservative
+    /// guard until C171/C182 are re-run on the quotient, then calibrate from that evidence. `max_options`
+    /// remains an independent residency bound because the result set itself can be large.
     pub const NODE: SearchBudget = SearchBudget {
         max_steps: 10_000_000,
         max_options: 1_000_000,
