@@ -353,7 +353,7 @@ impl SearchCensus {
 /// exact fallback, including self-conflicts.
 ///
 /// The historical accepted-set counts remain pinned by
-/// `the_enumeration_expands_one_state_per_acyclic_subset` as the negative control. In particular, a
+/// `the_search_expands_one_state_per_acyclic_subset` as the negative control. In particular, a
 /// one-way 12-key star has 4,095 reachable accepted subsets but only **two** distinct rejected-set states;
 /// `the_directed_path_quotients_states_by_their_rejection_union` pins both the identical option set and
 /// that reduction.
@@ -1259,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn the_enumeration_expands_one_state_per_acyclic_subset() {
+    fn the_search_expands_one_state_per_acyclic_subset() {
         // Complete conflict relation: no subset of size >= 2 is acyclic, so each key terminates alone.
         let n = 8i32;
         let dense: BTreeMap<i32, BTreeSet<i32>> = (0..n)
@@ -1427,7 +1427,10 @@ mod tests {
         assert_eq!(old_expanded, (1usize << n) - 1);
 
         let (options, census) = exact_with_census(&star);
-        assert_eq!(options, oracle, "the quotient must invent or lose no option");
+        assert_eq!(
+            options, oracle,
+            "the quotient must invent or lose no option"
+        );
         assert_eq!(options, set([leaves]));
         assert_eq!(census.asymmetric, (n - 1) as usize);
         assert_eq!(
