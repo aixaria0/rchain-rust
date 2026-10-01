@@ -133,8 +133,8 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
         }
     }
 
-    /// Handle a finalized-fringe message, starting the LFS sync once from the bootstrap node (port
-    /// of `onFinalizedFringeMessage`).
+    /// Handle a finalized-fringe message from the bootstrap node. The first usable fringe starts
+    /// the background LFS worker; later fringes replace its pending retry target (C181).
     async fn on_finalized_fringe_message(
         &mut self,
         sender: &PeerNode,
@@ -646,6 +646,15 @@ mod tests {
                 .iter()
                 .any(|l| l.contains(needle))
         }
+
+        fn count(&self, needle: &str) -> usize {
+            self.lines
+                .lock()
+                .expect("log lock")
+                .iter()
+                .filter(|line| line.contains(needle))
+                .count()
+        }
     }
 
     impl Log for RecordingLog {
@@ -950,6 +959,109 @@ mod tests {
                 .expect("approved store readable")[0],
             None,
             "a failed sync must not record the fringe as approved"
+        );
+    }
+
+    /// **AUDIT C181 / #125: a failed LFS attempt is re-armed by a re-issued fringe.**
+    ///
+    /// The old implementation consumed `start_requester` before spawning the attempt and moved the
+    /// importer plus both receivers into that task. When the task failed, those resources had no path
+    /// back and a later bootstrap fringe was silently ignored forever. This drives that exact sequence:
+    /// one real failed attempt, then a second fringe, then a second real failed attempt using the same
+    /// worker-owned resources. The old one-shot implementation times out waiting for failure #2.
+    #[tokio::test]
+    async fn a_reissued_fringe_restarts_a_failed_sync_attempt() {
+        let bootstrap = peer("bootstrap");
+        let log = Arc::new(RecordingLog::default());
+
+        let inner_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let block_store: BlockStore = Arc::new(UnreadableBlockStore { inner: inner_store });
+        let dag = build_dag().await;
+        let approved_store: ApprovedStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(ByteCodec),
+            Arc::new(FringeCodec),
+        ));
+
+        let transport: Arc<dyn TransportLayer> = Arc::new(SilentTransport);
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: Some(bootstrap.clone()),
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![bootstrap.clone()]));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf.clone(),
+            connections,
+            log.clone(),
+        ));
+
+        let mut engine = NodeSyncing::new(
+            transport,
+            conf,
+            block_store,
+            dag,
+            approved_store,
+            comm_util,
+            log.clone(),
+            None,
+            false,
+            RefusingImporter,
+        );
+
+        let first = FinalizedFringe {
+            hashes: vec![hash(7)],
+            state_hash: StateHash::new([7u8; 32]),
+        };
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(first))
+            .await
+            .expect("first fringe is handled");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while log.count("LFS state sync failed") < 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first sync attempt did not fail as the fixture intends"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let second = FinalizedFringe {
+            hashes: vec![hash(8)],
+            state_hash: StateHash::new([8u8; 32]),
+        };
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(second))
+            .await
+            .expect("re-issued fringe is handled");
+
+        while log.count("LFS state sync failed") < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the re-issued fringe did not start a fresh sync attempt"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(
+            log.contains("Retrying LFS state sync from finalized fringe"),
+            "the recovery path must be explicit in the operator log"
+        );
+        assert!(
+            log.contains("Updated the pending finalized fringe"),
+            "a later bootstrap fringe must be retained rather than silently discarded"
         );
     }
 
