@@ -437,17 +437,107 @@ fn search<D: Ord + Clone>(
         census.options = result.len();
         return Ok((result, census));
     }
-    let (result, expanded, max_frontier) = enumerate_states(conflicts_map, &all_keys, budget)?;
+    let (result, expanded, max_frontier) =
+        enumerate_rejection_sets(conflicts_map, &all_keys, budget)?;
     census.expanded = expanded;
     census.max_frontier = max_frontier;
     census.options = result.len();
     Ok((result, census))
 }
 
-/// The ported search, over every reachable state. Correct for **any** relation — this is the fallback
-/// [`search`] takes when the fast path's precondition does not hold — and it is also the oracle the
-/// maximal-independent-set path is differed against, via the literal transcription in
-/// `sdk/src/property_tests.rs`.
+/// Exact directed-case search, quotiented by the value the search ultimately returns: the rejected set.
+///
+/// For an accepted set `A`, write `R(A) = union(conflicts(a), a in A)`. The old general path kept
+/// `A` as its state, so many different accepted sets with the same `R(A)` were expanded separately.
+/// That distinction is not observable by any future rejection:
+///
+/// - if `k` is not rejected and `conflicts(k) <= R`, accepting `k` changes neither `R` nor which
+///   other keys are rejected; it is a zero-delta accept and may be saturated immediately;
+/// - every accept that can affect the future strictly grows `R` to `R union conflicts(k)`;
+/// - after all zero-delta accepts are saturated, the state is terminal exactly when no non-rejected key
+///   can grow `R`. The returned option is then exactly `R`, as in the literal enumeration.
+///
+/// Therefore two old states with the same rejected set have identical quotient futures and may be merged.
+/// This preserves the exact option set for arbitrary directed/self-conflicting relations while replacing
+/// "one state per reachable accepted subset" with "one state per distinct rejection union". The latter is
+/// output-adjacent: a directed star with 40 keys has 2 quotient states instead of 2^40-1 accepted subsets.
+///
+/// The literal accepted-set enumeration remains below under `cfg(test)` as the differential oracle.
+fn enumerate_rejection_sets<D: Ord + Clone>(
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+    all_keys: &[D],
+    budget: SearchBudget,
+) -> Result<(BTreeSet<BTreeSet<D>>, usize, usize), SearchBudgetExceeded> {
+    let mut queue: VecDeque<BTreeSet<D>> = VecDeque::new();
+    let mut visited: BTreeSet<BTreeSet<D>> = BTreeSet::new();
+
+    // The ported search seeds one accepted key at a time. In the quotient, that seed is represented by
+    // precisely the rejection union it creates. Distinct keys that reject the same set are one state.
+    for k in all_keys {
+        let rejected = conflicts_map.get(k).cloned().unwrap_or_default();
+        if visited.insert(rejected.clone()) {
+            queue.push_back(rejected);
+        }
+    }
+
+    let mut expanded = 0usize;
+    let mut max_frontier = queue.len();
+    let mut result: BTreeSet<BTreeSet<D>> = BTreeSet::new();
+
+    while let Some(rejected) = queue.pop_front() {
+        expanded += 1;
+        if expanded > budget.max_steps {
+            return Err(SearchBudgetExceeded {
+                steps: expanded,
+                options: result.len(),
+                budget,
+            });
+        }
+
+        // Keys whose conflicts are already inside `rejected` are zero-delta accepts: accepting all of
+        // them cannot change this state. Only a key that adds at least one newly rejected item creates
+        // a distinct successor.
+        let next: Vec<D> = all_keys
+            .iter()
+            .filter(|k| {
+                !rejected.contains(*k)
+                    && conflicts_map
+                        .get(*k)
+                        .is_some_and(|conflicts| !conflicts.is_subset(&rejected))
+            })
+            .cloned()
+            .collect();
+
+        if next.is_empty() {
+            result.insert(rejected);
+            if result.len() > budget.max_options {
+                return Err(SearchBudgetExceeded {
+                    steps: expanded,
+                    options: result.len(),
+                    budget,
+                });
+            }
+        } else {
+            for k in next {
+                let mut grown = rejected.clone();
+                if let Some(conflicts) = conflicts_map.get(&k) {
+                    grown.extend(conflicts.iter().cloned());
+                }
+                if visited.insert(grown.clone()) {
+                    queue.push_back(grown);
+                }
+            }
+            max_frontier = max_frontier.max(queue.len());
+        }
+    }
+
+    Ok((result, expanded, max_frontier))
+}
+
+/// Literal accepted-set enumeration of the ported Scala search. Correct for **any** relation, but
+/// intentionally test-only now: it is the oracle used to prove the quotient above has exactly the same
+/// rejection options, and its old exponential state count remains useful as a negative control.
+#[cfg(test)]
 fn enumerate_states<D: Ord + Clone>(
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
     all_keys: &[D],
@@ -1317,6 +1407,40 @@ mod tests {
                 (k as i32, set([partner as i32]))
             })
             .collect()
+    }
+
+    /// The directed path must quotient accepted subsets by rejection state without changing one option.
+    /// A one-way star is the sharp case: its induced digraph is acyclic, so the literal accepted-set
+    /// enumeration visits every nonempty subset (2^n - 1), even though every path returns the same
+    /// rejection option. The shipped directed path needs only two rejection unions: empty and all leaves.
+    #[test]
+    fn the_directed_path_quotients_states_by_their_rejection_union() {
+        let n = 12i32;
+        let leaves: BTreeSet<i32> = (1..n).collect();
+        let star: BTreeMap<i32, BTreeSet<i32>> = (0..n)
+            .map(|k| {
+                if k == 0 {
+                    (k, leaves.clone())
+                } else {
+                    (k, BTreeSet::new())
+                }
+            })
+            .collect();
+        let keys: Vec<i32> = star.keys().copied().collect();
+
+        let (oracle, old_expanded, _) =
+            enumerate_states(&star, &keys, SearchBudget::UNBOUNDED).expect("unbounded oracle");
+        assert_eq!(old_expanded, (1usize << n) - 1);
+
+        let (options, census) = exact_with_census(&star);
+        assert_eq!(options, oracle, "the quotient must invent or lose no option");
+        assert_eq!(options, set([leaves]));
+        assert_eq!(census.asymmetric, (n - 1) as usize);
+        assert_eq!(
+            census.expanded, 2,
+            "only the empty and all-leaves rejection unions are distinct"
+        );
+        assert!(census.max_frontier <= 2);
     }
 
     /// The census must not be able to disagree with the function it describes: `with_census` is the
