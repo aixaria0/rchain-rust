@@ -6003,6 +6003,14 @@ calls and none of them could see a sequence.
 height, or on the tip — and it is deliberately not guessed here. Nor is this a cost finding: unlike
 #148's storm, production is *bounded* (exactly N blocks) and stops. What it shares with #148 is the
 frozen finality; what it does not share is the growth.
+
+**Fixed 2026-10-01.** The tap is keyed per-*sender* rather than per height — `attest_warranted` now takes
+the sender's last answered height, and the tap keeps a per-sender map — so a round that comes to rest at
+one height answers each peer's block (one request per sender per height) and advances instead of sealing.
+The falsifier is inverted: `a_round_that_comes_to_rest_at_one_height_is_answered_for_every_peer` asserts
+seven answers against seven peers at one height, and still refuses a repeated peer at an already-answered
+height. C192 → `done`. The storm bound this does **not** close is C171's (the per-sender gate is no bound
+while the height keeps advancing; that pace half is #126's open half), so C192 and C171 stay distinct.
 ## 45. The restoring rule clears nothing, and says it did (C193)
 
 **Found by checking the premise of #156's repair rather than by looking for it.** The team's recommendation
