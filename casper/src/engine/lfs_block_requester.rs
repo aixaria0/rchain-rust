@@ -635,6 +635,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![tip],
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let started = Instant::now();
@@ -740,6 +741,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![tip],
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let state = request_blocks(
@@ -863,6 +865,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![tip],
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let outcome = request_blocks(
@@ -913,6 +916,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![tip],
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let outcome = tokio::time::timeout(
@@ -974,6 +978,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: Vec::new(),
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let started = Instant::now();
@@ -1103,6 +1108,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![tip],
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let outcome = tokio::time::timeout(
@@ -1195,6 +1201,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![tip],
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
 
         let state = tokio::time::timeout(

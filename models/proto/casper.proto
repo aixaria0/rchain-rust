@@ -8,14 +8,33 @@ package casper;
 
 // ---------- Approved block ---------
 
+// The fringe state a **restoring** node cannot derive from the blocks (#139). `fringe` and
+// `fringeStateHash` are a node's own recomputation produced by validation — they are not block
+// fields, and the block hash covers the block, so they cannot ride on it. A joiner that LFS-syncs a
+// mature chain therefore had no way to learn them and could not replay what it restored; this
+// carries them, per block, alongside the fringe they belong to.
+message BlockFringeProto {
+  bytes blockHash       = 1;
+  repeated bytes fringe = 2;
+  bytes fringeStateHash = 3;
+}
+
 message FinalizedFringeProto {
   repeated bytes hashes = 1;
   bytes stateHash       = 2;
+  // One entry per block in this fringe's ancestry, present only when the requester asked for it
+  // (`includeFringeMetadata`). An older responder simply leaves it empty and an older requester
+  // never sees it — a field, not a new message type, so neither side errors on the other.
+  repeated BlockFringeProto ancestry = 3;
 }
 
 message FinalizedFringeRequestProto {
   string identifier = 1;
   bool   trimState  = 2;
+  // Ask the responder to fill `ancestry`. Ignored by a responder that does not know the field, which
+  // is what makes this a non-breaking addition: a mixed pair degrades to the pre-#139 behaviour
+  // instead of failing to sync.
+  bool   includeFringeMetadata = 3;
 }
 
 // ------- End Approved block --------

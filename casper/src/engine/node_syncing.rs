@@ -19,7 +19,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
-    BlockMessage, CasperMessage, FinalizedFringe, StoreItemsMessage,
+    BlockFringe, BlockMessage, CasperMessage, FinalizedFringe, StoreItemsMessage,
 };
 use rchain_rspace::state::RSpaceImporter;
 use rchain_shared::log::{Log, LogSource};
@@ -517,6 +517,7 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
         &block_store,
         log.as_ref(),
         &block_st.height_map,
+        &fringe.ancestry,
     )
     .await?;
     Ok(())
@@ -556,9 +557,25 @@ async fn populate_dag(
     block_store: &BlockStore,
     log: &dyn Log,
     height_map: &BTreeMap<i64, BTreeSet<BlockHash>>,
+    // **The per-block fringe state, carried on the fringe the sync was started from** (AUDIT C188,
+    // #139). Empty when the responder did not send it — an older peer, or a requester that did not
+    // ask — in which case every block falls back to the pre-#139 derivation and the log says so per
+    // block. That is a degradation, not a failure: the sync still completes.
+    ancestry: &[BlockFringe],
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeSyncing");
     log.info(source, "Adding blocks for approved state to DAG.");
+    let fringe_of: BTreeMap<BlockHash, &BlockFringe> =
+        ancestry.iter().map(|b| (b.block_hash, b)).collect();
+    if ancestry.is_empty() {
+        log.warn(
+            source,
+            "The fringe response carried no per-block fringe state (#139): every restored block \
+             will be inserted with an empty fringe, and a block whose close deploy anchors the next \
+             epoch's seed to the fringe state will not replay as the proposer did it. Ask a peer \
+             that knows `includeFringeMetadata`.",
+        );
+    }
 
     // Insert blocks in ascending height order (parents before children): `dag.insert` requires each
     // block's justifications to already be present in the message map, and a block's justifications
@@ -584,7 +601,28 @@ async fn populate_dag(
             // block 0.
             insert_genesis(dag, block).await?;
         } else {
-            let bmd = BlockMetadata::from_block(&block);
+            // **The metadata a validating node would have derived**, when the responder sent it
+            // (#139). `from_block` cannot know it: `fringe` and `fringe_state_hash` are a node's own
+            // recomputation and are not block fields, so a restored node otherwise carries an empty
+            // fringe for every block it restores and replays boundary blocks from a zero seed.
+            let bmd = match fringe_of.get(&hash) {
+                Some(bf) => BlockMetadata {
+                    fringe: bf.fringe.clone(),
+                    fringe_state_hash: bf.fringe_state_hash,
+                    ..BlockMetadata::from_block(&block)
+                },
+                None => {
+                    log.warn(
+                        source,
+                        &format!(
+                            "No per-block fringe state for {} (#139): inserting it with an empty \
+                             fringe, which is the pre-#139 behaviour for this block alone",
+                            hash.to_hex()
+                        ),
+                    );
+                    BlockMetadata::from_block(&block)
+                }
+            };
             dag.insert(bmd, block).await?;
         }
     }
@@ -905,7 +943,7 @@ mod tests {
                 .insert(b.block_hash);
         }
 
-        populate_dag(dag.as_ref(), &block_store, &NopLog, &height_map)
+        populate_dag(dag.as_ref(), &block_store, &NopLog, &height_map, &[])
             .await
             .expect("populate_dag must succeed when blocks are inserted parents-first");
 
@@ -1023,6 +1061,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![hash(7)],
             state_hash: StateHash::new([7u8; 32]),
+            ancestry: Vec::new(),
         };
 
         // The waiter is registered *before* the attempt can signal — polled by the same `select!` that
@@ -1130,6 +1169,7 @@ mod tests {
                         &CasperMessage::FinalizedFringe(FinalizedFringe {
                             hashes: vec![hash(7 + attempt as u8)],
                             state_hash: StateHash::new([7 + attempt as u8; 32]),
+                            ancestry: Vec::new(),
                         }),
                     )
                     .await
@@ -1181,6 +1221,7 @@ mod tests {
         let first = FinalizedFringe {
             hashes: vec![hash(1)],
             state_hash: StateHash::new([1u8; 32]),
+            ancestry: Vec::new(),
         };
         engine
             .handle(&bootstrap, &CasperMessage::FinalizedFringe(first))
@@ -1190,6 +1231,7 @@ mod tests {
         let second = FinalizedFringe {
             hashes: vec![hash(2)],
             state_hash: StateHash::new([2u8; 32]),
+            ancestry: Vec::new(),
         };
         let second_state = rchain_shared::base16::encode(second.state_hash.as_bytes());
         engine
@@ -1274,6 +1316,7 @@ mod tests {
         let announcement = FinalizedFringe {
             hashes: Vec::new(),
             state_hash: StateHash::new([0u8; 32]),
+            ancestry: Vec::new(),
         };
         engine
             .handle(&bootstrap, &CasperMessage::FinalizedFringe(announcement))
@@ -1290,6 +1333,7 @@ mod tests {
         let fringe = FinalizedFringe {
             hashes: vec![hash(7)],
             state_hash: StateHash::new([7u8; 32]),
+            ancestry: Vec::new(),
         };
         engine
             .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe))

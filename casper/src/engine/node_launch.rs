@@ -180,6 +180,7 @@ async fn create_store_broadcast_genesis(
     let genesis_fringe = FinalizedFringe {
         hashes: Vec::new(),
         state_hash: genesis_block.pre_state_hash,
+        ancestry: Vec::new(),
     };
 
     put_block(block_store, genesis_block.clone()).await?;
@@ -250,7 +251,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             importer,
         )));
         comm_util
-            .request_finalized_fringe(trim_state)
+            .request_finalized_fringe(trim_state, true)
             .await
             .map_err(|e| e.to_string())?;
 
