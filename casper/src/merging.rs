@@ -4,7 +4,7 @@
 //! (`DeployChainIndex.apply`, `BlockIndex.apply`, `MergeScope.merge`) from `casper/.../merging/`.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -588,7 +588,65 @@ fn sys_deploy_id(block_hash: &BlockHash, prefix: u8) -> Vec<u8> {
 /// Measured under a devnet fork storm (#117): ~750 requests over one stall with 711 of them hits, and
 /// a heap profile put `DeployChainIndex::clone`/`Vec::clone` under this frame among the largest
 /// allocating sites. Sharing is safe because an index is immutable once built.
-static BLOCK_INDEX_CACHE: OnceLock<Mutex<BTreeMap<BlockHash, Arc<BlockIndex>>>> = OnceLock::new();
+/// Hard bound independent of finality. The widest measured merge scope in #117 was 43 chains; 256
+/// leaves almost six times that working set resident while preventing a stalled fringe from making
+/// this advisory cache a monotone memory owner. Eviction changes recomputation cost only: an index is
+/// reproducible from the block/store, and in-flight users hold their own `Arc`.
+const BLOCK_INDEX_CACHE_MAX_ENTRIES: usize = 256;
+
+#[derive(Default)]
+struct BlockIndexCache {
+    entries: BTreeMap<BlockHash, Arc<BlockIndex>>,
+    insertion_order: VecDeque<BlockHash>,
+}
+
+impl BlockIndexCache {
+    fn get(&self, hash: &BlockHash) -> Option<Arc<BlockIndex>> {
+        self.entries.get(hash).map(Arc::clone)
+    }
+
+    /// Insert one immutable index and evict the oldest cached entries until the hard bound holds.
+    ///
+    /// FIFO is intentional here: cache order is not consensus state, hits stay allocation-free, and
+    /// unlike a finality-derived prune this bound keeps working while finality is stalled.
+    fn insert(&mut self, hash: BlockHash, index: Arc<BlockIndex>) -> usize {
+        let is_new = !self.entries.contains_key(&hash);
+        self.entries.insert(hash.clone(), index);
+        if is_new {
+            self.insertion_order.push_back(hash);
+        }
+
+        let mut evicted = 0usize;
+        while self.entries.len() > BLOCK_INDEX_CACHE_MAX_ENTRIES {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                evicted += 1;
+            }
+        }
+        evicted
+    }
+
+    fn remove_many(&mut self, hashes: &[BlockHash]) -> usize {
+        let before = self.entries.len();
+        for hash in hashes {
+            self.entries.remove(hash);
+        }
+        if self.entries.len() != before {
+            let entries = &self.entries;
+            self.insertion_order
+                .retain(|hash| entries.contains_key(hash));
+        }
+        before - self.entries.len()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+static BLOCK_INDEX_CACHE: OnceLock<Mutex<BlockIndexCache>> = OnceLock::new();
 
 async fn get_block_unsafe(
     block_store: &BlockStore,
@@ -615,14 +673,14 @@ impl BlockIndex {
         fringe_state_hash: Blake2b256Hash,
     ) -> Result<Arc<BlockIndex>, String> {
         INDEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+        let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BlockIndexCache::default()));
         if let Some(idx) = cache
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&block_hash)
         {
             // A hit is a refcount bump, not a copy: see the cache's own comment.
-            return Ok(Arc::clone(idx));
+            return Ok(idx);
         }
 
         let block = get_block_unsafe(block_store, &block_hash).await?;
@@ -690,11 +748,17 @@ impl BlockIndex {
         .await?;
 
         let shared = Arc::new(index);
-        let cache_len = {
+        let (cache_len, capacity_evicted) = {
             let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-            guard.insert(block_hash, Arc::clone(&shared));
-            guard.len() as u64
+            let capacity_evicted = guard.insert(block_hash, Arc::clone(&shared));
+            (guard.len() as u64, capacity_evicted as u64)
         };
+        if capacity_evicted > 0 {
+            INDEX_CACHE_CAPACITY_EVICTED.fetch_add(
+                capacity_evicted,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         INDEX_CACHE_LEN.store(cache_len, std::sync::atomic::Ordering::Relaxed);
         Ok(shared)
     }
@@ -709,13 +773,9 @@ impl BlockIndex {
             return;
         };
         let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-        let before = guard.len();
-        for h in hashes {
-            guard.remove(h);
-        }
+        let pruned = guard.remove_many(hashes);
         // The oracle logs this (`Pruned N merging indices, new size: M`) and the port did not, which is
         // part of why the cache's growth was invisible (#60).
-        let pruned = before - guard.len();
         if pruned > 0 {
             INDEX_CACHE_PRUNED.fetch_add(pruned as u64, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1379,6 +1439,8 @@ static INDEX_REPLAY_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 static INDEX_REPLAY_SAVE_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static INDEX_CACHE_PRUNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_CACHE_CAPACITY_EVICTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 static INDEX_CACHE_LEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A snapshot of the block-index counters, for a node's progress line.
@@ -1390,6 +1452,7 @@ pub struct IndexStats {
     pub replay_save_failures: u64,
     pub cache_len: u64,
     pub cache_pruned: u64,
+    pub cache_capacity_evicted: u64,
 }
 
 impl IndexStats {
@@ -1403,19 +1466,22 @@ impl IndexStats {
             replay_save_failures: INDEX_REPLAY_SAVE_FAILURES.load(Relaxed),
             cache_len: INDEX_CACHE_LEN.load(Relaxed),
             cache_pruned: INDEX_CACHE_PRUNED.load(Relaxed),
+            cache_capacity_evicted: INDEX_CACHE_CAPACITY_EVICTED.load(Relaxed),
         }
     }
 
     /// One line, for a log: what indexing has cost so far.
     pub fn summary(&self) -> String {
         format!(
-            "{} blocks indexed, {} replay fallbacks ({} ms, {} not persisted), index cache {} entries, {} pruned",
+            "{} blocks indexed, {} replay fallbacks ({} ms, {} not persisted), index cache {} entries, {} pruned, cap {}, {} capacity evicted",
             self.calls,
             self.replay_fallbacks,
             self.replay_millis,
             self.replay_save_failures,
             self.cache_len,
-            self.cache_pruned
+            self.cache_pruned,
+            BLOCK_INDEX_CACHE_MAX_ENTRIES,
+            self.cache_capacity_evicted
         )
     }
 }
@@ -1612,6 +1678,67 @@ mod tests {
     fn pruning_a_cache_that_holds_nothing_is_a_no_op() {
         BlockIndex::prune_cache(&[]);
         BlockIndex::prune_cache(&[BlockHash::new([1u8; 32]), BlockHash::new([2u8; 32])]);
+    }
+
+    /// The cache must stay bounded even when finality never advances, and eviction must not invalidate
+    /// an index already handed to a merge. The latter is the reason entries are `Arc`-shared: removing
+    /// the cache's reference only changes whether the next lookup recomputes it.
+    #[test]
+    fn capacity_eviction_bounds_the_cache_and_keeps_in_flight_indices_alive() {
+        let first_hash = block_hash(0);
+        let first = Arc::new(BlockIndex {
+            block_hash: first_hash,
+            deploy_chains: Vec::new(),
+            native_changes: Vec::new(),
+        });
+        let mut cache = BlockIndexCache::default();
+        assert_eq!(cache.insert(first_hash, Arc::clone(&first)), 0);
+
+        let mut last = Arc::clone(&first);
+        for id in 1..=BLOCK_INDEX_CACHE_MAX_ENTRIES {
+            let hash = block_hash(u16::try_from(id).expect("cache test id fits in u16"));
+            last = Arc::new(BlockIndex {
+                block_hash: hash,
+                deploy_chains: Vec::new(),
+                native_changes: Vec::new(),
+            });
+            cache.insert(hash, Arc::clone(&last));
+        }
+
+        assert_eq!(cache.len(), BLOCK_INDEX_CACHE_MAX_ENTRIES);
+        assert!(cache.get(&first_hash).is_none(), "the oldest cache entry is evicted");
+        assert_eq!(
+            first.block_hash, first_hash,
+            "an in-flight Arc remains valid after cache eviction"
+        );
+        let cached_last = cache
+            .get(&last.block_hash)
+            .expect("the newest index remains cached");
+        assert!(Arc::ptr_eq(&cached_last, &last));
+    }
+
+    /// Explicit finality pruning must also remove its bookkeeping entry; otherwise the queue used to
+    /// enforce the hard bound would become the new unbounded structure.
+    #[test]
+    fn finality_pruning_removes_cache_order_bookkeeping_too() {
+        let mut cache = BlockIndexCache::default();
+        for id in 0..4u16 {
+            let hash = block_hash(id);
+            cache.insert(
+                hash,
+                Arc::new(BlockIndex {
+                    block_hash: hash,
+                    deploy_chains: Vec::new(),
+                    native_changes: Vec::new(),
+                }),
+            );
+        }
+
+        assert_eq!(cache.remove_many(&[block_hash(1), block_hash(3)]), 2);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.insertion_order.len(), 2);
+        assert!(cache.get(&block_hash(1)).is_none());
+        assert!(cache.get(&block_hash(3)).is_none());
     }
 
     fn block_hash(id: u16) -> BlockHash {
