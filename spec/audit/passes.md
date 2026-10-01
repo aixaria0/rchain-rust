@@ -6160,3 +6160,40 @@ the record rather than changing either structure, so the structural disagreement
 on a devnet — the in-process mechanism is shape-matched, not yet the instrumented run #156 asks for, and that
 run is worth doing now that the decision says what to assert.
 
+## 48. The instrumented run: the equivocation reproduces, and it is a race, not the failed record
+
+§47 left the devnet run owed. It has now been run, and it settled the sentence §43's addendum could not —
+in the opposite direction: **the reachable shape is not the failed record C190 named.**
+
+**The run.** `devnet.sh up --validators 2` against a 289-round chain, then `reset 1` — validator 1 re-syncs a
+chain carrying its own blocks (it had produced seq 1..292). Result and artifacts:
+`spec/audit/evidence/n156-instrumented-results.md` and `n156-instrumented/validator-1.log.txt`.
+
+**The observation.** The self-equivocation reproduced — **11** `equivocation detected` lines, and the #157
+halt fired once (`halted after 3 consecutive self-validation failures`) before the node recovered once
+synced. **And the C190 instrument never fired**: `msg_map but not latest_msgs` **0**, `cleared this node`
+**0**, and no `validation failed` record anywhere. There is no failed record; the colliding block is the
+node's *own old block, inserted validly by the sync*.
+
+**The mechanism is a proposer/sync TOCTOU window.** `proposer.rs::propose` reads `latest_msgs` into
+`next_seq` (`:263`), `create_block` derives the parent set from a snapshot of the same structures
+(`:583`), and inserts the block much later (`dag.insert`, `:432`). The sync (`populate_dag`) inserts the
+node's own old blocks into that window, each taking its `(sender, seq_num)` in `msg_map` — so a proposal
+derived against a snapshot that predates the sync's advance collides on insert. `insert_msg_mut` writes
+both maps correctly; the two structures never disagree, the proposer is just reading one that is already
+out of date when it writes.
+
+**What this corrects.** §43's addendum named the reachable shape *"a node that receives and records one of
+its own blocks as failed"*; this run shows no failed record is involved. C190's repair is not wrong, but on
+this tree it defends a shape the sync no longer produces (#139's `InvalidStateHash` was that shape's cause,
+and it is fixed); it remains correct for a genuine `Divergence` self-record. The defect this run found — a
+stale-snapshot self-equivocation during re-sync, producing the #156 symptom and the #157 halt — is distinct
+and **unregistered**. A fix is a decision (re-derive the seq against the DAG's current state at insert, or
+catch a self-equivocation and retry rather than counting it as a self-validation failure), not a one-line
+edit.
+
+**Not claimed.** That the race is the only remaining path (a `Divergence` self-record may still be reachable
+by genuine divergence, and C190's repair covers it there), or that the node stays halted (it recovered once
+synced).
+
+
