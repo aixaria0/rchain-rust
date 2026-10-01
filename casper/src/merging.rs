@@ -588,11 +588,12 @@ fn sys_deploy_id(block_hash: &BlockHash, prefix: u8) -> Vec<u8> {
 /// Measured under a devnet fork storm (#117): ~750 requests over one stall with 711 of them hits, and
 /// a heap profile put `DeployChainIndex::clone`/`Vec::clone` under this frame among the largest
 /// allocating sites. Sharing is safe because an index is immutable once built.
-/// Hard bound independent of finality. The widest measured merge scope in #117 was 43 chains, while
-/// the 2026-09-29 incident restarted into 250 cached indices and was killed in the same second. Keep
-/// only 64 strong entries: enough to cover the measured working set with headroom, while making a
-/// catch-up burst unable to retain hundreds of large historical indices. A larger scope is still
-/// correct — an evicted index is simply recomputed — and in-flight users hold their own `Arc`.
+/// Provisional entry-retention limit independent of finality. The 2026-09-29 restart logged 250
+/// cached indices 30 seconds before a global OOM kill. That correlation does not establish the cache
+/// as the cause, and the 43-chain merge scope in #117 does not measure the number of block indices.
+/// Retaining at most 64 entries bounds this cache's references, not process RSS: individual indices
+/// can be large and in-flight users hold their own `Arc`. Evicted indices are recomputed; the miss
+/// cost and memory envelope still require measurement under the same controlled campaign.
 const BLOCK_INDEX_CACHE_MAX_ENTRIES: usize = 64;
 
 #[derive(Default)]
