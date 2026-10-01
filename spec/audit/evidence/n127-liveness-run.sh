@@ -47,6 +47,22 @@ mkdir -p "$OUT"
 IMAGE=$(docker inspect rnode:local --format '{{.Id}}' 2>/dev/null || echo "none")
 FLAGS="--validators 3 --stakes 100,100,50 --epoch-length 10 --fresh"
 
+# **The production driver, read from the running container rather than restated by the caller** — the same
+# rule this header already follows for the memory ceiling. It is not decoration: **`--autopropose` plus a
+# deployer key** makes the dev-mode dummy deploy live (`dummy_deploy_key`, `node_runtime.rs:2575`, built at
+# `:1685`), and that deploy is injected into *any* block whose pool is empty — attestation blocks included
+# (`proposer.rs:711`) — so every block carries a deploy, `new_state_transition` is pinned true, and
+# `attestation_suppressed` is never exercised. **`--dev-mode` alone is not the gate**: a faucet key without
+# autopropose implies no empty blocks, which the node's own test
+# (`the_dummy_deploy_needs_autopropose_and_not_just_a_key`) pins. A transcript that does not say which of
+# these flags was set cannot be read as a guard measurement (C176's class) — which is how the #148 probe
+# came to need a hand-written caveat, and then a corrected one.
+driver_flags() {
+  docker inspect "${CONTAINERS[bootstrap]}" --format '{{join .Config.Cmd " "}}' 2>/dev/null \
+    | tr ' ' '\n' | grep -E '^--(no-)?(autopropose|propose-on-deploy|attest-on-new-blocks|dev-mode|deployer-private-key)$' \
+    | sort | tr '\n' ' '
+}
+
 {
   echo "# tree=$TREE image=$IMAGE"
   echo "# shape: $FLAGS, cap=$CAP, window=${WINDOW_S}s, kill=validator-2 at T+${KILL_AT}s, NO_KILL=${NO_KILL}, attempts=$ATTEMPTS"
@@ -74,6 +90,20 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
     continue
   fi
   echo "  3 of 3 up at $(date -u +%H:%M:%S)"
+  # Record the driver per attempt, now that the container exists, and say plainly when the guard is out of
+  # reach. A reader of the artifact alone must be able to tell a guard measurement from a dummy-deploy one.
+  # The warning keys on `--autopropose`, which is the gate (`node_runtime.rs:2575`), not on `--dev-mode`.
+  df=$(driver_flags)
+  {
+    echo "# driver a${attempt}: ${df:-unknown — no driver flags found in the container argv}"
+    if printf '%s' "$df" | grep -q -- '--autopropose'; then
+      echo "# *** a${attempt}: --autopropose IS SET. With a deployer key present that makes the dummy deploy"
+      echo "#     live (`node_runtime.rs:2575`), and it is injected into any block whose pool is empty —"
+      echo "#     attestation blocks included — so every block carries a deploy, `new_state_transition` is"
+      echo "#     pinned true, and THIS RUN DOES NOT MEASURE attestation_suppressed."
+    fi
+  } >> "$OUT/manifest.txt"
+  [[ "$df" == *--autopropose* ]] && echo "  *** driver: --autopropose is set — the attestation guard is NOT exercised by this run"
 
   python3 spec/audit/evidence/n117-queue-depth.py "$OUT/series-a${attempt}.tsv" \
     > "$OUT/series-a${attempt}.log" 2>&1 &
