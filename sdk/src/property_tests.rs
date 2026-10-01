@@ -185,16 +185,15 @@ proptest! {
         }
     }
 
-    /// **The exact rewrite is the same function (#117).** `compute_rejection_options` now reads the answer
-    /// off the **maximal independent sets** of the conflict relation when that relation is symmetric and
-    /// irreflexive on its keys, instead of enumerating every reachable acceptance state — the enumeration
-    /// expands one state per acyclic subset, which is `2^n` on a scope whose chains do not conflict, and
-    /// those states are what the node's memory ceiling was made of. The rewrite rests on a proof (symmetric
-    /// and irreflexive makes "reachable" = "independent" and "terminal" = "dominating", so the terminal
-    /// states *are* the maximal independent sets), and this project does not accept a proof in place of a
-    /// check: this is the check, against a literal transcription of the ported search, over both the
-    /// legally-shaped maps the merge produces and arbitrary ones — which is what exercises **both** paths,
-    /// since the arbitrary generator produces the asymmetric maps the fast path declines.
+    /// **The exact rewrites are the same function (#117/C178).** Symmetric, irreflexive maps use the
+    /// maximal-independent-set path; arbitrary directed/self-conflicting maps use the rejected-set
+    /// quotient. Neither is allowed to change one rejection option, because the merge result is
+    /// consensus-visible (law 17).
+    ///
+    /// This is the check against a literal transcription of the Scala-shaped accepted-set enumeration.
+    /// It deliberately mixes the legally-shaped undirected maps with arbitrary maps up to seven keys, so
+    /// asymmetric relations and self-conflicts exercise the directed quotient rather than letting the
+    /// symmetric fast path make the test green without touching C178's real input.
     #[test]
     fn rejection_options_match_a_literal_enumeration(
         conflicts in prop_oneof![arb_conflicts(), arb_any_conflicts()]
@@ -204,10 +203,9 @@ proptest! {
             .expect("unbounded");
         prop_assert_eq!(options, rejection_options_by_literal_enumeration(&conflicts));
 
-        // The path the shape *earns*, asserted rather than assumed: a relation that is symmetric and
-        // irreflexive on its keys must have taken the fast path (which keeps no frontier at all), and any
-        // other must have kept one. Without this the differential could pass with the fast path quietly
-        // never firing — a green test measuring the code the fix was meant to replace.
+        // The path the shape *earns*, asserted rather than assumed: the symmetric path has no frontier;
+        // the directed quotient has a queue. Without this, the differential could pass while one rewrite
+        // quietly never runs — a green test measuring only its oracle rather than the shipped path.
         let fast_path_applies = census.asymmetric == 0 && census.self_conflicts == 0;
         prop_assert_eq!(
             census.max_frontier == 0,
