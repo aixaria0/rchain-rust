@@ -1,0 +1,1 @@
+index cache 64 entries, 360 pruned, cap 64, 19370 capacity evicted

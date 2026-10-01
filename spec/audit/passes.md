@@ -5687,3 +5687,67 @@ genuine first-time joiner does not, which is why it was invisible before: **the 
 before reaching it.** It is recorded here rather than as a row because it has no diagnosis yet, and a
 `todo` row's `owes` is supposed to be something a reader can act on; classifying it needs the first
 hour of the next unit, not a guess in this one.
+
+## 39. The directed merge search is output-bounded, and the ramp that was to prove it no longer reproduces (C178, C189, #127)
+
+**#127's close condition is a two-conjunct falsifier**, and this pass is both conjuncts run rather than
+argued. The first — *expanded states bounded by a function of the output rather than of the conflict-set
+width* — is met, on a live network, by three to four orders of magnitude. The second — *the controlled
+baseline showing the ramp is gone* — cannot be met, because the ramp no longer appears on the tree the fix
+was applied to **or** on the tree before it, and that is recorded as C189 rather than smoothed over.
+
+**The fix.** C178's owed directed case landed as #141: the search's state was the accepted set, and many
+accepted sets produce the same rejected set — which is what the search returns — so the states are
+quotiented by that union, every transition that matters strictly grows it, and the terminal states are
+reachable in one state apiece. The reasoning is exact rather than heuristic, so it ships as an exact
+rewrite with no §6 row and no fork: the option set is identical, and the option set is what the merge
+minimises over. It is gated in process by `rejection_options_are_bounded_on_a_directed_shape`, **observed
+red with the quotient disabled** — 16,383 states for one option at 14 keys, `2^14 - 1`, against a bound of
+30 — on two directed families (a dependency chain, and a one-way star); every shape that file carried
+before was a fork and took the symmetric fast path, so it had never measured the path the node runs.
+
+**Round 1 was a null, and it is reported as one.** The controlled baseline ran the frozen no-load rig on
+both trees: **0 of 3** crossings on both, because the widest merge scope on every attempt on both arms was
+**9 chains**, against the 33-43 the ramp was recorded at. The control not ramping is the pre-registered
+"the rig is not reproducing" row, and it means the campaign could not decide. What it did read, at the one
+width both arms reached, is the quotient live on a node: 104/118/99 states on the control against 8/13/12
+on the fixed tree, at 9 chains and 43 conflict pairs.
+
+**Round 2 added the load and the answer arrived.** Four bounded deploys at T+30 and a `stop 2` at T+120,
+frozen as a second preregistration rather than edited into the first, on the same peak/crossing
+measurement:
+
+| arm | widest scope | worst merge | peaks (bootstrap / v1 / v2) | crossed |
+|---|---|---|---|---|
+| control `6eacc4969` | 29 chains | **650,159** states (650,159, 615,599) | 647-689 MiB | 0 of 3 |
+| fixed `865e8137e` | **161-174 chains** | **153-290** states | 31-45 MiB | 0 of 3 |
+
+Two of those columns matter more than the rest. The control is **reproducible to the state count** —
+attempts 1 and 2 report an identical envelope, 29 chains / 455 pairs / 324 asymmetric / 650,159 states,
+from three nodes computing it independently. And the fixed arm's scopes are **not rescaled versions of the
+control's**: 161-174 chains and 12,818-15,781 conflict pairs are widths the enumeration cannot reach, and
+every one of the fixed arm's merges sits in the cheapest cost bucket while the control puts nine samples in
+the 10^5 one.
+
+**What the memory says, and what it does not.** Neither arm crossed 3000 MiB, so the cgroup OOM of #117 is
+**unreproduced on either tree at 8 GiB** — the peaks are the finding instead, 647-689 MiB against 31-45 MiB
+while the fixed arm carries the *wider* DAG. C189 records that as the residual: the ramp's input is a DAG
+shape the proposer fix (#138) moved, so any future fix would be untestable against the measurement that
+motivated it, and the honest alternatives are a rig that reproduces the ceiling or a re-scope of the
+memory claims that says *unreproduced* rather than *fixed*.
+
+**A side reading, and the row's own gap.** #141's second half — a 64-entry cap on the block-index memo —
+binds under load for the first time: 16,288 capacity evictions at scopes up to 174 chains, where a merge
+wants ~170 indices and the cache holds 64. Arm C's preregistered row offered "never binds" and "thrashes",
+and the run produced a **third** outcome: the cap binds and the one cost metric available does not move —
+exactly **1** replay fallback on both arms (624 ms against 721 ms) at 2.3x the indexed blocks. What the
+metric cannot see is the recomputation an eviction forces, which is CPU rather than a replay fallback. So
+64 is neither vindicated nor convicted here; what the run adds is that it is small enough to bind on a real
+forked DAG, which the cache's own comment did not know.
+
+**One disclosure, because a frozen protocol is the whole point.** The round-2 rig was edited once after its
+preregistration was frozen and before its first arm ran — `exec > >(tee "$OUT/run.log")`, so that the peaks,
+which exist only on stdout, land in the arm directory rather than being lost to a caller's pipe. The first
+control attempt was aborted two minutes in for exactly that reason and produced no reading. The edit
+touches no experiment parameter: shape, cap, threshold, window, attempt count and load offsets are the
+frozen ones.

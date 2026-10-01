@@ -89,6 +89,16 @@ pub mod search_census {
     pub const WIDTH_EDGES: [usize; 4] = [16, 32, 64, 128];
     /// The cost's edges, logarithmic: below 10³ nothing is worth gating, and 10⁶ is the order that
     /// reached gigabytes in the heap profile.
+    ///
+    /// **These edges are calibrated against the *old* step unit and the histogram is not comparable
+    /// across C178.** Every count ever published under these buckets — the 899,236 and 1,663,395 and
+    /// 2,026,511 figures C182 cites — was a count of **accepted-set** states expanded. The directed path
+    /// now counts **distinct rejected sets** instead (`SearchCensus::expanded`,
+    /// `sdk/src/dag/merging.rs`), which is a strictly smaller number for the same merge and a different
+    /// quantity in the same units: on a dependency chain of `n` chains the old unit gave `2^n - 1` and
+    /// the new one gives `n`. So a sample that moves bucket after the quotient moved for two reasons at
+    /// once, and reading a bucket drop as "the merge got cheaper" is wrong until the distribution is
+    /// re-measured on its own arm. That re-measurement is owed and is what C182 closes on.
     pub const EXPANDED_EDGES: [usize; 4] = [1_000, 10_000, 100_000, 1_000_000];
 
     /// Cumulative counts per bucket: `COUNTS[i]` is the number of samples `<= EDGES[i]`, and the last

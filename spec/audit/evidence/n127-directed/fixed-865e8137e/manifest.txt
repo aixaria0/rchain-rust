@@ -1,0 +1,7 @@
+arm=fixed
+image=rnode:fixed-865e8137e
+image_id=sha256:46658753477f940d879932ba579ffdf9cdab6f0472838e76a143ef20503fb93e
+arm_tree=865e8137e
+harness_tree=865e8137e
+started=2026-10-01T12:18:29Z
+finished=2026-10-01T12:34:14Z rc=0

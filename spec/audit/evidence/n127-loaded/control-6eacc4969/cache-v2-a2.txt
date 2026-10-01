@@ -1,0 +1,1 @@
+index cache 20 entries, 303 pruned

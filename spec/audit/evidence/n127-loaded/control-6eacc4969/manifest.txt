@@ -1,0 +1,8 @@
+arm=control
+image=rnode:control-6eacc4969
+image_id=sha256:b3411e185fa1ddb9775098b2f27f6f9196581914f0c04583e4d1a6c85db20bac
+arm_tree=6eacc4969
+harness_tree=5bca6f9aa
+rig=n127-loaded-run.sh cap=8g threshold=3000MiB window=300s attempts=3 deploys=4 at T+30s kill=v2 at T+120s min_scope=20
+started=2026-10-01T12:36:38Z
+finished=2026-10-01T12:52:20Z
