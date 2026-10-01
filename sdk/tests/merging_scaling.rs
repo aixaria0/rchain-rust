@@ -21,6 +21,15 @@
 //!
 //! The dense case was never the problem — accepting any chain rejects all the others — which is why the
 //! 1000-node full-graph test passed throughout.
+//!
+//! **Then the directed case.** The rewrite above is gated on the relation's *shape*, and the node's
+//! relation is not that shape: `resolve_conflict_set` unions each chain's transitive dependency closure
+//! into its conflict set, so the map is directed — measured, 376–653 asymmetric pairs among the keys in
+//! every one of nine node-runs. The precondition therefore declined on the real input and the enumeration
+//! still ran there. The directed path now quotients states by the **rejected set** — the value the search
+//! ultimately returns — so accepted sets sharing a rejection union collapse into one state and every
+//! transition that matters strictly grows that union. The gate for it is below, in the same shape as the
+//! fork's: expansion bounded by the **output** rather than by the width.
 
 use rchain_sdk::dag::merging::{
     compute_rejection_options, compute_rejection_options_with_census, SearchBudget,
@@ -157,6 +166,102 @@ fn rejection_options_are_bounded_on_a_fork_shape() {
                 elapsed.as_millis() < 1000,
                 "{} conflicting chains in two branches took {elapsed:?}; this must be bounded",
                 per_branch * 2
+            );
+        }
+    }
+}
+
+/// A **linear dependency chain**: `i` conflicts with every key before it and none after. This is the
+/// transitive closure of a path — key `i` depends on `i-1`, which depends on `i-2`, and
+/// `with_dependencies` (`sdk/src/dag/merging.rs`) closes over that before `resolve_conflict_set` unions
+/// it in — so it is the smallest faithful reduction of the shape a single-branch history hands the node.
+///
+/// It is **directed and asymmetric by construction**, which is the point: every pair is one-way, so the
+/// symmetric fast path declines and this reaches the directed search.
+fn dependency_chain_shape(n: usize) -> BTreeMap<i32, BTreeSet<i32>> {
+    (0..n as i32)
+        .map(|k| (k, (0..k).collect::<BTreeSet<i32>>()))
+        .collect()
+}
+
+/// A **one-way star**: key `0` conflicts with every other key, and no other key conflicts with anything.
+/// The same closure with one root instead of a chain, and the sharpest case of the quotient there is —
+/// every nonempty subset of the leaves is a reachable accepted set, all of them reporting one rejection.
+fn star_shape(n: usize) -> BTreeMap<i32, BTreeSet<i32>> {
+    let leaves: BTreeSet<i32> = (1..n as i32).collect();
+    (0..n as i32)
+        .map(|k| {
+            if k == 0 {
+                (k, leaves.clone())
+            } else {
+                (k, BTreeSet::new())
+            }
+        })
+        .collect()
+}
+
+/// Widths the directed gate is asserted at. Kept as a constant because the **red** observation needs a
+/// smaller one: with the quotient disabled the enumeration is `2^n - 1` on these shapes, and `n = 40` is
+/// 1.1e12 states — which is the finding, but not something a test run can produce. At `n = 14` it is
+/// 16,383 states against this gate's bound of 30.
+const DIRECTED_WIDTHS: [usize; 3] = [20, 40, 100];
+
+/// **C178's gate, and it is counts rather than seconds**, exactly as
+/// `rejection_options_are_bounded_on_a_fork_shape` is for the symmetric path.
+///
+/// The claim is C178's own close condition: expanded states bounded by a function of the **output** (the
+/// rejection options) rather than of the conflict-set width. The bound asserted is
+/// `expanded ≤ (keys + 1) × (options + 1)`, the same form the fork gate uses.
+///
+/// **On these shapes the enumeration is `2^n - 1` for one option** — a dependency chain makes *every*
+/// subset reachable, because accepting keys in increasing order rejects only what came before, and only
+/// the largest accepted set is terminal. So the enumeration is exponential in the width to report a single
+/// answer, and the quotient reports that answer in `n` states. Disabling the quotient and re-running this
+/// gate at `n = 14` gives 16,383 expansions against a bound of 30, which is how it was observed red.
+///
+/// The assertions on `asymmetric` and `max_frontier` are not decoration: without them this gate could go
+/// green while the input silently took the fast path, which would be a green test measuring a path the
+/// node does not run. The three widths stop at 100 because the quotient's growth is linear there and the
+/// enumeration's is not — at `n = 40` the old path is already 2^40 states.
+#[test]
+fn rejection_options_are_bounded_on_a_directed_shape() {
+    for n in DIRECTED_WIDTHS {
+        for (name, map) in [
+            ("dependency chain", dependency_chain_shape(n)),
+            ("one-way star", star_shape(n)),
+        ] {
+            let started = Instant::now();
+            let (options, census) =
+                compute_rejection_options_with_census(&map, SearchBudget::UNBOUNDED)
+                    .expect("unbounded");
+            let elapsed = started.elapsed();
+
+            assert!(
+                census.asymmetric > 0,
+                "{name} at {n} keys reports {} asymmetric pairs, so it took the symmetric fast path \
+                 and this gate measured the wrong path",
+                census.asymmetric
+            );
+            assert!(
+                census.max_frontier > 0,
+                "{name} at {n} keys kept no frontier, which is the fast path's signature"
+            );
+            assert_eq!(
+                options.len(),
+                1,
+                "{name} at {n} keys has exactly one rejection option, and the old path reached it in \
+                 2^n - 1 states"
+            );
+            assert!(
+                census.expanded <= (census.keys + 1) * (census.options + 1),
+                "{name} at {n} keys expanded {} states for {} options, which is not bounded by the \
+                 output; the enumeration this gate exists to exclude is exponential in the width",
+                census.expanded,
+                census.options
+            );
+            println!(
+                "{name} at {n} keys: {} states for 1 option, {elapsed:?}",
+                census.expanded
             );
         }
     }
