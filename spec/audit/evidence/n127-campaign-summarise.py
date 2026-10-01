@@ -59,16 +59,45 @@ def read_series(path):
     return rows
 
 
+def _sec_of_day(u):
+    """`HH:MM:SS` to seconds-of-day. The series' own timestamp, so the elapsed time is read rather than
+    assumed — see `rate`."""
+    h, m, s = (int(x) for x in u.split(":"))
+    return h * 3600 + m * 60 + s
+
+
 def rate(series, node):
-    """Blocks/minute for a node, from the first and last sample that has a height."""
+    """**Heights**/minute for a node, from the first and last sample that has a height.
+
+    It is *not* a block rate, and the name and the printed label said it was from the day this was
+    written — "Blocks/minute … from … a height" in one sentence, with the body reading `h`. The
+    quantity is a `latestBlockNumber` delta, and `latestBlockNumber` is `max_height + 1`, so what this
+    returns is a **round** rate: one height is one round, and a round carries one block per bonded
+    sender (measured at 2.99 blocks per height on a 3-validator net, `n149-results.md`).
+
+    Every rate in `n127-campaign-results.md` and every document quoting them inherits this, which is
+    why the campaign's "12–16 blocks/min" is a height figure. Converting is not a multiplication by 3
+    for those runs: the block-per-height ratio was never recorded, the series here keeps only
+    `latestBlockNumber`, and the sender count differs between arms. So the honest repair is to label
+    the number for what it is and let a block-level instrument re-derive it — which is what
+    `n149-sample.py`'s block-hash union does.
+
+    **And the divisor was wrong too, in the opposite direction.** This used `secs = len(pts)` on a
+    `# one sample a second` assumption. The sampler is `sleep(1)` **plus the work of a sample**, so the
+    campaign's committed series ran at **1.158 s per sample** — 260 distinct timestamps over 300 s,
+    `n127-campaign/c5442ee1f-20260930T163518Z/series-a1.tsv`, measured. Dividing by the count therefore
+    understates the elapsed time and **overstates every rate by 300/260 ≈ 1.15x**. The elapsed time now
+    comes from the timestamps themselves, which is what the function should always have used.
+    """
     pts = [(u, int(h)) for u, n, h, _f, _a in series if n == node and h.isdigit()]
     if len(pts) < 2:
         return None
-    first, last = pts[0], pts[-1]
-    secs = len(pts)  # one sample a second
-    if secs < 2:
+    span = _sec_of_day(pts[-1][0]) - _sec_of_day(pts[0][0])
+    if span <= 0:
+        # One sample is not a rate, and a non-positive span is a run that crossed midnight — which this
+        # refuses rather than reporting a negative or absurd rate from a clock that wrapped.
         return None
-    return (last[1] - first[1]) * 60.0 / secs
+    return (pts[-1][1] - pts[0][1]) * 60.0 / span
 
 
 def finality(series, node):
@@ -160,7 +189,9 @@ def main():
         nodes = sorted({n for _u, n, _h, _f, _av in series})
         for node in nodes:
             r, f = rate(series, node), finality(series, node)
-            rtxt = f"{r:.1f} blocks/min" if r is not None else "rate: too few samples"
+            # `heights/min`, not `blocks/min` — see `rate`'s docstring. The label is the whole defect:
+            # every number below was read as a block rate for two days.
+            rtxt = f"{r:.1f} heights/min" if r is not None else "rate: too few samples"
             ftxt = (f"finality {f[0]} -> {f[1]}" + (" (moved)" if f[2] else " (did not move)")) if f else "finality: none"
             samples = sum(1 for _u, n, _h, _f, _a in series if n == node)
             print(f"  0.1 {node:<9} {samples:>4} samples  {rtxt:<22} {ftxt}")

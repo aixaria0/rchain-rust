@@ -353,6 +353,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **The LFS block walk gives up when it stops completing blocks**: `request_blocks` fails after `MAX_IDLE_ROUNDS` (3) **consecutive** idle resend intervals in which `LfsState::finished` did not grow (`casper/src/engine/lfs_block_requester.rs`, issue #102) | `LfsBlockRequester.scala:309-312` — `requestStream.evalOnIdle(resendRequests, requestTimeout).terminateAfter(_.isFinished) concurrently responseStream`: the **only** termination condition is `isFinished`, so a fringe naming state no peer has retries forever. Nothing upstream bounds the walk: `requestTimeout` is the *resend* interval, not a deadline | the port did the same, and the consequence is #102's first defect rather than a theoretical one: `run_approved_state_sync` `join!`s the block walk with the tuple-space request, so a walk that never ends is a **sync attempt that never ends** — the spawned task never returns, `notify_when_restored` never fires, and the node sits in `NodeSyncing` for good **with a serving API and no error line**, which is the "silently stuck" class this register keeps finding. **Why a pace rule and not a deadline**: a long chain legitimately takes longer than any fixed duration, so a wall-clock bound would abandon a walk that is *long* rather than *stuck*; the quantity that distinguishes them is whether blocks are still being completed, and `finished` is monotone (`done` only adds, `add` refuses an existing key), which is what makes "did it move" well-formed — **Law 51a**'s `Drift`, the same shape as C171 and refused by the same `Paced`. **Pace, not a rate**: a slow peer that needs several resends per block is untouched, because the counter resets on every completed block. Falsified in both directions: deleting the give-up leaves the walk hanging (`a_walk_nobody_serves_fails_rather_than_hangs` reports #102's exact symptom after its 2 s harness bound), and deleting the reset abandons a progressing walk (`a_slow_but_progressing_walk_is_not_abandoned` fails on the second block) — the two mutations cannot both be satisfied by a rule that is not this one |
 
 | **A new block justifies the `latest_msgs` as of the last round boundary, not `latest_msgs`** (`DagMessageState::round_parents`, `block-storage/src/dag/message_state.rs`; the proposer reads it in `get_pre_state_for_new_block`) | `BlockCreator`'s `getPreStateForNewBlock` builds the parent set as `dag.latestMessages.map(_.id)`, every sender's newest message | the oracle's parent set is one its **own** finalizer cannot advance on. `calculate_next_fringe_support_map` derives each candidate's `seen_by` from `parents ∖ next_layer`, so a parent set that *is* every sender's newest message has almost no remainder: the head of each round has an empty one and the later movers have seen a prefix. Measured in-process through the production entry point with three live validators at the devnet's `100/100/50`: `Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }`, refusing before the quorum is ever consulted. With the round snapshot the same chain publishes a fringe and tracks the tip at a constant 12-height lag (48/60, 168/180, 348/360). Nothing else moves: heights stay `max + 1`, the validity rules are untouched, and the gate is unchanged. **What this is not:** not a validation fork — a block justifying a snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's blocks — but it *is* a proposer divergence, because the two produce different blocks on the same history, which is why it is registered rather than assumed. The `150 of 250` the devnet logged is this defect's half-fixed shape, reproduced in-process on the way to the correction. AUDIT C185; pass §35. |
+| **A block's justification set is bounded by `max-number-of-parents`, refused on the receiving side** (`casper/src/validate.rs::justification_count`, read off `casper.max-number-of-parents`, whose shipped default moved from `2147483647` to `255`; the proposer refuses to build a block above it in `proposer.rs::create_block`) | **the oracle composes no per-block bound at all** — the same fact the `ExceedsBlockPhloLimit` row records — and this tree carries no `legacy/` to check a Scala `maxNumberOfParents` against, so the honest statement is that the key was configuration in this port and nothing more: no proposer cap and no validation rule, while two doc comments (`proposer.rs`, `validate.rs`) and **C123's fix rationale** each asserted it bounded exactly this set. **Hard fork (#51 category A):** a block justifying more parents than the bound is valid today and refused after, so an upgraded node rejects what an unupgraded one accepts. `0` or negative disables the check, which is how a chain keeps the pre-#153 semantics exactly rather than by accident. **It is also the tenth key of AUDIT C143's class** — parsed into `NodeConf` and read by nothing — which C143's own list of nine did not reach; the register's disposition for that class is to *refuse* the key, and this key takes the other horn of it, enforcing the setting rather than rejecting it, because unlike the keepalive and random-port knobs its documented purpose is one this port can honour. AUDIT C191; #153. |
 
 ---
 
@@ -4484,10 +4485,13 @@ finalizer — is a separate increment, not this one.
 
 Measured 2026-09-29, three validators at 100/100/50, `--no-autopropose --propose-on-deploy`,
 `--epoch-length 10`: **four deploys produced 126 blocks in about three minutes** (~2/s) while finality
-stayed at 8, and the height ran to 126. Attestation is the fuel — each attestation is itself a remote
+stayed at 8, and the height ran to 126 — **the unit here is unverified, and the sentence itself equates
+the two**: if 126 is the height, the block count is ~3x that on a three-validator net, and the same
+substitution is what `n127-campaign-summarise.py`'s `rate()` was found to make (2026-10-01, see §0.1).
+No artifact for this measurement is committed in the tree, so it is flagged rather than corrected. Attestation is the fuel — each attestation is itself a remote
 block for the peers, which attest in turn — so it is the tap, not the dummy-`Nil` injector, that makes
 the chain grow. The shape was already recorded twice on a two-validator net (23 blocks from six
-deploys) and on the issue itself (276 blocks in about a minute, finalised only to 11).
+deploys) and on the issue itself (276 in about a minute, finalised only to 11 — unit unverified, see above).
 
 `suppress_attestation` cannot bound this: the quorum *is* reachable, so its suppression clause is
 deliberately inert, C170's repair included. The bound has to be on **our own quiet** — this node's
@@ -5157,11 +5161,15 @@ mean width 15.7–19.6, widest 32–37, and **2,026,511 states expanded on one m
 run's 1,663,395, on a chain whose block rate is lower. Load is not the only thing that moves the cost.
 
 **0.1 — the storm is a post-kill phenomenon in this configuration, and the pre-registration did not foresee
-the rate it found.** All three validators live: 12–16 blocks/min, one block per 4–5 s, *slower* than the 2 s
-autopropose timer and an order of magnitude below the recorded 276/min storm — a case the frozen table has
-no row for, so it is a correction to the pre-registration rather than a reading. After the kill, finality did
-not resume in **3 of 3** attempts: two froze completely (height and finality both stopped for 180 s) and one
-kept producing at ~18 blocks/min while finality moved +4 heights. The chain that runs while finality is
+the rate it found.** All three validators live: 12–16 **heights**/min (written "blocks/min" here and
+elsewhere until 2026-10-01 — the figures come from `n127-campaign-summarise.py`'s `rate()`, which is
+documented as "Blocks/minute … from … a height" and reads `latestBlockNumber`, a round count, one block per
+bonded sender per round; ~3 blocks each, measured block-level in `n149-results.md`), one height per 4–5 s,
+*slower* than the 2 s autopropose timer and an order of magnitude below the recorded 276/min storm — a case
+the frozen table has no row for, so it is a correction to the pre-registration rather than a reading. After
+the kill, finality did not resume in **3 of 3** attempts: two froze completely (height and finality both
+stopped for 180 s) and one kept producing at ~18 heights/min (~15% high — summariser output, see the
+divisor note in §0.1's correction) while finality moved +4 heights. The chain that runs while finality is
 pinned is the one an absent validator creates — C171's own mechanism, and #70's second stop.
 
 **0.3 — void, by construction at this scale.** Every stall line carries `at tip 0`: the line is rate-limited
@@ -5182,16 +5190,22 @@ artifacts rather than the summary. They are corrected here rather than deleted, 
 the one this register exists to record.
 
 - **"the storm is a post-kill phenomenon here" is not supported by the run.** v1 in attempt 2 made
-  **17.6 blocks/min** after the kill against **16.1** before it. What the kill does is *decouple height from
+  **17.6 heights/min** after the kill against **16.1** before it (both are the campaign's rates; see §0.1's
+  correction on the unit — and, being summariser output, both are also ~15% high: `rate()` divided by the
+  sample *count* rather than the elapsed time, ~1.158 s/sample). What the kill does is *decouple height from
   finality* — the chain keeps producing while the fringe stops advancing — and the rate is the same on both
-  sides. Calling that a storm stretches the word past the 276 blocks/min the storm is recorded at.
+  sides. Calling that a storm stretches the word past the 276/min the storm is recorded at (that figure's
+  unit is **unverified** — the sentence below states it as "276 blocks in about a minute" and, for the
+  adjacent measurement, "the height ran to 126", so both may be the same quantity, and no artifact for
+  either exists in this tree; see the flag on that line).
 - **"~75 is the number of reporting periods" is wrong: there is no period.** The only production caller of
   `report_period_snapshot` is the `/metrics` handler, **once per request** (`node/src/web/http.rs:180-184`);
   the oracle's route returns a cached string instead. So the factor is the *scrape count* — and this
   campaign's own sampler curled `/metrics` once a second, which means **the instrument was inflated by the
   measurement**. The pre-registration's "scraped twice" describes a protocol that did not run.
 - **The envelope's "storm" label was mine and it was wrong.** This section's 0.2 heading reports the
-  *pre-kill* scrapes, and they show all three validators live at 12–16 blocks/min with widest scopes of
+  *pre-kill* scrapes, and they show all three validators live at 12–16 heights/min (see §0.1's correction
+  on the unit) with widest scopes of
   **30–36 chains and up to 985,391 states**. The kill did not widen the scope; it changed the *cost* on the
   survivors. `n127-shape-distribution-results.md` had already called its 43-chain point "the quiet devnet".
 
@@ -5487,7 +5501,9 @@ and the result is two findings rather than one.
 | **fixed (`de4e9af02`)** | **72, 90, 105** | 76, 94, 109 | **3–4** | **T+120s — still advancing at the kill** |
 
 Three to four heights behind, in all three attempts, and still moving at the kill instant. The chain runs at
-~38 blocks/min against the campaign's 12–16. The stall line has effectively disappeared: six lines per
+~38 heights/min against the campaign's 12–16 (both height rates — see §0.1's correction; the ~38 is also
+**unverified at its source**: it is cited to `n127-proposer-fix-results.md`, which reports heights and
+finality and no rate at all, a finding of the #148 session). The stall line has effectively disappeared: six lines per
 attempt against seventy-five, and all six are the boundary warming up at genesis. The C184 budget control is
 still empty.
 
@@ -5943,3 +5959,47 @@ restored is precisely a node with `validation_failed` records of its own — but
 line saying which structure the arithmetic read. Naming that needs the instrumentation #156 asks for, and
 it is worth doing **after** the decision, because it is the decision that determines what the instrument
 should assert.
+---
+
+## 44. Attestation is bounded per remote *height*, and a round that rests at one height is sealed (C192, #149)
+
+**What was measured.** One deploy on a guard-live devnet (`--no-autopropose --propose-on-deploy`), all
+validators live, three attempts at each of N ∈ {3, 5, 8}, and an idle control. Blocks after the deploy
+are **exactly N** — one per bonded validator, every validator among the senders, 3 of 3 attempts — and
+the whole DAG is genesis plus N blocks **all at one height**. Finality advances **not at all**. At N = 2
+the chain instead runs four rounds, 2 blocks at each of heights 1-4, and finalises height 1. The reading
+and its artifacts are `spec/audit/evidence/n149-results.md` and `n149-blocks/`.
+
+**The mechanism, and it is one rule.** The attestation tap answers a remote block only if its height is
+strictly greater than the last height it answered (`node_runtime.rs:2706`):
+
+```rust
+sender != me && last_attested_height.map_or(true, |last| height > last)
+```
+
+On a three-or-more validator net the peers react to the deploy-bearing block **before any of them has
+produced**, so all of their attestations land at the **same height**. Every node's
+`last_attested_height` is then that height, and since no block above it exists — or can now be produced
+— the tap refuses every block that will ever arrive from a peer. Nothing else requests a proposal with
+autopropose off, so no second round is enqueued, and the proposer's round veto and its escape
+(`proposer.rs:531-547`) are never even reached: the escape's counter increments on a proposal
+*request*, and the tap is the only thing that issues one here. **The chain is sealed with its deploy
+unfinalised.** At N = 2 the blocks arrive one at a time and each raises the tip before the other node
+answers, so the rule never binds and the chain cascades normally. So the difference is not the validator
+count as such but whether a round comes to rest at a single height.
+
+**The bound is real and it is too strong.** The rule exists to stop a burst at one height enqueuing a
+proposal per block — the #70 fan-out — and that is a genuine bound. It is also the wrong quantity: its
+own comment says *"The per-remote-height rule above is not a bound at all **while the height itself
+keeps advancing**"*, and the case it did not consider is the height **stopping**, which this rule causes.
+
+**Falsified in both directions.** `a_round_that_comes_to_rest_at_one_height_is_sealed_by_its_own_bound`
+runs the rule as a *sequence* — seven peer blocks at one height against the same seven one height
+apart — and asserts 1 answered against 7. Mutating `>` to `>=` turns it red with `left: 7, right: 1`,
+so it pins this rule rather than the arithmetic around it. The existing cases in that module are single
+calls and none of them could see a sequence.
+
+**What is not claimed.** The fix is a design question — key the tap on the round rather than on the
+height, or on the tip — and it is deliberately not guessed here. Nor is this a cost finding: unlike
+#148's storm, production is *bounded* (exactly N blocks) and stops. What it shares with #148 is the
+frozen finality; what it does not share is the growth.
