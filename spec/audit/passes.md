@@ -4821,6 +4821,14 @@ correcting the *record* rather than the node:
   The count came from one size class and the size from another, and "fully resident" is the inverse of
   the truth for the class it names. `owes`: replace the sentence with the measured histogram.
 
+**Closed 2026-10-01.** Each part is satisfied by work that already existed, recorded here so the row is
+not left standing on a superseded evidence base: the current samplers echo their configuration into each
+artifact's header (`n149-sweep-run.sh` writes `tree`/`image`/`sweep`/`windows`), the Stage A sampler
+(`n117-after-fix-run.sh`) resolves the cgroup from the container id and reads the peak while the node
+lives — the fix this very § names — and `docs/src/node/validator-requirements.md:141-150` states the
+measured histogram. The `target/n105/` arms this section audited are gone; nothing in the tree re-reads
+them. C176 → `done`.
+
 ### The record this pass corrects
 
 The audit's claim ledger marked **6 contradicted and 8 unsupported of 43** claims made on #117 and PR
