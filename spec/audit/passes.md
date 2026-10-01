@@ -4607,6 +4607,62 @@ re-fetch), and then the falsifier is a node that has marked one block failed and
 next block above it. Independent of C172's fix, which is `ValidateError::Internal` → dropped where this is
 `ValidationFailed` → recorded, and does not touch this path.
 
+### The decision, taken 2026-10-01: both halves, with the restoring rule as the fix
+
+**Which fork, and why it was not a free choice.** Option (a) alone cannot close the row. Counting failed
+justifications in the maximum removes the height rule as a reader, but for a **bonded** sender
+`neglected_invalid_block` is still there — and counting the parent in the maximum actually makes it
+*fire*, because the child now reaches that check instead of being refused earlier by `block_summary`. So
+(a) is a prerequisite for a child to be looked at, and the law's inverse is what admits it: the restoring
+rule. Both landed.
+
+**The refusal has four readers, not the three this pass named.** A panel re-derived C173 from the code on
+2026-09-30 and found `get_parents_metadata` (`casper/src/proto_util.rs:33`), which filters failed
+justifications out of the parent list `repeat_deploy` and `get_parent_metadatas_above_block_number`
+walk. It matters for exactly this reason: the readers are not in one place, so a restoring rule has to run
+**before the checks**, not inside one of them, and the code says so where it is called.
+
+**The record itself was the first defect, and it was two flags pretending to be one.**
+`mark_failed_attributable` was reached by *every* `ValidateError::ValidationFailed`, `NeglectedInvalidBlock`
+included, so a child refused **because a justification failed** was marked `validation_failed` *and*
+`slashable` — one transient failure fabricated slash evidence against every validator above it, and
+propagated. `BlockMetadata` now carries a `failure_cause` (proto `failureCause = 23`), classified once in
+`BlockStatus::failure_cause`: `Attributable` (the block's own fault, and the only slashable case),
+`Divergence` (this node's state or replay disagreed — the measured `InvalidStateHash`), `Cascade` (refused
+because a justification failed). `mark_failed(meta, cause)` is now the single place attribution comes
+from. It also carries `restore_attempts` (`= 24`), so the restoring rule's per-record cap survives a
+restart.
+
+**The restoring rule, and the three bounds that make it a rule** (`restore_divergent_justifications`,
+`casper/src/multi_parent_casper.rs`): keyed on the cause — only a `Divergence` is eligible;
+capped per record by the persisted count; budgeted per incoming block. A revalidation costs one merge plus
+one replay, the same order as validating the block, so the work one block can provoke is a constant — the
+property C180's class is about, and the reason the unbounded version was not on the table. A successful
+revalidation clears `validation_failed` and the cause and **keeps `slashable` exactly as it was**.
+
+**The guard fired, as it was stated to.** Law 53a's `falsifiable` cell said a restoring rule makes
+`Rchain.the_refusal_is_persistent` false *by construction* and that the theorem is a guard on this fix.
+Clause **53b** now models the rule as `restoreStep` — the exact inverse of `strandStep` — and
+`Rchain.the_refusal_is_not_persistent_once_a_rule_restores` is that cell **executed**, not asserted. 53a
+is retained, stated over the rule set without the inverse.
+
+**What is not claimed.** The rule re-runs the checks against the current DAG; it does not manufacture
+agreement. A node whose view is *still* divergent re-validates to the same refusal and is right to keep
+refusing a block it cannot verify. `Terminal` demands an inverse, not that the inverse always fires — and
+the `InvalidStateHash` divergence that made B refuse the block in the first place remains undetermined,
+which is #105's open half and not this row's.
+
+**Falsifiers, each observed red by deleting the clause it names.** `only_an_attributable_failure_is_slashable`
+and `the_causes_partition_the_statuses` (the split — red with the unconditional `slashable: true` restored);
+`a_failed_parent_still_sets_its_childs_height` (option (a) — red with the `if !meta.validation_failed`
+guard restored); `only_a_divergence_is_revalidated`, `a_record_at_the_attempt_limit_is_not_revalidated_again`
+and `one_block_budget_bounds_the_revalidations` (the rule's three bounds, driven through the real
+`validate`); `only_a_divergence_is_restorable` and `a_successful_revalidation_clears_the_refusal_and_keeps_attribution`
+(the record's transformation). **What is not pinned end to end**: an accepted child after a restore needs
+a genuinely valid chain, so the clearing branch is covered at the record-transition level and the
+two-node devnet in #125's thread is the end-to-end measurement — the `restoring_rule.rs` header says so
+rather than leaving the gap to be assumed.
+
 [#105]: https://github.com/rchain-community/rchain-rust/issues/105
 ## 26. The fringe gate asked two questions of one map: a silent validator capped finality at any stake share (#70)
 
