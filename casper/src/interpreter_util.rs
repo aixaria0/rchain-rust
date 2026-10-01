@@ -316,6 +316,90 @@ fn describe_state_mismatch(
     )
 }
 
+/// One line naming a **`rejected_deploys`** disagreement — the one refusal on this path that used to say
+/// nothing at all (#139, #140).
+///
+/// **Why it is its own line and not a `describe_state_mismatch` call.** The other refusals compare two
+/// *hashes* and can name both sides as a pair. This one compares two **sets of rejected deploy ids** —
+/// what this node's own merge filtered out against what the block says was filtered out — so the
+/// evidence is not a scalar but *which ids are in one set and not the other*. The line therefore carries
+/// the symmetric difference, capped at four ids a side, because these sets are peer-sized and this is a
+/// `warn` per failing block.
+///
+/// The arm itself returned `Err(BlockStatus::InvalidRejectedDeploy)` with no log, so an operator saw a
+/// status and no counts: the claimed set could be empty, or could be every deploy in the block, and the
+/// log could not tell those apart.
+fn describe_rejected_deploy_mismatch(
+    block: &BlockMessage,
+    pre_state: &ParentsMergedState,
+) -> String {
+    /// The ids present in `set` and absent from `other`, as hex, first four then a count of the rest.
+    fn only(set: &BTreeSet<Vec<u8>>, other: &BTreeSet<Vec<u8>>) -> String {
+        let diff: Vec<String> = set
+            .difference(other)
+            .map(|id| rchain_shared::base16::encode(id))
+            .collect();
+        match diff.len() {
+            0 => "none".to_string(),
+            n if n <= 4 => diff.join(", "),
+            n => format!("{}, +{} more", diff[..4].join(", "), n - 4),
+        }
+    }
+    format!(
+        "state-hash disagreement on rejected-deploys: block #{} {} by {} — this node's merge computed {} \
+         rejected ({} only here), the block claims {} ({} only there); fringe_state={} \
+         prev_fringe_lookup={} {}",
+        block.block_number,
+        block.block_hash.to_hex(),
+        short_id(&block.sender),
+        pre_state.fringe_rejected_deploys.len(),
+        only(&pre_state.fringe_rejected_deploys, &block.rejected_deploys),
+        block.rejected_deploys.len(),
+        only(&block.rejected_deploys, &pre_state.fringe_rejected_deploys),
+        pre_state.fringe_state.to_hex(),
+        pre_state.prev_fringe_lookup.to_hex(),
+        describe_deploys(block),
+    )
+}
+
+/// What a failed replay failed **on**, before `handle_errors` collapses it (#139, #140).
+///
+/// **Why the variant is worth a line of its own.** `handle_errors` keeps only two outcomes out of a
+/// [`ReplayFailure`]: `InternalError` becomes an `Err` — the node's own fault, so no block is recorded
+/// failed — and **every other variant becomes `Ok(None)`**, which is the same `InvalidStateHash` a plain
+/// post-state mismatch produces. So "the replay disagreed about the post-state" and "the replay failed a
+/// status, cost or comm check" reach an operator as one status, and the variant with its payload is what
+/// separates them. It is read here, before that collapse.
+///
+/// The payloads are included rather than elided: a cost pair and a pair of booleans *are* the diagnosis,
+/// and the error strings are already in this process's memory at this point. They can be peer-sized,
+/// which is the same exposure `handle_errors` already has when it formats an `InternalError`'s cause into
+/// an error.
+fn describe_replay_failure(failure: &ReplayFailure) -> String {
+    match failure {
+        ReplayFailure::InternalError(cause) => format!("kind=InternalError cause={cause}"),
+        ReplayFailure::ReplayStatusMismatch {
+            initial_failed,
+            replay_failed,
+        } => format!(
+            "kind=ReplayStatusMismatch initial_failed={initial_failed} replay_failed={replay_failed}"
+        ),
+        ReplayFailure::UnusedCommEvent(cause) => format!("kind=UnusedCommEvent cause={cause}"),
+        ReplayFailure::ReplayCostMismatch {
+            initial_cost,
+            replay_cost,
+        } => format!(
+            "kind=ReplayCostMismatch initial_cost={initial_cost} replay_cost={replay_cost}"
+        ),
+        ReplayFailure::SystemDeployErrorMismatch {
+            play_error,
+            replay_error,
+        } => format!(
+            "kind=SystemDeployErrorMismatch play_error={play_error} replay_error={replay_error}"
+        ),
+    }
+}
+
 fn describe_no_advance(reason: &NoAdvance<Validator>) -> String {
     match reason {
         NoAdvance::Coverage { missing, senders } => format!(
@@ -460,6 +544,15 @@ where
         );
         Err(BlockStatus::InvalidPreStateHash)
     } else if pre_state.fringe_rejected_deploys != block.rejected_deploys {
+        // **The one arm on this path that used to say nothing at all.** The other refusals carry a hash
+        // disagreement and go through `describe_state_mismatch`; this one compared two sets and returned
+        // `InvalidRejectedDeploy` with no log, so the claimed set could be empty or could be every deploy
+        // in the block and the log could not tell those apart (Aria's #140 named the arm; this is it,
+        // rewritten against the status split that landed after it).
+        log.warn(
+            source,
+            &describe_rejected_deploy_mismatch(block, &pre_state),
+        );
         Err(BlockStatus::InvalidRejectedDeploy)
     } else if slash_is_unjustified(dag, block).await? {
         Err(BlockStatus::UnjustifiedSlash)
@@ -476,6 +569,29 @@ where
         // Read the recomputed hash *before* `handle_errors` consumes the result, so the disagreement
         // can be reported with both sides (#139).
         let recomputed = replay_result.as_ref().ok().cloned();
+        // **A replay that failed and a replay that disagreed are different faults**, and `handle_errors`
+        // collapses them: every variant but `InternalError` becomes `Ok(None)`, which is the same
+        // `InvalidStateHash` a plain post-state mismatch produces. The variant and its payload are read
+        // here, before that collapse (Aria's #140; the hash-side arms of that PR are already covered by
+        // the disagreement lines above and below).
+        if let Err(failure) = &replay_result {
+            log.warn(
+                source,
+                &format!(
+                    "replay failed on block #{} {} by {} — {} (declared post-state {} pre_state={} \
+                     fringe_state={} prev_fringe_lookup={}) {}",
+                    block.block_number,
+                    block.block_hash.to_hex(),
+                    short_id(&block.sender),
+                    describe_replay_failure(failure),
+                    post_state_hash.to_hex(),
+                    pre_state.pre_state_hash.to_hex(),
+                    pre_state.fringe_state.to_hex(),
+                    pre_state.prev_fringe_lookup.to_hex(),
+                    describe_deploys(block),
+                ),
+            );
+        }
         let handled = handle_errors(&post_state_hash, replay_result)?;
         if handled.is_none() {
             log.warn(
@@ -532,8 +648,10 @@ mod tests {
     ///
     /// The `close_block=yes` arm is deliberate: that is the system deploy that anchors the next
     /// epoch's seed to the fringe state, so it is the deploy a fringe-derived divergence appears on.
-    #[test]
-    fn the_disagreement_line_names_both_hashes_and_the_predicate() {
+    /// A block and the pre-state it was merged against, with every field the mismatch lines read set to a
+    /// distinct value. Shared so that a change to `BlockMessage` or `ParentsMergedState` breaks one
+    /// fixture rather than one per line under test.
+    fn fixture() -> (BlockMessage, ParentsMergedState) {
         let block = BlockMessage {
             version: 1,
             shard_id: "root".to_string(),
@@ -577,6 +695,17 @@ mod tests {
             pre_state_hash: hash(0x11),
             rejected_deploys: BTreeSet::new(),
         };
+        (block, pre_state)
+    }
+
+    /// A `BTreeSet<Vec<u8>>` of rejected deploy ids, for the fixture's overrides.
+    fn ids(items: impl IntoIterator<Item = u8>) -> BTreeSet<Vec<u8>> {
+        items.into_iter().map(|b| vec![b]).collect()
+    }
+
+    #[test]
+    fn the_disagreement_line_names_both_hashes_and_the_predicate() {
+        let (block, pre_state) = fixture();
 
         let line = describe_state_mismatch(
             &block,
@@ -646,5 +775,85 @@ mod tests {
             Err(ReplayFailure::replay_status_mismatch(true, false)),
         );
         assert_eq!(r.unwrap(), None);
+    }
+
+    /// **The arm that used to leave no trace** (#140). A `rejected_deploys` disagreement has to name both
+    /// sets — so an empty claimed set is distinguishable from one holding every deploy — and, because the
+    /// evidence is *which ids differ*, the difference between them.
+    #[test]
+    fn the_rejected_deploy_line_names_both_sets_and_what_differs() {
+        let (mut block, mut pre_state) = fixture();
+        // This node's merge filtered out `01` and `02`; the block claims `02` and `03`.
+        pre_state.fringe_rejected_deploys = ids([0x01, 0x02]);
+        block.rejected_deploys = ids([0x02, 0x03]);
+
+        let line = describe_rejected_deploy_mismatch(&block, &pre_state);
+
+        assert!(line.contains("rejected-deploys"), "{line}");
+        assert!(line.contains("#42"), "{line}");
+        // Both counts, which is what the arm logged nothing of before.
+        assert!(line.contains("computed 2 rejected"), "computed: {line}");
+        assert!(line.contains("claims 2"), "claimed: {line}");
+        // The ids each side has and the other does not — the actual evidence.
+        assert!(
+            line.contains(&rchain_shared::base16::encode(&[0x01u8])),
+            "only here: {line}"
+        );
+        assert!(
+            line.contains(&rchain_shared::base16::encode(&[0x03u8])),
+            "only there: {line}"
+        );
+        // The deploy that consumes the fringe, as the sibling disagreement line carries it.
+        assert!(line.contains("close_block=yes"), "{line}");
+    }
+
+    /// …and a side with no ids of its own says `none` rather than printing an empty list, because that is
+    /// what tells an operator the other set is a strict superset.
+    #[test]
+    fn the_rejected_deploy_line_says_none_when_one_side_is_a_superset() {
+        let (mut block, mut pre_state) = fixture();
+        pre_state.fringe_rejected_deploys = ids([0x01]);
+        block.rejected_deploys = ids([0x01, 0x02]);
+
+        let line = describe_rejected_deploy_mismatch(&block, &pre_state);
+
+        assert!(line.contains("(none only here)"), "{line}");
+        assert!(
+            line.contains(&rchain_shared::base16::encode(&[0x02u8])),
+            "only there: {line}"
+        );
+    }
+
+    /// **Read before `handle_errors` collapses it** (#140). Four of the five variants become `Ok(None)` —
+    /// the same status a plain post-state mismatch produces — so the variant is the only thing that
+    /// separates "the replay disagreed" from "the replay failed a status, cost or comm check".
+    #[test]
+    fn the_replay_failure_line_names_every_variant_and_its_payload() {
+        let cases = [
+            (ReplayFailure::internal_error("boom"), "kind=InternalError"),
+            (
+                ReplayFailure::replay_status_mismatch(true, false),
+                "initial_failed=true",
+            ),
+            (
+                ReplayFailure::unused_comm_event("c"),
+                "kind=UnusedCommEvent",
+            ),
+            (ReplayFailure::replay_cost_mismatch(7, 9), "replay_cost=9"),
+            (
+                ReplayFailure::system_deploy_error_mismatch("a", "b"),
+                "play_error=a",
+            ),
+        ];
+
+        let mut lines = BTreeSet::new();
+        for (failure, needle) in &cases {
+            let line = describe_replay_failure(failure);
+            assert!(line.contains(needle), "{needle} missing from {line}");
+            lines.insert(line);
+        }
+        // All five must be *distinguishable*: a line that named only the kind would pass the assertions
+        // above while leaving the four soft-failed variants reading alike.
+        assert_eq!(lines.len(), cases.len(), "one line per variant: {lines:?}");
     }
 }
