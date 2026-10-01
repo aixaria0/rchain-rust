@@ -6188,7 +6188,7 @@ its own blocks as failed"*; this run shows no failed record is involved. C190's 
 this tree it defends a shape the sync no longer produces (#139's `InvalidStateHash` was that shape's cause,
 and it is fixed); it remains correct for a genuine `Divergence` self-record. The defect this run found — a
 stale-snapshot self-equivocation during re-sync, producing the #156 symptom and the #157 halt — is distinct
-and **unregistered**. A fix is a decision (re-derive the seq against the DAG's current state at insert, or
+and registered as **C194**. A fix is a decision (re-derive the seq against the DAG's current state at insert, or
 catch a self-equivocation and retry rather than counting it as a self-validation failure), not a one-line
 edit.
 
