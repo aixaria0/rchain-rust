@@ -42,7 +42,7 @@ use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::validator::Validator;
-use rchain_shared::refined::NonNegI64;
+use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
@@ -62,8 +62,13 @@ const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
 const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
-/// `PosParams` serializes as five little-endian `i64`s.
-const PARAMS_LEN: usize = 5 * 8;
+/// `PosParams` serializes as seven little-endian `i64`s.
+const PARAMS_LEN: usize = 7 * 8;
+/// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150)
+/// and the absence slack (B4, #150) were added, in that order. A record shorter than [`PARAMS_LEN`]
+/// but at least this long reads the fields it carries and defaults the rest to zero, which is the
+/// pre-change rule for each (see [`decode_params`]).
+const PARAMS_LEN_ORIGINAL: usize = 5 * 8;
 
 // --- Leaf keys ---------------------------------------------------------------
 
@@ -99,6 +104,21 @@ pub fn pos_pending_withdrawers_key() -> Blake2b256Hash {
 /// its bond when its withdrawal is released.
 pub fn pos_committed_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:committed")
+}
+
+/// **Leaf key for the height of the last block each validator signed** — `validator → BlockHeight`
+/// (B4, #150).
+///
+/// The one per-validator **activity** record in state, and it exists because every other candidate
+/// signal was proposer-steerable: a block writes only its **own** entry, from its own signed `sender`
+/// and its own `block_number`, and each node replays that write from the same two values. Nothing a
+/// proposer can put in a block changes what another validator's entry says.
+///
+/// What it is for: an income-only absence rule, and any later score that needs to know whether a
+/// validator has been doing the work — neither of which could be stated honestly against a signal the
+/// proposer chose.
+pub fn pos_last_spoke_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:last_spoke")
 }
 
 /// Leaf key for the immutable PoS parameters.
@@ -259,6 +279,42 @@ pub fn encode_bonds(bonds: &BTreeMap<Validator, NonNegI64>) -> Vec<u8> {
         out.extend_from_slice(&i64::from(*stake).to_le_bytes());
     }
     out
+}
+
+/// Encode the last-spoke map (B4, #150): the same wire shape as [`encode_bonds`] — a 65-byte
+/// validator and a little-endian `i64` — with the block height in the value slot.
+///
+/// Deliberately the same shape rather than a second codec: `BlockHeight` and `NonNegI64` are both a
+/// non-negative `i64` in a fixed-width slot, and a reader who has met one map has met both.
+pub fn encode_last_spoke(spoke: &BTreeMap<Validator, BlockHeight>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(spoke.len() * BOND_ENTRY_LEN);
+    for (v, height) in spoke {
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(&i64::from(*height).to_le_bytes());
+    }
+    out
+}
+
+/// Decode a last-spoke map (inverse of [`encode_last_spoke`]).
+pub fn decode_last_spoke(bytes: &[u8]) -> Result<BTreeMap<Validator, BlockHeight>, String> {
+    if bytes.len() % BOND_ENTRY_LEN != 0 {
+        return Err(format!(
+            "last-spoke encoding has {} bytes, not a multiple of {BOND_ENTRY_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for chunk in bytes.chunks_exact(BOND_ENTRY_LEN) {
+        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+        let height_bytes: [u8; 8] = chunk[VALIDATOR_LEN..BOND_ENTRY_LEN]
+            .try_into()
+            .map_err(|_| "last-spoke encoding: invalid height length".to_string())?;
+        let height = i64::from_le_bytes(height_bytes);
+        let height = BlockHeight::try_from(height)
+            .map_err(|_| format!("negative last-spoke height {height}"))?;
+        out.insert(validator, height);
+    }
+    Ok(out)
 }
 
 /// Decode a bonds map (inverse of [`encode_bonds`]).
@@ -465,11 +521,32 @@ pub struct PosParams {
     pub quarantine_length: i64,
     /// Maximum size of the active set, by descending stake (`0` = unlimited).
     pub number_of_active_validators: i64,
+    /// **What share of a deploy's burned phlo goes to the block's producer** (B2, #150), in basis
+    /// points of the amount the staking vault keeps for that deploy. `0` is the contract's own
+    /// behaviour — every burned photon reaches the epoch pot and is split by the drawn set — and it is
+    /// what a params record written before this field existed decodes to.
+    ///
+    /// Refined and bounded above by `10000`: a share over 100 % would pay the producer more than the
+    /// deploy burned, out of other validators' stake in the same vault. A genesis parameter rather
+    /// than a constant because it decides *amounts*, which are consensus state: two nodes with
+    /// different values compute different post-states, and genesis identity is the mechanism that
+    /// makes a network agree on one.
+    pub executor_share: NonNegI64,
+    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
+    /// #150), in heights. `0` disables the rule, which is `Pos.rhox`'s behaviour — in the contract
+    /// absence costs nothing and an absent validator is paid for being drawn — and it is what a params
+    /// record written before this field decodes to.
+    ///
+    /// The rule it gates can only ever *remove* an entry from the rewards a boundary is about to
+    /// commit, so it is income-only by construction: no bond, no pool entry and no ledger is reachable
+    /// from it.
+    pub absence_slack: NonNegI64,
 }
 
 impl Default for PosParams {
-    /// Permissive parameters: no bond bounds, no quarantine, unlimited active set. Used when no
-    /// genesis PoS state has been installed (ad-hoc runtimes/tests).
+    /// Permissive parameters: no bond bounds, no quarantine, unlimited active set, and **no producer
+    /// share** — which is the contract's own behaviour, so an ad-hoc runtime pays exactly what
+    /// `Pos.rhox` pays. Used when no genesis PoS state has been installed (ad-hoc runtimes/tests).
     fn default() -> Self {
         PosParams {
             minimum_bond: NonNegI64::zero(),
@@ -477,12 +554,14 @@ impl Default for PosParams {
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
+            executor_share: NonNegI64::zero(),
+            absence_slack: NonNegI64::zero(),
         }
     }
 }
 
 impl PosParams {
-    /// Encode as five little-endian `i64`s (inverse: [`decode_params`]).
+    /// Encode as seven little-endian `i64`s (inverse: [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
         out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
@@ -490,23 +569,45 @@ impl PosParams {
         out.extend_from_slice(&self.epoch_length.to_le_bytes());
         out.extend_from_slice(&self.quarantine_length.to_le_bytes());
         out.extend_from_slice(&self.number_of_active_validators.to_le_bytes());
+        out.extend_from_slice(&i64::from(self.executor_share).to_le_bytes());
+        out.extend_from_slice(&i64::from(self.absence_slack).to_le_bytes());
         out
     }
 }
 
 /// Decode [`PosParams`] (inverse of [`PosParams::encode`]).
+///
+/// **A record that stops short of the current form reads the fields it carries and defaults the rest
+/// to zero** — the rule [`SlashSeverity::Unspecified`] uses for a slash that predates the tiers, and
+/// for the same reason: each trailing field's zero is exactly the behaviour of a chain that ran before
+/// it existed (no producer's share; no absence rule). A record that is *not* a whole number of fields,
+/// or that is shorter than the original five, is refused.
+///
+/// [`SlashSeverity::Unspecified`]: rchain_models::block_metadata::SlashSeverity::Unspecified
 pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
-    if bytes.len() != PARAMS_LEN {
+    if bytes.len() % 8 != 0 || bytes.len() < PARAMS_LEN_ORIGINAL || bytes.len() > PARAMS_LEN {
         return Err(format!(
-            "params encoding has {} bytes, expected {PARAMS_LEN}",
+            "params encoding has {} bytes: a params record is a whole number of eight-byte fields, \
+             between {PARAMS_LEN_ORIGINAL} and {PARAMS_LEN}",
             bytes.len()
         ));
     }
     let read = |i: usize| -> i64 {
+        // A field the record does not carry is the pre-change rule, not a missing value.
+        if (i + 1) * 8 > bytes.len() {
+            return 0;
+        }
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
         i64::from_le_bytes(arr)
     };
+    let executor_share = read(5);
+    let absence_slack = read(6);
+    if executor_share > 10_000 {
+        return Err(format!(
+            "executor_share is {executor_share} basis points, above the whole of what was burned"
+        ));
+    }
     // The two bond bounds are refused rather than clamped (the deferred item 1d): a stored negative
     // is not a value this protocol can mean, and clamping it would silently turn a corrupted or
     // malicious params leaf into "no minimum", which is the permissive reading of the same bytes.
@@ -518,6 +619,10 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
         epoch_length: read(2),
         quarantine_length: read(3),
         number_of_active_validators: read(4),
+        executor_share: NonNegI64::try_from(executor_share)
+            .map_err(|e| format!("executor_share is not a valid basis-point share: {e}"))?,
+        absence_slack: NonNegI64::try_from(absence_slack)
+            .map_err(|e| format!("absence_slack is not a valid number of heights: {e}"))?,
     })
 }
 
@@ -557,8 +662,8 @@ impl PosGenesis {
 }
 
 /// Select the active validator set from the pool: drop zero-stake and withdrawing validators, then
-/// **draw** up to `number_of_active_validators` of the rest uniformly without replacement, seeded by
-/// `seed` (`0` = unlimited, no draw).
+/// **draw** up to `number_of_active_validators` of the rest **in proportion to stake**, without
+/// replacement, seeded by `seed` (`0` = unlimited, no draw).
 ///
 /// **Why a draw and not the top N.** The set this returns *is* the finality weight set
 /// (`casper/src/multi_parent_casper.rs`'s `Finalizer`), so who is in it decides who can finalise.
@@ -567,13 +672,24 @@ impl PosGenesis {
 /// the moment of use, so every candidate block was a fresh, free reroll — a proposer could try
 /// headers until it drew the set it wanted. See `close_block` step 5 for what anchors the draw now.
 ///
-/// **Uniform, and the residual that carries** (a security property, not a preference): splitting a
-/// stake across `k` validators yields about `k` times the expected slots of the same stake held
-/// whole, while a large honest validator is no likelier to be drawn than a dust one. The cap bites
-/// (default 100), so this is a live sybil exposure in the finality weight set, registered with the
-/// rest of the rule's residuals in `spec/RUST-VS-SCALA.md` §3. Weighted sampling without replacement
-/// — an exact-integer walk of the pool in canonical order, no floats — is the drop-in alternative and
-/// changes nothing else in this file.
+/// **Why weighted, and not uniform.** The rule was a uniform draw until 2026-10-02, and a uniform
+/// draw pays per **key** rather than per stake: the first slot went to a dust validator as readily as
+/// to the largest one, so splitting a stake across `k` keys bought about `k` times the expected slots
+/// (registered as residual O3 in `spec/RUST-VS-SCALA.md` §3). That is a sybil incentive in the
+/// finality weight set *and* an income bug — `epoch_rewards` pays the drawn members, so a staker that
+/// split its stake out-earned the same stake held whole, while a single large validator earned less
+/// than its share. The weighted draw gives the **first** slot to a validator with probability exactly
+/// `stake / total`, which is the property that removes the split incentive, and it needs no
+/// participation score, no delegation and no new state: `(pool, seed)` still determines the result.
+///
+/// **Successive weighting, and the residual that stays.** The draw is sequential — pick by weight,
+/// remove, renormalise, repeat — so it is exactly proportional for the first slot and *approximately*
+/// so for the later ones (an item already drawn cannot be drawn again, so the tail slightly favours
+/// the items that were not picked). Splitting a stake is therefore no longer worth ~`k` times the
+/// slots, but it is not provably neutral either, and the honest statement is that O3 is reduced rather
+/// than closed. The exact-proportional alternative is a systematic (rotated-interval) scheme, which
+/// assigns a fixed share instead of a random one and would collide for any stake above `1/k` of the
+/// total; that is a different rule with a different variance, and it is not this one.
 ///
 /// Generic over what the withdrawal map holds, because only its key set matters here and the port has
 /// two of them: the staged requests (`validator → deadline`, `pendingWithdrawers`) and the claims
@@ -586,7 +702,7 @@ pub fn select_active<V>(
 ) -> BTreeMap<Validator, NonNegI64> {
     // Eligible candidates, in the `BTreeMap`'s key order — the canonical container order, which is
     // what makes the draw a function of `(pool, seed)` and nothing else.
-    let mut candidates: Vec<(&Validator, NonNegI64)> = pool
+    let candidates: Vec<(&Validator, NonNegI64)> = pool
         .iter()
         .filter(|(v, stake)| i64::from(**stake) > 0 && !withdrawers.contains_key(*v))
         .map(|(v, stake)| (v, *stake))
@@ -612,7 +728,7 @@ pub fn select_active<V>(
             .collect();
     }
     let mut rand = Blake2b512Random::from_init(&seed.rng_input());
-    draw_without_replacement(&mut candidates, cap, &mut rand)
+    draw_weighted_without_replacement(&candidates, cap, &mut rand)
         .into_iter()
         .map(|(v, stake)| (*v, stake))
         .collect()
@@ -704,6 +820,42 @@ fn epoch_pot(
 /// the epoch total. That is the same case the Lean model leaves as a hypothesis
 /// (`hD : 0 < activeBonds / minimumBond`): the model states the theorem for the defined case, the port
 /// pays nothing in the undefined one. `an_epoch_with_a_zero_normaliser_pays_nothing` pins it.
+/// **The absence rule** (B4, #150): drop from an epoch's rewards every drawn validator whose last
+/// signed block is older than `slack` heights before `boundary`.
+///
+/// **Income only, and that is structural rather than promised.** The whole effect of this function is
+/// to remove entries from the map a boundary is about to commit, so no bond, no pool entry and no
+/// ledger is reachable from it — an absent validator is not slashed, not evicted, and not deactivated,
+/// it is simply not paid for a boundary at which it did not act. The withheld reward stays in the
+/// staking vault (nothing debits it), so the next epoch distributes it: the epoch's conservation is
+/// untouched by construction.
+///
+/// **And it is fully recoverable.** The rule reads only the height in `pos:last_spoke`, and a validator
+/// writes that entry itself by signing one block — so one block from a validator that was away puts it
+/// back in full at its next boundary. `slack == 0` disables the rule entirely, which is `Pos.rhox`'s
+/// behaviour: in the contract absence costs nothing and an absent validator is paid for being drawn.
+///
+/// A validator that has **never** signed on this chain is as absent as it is possible to be, so it is
+/// dropped too — which is the honest reading of a missing record rather than a special case.
+fn apply_absence(
+    rewards: BTreeMap<Validator, NonNegI64>,
+    spoke: &BTreeMap<Validator, BlockHeight>,
+    boundary: i64,
+    slack: i64,
+) -> BTreeMap<Validator, NonNegI64> {
+    if slack <= 0 {
+        return rewards;
+    }
+    let earliest = boundary.saturating_sub(slack);
+    rewards
+        .into_iter()
+        .filter(|(validator, _)| match spoke.get(validator) {
+            None => false,
+            Some(height) => i64::from(*height) >= earliest,
+        })
+        .collect()
+}
+
 fn epoch_reward(pot: i64, minimum_bond: i64, active_bonds: i64, bond: i64) -> Result<i64, String> {
     if minimum_bond <= 0 {
         return Ok(0);
@@ -802,6 +954,42 @@ impl NativeSystemState {
     pub fn set_active(&self, active: &BTreeMap<Validator, NonNegI64>) {
         self.store
             .put(PREFIX_POS, pos_active_key(), encode_bonds(active));
+    }
+
+    /// **The height of the last block each validator signed** (B4, #150) — the activity record the
+    /// absence rule reads. Absent from the map means the validator has never signed a block on this
+    /// chain, which is the same thing the rule needs to know as "very long ago".
+    pub async fn last_spoke(&self) -> Result<BTreeMap<Validator, BlockHeight>, String> {
+        match self
+            .store
+            .get(PREFIX_POS, &pos_last_spoke_key())
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(bytes) => decode_last_spoke(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// **Record that `speaker` signed a block at `height`** (B4, #150).
+    ///
+    /// A block writes exactly one entry — its own sender's — and the value it writes is its own
+    /// height, so the write is a function of the block alone. It is a *record*, not a reward or a
+    /// penalty: nothing reads it until an epoch boundary, and nothing about it can touch a bond.
+    ///
+    /// Nothing prunes the map. Its size is bounded by the number of distinct keys that have ever
+    /// signed a block on this chain, which is the bond pool plus anything ever slashed out of it —
+    /// small, and the entries are 73 bytes each.
+    pub async fn record_spoke(
+        &self,
+        speaker: &Validator,
+        height: BlockHeight,
+    ) -> Result<(), String> {
+        let mut spoke = self.last_spoke().await?;
+        spoke.insert(*speaker, height);
+        self.store
+            .put(PREFIX_POS, pos_last_spoke_key(), encode_last_spoke(&spoke));
+        Ok(())
     }
 
     /// The active-validator set (the consensus validator set).
@@ -1251,10 +1439,18 @@ impl NativeSystemState {
         let mut pending = self.pending_withdrawers().await?;
         let mut committed = self.committed_rewards().await?;
 
-        // 1. The epoch's rewards, from the state as it stands.
-        let rewards = self
-            .epoch_rewards(&pool, &withdrawers, &committed, &params)
-            .await?;
+        // 1. The epoch's rewards, from the state as it stands — and then the **absence rule** (B4,
+        // #150), which can only ever *remove* an entry from what this boundary is about to commit. The
+        // withheld reward stays in the staking vault and is distributed by a later epoch: nothing is
+        // minted, nothing is burned, and no bond is reachable from here.
+        let spoke = self.last_spoke().await?;
+        let rewards = apply_absence(
+            self.epoch_rewards(&pool, &withdrawers, &committed, &params)
+                .await?,
+            &spoke,
+            block_number,
+            i64::from(params.absence_slack),
+        );
         for (validator, reward) in &rewards {
             let carried = committed
                 .get(validator)
@@ -1917,6 +2113,56 @@ impl NativeSystemState {
         Ok(Ok(()))
     }
 
+    /// **Pay the block's producer for the work it did** (B2, #150): `burned * executor_share / 10000`
+    /// leaves the staking vault and arrives in the producer's own REV vault.
+    ///
+    /// **Why this is a payment and not a new pot.** The deploy's phlo was charged *into* the staking
+    /// vault and the unconsumed part refunded *out* of it, so what the vault keeps for a deploy is
+    /// exactly what that deploy burned — and that is what an epoch's reward pot is made of. Paying the
+    /// producer a share of it moves money between two parties who are both already paid out of the
+    /// same vault, so the total paid out is unchanged: the pie is the same, and this decides **who**
+    /// gets a slice of it. Nothing is minted, nothing is destroyed, and the conservation law the
+    /// epoch's own transitions carry holds here too.
+    ///
+    /// **The producer is the block's own signed `sender`**, which is the only production signal the
+    /// protocol can read without new state. It is set before the block's deploys run and is identical
+    /// on play and replay, so the payment is deterministic; it needs no participation score, and no
+    /// third party can steer it — the address is the one that signed the block.
+    ///
+    /// `burned` is the deploy's *whole* burned amount and the share is applied **here**, from this
+    /// node's own `PosParams`, so the number lives in consensus state rather than in each caller.
+    /// A short vault is the platform error [`Self::debit_pos_vault`] describes, and it cannot arise
+    /// here: the payment is a fraction of an amount this vault just retained.
+    pub async fn pay_executor(
+        &self,
+        executor: &PublicKey,
+        burned: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        let share = i64::from(self.params().await?.executor_share);
+        // `i128`, because the product of an `i64`-bounded amount and a `i64`-bounded share is not an
+        // `i64` — and a wrapped product here would pay the producer a *different* amount than the one
+        // the share names, silently, on a consensus path.
+        let payment = i128::from(i64::from(burned)) * i128::from(share) / 10000;
+        let payment = checked_i64(payment, "executor payment")?;
+        let payment = NonNegI64::try_from(payment).map_err(|e| format!("payExecutor: {e}"))?;
+        if payment == NonNegI64::zero() {
+            return Ok(Ok(()));
+        }
+        let address = RevAddress::from_public_key(executor)
+            .ok_or_else(|| "payExecutor: invalid executor public key".to_string())?
+            .to_base58();
+        self.debit_pos_vault(payment).await?;
+        let balance = self
+            .vault_balance(&address)
+            .await?
+            .unwrap_or(NonNegI64::zero());
+        self.set_vault_balance(
+            &address,
+            balance_plus(balance, i64::from(payment), "payExecutor")?,
+        );
+        Ok(Ok(()))
+    }
+
     /// The REV address (base58) of a validator's public key.
     fn vault_address(&self, validator: &Validator) -> Result<String, String> {
         let pk = PublicKey::new(validator.as_bytes().to_vec());
@@ -2142,8 +2388,68 @@ mod tests {
             epoch_length: 10,
             quarantine_length: 5,
             number_of_active_validators: 3,
+            executor_share: NonNegI64::try_from(2500).unwrap(),
+            absence_slack: NonNegI64::try_from(0).unwrap(),
         };
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
+    }
+
+    /// **A shorter record is a chain that predates the fields it does not carry, and each missing
+    /// field reads as the rule of that chain** (B2 and B4, #150) — the same compatibility rule the
+    /// slash tiers use (`SlashSeverity::Unspecified` is code `0`, the pre-tier rule). The alternative,
+    /// refusing a short record, would make a node that upgrades unable to read its own genesis params
+    /// leaf.
+    ///
+    /// Both new fields are *off* at zero and both zeros are the older behaviour: no producer's share,
+    /// and no absence rule. And the *upper* bound on the share is refused rather than clamped: a share
+    /// above 10 000 basis points would pay the producer more than the deploy burned, out of the same
+    /// vault other validators' stake sits in — a reward funded by everyone else's bond.
+    #[test]
+    fn a_short_params_record_reads_the_pre_change_rule_and_an_over_share_is_refused() {
+        let current = PosParams {
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            maximum_bond: NonNegI64::try_from(1000).unwrap(),
+            epoch_length: 10,
+            quarantine_length: 5,
+            number_of_active_validators: 3,
+            executor_share: NonNegI64::try_from(2500).unwrap(),
+            absence_slack: NonNegI64::try_from(7).unwrap(),
+        };
+        let original = &current.encode()[..PARAMS_LEN_ORIGINAL];
+        assert_eq!(
+            decode_params(original).unwrap(),
+            PosParams {
+                executor_share: NonNegI64::zero(),
+                absence_slack: NonNegI64::zero(),
+                ..current.clone()
+            },
+            "the five-field record is both pre-change rules at once"
+        );
+        // And the intermediate form — the producer's share without the absence slack — reads the share
+        // it carries and defaults only what it lacks.
+        let share_only = &current.encode()[..PARAMS_LEN_ORIGINAL + 8];
+        assert_eq!(
+            decode_params(share_only).unwrap(),
+            PosParams {
+                absence_slack: NonNegI64::zero(),
+                ..current.clone()
+            },
+            "the six-field record carries the share it has and defaults the slack it lacks"
+        );
+
+        // A record that is not a whole number of fields, or shorter than the original, is refused: the
+        // tolerance is "a field the record does not carry", not "any byte string".
+        for len in [0usize, 8, 39, 41, 47, 57, 64] {
+            assert!(
+                decode_params(&vec![0u8; len]).is_err(),
+                "{len} bytes is not a params record this protocol has ever written"
+            );
+        }
+
+        let mut over = current.encode();
+        over[40..48].copy_from_slice(&10_001i64.to_le_bytes());
+        let err = decode_params(&over).expect_err("a share above the whole is not a share");
+        assert!(err.contains("executor_share"), "{err}");
     }
 
     /// **Deferred item 1d, and the shape of the hole it closed.** The wire record held the two bond
@@ -2164,6 +2470,8 @@ mod tests {
             epoch_length: 10,
             quarantine_length: 5,
             number_of_active_validators: 3,
+            executor_share: NonNegI64::zero(),
+            absence_slack: NonNegI64::zero(),
         };
         assert!(
             decode_params(&params.encode()).is_ok(),
@@ -2271,6 +2579,12 @@ mod tests {
     /// Every other test here asserts a *property*, so a refactor that changed the draw would satisfy
     /// all of them — only a full chain replay would notice. This pins the output itself, in the style
     /// of `Blake2b512Random`'s own vectors.
+    ///
+    /// **The vector moved on 2026-10-02 and that is the point of it.** It read
+    /// `[1, 3, 5]` under the uniform draw. The weighted rule draws a stake-heavier set: `[3, 4, 5]`,
+    /// the three largest stakes in the pool, where the uniform rule's set took the smallest. Both are
+    /// the same kind of statement, and the movement is the point: a change here is a consensus
+    /// change.
     #[test]
     fn the_draw_matches_a_known_answer_vector() {
         let pool = pool_of(&[(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)]);
@@ -2286,8 +2600,194 @@ mod tests {
         );
         assert_eq!(
             active.keys().copied().collect::<Vec<_>>(),
-            vec![validator(1), validator(3), validator(5)],
+            vec![validator(3), validator(4), validator(5)],
             "the draw for this pool and seed; a change here is a consensus change"
+        );
+    }
+
+    /// **The book's "cap bites" table, re-measured on the weighted rule — and the direction of the
+    /// reversal has flipped.**
+    ///
+    /// `epoch_rewards` pays a pooled validator `bond / active_bonds` of the pot when it is drawn and
+    /// zero otherwise, so a staker's expected income is the drawn holdings over the drawn total,
+    /// averaged over seeds. The published table (pot 1, six rival keys at stake 10, cap 4) read
+    /// **0.326 / 0.400 / 0.528** for one stake of 40 held as one key, four keys of 10 and twenty keys of
+    /// 2 — splitting bought 62 %, holding whole was *penalised*, and every key was an independent
+    /// lottery ticket. That is the sybil exposure O3 named.
+    ///
+    /// On the weighted rule the same measurement reads **0.5328 / 0.4000 / 0.1770**. Splitting a stake
+    /// into twenty keys now **loses** 56 % of the fair share instead of gaining 32 %, so the per-key
+    /// lever is gone — and the reason the four-equal-keys case sits exactly at the pro-rata 0.4 is that
+    /// it *is* the rivals' configuration, which is the cleanest statement of proportionality available.
+    ///
+    /// **The concentration side of this is real and is stated rather than hidden.** Above the cap, a
+    /// single large key earns ~33 % *more* than the flat pro-rata share, because the drawn set is capped
+    /// at four and a large key both draws more often and crowds the denominator when it does. The
+    /// uniform rule had the same magnitude pointing the other way. Neither is "pro-rata"; the cap is
+    /// what breaks proportionality, and the two rules differ only in which side of it a staker is on.
+    /// Weighting is the side chosen, for two reasons: a per-key income rule *mints finality weight for
+    /// free* (a consensus-safety problem, not a preference), and a large bond is already the thing the
+    /// cap exists to bound — a bond is bounded above by `maximum_bond`, and the operator carries the
+    /// concentration risk itself, since everything at risk is per-validator. The seeds are fixed, so
+    /// these are pins rather than samples.
+    #[test]
+    fn the_cap_regime_no_longer_rewards_a_split_stake() {
+        let params = PosParams {
+            number_of_active_validators: 4,
+            ..PosParams::default()
+        };
+        let seeds = 4096i64;
+        // Six rivals of stake 10, plus the holder's 40 however it is held: every configuration has the
+        // same total weight, so the same pool total and the same denominator distribution.
+        let measure = |held: &[i64]| -> f64 {
+            let mut pool = pool_of(&[(1, 10), (2, 10), (3, 10), (4, 10), (5, 10), (6, 10)]);
+            let mut held_keys = BTreeSet::new();
+            for (index, stake) in held.iter().enumerate() {
+                let address = u8::try_from(100 + index).expect("a test key");
+                let key = validator(address);
+                pool.insert(key, NonNegI64::try_from(*stake).expect("a test stake"));
+                held_keys.insert(key);
+            }
+            let mut total = 0.0;
+            for epoch in 0..seeds {
+                let seed = EpochSeed {
+                    epoch,
+                    anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                };
+                let active =
+                    select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params, &seed);
+                let drawn_total: i64 = active.values().map(|s| i64::from(*s)).sum();
+                let drawn_holdings: i64 = active
+                    .iter()
+                    .filter(|(v, _)| held_keys.contains(v))
+                    .map(|(_, s)| i64::from(*s))
+                    .sum();
+                if drawn_total > 0 {
+                    total += drawn_holdings as f64 / drawn_total as f64;
+                }
+            }
+            total / seeds as f64
+        };
+
+        let whole = measure(&[40]);
+        let four = measure(&[10, 10, 10, 10]);
+        let twenty = measure(&[2; 20]);
+        for (label, value, expected) in [
+            ("one key of 40", whole, 0.5328),
+            ("four keys of 10", four, 0.4000),
+            ("twenty keys of 2", twenty, 0.1770),
+        ] {
+            assert!(
+                (value - expected).abs() < 0.005,
+                "{label} earned {value}, not {expected}: the weights moved, so the rule moved"
+            );
+        }
+        assert!(
+            whole > four && four > twenty,
+            "income must not fall as a stake is held in fewer keys — the uniform rule had it the other \
+             way round, which is the defect; got {whole}, {four}, {twenty}"
+        );
+        assert!(
+            (four - 0.4).abs() < 0.005,
+            "a staker that looks exactly like its rivals must earn exactly the pro-rata share; got {four}"
+        );
+    }
+
+    /// How often, over `seeds` epochs, the single slot of a one-member draw goes to `target`.
+    ///
+    /// A *measurement*, in the register's sense: the drawn set is a deterministic function of the seed,
+    /// so "in proportion to stake" is a property of the distribution over seeds rather than of one
+    /// call, and the only way to state it is to draw many. The seeds are fixed constants, so the
+    /// measurement is reproducible.
+    fn slot_share(pool: &BTreeMap<Validator, NonNegI64>, target: &Validator, seeds: i64) -> f64 {
+        let params = PosParams {
+            number_of_active_validators: 1,
+            ..PosParams::default()
+        };
+        let hits = (0..seeds)
+            .filter(|epoch| {
+                let seed = EpochSeed {
+                    epoch: *epoch,
+                    anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                };
+                select_active(pool, &BTreeMap::<Validator, ()>::new(), &params, &seed)
+                    .contains_key(target)
+            })
+            .count();
+        hits as f64 / seeds as f64
+    }
+
+    /// **The B1 falsifier: the one slot is awarded in proportion to stake, not per key.**
+    ///
+    /// Three parts of stake against one. Under the uniform rule this was `0.5` — the ratio of *keys* —
+    /// and that is the whole defect: a staker could split its stake across keys and buy slots, because
+    /// each key was a ticket regardless of what it was worth. Under the weighted rule it is `0.75`,
+    /// the ratio of stake.
+    ///
+    /// The tolerance is four standard deviations of the binomial at 512 trials, so this is a
+    /// measurement of the rule rather than a flake: a correct rule misses the band about once in
+    /// sixteen thousand runs, and restoring the uniform draw moves the value to `0.5`, far outside it.
+    #[test]
+    fn the_first_slot_is_awarded_in_proportion_to_stake() {
+        let pool = pool_of(&[(1, 3), (2, 1)]);
+        let share = slot_share(&pool, &validator(1), 512);
+        assert!(
+            (0.70..=0.80).contains(&share),
+            "a three-to-one stake must take the slot about three times in four; got {share}"
+        );
+    }
+
+    /// **And splitting a stake across keys does not buy slots** — the same measurement, stated the way
+    /// a staker would try it.
+    ///
+    /// The stake is 4 either way. Held as one key against four equal keys it takes about half the
+    /// draws; split into four keys of 1 against the same four, the *four keys together* still take
+    /// about half — not four fifths, which is what a per-key rule would give them.
+    #[test]
+    fn splitting_a_stake_across_keys_does_not_buy_slots() {
+        let whole = pool_of(&[(1, 4), (2, 1), (3, 1), (4, 1), (5, 1)]);
+        let split = pool_of(&[
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+            (6, 1),
+            (7, 1),
+            (8, 1),
+        ]);
+        let params = PosParams {
+            number_of_active_validators: 1,
+            ..PosParams::default()
+        };
+        let split_group: BTreeSet<Validator> = (1..=4).map(validator).collect();
+        let seeds = 512i64;
+
+        let wins = |pool: &BTreeMap<Validator, NonNegI64>, group: &BTreeSet<Validator>| {
+            (0..seeds)
+                .filter(|epoch| {
+                    let seed = EpochSeed {
+                        epoch: *epoch,
+                        anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                    };
+                    select_active(pool, &BTreeMap::<Validator, ()>::new(), &params, &seed)
+                        .keys()
+                        .any(|v| group.contains(v))
+                })
+                .count() as f64
+                / seeds as f64
+        };
+
+        let whole_share = wins(&whole, &BTreeSet::from([validator(1)]));
+        let split_share = wins(&split, &split_group);
+        assert!(
+            (0.45..=0.55).contains(&whole_share),
+            "half the stake takes about half the draws; got {whole_share}"
+        );
+        assert!(
+            (0.40..=0.60).contains(&split_share),
+            "the same half of the stake, split across four keys, must still take about half the \
+             draws — a per-key rule gives it four fifths; got {split_share}"
         );
     }
 
@@ -3307,6 +3807,97 @@ mod tests {
         assert!(result.is_err(), "insufficient funds must be rejected");
     }
 
+    /// **The producer is paid a share of what the deploy burned** (B2, #150) — and it is a *transfer*:
+    /// the staking vault loses exactly what the producer's own vault gains, so the pie is unchanged and
+    /// only the recipient moves.
+    ///
+    /// The three facts, one arm each: the two vaults move by the same amount and in opposite
+    /// directions; the bond pool is untouched, because a payment that could touch a stake would be a
+    /// slash wearing a reward's clothes; and a share of zero — the contract's own behaviour, and what a
+    /// params record written before this field decodes to — moves nothing at all.
+    #[tokio::test]
+    async fn the_producer_is_paid_a_share_of_what_the_deploy_burned() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let producer = PublicKey::new(vec![9u8; 65]);
+        let producer_addr = RevAddress::from_public_key(&producer).unwrap().to_base58();
+        let deployer = PublicKey::new(vec![1u8; 65]);
+        let deployer_addr = RevAddress::from_public_key(&deployer).unwrap().to_base58();
+        let validator = validator(1);
+        native
+            .install_genesis(&PosGenesis {
+                bonds: BTreeMap::from([(validator, nn(100))]),
+                trusted: BTreeSet::from([validator]),
+                params: PosParams {
+                    executor_share: NonNegI64::try_from(2500).expect("a quarter"),
+                    absence_slack: NonNegI64::zero(),
+                    ..PosParams::default()
+                },
+            })
+            .unwrap();
+        let staking_before = i64::from(native.pos_vault_balance().await.unwrap());
+
+        // A deploy charged 100 that burns 40: `pre_charge` puts the whole charge in the vault and
+        // `refund` takes the unconsumed 60 back out, so the vault keeps the burned 40.
+        native.set_vault_balance(&deployer_addr, NonNegI64::try_from(1000).unwrap());
+        native
+            .pre_charge(&deployer, nn(100))
+            .await
+            .unwrap()
+            .unwrap();
+        native.refund(&deployer, nn(60)).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            staking_before + 40,
+            "the control: the vault keeps exactly what was burned"
+        );
+
+        native
+            .pay_executor(&producer, nn(40))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.vault_balance(&producer_addr).await.unwrap().unwrap()),
+            10,
+            "a quarter of 40, in the address that signed the block"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            staking_before + 30,
+            "and the same 10 left the staking vault"
+        );
+        assert_eq!(
+            native.bonds().await.unwrap().get(&validator),
+            Some(&nn(100)),
+            "the bond is not a payment source"
+        );
+
+        // Zero share: the pre-field rule, and it must move nothing — not even a rounding remainder.
+        let no_share = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        no_share
+            .install_genesis(&PosGenesis {
+                bonds: BTreeMap::from([(validator, nn(100))]),
+                trusted: BTreeSet::from([validator]),
+                params: PosParams::default(),
+            })
+            .unwrap();
+        let before = i64::from(no_share.pos_vault_balance().await.unwrap());
+        no_share
+            .pay_executor(&producer, nn(40))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(no_share.pos_vault_balance().await.unwrap()),
+            before
+        );
+        assert_eq!(
+            no_share.vault_balance(&producer_addr).await.unwrap(),
+            None,
+            "a share of zero does not even create the producer's vault"
+        );
+    }
+
     #[tokio::test]
     async fn find_or_create_vault_creates_zero_balance_once() {
         let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
@@ -3325,6 +3916,130 @@ mod tests {
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
             42
+        );
+    }
+
+    /// **The block's own activity record, and the rule that reads it** (B4, #150).
+    ///
+    /// Three properties, and each is one of the plan's conditions for the rule existing at all:
+    ///
+    /// 1. **the record is the block's own** — `record_spoke` writes the key it is given at the height
+    ///    it is given, and the *only* caller passes the block's own `sender` and `block_number`, so no
+    ///    party can write another validator's entry;
+    /// 2. **the rule is income only** — a validator that has gone quiet loses its epoch reward and
+    ///    keeps its bond, stays in the pool, and stays in the active set;
+    /// 3. **and it recovers fully** — one block from it puts it back in full at the next boundary,
+    ///    which is what makes this an incentive rather than a confiscation;
+    /// 4. with `absence_slack = 0` the rule does nothing at all, which is the contract's behaviour.
+    #[tokio::test]
+    async fn the_absence_rule_takes_income_only_and_releases_it_on_a_single_block() {
+        let params = PosParams {
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            epoch_length: 1,
+            absence_slack: NonNegI64::try_from(5).unwrap(),
+            ..PosParams::default()
+        };
+        let native = native_with(
+            &[validator(1), validator(2)],
+            params.clone(),
+            &[(validator(1), 4), (validator(2), 8)],
+        )
+        .await;
+        // A pot, the way a deploy's phlo makes one.
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, nn(10));
+        native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
+
+        // Validator 1 last spoke at height 4; validator 2 has no record at all.
+        native
+            .record_spoke(&validator(1), BlockHeight::try_from(4).unwrap())
+            .await
+            .unwrap();
+        let spoke = native.last_spoke().await.unwrap();
+        assert_eq!(
+            spoke.get(&validator(1)).map(|h| i64::from(*h)),
+            Some(4),
+            "the record is the key and height it was given"
+        );
+        assert_eq!(
+            spoke.get(&validator(2)),
+            None,
+            "and nothing else is written"
+        );
+
+        // The boundary is height 12, so the slack of 5 reaches back to 7: validator 1 (height 4) is
+        // out of time and validator 2 (nothing) is as absent as it gets.
+        native
+            .close_block(12, fringe_state(12))
+            .await
+            .unwrap()
+            .unwrap();
+        let committed = native.committed_rewards().await.unwrap();
+        assert_eq!(
+            committed.get(&validator(1)).map(|r| i64::from(*r)),
+            None,
+            "a quiet validator is not paid for the boundary it sat out"
+        );
+        assert_eq!(
+            committed.get(&validator(2)),
+            None,
+            "nor is a silent stranger"
+        );
+
+        // **Income only.** The bond is where it was and both are still bonded, so the rule cannot
+        // reach a stake — a validator that was never paid is not a validator that was slashed.
+        let pool = native.bonds().await.unwrap();
+        assert_eq!(pool.get(&validator(1)).map(|s| i64::from(*s)), Some(4));
+        assert_eq!(pool.get(&validator(2)).map(|s| i64::from(*s)), Some(8));
+
+        // **And one block recovers it in full.** Validator 1 speaks at 16, the next boundary is 20
+        // (slack reaches back to 15, and 16 is inside it), so it is paid the share it would have had.
+        native
+            .record_spoke(&validator(1), BlockHeight::try_from(16).unwrap())
+            .await
+            .unwrap();
+        native
+            .close_block(20, fringe_state(20))
+            .await
+            .unwrap()
+            .unwrap();
+        let committed = native.committed_rewards().await.unwrap();
+        let paid = committed
+            .get(&validator(1))
+            .map(|r| i64::from(*r))
+            .unwrap_or(0);
+        assert!(
+            paid > 0,
+            "a validator that has signed again is paid again — the rule has no memory of the lapse"
+        );
+
+        // **Slack zero is the contract's behaviour**: no record, no penalty.
+        let off = native_with(
+            &[validator(1)],
+            PosParams {
+                minimum_bond: NonNegI64::try_from(1).unwrap(),
+                epoch_length: 1,
+                ..PosParams::default()
+            },
+            &[(validator(1), 4)],
+        )
+        .await;
+        off.set_vault_balance(&payer_addr, nn(10));
+        off.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
+        off.close_block(12, fringe_state(12))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            off.committed_rewards()
+                .await
+                .unwrap()
+                .get(&validator(1))
+                .map(|r| i64::from(*r)),
+            Some(10),
+            "with the rule off, an absent validator is paid for being drawn — exactly as Pos.rhox \\
+             does: the only drawn validator takes the whole pot, never having signed a block"
         );
     }
 
@@ -3914,57 +4629,105 @@ pub fn genesis_epoch_seed() -> EpochSeed {
     }
 }
 
-/// A uniform `u64` in `[0, bound)`, rejection-sampled — never reduced modulo.
+/// A uniform `i128` in `[0, bound)`, rejection-sampled — never reduced modulo.
 ///
-/// A modulo of a 64-bit draw biases the low indices when `bound` does not divide 2^64, and "negligible
-/// bias" is not a phrase this codebase accepts on a consensus path. `accept` is the largest multiple of
-/// `bound` that fits a `u64`, so every accepted value maps to exactly `2^64 / bound` rejected-or-taken
-/// values and `v % bound` is uniform.
+/// A modulo biases the low values when `bound` does not divide the draw's range, and "negligible bias"
+/// is not a phrase this codebase accepts on a consensus path. `accept` is the largest multiple of
+/// `bound` that fits a non-negative `i128`, so every accepted value maps to exactly
+/// `i128::MAX / bound` rejected-or-taken values and `value % bound` is uniform over `[0, bound)`.
+///
+/// **Why the draw is taken as a signed `i128` and not a `u128`.** `i128::from_le_bytes` is *total*,
+/// where a `u128` bound would have to come from the pool's stakes through a conversion that either
+/// flattens an impossible failure to a value (the silent-defaulting class the type-system gate exists
+/// for) or carries a cast. Drawing in the signed domain keeps every conversion in this function
+/// infallible, at the cost of halving the acceptance rate — the non-negative half of the space — which
+/// is one extra stream read on average and nothing else.
 ///
 /// **The rejection loop consumes the stream a data-dependent number of times.** That is harmless here
 /// and it is checked rather than assumed: nothing reads the stream after a draw, and the draw's output
-/// is pinned by a known-answer test, so a change in consumption would show up there.
-fn uniform_below(rand: &mut Blake2b512Random, bound: usize) -> usize {
+/// is pinned by a known-answer test, so a change in consumption shows up there.
+fn uniform_below_i128(rand: &mut Blake2b512Random, bound: i128) -> i128 {
     if bound <= 1 {
         return 0;
     }
-    // The draw is `size_of::<usize>()` bytes wide, so the arithmetic is natively `usize`: there is no
-    // narrowing conversion here to flatten, which is what makes this total on 32- and 64-bit alike.
-    // (The first draft used `u64` and narrowed at the call site with `unwrap_or(0)` — the type-system
-    // gate refused it as a *silent* conversion, correctly, because a flattened failure there would
-    // have silently picked index 0.)
-    let mut buf = [0u8; std::mem::size_of::<usize>()];
-    let width = buf.len();
-    let accept = (usize::MAX / bound) * bound;
+    let accept = (i128::MAX / bound) * bound;
+    let mut buf = [0u8; std::mem::size_of::<i128>()];
     loop {
         let draw = rand.next();
-        buf.copy_from_slice(&draw[..width]);
-        let value = usize::from_le_bytes(buf);
-        if value < accept {
+        buf.copy_from_slice(&draw[..std::mem::size_of::<i128>()]);
+        let value = i128::from_le_bytes(buf);
+        if value >= 0 && value < accept {
             return value % bound;
         }
     }
 }
 
-/// Draw `count` distinct entries from `candidates`, uniformly without replacement, in draw order.
+/// Draw `count` distinct entries from `candidates` **in proportion to their weight**, without
+/// replacement, in draw order.
 ///
-/// Partial Fisher–Yates over a slice whose order is the caller's canonical order. `candidates` is built
-/// from a `BTreeMap`, so that order is key order — which is what makes the result a function of
-/// `(the pool, the seed)` and nothing else.
-fn draw_without_replacement<T: Clone>(
-    candidates: &mut [T],
+/// The walk is a sequential weighted draw: take a uniform value in `[0, remaining_total)`, walk the
+/// candidate list in its canonical order accumulating weights, take the first entry whose cumulative
+/// weight exceeds the value, remove it, repeat. Exact integer arithmetic throughout — no floats, no
+/// logarithms, no rounding, so `(pool, seed)` determines the result on every machine. `candidates` is
+/// built from a `BTreeMap`, so its order is key order, and `Vec::remove` preserves that order across
+/// the iteration, which is what makes the walk canonical.
+///
+/// **Exact for the first slot, and that is the property that matters.** The first pick is
+/// `stake / total` exactly. The later picks renormalise over what is left, so they are proportional to
+/// the *remaining* weights rather than to the original ones; an item's expected share of `count` slots
+/// is therefore near — not identically — `count · stake / total`. The exact-proportional alternative
+/// is a systematic (rotated-interval) scheme, which is a different rule with a different variance and
+/// a collision problem for any stake above `1/count` of the total. This is the sequential rule, and
+/// the residual is stated where the rule is documented rather than left implicit.
+fn draw_weighted_without_replacement<T>(
+    candidates: &[T],
     count: usize,
     rand: &mut Blake2b512Random,
-) -> Vec<T> {
+) -> Vec<T>
+where
+    T: Clone + Weighted,
+{
+    let mut remaining: Vec<T> = candidates.to_vec();
     let mut out = Vec::with_capacity(count);
-    let mut remaining = candidates.len();
     for _ in 0..count {
-        let pick = uniform_below(rand, remaining);
-        candidates.swap(pick, remaining - 1);
-        remaining -= 1;
-        out.push(candidates[remaining].clone());
+        // A sum of `i128` weights: each is `i64`-bounded (the stake type), so the sum leaves `i128`
+        // only at ~2^64 candidates — a pool that cannot be held, let alone drawn from.
+        let total: i128 = remaining.iter().map(|c| c.weight()).sum();
+        if total <= 0 {
+            break;
+        }
+        let draw = uniform_below_i128(rand, total);
+        let mut cumulative: i128 = 0;
+        let mut pick = remaining.len() - 1;
+        for (index, candidate) in remaining.iter().enumerate() {
+            cumulative += candidate.weight();
+            if draw < cumulative {
+                pick = index;
+                break;
+            }
+        }
+        out.push(remaining.remove(pick));
     }
     out
+}
+
+/// A candidate's weight in the active-set draw: its stake.
+///
+/// A trait rather than a closure so the helper stays generic and the weight is read in exactly one
+/// place. It is implemented for the `(validator, stake)` pair the pool yields, and it returns an
+/// `i128` because `i128::from` is a *total* widening of the `i64` the refinement wraps — every other
+/// width would need a conversion that can fail, and a weight that silently fell to `0` would drop a
+/// candidate out of the draw without saying so.
+trait Weighted {
+    fn weight(&self) -> i128;
+}
+
+impl Weighted for (&Validator, NonNegI64) {
+    fn weight(&self) -> i128 {
+        // Total: `i128::from(i64)` is a widening conversion, and `i64::from` on the refinement is the
+        // macro's own infallible accessor. Nothing here can fail, so nothing here can default.
+        i128::from(i64::from(self.1))
+    }
 }
 
 // ----------------------------------------------------------------------------------------------

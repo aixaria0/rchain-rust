@@ -719,8 +719,10 @@ where
         .filter(|(_, b)| i64::from(**b) > 0)
         .map(|(v, _)| *v)
         .collect();
-    let to_slash: BTreeMap<Validator, SlashSeverity> =
+    let mut to_slash: BTreeMap<Validator, ProposedSlash> =
         slashable_offenders(&pre_state.justifications, &bonded);
+    // **And the equivocations this node has itself seen** (AUDIT C200).
+    add_recorded_equivocations(&mut to_slash, dag.recorded_equivocations().await, &bonded);
     if !to_slash.is_empty() {
         // The consequence, logged where it is decided. The validation failure that caused it is already
         // logged by the block processor; nothing connected the two, so a slashing used to be visible only as
@@ -732,14 +734,19 @@ where
             to_slash.len(),
             to_slash
                 .iter()
-                .map(|(v, tier)| format!(
-                    "{} {:?}/{}bps",
+                .map(|(v, slash)| format!(
+                    "{} {:?}/{}bps{}",
                     rchain_shared::base16::encode(v.as_bytes())
                         .chars()
                         .take(8)
                         .collect::<String>(),
-                    tier,
-                    tier.basis_points()
+                    slash.severity,
+                    slash.severity.basis_points(),
+                    if slash.evidence.is_some() {
+                        " (equivocation evidence)"
+                    } else {
+                        ""
+                    }
                 ))
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -1632,6 +1639,21 @@ mod attestation_suppression_tests {
     }
 }
 
+/// **A slash the proposer is about to attach**: how much the offence takes (AUDIT C199), and — when
+/// the offence is an **equivocation** rather than a failed block — the evidence a receiver needs to
+/// check it (AUDIT C200).
+///
+/// The two kinds are one type because they travel the same way: the tier sizes the confiscation in
+/// both, and the evidence is what makes the second kind *justifiable* by a node that never saw the
+/// block the proposer is complaining about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposedSlash {
+    pub severity: SlashSeverity,
+    /// The offender's second block at a `(sender, seq_num)` the DAG already holds a different block
+    /// for, serialized. `None` for the metadata-justified kind.
+    pub evidence: Option<Vec<u8>>,
+}
+
 /// The validators a proposer may slash: bonded, and the sender of a justification whose failure is
 /// attributable to the block rather than to this node's inability to replay it.
 ///
@@ -1648,16 +1670,57 @@ mod attestation_suppression_tests {
 fn slashable_offenders(
     justifications: &[rchain_models::block_metadata::BlockMetadata],
     bonded: &BTreeSet<Validator>,
-) -> BTreeMap<Validator, SlashSeverity> {
+) -> BTreeMap<Validator, ProposedSlash> {
     crate::validate::slashable_senders(justifications)
         .into_iter()
         .filter(|(sender, _)| bonded.contains(sender))
+        .map(|(sender, severity)| {
+            (
+                sender,
+                ProposedSlash {
+                    severity,
+                    evidence: None,
+                },
+            )
+        })
         .collect()
+}
+
+/// Fold **the equivocations this node has itself seen** into the set it is about to slash (AUDIT C200).
+///
+/// A validator that signed two blocks at one `(sender, seq_num)` has committed the one offence no
+/// honest node can commit, so it is slashed whatever else is true — at the harshest tier, and with the
+/// evidence **attached**, so that every other node checks the offence against its own DAG rather than
+/// trusting this one. Refusing such a block was already free of charge; this is the half that costs the
+/// offender.
+///
+/// The `bonded` filter is the same policy the metadata arm applies: only take stake from someone who
+/// has some. An insert over a metadata-justified entry is the right direction — `Malicious` is the
+/// harshest tier there is, so the fold can only harden the sentence, never soften it.
+fn add_recorded_equivocations(
+    to_slash: &mut BTreeMap<Validator, ProposedSlash>,
+    recorded: Vec<(Validator, Vec<u8>)>,
+    bonded: &BTreeSet<Validator>,
+) {
+    for (offender, evidence) in recorded {
+        if !bonded.contains(&offender) {
+            continue;
+        }
+        to_slash.insert(
+            offender,
+            ProposedSlash {
+                severity: SlashSeverity::Malicious,
+                evidence: Some(evidence),
+            },
+        );
+    }
 }
 
 #[cfg(test)]
 mod slashable_offenders_tests {
+    use super::add_recorded_equivocations;
     use super::slashable_offenders;
+    use super::ProposedSlash;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::BlockMetadata;
     use rchain_models::block_metadata::SlashSeverity;
@@ -1691,10 +1754,19 @@ mod slashable_offenders_tests {
         }
     }
 
+    /// The metadata-justified slash this rule produces for `v`: the tier the record carries, and no
+    /// evidence — the equivocation arm is a different source (AUDIT C200).
+    fn slashed(tier: SlashSeverity) -> ProposedSlash {
+        ProposedSlash {
+            severity: tier,
+            evidence: None,
+        }
+    }
+
     fn rule(
         justifications: &[BlockMetadata],
         bonded: &[Validator],
-    ) -> BTreeMap<Validator, SlashSeverity> {
+    ) -> BTreeMap<Validator, ProposedSlash> {
         slashable_offenders(justifications, &bonded.iter().copied().collect())
     }
 
@@ -1703,7 +1775,7 @@ mod slashable_offenders_tests {
         let v = Validator::new([1u8; 65]);
         assert_eq!(
             rule(&[meta(v, true, true)], &[v]),
-            BTreeMap::from([(v, SlashSeverity::Malicious)])
+            BTreeMap::from([(v, slashed(SlashSeverity::Malicious))])
         );
     }
 
@@ -1727,7 +1799,7 @@ mod slashable_offenders_tests {
                 &[meta(bonded, true, true), meta(observer, true, true)],
                 &[bonded]
             ),
-            BTreeMap::from([(bonded, SlashSeverity::Malicious)])
+            BTreeMap::from([(bonded, slashed(SlashSeverity::Malicious))])
         );
     }
 
@@ -1742,9 +1814,68 @@ mod slashable_offenders_tests {
         let mut bad = meta(v, true, true);
         bad.slash_severity = SlashSeverity::Misdemeanour;
 
-        let expected = BTreeMap::from([(v, SlashSeverity::Misdemeanour)]);
+        let expected = BTreeMap::from([(v, slashed(SlashSeverity::Misdemeanour))]);
         assert_eq!(rule(&[mild.clone(), bad.clone()], &[v]), expected);
         assert_eq!(rule(&[bad, mild], &[v]), expected);
+    }
+
+    /// **The equivocation arm, and what it must carry** (AUDIT C200).
+    ///
+    /// A recorded equivocation is slashed at the harshest tier **with its evidence attached** — the
+    /// evidence is the whole point: a receiver refuses a slash it cannot check, so a slash without one
+    /// would be worse than useless. Red before: `to_slash` held only the metadata arm, so an
+    /// equivocation was refused and never punished.
+    #[test]
+    fn a_recorded_equivocation_is_slashed_with_its_evidence() {
+        let v = Validator::new([1u8; 65]);
+        let evidence = vec![0xab, 0xcd];
+        let mut to_slash = BTreeMap::new();
+        add_recorded_equivocations(
+            &mut to_slash,
+            vec![(v, evidence.clone())],
+            &[v].into_iter().collect(),
+        );
+        assert_eq!(
+            to_slash,
+            BTreeMap::from([(
+                v,
+                ProposedSlash {
+                    severity: SlashSeverity::Malicious,
+                    evidence: Some(evidence),
+                }
+            )])
+        );
+    }
+
+    /// An equivocation by an **unbonded** key costs nothing, exactly as the metadata arm: there is no
+    /// stake to take, and a slash naming a validator with no bond is one every receiver refuses.
+    #[test]
+    fn an_equivocation_by_an_unbonded_sender_is_not_slashed() {
+        let v = Validator::new([1u8; 65]);
+        let mut to_slash = BTreeMap::new();
+        add_recorded_equivocations(&mut to_slash, vec![(v, vec![1, 2, 3])], &BTreeSet::new());
+        assert!(to_slash.is_empty());
+    }
+
+    /// The fold can only **harden** a sentence: a validator already facing a milder metadata-justified
+    /// tier answers for the equivocation instead, at `Malicious`.
+    #[test]
+    fn an_equivocation_hardens_a_milder_metadata_tier() {
+        let v = Validator::new([1u8; 65]);
+        let mut mild = meta(v, true, true);
+        mild.slash_severity = SlashSeverity::HonestMistake;
+        let mut to_slash = rule(&[mild], &[v]);
+        add_recorded_equivocations(
+            &mut to_slash,
+            vec![(v, vec![7])],
+            &[v].into_iter().collect(),
+        );
+        assert_eq!(
+            to_slash[&v].severity,
+            SlashSeverity::Malicious,
+            "the equivocation is the worst thing this validator did, at either order"
+        );
+        assert_eq!(to_slash[&v].evidence, Some(vec![7]));
     }
 }
 

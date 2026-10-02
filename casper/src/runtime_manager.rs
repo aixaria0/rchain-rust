@@ -670,6 +670,19 @@ impl RuntimeManager {
         );
         let _ = Self::eval_system_deploy_with(runtime, &refund).await?;
 
+        // **And the block's producer is paid for the work** (B2, #150). Last, because the amount is a
+        // share of what the deploy *burned* — which is only known once the refund has returned the
+        // unconsumed phlo — and because the vault has to hold the burned amount before it can pay out
+        // of it. The executor is the block's own signed `sender`, read from the runtime the block
+        // data was set on, so the play and replay paths pay the same address without either of them
+        // carrying it any further than this.
+        let pay_executor = SystemDeploy::pay_executor(
+            &runtime.block_data().sender,
+            processed.burned_amount(),
+            rand.split_byte(3),
+        );
+        let _ = Self::eval_system_deploy_with(runtime, &pay_executor).await?;
+
         processed.deploy_log = collector.event_log.clone();
         Ok(UserDeployRuntimeResult {
             deploy: processed,
@@ -881,6 +894,19 @@ impl RuntimeManager {
             NativeSystemDeployOp::Refund { deployer, amount } => {
                 native.refund(deployer, *amount).await?
             }
+            NativeSystemDeployOp::PayExecutor { executor, burned } => {
+                native.pay_executor(executor, *burned).await?
+            }
+            // **The block's own account of itself** (B4, #150). The speaker is the block's `sender`
+            // and the height its `block_number`, both read from the block data this runtime was set
+            // with — so the entry written is the block's own and cannot be anyone else's.
+            NativeSystemDeployOp::RecordSpoke => {
+                let block_data = runtime.block_data();
+                let speaker = Validator::try_from(block_data.sender.bytes()).map_err(|e| {
+                    format!("recordSpoke: the block's sender is not a validator key: {e}")
+                })?;
+                native.record_spoke(&speaker, block_data.block_number).await
+            }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
                 fringe_state_hash,
@@ -892,6 +918,7 @@ impl RuntimeManager {
             NativeSystemDeployOp::Slash {
                 validator,
                 severity,
+                evidence: _,
             } => native.slash(validator, *severity).await?,
         };
         let eval_result = EvaluateResult {
@@ -935,12 +962,15 @@ impl RuntimeManager {
             Ok(()) => {
                 let system_deploy = match &deploy.op {
                     Some(NativeSystemDeployOp::CloseBlock { .. }) => SystemDeployData::CloseBlock,
+                    Some(NativeSystemDeployOp::RecordSpoke) => SystemDeployData::RecordSpoke,
                     Some(NativeSystemDeployOp::Slash {
                         validator,
                         severity,
+                        evidence,
                     }) => SystemDeployData::Slash {
                         validator: *validator,
                         severity: *severity,
+                        evidence: evidence.clone(),
                     },
                     _ => SystemDeployData::Empty,
                 };
@@ -1401,10 +1431,8 @@ mod tests {
     use rchain_shared::store_manager::{database, InMemoryStoreManager};
     use rchain_shared::typed_store::BytesCodec;
 
-    /// A forked replay runtime (used for parallel block validation) must be constructible at the
-    /// empty root and able to replay an empty deploy set.
-    #[tokio::test]
-    async fn fork_replay_runtime_replays_empty() {
+    /// A manager over fresh in-memory stores — the fixture the tests below share.
+    async fn manager() -> RuntimeManager {
         let manager = InMemoryStoreManager::default();
         let history = create_history_repository::<
             SortedProc,
@@ -1445,14 +1473,26 @@ mod tests {
             .await
             .unwrap(),
         );
-        let runtime = RuntimeManager::new(
+        RuntimeManager::new(
             rho,
             replay,
             history,
             mergeable_store,
             native_changes_store,
             EffectMode::Sequential,
-        );
+        )
+    }
+
+    /// A forked replay runtime (used for parallel block validation) must be constructible at the
+    /// empty root and able to replay an empty deploy set.
+    #[tokio::test]
+    async fn fork_replay_runtime_replays_empty() {
+        let runtime = manager().await;
+        let empty_root = runtime
+            .runtime
+            .empty_state_hash()
+            .await
+            .expect("the empty state hash");
 
         let forked = runtime.fork_replay_runtime(empty_root).await.unwrap();
         let result = runtime
@@ -1470,5 +1510,219 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
+    }
+
+    /// **The deploy fold pays the block's own sender** (B2, #150) — the integration half of the
+    /// native unit test, and the half the compiler cannot check: `pay_executor` being correct says
+    /// nothing about whether anything calls it, or whether it is called with the **block's** sender
+    /// rather than the deployer's.
+    ///
+    /// The deployer and the producer are different keys on purpose, so a payment to the wrong one is
+    /// visible rather than accidentally right. The share is read back from the manager's own runtime,
+    /// which is where the block's native store actually lives — a `fork_play_runtime` carries the
+    /// tuple space and not the native store, so reading through one would report the empty map.
+    #[tokio::test]
+    async fn the_deploy_fold_pays_the_blocks_sender() {
+        use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+        use rchain_rholang::native_state::PosParams;
+        use rchain_rholang::util::rev_address::RevAddress;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let rm = manager().await;
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+        let deployer = PublicKey::new(vec![7u8; 65]);
+        let producer = PublicKey::new(vec![5u8; 65]);
+        let producer_address = RevAddress::from_public_key(&producer)
+            .expect("producer address")
+            .to_base58();
+
+        let bonded = Validator::from_slice(&[1u8; 65]);
+        let pos = PosGenesis {
+            bonds: BTreeMap::from([(bonded, NonNegI64::try_from(1_000).expect("a stake"))]),
+            trusted: BTreeSet::new(),
+            params: PosParams {
+                executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
+                ..PosParams::default()
+            },
+        };
+        let vaults = [Vault {
+            rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
+            initial_balance: NonNegI64::try_from(1_000_000_000).expect("a funded deployer"),
+        }];
+        let (_pre, genesis_post, _) = rm
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos, &vaults)
+            .await
+            .expect("compute_genesis");
+
+        let block_data = BlockData {
+            block_number: BlockHeight::zero(),
+            sender: producer.clone(),
+            seq_num: SeqNum::zero(),
+            timestamp: 0,
+        };
+        let deploy = SignedDeployData {
+            data: DeployData {
+                attachments: Vec::new(),
+                term: r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(true) }"#
+                    .to_string(),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 500_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+            },
+            deployer: deployer.bytes().to_vec(),
+            sig: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        let (_post, user_results, _) = rm
+            .compute_state(
+                &genesis_post,
+                &[deploy],
+                &[],
+                &rand,
+                block_data,
+                &Blake2b256Hash::from_bytes([3u8; 32]),
+            )
+            .await
+            .expect("play compute_state");
+        let burned = i64::from(user_results[0].deploy.burned_amount());
+        assert!(burned > 0, "the control: this deploy burns phlo");
+
+        let native = NativeSystemState::new(rm.runtime.native_store());
+        assert_eq!(
+            i64::from(
+                native
+                    .vault_balance(&producer_address)
+                    .await
+                    .expect("read the producer's balance")
+                    .unwrap_or(NonNegI64::zero())
+            ),
+            burned * 2_500 / 10_000,
+            "the producer's own vault holds a quarter of what the deploy burned"
+        );
+        assert_eq!(
+            native.bonds().await.expect("read the pool").get(&bonded),
+            Some(&NonNegI64::try_from(1_000).expect("a stake")),
+            "and the payment does not come out of anyone's bond"
+        );
+    }
+
+    /// **A block records its own producer, and the replay records the same thing** (B4, #150).
+    ///
+    /// The activity record's whole security argument is that the entry is the *block's*, so this test
+    /// puts the op in the block's system-deploy list and then asks the native state who spoke: the
+    /// answer must be the block's `sender`, at the block's `block_number`, and no one else's. The
+    /// replay is run over the same block and must reach the same post-state hash, which is what makes
+    /// the record consensus data rather than a node's local note.
+    #[tokio::test]
+    async fn a_block_records_its_own_producer_and_the_replay_agrees() {
+        use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+        use rchain_rholang::native_state::PosParams;
+        use rchain_rholang::util::rev_address::RevAddress;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let rm = manager().await;
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+        let deployer = PublicKey::new(vec![7u8; 65]);
+        let producer = PublicKey::new(vec![5u8; 65]);
+
+        let pos = PosGenesis {
+            bonds: BTreeMap::from([(
+                Validator::from_slice(&[1u8; 65]),
+                NonNegI64::try_from(1_000).expect("a stake"),
+            )]),
+            trusted: BTreeSet::new(),
+            params: PosParams::default(),
+        };
+        let vaults = [Vault {
+            rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
+            initial_balance: NonNegI64::try_from(1_000_000_000).expect("a funded deployer"),
+        }];
+        let (_pre, genesis_post, _) = rm
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos, &vaults)
+            .await
+            .expect("compute_genesis");
+
+        // Height 3, so the recorded height is a number the genesis did not write.
+        let block_data = BlockData {
+            block_number: BlockHeight::try_from(3).expect("a height"),
+            sender: producer.clone(),
+            seq_num: SeqNum::zero(),
+            timestamp: 0,
+        };
+        let deploy = SignedDeployData {
+            data: DeployData {
+                attachments: Vec::new(),
+                term: "Nil".to_string(),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 500_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+            },
+            deployer: deployer.bytes().to_vec(),
+            sig: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        let system_deploys = [SystemDeploy::record_spoke(rand.split_byte(0))];
+        let (post_state, user_results, sys_results) = rm
+            .compute_state(
+                &genesis_post,
+                &[deploy],
+                &system_deploys,
+                &rand,
+                block_data.clone(),
+                &Blake2b256Hash::from_bytes([4u8; 32]),
+            )
+            .await
+            .expect("play compute_state");
+
+        let producer_validator =
+            Validator::try_from(producer.bytes()).expect("the producer is a validator key");
+        let native = NativeSystemState::new(rm.runtime.native_store());
+        assert_eq!(
+            native
+                .last_spoke()
+                .await
+                .expect("read the activity record")
+                .get(&producer_validator)
+                .copied()
+                .map(i64::from),
+            Some(3),
+            "the block's sender, at the block's own height"
+        );
+        assert!(
+            sys_results.iter().any(|r| matches!(
+                &r.deploy,
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy: SystemDeployData::RecordSpoke,
+                    ..
+                }
+            )),
+            "and the block's own state carries the record, so a receiver can replay it"
+        );
+
+        let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+        let processed_sys: Vec<ProcessedSystemDeploy> =
+            sys_results.into_iter().map(|r| r.deploy).collect();
+        let (replay_state, _) = rm
+            .replay_compute_state(
+                &genesis_post,
+                &processed,
+                &processed_sys,
+                &rand,
+                block_data,
+                &Blake2b256Hash::from_bytes([4u8; 32]),
+                true,
+                &pos,
+                &[],
+            )
+            .await
+            .expect("replay compute_state");
+        assert_eq!(
+            post_state, replay_state,
+            "the record is consensus data: both paths must reach the same post-state"
+        );
     }
 }

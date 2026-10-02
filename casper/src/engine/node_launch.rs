@@ -57,6 +57,8 @@ pub async fn create_genesis_block(
     epoch_length: i32,
     quarantine_length: i32,
     number_of_active_validators: i32,
+    executor_share: NonNegI64,
+    absence_slack: NonNegI64,
     pos_multi_sig_public_keys: &[String],
     pos_multi_sig_quorum: i32,
     pos_vault_pub_key: &str,
@@ -91,6 +93,8 @@ pub async fn create_genesis_block(
             epoch_length,
             quarantine_length,
             number_of_active_validators,
+            executor_share,
+            absence_slack,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             pos_vault_pub_key: pos_vault_pub_key.to_string(),
@@ -118,6 +122,19 @@ pub async fn create_genesis_block_from_config(
     // ("root") that no later block or deploy shares ("/root"), so a genesis block received from a
     // peer was dropped by the receiver's equality check.
     let shard_id = spec.shard_id.to_string();
+    // The producer's share, refused rather than clamped like the bond bounds: a share over the whole
+    // would pay a producer more than the deploy burned, out of the stake the same vault holds for
+    // every other validator.
+    let executor_share = NonNegI64::try_from(i64::from(gbd.executor_share))
+        .map_err(|e| format!("casper.genesis.executor-share must not be negative: {e}"))?;
+    if i64::from(executor_share) > 10_000 {
+        return Err(format!(
+            "casper.genesis.executor-share is {} basis points, above the whole of what a deploy burns",
+            i64::from(executor_share)
+        ));
+    }
+    let absence_slack = NonNegI64::try_from(i64::from(gbd.absence_slack))
+        .map_err(|e| format!("casper.genesis.absence-slack must not be negative: {e}"))?;
     create_genesis_block(
         validator,
         &shard_id,
@@ -130,6 +147,8 @@ pub async fn create_genesis_block_from_config(
         gbd.epoch_length,
         gbd.quarantine_length,
         gbd.number_of_active_validators,
+        executor_share,
+        absence_slack,
         &gbd.pos_multi_sig_public_keys,
         gbd.pos_multi_sig_quorum,
         &gbd.pos_vault_pub_key,

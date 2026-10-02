@@ -70,6 +70,8 @@ pub fn build_pos_genesis(proof_of_stake: &ProofOfStake) -> PosGenesis {
             epoch_length: i64::from(proof_of_stake.epoch_length),
             quarantine_length: i64::from(proof_of_stake.quarantine_length),
             number_of_active_validators: i64::from(proof_of_stake.number_of_active_validators),
+            executor_share: proof_of_stake.executor_share,
+            absence_slack: proof_of_stake.absence_slack,
         },
     }
 }
@@ -155,6 +157,22 @@ fn proof_of_stake_from_config(
         epoch_length: gbd.epoch_length,
         quarantine_length: gbd.quarantine_length,
         number_of_active_validators: gbd.number_of_active_validators,
+        // Refused, not clamped, like the bond bounds: a share over the whole would pay the producer
+        // more than the deploy burned, out of the stake the same vault holds for everyone else.
+        executor_share: {
+            let share = NonNegI64::try_from(i64::from(gbd.executor_share))
+                .map_err(|e| format!("casper.genesis.executor-share must not be negative: {e}"))?;
+            if i64::from(share) > 10_000 {
+                return Err(format!(
+                    "casper.genesis.executor-share is {} basis points, above the whole of what a \
+                     deploy burns",
+                    i64::from(share)
+                ));
+            }
+            share
+        },
+        absence_slack: NonNegI64::try_from(i64::from(gbd.absence_slack))
+            .map_err(|e| format!("casper.genesis.absence-slack must not be negative: {e}"))?,
         pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
         pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
         pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
@@ -583,6 +601,8 @@ mod tests {
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
+            executor_share: NonNegI64::try_from(0).unwrap(),
+            absence_slack: NonNegI64::try_from(0).unwrap(),
             pos_multi_sig_public_keys: vec![],
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),
@@ -660,6 +680,8 @@ mod tests {
             "root".to_string(),
             "/".to_string(),
             crate::conf::GenesisBlockData {
+                executor_share: 2500,
+                absence_slack: 0,
                 genesis_data_dir: dir.to_path_buf(),
                 bonds_file: dir.join("bonds.txt").to_string_lossy().into_owned(),
                 wallets_file: dir.join("wallets.txt").to_string_lossy().into_owned(),

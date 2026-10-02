@@ -27,8 +27,11 @@ Two consequences follow directly.
 
 - **Rewards are paid out of fees, not minted.** Nothing creates REV at a boundary; the epoch moves it
   from the vault to the validators.
-- **The validator that executed a deploy is paid exactly as one that executed nothing.** The deploy's
-  phlo goes into the pot, and the pot is split by stake (below), not by who did the work.
+- **Part of what a deploy burned is paid to the producer of the block that carried it**, before the rest
+  reaches the pot — `executor-share`, a quarter of it by default, so the epoch pot is the burned phlo
+  *minus* the producer's shares. That is the one place the protocol's payout reads who did the work, and
+  it is a payment out of the same vault rather than a second pot: the pie is what was burned, and this
+  decides who gets a slice of it (below).
 
 ## The formula: proportional to stake, in units of the minimum bond
 
@@ -57,19 +60,68 @@ under a configured minimum; it is not `PosParams::default()`, whose minimum is `
 ## What the formula does not read
 
 The inputs are the pot, `minimum_bond`, `active_bonds` and the validator's own `bond` — and nothing
-else. Not blocks proposed, not attestations made, not deploys executed, and not whether the validator
-was **live at all**. An absent validator is paid on the same terms as one that ran all epoch, because
-there is **no inactivity leak, no decay and no eviction** in this tree: a stopped validator's stake stays
-in the pool and counts in the finality denominator for ever. That is measured and written up in
+else. Not attestations made, not how many blocks it proposed, and not whether it was **live at all**. An
+absent validator is paid on the same terms as one that ran all epoch, because there is **no inactivity
+leak, no decay and no eviction** in this tree: a stopped validator's stake stays in the pool and counts
+in the finality denominator for ever. That is measured and written up in
 [The public testnet](testnet.md) (the *Do not onboard a validator yet* measurements), and
 [#149](https://github.com/rchain-community/rchain-rust/issues/149) owns the consequence — its
 predecessor #148 was closed into it with the close condition carried verbatim: a validator that bonds
-and goes offline makes production unbounded and freezes finality, **and still collects its share**.
+and goes offline makes production unbounded and freezes finality, **and still collects its share** of
+whatever the epoch's pot does hold.
 
-So the protocol's only performance input is the liveness hypothesis finality carries — `Participation`,
-named in [Progress: the shapes of non-progress](../formal/progress.md) — and liveness affects whether the
-chain *finalises*, not what a validator *earns*. Nothing in the reward is a function of the work a node
-did.
+**The producer's share is the exception, and it is outside this formula.** It is not part of
+`epoch_rewards` at all: `pay_executor` (`rholang/src/native_state.rs`) runs at the end of each deploy's
+cost accounting and pays the **block's own signed sender** a share of what that deploy burned, so the
+money never reaches the pot the formula divides. That makes production the one thing the payout reads
+about a node's work — and it is coarse rather than graduated: a block's producer is paid for the deploys
+it carried, weighted by what they burned, and nothing else it did (attesting, relaying, staying up)
+pays anything at all.
+
+So the protocol's liveness signal remains the one finality carries — `Participation`, named in
+[Progress: the shapes of non-progress](../formal/progress.md) — and liveness decides whether the chain
+*finalises*. What a validator earns is a function of two things only: **how much stake it holds** (the
+formula above, if it is drawn) and **how much phlo the blocks it signs burn** (the producer's share).
+Everything else a node does for the network is unpaid.
+
+## What the block's *producer* is paid, and what an absent validator forgoes
+
+Two payments sit outside the epoch formula, and both read the block rather than the boundary.
+
+**The producer's share.** A deploy's phlo is charged into the staking vault by `pre_charge` and the
+unconsumed part returned by `refund`, so what the vault keeps for a deploy is exactly what that deploy
+burned — and that is what the epoch pot is made of. `pay_executor` takes `executor-share` basis points of
+it (**a quarter** by default, set at genesis) and pays it to the block's **own signed `sender`**, at the
+end of that deploy's cost accounting. The producer is the one party the protocol can identify without new
+state and that nobody but the signer can steer, so this is the *only* place a payout reads who did the
+work — and it is coarse: a block's producer is paid for the deploys it carried, weighted by what they
+burned. Attesting, relaying and staying up pay nothing.
+
+It is a **reallocation inside a fixed pie**, not an emission: nothing is minted and the epoch pot is
+smaller by exactly what was paid out. `executor-share = 0` is `Pos.rhox`'s behaviour — the contract pays
+a producer nothing beyond its share of the pot — and it is what a params record written before the key
+existed decodes to. See [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) for the transfer table, and
+`payExecutor_conserves` in [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) for the conservation
+that holds across it.
+
+**The absence rule, off by default.** A block writes its own sender and height into `pos:last_spoke`
+(B4): one entry per block, chosen by nobody, because the payload is empty and every node reads the values
+off the block it is processing. On that record, `absence-slack` arms an income-only rule: at an epoch
+boundary, a drawn validator whose entry is older than `absence-slack` heights *forfeits that epoch's
+reward*, which stays in the vault for a later epoch.
+
+Three properties, and each is why the rule is shaped as it is. It **cannot touch a bond** — it removes an
+entry from the rewards a boundary is about to commit, and a stake is not reachable from there. It **is
+not a slash** — nothing about it appears in `mark_failed`, the offence predicate, or any exemption ledger.
+And it **recovers in full**: the record is written by the validator's own signature, so one block puts it
+back inside the slack immediately, and the next boundary pays it exactly as if it had never been away.
+
+**The shipped default is `absence-slack = 0`, which is off.** That is `Pos.rhox`'s behaviour — in the
+contract absence costs nothing and an absent validator is paid for being drawn — and it is a rule the
+contract does not have, so a network chooses it rather than inheriting it. It is also **not a fix for the
+liveness defect**: a validator that goes offline still freezes finality and still counts in the
+denominator ([#149](https://github.com/rchain-community/rchain-rust/issues/149)); this rule only decides
+that it is not paid for the boundary it sat out.
 
 ## Who is paid: the drawn set, and where "pro-rata" stops holding
 
@@ -77,8 +129,8 @@ did.
 is `0` for anyone outside the active set, so a validator that is bonded but not drawn for the epoch earns
 nothing in it.
 
-The active set is not a ranking. It is recomputed only at an epoch boundary (`select_active`, `:580`),
-and when the cap bites it is a **seeded uniform sample without replacement** from the eligible pool —
+The active set is not a ranking. It is recomputed only at an epoch boundary (`select_active`), and when
+the cap bites it is a **seeded stake-weighted draw without replacement** from the eligible pool —
 positive stake, not withdrawing — with the cap set by `number-of-active-validators`
 (`node/src/configuration/defaults.conf:334`, default `100`). The seed comes from the last **finalised**
 fringe, one boundary ahead. The reason, the residuals, and the alternative are in
@@ -90,32 +142,36 @@ there and not repeated here.
 - **The cap does not bite** — the eligible pool is within `number-of-active-validators`, which on a
   bonded network of ≤100 validators is simply all of it. Every pooled validator is active, nobody is
   undrawn, and the split is stake-proportional: the largest bond takes the largest share.
-- **The cap bites.** Membership is a uniform draw, so expected income is close to **uniform across the
-  drawn members** whatever their stake, and a member that is not drawn earns nothing that epoch. In this
-  regime "the largest stake earns most" is false, and what is true instead is the residual **O3**:
-  per-unit-of-stake income *favours* a stake split across several keys, since each key draws
-  independently.
+- **The cap bites.** Membership is a weighted draw, so a larger stake is drawn in proportion to its size
+  and a member that is not drawn earns nothing that epoch. Stake still predicts income — but not exactly
+  pro-rata, and which way it misses is worth knowing (below).
 
-**How large that reversal is, on the shipped rule** (derived from `select_active`'s uniform draw; pot 1,
-six rival keys at stake 10, cap 4, 200,000 trials):
+**How far from pro-rata, on the shipped rule** (pot 1, six rival keys at stake 10, cap 4 — the same
+measurement before and after the draw was weighted on 2026-10-02; 4 096 fixed seeds, so these are pins
+rather than samples):
 
-| how one stake of 40 is held | expected income |
-|---|---|
-| one key of 40 | **0.326** — *below* the flat pro-rata benchmark of 0.400 |
-| four keys of 10 | 0.400 |
-| twenty keys of 2 | **0.528** — **62 % more** than holding it whole |
+| how one stake of 40 is held | uniform draw (before) | weighted draw (now) |
+|---|---|---|
+| one key of 40 | **0.326** — *below* the flat pro-rata 0.400 | **0.5328** — *above* it |
+| four keys of 10 | 0.400 — exactly pro-rata | 0.4000 — exactly pro-rata |
+| twenty keys of 2 | **0.528** — 62 % *more* than whole | **0.1770** — 56 % *less* |
 
-So above the cap the operative lever is **the number of keys, not the size of the stake** — per-unit
-income falls as one's own stake grows, because a large drawn key inflates the normaliser the share
-divides by. This is O3 read from the validator's side rather than the network's, and it is a property of
-the rule as shipped, not of any proposal.
+Each pair is the same pool at the same total stake, differing only in how the stake is held. **Under the
+uniform rule the lever was the number of keys, and splitting was worth 62 %** — a per-key rule mints
+finality weight (and income) for free, which is a consensus-safety problem and not just an economic
+quirk. **Under the weighted rule the lever is the size of the key, and splitting costs 56 %.** Neither
+regime is exactly pro-rata; the cap is what breaks proportionality, and the two rules differ only in
+which side of it a staker lands on. Weighting is the side chosen: it is the side on which **stake buys
+weight**, which is what the cap exists to bound — a bond is bounded above by `maximum_bond`, and the
+concentration is the operator's own risk, borne per validator since everything at risk is per-validator.
 
 Which regime a net is in is a property of its size, not a policy — and the two are the same code path
 (`select_active` returns the whole eligible pool when the cap does not bite).
 
-## The asymmetry: a whole bond at risk, one epoch's phlo at reward
+## The asymmetry: everything at risk, one epoch's phlo at reward
 
-What is at stake is the validator's **entire** bond, and what is earned is its share of one epoch's
+What is at stake is **everything the validator holds in the PoS system** — its bond, its accrued and
+unwithdrawn rewards, and an escrowed withdrawal claim — and what is earned is its share of one epoch's
 burned phlo. The two exits from the active set are not symmetric, and the asymmetry is deliberate rather
 than an accident of the code — [Running a public testnet of your own](running-a-public-testnet.md) states
 it:
@@ -123,24 +179,28 @@ it:
 > A silent validator is not slashed; it is a drag instead. […] The protocol is asymmetric: going offline
 > is free, while a block that *fails validation on another node* costs the sender its stake.
 
-So a validator that never proposes keeps its bond and (if drawn) still earns; a validator that proposes a
-block another node attributes a failure to loses the bond. Nothing in this tree **underwrites** the
-second risk — no insurance, no partial slash, no reward floor, and (below) no delegation to spread it.
-That is an observation about the code, not a theorem about incentives: it says what the protocol does,
-not that the balance is the one a rational operator would choose.
+So a validator that never proposes keeps its bond and (if drawn) still earns; a validator that commits an
+offence loses a **stated share** of what it holds, and the share is set by what it did (below). Nothing in
+this tree **underwrites** that risk — no insurance, no reward floor, and (below) no delegation to spread
+it — and there is no programme that shares the income either, which is the risk/reward shape the page
+returns to. That is an observation about the code, not a theorem about incentives: it says what the
+protocol does, not that the balance is the one a rational operator would choose.
 
-## Slashing: behavioural, trustless, and full
+## Slashing: behavioural, trustless, and graded
 
 A slash is decided by **what the block did**, not by who is watching, and every node checks the
 producer's work.
 
 **Behavioural.** A failure is recorded in one place, `mark_failed`
-(`casper/src/multi_parent_casper.rs:835`), which sets `validation_failed: true` for **every** cause but
-`slashable: true` for only one:
+(`casper/src/multi_parent_casper.rs`), which takes the refusing status and derives **both** the cause and
+whether it is an offence from it:
 
 ```rust
+validated: true,
 validation_failed: true,
-slashable: matches!(cause, FailureCause::Attributable),
+slashable: status.is_slashing_offence(),
+slash_severity: status.slash_severity().unwrap_or(SlashSeverity::Unspecified),
+failure_cause: Some(status.failure_cause()),
 ```
 
 The cause is `FailureCause` (`models/src/block_metadata.rs`) — `Attributable` (the block's own fault,
@@ -161,22 +221,40 @@ longer offences: a node that reached the opposite verdict about blame would not 
 **refuse the block carrying the slash** — a permanent split, over a local setting, with the sender's whole
 bond gone.
 
-**Trustless.** The offence set is the senders of justifications whose metadata is `slashable`, intersected
-with the bonded set — `slashable_senders` (`casper/src/validate.rs:142`), called through
-`slashable_offenders` (`casper/src/blocks/proposer/proposer.rs:1637`). What makes the rule the
-*protocol's* rather than the proposer's is the receiving side: `slash_is_unjustified`
-(`casper/src/interpreter_util.rs:170`) refuses a block whose slashes are not a subset of the slashable
-senders **in the receiving node's own DAG**. The proposer's opinion of the victim carries no weight, and
-the slash service is not auth-gated — that per-node check is the guard (AUDIT C110,
-[`spec/audit/passes.md`](../../../spec/audit/passes.md)).
+**Two ways a slash is justified, and neither is the proposer's word.** The first is a failed block: the
+offence set is the senders of justifications whose metadata is `slashable`, intersected with the bonded
+set — `slashable_senders` (`casper/src/validate.rs`), called through `slashable_offenders`
+(`casper/src/blocks/proposer/proposer.rs`). The second is an **equivocation**.
+
+**Equivocation: the one fault that needs no judgement, and it used to be free.** The H-1 gate refuses a
+second block at a `(sender, seq_num)` the DAG already holds, and it refuses it **before any write** — so
+the refused block was stored nowhere, was never a `BlockStatus`, and was therefore never an offence.
+Double-signing cost a validator nothing while a stale deploy cost it its bond. Now the gate records the
+refused block's **header**, the proposer attaches it to the slash of every recorded equivocation by a
+bonded sender, and the header travels in the block's own state (`SystemDeployData::Slash`). It is a
+*header* — sender, reused sequence number, the conflicting hash and its signature — and not the block,
+because it lands in consensus data and a block refused at that gate has passed no check at all, so its
+size would be whatever its sender chose.
+
+**Trustless.** What makes either arm the *protocol's* rule rather than the proposer's is the receiving
+side: `slash_is_unjustified` (`casper/src/interpreter_util.rs:170`) refuses a block whose slashes it
+cannot re-derive from **its own** view. For the first arm, that is the slashable senders in the receiving
+node's own DAG. For the second it is a signature and a conflict the receiver checks itself:
+`validate::equivocation_is_proved` requires that the named offender's **own** signature covers the
+evidence's hash, and that the receiver's DAG already holds a **different** block by that sender at that
+sequence number. So a receiver needs neither to have seen the refused block nor to trust the proposer
+that showed it — a forged, relabelled or non-conflicting payload is refused. The proposer's opinion of
+the victim carries no weight, and the slash service is not auth-gated — that per-node check is the guard
+(AUDIT C110 and C200, [`spec/audit/passes.md`](../../../spec/audit/passes.md)).
 
 **Graded, and bounded.** `slash` (`rholang/src/native_state.rs`) removes the validator from the pool, the
 active set, the withdrawers and the pending withdrawers — confiscation, not deactivation — and what it
 takes is a **share of everything that validator holds in the PoS system**: its bond, its accrued and
 unwithdrawn rewards, and an escrowed withdrawal claim. The share is set by the **tier of the offence**
 (`SlashSeverity`, and the table is `BlockStatus::slash_severity`): a **forged** deploy — a signature that
-does not verify against the key it names — takes all of it; a rule the author's own block breaks takes a
-**quarter**; and a bound a stale deploy pool or a clock skew explains takes a **tenth**. **The remainder
+does not verify against the key it names — or a **proved equivocation** takes all of it; a rule the
+author's own block breaks takes a **quarter**; and a bound a stale deploy pool or a clock skew explains
+takes a **tenth**. **The remainder
 returns to the validator's own vault**, so the loss is exactly the tier and the worst case is one an
 operator can read before bonding. A validator that offended more than once answers for the worst tier it
 committed. (Before 2026-10-02 the rule took the *whole* bond whatever the offence, which is the exposure
@@ -228,11 +306,13 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    and the two primitives that needs are not both present: `bond` takes only the deploy signer's own
    unforgeable `deployerId` (`rholang/src/system_processes.rs:1707`), and a reward is paid only to the
    vault derived from `fromPublicKey(validator)` (`rholang/src/native_state.rs:1086`). So **every pool
-   reachable today is one more validator key** — which *concentrates* the whole-bond slash on the operator
-   rather than spreading it, and leaves members with no on-chain claim at all. Above the cap it is worse:
-   merging many small stakes into one key **forfeits** precisely the key-count income the draw pays
-   (above). A pool that would actually spread risk needs a new primitive — bonding from a named vault, or
-   a delegation leaf — which is a genesis-plus-hard-fork change, not a contract. Tracked on
+   reachable today is one more validator key** — which *concentrates* the slash on the operator rather
+   than spreading it, and leaves members with no on-chain claim at all. Above the cap it is the wrong
+   direction economically too: merging many small stakes into one key **raises** income under the
+   weighted draw (0.1770 for twenty keys of 2 against 0.5328 for one key of 40, above) — a pool
+   *concentrates* the stake it claims to spread, and it concentrates the cap's reward too. A pool that
+   would actually spread risk needs a new primitive — bonding from a named vault, or a delegation leaf —
+   which is a genesis-plus-hard-fork change, not a contract. Tracked on
    [#150](https://github.com/rchain-community/rchain-rust/issues/150).
 2. **Should the pot be weighted by participation as well as stake?** *It cannot do what it looks like it
    does.* The pot is a fixed pie of phlo already burned, so a multiplier is pure **reallocation** — with
