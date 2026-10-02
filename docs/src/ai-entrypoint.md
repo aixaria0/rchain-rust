@@ -31,6 +31,7 @@ deploy, and one for what a matched deploy is charged), the ρ-calculus core
 | Understand consensus / finality | [Consensus (Casper)](node/consensus.md) |
 | Understand the tuple space / storage | [The tuple space (RSpace)](node/rspace.md), [Storage](node/storage.md) |
 | Run a validator (hardware requirements / sizing) | [Running a validator: hardware requirements](node/validator-requirements.md) |
+| Understand what a validator is **paid** and what it can **lose** (epoch pot, slashing, the draw) | [Validator economics](node/validator-economics.md) |
 | Build an app against a running node (deploy rholang, read responses) | [Building applications on the local devnet](developer/building-apps.md) |
 | Understand the port (why Rust, module status) | [Part V](contributor/why-rust.md) |
 | Find the machine-checked proofs | [`spec/Rchain/`](../../spec/Rchain/) (Lean), [`spec/coq/`](../../spec/coq/) (Coq) |

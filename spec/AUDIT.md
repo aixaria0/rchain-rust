@@ -102,20 +102,19 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 231** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 0 · DONE 231** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  25 of 231 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  26 of 232 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 231 are settled: **167 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C197` | **`slash` leaves the slashed validator's `committedRewards` entry behind, where the oracle deletes it.** The contract's slash state update removes the entry as well as zeroing the bond (`casper/src/genesis/resources/Pos.rhox`, the `stateUpdateCh!` block: `committedRewards: state.get("committedRewards").delete(slashedValidator)`), but `NativeSystemState::slash` (`rholang/src/native_state.rs:1421-1448`) edits only the pool, the active set and the two withdrawal maps. The entry is then unreachable in both directions: never paid, because `close_block` pays pool members (`:1253`) and claims in `withdrawers` (`:1281`) only and the slashed validator is out of both; and never removed, because the sole `committed.remove` is `:1291`, the claim payment. Two consensus-visible consequences: the accrued rewards are stranded in the staking vault for ever, and because `epoch_pot` subtracts every `committed` entry (`:668`) they keep reducing the distributable pot, so after any slash of a validator that had crossed a boundary the port distributes a smaller remainder than the oracle. No test covers the slash/committed interaction. Deletion matches the oracle; leaving it is the deviation. | decide the fix and classify it. Deleting the entry raises the pot, so reward amounts move and the change is hard-fork class (registry §6, #51 category A). Pin it with a falsifier: a slash of a validator carrying a non-zero committed balance asserts the entry is cleared and the following pot is the oracle's. | §51 |
 
 ### T1 coverage — closed
 

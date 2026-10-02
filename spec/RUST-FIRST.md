@@ -101,10 +101,14 @@ The validator lifecycle is native and on-chain (`rholang/src/native_state.rs`):
 3. **bonded** — `"bond"` checks trust, `[minimum_bond, maximum_bond]`, and the deployer's REV vault,
    moves the stake into the staking vault, and inserts it into the pool (`pos:bonds`). It does **not**
    activate: the contract's `bond` writes only `allBonds` (`Pos.rhox:355`).
-4. **active** — the consensus set (`pos:active`), recomputed **only at an epoch boundary** (see below),
-   as the top `number_of_active_validators` of the pool by descending stake with a deterministic
-   key-ascending tie-break (`0` = unlimited). A validator leaves the active set at once if it is
-   slashed, which the contract also does in place (`Pos.rhox:486-495`).
+4. **active** — the consensus set (`pos:active`), recomputed **only at an epoch boundary** (see below).
+   `number_of_active_validators <= 0` means unlimited, and a cap that does not bite is not a selection:
+   the whole eligible pool (positive stake, not withdrawing) is active and the draw below never runs.
+   Where the cap **does** bite, membership is a **seeded uniform draw without replacement** from that
+   pool (`select_active`, `rholang/src/native_state.rs:580`) — *not* a ranking by stake — with the seed
+   written one boundary ahead from the last finalised fringe (`spec/RUST-VS-SCALA.md` §3 item 12). A
+   validator leaves the active set at once if it is slashed, which the contract also does in place
+   (`Pos.rhox:486-495`).
 5. **withdrawing** — `"withdraw"` only **stages** the request (`pos:pending_withdrawers`, the
    contract's `pendingWithdrawers`): the validator stays bonded and keeps validating until the next
    epoch boundary, where it is moved out of the pool (`pos:withdrawers`, holding the bond and a

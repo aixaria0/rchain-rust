@@ -6288,3 +6288,33 @@ under test is the one the arm pins.
 **What this was.** Not a new consensus rule — a first-instance over-reach of a fix that had not yet left the
 branch. It is C196 (law 51a's `Paced`): the bound is a pace condition on the storm's `Drift`, and the
 correction narrows *which steps* it paces rather than removing it.
+
+## 51. A slash strands the offender's accrued rewards, where the oracle clears them (C197, #150)
+
+Writing the validator-economics page meant stating, exactly, what a slash takes. The bond is unambiguous —
+`NativeSystemState::slash` (`rholang/src/native_state.rs:1421-1448`) moves it to the Coop vault. What the
+same function does with the offender's **accrued-but-unpaid** rewards is not: it edits the pool, the
+active set and both withdrawal maps, and leaves `committedRewards` alone.
+
+The oracle does not leave it. `casper/src/genesis/resources/Pos.rhox`'s slash state update removes the
+entry in the same write as the bond zeroing — `committedRewards: state.get("committedRewards").delete(slashedValidator)`
+— so the port is **fidelity-deviant**, not merely silent: the port's own doc comment on `slash` cites
+`Pos.rhox:486-495` and records a *different* contract deviation (the `pendingWithdrawers` tombstone) while
+missing this one.
+
+The entry is then unreachable in both directions. It is never **paid**: `close_block` pays pool members
+(`:1253`) and claims in `withdrawers` (`:1281`) only, and a slashed validator is in neither. It is never
+**removed**: the only `committed.remove` in the file is `:1291`, inside the claim payment. And because
+`epoch_pot` (`:668`) subtracts **every** `committed` entry, the stranded balance keeps reducing the
+distributable pot — so after a slash of a validator that had crossed an epoch boundary the port
+distributes a smaller remainder than the oracle would, which is consensus-visible (reward amounts are
+state). This is the common case rather than a corner: rewards are committed at every boundary and paid
+only at withdrawal, so any validator the epoch has reached carries a non-zero entry.
+
+**What is not claimed.** Not that the fix is obvious: deleting the entry matches the oracle, but it
+*raises* the pot, so the change moves reward amounts and is hard-fork class — a §6 row and a #51 category
+A classification before it lands. And not that a test would have been easy: nothing in the suite covers
+the slash/committed interaction at all, which is why the row is `todo` and its `owes` is the decision
+rather than a patch.
+
+**Found by**: writing `docs/src/node/validator-economics.md`, which had to say what a validator loses.

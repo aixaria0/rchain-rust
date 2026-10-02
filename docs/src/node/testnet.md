@@ -480,10 +480,12 @@ The implementation models the full lifecycle natively (`rholang/src/native_state
 
 > **observer** — any key that is not bonded · **trusted** — admission into the validator
 > stakeholder group; only a trusted key may bond · **bonded / pool** — a bond within
-> `[minimum, maximum]`, deducted from the validator's REV vault · **active** — the consensus set:
-> the top `number_of_active_validators` of the pool by stake, recomputed on every membership
-> change · **withdrawing** — deactivation, stake escrowed until the quarantine deadline ·
-> **removed** — `slash`/`untrust`, stake confiscated.
+> `[minimum, maximum]`, deducted from the validator's REV vault · **active** — the consensus set,
+> recomputed only at an epoch boundary: the whole eligible pool when it fits under
+> `number_of_active_validators`, otherwise a seeded uniform draw from it (`select_active`, not a
+> stake ranking) · **withdrawing** — deactivation, stake escrowed until the quarantine deadline ·
+> **removed** — `slash`/`untrust`, stake confiscated. What each state earns and risks:
+> [Validator economics](validator-economics.md).
 
 Bonding is done through the `rho:rchain:pos` **system process** (native methods `bond`,
 `withdraw`, `trust`, `untrust`, `getBonds`, `getActiveValidators`). There is no CLI or HTTP
