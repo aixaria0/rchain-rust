@@ -8,7 +8,7 @@ memory-safety bugs are unwritable rather than mitigated. An adversarial audit re
 Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
 **A small artifact, deliberately**: ~149,000 lines of Rust across 412 files compile to a single **37 MB**
-native binary — nothing to boot but the process, no garbage collector to pause, no heap to tune — so a
+native binary — nothing to boot but the process, and no collector inside it to pause — so a
 validator runs on a commodity laptop with an NVMe.
 
 ## Provenance
@@ -56,13 +56,19 @@ goal-indexed map for readers and AI agents is
 
 Three reasons drive the rewrite.
 
-**Memory safety.** The Scala/JVM node leaked memory and paused on garbage collection — it shipped
-`Memory`/`GarbageCollector` diagnostics and needed `SBT_OPTS="-Xmx4g -Xss2m"` to run. Rust's ownership
-model and lack of a tracing GC make the leak and the stop-the-world pause unrepresentable.
+**Memory safety.** The Scala/JVM node's latency and footprint were the collector's — it shipped
+`Memory`/`GarbageCollector` diagnostics and needed `SBT_OPTS="-Xmx4g -Xss2m"` to run. In Rust the
+`unsafe` keyword is forbidden, so the *memory-unsafety* class — use-after-free, double free,
+out-of-bounds access, data races — is unwritable; and the binary ships no tracing collector, so
+nothing stops the world to collect. Neither claim says memory cannot leak or grow: a leak is safe
+code, and a stop-the-world collector is safe Rust — we simply do not ship one. Footprint is an
+engineering concern either way, and this node measures its own (see
+[hardware requirements](docs/src/node/validator-requirements.md)).
 
-**Decentralization.** ~149,000 lines of Rust compile to a single 37 MB native binary — no JVM, no GC,
-no heap tuning — so a validator runs on any modern desktop or laptop with an NVMe SSD. Validator
-operation sits within consumer-grade hardware, which is what makes the network genuinely decentralized
+**Decentralization.** ~149,000 lines of Rust compile to a single 37 MB native binary — no JVM and
+no collector in the process — so a validator runs on any modern desktop or laptop with an NVMe SSD.
+Validator operation sits within consumer-grade hardware, which is what makes the network genuinely
+decentralized
 (see [hardware requirements](docs/src/node/validator-requirements.md)).
 
 **The calculus hierarchy.** Rust natively expresses the λ-calculus (closures), the π-calculus

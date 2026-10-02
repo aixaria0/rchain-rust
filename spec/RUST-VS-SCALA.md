@@ -66,9 +66,13 @@ enforces it:
 Beyond the memory-safety argument, the Rust node is *more* production-ready than the Scala one in
 concrete, auditable ways:
 
-1. **No GC pauses / no JVM heap blowup.** Scala boxed every `Par`/`Expr` node and every event in the
-   hot reduction path; long-running nodes suffered stop-the-world pauses and heap pressure. Rust's
-   value semantics and explicit allocation give predictable latency and a small, bounded footprint.
+1. **No collector to pause it / no JVM heap sizing.** Scala boxed every `Par`/`Expr` node and every
+   event in the hot reduction path; long-running nodes suffered stop-the-world pauses and heap
+   pressure. The Rust binary ships no tracing collector, so no collector pauses it and there is no
+   `-Xmx` to size. Value semantics and explicit allocation give predictable latency — but not a
+   *bounded* footprint: memory that leaks or grows is safe code in any language, and this node
+   measures its own residency and records the rate
+   ([hardware requirements](../docs/src/node/validator-requirements.md)).
 2. **No `Vec::with_capacity(attacker_count)` OOM.** The Scala scodec decoders (and the naive Rust
    port of them) trusted 32/64-bit length prefixes from the wire; a malicious length could allocate
    gigabytes. Rust made these *visible* as `with_capacity`/`try_into` sites, so they could be audited

@@ -7,7 +7,7 @@ repository rewrites it in Rust.
 
 Two reasons drive the rewrite.
 
-## 1. Memory safety and deterministic resource use
+## 1. Memory safety, and no collector in the runtime
 
 The Scala/JVM node leaked memory and paused for garbage collection. These were not theoretical
 concerns: the node shipped a `diagnostics` service that reported JVM `Memory`, `MemoryPool`, and
@@ -19,19 +19,34 @@ enlarged heap and thread stack just to run (see [`legacy/DEVELOPER.md`](https://
 export SBT_OPTS="-Xmx4g -Xss2m -Dsbt.supershell=false"
 ```
 
-Rust eliminates this class of problem by construction. Ownership and the borrow checker make memory
-leaks and use-after-free unrepresentable, with **no tracing garbage collector** — so there is no
-stop-the-world pause and no heap pressure to tune away. Resource lifetime becomes a compile-time,
-statically checked property rather than a runtime, best-effort one.
+Rust addresses this, but the parts are worth keeping separate, because only one of them is the type
+system.
+
+**Memory safety is structural.** With `unsafe` forbidden across the crate graph, ownership and the
+borrow checker make *undefined behaviour* — use-after-free, double free, out-of-bounds access, data
+races — unwritable: resource lifetime becomes a compile-time, statically checked property rather
+than a runtime, best-effort one.
+
+**There is no collector to pause it — and that is a runtime property, not a type-system one.** The
+binary ships no tracing garbage collector, so the stop-the-world pause the JVM imposed does not exist
+here. But a tracing collector, including one that stops the world, is ordinary *safe* Rust; nothing
+in the language forbids writing one. We simply do not ship one, and *that* is the claim.
+
+**A leak is not a safety bug, and Rust does not make one unrepresentable.** Leaking memory is
+defined as safe: `mem::forget`, a reference cycle through `Rc`/`Arc`, an unbounded cache, or simply
+retaining live data are all things safe code does. The JVM node's leak was a resource-lifetime
+defect, not a memory-safety one — Rust makes lifetime *visible in the types* rather than impossible to
+get wrong. Footprint stays an engineering concern, and this node measures its own and records the
+rate (see [Running a validator: hardware requirements](../node/validator-requirements.md)).
 
 ### The practical upshot — a validator on modest hardware
 
 The payoff is operational, not just theoretical. Roughly **149,000 lines of Rust** across 412 source
-files compile to a single **37 MB native binary** — no JVM to boot, no tracing GC to pause, no
-`-Xmx4g -Xss2m` to tune. The stop-the-world pauses and heap pressure that made the JVM node's runtime
-heavy and its latency unpredictable are gone by construction, so a validator runs comfortably — and
-with deterministic resource use — on any reasonably modern desktop PC or high-performance laptop with
-an NVMe SSD. See [Running a validator: hardware requirements](../node/validator-requirements.md).
+files compile to a single **37 MB native binary** — no JVM to boot, no collector in the process, no
+`-Xmx4g -Xss2m` to size. The collector-induced pauses and the heap sizing that made the JVM node's
+runtime heavy and its latency unpredictable are gone, so a validator runs comfortably on any
+reasonably modern desktop PC or high-performance laptop with an NVMe SSD. See
+[Running a validator: hardware requirements](../node/validator-requirements.md).
 
 *(Both figures are counted, not remembered: the line and file totals are
 `git ls-files '*.rs' | xargs wc -l` over the workspace, and the binary is `/usr/local/bin/rnode` as
@@ -42,9 +57,9 @@ a figure that changes weekly would fail the conformance gate every night instead
 
 The consequence is structural: **validator operation genuinely decentralizes.** The requirements sit
 within consumer-grade hardware, not a datacenter, so the barrier to running a validating node is a
-commodity machine. The same native code buys throughput too — no GC pauses and no JVM startup leave
-the CPU free for reduction itself, even while full ρ-calculus thread-level concurrency remains work in
-progress (see [the concurrency model](../formal/concurrency.md)).
+commodity machine. The same native code buys throughput too — no collector pauses and no JVM startup
+leave the CPU free for reduction itself, even while full ρ-calculus thread-level concurrency remains
+work in progress (see [the concurrency model](../formal/concurrency.md)).
 
 That decentralization is not an abstract ideal; it is the lesson of the original network's failure.
 Running a validator meant an always-on, co-op-operated AWS instance. Operators who self-hosted —
