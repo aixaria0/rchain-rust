@@ -2734,8 +2734,12 @@ def laws : List Law := [
       unstatable over a transition *relation*, and `Rchain.reduce_not_deterministic` \
       (`Rchain/Concurrent.lean`) is the repo's own proof that the flat calculus fixes no schedule at \
       all — so starvation is registered `open` rather than defined as a shape. **Not modelled either**: \
-      the protocol's inactivity leak (the honest fix for a net that stays below two thirds), which \
-      needs a state change this layer does not have, and no open issue owns it (#24 and #39 are both closed). **`Drift` has a port-side instance \
+      the protocol's inactivity leak (a state change that burns a silent validator's *bond*) — and that \
+      is a **decision rather than a debt** (2026-10-02, §59): the constraint governing this workstream is \
+      that a staker must not lose its bond through no fault of its own, and a partition is the canonical \
+      case of exactly that, so the instrument the port has instead is an **income-only** participation \
+      rule (law 44) that scales an epoch's reward and cannot reach a stake. The citations this used to \
+      carry (#24, #39) are both closed; the leak is not owed by anyone. **`Drift` has a port-side instance \
       now, not only C171's**: the LFS block walk's give-up rule (`MAX_IDLE_ROUNDS`, \
       `casper/src/engine/lfs_block_requester.rs`, §6, issue #102) is a `Paced` condition on a measure \
       the state already kept — `LfsState::finished`, monotone because `done` only adds and `add` \
@@ -2869,9 +2873,13 @@ def laws : List Law := [
       finality while the third validator was stopped, and #105's run froze with the survivor at 91 %, \
       where the binding constraint was a *message* and not a stake share. **What clause b still does not \
       fix, said plainly**: a net that stays below two thirds permanently (three equal validators minus \
-      one is exactly two thirds) still cannot finalise, and the honest repair there is an inactivity leak \
-      — a state change that burns a silent validator's stake — which belongs with the shard-configuration \
-      and validator-lifecycle work — unowned: #24 and #39 are both closed — not with a recency window" },
+      one is exactly two thirds) still cannot finalise. **And that is a decision rather than a debt** \
+      (2026-10-02, §59): the instrument that would price it is an inactivity leak, a state change that \
+      burns a silent validator's *bond*, and the constraint governing this whole workstream is that a \
+      staker must not lose its bond through no fault of its own — a partition is the canonical case of \
+      exactly that. What the port has instead is an **income-only** participation rule (law 44), which \
+      scales a validator's epoch reward and cannot reach a stake. The citations this used to carry (#24, \
+      #39) are both closed, and the leak is not owed by anyone" },
   { number := 53, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/validate.rs:neglected_invalid_block_detects_bonded_invalid_justification",

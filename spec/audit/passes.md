@@ -4747,9 +4747,12 @@ never-spoke, ahead-of-tip, return).
 **What it does not fix, said plainly.** The all-live attestation storm is untouched (AUDIT C171, still
 `todo`: the pace bound belongs on the guard or the tap, and the guard-side shape needs a measurement,
 because a cadence that suppresses *every* round traps liveness). And a net that loses more than a third
-of its stake **permanently** still cannot finalise — the honest fix there is an inactivity leak, which is
-a state change (burning a silent validator's stake) and belongs with the shard-configuration and
-validator-lifecycle work — unowned: #24 and #39 are both closed — not with a recency window.
+of its stake **permanently** still cannot finalise. **That is a decision rather than a debt** (2026-10-02,
+§59): the instrument that would price it is an inactivity leak, a state change that burns a silent
+validator's *bond*, and the constraint governing this workstream is that a staker must not lose its bond
+through no fault of its own — a partition is the canonical case of exactly that. What the port has
+instead is an **income-only** participation rule (§59, law 44), which scales an epoch's reward and cannot
+reach a stake. The citations this used to carry (#24, #39) are both closed.
 
 ## 27. The memory ceiling is glibc's heap, and the audit that had to break its own instruments to say so (#117)
 

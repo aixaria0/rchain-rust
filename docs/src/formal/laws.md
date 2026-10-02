@@ -286,8 +286,12 @@ drift — and that pairing is what makes the vocabulary diagnostic rather than t
 unstatable over a transition *relation*, and this tree's own `reduce_not_deterministic`
 (`Rchain/Concurrent.lean`) proves the flat calculus fixes no schedule at all; the shape is registered
 `open`, with that reason, rather than defined. The protocol's inactivity leak is out of scope for the
-same kind of honesty: it needs a state change (burning a silent validator's stake) this layer does not
-have, and no open issue owns it (#24 and #39 are both closed).
+same kind of honesty — it is a state change (burning a silent validator's stake) this layer does not
+have — and it is now a **decision rather than a debt** (2026-10-02, §59): the leak burns a *bond*, and
+the constraint governing this workstream is that a staker must not lose its bond through no fault of its
+own, with a partition the canonical case. The port's instrument instead is an **income-only**
+participation rule (law 44), which scales an epoch's reward and cannot reach a stake. The citations this
+used to carry (#24, #39) are both closed.
 
 **What is shared with the calculus, and how the sharing is checked.** A `System` is a step relation plus
 a decidable "is a step available now" predicate, *tied to the relation by the structure's own field*. The
@@ -329,8 +333,12 @@ fixture instance is two-sided as well (three speaking validators refused at 300 
 fixture advancing once the fourth speaks). The hypotheses are named in the instance module
 (`Participation`, `Delivery`, `StalenessBound`) because a liveness claim without its hypothesis is Law
 20's trap. What it still does not fix, plainly: a net that stays below two thirds **permanently** still
-cannot finalise, and the honest repair there is an inactivity leak — a state change that burns a silent
-validator's stake — which no open issue owns (#24 and #39 are both closed), and which is not a recency window.
+cannot finalise — and that is a **decision rather than a debt** (2026-10-02, §59). The instrument that
+would price it is an inactivity leak, a state change that burns a silent validator's *bond*, and the
+constraint governing this workstream is that a staker must not lose its bond through no fault of its own
+— a partition is the canonical case of exactly that. What the port has instead is an **income-only**
+participation rule (law 44), which scales an epoch's reward and cannot reach a stake. It is not a recency
+window, and the citations this used to carry (#24, #39) are both closed.
 
 ---
 
