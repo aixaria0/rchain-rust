@@ -6870,10 +6870,21 @@ the honest cost of the retirement and it is why the two remaining arms are state
 
 Not that a stale fringe is harmless: it moves the whole reading, which is a real if blunt lever. Not that
 the weight's numbers are right — `absence_slack` and `participation_grace` both ship `0`, so the rule is
-**off** and its arithmetic is dead code until a network arms it, and the measurement that would set the
-values by the distribution of a live validator's lag is **not done**. And not that this prices absence in
+**off** and its arithmetic is dead code until a network arms it. And not that this prices absence in
 the way a staker would notice: the withheld fraction returns to the vault for a later epoch, so the rule
 prices the *epoch* a validator sat out and not the behaviour.
+
+**The measurement is now done, and it says the opposite of what one would guess.** One devnet run with
+the instrument (`spec/audit/evidence/participation-lag-results.md`, 350 boundary readings, every one of
+them `min=median=p90=max=4`): **the lag of a live validator is the finality lag, not zero.** The
+participation is read at the last *finalised* fringe, so a validator that spoke in this very round still
+reads as far behind as finality takes to advance — a constant 4 there, which is the tree's own measured
+all-live finality gap (`n148-results.md`), so the two agree. **So the knee is a sum, and the larger term
+is invisible from the configuration**: a network that picked `absence-slack 5` from the intuition "a
+validator that missed a round or two should be cut" would be taxing validators that missed *nothing*.
+What generalises from the run is the instrument and that shape; the number is a fact about the rig,
+which drew a single validator per boundary, so the round-robin widening a large active set adds is not in
+it either.
 
 **Hard fork (#51 category A):** the committed rewards move for any chain that arms the rule, the genesis
 params record grows a field, and the retirement shifts a positional seed. Lockstep upgrade is the

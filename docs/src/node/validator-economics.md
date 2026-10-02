@@ -137,7 +137,20 @@ that it is paid less for the boundary it sat out.
 the genesis params record, so two nodes that disagree compute different post-states — and the value a
 network picks has to come from how far behind the fringe its *live* validators actually sit on its own
 chain, which is a property of its block rate and its active-set size rather than something this port can
-hand it. Nothing in the shipped configuration arms the rule.
+hand it. **A boundary logs exactly that**, whether or not the rule is armed, so a network can measure
+before it chooses:
+
+```
+[pos] participation lag at boundary 40000: drawn=100 never_spoke=0 min=4 median=6 p90=31 max=88
+```
+
+**And the first thing that log will tell you is not what you would guess: a validator that missed
+*nothing* does not read as zero.** The lag is measured against the last **finalised** fringe, so it
+carries the finality lag — on the rig this was developed on, a constant 4, which is that chain's own
+all-live finality gap. So the knee is a *sum*: the finality lag, plus the silence you want to price.
+Picking `absence-slack 5` because "a validator that missed a round or two should be cut" would tax
+validators that missed nothing at all. Measure first; the number is yours and nobody else's
+(`spec/audit/evidence/participation-lag-results.md` carries the run and its limits).
 
 ## Who is paid: the drawn set, and where "pro-rata" stops holding
 
