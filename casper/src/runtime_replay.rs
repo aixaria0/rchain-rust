@@ -18,12 +18,12 @@ use rchain_models::casper::protocol::casper_message::{
     ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use rchain_models::normalizer_env::NormalizerEnv;
-use rchain_models::validator::Validator;
 use rchain_models::par_ops::from_expr;
 use rchain_models::rholang::RhoType::RhoNumber;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::types::count_free_vars;
+use rchain_models::validator::Validator;
 use rchain_rholang::accounting::{Cost, CostAccounting};
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::evaluate_result::EvaluateResult;

@@ -276,15 +276,9 @@ mod block_system_deploy_tests {
             offender(1, SlashSeverity::HonestMistake, None),
         ]);
         let deploy_count = 4usize;
-        let deploys = block_system_deploys(
-            &to_slash,
-            deploy_count,
-            12,
-            fringe,
-            BTreeMap::new(),
-            &rand,
-        )
-        .expect("a list of system deploys");
+        let deploys =
+            block_system_deploys(&to_slash, deploy_count, 12, fringe, BTreeMap::new(), &rand)
+                .expect("a list of system deploys");
 
         // Three entries: the block's own record, two slashes, and the close — in that order.
         assert_eq!(

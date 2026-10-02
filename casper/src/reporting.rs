@@ -19,13 +19,13 @@ use rchain_models::casper::protocol::report::{
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::validator::Validator;
-use rchain_shared::refined::BlockHeight;
 use rchain_rholang::reporting_runtime::{ReportingRuntime, RhoReportingRspace};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rspace::reporting_rspace::{
     ReportingComm, ReportingConsume, ReportingEvent, ReportingProduce,
 };
 use rchain_rspace::reporting_transformer::ReportingTransformer;
+use rchain_shared::refined::BlockHeight;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::runtime_replay::RuntimeReplayOps;

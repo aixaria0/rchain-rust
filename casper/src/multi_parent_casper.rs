@@ -335,10 +335,9 @@ pub async fn participation_for_block(
             if meta.validation_failed {
                 continue;
             }
-            let m = msg_map
-                .get(&meta.block_hash)
-                .cloned()
-                .ok_or_else(|| format!("parent not in message map: {}", meta.block_hash.to_hex()))?;
+            let m = msg_map.get(&meta.block_hash).cloned().ok_or_else(|| {
+                format!("parent not in message map: {}", meta.block_hash.to_hex())
+            })?;
             parents.insert(m);
         }
     }

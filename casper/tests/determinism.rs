@@ -795,12 +795,7 @@ async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_st
 
     // What the **proposer** had: its own derived fringe.
     let proposer_fringe = fringe_state(1);
-    let close = SystemDeploy::close_block(
-        1,
-        proposer_fringe,
-        BTreeMap::new(),
-        rand.split_byte(9),
-    );
+    let close = SystemDeploy::close_block(1, proposer_fringe, BTreeMap::new(), rand.split_byte(9));
     let (declared_post_state, user_results, sys_results) = rm
         .compute_state(
             &genesis_post,

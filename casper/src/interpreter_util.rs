@@ -21,8 +21,8 @@ use rchain_rholang::errors::RholangError;
 use rchain_rholang::runtime::ReplayRhoRuntime;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::base16;
-use rchain_shared::refined::BlockHeight;
 use rchain_shared::log::{Log, LogSource};
+use rchain_shared::refined::BlockHeight;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::block_status::BlockStatus;

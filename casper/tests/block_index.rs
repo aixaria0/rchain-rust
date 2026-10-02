@@ -65,12 +65,13 @@ async fn build_dag() -> Arc<rchain_casper::dag::BlockDagKeyValueStorage> {
         .await
         .expect("metadata store"),
     );
-    let fringe_store: Arc<dyn rchain_shared::typed_store::KeyValueTypedStore<Blake2b256Hash, FringeData>> =
-        Arc::new(KeyValueTypedStoreCodec::new(
-            in_memory(),
-            Arc::new(Blake2b256HashCodec),
-            Arc::new(FringeDataCodec),
-        ));
+    let fringe_store: Arc<
+        dyn rchain_shared::typed_store::KeyValueTypedStore<Blake2b256Hash, FringeData>,
+    > = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(Blake2b256HashCodec),
+        Arc::new(FringeDataCodec),
+    ));
     let deploy_index: Arc<
         dyn rchain_shared::typed_store::KeyValueTypedStore<
             rchain_block_storage::dag::dag_storage::DeployId,
@@ -230,9 +231,15 @@ async fn the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block() {
         .await
         .expect("put the block");
 
-    let index = BlockIndex::get_block_index(&rm, &*build_dag().await, &store, block.block_hash, fringe_state(1))
-        .await
-        .expect("the block index regenerates the sidecar rather than failing");
+    let index = BlockIndex::get_block_index(
+        &rm,
+        &*build_dag().await,
+        &store,
+        block.block_hash,
+        fringe_state(1),
+    )
+    .await
+    .expect("the block index regenerates the sidecar rather than failing");
 
     assert_eq!(index.block_hash, block.block_hash);
     assert_eq!(
@@ -357,9 +364,15 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         .await
         .expect("put the block");
 
-    let index = BlockIndex::get_block_index(&rm, &*build_dag().await, &store, block.block_hash, fringe_state(1))
-        .await
-        .expect("the block index");
+    let index = BlockIndex::get_block_index(
+        &rm,
+        &*build_dag().await,
+        &store,
+        block.block_hash,
+        fringe_state(1),
+    )
+    .await
+    .expect("the block index");
     assert!(
         !index.native_changes.is_empty(),
         "the index must carry the block's native writes for the merge (#74)"
@@ -375,9 +388,15 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     // `#![forbid(unsafe_code)]` rules out a `#[global_allocator]` (see `casper/src/dag.rs`). That
     // makes `Arc::ptr_eq` the available falsifier — restore the old `idx.clone()` on the hit path and
     // this goes red, while still passing every behavioural test in the file.
-    let again = BlockIndex::get_block_index(&rm, &*build_dag().await, &store, block.block_hash, fringe_state(1))
-        .await
-        .expect("the block index again");
+    let again = BlockIndex::get_block_index(
+        &rm,
+        &*build_dag().await,
+        &store,
+        block.block_hash,
+        fringe_state(1),
+    )
+    .await
+    .expect("the block index again");
     assert!(
         Arc::ptr_eq(&index, &again),
         "a cache hit must share the cached index, not deep-copy it (#117)"
