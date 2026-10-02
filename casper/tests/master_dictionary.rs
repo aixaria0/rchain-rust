@@ -19,7 +19,7 @@ use rchain_crypto::private_key::PrivateKey;
 use rchain_crypto::signatures::secp256k1::Secp256k1;
 use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
-use rchain_models::rholang::RhoType::{RhoList, RhoString};
+use rchain_models::rholang::RhoType::RhoString;
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
 

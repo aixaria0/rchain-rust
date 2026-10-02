@@ -57,53 +57,79 @@ Two registrations live in these files and only one keeps upstream's shape:
 | `Ballot.rho` | `rho:id:hpg1dns31bbdwb4yf9u6teabt7doutus6xfnu6uij6rweoszc8qy` | the ballot snippets |
 | `Chat.rho` | `rho:id:yaer85qmkisrnr3h7yir389u687jhrzs4p1h67jtqasp4j5fw8sy` | `newChat`, `sendChat`, `readChat` |
 | `Group.rho` | `rho:id:4ms51n1oramet9iu94df4483xp88jogfsfcnnsmen6xpraz7gs9o` | `newGroup`, `joinGroup`, `addMember` |
-| **the master directory's read cap** | `rho:id:wxc4mwdh7otq4fd6iuxt84inepssyz5tugojf7ao68dkh4ebbncy` | the `MasterURI` every governance snippet takes — the wallet's `master-uri.ts` |
-| **the master directory's grant cap** | `rho:id:h1uxxzbr71xnoz5r99tkr6jkuoky1o16usme58mzefqk5afym6yo` | an application registering under **its own name**: `grant!("myKey", *writerCh)` returns a writer bound to that one key |
+| **`masterdict-resolve`** | `rho:id:fbcb5xks6kygyyeixsuq1ahpcb6jwahpmt5s5byfwfpcmi64bpqo` | the name layer's read side — `resolve`, `resolveAt`, `versionsOf`, `ownerOf`, `sealed`, `targetOf`, `aliases`. **This is where the `MasterURI` a governance client takes now points** |
+| **`masterdict-publish`** | `rho:id:3q9ax77mpszucp83yqomxe5c5161tg7u1mqfhw7b4k71j869bpiy` | the self-scoped write side: `publish(path, value)`, `seal(path)`, `grant(path)`, `revoke(path)`. Where the old **grant cap** went: nothing is claimed, so nothing is granted — the owner prefix is derived |
+| **`masterdict-root`** | `rho:id:1wk4t7op7kjmpkacgzcwkoeo93buy3pqkshypzca7ntw457r4emo` | the **alias tier's governor**: `alias`, `unalias`, `setRootAuthority`. Held by the ceremony key |
 
 `ballot`, `chat` and `group` are **not** in upstream's deployment order: the master directory has
 slots for them here because the wallet's editor asks the directory for those class *names*, and a slot
 that was never filled answers `Nil` — which a client cannot tell from "broken".
 
-**The read cap alone made the directory immutable, and that is fixed** (#71). The template mints
-`{"read", "write", "grant"}` and parks all three on `@[*deployerId, "MasterContractAdmin"]`, keyed by
-the *genesis* deployer — an identity nothing holds after block 1 — so from genesis onward nothing could
-write a name, and an application trying to register got no error and no rejection: law 40 (a call the
-directory cannot match does nothing) over law 38 (silence is not failure). Measured on a live chain
-before the fix: `read("Inbox", *ret)` answered a capability, `write("probeKey", "probeValue", *ret)`
-answered `{"expr":[]}`. The **grant cap** above is the repair, and it is deliberately the restricted
-half: `Directory.rho`'s `grant(@key, ret)` returns a writer bound to one key, so a holder can own its
-own name and nothing else. Raw `write` stays unpublished, because a `write` holder can swap any
-application under a client's feet. It is published by **our own** `extraSlots` term rather than by the
-vendored template, which stays byte-faithful to upstream; the behavioural pin is
-`the_published_grant_capability_owns_exactly_one_key`, which takes a writer, writes, and reads the
-value back through the read cap — because a probe that only checks *that something answered* cannot
-distinguish this defect from a working chain.
+**The name layer is the rooted master dictionary** (issue #99). It replaced the testnet *template* and
+the `readcap`/`grantcap` pair with one term, `resources/rgov/MasterDictionary.rho` — **our own, not
+vendored**: it has no upstream. `Directory.rho` remains a *class* (its URI is in the table above, and
+`memberIdGovRev` imports it), but nothing installs an *instance* of it at genesis any more.
 
-**The parked capability is not lost — it is held, and that distinction is measured, not assumed.** The
-datum sits on `@[*deployerId, "MasterContractAdmin"]` keyed by the ceremony key, and **both** genesis
-consumers (`MemberDirectory.rho:15,162` and `extraSlots`) read it with `<<-` — a *peek*, which restores
-what it reads. So nothing consumed it, and a deploy signed with the ceremony key still finds and writes
-through it: the directory is **operator-mutable and application-immutable**, not lost. That reading
-matters because it is the cheaper one to act on — "make the operator's write path usable" is a smaller
-change than "recover a lost capability". `only_the_ceremony_key_still_holds_the_parked_capability` pins
-both halves with one probe text signed by two keys: the ceremony key writes and the value is visible
-through the read cap, while a stranger's identical probe matches nothing and its write silently does not
-happen.
+Two tiers, and the access-control system is entirely the first one:
 
-**What publishing `grant` does not decide, recorded as open rather than implied by a key name:**
+- **rooted**: a name is `<revAddr>/<path>`, and `publish(path, value)` succeeds iff the path's owner
+  prefix equals the caller's derived REV address. The prefix comes from
+  `rho:rev:address("fromDeployerId", …)` — never from the caller — so a write outside your own root is
+  **inexpressible rather than refused**, and a forged id derives `Nil`, which every verb guards before
+  it touches state. `grant(path)` still exists, but it hands out a writekey bound to one path **and one
+  epoch**; `revoke(path)` bumps the epoch and retires every key already issued for it.
+- **aliases**: the short names are aliases to rooted paths — `"Inbox" -> "<revAddr>/Inbox"` — and
+  re-pointing one is a single governed act that never rewrites what an earlier client resolved.
+  Versions are append-only (`resolveAt(p, 0)` answers the same thing for ever) and `seal(p)` closes a
+  path; the only mutable pointer is the alias.
 
-- **Who may claim a name at block 0, and how that authority rotates.** `grant` returns a one-key
-  writer to *whoever calls it*, so on this genesis any caller may claim any unclaimed name. A
-  gatekeeper contract in front of it, holding an admission policy, is the shape that would restrict
-  that; nothing here does.
-- **Whether an existing name may be overwritten.** `write`'s `set` overwrites, so a `grant` holder for
-  a key can replace what is under it. Overwrite is the friendly upgrade path — publish a new value
-  under the same name and every client follows without redistributing a uri — and it is also the
-  supply-chain risk. Extending only as `Name@2` is the conservative reading and is not implemented.
-- **Whether `Group`/`Ballot`/`Chat` belong in genesis content at all.** Registering less at genesis is
-  arguably better: genesis freezes an interface for every chain built from the port, and voting rules
-  and group semantics are exactly what a governance experiment needs to change. They are installed
-  above, and that is a testnet scope decision, not a conclusion.
+The dictionary publishes the three facets above under constant keys, parks its own admin handle on
+`@[*deployerId, "MasterContractAdmin"]` for the ceremony key, **publishes each class under the
+operator's own root** and aliases the names to those paths — so `resolve("Directory")` answers the
+class *contract*, exactly what the old slot held. `memberDirectory` publishes `GetMe`/`SendThem` the
+same way, at `<rootAddr>/GetMe`.
+
+**The admin handle is written by the dictionary, not parked out of reach.** #71's defect was that the
+template parked `{"read","write","grant"}` on `@[*deployerId, "MasterContractAdmin"]` keyed by the
+genesis deployer — an identity nothing holds after block 1 — so from genesis onward nothing could write
+a name, and an application trying to register got no error and no rejection: law 40 (a call the
+directory cannot match does nothing) over law 38 (silence is not failure). The dictionary now writes
+that datum *itself*, for the deployer that installs it, and it carries `{"read", "write", "root"}` —
+its own three facets. No `grant`: a rooted name is derived, so there is nothing to grant. That the
+handle is **operator-held and application-immutable** is unchanged and still measured, by
+`only_the_ceremony_key_can_reach_the_admin_handle`: the ceremony key's deploy reads it with a `<<-`
+peek, while a stranger's identical probe keys the channel to *its own* id, matches nothing, and finds
+nothing.
+
+### The three admission questions, answered
+
+These were recorded as open in #71's thread, and deciding them is what #99 owed. Each is now a property
+of the deployed dictionary, pinned by `casper/tests/master_dictionary.rs`:
+
+- **Who may claim a name at block 0, and how that authority rotates.** *Nobody claims one.* A rooted
+  name is derived from the caller's identity, so there is no unclaimed namespace to race for and no
+  admission policy to freeze — the question dissolves rather than being answered by policy. The one
+  governed thing is the **alias tier**, and its governor is the identity that installs the dictionary
+  (the ceremony key), which hands the role on with `setRootAuthority`. A non-root `alias` call is
+  refused: `("dir-error", "not the root authority")`.
+- **Whether an existing name may be overwritten.** *It may not.* `publish` **appends**; a version, once
+  written, is answered by `resolveAt(path, v)` for ever. The mutable pointer is the alias, and moving it
+  is visible, single-writer and governed. That is the "extend-only" reading #71's thread agreed on; the
+  overwrite path `Directory.rho`'s `set` gave a `grant` holder is gone from the name layer entirely.
+- **Whether `Group`/`Ballot`/`Chat` belong in genesis content at all.** *The classes stay; the names
+  stop being frozen.* Their class URIs are still genesis content — installing less would break the
+  wallet's editor — but what the *names* mean is now an alias the root authority can re-point, so a
+  governance experiment can change them without a genesis change. That is the compromise the rooted
+  design buys: the classes are frozen, the interface is not.
+
+**The disclosure rule, which is a discipline and not a mechanism.** A deployer id is a bearer value:
+"Nothing was forged. The identity was disclosed, and disclosure is transfer" (`SECURITY.md`). Holding
+one lets its holder act as that identity *anywhere*, for as long as it exists, so a contract that stores
+`*deployerId` and hands it out transfers that namespace. Nothing inside the calculus prevents it; the
+mitigation is that the dictionary itself never does it, which
+`the_deployer_id_is_only_ever_the_address_derivation` asserts over the contract's source — every
+occurrence of the binder is the derivation, the binder itself, the admin-handle key, or a call to one
+of the dictionary's own facets.
 
 Two of the vendored files carry a behavioural repair, both recorded in
 `resources/rgov/NOTICE` with their evidence: `Inbox.rho`'s zero-argument `read` restored a store it
@@ -114,35 +140,33 @@ nothing, silently (AUDIT C25). The group row above is usable because of that sec
 
 ### The key: the genesis ceremony's own
 
-`masterDirectory`, `extraSlots` and `memberDirectory` are signed by **the key that creates the genesis
-block** — `create_genesis_block`'s `ValidatorIdentity`. That is the standard genesis-ceremony
-arrangement, and it is what the master directory's admin capability requires:
+`masterDictionary` and `memberDirectory` are signed by **the key that creates the genesis block** —
+`create_genesis_block`'s `ValidatorIdentity`. That is the standard genesis-ceremony arrangement, and it
+is what the admin handle requires:
 
-- **They must be one key.** The template publishes its
-  `@[*deployerId, "MasterContractAdmin"]` capability for *its own* deployer, and the `GetMe` feature's
-  registration is gated on reading that capability back. Signed by different keys the gate never
-  opens, the feature registers nothing, and the directory answers `Nil` for `GetMe`. (This rule was
-  originally argued from a handshake that reached "directory answered GetMe" and stopped before
-  `getMe` — an observation later explained by AUDIT C21 rather than by the keys. The rule stands on the
-  gate's `deployerId`, not on that sighting: the same key is what makes
+- **They must be one key.** The dictionary parks its admin handle on
+  `@[*deployerId, "MasterContractAdmin"]` for *its own* deployer, and the `GetMe` feature's registration
+  is gated on reading that handle back — as is the dictionary's **root authority**, which is derived
+  from the deployer that installs it. Signed by different keys the gate never opens and the feature
+  registers nothing. (This rule was originally argued from a handshake that reached "directory answered
+  GetMe" and stopped before `getMe` — an observation later explained by AUDIT C21 rather than by the
+  keys. The rule stands on the gate's `deployerId`, not on that sighting: the same key is what makes
   `the_governance_terms_are_signed_by_the_ceremony_key` meaningful.)
 - **It must be a key whose private half is not public.** An earlier revision signed them with a key
   derived from a string literal in `rgov.rs`; anyone reading the source could compute it and exercise
   the capability on any network that installed it. The ceremony identity is threaded in for that
   reason, and `spec/TEST-COVERAGE.md` records the change.
 - **Nothing a client hardcodes moves because of it.** The eight class keys are the classes' own fixed
-  keys and the read cap is derived from the deploy *order* (the deploy's RNG state), not the signer;
-  `the_published_keys_are_constants` asserts exactly that, and it is why the constants above are the
-  same under either key.
-
-`extraSlots` is our own term, not upstream's: rather than rewrite upstream's seven-slot template body,
-it takes the write capability the template published and writes `Chat`, `Ballot` and `Group` in.
+  keys, and the dictionary's three facet keys are derived from *named strings*
+  (`build_uri(blake2b256("rnode/genesis/masterdict-…"))`) rather than from the deploy's RNG state or the
+  signer; `the_published_keys_are_constants` asserts that the three are distinct and hardcodable, and it
+  is why the constants above are the same under either key.
 
 ## Ceiling of this arrangement, and what a public network needs
 
 ### The handshake, end to end (the open item is closed)
 
-On a fresh chain, with the constants above: the read cap resolves, the directory answers `GetMe` with
+On a fresh chain, with the constants above: the resolve facet answers, the name layer answers `GetMe` with
 the feature's channel, `getMe` runs for the calling deployer, and it **answers** — creating the member
 (inbox + dictionary) on the way if this is the deployer's first call, and writing
 `@[*deployerId, "inbox"]` / `@[*deployerId, "dictionary"]` for the key that deployed the feature. That
@@ -168,9 +192,9 @@ Genesis installing steps 2–4 above is a **testnet** convenience with a real co
 must not do it:
 
 - **The ceremony key holds `@[*deployerId, "MasterContractAdmin"]`** and the chain's only `GetMe`
-  feature: the capability belongs to whoever ran genesis. That is a real, secret key and an
+  feature: the handle belongs to whoever ran genesis. That is a real, secret key and an
   identifiable operator — but it is still *one* key over every client's first governance call. A
-  network that would rather each client run its own directory must install none of steps 2–4; that is
+  network that would rather each client run its own dictionary must install neither of steps 2–3; that is
   a genesis flag to land, not something this arrangement can express. What makes the shared model
   tolerable is verifiability: the class URIs are chain constants, so a client can check what the
   directory hands it against the table above instead of trusting the operator. **The parked capability

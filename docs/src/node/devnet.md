@@ -231,10 +231,10 @@ A hand probe of the handshake (deploy it, then read the node's own log for the s
 new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:stdout`),
     capCh, getMeCh, stuffCh in {
   out!("stage:1 lookup sent") |
-  rl!(`<ReadcapURI from spec/GENESIS.md>`, *capCh) |
+  rl!(`<masterdict-resolve URI from spec/GENESIS.md>`, *capCh) |
   for (MCAread <- capCh) {
-    out!("stage:2 readcap resolved") |
-    MCAread!("GetMe", *getMeCh) |
+    out!("stage:2 resolve facet resolved") |
+    MCAread!("resolve", ["GetMe"], *getMeCh) |
     for (GetMe <- getMeCh) {
       out!(["stage:3 getme-entry", *GetMe]) |     // the *value*, not just that it answered
       new logCh in {
