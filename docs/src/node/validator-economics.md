@@ -179,15 +179,12 @@ declines to. A node that cannot replay a block, or replays it to a *different* s
 `Divergence`, not `Attributable`, and a `Divergence` is never an offence.
 
 **One divergence from the oracle, and it is not the bond.** `Pos.rhox`'s slash also **deletes** the
-offender's accrued rewards from the committed map, in the same write as the bond zeroing; this port does
-not, and the entry is then unreachable in both directions — never paid, because the epoch pays pool
-members (`:1253`) and claims in `withdrawers` (`:1281`) and the slashed validator is in neither, and never
-removed, because the only `committed.remove` in the file is the claim payment (`:1291`). Two
-consensus-visible consequences: the accrued rewards are stranded in the staking vault, and since
-`epoch_pot` (`:668`) subtracts every committed entry they keep reducing the distributable pot, so the port
-pays a smaller remainder than the oracle after any slash of a validator the epoch had reached. It is
-**registered as an open finding** — C197 in [`spec/AUDIT.md`](../../../spec/AUDIT.md), with the fork
-classification as what it owes, because deleting the entry *raises* the pot and so moves reward amounts.
+offender's accrued rewards from the committed map, in the same write as the bond zeroing — and this port
+once did not, which stranded the balance in the vault rather than returning it to the pot. That was
+**C197** in [`spec/AUDIT.md`](../../../spec/AUDIT.md), and it is **closed**: `slash` now removes the entry
+with the rest of the validator's records, so the accrued amount goes back to the distributable pot, which
+is what the oracle does. The bond is confiscated either way; what changed is only where the offender's
+*unpaid* rewards end up.
 
 ## Admission: trust, self-bond, staged exit
 

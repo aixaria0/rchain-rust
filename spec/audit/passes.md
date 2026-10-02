@@ -6363,3 +6363,17 @@ configuration and accepted by another with **both** verdicts outside the offence
 **Hard fork (#51 category A)**: a proposer on a fixed node no longer includes a `Slash` an unfixed one
 would, and a fixed node accepts a block containing no slash that an unfixed one expects. Lockstep upgrade
 is the practice, and this is the row that says so.
+
+**Fixed 2026-10-02.** `NativeSystemState::slash` now removes the offender's `committedRewards` entry in
+the same call that removes it from the pool, the active set and both withdrawal maps, so the accrued amount
+returns to the distributable pot — which is what the oracle does, and the opposite of what the port did
+while the entry was stranded. The classification in the row above is unchanged: the fix was already
+decided (deletion matches `Pos.rhox`); what it needed was the hard-fork marking and a test, and both are
+now here.
+
+**Falsified, and red before the fix.** `a_slash_clears_the_accrued_rewards_and_returns_them_to_the_pot`
+builds a validator with a bond, some burned phlo and a non-zero accrued balance, reads the pot the way
+`close_block` reads it, slashes, and asserts the entry is gone **and** that the pot rose by exactly the
+accrued amount. The bond's confiscation is pot-neutral — the vault loses precisely what the pool loses —
+so the assertion isolates the one quantity that was wrong. Deleting `committed.remove(validator)` from
+`slash` turns it red with the pot unmoved, which is the defect this row recorded.
