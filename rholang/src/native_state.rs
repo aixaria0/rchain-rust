@@ -62,12 +62,12 @@ const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
 const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
-/// `PosParams` serializes as seven little-endian `i64`s.
-const PARAMS_LEN: usize = 7 * 8;
-/// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150)
-/// and the absence slack (B4, #150) were added, in that order. A record shorter than [`PARAMS_LEN`]
-/// but at least this long reads the fields it carries and defaults the rest to zero, which is the
-/// pre-change rule for each (see [`decode_params`]).
+/// `PosParams` serializes as eight little-endian `i64`s.
+const PARAMS_LEN: usize = 8 * 8;
+/// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150),
+/// the absence knee (B4, #150) and the participation grace (B4, #150) were added, in that order. A
+/// record shorter than [`PARAMS_LEN`] but at least this long reads the fields it carries and defaults
+/// the rest, which is the pre-change rule for each (see [`decode_params`]).
 const PARAMS_LEN_ORIGINAL: usize = 5 * 8;
 
 // --- Leaf keys ---------------------------------------------------------------
@@ -532,15 +532,24 @@ pub struct PosParams {
     /// different values compute different post-states, and genesis identity is the mechanism that
     /// makes a network agree on one.
     pub executor_share: NonNegI64,
-    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
-    /// #150), in heights. `0` disables the rule, which is `Pos.rhox`'s behaviour — in the contract
-    /// absence costs nothing and an absent validator is paid for being drawn — and it is what a params
-    /// record written before this field decodes to.
+    /// **The lag at which a validator's participation weight reaches zero** (B4, #150), in heights —
+    /// the *knee* of the weight. `0` disables the rule, which is `Pos.rhox`'s behaviour — in the
+    /// contract absence costs nothing and an absent validator is paid for being drawn.
     ///
-    /// The rule it gates can only ever *remove* an entry from the rewards a boundary is about to
-    /// commit, so it is income-only by construction: no bond, no pool entry and no ledger is reachable
-    /// from it.
+    /// The rule it gates only ever *scales down* the reward a boundary is about to commit, so it is
+    /// income-only by construction: no bond, no pool entry and no ledger is reachable from it.
     pub absence_slack: NonNegI64,
+    /// **How far behind the last finalised fringe a validator's latest message may sit and still be
+    /// paid its whole share** (B4, #150), in heights: the flat part of the weight. Between this and
+    /// `absence_slack` the weight ramps linearly to zero.
+    ///
+    /// **Why the weight has two parameters rather than one.** A rule that pays an honest validator *in
+    /// full* and reaches zero somewhere else cannot be a function of a single threshold — the ramp would
+    /// have to begin at lag zero, which puts a haircut on every live validator, including one that
+    /// missed nothing. `participation_grace == absence_slack` reproduces a binary threshold rule
+    /// exactly, and **that is also what a params record written before this field decodes to**, so the
+    /// pre-change rule is the default rather than a special case a reader has to reconstruct.
+    pub participation_grace: NonNegI64,
 }
 
 impl Default for PosParams {
@@ -556,12 +565,13 @@ impl Default for PosParams {
             number_of_active_validators: 0,
             executor_share: NonNegI64::zero(),
             absence_slack: NonNegI64::zero(),
+            participation_grace: NonNegI64::zero(),
         }
     }
 }
 
 impl PosParams {
-    /// Encode as seven little-endian `i64`s (inverse: [`decode_params`]).
+    /// Encode as eight little-endian `i64`s (inverse: [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
         out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
@@ -571,6 +581,7 @@ impl PosParams {
         out.extend_from_slice(&self.number_of_active_validators.to_le_bytes());
         out.extend_from_slice(&i64::from(self.executor_share).to_le_bytes());
         out.extend_from_slice(&i64::from(self.absence_slack).to_le_bytes());
+        out.extend_from_slice(&i64::from(self.participation_grace).to_le_bytes());
         out
     }
 }
@@ -603,6 +614,16 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
     };
     let executor_share = read(5);
     let absence_slack = read(6);
+    // **The grace is the one field whose absence does not default to zero, and that is the whole
+    // compatibility rule here.** A record written before it exists describes a chain running the
+    // *binary* rule, which is `grace == knee`; defaulting to zero would silently turn every armed chain
+    // into a ramped one on upgrade — a rule change wearing a missing-field's clothes, and the opposite
+    // of what "the record does not carry the field" is supposed to mean.
+    let participation_grace = if bytes.len() >= PARAMS_LEN {
+        read(7)
+    } else {
+        absence_slack
+    };
     if executor_share > 10_000 {
         return Err(format!(
             "executor_share is {executor_share} basis points, above the whole of what was burned"
@@ -623,6 +644,8 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
             .map_err(|e| format!("executor_share is not a valid basis-point share: {e}"))?,
         absence_slack: NonNegI64::try_from(absence_slack)
             .map_err(|e| format!("absence_slack is not a valid number of heights: {e}"))?,
+        participation_grace: NonNegI64::try_from(participation_grace)
+            .map_err(|e| format!("participation_grace is not a valid number of heights: {e}"))?,
     })
 }
 
@@ -820,38 +843,81 @@ fn epoch_pot(
 /// the epoch total. That is the same case the Lean model leaves as a hypothesis
 /// (`hD : 0 < activeBonds / minimumBond`): the model states the theorem for the defined case, the port
 /// pays nothing in the undefined one. `an_epoch_with_a_zero_normaliser_pays_nothing` pins it.
-/// **The absence rule** (B4, #150): drop from an epoch's rewards every drawn validator whose last
-/// signed block is older than `slack` heights before `boundary`.
+/// **The participation weight** in basis points, mirroring `spec/Rchain/Pos.lean`'s
+/// `participationWeight`: the whole share inside `grace` heights of the boundary, ramping linearly to
+/// `0` at `knee`, and `0` past it. `None` is a validator the fringe does not contain — as far behind as
+/// a validator can be, so `0` rather than a default.
 ///
-/// **Income only, and that is structural rather than promised.** The whole effect of this function is
-/// to remove entries from the map a boundary is about to commit, so no bond, no pool entry and no
-/// ledger is reachable from it — an absent validator is not slashed, not evicted, and not deactivated,
-/// it is simply not paid for a boundary at which it did not act. The withheld reward stays in the
-/// staking vault (nothing debits it), so the next epoch distributes it: the epoch's conservation is
-/// untouched by construction.
+/// `knee <= grace` is not a shape this protocol means; the first branch has already answered it, and the
+/// guard on the last arm is there so a `knee` below the grace degrades to the binary rule rather than
+/// dividing by a non-positive number.
+fn participation_weight(behind: Option<i64>, grace: i64, knee: i64) -> i64 {
+    let Some(behind) = behind else {
+        return 0;
+    };
+    if behind <= grace {
+        10_000
+    } else if knee <= behind || knee <= grace {
+        0
+    } else {
+        10_000 * (knee - behind) / (knee - grace)
+    }
+}
+
+/// Scale a committed reward by a basis-point weight, mirroring `absenceAdjusted`.
 ///
-/// **And it is fully recoverable.** The rule reads only the height in `pos:last_spoke`, and a validator
-/// writes that entry itself by signing one block — so one block from a validator that was away puts it
-/// back in full at its next boundary. `slack == 0` disables the rule entirely, which is `Pos.rhox`'s
-/// behaviour: in the contract absence costs nothing and an absent validator is paid for being drawn.
+/// `i128` because the product of two `i64`-bounded values is not an `i64`, and a wrapped product here
+/// would pay a validator a *different* amount than the weight names, silently, on a consensus path.
+fn scaled_by_weight(reward: NonNegI64, weight: i64) -> NonNegI64 {
+    let product = i128::from(i64::from(reward)) * i128::from(weight);
+    NonNegI64::saturating(i64::try_from(product / 10_000).unwrap_or(i64::MAX))
+}
+
+/// **The participation rule** (B4, #150): scale each drawn validator's epoch reward by its
+/// participation weight.
 ///
-/// A validator that has **never** signed on this chain is as absent as it is possible to be, so it is
-/// dropped too — which is the honest reading of a missing record rather than a special case.
-pub(crate) fn apply_absence(
+/// The participation comes from the **last finalised fringe** — each validator's latest *message*
+/// height, derived by the caller from the DAG — rather than from a `pos:last_spoke` entry read out of
+/// this block's pre-state. The pre-state is a function of the proposer's justification set and nothing
+/// requires a block to justify everything it has seen, so the old read could be *aimed* at a chosen
+/// rival; the fringe is the `>2/3`-agreed object, so a stale fringe moves every validator's reading back
+/// together and singles nobody out. It also measures the right event: an attestation block carries no
+/// system deploys and so recorded nothing, while an attestation *is* a message.
+///
+/// **Income only, and that is structural rather than promised.** The whole effect is to multiply the
+/// rewards a boundary is about to commit, so no bond, no pool entry and no ledger is reachable from it —
+/// an absent validator is not slashed, not evicted, and not deactivated, it is simply paid less for a
+/// boundary at which it did not act. The withheld fraction stays in the staking vault (nothing debits
+/// it), so a later epoch distributes it and the epoch's conservation is untouched by construction. That
+/// is the Rust half of the model's `weighted_rewards_le_pot`.
+///
+/// **And it is fully recoverable.** The weight is a function of how far behind the *last finalised
+/// fringe* a validator's latest message sits, and one message puts it back inside the grace — so a
+/// validator that was away is made whole at its next boundary, with no memory of the lapse.
+///
+/// `knee == 0` disables the rule entirely, which is `Pos.rhox`'s behaviour: in the contract absence
+/// costs nothing and an absent validator is paid for being drawn. `grace == knee` is a binary threshold
+/// rule; `grace < knee` is the graded one.
+pub(crate) fn apply_weight(
     rewards: BTreeMap<Validator, NonNegI64>,
-    spoke: &BTreeMap<Validator, BlockHeight>,
+    participation: &BTreeMap<Validator, BlockHeight>,
     boundary: i64,
-    slack: i64,
+    grace: i64,
+    knee: i64,
 ) -> BTreeMap<Validator, NonNegI64> {
-    if slack <= 0 {
+    if knee <= 0 {
         return rewards;
     }
-    let earliest = boundary.saturating_sub(slack);
     rewards
         .into_iter()
-        .filter(|(validator, _)| match spoke.get(validator) {
-            None => false,
-            Some(height) => i64::from(*height) >= earliest,
+        .map(|(validator, reward)| {
+            let behind = participation
+                .get(&validator)
+                .map(|h| boundary.saturating_sub(i64::from(*h)));
+            (
+                validator,
+                scaled_by_weight(reward, participation_weight(behind, grace, knee)),
+            )
         })
         .collect()
 }
@@ -1445,9 +1511,9 @@ impl NativeSystemState {
         let mut pending = self.pending_withdrawers().await?;
         let mut committed = self.committed_rewards().await?;
 
-        // 1. The epoch's rewards, from the state as it stands — and then the **absence rule** (B4,
-        // #150), which can only ever *remove* an entry from what this boundary is about to commit. The
-        // withheld reward stays in the staking vault and is distributed by a later epoch: nothing is
+        // 1. The epoch's rewards, from the state as it stands — and then the **participation rule**
+        // (B4, #150), which can only ever *scale down* what this boundary is about to commit. The
+        // withheld fraction stays in the staking vault and is distributed by a later epoch: nothing is
         // minted, nothing is burned, and no bond is reachable from here.
         // **The participation comes from the fringe, not from this block's own pre-state** (B4, #150).
         // The pre-state is a function of the justification set and nothing requires a block to justify
@@ -1456,11 +1522,12 @@ impl NativeSystemState {
         // in the same block. The fringe is the >2/3-agreed object, so a stale fringe moves every
         // validator's reading back together and singles nobody out. This is the same move step 5 below
         // makes for the epoch seed, and for the same reason.
-        let rewards = apply_absence(
+        let rewards = apply_weight(
             self.epoch_rewards(&pool, &withdrawers, &committed, &params)
                 .await?,
             participation,
             block_number,
+            i64::from(params.participation_grace),
             i64::from(params.absence_slack),
         );
         for (validator, reward) in &rewards {
@@ -2402,6 +2469,7 @@ mod tests {
             number_of_active_validators: 3,
             executor_share: NonNegI64::try_from(2500).unwrap(),
             absence_slack: NonNegI64::try_from(0).unwrap(),
+            participation_grace: NonNegI64::try_from(0).unwrap(),
         };
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
     }
@@ -2426,6 +2494,7 @@ mod tests {
             number_of_active_validators: 3,
             executor_share: NonNegI64::try_from(2500).unwrap(),
             absence_slack: NonNegI64::try_from(7).unwrap(),
+            participation_grace: NonNegI64::try_from(3).unwrap(),
         };
         let original = &current.encode()[..PARAMS_LEN_ORIGINAL];
         assert_eq!(
@@ -2433,9 +2502,10 @@ mod tests {
             PosParams {
                 executor_share: NonNegI64::zero(),
                 absence_slack: NonNegI64::zero(),
+                participation_grace: NonNegI64::zero(),
                 ..current.clone()
             },
-            "the five-field record is both pre-change rules at once"
+            "the five-field record is every pre-change rule at once"
         );
         // And the intermediate form — the producer's share without the absence slack — reads the share
         // it carries and defaults only what it lacks.
@@ -2444,14 +2514,27 @@ mod tests {
             decode_params(share_only).unwrap(),
             PosParams {
                 absence_slack: NonNegI64::zero(),
+                participation_grace: NonNegI64::zero(),
                 ..current.clone()
             },
             "the six-field record carries the share it has and defaults the slack it lacks"
         );
+        // **The grace is the one field whose absence is not zero, and this is the arm that says so.**
+        // A record carrying the knee but not the grace describes a chain running the *binary* rule,
+        // which is `grace == knee`; defaulting to zero would silently ramp every armed chain on upgrade.
+        let knee_only = &current.encode()[..PARAMS_LEN_ORIGINAL + 16];
+        assert_eq!(
+            decode_params(knee_only).unwrap(),
+            PosParams {
+                participation_grace: NonNegI64::try_from(7).unwrap(),
+                ..current.clone()
+            },
+            "a record without the grace reads the binary rule — the knee — and not a ramp from zero"
+        );
 
         // A record that is not a whole number of fields, or shorter than the original, is refused: the
         // tolerance is "a field the record does not carry", not "any byte string".
-        for len in [0usize, 8, 39, 41, 47, 57, 64] {
+        for len in [0usize, 8, 39, 41, 47, 57] {
             assert!(
                 decode_params(&vec![0u8; len]).is_err(),
                 "{len} bytes is not a params record this protocol has ever written"
@@ -2484,6 +2567,7 @@ mod tests {
             number_of_active_validators: 3,
             executor_share: NonNegI64::zero(),
             absence_slack: NonNegI64::zero(),
+            participation_grace: NonNegI64::zero(),
         };
         assert!(
             decode_params(&params.encode()).is_ok(),
@@ -3953,6 +4037,9 @@ mod tests {
             minimum_bond: NonNegI64::try_from(1).unwrap(),
             epoch_length: 1,
             absence_slack: NonNegI64::try_from(5).unwrap(),
+            // **`grace == knee` is the binary rule** — the cliff the tree shipped before the weight was
+            // graded — so this test is about that shape and the graded ramp has its own arms.
+            participation_grace: NonNegI64::try_from(5).unwrap(),
             ..PosParams::default()
         };
         let native = native_with(
@@ -3978,14 +4065,17 @@ mod tests {
             .unwrap()
             .unwrap();
         let committed = native.committed_rewards().await.unwrap();
+        // **The key survives with a zero, rather than going away** — the rule scales now where it used
+        // to filter, so "not paid" is `Some(0)` and not `None`. A test asserting absence would fail
+        // against the real rule, which is the honest kind of failure but not the property wanted.
         assert_eq!(
             committed.get(&validator(1)).map(|r| i64::from(*r)),
-            None,
+            Some(0),
             "a quiet validator is not paid for the boundary it sat out"
         );
         assert_eq!(
-            committed.get(&validator(2)),
-            None,
+            committed.get(&validator(2)).map(|r| i64::from(*r)),
+            Some(0),
             "nor is a silent stranger"
         );
 

@@ -2426,6 +2426,7 @@ mod boundary_merge_tests {
                     number_of_active_validators: 10,
                     executor_share: nn(0),
                     absence_slack: nn(0),
+                    participation_grace: nn(0),
                 },
             })
             .unwrap();

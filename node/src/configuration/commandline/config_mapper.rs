@@ -277,6 +277,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "casper.genesis-block-data.absence-slack",
             run.absence_slack,
         );
+        opt_i32(
+            &mut e,
+            "casper.genesis-block-data.participation-grace",
+            run.participation_grace,
+        );
         opt_str(
             &mut e,
             "casper.genesis-block-data.pos-vault-pub-key",

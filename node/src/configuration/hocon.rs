@@ -281,6 +281,19 @@ fn tls_conf_from_hocon(h: &Hocon) -> Result<TlsConf, String> {
 const DEFAULT_EXECUTOR_SHARE: i32 = 2500;
 
 fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> {
+    // Hoisted out of the literal because the second one's fallback is the first: **the participation
+    // grace is the one field whose absence is not zero** (B4, #150). A config that predates the weight
+    // describes a chain running the *binary* rule, which is `grace == slack`; defaulting to zero would
+    // silently ramp every armed chain on upgrade — a rule change wearing a missing-key's clothes, and
+    // the opposite of what "the file does not state it" is supposed to mean.
+    let absence_slack = match get_opt(h, "absence-slack") {
+        Some(v) => to_i32(v)?,
+        None => 0,
+    };
+    let participation_grace = match get_opt(h, "participation-grace") {
+        Some(v) => to_i32(v)?,
+        None => absence_slack,
+    };
     Ok(GenesisBlockData {
         genesis_data_dir: to_path(get(h, "genesis-data-dir")?)?,
         bonds_file: to_string(get(h, "bonds-file")?)?,
@@ -304,10 +317,8 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
         // Optional for the same reason as `executor-share` and with a fallback that is *off*: this
         // keys a rule the contract does not have, so a config written before it must resolve to the
         // contract's behaviour rather than to a rule nobody chose.
-        absence_slack: match get_opt(h, "absence-slack") {
-            Some(v) => to_i32(v)?,
-            None => 0,
-        },
+        absence_slack,
+        participation_grace,
         pos_multi_sig_public_keys: to_string_list(get(h, "pos-multi-sig-public-keys")?)?,
         pos_multi_sig_quorum: to_i32(get(h, "pos-multi-sig-quorum")?)?,
         pos_vault_pub_key: to_string(get(h, "pos-vault-pub-key")?)?,
@@ -355,6 +366,9 @@ fn genesis_block_data_over(
     }
     if let Some(v) = get_opt(h, "absence-slack") {
         out.absence_slack = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "participation-grace") {
+        out.participation_grace = to_i32(v)?;
     }
     if let Some(v) = get_opt(h, "pos-multi-sig-public-keys") {
         out.pos_multi_sig_public_keys = to_string_list(v)?;
@@ -699,6 +713,7 @@ mod tests {
         GenesisBlockData {
             executor_share: 2500,
             absence_slack: 0,
+            participation_grace: 0,
             genesis_data_dir: PathBuf::from("/genesis"),
             bonds_file: "/genesis/bonds.txt".to_string(),
             wallets_file: "/genesis/wallets.txt".to_string(),

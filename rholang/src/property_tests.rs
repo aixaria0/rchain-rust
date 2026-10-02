@@ -29,12 +29,13 @@ use crate::scheduler::EffectMode;
 /// (`casper/src/property_tests.rs`). A unit test fixes an instance; these two theorems are about *every*
 /// instance, and the difference is what this module exists to close.
 ///
-/// Both are tested through the functions the Lean names — `epoch_reward` (`reward`) and `apply_absence`
-/// (`absenceAdjusted`) — rather than through `close_block`, so the property is about the arithmetic
-/// itself and not about the boundary plumbing that calls it. The plumbing has its own tests.
+/// Both are tested through the functions the Lean names — `epoch_reward` (`reward`) and `apply_weight`
+/// (`absenceAdjusted` over `participationWeight`) — rather than through `close_block`, so the property
+/// is about the arithmetic itself and not about the boundary plumbing that calls it. The plumbing has
+/// its own tests.
 mod reward_laws {
     use super::*;
-    use crate::native_state::{apply_absence, epoch_reward};
+    use crate::native_state::{apply_weight, epoch_reward};
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, NonNegI64};
     use std::collections::BTreeMap;
@@ -78,50 +79,58 @@ mod reward_laws {
             prop_assert!(shares.iter().all(|s| *s >= 0), "a share cannot be negative: {:?}", shares);
         }
 
-        /// **The absence rule is income-only in the only sense that can be tested of it**: what comes
-        /// out of `apply_absence` is a *sub-map* of what went in — same keys with the same values, or
-        /// keys gone. It never raises a reward, never scales one, and never invents an entry, which is
-        /// the whole of "it cannot reach a bond" at this level: a bond is not an argument to it.
+        /// **The rule never raises a reward, and never invents or drops a validator**: every key that
+        /// went in comes out with a value no larger than it had.
         ///
-        /// `absence_never_raises` and `the_absence_rule_moves_no_stake` are the Lean statements.
+        /// **This replaced a sub-map statement, and the replacement is not cosmetic.** The rule used to
+        /// *filter* — so "same values, or keys gone" was exactly its shape — and it now *scales*, which
+        /// keeps every key and lowers some values. A test still asserting the sub-map would fail against
+        /// the real rule, which is the useful kind of failure but not the property the register needs.
+        /// What survives is `absence_never_raises`, entry by entry, plus
+        /// `the_absence_rule_moves_no_stake` — a bond is still not an argument to it.
         #[test]
-        fn law44_the_absence_rule_only_ever_removes_entries(
-            slack in 0usize..8,
+        fn law44_the_absence_rule_never_raises_a_reward(
+            grace in 0usize..8,
+            knee in 0usize..8,
             heights in prop::collection::vec(0i64..20, 1..5),
             boundary in 0i64..20,
+            reward in 0i64..1_000_000,
         ) {
             let rewards: BTreeMap<Validator, NonNegI64> =
-                (0..heights.len()).map(|i| (validator(i), nn(100))).collect();
-            let spoke: BTreeMap<Validator, BlockHeight> = heights
+                (0..heights.len()).map(|i| (validator(i), nn(reward))).collect();
+            let participation: BTreeMap<Validator, BlockHeight> = heights
                 .iter()
                 .enumerate()
                 .map(|(i, h)| (validator(i), BlockHeight::try_from(*h).expect("a test height")))
                 .collect();
-            let slack = i64::try_from(slack).expect("a small slack");
-            let out = apply_absence(rewards.clone(), &spoke, boundary, slack);
+            let out = apply_weight(
+                rewards.clone(),
+                &participation,
+                boundary,
+                i64::try_from(grace).expect("a small grace"),
+                i64::try_from(knee).expect("a small knee"),
+            );
 
-            for (v, kept) in &out {
-                prop_assert_eq!(
-                    rewards.get(v),
-                    Some(kept),
-                    "an entry survives with the value it had, or it does not survive"
+            prop_assert_eq!(out.len(), rewards.len(), "a scaling keeps every key");
+            for (v, paid) in &out {
+                prop_assert!(
+                    i64::from(*paid) <= i64::from(rewards[v]),
+                    "a validator is paid at most what it was owed, whatever its lag"
                 );
             }
-            prop_assert!(out.len() <= rewards.len());
         }
 
-        /// **The rule withholds.** This is the direction the two properties above do **not** pin, and
-        /// that is not a hypothetical: the identity function — `apply_absence` returning its input
-        /// unchanged — satisfies `law44_the_absence_rule_only_ever_removes_entries`,
-        /// `law44_a_validator_inside_the_slack_is_kept` and all three of the Lean theorems
-        /// (`absence_never_raises`, `a_returning_validator_is_paid_in_full`,
-        /// `the_absence_rule_moves_no_stake`). So a rule that withholds nothing was, until this test,
-        /// indistinguishable from the real one by every check in the tree.
+        /// **The rule withholds.** This is the direction the property above does **not** pin, and that
+        /// is not a hypothetical: the identity function — a weight that is always the whole share —
+        /// satisfies `law44_the_absence_rule_never_raises_a_reward`,
+        /// `law44_a_validator_inside_the_grace_is_kept` and the Lean implications, because those are all
+        /// of the form "if it withholds, it withholds correctly". A rule that withholds nothing was,
+        /// until this pair of tests, indistinguishable from the real one by every check in the tree.
         ///
-        /// A validator silent *past* the slack, under a rule that is on, is not paid — and the reward it
-        /// does not receive is not moved anywhere, it stays in the vault for a later epoch.
+        /// A validator silent *past the knee*, under a rule that is on, is paid **nothing** — and the
+        /// reward it does not receive is not moved anywhere, it stays in the vault for a later epoch.
         #[test]
-        fn law44_a_validator_outside_the_slack_is_not_paid(
+        fn law44_a_validator_outside_the_knee_is_not_paid(
             slack in 1usize..5,
             extra in 1i64..3,
             reward in 1i64..1_000_000,
@@ -134,13 +143,16 @@ mod reward_laws {
             // way, and the first version of this test got it wrong and panicked in the generator
             // rather than in the assertion.
             let spoken_at = boundary - slack - extra;
-            let spoke = BTreeMap::from([(
+            let participation = BTreeMap::from([(
                 v,
                 BlockHeight::try_from(spoken_at).expect("a height at or above zero"),
             )]);
-            prop_assert!(
-                apply_absence(rewards, &spoke, boundary, slack).is_empty(),
-                "a validator silent past the slack is not paid, whatever it was owed"
+            // `grace == knee` is the binary shape: the cliff the tree shipped before this was graded.
+            let out = apply_weight(rewards, &participation, boundary, slack, slack);
+            prop_assert_eq!(
+                out.get(&v).map(|r| i64::from(*r)),
+                Some(0),
+                "a validator silent past the knee is paid nothing, whatever it was owed"
             );
         }
 
@@ -152,52 +164,84 @@ mod reward_laws {
             let slack = i64::try_from(slack).expect("a small slack");
             let v = validator(1);
             let rewards = BTreeMap::from([(v, nn(100))]);
-            prop_assert!(
-                apply_absence(rewards, &BTreeMap::new(), boundary, slack).is_empty(),
+            let out = apply_weight(rewards, &BTreeMap::new(), boundary, slack, slack);
+            prop_assert_eq!(
+                out.get(&v).map(|r| i64::from(*r)),
+                Some(0),
                 "a validator with no entry has not spoken, so it is not paid"
             );
         }
 
-        /// **And a slack of zero withholds nothing** — `Pos.rhox`'s behaviour, and the shipped
-        /// default: the rule is off, so the oldest possible silence costs nothing. This is the opposite
-        /// direction from the two tests above, and the three together are what make the rule's *switch*
-        /// a checked thing rather than a claim.
+        /// **And a knee of zero withholds nothing** — `Pos.rhox`'s behaviour, and the shipped default:
+        /// the rule is off, so the oldest possible silence costs nothing. This is the opposite direction
+        /// from the two tests above, and the three together are what make the rule's *switch* a checked
+        /// thing rather than a claim.
         #[test]
-        fn law44_a_zero_slack_withholds_nothing(
+        fn law44_a_zero_knee_withholds_nothing(
             heights in prop::collection::vec(0i64..20, 1..5),
             boundary in 0i64..40,
         ) {
             let rewards: BTreeMap<Validator, NonNegI64> =
                 (0..heights.len()).map(|i| (validator(i), nn(100))).collect();
-            let spoke: BTreeMap<Validator, BlockHeight> = heights
+            let participation: BTreeMap<Validator, BlockHeight> = heights
                 .iter()
                 .enumerate()
                 .map(|(i, h)| (validator(i), BlockHeight::try_from(*h).expect("a test height")))
                 .collect();
-            prop_assert_eq!(apply_absence(rewards.clone(), &spoke, boundary, 0), rewards);
+            prop_assert_eq!(apply_weight(rewards.clone(), &participation, boundary, 0, 0), rewards);
         }
 
-        /// **And a validator inside the slack is paid in full** — `a_returning_validator_is_paid_in_full`
-        /// as a property: a height within `slack` of the boundary is indistinguishable from having just
-        /// spoken, so the rule has nothing to recover from and an honest validator that was briefly away
-        /// is made whole.
+        /// **And a validator inside the grace is paid in full** —
+        /// `a_returning_validator_is_paid_in_full` as a property: a lag within the **grace** is
+        /// indistinguishable from having just spoken, so the rule has nothing to recover from and an
+        /// honest validator that was briefly away is made whole. The hypothesis is over the grace and
+        /// not the knee, which is the whole reason the weight has two parameters.
         #[test]
-        fn law44_a_validator_inside_the_slack_is_kept(
-            slack in 1usize..8,
+        fn law44_a_validator_inside_the_grace_is_kept(
+            grace in 1usize..8,
             offset in 0i64..8,
             boundary in 8i64..40,
         ) {
-            let slack = i64::try_from(slack).expect("a small slack");
-            prop_assume!(offset <= slack);
+            let grace = i64::try_from(grace).expect("a small grace");
+            prop_assume!(offset <= grace);
             let v = validator(1);
             let rewards = BTreeMap::from([(v, nn(100))]);
-            let spoke = BTreeMap::from([
+            let participation = BTreeMap::from([
                 (v, BlockHeight::try_from(boundary - offset).expect("a height")),
             ]);
             prop_assert_eq!(
-                apply_absence(rewards.clone(), &spoke, boundary, slack),
+                apply_weight(rewards.clone(), &participation, boundary, grace, grace),
                 rewards
             );
+        }
+
+        /// **Between the grace and the knee the weight is partial** — the direction the binary rule
+        /// could not express at all, and the reason the weight has two parameters rather than one.
+        ///
+        /// This is the Rust twin of the model's `the_ramp_is_a_ramp`, and it is the arm that fails if
+        /// the ramp is dropped: a binary reading in place of it pays such a validator either everything
+        /// or nothing, and never something strictly in between. `paid > 0` as well as `paid < reward`,
+        /// because a rule that simply zeroed this band would satisfy the upper half alone.
+        #[test]
+        fn law44_between_the_grace_and_the_knee_a_validator_is_paid_in_part(
+            grace in 0i64..5,
+            spread in 2i64..6,
+            offset in 1i64..5,
+            reward in 100i64..1_000_000,
+            boundary in 20i64..60,
+        ) {
+            let knee = grace + spread;
+            let behind = grace + offset;
+            prop_assume!(behind < knee);
+            let v = validator(1);
+            let rewards = BTreeMap::from([(v, nn(reward))]);
+            let participation = BTreeMap::from([
+                (v, BlockHeight::try_from(boundary - behind).expect("a height")),
+            ]);
+            let out = apply_weight(rewards, &participation, boundary, grace, knee);
+            let paid = i64::from(*out.get(&v).expect("a scaling keeps every key"));
+            prop_assert!(paid < reward, "inside the ramp the share is cut");
+            prop_assert!(paid > 0, "and it is not cut to nothing");
         }
     }
 }

@@ -169,9 +169,17 @@ pub struct GenesisBlockData {
     /// parameter because it decides amounts, which are consensus state: two nodes with different
     /// values compute different post-states.
     pub executor_share: i32,
-    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
-    /// #150), in heights. `0` is the contract's behaviour: absence costs nothing.
+    /// **The lag at which a validator's participation weight reaches zero** (B4, #150), in heights.
+    /// `0` is the contract's behaviour: absence costs nothing.
     pub absence_slack: i32,
+    /// **How far behind the last finalised fringe a validator's latest message may sit and still be
+    /// paid its whole share** (B4, #150), in heights. Between this and `absence_slack` the weight ramps
+    /// linearly to zero.
+    ///
+    /// A genesis parameter because it decides amounts, which are consensus state. **A file that does
+    /// not state it gets the binary rule** (`grace == slack`), which is what a chain that predates the
+    /// field was running — see [`crate::genesis::contracts::ProofOfStake`], where the rule is applied.
+    pub participation_grace: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,
@@ -195,6 +203,7 @@ mod tests {
             number_of_active_validators: 10,
             executor_share: 2500,
             absence_slack: 0,
+            participation_grace: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),

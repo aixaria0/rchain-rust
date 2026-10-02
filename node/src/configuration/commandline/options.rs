@@ -545,9 +545,21 @@ pub struct Run {
     pub executor_share: Option<i32>,
 
     /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
-    /// #150), in heights; `0` is the contract's behaviour and the shipped default.
+    /// #150), in heights; `0` is the contract's behaviour and the shipped default. It is the *knee* of
+    /// the participation weight: the lag at which the weight reaches zero.
     #[arg(long = "absence-slack")]
     pub absence_slack: Option<i32>,
+
+    /// **How far behind the last finalised fringe a validator's latest message may sit and still be
+    /// paid its whole share** (B4, #150), in heights — the flat part of the weight, with the ramp
+    /// running from here to `absence-slack`.
+    ///
+    /// **Unstated means the slack's binary rule, not zero.** A network whose config predates this key was
+    /// running `grace == slack`, so that is what an omitted flag resolves to — a ramp from zero would be
+    /// a rule change wearing a default, and it would land on exactly the networks that had armed the
+    /// rule. `--absence-slack 0` disables the rule whatever this says.
+    #[arg(long = "participation-grace")]
+    pub participation_grace: Option<i32>,
 
     /// Public key for transfers from the PoS vault.
     ///

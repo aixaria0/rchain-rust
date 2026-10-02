@@ -59,6 +59,7 @@ pub async fn create_genesis_block(
     number_of_active_validators: i32,
     executor_share: NonNegI64,
     absence_slack: NonNegI64,
+    participation_grace: NonNegI64,
     pos_multi_sig_public_keys: &[String],
     pos_multi_sig_quorum: i32,
     pos_vault_pub_key: &str,
@@ -95,6 +96,7 @@ pub async fn create_genesis_block(
             number_of_active_validators,
             executor_share,
             absence_slack,
+            participation_grace,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             pos_vault_pub_key: pos_vault_pub_key.to_string(),
@@ -135,6 +137,10 @@ pub async fn create_genesis_block_from_config(
     }
     let absence_slack = NonNegI64::try_from(i64::from(gbd.absence_slack))
         .map_err(|e| format!("casper.genesis.absence-slack must not be negative: {e}"))?;
+    // The "absent means the binary rule" reading has already been applied where this `gbd` was parsed
+    // (`configuration::hocon`), so this is the value and not a second fallback.
+    let participation_grace = NonNegI64::try_from(i64::from(gbd.participation_grace))
+        .map_err(|e| format!("casper.genesis.participation-grace must not be negative: {e}"))?;
     create_genesis_block(
         validator,
         &shard_id,
@@ -149,6 +155,7 @@ pub async fn create_genesis_block_from_config(
         gbd.number_of_active_validators,
         executor_share,
         absence_slack,
+        participation_grace,
         &gbd.pos_multi_sig_public_keys,
         gbd.pos_multi_sig_quorum,
         &gbd.pos_vault_pub_key,
