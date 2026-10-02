@@ -7,7 +7,7 @@ its authority cannot be forged — there is no syntax that writes a private name
 memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
 Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
-**A small artifact, deliberately**: ~138,000 lines of Rust across 400 files compile to a single **37 MB**
+**A small artifact, deliberately**: ~149,000 lines of Rust across 412 files compile to a single **37 MB**
 native binary — nothing to boot but the process, no garbage collector to pause, no heap to tune — so a
 validator runs on a commodity laptop with an NVMe.
 
@@ -60,7 +60,7 @@ Three reasons drive the rewrite.
 `Memory`/`GarbageCollector` diagnostics and needed `SBT_OPTS="-Xmx4g -Xss2m"` to run. Rust's ownership
 model and lack of a tracing GC make the leak and the stop-the-world pause unrepresentable.
 
-**Decentralization.** ~138,000 lines of Rust compile to a single 37 MB native binary — no JVM, no GC,
+**Decentralization.** ~149,000 lines of Rust compile to a single 37 MB native binary — no JVM, no GC,
 no heap tuning — so a validator runs on any modern desktop or laptop with an NVMe SSD. Validator
 operation sits within consumer-grade hardware, which is what makes the network genuinely decentralized
 (see [hardware requirements](docs/src/node/validator-requirements.md)).
