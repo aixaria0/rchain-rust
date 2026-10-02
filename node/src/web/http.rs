@@ -1526,7 +1526,7 @@ mod tests {
                 ],
                 pending_withdrawals: vec![PendingWithdrawal {
                     validator: Validator::try_from([9u8; 65].as_slice()).expect("65 bytes"),
-                    staged_at_block: 200,
+                    deadline: 260,
                     blocks_remaining: 60,
                 }],
             })
@@ -2226,7 +2226,9 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("0303"));
-        assert_eq!(json["pendingWithdrawals"][0]["stagedAtBlock"], 200);
+        // `deadline`, not `stagedAtBlock`: the stored value is law 47's deadline, which already
+        // contains the quarantine (AUDIT C206 — the rename is the fix's user-visible half).
+        assert_eq!(json["pendingWithdrawals"][0]["deadline"], 260);
         assert_eq!(json["pendingWithdrawals"][0]["blocksRemaining"], 60);
     }
 
