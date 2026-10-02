@@ -16,6 +16,7 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use rchain_casper::runtime_manager::RuntimeManager;
@@ -31,6 +32,10 @@ use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::refined::NonNegI64;
 
 use common::{build_runtime_manager_with_mode, fringe_state};
+
+use rchain_casper::system_deploy::SystemDeploy;
+use rchain_rholang::native_state::{pos_epoch_seed_key, pos_trusted_key};
+use rchain_rspace::native_store::PREFIX_POS;
 
 /// The deployer: `[1u8; 65]` parses as a valid uncompressed secp256k1 point, which the pre-charge
 /// path of `compute_state` requires (the same key `scheduler.rs` uses).
@@ -138,5 +143,78 @@ async fn a_users_trust_is_readable_after_its_block_commits() {
         "a deploy's native write must survive its block: the trusted set is {trusted:?} after a \
          successful trust of {:?}, and the post-state hash was {post_state:?}",
         Validator::new(NEWCOMER)
+    );
+}
+
+/// **C207's discriminator.** Does the *sidecar* a block saves carry the user deploy's write, or only
+/// the last checkpoint's?
+///
+/// Why this is the test and not a merge: the live symptom is an **asymmetry** — a system deploy's
+/// native write survives a merging network, a user deploy's does not — and the code says that
+/// asymmetry is exactly what a sidecar carrying *one checkpoint's* set looks like.
+/// `block_on` (`casper/src/runtime_manager.rs:1099-1137`) takes 1 + M hard checkpoints per block, and
+/// `create_checkpoint` **replaces** `last_native_changes` (`rspace/src/rspace.rs:585-588`). So a bare
+/// `last_native_changes()` read *after the block has played* returns the **last** checkpoint's set —
+/// the system deploys' — and the user deploys' survives only because `block_on:1119` captures it into
+/// a local first. A call site that reads it once afterwards gets the system half only.
+///
+/// **Neither the block nor this test has a merge in it.** The assertion is on what the block *saved*,
+/// which is the layer any merge later re-applies, so it separates "the capture is lossy" from "the
+/// capture is fine and the merge drops it" without building a DAG.
+///
+/// The second assertion is a **control**: a block with a system deploy must carry *its* write too. A
+/// sidecar that is empty fails both and says something different from one that has the system half
+/// and not the user half — and the second is the live asymmetry's signature.
+#[tokio::test]
+async fn the_sidecar_a_block_saves_carries_the_user_deploys_write_not_only_the_systems() {
+    let rm = build_runtime_manager_with_mode(EffectMode::Sequential).await;
+    let start = seed(&rm).await;
+    let block_data = BlockData::empty();
+    let sender = block_data.sender.bytes().to_vec();
+
+    // One user deploy that writes a native leaf, and **one system deploy**, so the block takes the
+    // 1 + M checkpoints the live path takes. Without the system deploy there is one checkpoint and
+    // the sidecar cannot show the asymmetry at all — which is why the first version of this test
+    // passed on a tree that has the live defect.
+    let (post_state, user, _system) = rm
+        .compute_state(
+            &start,
+            &[deploy(&trust_term(&NEWCOMER))],
+            &[SystemDeploy::close_block(
+                1,
+                fringe_state(1),
+                BTreeMap::new(),
+                fixed_rand(),
+            )],
+            &fixed_rand(),
+            block_data,
+            &fringe_state(1),
+        )
+        .await
+        .expect("compute_state");
+    assert!(
+        user[0].eval_result.succeeded(),
+        "the trust deploy must succeed: {:?}",
+        user[0].eval_result.errors
+    );
+
+    let sidecar = rm
+        .load_native_changes(post_state.as_bytes(), &sender, 0)
+        .await
+        .expect("the sidecar read is not a store error")
+        .expect("compute_state must have saved a sidecar for the block it just played");
+    let slots: Vec<(u8, rchain_crypto::hash::blake2b256_hash::Blake2b256Hash)> =
+        sidecar.iter().map(|a| a.slot()).collect();
+
+    assert!(
+        slots.contains(&(PREFIX_POS, pos_epoch_seed_key())),
+        "control: the *system* deploy's write must be in the sidecar — a sidecar missing this is \
+         empty rather than partial, which is a different finding. Slots: {slots:?}"
+    );
+    assert!(
+        slots.contains(&(PREFIX_POS, pos_trusted_key())),
+        "**C207**: the block's sidecar carries the system deploy's write and not the user deploy's, \
+         which is the live asymmetry exactly — a merge re-applying this set drops the trust. Slots: \
+         {slots:?}"
     );
 }

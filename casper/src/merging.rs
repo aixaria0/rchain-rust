@@ -2420,6 +2420,173 @@ mod native_merge_tests {
              from the same DAG, whatever the values"
         );
     }
+
+    /// **C207's reproduction, in process: a block's *other* native writes go with it when it loses a
+    /// native conflict — and every cost-accounted block conflicts with every concurrent sibling.**
+    ///
+    /// The sibling test above pins the *rejection*, and the rejection is **intended**: de-duplicating
+    /// two concurrent writers of one slot would credit a vault once for two debits and destroy REV
+    /// (`equal_concurrent_vault_writes_do_not_destroy_rev`). What was not pinned is the
+    /// **consequence**, and it is what the live network shows.
+    ///
+    /// It is not a corner either. `pre_charge`, `refund` and `pay_executor` run for **every user
+    /// deploy** and all three write `pos:vault`, so on a network with concurrent proposers *every*
+    /// user-deploy block conflicts with every sibling, loses the resolution, and is rejected whole.
+    /// A **system** deploy does not: `close_block` writes no `pos:vault`, and two sibling boundaries
+    /// write *identical* values from the same pre-state, so rejecting one leaves the other's equal
+    /// write in place. **That is the whole asymmetry** — a user deploy's native write vanishes on a
+    /// merging network and a system deploy's does not — and it is why nothing looked wrong for so
+    /// long: the epoch machinery keeps working while `bond`, `withdraw`, `trust` and `delegate` are
+    /// no-ops.
+    ///
+    /// The control is the same branch merged **alone**: its unique write survives. So what loses it is
+    /// the conflict, not the merge's application.
+    #[tokio::test]
+    async fn a_block_that_loses_a_native_conflict_loses_its_other_native_writes_too() {
+        let base_repo = empty_repo().await;
+        let base_state = base_repo.root();
+        let shared = key(9); // stands in for `pos:vault`: written by every cost-accounted block
+        let unique = key(10); // stands in for `pos:delegations`: written by one block only
+
+        let branch = |host: u8, writes_unique: bool| {
+            let mut native_changes = vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: shared,
+                value: vec![host],
+            }];
+            if writes_unique {
+                native_changes.push(NativeStoreAction::Put {
+                    prefix: PREFIX_POS,
+                    key: unique,
+                    value: vec![40],
+                });
+            }
+            BlockIndex {
+                block_hash: BlockHash::new([host; 32]),
+                deploy_chains: vec![Arc::new(DeployChainIndex {
+                    host_block: key(host),
+                    deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                        id: vec![host],
+                        cost: 0,
+                    }]),
+                    pre_state_hash: base_state,
+                    post_state_hash: base_state,
+                    event_log_index: EventLogIndex::empty(),
+                    state_changes: StateChange::empty(),
+                })],
+                native_changes,
+            }
+        };
+
+        // Host 1 carries the unique write as well as the shared one; host 2 carries only the shared.
+        // `repo` is a reference so the closure below is `Fn` and can be called for both orderings.
+        let repo = &base_repo;
+        let run = |conflict_scope: BTreeSet<BlockHash>,
+                   indexes: BTreeMap<BlockHash, BlockIndex>| {
+            let block_index = move |h: BlockHash| {
+                let index = indexes.get(&h).cloned();
+                async move {
+                    index
+                        .map(Arc::new)
+                        .ok_or_else(|| format!("no index for {h:?}"))
+                }
+            };
+            let scope = MergeScope {
+                final_scope: BTreeSet::new(),
+                conflict_scope,
+                ancestry: BTreeMap::new(),
+            };
+            async move {
+                MergeScope::merge(
+                    &scope,
+                    base_state,
+                    &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+                    repo,
+                    &block_index,
+                    |_| 0,
+                )
+                .await
+            }
+        };
+
+        // --- the control: the unique-writing branch merged alone keeps its unique write ---
+        let alone: BTreeMap<BlockHash, BlockIndex> = [(BlockHash::new([1u8; 32]), branch(1, true))]
+            .into_iter()
+            .collect();
+        let (merged_alone, rejected_alone) =
+            run(BTreeSet::from([BlockHash::new([1u8; 32])]), alone)
+                .await
+                .expect("a single branch merges");
+        assert!(
+            rejected_alone.is_empty(),
+            "nothing to conflict with, so nothing is rejected"
+        );
+        assert_eq!(
+            base_repo
+                .get_history_reader(merged_alone)
+                .await
+                .get_native(PREFIX_POS, unique)
+                .await
+                .expect("a readable native leaf"),
+            Some(vec![40]),
+            "**control**: merged alone, the unique write survives — so what loses it is the conflict"
+        );
+
+        // --- C207: the same branch, concurrent with any other cost-accounted block ---
+        //
+        // Both orderings, because which host the DAG rejects is hash-determined rather than
+        // value-determined (`two_branch_blocks_writing_one_native_slot_do_not_panic_the_merge`
+        // asserts exactly that). Running one ordering would let the test pass by luck of which
+        // host lost.
+        let mut seen_a_loss = false;
+        for unique_on in [1u8, 2u8] {
+            let both: BTreeMap<BlockHash, BlockIndex> = [
+                (BlockHash::new([1u8; 32]), branch(1, unique_on == 1)),
+                (BlockHash::new([2u8; 32]), branch(2, unique_on == 2)),
+            ]
+            .into_iter()
+            .collect();
+            let (merged, rejected) = run(
+                BTreeSet::from([BlockHash::new([1u8; 32]), BlockHash::new([2u8; 32])]),
+                both,
+            )
+            .await
+            .expect("two concurrent writers of the shared slot merge");
+
+            assert_eq!(
+                rejected.len(),
+                1,
+                "the shared slot is written by both and neither has seen the other"
+            );
+            let loser = rejected.iter().next().expect("one rejected host")[0];
+            let leaf = base_repo
+                .get_history_reader(merged)
+                .await
+                .get_native(PREFIX_POS, unique)
+                .await
+                .expect("a readable native leaf");
+
+            if loser == unique_on {
+                seen_a_loss = true;
+                assert!(
+                    leaf.is_none(),
+                    "**C207**: host {unique_on} carried the unique write and lost the conflict, so \
+                     the merged state must have lost that write with it — it holds {leaf:?} instead"
+                );
+            } else {
+                assert_eq!(
+                    leaf,
+                    Some(vec![40]),
+                    "the host carrying the unique write survived, so its write is there"
+                );
+            }
+        }
+        assert!(
+            seen_a_loss,
+            "the fixture must exercise the case it exists for: one of the two orderings has to put \
+             the unique write on the losing host"
+        );
+    }
 }
 
 /// Issue #83: two blocks that each wrote a native key, merged in one scope.
