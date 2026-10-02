@@ -759,3 +759,84 @@ fn c151_the_unvalidated_relaxed_scheduler_reaches_sequential_on_every_shape_trie
             .unwrap_or_else(|e| panic!("{name}: the validated relaxed scheduler diverged: {e}"));
     }
 }
+
+/// **Law 57's split as a property, over the space its Lean statement quantifies over.**
+///
+/// `split_sums_to_the_reward` is about *every* reward, *every* operator stake and *every* list of
+/// delegated principals — and the invariant it carries is the one the whole primitive rests on: the
+/// delegators' shares plus the operator's remainder are the reward the key was paid, so a validator
+/// with delegators commits exactly what it would have committed alone and law 46 survives the split
+/// rather than needing to be restated. A unit test fixes one instance of that (the split's own
+/// `the_split_is_not_the_identity`, which is a fixed triple) and cannot see the cases where the floor
+/// bites differently.
+///
+/// Tested through the functions the Lean names — `split_reward`/`pro_rata` (`Rchain.proRata`) — rather
+/// than through `close_block`, so the property is about the arithmetic and not about the boundary
+/// plumbing that calls it. The plumbing has its own tests.
+mod delegation_laws {
+    use super::*;
+    use crate::native_state::{pro_rata, split_reward};
+
+    // A doc comment cannot sit on the `proptest!` invocation — rustdoc does not generate
+    // documentation for macro invocations, and the warning is a CI failure under `-D warnings` — so
+    // each property's reasoning is a plain comment above it rather than a `///`.
+    proptest! {
+        // **The split is exact.** The shares and the operator's remainder add up to the reward, for
+        // every reward, every operator stake and every list of principals — which is stronger than law
+        // 46's inequality and is what makes the split safe to sit in front of it.
+        //
+        // Red under a `split_reward` that floors the remainder *without* giving it back (the sum is
+        // then short by the dust) or that hands the whole reward to the operator (the shares are then
+        // empty and each delegator is paid nothing).
+        #[test]
+        fn law57_the_split_sums_to_the_reward(
+            reward in 0i64..1_000_000_000,
+            own in 0i64..1_000_000,
+            amounts in prop::collection::vec(0i64..1_000_000, 0..6),
+        ) {
+            let (shares, remainder) = split_reward(reward, own, &amounts).expect("in range");
+            let paid: i64 = shares.iter().sum();
+            prop_assert_eq!(
+                paid + remainder,
+                reward,
+                "shares {:?} plus remainder {} is not the reward {}",
+                shares,
+                remainder,
+                reward
+            );
+            prop_assert!(remainder >= 0, "the operator's remainder cannot be negative");
+            prop_assert!(
+                shares.iter().all(|s| *s >= 0),
+                "a share cannot be negative: {:?}",
+                shares
+            );
+        }
+
+        // **The delegators never take more than the reward between them** — the property
+        // `pro_rata_sum_le` states, and what stops a share from being paid out of the operator's own
+        // stake in the key.
+        #[test]
+        fn law57_the_delegators_never_take_more_than_the_reward(
+            reward in 0i64..1_000_000_000,
+            own in 0i64..1_000_000,
+            amounts in prop::collection::vec(0i64..1_000_000, 0..6),
+        ) {
+            let shares = pro_rata(reward, own, &amounts).expect("in range");
+            let paid: i64 = shares.iter().sum();
+            prop_assert!(paid <= reward, "shares {shares:?} sum to {paid}, above {reward}");
+        }
+
+        // **With no delegations the split is the identity**: no shares, and the operator's remainder
+        // is the whole reward. The arithmetic half of the port's dormancy requirement; the store half
+        // is `delegation_tests::the_delegation_leaves_are_absent_until_the_first_delegation`.
+        //
+        // Red under a split that emits a zero-valued share per delegator, and under one that hands a
+        // slice of the reward to a party that is not there.
+        #[test]
+        fn law57_the_split_with_no_delegators_is_the_identity(reward in 0i64..1_000_000_000, own in 0i64..1_000_000) {
+            let (shares, remainder) = split_reward(reward, own, &[]).expect("in range");
+            prop_assert!(shares.is_empty(), "no delegators, no shares: {shares:?}");
+            prop_assert_eq!(remainder, reward);
+        }
+    }
+}

@@ -3184,6 +3184,19 @@ def laws : List Law := [
       `Rchain.a_slash_clears_the_delegations],
     axioms := [],
     rust := ["rholang/src/native_state.rs", "rholang/src/system_processes.rs"],
+    rustWitness := [
+      "rholang/src/native_state.rs:the_delegation_leaves_are_absent_until_the_first_delegation",
+      "rholang/src/native_state.rs:the_split_is_not_the_identity",
+      "rholang/src/property_tests.rs:law57_the_split_sums_to_the_reward",
+      "rholang/src/property_tests.rs:law57_the_delegators_never_take_more_than_the_reward",
+      "rholang/src/property_tests.rs:law57_the_split_with_no_delegators_is_the_identity",
+      "rholang/src/native_state.rs:a_delegation_enlarges_the_pool_and_a_second_one_accumulates",
+      "rholang/src/native_state.rs:a_boundary_splits_the_reward_across_the_delegations",
+      "rholang/src/native_state.rs:a_slash_fans_out_to_each_delegators_own_vault_at_every_tier",
+      "rholang/src/native_state.rs:an_undelegation_is_staged_then_paid_to_the_delegator",
+      "rholang/src/native_state.rs:a_validator_with_delegations_cannot_withdraw",
+      "rholang/src/native_state.rs:the_delegation_refusals",
+      "rholang/src/native_state.rs:the_delegation_leaves_round_trip_or_refuse"],
     witness := [`Rchain.a_second_delegation_accumulates, `Rchain.the_total_belongs_to_one_operator,
       `Rchain.proRata_sum_le, `Rchain.split_sums_to_the_reward,
       `Rchain.split_with_no_delegators_is_the_operator, `Rchain.the_split_is_not_the_identity,
@@ -3203,22 +3216,29 @@ def laws : List Law := [
       equal-share mutant reads as `[2, 2]` and the base-drop mutant as `[33, 66]`. The dormancy half is \
       `split_with_no_delegators_is_the_operator`, and the aggregate half is \
       `a_delegation_enlarges_the_pool`, which is red if `delegate` writes the ledger without the pool",
-    note := "**This is the first law in the register whose Rust witnesses are owed rather than landed**, \
-      and the row says so rather than leaving a reader to infer it: the leaf codecs, the two \
-      `rho:rchain:pos` ops, the boundary move, the slash fan-out and their falsifiers are the same \
-      change's second unit, and `rustWitness` is declared when those tests exist (a declared witness \
-      that does not run is refused by `tools/check-rust-witnesses.sh`). **Two established laws are \
-      touched rather than restated**: `sum_rewards_le_pot` (46) is a statement about the reward \
-      *before* this split, which `split_sums_to_the_reward` shows the split preserves exactly; and \
-      `atRisk` (law 45's slash) now reads the aggregate pool entry, which is why the delegation ledger \
-      is **not** added to it — counting a delegator's principal twice would overstate what a slash may \
-      take, and the escrowed claim and the accrued delegated reward, which have left the pool or never \
-      joined it, are what the sum does add. **What this row does not claim**: which vault receives a \
-      refund. `PosState.user` is the total over every user vault, so the per-vault fan-out is \
-      inexpressible here and is pinned by a Rust witness in the second unit — the same simplification \
-      the withdrawal path already carries. Nor does it claim anything about the port's **dormancy at the \
-      store**: that the four leaves are left absent rather than written empty is a property of \
-      `native_state.rs`'s write path (`set_*` is an unconditional `put`), not of this model" }
+    note := "**Landed in two units, and the row is honest about which half is which.** The model and the \
+      state's shape came first (the same change's spec unit); the Rust — the four leaf codecs, the two \
+      `rho:rchain:pos` ops, the boundary move and split, the slash fan-out and the two refusals — is the \
+      second, and `rustWitness` is declared with it. **Every falsifier was run against a mutation that \
+      removes the thing it pins**, which is the standard this register keeps and which the split's own \
+      fixture is the newest example of: dropping the slash fan-out, writing an empty delegation leaf, \
+      replacing instead of accumulating a second delegation, not splitting the reward, removing the \
+      withdrawal guard and paying an undelegation to the operator each turn the matching test red. \
+      **Two established laws are touched rather than restated**: `sum_rewards_le_pot` (46) is a statement \
+      about the reward *before* this split, which `split_sums_to_the_reward` shows the split preserves \
+      exactly; and `atRisk` (law 45's slash) now reads the aggregate pool entry, which is why the \
+      delegation ledger is **not** added to it — counting a delegator's principal twice would overstate \
+      what a slash may take, and the escrowed claim and the accrued delegated reward, which have left the \
+      pool or never joined it, are what the sum does add. The port's `slash` has the same subtraction for \
+      the same reason, and getting it wrong there is a slash that mints. **What this row does not \
+      claim**: which vault receives a refund, in the *model*. `PosState.user` is the total over every \
+      user vault, so the per-vault fan-out is inexpressible there and is pinned by \
+      `a_slash_fans_out_to_each_delegators_own_vault_at_every_tier` and \
+      `an_undelegation_is_staged_then_paid_to_the_delegator` instead — the same simplification the \
+      withdrawal path already carries. Nor does the model claim anything about the port's **dormancy at \
+      the store**: that the four leaves are left absent rather than written empty is a property of \
+      `native_state.rs`'s write path (`set_*` is an unconditional `put`, so the delegation setters clear \
+      instead), pinned by `the_delegation_leaves_are_absent_until_the_first_delegation`" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
