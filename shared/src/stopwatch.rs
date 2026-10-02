@@ -3,7 +3,13 @@
 //! The cats-effect `Sync[F]` is simplified to synchronous calls; the logging callback is a plain
 //! `FnMut(String)`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// The wasm build takes the host's clock (`web-time`); `std`'s panics there (issue #98).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 /// Format a duration (in nanoseconds) as a human-readable string (port of `Stopwatch.showTime`).
 pub fn show_time(nanos: i64) -> String {

@@ -7,6 +7,12 @@
 
 use std::sync::OnceLock;
 
+// The wasm build takes the host's clock (`web-time`); `std`'s panics there (issue #98).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
 /// The substring after the last occurrence of `pattern`, or the whole string when absent (port of
 /// `Debug.suffixAfterLast`).
 pub fn suffix_after_last<'a>(pattern: &str, string: &'a str) -> &'a str {
@@ -16,9 +22,9 @@ pub fn suffix_after_last<'a>(pattern: &str, string: &'a str) -> &'a str {
         .unwrap_or(string)
 }
 
-fn startup() -> &'static std::time::Instant {
-    static START: OnceLock<std::time::Instant> = OnceLock::new();
-    START.get_or_init(std::time::Instant::now)
+fn startup() -> &'static Instant {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now)
 }
 
 /// Build the debug string for a list of `(source, rendered_value)` pairs (port of `Debug.string`).

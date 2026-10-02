@@ -73,3 +73,10 @@ RUST_TEST_THREADS = "10"
 # jemalloc ignores an unrecognised option *without complaint* — the failure that already made one
 # profiling attempt report "no ramp" from an instrument that had never been compiled in.
 JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false,stats_print:true,stats_print_opts:g"
+
+# **The wasm RNG backend selector (issue #98).** `getrandom` 0.4 requires *both* the `wasm_js` crate
+# feature (named in `crypto/Cargo.toml`) *and* this cfg flag, or it emits a `compile_error!` for
+# `wasm32-unknown-unknown`. Scoped to the target so no host build and no other target sees it; the
+# `RUSTFLAGS` it sets applies only to `--target wasm32-unknown-unknown` invocations.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

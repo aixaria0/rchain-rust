@@ -18,3 +18,11 @@ lmdb-rkv = { version = "0.14", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# `std::time::{Instant, SystemTime}` compile for `wasm32-unknown-unknown` but panic at runtime — the
+# target has no clock in `std`. `web-time` provides the same three items backed by the host's
+# `performance.now`/`Date`, so the modules that stamp time (`time`, `debug`, `log`, `rate_limiter`,
+# `stopwatch`) alias them per target instead of calling `std` directly (issue #98,
+# `candidate:host-supplied-clock`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"

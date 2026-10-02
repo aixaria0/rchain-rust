@@ -6,6 +6,9 @@
 //! (SubjectPublicKeyInfo), and the public key as hex.
 
 use std::fs;
+// `write_all` is used only by the `#[cfg(unix)]` `write_with_mode`; the non-unix (and wasm) arm uses
+// `fs::write`, so the trait import is gated to keep the wasm build warning-free (issue #98).
+#[cfg(unix)]
 use std::io::Write;
 use std::path::Path;
 

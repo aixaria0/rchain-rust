@@ -5,7 +5,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// The wasm build takes the host's clock (`web-time`); `std`'s panics there (issue #98).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 /// A minimal fixed-window rate limiter (bounded requests per second).
 pub struct RateLimiter {

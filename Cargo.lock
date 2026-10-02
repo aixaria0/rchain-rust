@@ -2701,6 +2701,8 @@ dependencies = [
  "blake2",
  "crypto_box",
  "ed25519-dalek",
+ "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "k256",
  "p256",
  "pkcs5",
@@ -2814,6 +2816,7 @@ dependencies = [
  "lmdb-rkv",
  "lz4_flex",
  "tokio",
+ "web-time",
 ]
 
 [[package]]
