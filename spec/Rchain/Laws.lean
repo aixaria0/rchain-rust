@@ -3161,7 +3161,64 @@ def laws : List Law := [
       than a different address, are properties of `rho:rev:address` and are pinned by \
       `casper/tests/master_dictionary.rs`, not here. Nor does it claim that a contract cannot *disclose* \
       a deployer id it was given: that is a discipline over the chain's contracts, not a mechanism the \
-      calculus can enforce, and the source scan is the floor under it" }
+      calculus can enforce, and the source scan is the floor under it" },
+  { number := 57, layer := "PoS",
+    statement := "**A delegator's stake is the operator's bond, attributed.** A delegation moves a \
+      principal from the delegator's own vault into the staking vault and adds it to the operator's key \
+      — the `pool` entry becomes the **aggregate** — so the stake counts in the draw and in what a slash \
+      reaches exactly as the operator's own does, while the `pos:delegations` ledger records who owns \
+      the part that is there. Each epoch's reward for that key is split pro-rata across the operator's \
+      own stake and its delegations **exactly** — the operator keeps the integer-division remainder — so \
+      a validator with delegators commits the same total it would have committed alone, and the split is \
+      the **identity** when nobody has delegated. An undelegation is a request that moves nothing until \
+      a boundary acts on it, so a delegator cannot escape a slash already in flight; and a second \
+      delegation from the same delegator **adds** to the first rather than replacing it",
+    status := .provedModel,
+    declarations := [`Rchain.PosDelegation, `Rchain.PosUndelegation, `Rchain.PosDelegationClaim,
+      `Rchain.delegatedTotal, `Rchain.proRata, `Rchain.delegate, `Rchain.undelegate,
+      `Rchain.lookup_setKey_self, `Rchain.a_second_delegation_accumulates,
+      `Rchain.the_total_belongs_to_one_operator, `Rchain.proRata_sum_le,
+      `Rchain.split_sums_to_the_reward, `Rchain.split_with_no_delegators_is_the_operator,
+      `Rchain.the_split_is_not_the_identity, `Rchain.delegate_conserves,
+      `Rchain.a_delegation_enlarges_the_pool, `Rchain.undelegate_moves_no_coins,
+      `Rchain.a_slash_clears_the_delegations],
+    axioms := [],
+    rust := ["rholang/src/native_state.rs", "rholang/src/system_processes.rs"],
+    witness := [`Rchain.a_second_delegation_accumulates, `Rchain.the_total_belongs_to_one_operator,
+      `Rchain.proRata_sum_le, `Rchain.split_sums_to_the_reward,
+      `Rchain.split_with_no_delegators_is_the_operator, `Rchain.the_split_is_not_the_identity,
+      `Rchain.delegate_conserves, `Rchain.a_delegation_enlarges_the_pool,
+      `Rchain.undelegate_moves_no_coins, `Rchain.a_slash_clears_the_delegations],
+    falsifiable := some "**the split's fixture was measured against three plausible wrong splits, not \
+      asserted.** `the_split_is_not_the_identity` decides `proRata 100 30 [10, 61] = [9, 60]` — a \
+      denominator of 101 over principals 10 and 61, flooring to 9 and 60 and leaving 31 to the operator \
+      — together with `proRata 100 0 [30, 70] = [30, 70]` and `proRata 100 40 [1, 2] = [2, 4]`. Compiled \
+      against those clauses: the operator keeps everything, every delegator gets an equal share \
+      (`amount / (base + weights.length)`), and the base is dropped from the denominator. **Clauses 1 \
+      and 3 refute all three; clause 2 refutes only the first**, because with `base = 0` it cannot tell \
+      a rule that divides by the base from one that ignores it — recorded rather than left implied. \
+      **Clause 3 read `[1, 1, 1]` when it was written and that was nearly vacuous for the same reason**: \
+      three equal weights pay `100 / 3` under the real rule and under the equal-share mutant alike, so \
+      it distinguished nothing clause 1 did not; `[1, 2]` with base 40 reads `[2, 4]`, which the \
+      equal-share mutant reads as `[2, 2]` and the base-drop mutant as `[33, 66]`. The dormancy half is \
+      `split_with_no_delegators_is_the_operator`, and the aggregate half is \
+      `a_delegation_enlarges_the_pool`, which is red if `delegate` writes the ledger without the pool",
+    note := "**This is the first law in the register whose Rust witnesses are owed rather than landed**, \
+      and the row says so rather than leaving a reader to infer it: the leaf codecs, the two \
+      `rho:rchain:pos` ops, the boundary move, the slash fan-out and their falsifiers are the same \
+      change's second unit, and `rustWitness` is declared when those tests exist (a declared witness \
+      that does not run is refused by `tools/check-rust-witnesses.sh`). **Two established laws are \
+      touched rather than restated**: `sum_rewards_le_pot` (46) is a statement about the reward \
+      *before* this split, which `split_sums_to_the_reward` shows the split preserves exactly; and \
+      `atRisk` (law 45's slash) now reads the aggregate pool entry, which is why the delegation ledger \
+      is **not** added to it — counting a delegator's principal twice would overstate what a slash may \
+      take, and the escrowed claim and the accrued delegated reward, which have left the pool or never \
+      joined it, are what the sum does add. **What this row does not claim**: which vault receives a \
+      refund. `PosState.user` is the total over every user vault, so the per-vault fan-out is \
+      inexpressible here and is pinned by a Rust witness in the second unit — the same simplification \
+      the withdrawal path already carries. Nor does it claim anything about the port's **dormancy at the \
+      store**: that the four leaves are left absent rather than written empty is a property of \
+      `native_state.rs`'s write path (`set_*` is an unconditional `put`), not of this model" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

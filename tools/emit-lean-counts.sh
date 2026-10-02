@@ -16,7 +16,8 @@
 #
 #     laws, entries, laws-entries, axioms, summary,
 #     proved-laws, proved-tied-laws, proved-model-laws, owed-laws, open-laws,
-#     orphaned-laws, vacuous-laws, axiom-by-design-laws
+#     orphaned-laws, vacuous-laws, axiom-by-design-laws,
+#     proved-model-entries, proved-tied-entries   (rows, for a sentence decomposing `entries`)
 #
 # `--check` (what the gate runs) rewrites into a scratch copy and refuses a diff, the same discipline
 # `emit-lean-laws.sh` uses for `spec/laws.tsv` itself. It also fails on a **hand-written** register total
@@ -49,6 +50,11 @@ fi
 
 # --- the totals, straight off the register's own emission -------------------------------------------
 col() { awk -F'\t' -v s="$1" 'NR>1 && $4==s {print $1}' "$TSV" | sort -u | wc -l | tr -d ' '; }
+# The same count **by row rather than by law**, for a sentence that is decomposing `entries`. The two
+# differ wherever a law has clauses (law 56 is one number and three rows), so a `-laws` marker in an
+# entry-decomposing sentence would silently understate — measured 2026-10-02, when `proved-model` read 37
+# laws against 48 entries and the wrong key put 37 into `AGENTS.md`.
+col_rows() { awk -F'\t' -v s="$1" 'NR>1 && $4==s' "$TSV" | wc -l | tr -d ' '; }
 entries="$(awk 'NR>1' "$TSV" | wc -l | tr -d ' ')"
 n_laws="$(awk -F'\t' 'NR>1{print $1}' "$TSV" | sort -u | wc -l | tr -d ' ')"
 n_axioms="$(awk -F'\t' 'NR>1 && $6 != "-" {print $6}' "$TSV" \
@@ -68,6 +74,8 @@ value_of() {
     proved-laws)          printf '%s' "$n_proved" ;;
     proved-tied-laws)     printf '%s' "$n_proved_tied" ;;
     proved-model-laws)    printf '%s' "$n_proved_model" ;;
+    proved-model-entries) printf '%s' "$(col_rows proved-model)" ;;
+    proved-tied-entries)  printf '%s' "$(col_rows proved-tied)" ;;
     owed-laws)            col owed ;;
     open-laws)            col open ;;
     orphaned-laws)        col orphaned ;;
@@ -117,7 +125,8 @@ for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
 
 # The map as `key=value` lines, reused for both the rewrite and the scan.
 map="$(for k in laws entries laws-entries axioms summary proved-laws proved-tied-laws proved-model-laws \
-                 owed-laws open-laws orphaned-laws vacuous-laws axiom-by-design-laws; do
+                 owed-laws open-laws orphaned-laws vacuous-laws axiom-by-design-laws \
+                 proved-model-entries proved-tied-entries; do
           printf '%s=%s\n' "$k" "$(value_of "$k")"
         done)"
 

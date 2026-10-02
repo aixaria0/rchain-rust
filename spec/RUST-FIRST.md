@@ -42,6 +42,16 @@ The PoS leaves under `PREFIX_POS`:
 | `pos:params` | immutable PoS parameters (min/max bond, epoch, quarantine, active cap) |
 | `pos:coop` | the Coop slashing-vault balance (confiscated stake) |
 | `pos:vault` | the staking-vault balance — escrowed bonds + the phlo that funds the rewards |
+| `pos:delegations` | delegated principals (`(operator, delegator) → NonNegI64`) — the attribution of the aggregate, not a second copy of the stake |
+| `pos:pending_delegations` | undelegation **requests** (`(operator, delegator) → epoch-boundary deadline`) |
+| `pos:delegation_claims` | escrowed undelegated principals (`(operator, delegator) → (amount, deadline)`), moved here at the boundary |
+| `pos:delegated_rewards` | a delegator's accrued reward (`(operator, delegator) → NonNegI64`), held apart from the operator's `pos:committed` |
+
+**The four `deleg*` leaves are absent on a chain where nobody has delegated**, and that is a
+requirement rather than a detail (see *Dormancy* below): a validator's `pos:bonds` entry is the
+**aggregate** of its own stake and its delegations, so with no delegations the aggregate is the stake and
+the post-state is byte-identical to a chain without the primitive. `pos:last_spoke` and `pos:epoch_seed`
+are the two earlier leaves of the same shape and are documented in `spec/audit/passes.md` §6.
 
 Leaves are the new `PersistedData::NativeLeaf(Vec<u8>)` (the previously-free 2-bit tag `3`). The
 trie prefix disambiguates registry vs PoS vs vault, so a single leaf kind suffices.
@@ -79,6 +89,14 @@ contract's `posVault`), and the Coop multisig vault — so nothing is minted and
 | refund | staking vault → deployer vault | `Pos.rhox:417-454` (`refundDeploy`) |
 | slash | staking vault → Coop vault | `Pos.rhox:470-482` |
 | withdrawal | staking vault → validator vault | `Pos.rhox:556-567` (`payWithdrawer`) |
+| **delegation** | delegator vault → staking vault | **none** — the contract has no delegation primitive |
+| **undelegation payout** | staking vault → delegator vault | **none**, for the same reason |
+| **slash fan-out** | staking vault → the offender's vault, **and each delegator's own vault** | **none** — the contract returns the remainder to the offender alone |
+
+The last three rows are the primitive's whole REV movement, and each is a deviation registered with the
+**"Hard fork (#51 category A)"** marking in `spec/audit/passes.md` §6. A delegation debits the
+**delegator's own** vault through the delegator's own `deployerId` — which is what keeps it inside the B2
+decision below rather than needing a capability the tree declined to model.
 
 The genesis install funds the vault with **exactly** the initial bond sum (`Pos.rhox:167-174`), so at
 genesis the distributable *pot* (`vault − bonded − withdrawers − committed rewards`) is zero. The pot
@@ -117,6 +135,59 @@ The validator lifecycle is native and on-chain (`rholang/src/native_state.rs`):
    deadline) and paid `bond + committed rewards` at the first boundary past its quarantine.
 6. **removed** — `slash` (consensus, for bonded offenders) and `untrust` (governance) remove the
    validator and confiscate the stake to the Coop vault (`pos:coop`).
+
+**Alongside the lifecycle, not a stage of it: delegated-to.** A bonded validator's pool entry may carry
+one or more delegations — third-party stake attributed to its key. It is not a validator state (the
+operator does not change state, and a delegator is not a validator at all), so it is a section of its
+own below.
+
+## Delegated stake (`pos:delegations`)
+
+A key that holds REV but does not run a node can stake it on one that does. `rho:rchain:pos!("delegate",
+*deployerId, operatorPubKey, amount, *ret)` moves `amount` from the **delegator's own** vault into the
+staking vault and adds it to the operator's `pos:bonds` entry, so the operator's key carries the
+**aggregate** and the ledger `pos:delegations` records which part is whose. There is no commission and no
+admission step: any bonded operator is delegable-to, and the integer-division dust the split leaves goes
+to the operator.
+
+- **Activation follows `bond`, not a new path.** A delegation enters the pool at once and the *active*
+  set only at the next boundary, because `select_active` draws from the pool. So a delegation cannot
+  conjure a slot mid-epoch, and it does reach the draw — which is stake-weighted, so a delegator's REV
+  buys weight through the operator's key that it could not buy alone.
+- **The epoch split.** At a boundary, after `epoch_rewards` and the absence weight, each drawn
+  validator's reward is divided pro-rata across its own stake and its delegations. The delegators' shares
+  go to `pos:delegated_rewards` — **not** to the operator's `pos:committed`, where the operator could be
+  paid what is not its own — and the operator keeps the remainder. So the operator's committed entry
+  plus its delegators' entries equal exactly what it would have committed with no delegators at all,
+  which is what keeps `sum_rewards_le_pot` true through the split (`spec/Rchain/Pos.lean`, law 57).
+  `epoch_pot` subtracts both ledgers, or the pot would distribute a delegator's accrued reward twice.
+- **Undelegation mirrors `withdraw`.** `"undelegate"` **stages** the request
+  (`pos:pending_delegations`): the principal stays in the operator's pool entry, still earning and still
+  at risk, until the boundary moves it into `pos:delegation_claims` with a deadline, and it is paid
+  `principal + accrued rewards` to the delegator's own vault at the first boundary past its quarantine.
+  Staging rather than paying at once is the point: undelegating cannot be used to dodge a slash already
+  in flight.
+- **A slash reaches the delegated principal, and returns it to its owner.** The operator's aggregate pool
+  entry is what `atRisk` reads, so the tier applies to delegators' stake exactly as to the operator's;
+  the remainder is fanned out pro-rata — the operator's own part to its vault, each delegator's part to
+  **its own** vault — with the dust to the operator, and every delegation ledger entry for that key is
+  removed. This fan-out is the sharpest correctness risk in the primitive: paying the whole remainder to
+  the operator would hand a delegator's principal to the party it was delegated to.
+- **Two refusals keep the accounting single-valued.** `withdraw` refuses while delegations are
+  outstanding, and `delegate` refuses while a withdrawal is pending, so a validator is never
+  simultaneously withdrawing and delegated-to. A delegation is also refused when the operator is not in
+  the pool, when the delegator names itself, and below `minimum_bond` — the per-delegation floor, which
+  is the DoS control on an unbounded ledger.
+
+### Dormancy, and where the fork point is
+
+No chain that never calls `delegate` changes state. The four leaves are **not written at genesis** and no
+setter is called until its value is non-empty — `set_*` is an unconditional `put`
+(`rholang/src/native_state.rs`), so an empty write is a trie leaf and a **different root** from an absent
+one. `pos:epoch_seed` is the precedent: genesis leaves it absent and the first boundary writes it. With
+the aggregate equal to the stake when nobody has delegated, the post-state of a no-delegation chain is
+byte-identical to one produced without the primitive — so the fork point is the **first `delegate`
+deploy**, and an unupgraded node diverges there rather than at genesis.
 
 ## The epoch (`close_block`)
 
@@ -168,7 +239,9 @@ The native `rho:*` protocol is installed as ordinary system-process `Definition`
 - `rho:registry:lookup` / `insertArbitrary` / `insertSigned:secp256k1` — backed by the native
   registry map.
 - `rho:rchain:pos` — `getBonds` (pool) → `RhoMap`, `getActiveValidators` (active set) → `RhoSet`,
-  `bond` / `withdraw` (validator lifecycle), and `trust` / `untrust` (stakeholder admission) via a
+  `bond` / `withdraw` (validator lifecycle), `delegate` / `undelegate` (delegated stake — no new channel
+  and no `SystemDeployData` variant: a new **method** on this channel is reached by an ordinary deploy
+  and replays from that deploy's own COMM trace), and `trust` / `untrust` (stakeholder admission) via a
   `remainder` install pattern.
 - `rho:rchain:revVault` / `multiSigRevVault` — `getBalance` / `deposit` / `transfer` / `findOrCreate`
   over the vault balance map.
@@ -202,9 +275,17 @@ port keys balances by address and takes the caller's own `deployerId`:
   address, which the Scala's does not, and costs nothing: a balance is public chain state, and the
   address is derivable from a public key anyway.
 - **The half that is lost: delegation.** A contract cannot be handed a vault to spend from; only the key
-  that signs a deploy can spend that key's REV. Nothing in this tree needs it (the wallet, the faucet,
+  that signs a deploy can spend that key's REV. Nothing in this tree needed it (the wallet, the faucet,
   the gateway's txn legs and the genesis ceremony all act as the key itself), which is why the decision
   is to keep the simplification rather than pay for it.
+  **Updated 2026-10-02 (#193): the *delegation* this paragraph names is not the delegation that landed,
+  and the distinction is why the decision stands.** What is lost here is a contract's ability to spend a
+  vault it was *handed* — a third party spending a named account. What landed is a staker spending from
+  **its own** vault through **its own** `deployerId` and having the protocol attribute the stake to
+  another key (`pos:delegations`, the *Delegated stake* section above). No capability is handed over and
+  no minted name is needed, so the "what landing it would cost" item below is still unspent. The
+  alternative shape — bonding from a named vault — is the one that would have needed it, and it is the
+  direction issue #193 rejected for exactly this reason.
 - **What landing it would cost**, for whoever revisits this: the minted unforgeable must be
   *deterministic and replayable* — in the contract it is a `new` name, i.e. drawn from the deploy's
   RNG — so the native call would have to thread the deploy's random seed and persist

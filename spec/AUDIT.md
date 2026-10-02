@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 238** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 238** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  32 of 238 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  33 of 239 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 238 are settled: **174 name the evidence that holds them** and **64 do not** — the
+All 239 are settled: **174 name the evidence that holds them** and **65 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -124,10 +124,11 @@ verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason cl
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
-### In progress — none
+### IN PROGRESS (1)
 
-Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
-that it is empty is the fact, and it is said rather than shown as a table with no rows.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C204` | **a bonded key's entry in `pos:bonds` may be other people's stake, and the protocol has no way to say whose.** #193: `bond` takes the caller's own unforgeable `GDeployerId` and derives the validator from it, a reward is paid only to `vault_address(validator)`, and `Pos.rhox` keeps one self-funded bonds map — so a user holding REV with no node to run has **no on-chain way to earn**, and the only route to stake is to run a validator, which needs an existing trusted stakeholder to admit the key and puts the whole bond at the tier on the staker's own capital. **Decided 2026-10-02: the delegation ledger.** `pos:bonds` becomes the **aggregate** and four new leaves attribute it (`pos:delegations`, `pos:pending_delegations`, `pos:delegation_claims`, `pos:delegated_rewards`); admission is open with no commission, and undelegation mirrors `withdraw` (stage → boundary → quarantine → payout). Five deviations are registered in §6 with the **Hard fork (#51 category A)** marking — the aggregate, the epoch split, the slash fan-out and the two refusals — and dormancy is registered as a **requirement** so the fork point is the first `delegate` deploy rather than genesis. The model is law 57, and the split's fixture was compiled against three plausible wrong splits before it was trusted (pass §60). **The Rust is not written yet, and this row says so rather than leaving it to be discovered: it is the first `in progress` row opened for work the pass has decided but not implemented**, which is deliberate — a decided consensus deviation that is invisible until its implementation lands is the omission this register exists to catch. | the second unit of the same change: the four leaf codecs, `delegate`/`undelegate` on `rho:rchain:pos`, the boundary move, the epoch split, the slash fan-out and the two refusals in `rholang/src/native_state.rs` + `rholang/src/system_processes.rs`, each with a both-ways falsifier and a `rustWitness` on law 57 — then the read surface on `GET /api/v1/pos`, the in-process measurement, and the devnet arm (delegate → boundary → undelegate → quarantine payout, with an unupgraded node diverging at the first `delegate`) | §60 |
 
 ### DONE (238)
 
