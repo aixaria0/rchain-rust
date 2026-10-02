@@ -4043,6 +4043,55 @@ mod tests {
         );
     }
 
+    /// **The rule reads the fringe, and the `pos:last_spoke` store is not consulted at all** (B4, #150).
+    ///
+    /// This is the falsifier for the read, and it is deliberately built so that the two sources
+    /// *disagree*: the store says the validator has been silent since height 1, the participation the
+    /// caller derived from the fringe says height 9, and the boundary is at 12 with a slack of 5 — so
+    /// the store's reading drops it and the fringe's pays it. **Restoring `close_block`'s read to
+    /// `self.last_spoke()` turns this red**, which is the whole point: the store is written by whichever
+    /// block a proposer chose to justify and a proposer may omit what it has seen, while the fringe is
+    /// the >2/3-agreed object. A test that merely agreed with the store would pin neither.
+    #[tokio::test]
+    async fn the_absence_rule_reads_the_fringe_and_not_the_spoke_store() {
+        let params = PosParams {
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            epoch_length: 1,
+            absence_slack: NonNegI64::try_from(5).unwrap(),
+            ..PosParams::default()
+        };
+        let native = native_with(&[validator(1)], params, &[(validator(1), 4)]).await;
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, nn(10));
+        native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
+
+        // The **store** says the validator has been silent since height 1 — outside the slack's reach.
+        native
+            .record_spoke(&validator(1), BlockHeight::try_from(1).unwrap())
+            .await
+            .unwrap();
+
+        // The **fringe** the caller derived says height 9, which is inside it.
+        let participation = BTreeMap::from([(validator(1), BlockHeight::try_from(9).unwrap())]);
+        native
+            .close_block(12, fringe_state(12), &participation)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            native
+                .committed_rewards()
+                .await
+                .unwrap()
+                .get(&validator(1))
+                .is_some(),
+            "the participation the caller derived is what the boundary pays on; a rule that read the \
+             store instead would have dropped this validator, whose store entry is eight heights stale"
+        );
+    }
+
     #[test]
     fn txn_record_round_trip() {
         let rec = TxnRecord {
