@@ -2812,6 +2812,8 @@ dependencies = [
  "rchain-rspace",
  "rchain-shared",
  "tokio",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

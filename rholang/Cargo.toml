@@ -24,11 +24,23 @@ rchain-shared = { path = "../shared" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1", features = ["rt"] }
+# `sync` for the `oneshot` the spawn seam returns its result over; `wasm-bindgen-futures` is the
+# host executor `spawn_reduce_task` hands the reduction future to (there is no tokio runtime on the
+# target — see `reduce.rs`).
+tokio = { version = "1", features = ["rt", "sync"] }
+wasm-bindgen-futures = "0.4"
 
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Host-only test infrastructure: `proptest` pulls `wait-timeout`, which is native-only, and the test
+# runtime is the multi-thread executor the target rejects. Scoping them to the host keeps the wasm
+# test target buildable (issue #98).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 
-[dev-dependencies.proptest]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.proptest]
 # The property sweep (Laws 3/5). Already in `Cargo.lock` — a dev-dependency addition.
 version = "1"
+
+# The wasm-target harness for `tests/wasm_reduce.rs` — a full reduction, parsed and executed, on the
+# target that has no runtime of its own (issue #98).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -2264,18 +2264,68 @@ fn resolve_match(
 /// take `self: Arc<Self>` and return this, so the scheduler can `tokio::spawn` disjoint branches.
 type ReducerFuture = Pin<Box<dyn Future<Output = Result<(), RholangError>> + std::marker::Send>>;
 
-/// Spawn a prepared reducer future on the current runtime and await its result, mapping a task
-/// panic to a legible [`RholangError`]. Every continuation dispatch and persistent/peek follow-on
-/// effect goes through this so no single task's future chain grows with the recursion depth.
+/// Spawn a prepared reducer future and await its result, mapping a task panic to a legible
+/// [`RholangError`]. Every continuation dispatch and persistent/peek follow-on effect goes through
+/// this so no single task's future chain grows with the recursion depth.
 async fn join_spawned(
     fut: Result<ReducerFuture, RholangError>,
     what: &'static str,
 ) -> Result<(), RholangError> {
     let fut = fut?;
-    tokio::spawn(fut)
-        .await
-        .map_err(|e| RholangError::ReduceError(format!("{what} task panicked: {e}")))?
+    spawn_reduce(fut).join(what).await?
 }
+
+/// A reduction task spawned onto the host's executor, awaitable to its result.
+///
+/// On a threaded target this is a `tokio::task::JoinHandle`. **`wasm32-unknown-unknown` has no tokio
+/// runtime** — the reducer is driven by whatever executor the host supplies (the node's runtime, or
+/// `wasm-bindgen-futures`' microtask queue in a browser) — so it is a one-shot the spawned task
+/// resolves. This is the same seam the store (`KeyValueStoreCodec::with_store`) and the clock
+/// (`shared::time`) took: the reducer names the *shape*, the host supplies the mechanism (issue #98).
+#[cfg(not(target_arch = "wasm32"))]
+struct ReduceTask<T>(tokio::task::JoinHandle<T>);
+
+#[cfg(target_arch = "wasm32")]
+struct ReduceTask<T>(tokio::sync::oneshot::Receiver<T>);
+
+impl<T> ReduceTask<T> {
+    /// Await the task, mapping a host panic — or a task dropped before it ran — to a legible error.
+    async fn join(self, what: &'static str) -> Result<T, RholangError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0
+                .await
+                .map_err(|e| RholangError::ReduceError(format!("{what} task panicked: {e}")))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.0.await.map_err(|_| {
+                RholangError::ReduceError(format!("{what} task was dropped before it ran"))
+            })
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_reduce<T: std::marker::Send + 'static>(
+    fut: impl Future<Output = T> + std::marker::Send + 'static,
+) -> ReduceTask<T> {
+    ReduceTask(tokio::spawn(fut))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_reduce<T: 'static>(fut: impl Future<Output = T> + 'static) -> ReduceTask<T> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = tx.send(fut.await);
+    });
+    ReduceTask(rx)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type RelaxedTaskSet = tokio::task::JoinSet<Result<(), RholangError>>;
+#[cfg(target_arch = "wasm32")]
+type RelaxedTaskSet = Vec<ReduceTask<Result<(), RholangError>>>;
 
 /// Per-evaluation reduction-step budget. A step is a continuation dispatch or a persistent/peek
 /// re-produce / re-consume — i.e. one trip around the produce/consume → continuation cycle. An
@@ -2313,7 +2363,7 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     /// await continuation completion while holding its claims — `for(x <- c){ c!(x) }` would
     /// self-deadlock (the continuation claims `c`, the producer holds it) — so relaxed dispatch
     /// enqueues the continuation at `child(0)` and returns.
-    relaxed_tasks: Arc<Mutex<tokio::task::JoinSet<Result<(), RholangError>>>>,
+    relaxed_tasks: Arc<Mutex<RelaxedTaskSet>>,
 }
 
 impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
@@ -2335,7 +2385,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             max_steps: Arc::new(AtomicI64::new(DEFAULT_MAX_REDUCE_STEPS)),
             cancelled: Arc::new(AtomicBool::new(false)),
             claims: Arc::new(ChannelClaimQueue::new()),
-            relaxed_tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
+            relaxed_tasks: Arc::new(Mutex::new(RelaxedTaskSet::default())),
         }
     }
 
@@ -2426,6 +2476,8 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// the drain ends exactly when no task has enqueued another.
     async fn drain_relaxed_tasks(&self) -> Result<(), RholangError> {
         loop {
+            // `mut` is needed by the host arm's `join_next`; the wasm arm consumes the set by value.
+            #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
             let mut set = {
                 let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
                 if guard.is_empty() {
@@ -2433,6 +2485,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 }
                 std::mem::take(&mut *guard)
             };
+            #[cfg(not(target_arch = "wasm32"))]
             while let Some(res) = set.join_next().await {
                 match res {
                     Err(e) => {
@@ -2443,6 +2496,12 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                     Ok(Err(e)) => return Err(e),
                     Ok(Ok(())) => {}
                 }
+            }
+            // The wasm arm has no `JoinSet` (it spawns through `spawn_local`); joining in insertion
+            // order still awaits every task and surfaces an error, which is the drain's contract.
+            #[cfg(target_arch = "wasm32")]
+            for task in set {
+                task.join("relaxed").await??;
             }
         }
     }
@@ -2516,14 +2575,12 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 let e = (*env).clone();
                 let urn_map = self.urn_map.clone();
                 let c = cost.clone();
-                handles.push(tokio::spawn(
+                handles.push(spawn_reduce(
                     async move { resolve_term(term, e, r, urn_map, c) },
                 ));
             }
             for h in handles {
-                let resolved = h.await.map_err(|e| {
-                    RholangError::ReduceError(format!("reducer task panicked: {e}"))
-                })??;
+                let resolved = h.join("reducer").await??;
                 if let Some(w) = resolved {
                     effects.push(w);
                 }
@@ -2573,28 +2630,21 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                     // every earlier effect's subtree completed. Awaiting the immediate
                     // predecessor alone suffices because that task itself awaits its own — a
                     // linear chain of awaits, not the quadratic all-predecessors join.
-                    let mut predecessor: Option<tokio::task::JoinHandle<Result<(), RholangError>>> =
-                        None;
+                    let mut predecessor: Option<ReduceTask<Result<(), RholangError>>> = None;
                     for (i, effect) in effects.into_iter().enumerate() {
                         let self_ = self.clone();
                         let cost = cost.clone();
                         let effect_path = path.child(i as u16);
-                        let handle = tokio::spawn(async move {
+                        let handle = spawn_reduce(async move {
                             if let Some(prev) = predecessor {
-                                prev.await.map_err(|e| {
-                                    RholangError::ReduceError(format!(
-                                        "gate predecessor task panicked: {e}"
-                                    ))
-                                })??;
+                                prev.join("gate predecessor").await??;
                             }
                             self_.apply_effect(effect, cost, effect_path).await
                         });
                         predecessor = Some(handle);
                     }
                     if let Some(last) = predecessor {
-                        last.await.map_err(|e| {
-                            RholangError::ReduceError(format!("gate task panicked: {e}"))
-                        })??;
+                        last.join("gate").await??;
                     }
                     Ok(())
                 }
@@ -2810,10 +2860,11 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             Ok(fut) => fut,
             Err(e) => Box::pin(async move { Err(e) }),
         };
-        self.relaxed_tasks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .spawn(fut);
+        let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+        #[cfg(not(target_arch = "wasm32"))]
+        guard.spawn(fut);
+        #[cfg(target_arch = "wasm32")]
+        guard.push(spawn_reduce(fut));
     }
 
     /// Wait for the head lease, mapping a Law 24 validation failure to the block-path fallback

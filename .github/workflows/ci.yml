@@ -212,6 +212,7 @@ jobs:
           cargo install wasm-bindgen-cli --version "$WB" --locked
           cargo test -p rchain-crypto --test wasm_law19 --target wasm32-unknown-unknown
           cargo test -p rchain-rspace --test wasm_roundtrip --target wasm32-unknown-unknown
+          cargo test -p rchain-rholang --test wasm_reduce --target wasm32-unknown-unknown
 
       - name: Test
         run: cargo test --workspace --all-features
