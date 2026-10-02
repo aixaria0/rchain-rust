@@ -28,6 +28,7 @@ use rchain_block_storage::dag::codecs::{
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::merging::{BlockIndex, MergeScope};
+use rchain_casper::system_deploy::SystemDeploy;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
@@ -438,5 +439,233 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         Blake2b256Hash::from_byte_array(post_state.as_bytes()),
         "the merge must reproduce the branch's post-state, its native writes included: a match is the \
          fix for #74, and a mismatch is the state loss it reported"
+    );
+}
+
+/// **AUDIT C201, the half the live arm could not reach: is a slashed validator gone from the bonds a
+/// *merged* pre-state reports?**
+///
+/// The A2 live arm (`spec/audit/evidence/a2-live-equivocation-run.sh`, #150) turned this up: the
+/// proposer emitted a `Slash` for the offender on **every** block after the first, 59 of them and
+/// still counting, while every one of those blocks carried a bonds map with the offender already gone.
+/// The fold that decides who is slashable filters on `bonded`, which is
+/// `compute_bonds(pre_state_hash)` — `pos:active` read at the proposer's **merged pre-state**, the one
+/// `MergeScope::merge` reconstructs from the native-changes sidecar (#74).
+///
+/// The measured half is clean: `a_slashed_validator_is_absent_from_the_bonds_at_the_post_state`
+/// (in `runtime_manager.rs`) shows the leaf is written and read correctly at a **post-state**. What
+/// that cannot see is the merge — so this is the fixture the row asked for, and it splits the question
+/// the same way: **build two siblings off one genesis, one of which slashes the victim, merge them, and
+/// ask the merged root who is bonded.**
+///
+/// A pass here means the stale read is the proposer's *hash choice* and not the merge. **A failure is
+/// the merge's native reconstruction, and this row closes into a fix there (#74) rather than here** —
+/// which is why the assertion names both possibilities rather than only the expected one.
+/// **⚠ IGNORED, because it fails — and the failure is the finding, not a fixture to fix away.**
+///
+/// What is established, in both fixture shapes tried:
+///
+/// * **The slashing branch alone carries its write.** The single-branch control in here passes: merge
+///   the slashing branch by itself and the victim is gone from `pos:active` at the merged root. So the
+///   merge *can* fold this branch's native write, and the two-branch arm below is not measuring an
+///   unreadable index.
+/// * **With a benign sibling in the conflict scope, it does not.** The victim is present at the merged
+///   root. Whether that is a lost write or a chain-bookkeeping effect is exactly what C201's row still
+///   owes — and the second shape below is why I will not call it yet.
+/// * **And a second shape fails differently, which is why the first is not conclusive.** Give the
+///   slashing branch a deploy too — the faithful shape, since a block that slashes in a live run is an
+///   ordinary block — and the merge refuses outright: *"both write native key `04/1073…` and neither
+///   has seen the other; conflict resolution must reject one"*. That key is the **staking vault**, which
+///   every block's cost accounting writes, so the refusal is about two unreconciled siblings writing one
+///   hot leaf — a `final_scope`/`ancestry` question, not a slash question. A real merge resolves it
+///   because the finalised fringe orders the writers, and this fixture does not build that.
+///
+/// So the honest state is: **the fixture needs a faithful final scope before its failure means
+/// anything**, and the two shapes above are the evidence a next attempt starts from. It is `#[ignore]`d
+/// rather than deleted so that attempt begins with a running reproduction, and rather than left live so
+/// that the suite does not carry a known failure. C201's row carries the same account.
+#[ignore = "C201 open: needs a final_scope that orders the writers before the two-branch arm means anything"]
+#[tokio::test]
+async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
+    use rchain_models::block_metadata::SlashSeverity;
+    use rchain_rholang::native_state::PosParams;
+    use rchain_shared::refined::SeqNum;
+
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let operator = Validator::new([1u8; 65]);
+    let victim = Validator::new([2u8; 65]);
+    let pos = PosGenesis {
+        bonds: BTreeMap::from([
+            (operator, NonNegI64::try_from(100).expect("a stake")),
+            (victim, NonNegI64::try_from(100).expect("a stake")),
+        ]),
+        trusted: BTreeSet::new(),
+        params: PosParams::default(),
+    };
+    let (_pre, genesis_post, _) = rm
+        .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[seeded_vault()])
+        .await
+        .expect("compute_genesis");
+    let bonded_before = rm
+        .compute_bonds(&StateHash::from_slice(genesis_post.as_bytes()))
+        .await
+        .expect("bonds at the genesis post-state");
+    assert!(
+        bonded_before.contains_key(&victim),
+        "the control: the victim is bonded before anything is slashed"
+    );
+
+    // Two siblings off the same genesis. `a` slashes the victim; `b` is the benign branch that makes
+    // the merge a merge rather than a single-branch replay — without it there is nothing for the
+    // conflict scope's native writes to be reconciled against.
+    let mut a = block_shell();
+    a.block_hash = BlockHash::new([0x31; 32]);
+    a.sender = operator;
+    a.seq_num = SeqNum::try_from(1).expect("seq 1");
+    a.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
+    let slash = [SystemDeploy::slash(
+        &victim,
+        SlashSeverity::Malicious,
+        None,
+        rand.split_byte(0),
+    )];
+    let a_rand = BlockRandomSeed::random_generator_from_block(&a);
+    let (post_a, a_user, a_sys) = rm
+        .compute_state(
+            &genesis_post,
+            &[],
+            &slash,
+            &a_rand,
+            BlockData::from_block(&a),
+            &fringe_state(1),
+        )
+        .await
+        .expect("the slashing sibling");
+    a.post_state_hash = StateHash::new(*post_a.as_bytes());
+    a.state = RholangState {
+        deploys: a_user.into_iter().map(|r| r.deploy).collect(),
+        system_deploys: a_sys.into_iter().map(|r| r.deploy).collect(),
+    };
+
+    let mut b = block_shell();
+    b.block_hash = BlockHash::new([0x32; 32]);
+    b.sender = victim;
+    b.seq_num = SeqNum::try_from(1).expect("seq 1");
+    b.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
+    let b_rand = BlockRandomSeed::random_generator_from_block(&b);
+    let (post_b, b_user, b_sys) = rm
+        .compute_state(
+            &genesis_post,
+            &[deploy(r#"@"other"!(1)"#)],
+            &[],
+            &b_rand,
+            BlockData::from_block(&b),
+            &fringe_state(1),
+        )
+        .await
+        .expect("the benign sibling");
+    b.post_state_hash = StateHash::new(*post_b.as_bytes());
+    b.state = RholangState {
+        deploys: b_user.into_iter().map(|r| r.deploy).collect(),
+        system_deploys: b_sys.into_iter().map(|r| r.deploy).collect(),
+    };
+
+    // Both blocks need an index before the merge can fold their native writes — that is what the index
+    // table is for, and rebuilding it is the same call each time.
+    let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+        {
+            let shared: SharedStore = Arc::new(tokio::sync::Mutex::new(Box::new(
+                InMemoryKeyValueStore::default(),
+            )));
+            shared
+        },
+        Arc::new(BlockHashCodec),
+        Arc::new(BlockMessageCodec),
+    ));
+    store
+        .put(&[(a.block_hash, a.clone()), (b.block_hash, b.clone())])
+        .await
+        .expect("put both siblings");
+    let dag = build_dag().await;
+    let index_a = BlockIndex::get_block_index(&rm, &*dag, &store, a.block_hash, fringe_state(1))
+        .await
+        .expect("the slashing sibling's index");
+    let index_b = BlockIndex::get_block_index(&rm, &*dag, &store, b.block_hash, fringe_state(1))
+        .await
+        .expect("the benign sibling's index");
+    let block_index = move |h: BlockHash| {
+        let (ia, ib) = (index_a.clone(), index_b.clone());
+        async move {
+            if h == ia.block_hash {
+                Ok(ia)
+            } else if h == ib.block_hash {
+                Ok(ib)
+            } else {
+                Err(format!("no index for {h:?}"))
+            }
+        }
+    };
+
+    // **The isolating control, and it is what makes a failure below legible.** Merge the slashing
+    // branch *alone* first. If the victim is gone here, the merge can fold this branch's native write
+    // and anything the two-branch merge does differently is a *reconciliation* question; if the victim
+    // is still here, the branch's own index is what the merge cannot read and the two-branch assertion
+    // below would be measuring that instead.
+    let alone = MergeScope {
+        final_scope: BTreeSet::new(),
+        conflict_scope: BTreeSet::from([a.block_hash]),
+        ancestry: BTreeMap::new(),
+    };
+    let (merged_alone, _) = MergeScope::merge(
+        &alone,
+        Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
+        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        rm.get_history_repo(),
+        &block_index,
+        |_| 0,
+    )
+    .await
+    .expect("the merge of the slashing branch alone");
+    let alone_bonds = rm
+        .compute_bonds(&StateHash::from_slice(merged_alone.as_bytes()))
+        .await
+        .expect("bonds at the single-branch root");
+    assert!(
+        !alone_bonds.contains_key(&victim),
+        "the slashing branch *alone* must carry its write to the merged root — if it does not, the \
+         merge cannot read this branch's index and the two-branch arm below is measuring the wrong thing"
+    );
+
+    let scope = MergeScope {
+        final_scope: BTreeSet::new(),
+        conflict_scope: BTreeSet::from([a.block_hash, b.block_hash]),
+        ancestry: BTreeMap::new(),
+    };
+    let (merged, _rejected) = MergeScope::merge(
+        &scope,
+        Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
+        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        rm.get_history_repo(),
+        &block_index,
+        |_| 0,
+    )
+    .await
+    .expect("the merge of two siblings");
+
+    let bonded_after = rm
+        .compute_bonds(&StateHash::from_slice(merged.as_bytes()))
+        .await
+        .expect("bonds at the merged root");
+    assert!(
+        bonded_after.contains_key(&operator),
+        "the control: the merging validator is untouched by the other branch's slash"
+    );
+    assert!(
+        !bonded_after.contains_key(&victim),
+        "a slashed validator must be gone from `pos:active` at a **merged** root — if it is still here \
+         the merge's native reconstruction (#74) is the defect, which is what C201's row says this \
+         fixture would decide; if it is gone, the live arm's repeated `Slash` is the proposer's hash \
+         choice and not the merge"
     );
 }
