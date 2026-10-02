@@ -6965,6 +6965,26 @@ base 40 now, which reads `[2, 4]` where the equal-share mutant reads `[2, 2]` an
 `[33, 66]`. **A fixture clause no plausible mutant fails is not a check** — AUDIT C149's lesson, applied
 to a fixture written by someone who had just read it.
 
+**And the arm the pass owed reported a failure that is not this primitive's** (2026-10-02,
+`spec/audit/evidence/n193-delegation-live-results.md`). The delegate op runs, reports success, and the
+deploy commits — and its native write is absent from the node's native state afterwards, while the same
+deploy's *tuple-space* publish reads back. Three controls make it a finding rather than an instrument:
+`withdraw`, code that predates this pass, behaves identically (`GET /api/v1/pos` answers
+`"pendingWithdrawals": []` after a successful `withdraw`), and it reproduces with the default epoch
+length, so no `close_block` ran to rewrite anything. **It is registered as C205 and it blocks `bond`,
+`withdraw`, `trust` and `delegate` alike**, which is why C204 stays open with its evidence criterion
+unmet rather than being talked into a pass: a consensus rule measured on a network whose deploys cannot
+write native state has not been measured. **The defect is not new and its issue is closed**: #74
+("Post-genesis validator admission does not take effect") was found the same way on a live testnet, was
+closed by the `NativeChangesStore` sidecar, and reproduces here on `1a5c9539c` — with jimscarver's own
+2026-09-25 comments on that issue measuring the same thing and ruling out both slashing and **the
+multi-parent merge**, which is the mechanism this pass would otherwise have proposed. Their timeline
+also adds what this arm did not see: the write *is* applied and is lost a few blocks later, so the
+search is for where a drained change is dropped, not for why it never lands. The remaining candidate —
+`last_native_changes` being kept "replacement, not accumulation" — is named as a candidate in the row,
+not as a cause. Locating it is its own unit, and it is now a **regression against a closed issue**
+rather than a new defect — filed as **#203**, so it is owned rather than merely recorded.
+
 **Found by this pass and fixed in the same commit, and recorded here rather than as a check-off row
 because it names no law: the authoritative document's own register total was hand-written, stale, and
 outside the scan that exists to catch exactly that.** `AGENTS.md` read

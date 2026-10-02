@@ -1,0 +1,14 @@
+// Read the PoS **bond pool** (`pos:bonds`) back from a live node, and publish it on a public name.
+//
+// `getBonds` answers a `Map[ByteArray, Number]`, so this is the one read that shows the *aggregate*
+// after a delegation rather than the drawn active set — which is what a block's own `bonds` field
+// carries and therefore what `compute_bonds` recomputes. A probe rather than a contract: it was
+// written while diagnosing the #193 live arm, where the delegate op reported success and the on-chain
+// bond did not move, and the question "is the pool wrong or is the active set wrong" needed an answer
+// that only this read can give.
+new pos(`rho:rchain:pos`), ret in {
+  pos!("getBonds", *ret) |
+  for (@bonds <- ret) {
+    @"pos-bonds"!(bonds)
+  }
+}

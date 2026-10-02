@@ -1,0 +1,20 @@
+// Drive the PoS **undelegation** path from a deploy, and report the result on a public name.
+//
+// `rho:rchain:pos!("undelegate", *deployerId, operatorPubKey, *ret)` **stages** the exit (law 57, #193)
+// and moves nothing: the principal stays in the operator's aggregate pool entry, still earning and
+// still at risk, until the next epoch boundary moves it into an escrow under the delegator's own name.
+// It is paid `principal + accrued rewards` to the **delegator's own** vault at the first boundary past
+// its quarantine — law 47's three stages, seen from a delegator, and the reason undelegating cannot be
+// used to dodge a slash that is already in flight.
+//
+// The delegator is again the deployer (`*deployerId`), so only the party that delegated can withdraw
+// it; the operator is the same named key `pos-delegate.rho` uses, and this file's placeholder is
+// substituted the same way and for the same reason.
+//
+// Publish the result on a public name so `tools/devnet.sh query pos-undelegate` can read it back.
+new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("undelegate", *deployerId, "<OPERATOR_PUBKEY_HEX>".hexToBytes(), *ret) |
+  for (@result <- ret) {
+    @"pos-undelegate"!(result)
+  }
+}

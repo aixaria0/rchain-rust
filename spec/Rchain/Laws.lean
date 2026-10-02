@@ -3179,7 +3179,8 @@ def laws : List Law := [
       `Rchain.lookup_setKey_self, `Rchain.a_second_delegation_accumulates,
       `Rchain.the_total_belongs_to_one_operator, `Rchain.proRata_sum_le,
       `Rchain.split_sums_to_the_reward, `Rchain.split_with_no_delegators_is_the_operator,
-      `Rchain.the_split_is_not_the_identity, `Rchain.delegate_conserves,
+      `Rchain.the_split_is_not_the_identity, `Rchain.the_refund_is_split_pro_rata,
+      `Rchain.delegate_conserves,
       `Rchain.a_delegation_enlarges_the_pool, `Rchain.undelegate_moves_no_coins,
       `Rchain.a_slash_clears_the_delegations],
     axioms := [],
@@ -3191,6 +3192,7 @@ def laws : List Law := [
       "rholang/src/property_tests.rs:law57_the_delegators_never_take_more_than_the_reward",
       "rholang/src/property_tests.rs:law57_the_split_with_no_delegators_is_the_identity",
       "rholang/src/native_state.rs:a_delegation_enlarges_the_pool_and_a_second_one_accumulates",
+      "rholang/src/native_state.rs:a_delegation_reaches_the_active_set_that_casper_reads",
       "rholang/src/native_state.rs:a_boundary_splits_the_reward_across_the_delegations",
       "rholang/src/native_state.rs:a_slash_fans_out_to_each_delegators_own_vault_at_every_tier",
       "rholang/src/native_state.rs:an_undelegation_is_staged_then_paid_to_the_delegator",
@@ -3200,7 +3202,7 @@ def laws : List Law := [
     witness := [`Rchain.a_second_delegation_accumulates, `Rchain.the_total_belongs_to_one_operator,
       `Rchain.proRata_sum_le, `Rchain.split_sums_to_the_reward,
       `Rchain.split_with_no_delegators_is_the_operator, `Rchain.the_split_is_not_the_identity,
-      `Rchain.delegate_conserves, `Rchain.a_delegation_enlarges_the_pool,
+      `Rchain.the_refund_is_split_pro_rata, `Rchain.delegate_conserves, `Rchain.a_delegation_enlarges_the_pool,
       `Rchain.undelegate_moves_no_coins, `Rchain.a_slash_clears_the_delegations],
     falsifiable := some "**the split's fixture was measured against three plausible wrong splits, not \
       asserted.** `the_split_is_not_the_identity` decides `proRata 100 30 [10, 61] = [9, 60]` — a \

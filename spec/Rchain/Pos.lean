@@ -1011,6 +1011,22 @@ theorem the_split_is_not_the_identity :
       ∧ proRata 100 0 [30, 70] = [30, 70]
       ∧ proRata 100 40 [1, 2] = [2, 4] := by decide
 
+/-- **The slash's refund runs the same function, and its fixture is decided too** — which is the half
+    of `proRata` the epoch never reaches. #193's close condition asks for "the delegated-slash refund"
+    to be *proved and held by property tests*, and the proof is `proRata_sum_le` plus the exactness
+    above; what this adds is the instance, in the shape the refund actually takes.
+
+    The refund's base is a **weight that is paid but not issued a share by this function** — the
+    offender's own holdings, which receives the remainder — and its weights are the delegators'
+    at-risk totals. So the instance needs three different numbers on three different sides: a returned
+    amount, an offender's part, and **two unequal** delegator parts. `100` returned against parts
+    `40 / 30 / 60` divides by `130` and pays `23` and `46`, leaving `31` with the offender.
+
+    **The fixture bites for the same measured reason the split's does**: the two shares differ from
+    each other and from zero, so an equal-share refund reads `[50, 50]`, a refund that ignores the
+    offender's base reads `[33, 66]`, and one that pays the offender everything reads `[]`. -/
+theorem the_refund_is_split_pro_rata : proRata 100 40 [30, 60] = [23, 46] := by decide
+
 /-- **A delegation** (`delegate`, `rholang/src/native_state.rs`): the principal leaves the delegator's own
     vault and joins the **staking vault**, and the operator's pool entry becomes the **aggregate** — which
     is the whole of what a delegation changes for consensus, since `compute_bonds` reads the active set
