@@ -21,7 +21,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
-use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+use rchain_block_storage::dag::codecs::{
+    Blake2b256HashCodec, BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, FringeDataCodec,
+    SignedDeployDataCodec,
+};
+use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::merging::{BlockIndex, MergeScope};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
@@ -37,8 +41,67 @@ use rchain_models::validator::Validator;
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::refined::NonNegI64;
-use rchain_shared::store::InMemoryKeyValueStore;
-use rchain_shared::typed_store::{KeyValueTypedStoreCodec, SharedStore};
+use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
+use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec, SharedStore};
+
+/// The storage the node builds, constructed the way `casper/src/dag.rs`'s own tests construct it — the
+/// same four stores.
+///
+/// The block index needs a DAG because the participation a boundary's absence rule reads is *derived*
+/// from it rather than carried on the block, and it is used only on the regeneration arm — which is
+/// exactly the arm these tests take.
+async fn build_dag() -> Arc<rchain_casper::dag::BlockDagKeyValueStorage> {
+    fn in_memory() -> Arc<tokio::sync::Mutex<Box<dyn KeyValueStore + Send + Sync>>> {
+        Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )))
+    }
+    let metadata_store = Arc::new(
+        BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMetadataCodec),
+        )))
+        .await
+        .expect("metadata store"),
+    );
+    let fringe_store: Arc<dyn rchain_shared::typed_store::KeyValueTypedStore<Blake2b256Hash, FringeData>> =
+        Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(Blake2b256HashCodec),
+            Arc::new(FringeDataCodec),
+        ));
+    let deploy_index: Arc<
+        dyn rchain_shared::typed_store::KeyValueTypedStore<
+            rchain_block_storage::dag::dag_storage::DeployId,
+            BlockHash,
+        >,
+    > = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(BytesCodec),
+        Arc::new(BlockHashCodec),
+    ));
+    let deploy_store: Arc<
+        dyn rchain_shared::typed_store::KeyValueTypedStore<
+            rchain_block_storage::dag::dag_storage::DeployId,
+            SignedDeployData,
+        >,
+    > = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(BytesCodec),
+        Arc::new(SignedDeployDataCodec),
+    ));
+    Arc::new(
+        rchain_casper::dag::BlockDagKeyValueStorage::create(
+            metadata_store,
+            fringe_store,
+            deploy_index,
+            deploy_store,
+        )
+        .await
+        .expect("dag storage"),
+    )
+}
 
 use rchain_casper::genesis::contracts::Vault;
 use rchain_rholang::util::rev_address::RevAddress;
@@ -167,7 +230,7 @@ async fn the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block() {
         .await
         .expect("put the block");
 
-    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash, fringe_state(1))
+    let index = BlockIndex::get_block_index(&rm, &*build_dag().await, &store, block.block_hash, fringe_state(1))
         .await
         .expect("the block index regenerates the sidecar rather than failing");
 
@@ -294,7 +357,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         .await
         .expect("put the block");
 
-    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash, fringe_state(1))
+    let index = BlockIndex::get_block_index(&rm, &*build_dag().await, &store, block.block_hash, fringe_state(1))
         .await
         .expect("the block index");
     assert!(
@@ -312,7 +375,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     // `#![forbid(unsafe_code)]` rules out a `#[global_allocator]` (see `casper/src/dag.rs`). That
     // makes `Arc::ptr_eq` the available falsifier — restore the old `idx.clone()` on the hit path and
     // this goes red, while still passing every behavioural test in the file.
-    let again = BlockIndex::get_block_index(&rm, &store, block.block_hash, fringe_state(1))
+    let again = BlockIndex::get_block_index(&rm, &*build_dag().await, &store, block.block_hash, fringe_state(1))
         .await
         .expect("the block index again");
     assert!(

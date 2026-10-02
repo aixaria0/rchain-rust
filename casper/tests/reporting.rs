@@ -215,6 +215,7 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
             &[SystemDeploy::close_block(
                 1,
                 fringe_state(1),
+                BTreeMap::new(),
                 block_rand.clone(),
             )],
             &block_rand,
@@ -245,10 +246,10 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
             }
         },
         SortedProc::default(),
-        // A reporter has no DAG, so the fringe state hash the block's close deploy anchored the next
-        // epoch's seed to is supplied to it — here the same value the play above handed to
-        // `close_block`, which is what a node gets from the DAG's metadata for that block.
-        |_hash| async move { Ok(fringe_state(1)) },
+        // A reporter has no DAG, so the close deploy's two derived inputs are supplied to it — here the
+        // same values the play above handed to `close_block`, which is what a node gets from the DAG
+        // for that block.
+        |_block| async move { Ok((fringe_state(1), BTreeMap::new())) },
     );
 
     let result = reporter

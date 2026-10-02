@@ -1415,6 +1415,7 @@ impl NativeSystemState {
         &self,
         block_number: i64,
         fringe_state_hash: Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
     ) -> Result<Result<(), String>, String> {
         let params = self.params().await?;
         let boundary = is_epoch_boundary(&params, block_number);
@@ -1448,11 +1449,17 @@ impl NativeSystemState {
         // #150), which can only ever *remove* an entry from what this boundary is about to commit. The
         // withheld reward stays in the staking vault and is distributed by a later epoch: nothing is
         // minted, nothing is burned, and no bond is reachable from here.
-        let spoke = self.last_spoke().await?;
+        // **The participation comes from the fringe, not from this block's own pre-state** (B4, #150).
+        // The pre-state is a function of the justification set and nothing requires a block to justify
+        // everything it has seen, so a rule reading `pos:last_spoke` out of it can be *aimed* at a
+        // chosen rival — the proposer is never its own victim, since its own record is written earlier
+        // in the same block. The fringe is the >2/3-agreed object, so a stale fringe moves every
+        // validator's reading back together and singles nobody out. This is the same move step 5 below
+        // makes for the epoch seed, and for the same reason.
         let rewards = apply_absence(
             self.epoch_rewards(&pool, &withdrawers, &committed, &params)
                 .await?,
-            &spoke,
+            participation,
             block_number,
             i64::from(params.absence_slack),
         );
@@ -2844,7 +2851,7 @@ mod tests {
             .unwrap()
             .unwrap();
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -2922,7 +2929,7 @@ mod tests {
         );
 
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -2984,7 +2991,7 @@ mod tests {
 
         // The boundary moves it out of the pool and into an escrowed claim.
         native
-            .close_block(10, fringe_state(10))
+            .close_block(10, fringe_state(10), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3017,7 +3024,7 @@ mod tests {
         );
 
         native
-            .close_block(16, fringe_state(16))
+            .close_block(16, fringe_state(16), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3104,7 +3111,7 @@ mod tests {
 
         // 7 is not a multiple of 10: nothing happens.
         native
-            .close_block(7, fringe_state(7))
+            .close_block(7, fringe_state(7), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3132,7 +3139,7 @@ mod tests {
         // 10 is a boundary: the sequence runs. The request staged at block 3 was given the deadline
         // `0 + 10 * (1 + 3 / 10) = 10`, so this boundary both moves it out of the pool and pays it.
         native
-            .close_block(10, fringe_state(10))
+            .close_block(10, fringe_state(10), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3166,7 +3173,7 @@ mod tests {
         );
         assert!(!native.active().await.unwrap().contains_key(&v2));
         native
-            .close_block(9, fringe_state(9))
+            .close_block(9, fringe_state(9), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3175,7 +3182,7 @@ mod tests {
             "9 is not a boundary either"
         );
         native
-            .close_block(10, fringe_state(10))
+            .close_block(10, fringe_state(10), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3227,7 +3234,7 @@ mod tests {
         );
 
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3290,7 +3297,7 @@ mod tests {
         // committed map *and* moves the validator out of the pool, in that order.
         native.withdraw(&v, 1).await.unwrap().unwrap();
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3311,7 +3318,7 @@ mod tests {
             "quarantineLength + epochLength * (1 + blockNumber / epochLength)"
         );
         native
-            .close_block(2, fringe_state(2))
+            .close_block(2, fringe_state(2), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3362,7 +3369,7 @@ mod tests {
         native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
 
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3392,7 +3399,7 @@ mod tests {
         native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
         native.pre_charge(&payer, nn(5)).await.unwrap().unwrap();
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3424,7 +3431,7 @@ mod tests {
         assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 5);
 
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3781,12 +3788,12 @@ mod tests {
         )
         .await;
         native
-            .close_block(1, fringe_state(1))
+            .close_block(1, fringe_state(1), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
         native
-            .close_block(2, fringe_state(2))
+            .close_block(2, fringe_state(2), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -3924,18 +3931,22 @@ mod tests {
         );
     }
 
-    /// **The block's own activity record, and the rule that reads it** (B4, #150).
+    /// **The absence rule, read from the fringe** (B4, #150), and the three conditions on it.
     ///
-    /// Three properties, and each is one of the plan's conditions for the rule existing at all:
+    /// The participation is now an *input* to the boundary rather than a store the rule reads for
+    /// itself: `close_block` takes each validator's latest message height in the last finalised fringe,
+    /// which the validator derives from the DAG (see `multi_parent_casper::participation_for_block`).
+    /// The properties this test pins:
     ///
-    /// 1. **the record is the block's own** — `record_spoke` writes the key it is given at the height
-    ///    it is given, and the *only* caller passes the block's own `sender` and `block_number`, so no
-    ///    party can write another validator's entry;
-    /// 2. **the rule is income only** — a validator that has gone quiet loses its epoch reward and
+    /// 1. **the rule is income only** — a validator that has gone quiet loses its epoch reward and
     ///    keeps its bond, stays in the pool, and stays in the active set;
-    /// 3. **and it recovers fully** — one block from it puts it back in full at the next boundary,
+    /// 2. **and it recovers fully** — one message from it puts it back in full at the next boundary,
     ///    which is what makes this an incentive rather than a confiscation;
-    /// 4. with `absence_slack = 0` the rule does nothing at all, which is the contract's behaviour.
+    /// 3. with `absence_slack = 0` the rule does nothing at all, which is the contract's behaviour.
+    ///
+    /// What it does **not** pin, and a reader should not read into it: that the map it passes is the
+    /// one a node derives. That is `participation_for_block`'s subject, and `casper`'s tests are where
+    /// the derivation is exercised.
     #[tokio::test]
     async fn the_absence_rule_takes_income_only_and_releases_it_on_a_single_block() {
         let params = PosParams {
@@ -3956,27 +3967,13 @@ mod tests {
         native.set_vault_balance(&payer_addr, nn(10));
         native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
 
-        // Validator 1 last spoke at height 4; validator 2 has no record at all.
-        native
-            .record_spoke(&validator(1), BlockHeight::try_from(4).unwrap())
-            .await
-            .unwrap();
-        let spoke = native.last_spoke().await.unwrap();
-        assert_eq!(
-            spoke.get(&validator(1)).map(|h| i64::from(*h)),
-            Some(4),
-            "the record is the key and height it was given"
-        );
-        assert_eq!(
-            spoke.get(&validator(2)),
-            None,
-            "and nothing else is written"
-        );
+        // Validator 1's latest message in the fringe is at height 4; validator 2 has no entry at all.
+        let participation = BTreeMap::from([(validator(1), BlockHeight::try_from(4).unwrap())]);
 
         // The boundary is height 12, so the slack of 5 reaches back to 7: validator 1 (height 4) is
-        // out of time and validator 2 (nothing) is as absent as it gets.
+        // out of time and validator 2 (no entry) is as absent as it gets.
         native
-            .close_block(12, fringe_state(12))
+            .close_block(12, fringe_state(12), &participation)
             .await
             .unwrap()
             .unwrap();
@@ -3998,14 +3995,12 @@ mod tests {
         assert_eq!(pool.get(&validator(1)).map(|s| i64::from(*s)), Some(4));
         assert_eq!(pool.get(&validator(2)).map(|s| i64::from(*s)), Some(8));
 
-        // **And one block recovers it in full.** Validator 1 speaks at 16, the next boundary is 20
-        // (slack reaches back to 15, and 16 is inside it), so it is paid the share it would have had.
+        // **And one block recovers it in full.** Validator 1's message is at 16 in the next fringe, and
+        // the next boundary is 20 (slack reaches back to 15, and 16 is inside it), so it is paid the
+        // share it would have had.
+        let recovered = BTreeMap::from([(validator(1), BlockHeight::try_from(16).unwrap())]);
         native
-            .record_spoke(&validator(1), BlockHeight::try_from(16).unwrap())
-            .await
-            .unwrap();
-        native
-            .close_block(20, fringe_state(20))
+            .close_block(20, fringe_state(20), &recovered)
             .await
             .unwrap()
             .unwrap();
@@ -4032,7 +4027,7 @@ mod tests {
         .await;
         off.set_vault_balance(&payer_addr, nn(10));
         off.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
-        off.close_block(12, fringe_state(12))
+        off.close_block(12, fringe_state(12), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
@@ -4799,8 +4794,14 @@ mod epoch_seed_writer_tests {
         let anchor_b1 = Blake2b256Hash::create(b"B1 pre-state");
         let a = pos_with_pool(4, 2).await;
         let b = pos_with_pool(4, 2).await;
-        a.close_block(1, anchor_b1).await.unwrap().unwrap();
-        b.close_block(1, anchor_b1).await.unwrap().unwrap();
+        a.close_block(1, anchor_b1, &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        b.close_block(1, anchor_b1, &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             a.epoch_seed().await.unwrap(),
             b.epoch_seed().await.unwrap(),
@@ -4811,6 +4812,7 @@ mod epoch_seed_writer_tests {
         a.close_block(
             2,
             Blake2b256Hash::create(b"B2 pre-state, justification set 1"),
+            &BTreeMap::new(),
         )
         .await
         .unwrap()
@@ -4818,6 +4820,7 @@ mod epoch_seed_writer_tests {
         b.close_block(
             2,
             Blake2b256Hash::create(b"B2 pre-state, justification set 2"),
+            &BTreeMap::new(),
         )
         .await
         .unwrap()
@@ -4846,9 +4849,17 @@ mod epoch_seed_writer_tests {
         let native = pos_with_pool(4, 2).await;
         let repeated = Blake2b256Hash::create(b"the same pre-state twice");
 
-        native.close_block(1, repeated).await.unwrap().unwrap();
+        native
+            .close_block(1, repeated, &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         let first = native.epoch_seed().await.unwrap().expect("seeded at B1");
-        native.close_block(2, repeated).await.unwrap().unwrap();
+        native
+            .close_block(2, repeated, &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         let second = native.epoch_seed().await.unwrap().expect("seeded at B2");
 
         assert_ne!(
@@ -4869,11 +4880,19 @@ mod epoch_seed_writer_tests {
     async fn the_written_seed_anchors_are_the_previous_seed_and_this_blocks_fringe_state() {
         let native = pos_with_pool(4, 2).await;
         let b1 = Blake2b256Hash::create(b"B1 pre-state");
-        native.close_block(1, b1).await.unwrap().unwrap();
+        native
+            .close_block(1, b1, &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         let seed_at_b1 = native.epoch_seed().await.unwrap().expect("seeded at B1");
 
         let b2 = Blake2b256Hash::create(b"B2 pre-state");
-        native.close_block(2, b2).await.unwrap().unwrap();
+        native
+            .close_block(2, b2, &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
         let seed_at_b2 = native.epoch_seed().await.unwrap().expect("seeded at B2");
 
         assert_eq!(
@@ -4900,7 +4919,7 @@ mod epoch_seed_writer_tests {
              how the boundary tells the two apart"
         );
         native
-            .close_block(1, Blake2b256Hash::create(b"B1"))
+            .close_block(1, Blake2b256Hash::create(b"B1"), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();

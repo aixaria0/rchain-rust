@@ -35,7 +35,7 @@ use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 use rchain_rspace::native_store::{NativeStoreAction, PREFIX_POS};
 use rchain_rspace::rspace::RSpace;
-use rchain_shared::refined::NonNegI64;
+use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::event_converter::{comm_multisets_match, to_casper_event};
@@ -910,9 +910,10 @@ impl RuntimeManager {
             NativeSystemDeployOp::CloseBlock {
                 block_number,
                 fringe_state_hash,
+                participation,
             } => {
                 native
-                    .close_block(*block_number, *fringe_state_hash)
+                    .close_block(*block_number, *fringe_state_hash, participation)
                     .await?
             }
             NativeSystemDeployOp::Slash {
@@ -1013,6 +1014,20 @@ impl RuntimeManager {
     > {
         let creator = block_data.sender.bytes().to_vec();
         let seq_num = i64::from(block_data.seq_num);
+        // **The close deploy's participation is in the deploy itself on this path** (B4, #150): the play
+        // op carries the map a validator derived from its fringe, so the sequential backstop and the
+        // law-11 rig-replay below must use *that* map rather than an empty one — otherwise the two
+        // sides of the comparison would disagree about a boundary's rewards, which is the divergence
+        // this whole net exists to catch.
+        let participation: BTreeMap<Validator, BlockHeight> = system_deploys
+            .iter()
+            .find_map(|sd| match &sd.op {
+                Some(NativeSystemDeployOp::CloseBlock { participation, .. }) => {
+                    Some(participation.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
         // Laws 23–25: the speculative run, with the whole-set safety net. A certificate
         // invalidation escaping the per-deploy fallback (a block-level system deploy's
         // speculative commit) re-runs the whole deploy set sequentially on a forked runtime
@@ -1065,6 +1080,7 @@ impl RuntimeManager {
                     rand,
                     &block_data,
                     fringe_state_hash,
+                    &participation,
                     &processed_deploys,
                     &processed_system_deploys,
                     state_hash,
@@ -1144,6 +1160,7 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         block_data: &BlockData,
         fringe_state_hash: &Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
         relaxed_user: &[UserDeployRuntimeResult],
         relaxed_sys: &[SystemDeployRuntimeResult],
         relaxed_hash: Blake2b256Hash,
@@ -1191,6 +1208,7 @@ impl RuntimeManager {
                         rand,
                         block_data.clone(),
                         fringe_state_hash,
+                        participation,
                         true,
                         // No PoS override on the backstop replay; the manager's genesis
                         // descriptors stand in for the (HEAD-era) empty bonds map.
@@ -1238,6 +1256,7 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         block_data: BlockData,
         fringe_state_hash: &Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -1250,6 +1269,7 @@ impl RuntimeManager {
             rand,
             block_data,
             fringe_state_hash,
+            participation,
             with_cost_accounting,
             pos_genesis,
             vaults,
@@ -1269,6 +1289,7 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         block_data: BlockData,
         fringe_state_hash: &Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -1283,6 +1304,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 fringe_state_hash,
+                participation,
                 with_cost_accounting,
                 pos_genesis,
                 vaults,
@@ -1504,6 +1526,7 @@ mod tests {
                 &Blake2b512Random::new_random(128),
                 BlockData::empty(),
                 &Blake2b256Hash::from_bytes([0u8; 32]),
+                &BTreeMap::new(),
                 false,
                 &PosGenesis::default(),
                 &[],
@@ -1714,6 +1737,7 @@ mod tests {
                 &rand,
                 block_data,
                 &Blake2b256Hash::from_bytes([4u8; 32]),
+                &BTreeMap::new(),
                 true,
                 &pos,
                 &[],

@@ -17,6 +17,7 @@ use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::validator::Validator;
 use rchain_shared::log::{Log, LogSource};
+use rchain_shared::refined::BlockHeight;
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::validate_block_checkpoint;
@@ -142,6 +143,14 @@ where
     // Currently finalized fringe.
     let prev_fringe = message_map::latest_fringe(msg_map, &parents);
     let prev_fringe_hashes: BTreeSet<BlockHash> = prev_fringe.iter().map(|m| m.id).collect();
+    // **The participation the epoch's absence rule reads** (B4, #150), taken here rather than at the
+    // struct literal below: this is the last point at which the fringe's `Message` set — and not merely
+    // its block hashes — is still alive, and it must come from the *same* `prev_fringe` the state hash
+    // is looked up under. Deriving it later, or from `dag_repr.latest_fringe()` separately, is the one
+    // way play and replay could disagree about which fringe was meant. A validator with no message in
+    // the fringe is simply absent from the map, which the rule reads as silence.
+    let participation: BTreeMap<Validator, BlockHeight> =
+        liveness::latest_heights(prev_fringe.iter().map(|m| (m.sender, m.height)));
     let fringe_record = dag_repr
         .fringe_states
         .get(&FringeData::fringe_hash_of(&prev_fringe_hashes))
@@ -298,10 +307,47 @@ where
         prev_fringe_lookup,
         prev_fringe: prev_fringe_for_report,
         fringe_bonds_map: bonds_map,
+        participation,
         fringe_rejected_deploys,
         pre_state_hash,
         rejected_deploys: cs_rejected_deploys,
     })
+}
+
+/// **The participation an epoch boundary's absence rule reads** (B4, #150), derived from the DAG for a
+/// block whose merged pre-state is not in hand.
+///
+/// It exists for the index-regeneration replay, which carries a `fringe_state_hash` but no
+/// `ParentsMergedState` — and it is deliberately the *same* derivation `get_pre_state_for_parents`
+/// performs, down to the `validation_failed` filter `validate_block_checkpoint` applies before it asks
+/// for a pre-state. It has to be: `regenerate_sidecars` compares the post-state hash it replays against
+/// the block's own, so a map derived any other way is a different post-state and the block becomes
+/// un-indexable.
+pub async fn participation_for_block(
+    dag: &dyn BlockDagStorage,
+    block: &BlockMessage,
+) -> Result<BTreeMap<Validator, BlockHeight>, String> {
+    let dag_repr = dag.get_representation().await;
+    let msg_map = &dag_repr.dag_message_state.msg_map;
+    let mut parents: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
+    for j in &block.justifications {
+        if let Some(meta) = dag.lookup(j).await? {
+            if meta.validation_failed {
+                continue;
+            }
+            let m = msg_map
+                .get(&meta.block_hash)
+                .cloned()
+                .ok_or_else(|| format!("parent not in message map: {}", meta.block_hash.to_hex()))?;
+            parents.insert(m);
+        }
+    }
+    // An empty parent set has no fringe, and no participation: the genesis shape, and the arm
+    // `validate_block_checkpoint` handles separately.
+    let fringe = message_map::latest_fringe(msg_map, &parents);
+    Ok(liveness::latest_heights(
+        fringe.iter().map(|m| (m.sender, m.height)),
+    ))
 }
 
 /// Compute the pre-state for a new block from the DAG's latest messages (port of
@@ -806,8 +852,13 @@ where
     // the merge — the same value the block's own close deploy used, so the regeneration path below (if
     // it is ever taken) replays to the same seed leaf. The index is best-effort here: a failure leaves
     // it to be rebuilt on the next lookup, which is why the result is discarded.
+    //
+    // The index takes the DAG so that the participation the epoch's absence rule needs can be derived
+    // on the fallback arm only, rather than walked here for every block. `pre_state.participation` is
+    // not in scope at this point, and `participation_for_block` is the same derivation anyway.
     let _ = BlockIndex::get_block_index(
         runtime,
+        dag,
         block_store,
         block.block_hash,
         Blake2b256Hash::from_byte_array(block_metadata.fringe_state_hash.as_bytes()),

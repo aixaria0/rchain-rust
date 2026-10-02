@@ -183,12 +183,20 @@ fn reporting_casper(
             async move { create_reporting_rspace(&manager).await }
         },
         mergeable_tag_name,
-        // A reporter replays from a block message and has no DAG of its own, so the fringe state hash
-        // a boundary block anchored its successor's seed to is looked up here — from the metadata
-        // validation stored for that block, which is the recomputed value.
-        move |hash: BlockHash| {
+        // A reporter replays from a block message and has no DAG of its own, so the close deploy's two
+        // derived inputs are supplied here: the fringe state hash a boundary block anchored its
+        // successor's seed to (from the metadata validation stored for that block, which is the
+        // recomputed value), and the participation its absence rule reads (derived from the DAG, by the
+        // same function the validator uses).
+        move |block: BlockMessage| {
             let dag = dag.clone();
-            async move { fringe_state_of(&*dag, &hash).await }
+            async move {
+                let fringe_state_hash = fringe_state_of(&*dag, &block.block_hash).await?;
+                let participation =
+                    rchain_casper::multi_parent_casper::participation_for_block(&*dag, &block)
+                        .await?;
+                Ok((fringe_state_hash, participation))
+            }
         },
     )
 }
@@ -869,9 +877,14 @@ fn wire_block_processing_observed(
                 // A missing metadata is reported as the index error it is — the caller retries the
                 // lookup on the next index request, and the message names the block.
                 let fringe_state_hash = fringe_state_of(&*dag, &hash).await?;
-                let result =
-                    BlockIndex::get_block_index(&runtime, &block_store, hash, fringe_state_hash)
-                        .await;
+                let result = BlockIndex::get_block_index(
+                    &runtime,
+                    &*dag,
+                    &block_store,
+                    hash,
+                    fringe_state_hash,
+                )
+                .await;
                 // Indexing every stored block is the expensive half of a restart, and until now it was
                 // silent (#60): a node replaying its whole DAG looked exactly like a hung one, with the
                 // API down and nothing in the log. Report progress while it happens, so both the cost
@@ -1739,8 +1752,14 @@ async fn setup_shard_runtime(
                 let block_store = block_store.clone();
                 async move {
                     let fringe_state_hash = fringe_state_of(&*dag, &hash).await?;
-                    BlockIndex::get_block_index(&runtime, &block_store, hash, fringe_state_hash)
-                        .await
+                    BlockIndex::get_block_index(
+                        &runtime,
+                        &*dag,
+                        &block_store,
+                        hash,
+                        fringe_state_hash,
+                    )
+                    .await
                 }
             }
         };

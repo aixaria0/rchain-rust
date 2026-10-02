@@ -1,5 +1,6 @@
 //! Block replay reporting (port of `casper/reporting/ReportingCasper.scala`).
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -9,7 +10,6 @@ use async_trait::async_trait;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::block::state_hash::StateHash;
-use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, Peek, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
@@ -18,6 +18,8 @@ use rchain_models::casper::protocol::report::{
 };
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
+use rchain_models::validator::Validator;
+use rchain_shared::refined::BlockHeight;
 use rchain_rholang::reporting_runtime::{ReportingRuntime, RhoReportingRspace};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rspace::reporting_rspace::{
@@ -160,28 +162,30 @@ impl
 /// `ReportingCasper.rhoReporter`). The space factory is async because building a `ReplayRSpace`
 /// requires store access; `mergeable_tag_name` is the shard's non-negative mergeable tag.
 ///
-/// `fringe_state_of` supplies the state hash of the last finalised fringe as of a block — the value
-/// that block's close system deploy anchored the next epoch's active-set seed to. It is a parameter
-/// rather than something derived here because deriving it means the merge
-/// (`get_pre_state_for_parents`), which needs a DAG, and a reporter replays from a block message
-/// alone. For the same reason the value is *asked for* rather than carried on the block: nothing
-/// about it is published, so there is nothing a proposer could choose and nothing a validator would
-/// have to verify.
+/// **The two inputs a `CloseBlock` system deploy needs that a reporter cannot derive for itself**: the
+/// state hash of the last finalised fringe, and the participation its epoch's absence rule reads.
+pub type CloseInputs = (Blake2b256Hash, BTreeMap<Validator, BlockHeight>);
+
+/// `close_inputs_of` supplies those two for a block. They are parameters rather than something derived
+/// here because deriving them means the merge (`get_pre_state_for_parents`), which needs a DAG, and a
+/// reporter replays from a block message alone. For the same reason they are *asked for* rather than
+/// carried on the block: nothing about either is published, so there is nothing a proposer could
+/// choose and nothing a validator would have to verify.
 pub fn rho_reporter<F, Fut, G, Gut>(
     create_space: F,
     mergeable_tag_name: SortedProc,
-    fringe_state_of: G,
+    close_inputs_of: G,
 ) -> impl ReportingCasper
 where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Arc<RhoReportingRspace>, String>> + Send + 'static,
-    G: Fn(BlockHash) -> Gut + Send + Sync + 'static,
-    Gut: Future<Output = Result<Blake2b256Hash, String>> + Send + 'static,
+    G: Fn(BlockMessage) -> Gut + Send + Sync + 'static,
+    Gut: Future<Output = Result<CloseInputs, String>> + Send + 'static,
 {
     RhoReporter {
         create_space: Box::new(move || Box::pin(create_space())),
         mergeable_tag_name,
-        fringe_state_of: Box::new(move |h| Box::pin(fringe_state_of(h))),
+        close_inputs_of: Box::new(move |b| Box::pin(close_inputs_of(b))),
     }
 }
 
@@ -192,10 +196,10 @@ struct RhoReporter {
             + Sync,
     >,
     mergeable_tag_name: SortedProc,
-    /// The fringe state hash as of a block, supplied by the node — it has the DAG, and a reporter does
-    /// not. See [`rho_reporter`].
-    fringe_state_of: Box<
-        dyn Fn(BlockHash) -> Pin<Box<dyn Future<Output = Result<Blake2b256Hash, String>> + Send>>
+    /// The close deploy's two inputs as of a block, supplied by the node — it has the DAG, and a
+    /// reporter does not. See [`rho_reporter`].
+    close_inputs_of: Box<
+        dyn Fn(BlockMessage) -> Pin<Box<dyn Future<Output = Result<CloseInputs, String>> + Send>>
             + Send
             + Sync,
     >,
@@ -215,13 +219,14 @@ impl ReportingCasper for RhoReporter {
         runtime.reset(pre_state_hash).await?;
 
         let rand = BlockRandomSeed::from_block(&block).random_generator();
-        let fringe_state_hash = (self.fringe_state_of)(block.block_hash.clone()).await?;
+        let (fringe_state_hash, participation) = (self.close_inputs_of)(block.clone()).await?;
         replay_deploys(
             &runtime,
             &block,
             rand,
             with_cost_accounting,
             &fringe_state_hash,
+            &participation,
         )
         .await
     }
@@ -235,6 +240,7 @@ async fn replay_deploys(
     rand: Blake2b512Random,
     with_cost_accounting: bool,
     fringe_state_hash: &Blake2b256Hash,
+    participation: &BTreeMap<Validator, BlockHeight>,
 ) -> Result<ReplayResult, String> {
     let ops = RuntimeReplayOps::new(runtime);
 
@@ -267,6 +273,7 @@ async fn replay_deploys(
                 sd,
                 i64::from(block.block_number),
                 fringe_state_hash,
+                participation,
                 rand.split_byte(
                     u8::try_from(terms_len + i)
                         .map_err(|_| "deploy count exceeds 255".to_string())?,

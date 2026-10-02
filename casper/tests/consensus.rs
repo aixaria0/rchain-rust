@@ -99,6 +99,7 @@ async fn genesis_deploy_replay_recomputes_state() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             false,
             &PosGenesis::default(),
             &[],
@@ -191,6 +192,7 @@ async fn replay_matches_play_for_persistent_and_peek() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             false,
             &PosGenesis::default(),
             &[],
@@ -262,7 +264,12 @@ async fn bond_deploy_updates_the_active_validator_set() {
     // active set is recomputed inside `closeBlock` (`:546`) — an epoch boundary, which with these
     // permissive parameters every block is. Without it the deploy would pool the stake and leave the
     // validator out of the consensus set.
-    let close = SystemDeploy::close_block(1, fringe_state(1), fixed_rand().split_byte(2));
+    let close = SystemDeploy::close_block(
+        1,
+        fringe_state(1),
+        BTreeMap::new(),
+        fixed_rand().split_byte(2),
+    );
     let (post_state, user_results, sys_results) = rm
         .compute_state(
             &post,
@@ -300,6 +307,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
             &rand,
             block_data(1),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -364,6 +372,7 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             &[SystemDeploy::close_block(
                 1,
                 fringe_state(1),
+                BTreeMap::new(),
                 fixed_rand().split_byte(2),
             )],
             &rand,
@@ -388,6 +397,7 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             &[SystemDeploy::close_block(
                 2,
                 fringe_state(1),
+                BTreeMap::new(),
                 fixed_rand().split_byte(3),
             )],
             &rand,
@@ -540,6 +550,7 @@ async fn play_block(
     let close = SystemDeploy::close_block(
         height,
         *fringe,
+        BTreeMap::new(),
         rand.split_byte(u8::try_from(height).expect("a test height fits a byte")),
     );
     let (post, user, sys) = rm
@@ -775,6 +786,7 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
                     &rand,
                     block_data(4),
                     &fringe_state(1),
+                    &BTreeMap::new(),
                     true,
                     &pos_genesis,
                     &vaults,

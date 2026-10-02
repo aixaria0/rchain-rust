@@ -115,6 +115,7 @@ impl BlockCreator {
                 selected.len(),
                 i64::from(block_num),
                 pre_state.fringe_state,
+                pre_state.participation.clone(),
                 &rand,
             )?;
 
@@ -206,6 +207,7 @@ fn block_system_deploys(
     deploy_count: usize,
     block_number: i64,
     fringe_state: Blake2b256Hash,
+    participation: BTreeMap<Validator, BlockHeight>,
     rand: &Blake2b512Random,
 ) -> Result<Vec<SystemDeploy>, String> {
     let mut system_deploys: Vec<SystemDeploy> = Vec::new();
@@ -221,6 +223,7 @@ fn block_system_deploys(
     system_deploys.push(SystemDeploy::close_block(
         block_number,
         fringe_state,
+        participation,
         seed_at(rand, deploy_count + 1 + to_slash.len())?,
     ));
     Ok(system_deploys)
@@ -273,8 +276,15 @@ mod block_system_deploy_tests {
             offender(1, SlashSeverity::HonestMistake, None),
         ]);
         let deploy_count = 4usize;
-        let deploys = block_system_deploys(&to_slash, deploy_count, 12, fringe, &rand)
-            .expect("a list of system deploys");
+        let deploys = block_system_deploys(
+            &to_slash,
+            deploy_count,
+            12,
+            fringe,
+            BTreeMap::new(),
+            &rand,
+        )
+        .expect("a list of system deploys");
 
         // Three entries: the block's own record, two slashes, and the close — in that order.
         assert_eq!(
@@ -311,6 +321,7 @@ mod block_system_deploy_tests {
             Some(NativeSystemDeployOp::CloseBlock {
                 block_number: 12,
                 fringe_state_hash: fringe,
+                participation: BTreeMap::new(),
             }),
             "and the close carries the fringe's own state hash, which is not the proposer's to choose"
         );
@@ -337,6 +348,7 @@ mod block_system_deploy_tests {
             0,
             1,
             Blake2b256Hash::from_bytes([0u8; 32]),
+            BTreeMap::new(),
             &rand,
         )
         .expect("a list of system deploys");
