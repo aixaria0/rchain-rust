@@ -768,6 +768,57 @@ mod tests {
         );
     }
 
+    /// **The C198 falsifier: a per-node knob changes the refusal and must never change the offence.**
+    ///
+    /// Each check below is configured **per node** with no value committed at genesis — the fee floor
+    /// `casper.min-phlo-price`, the width `casper.max-number-of-parents`, and the compiled
+    /// `SUPPORTED` set — so two correctly-configured operators can disagree about the *same block*.
+    ///
+    /// A disagreement about a refusal is harmless. A disagreement about an **offence** is a chain
+    /// split: `slash_is_unjustified` (`interpreter_util.rs`) makes a node refuse any block whose
+    /// slashes it cannot re-derive from its own metadata, so the strict node's `Slash(X)` is a block
+    /// the permissive node rejects — permanently, and over a local setting, with X's whole bond gone.
+    ///
+    /// Red before C198: `slashable` was `matches!(cause, Attributable)`, all three of these are
+    /// `Attributable`, and the assertions below were the wrong way round.
+    #[test]
+    fn a_local_knob_changes_the_refusal_and_never_the_offence() {
+        // A fee floor above and below the same deploy's price.
+        let mut priced = block();
+        priced.state.deploys = vec![deploy(0, 1, "root")];
+        let refused = phlo_price(&priced, 2);
+        let accepted = phlo_price(&priced, 1);
+        assert_ne!(refused, accepted, "the knob does move the refusal");
+        assert_eq!(refused, BlockStatus::ContainsLowCostDeploy);
+        assert_eq!(accepted, BlockStatus::Valid);
+        assert!(
+            !refused.is_slashing_offence() && !accepted.is_slashing_offence(),
+            "neither node may be asked to take a bond for this block"
+        );
+
+        // An active-set width: 256 justifications is past one node's bound and inside another's,
+        // since a non-positive bound disables the check (how a pre-#153 chain keeps its semantics).
+        let mut wide = block();
+        wide.justifications = (0..=255u8).map(|i| BlockHash::new([i; 32])).collect();
+        let over = justification_count(&wide, 255);
+        let under = justification_count(&wide, 0);
+        assert_ne!(over, under, "the knob does move the refusal");
+        assert_eq!(over, BlockStatus::TooManyJustifications);
+        assert_eq!(under, BlockStatus::Valid);
+        assert!(
+            !over.is_slashing_offence() && !under.is_slashing_offence(),
+            "and never the offence"
+        );
+
+        // A rule version. `SUPPORTED` is compiled in rather than configured, so this is the version
+        // coupling rather than an operator choice — and during an upgrade it is the *older* nodes
+        // refusing the *newer* ones' blocks, which is the last thing that may take a bond.
+        let mut newer = block();
+        newer.version = 2;
+        assert_eq!(block_version(&newer), BlockStatus::InvalidVersion);
+        assert!(!block_version(&newer).is_slashing_offence());
+    }
+
     /// A non-positive bound disables the check, which is how a chain that has not adopted #153 keeps the
     /// pre-#153 semantics exactly.
     ///

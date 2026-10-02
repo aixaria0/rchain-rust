@@ -146,10 +146,20 @@ slashable: matches!(cause, FailureCause::Attributable),
 The cause is `FailureCause` (`models/src/block_metadata.rs`) — `Attributable` (the block's own fault,
 together with the DAG's structure), `Divergence` (this node's state or replay disagreed — the measured
 `InvalidStateHash`, [#105](https://github.com/rchain-community/rchain-rust/issues/105)), or `Cascade` (a
-justification failed). **Only `Attributable` is slashable**, because "one transient failure must not
-fabricate slash evidence against every validator above it"
-([#125](https://github.com/rchain-community/rchain-rust/issues/125)). The partition is
+justification failed). **Only `Attributable` is the block's fault** — one transient failure must not
+fabricate slash evidence against every validator above it
+([#125](https://github.com/rchain-community/rchain-rust/issues/125)) — and the partition is
 `BlockStatus::failure_cause` (`casper/src/block_status.rs:129`).
+
+**But the offence set is narrower than the blame set**, which is a separate question and a separate
+predicate: `BlockStatus::is_slashing_offence` (`casper/src/block_status.rs`). Three `Attributable`
+refusals read an input that belongs to the **receiving node** rather than to the block — the fee floor
+`casper.min-phlo-price`, the width `casper.max-number-of-parents`, and the compiled version set
+`SUPPORTED` — and none of the three is committed at genesis, so two correctly-configured operators may
+hold different values with no committed value to be wrong about. They are still refused, and they are no
+longer offences: a node that reached the opposite verdict about blame would not merely disagree, it would
+**refuse the block carrying the slash** — a permanent split, over a local setting, with the sender's whole
+bond gone.
 
 **Trustless.** The offence set is the senders of justifications whose metadata is `slashable`, intersected
 with the bonded set — `slashable_senders` (`casper/src/validate.rs:142`), called through
