@@ -287,7 +287,7 @@ unstatable over a transition *relation*, and this tree's own `reduce_not_determi
 (`Rchain/Concurrent.lean`) proves the flat calculus fixes no schedule at all; the shape is registered
 `open`, with that reason, rather than defined. The protocol's inactivity leak is out of scope for the
 same kind of honesty: it needs a state change (burning a silent validator's stake) this layer does not
-have — #24, #39.
+have, and no open issue owns it (#24 and #39 are both closed).
 
 **What is shared with the calculus, and how the sharing is checked.** A `System` is a step relation plus
 a decidable "is a step available now" predicate, *tied to the relation by the structure's own field*. The
@@ -330,7 +330,7 @@ fixture advancing once the fourth speaks). The hypotheses are named in the insta
 (`Participation`, `Delivery`, `StalenessBound`) because a liveness claim without its hypothesis is Law
 20's trap. What it still does not fix, plainly: a net that stays below two thirds **permanently** still
 cannot finalise, and the honest repair there is an inactivity leak — a state change that burns a silent
-validator's stake — which belongs with #24 and #39, not with a recency window.
+validator's stake — which no open issue owns (#24 and #39 are both closed), and which is not a recency window.
 
 ---
 
