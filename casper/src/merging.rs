@@ -537,7 +537,7 @@ impl BlockIndex {
             let (id, log) = match sd {
                 ProcessedSystemDeploy::Succeeded {
                     event_list,
-                    system_deploy: SystemDeployData::Slash(_),
+                    system_deploy: SystemDeployData::Slash { .. },
                 } => (sys_deploy_id(&block_hash, 1), event_list),
                 ProcessedSystemDeploy::Succeeded {
                     event_list,

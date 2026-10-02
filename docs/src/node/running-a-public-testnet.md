@@ -338,8 +338,12 @@ node checks the producer's work: a block whose slashes are not a subset of the s
 receiver's own DAG* is refused, so the proposer's opinion of the victim carries no weight (AUDIT C110).
 
 `NativeSystemState::slash` removes that validator from the pool, the active set, the withdrawers and the
-pending withdrawers, and moves its whole bond to the Coop multisig vault — confiscation, not deactivation.
-The full rule, and what a validator is paid, are in [Validator economics](validator-economics.md).
+pending withdrawers — confiscation, not deactivation — and moves a **share of everything it holds in the
+PoS system** (its bond, its accrued rewards and any escrowed claim) to the Coop multisig vault, with the
+rest back to the validator. The share is the **tier of the offence**: all of it for a forged deploy, a
+quarter for a rule the author's own block breaks, a tenth for a bound a stale pool or a clock skew
+explains. The full rule, and what a validator is paid, are in
+[Validator economics](validator-economics.md).
 
 Two consequences worth knowing before running a network.
 

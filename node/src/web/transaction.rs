@@ -190,7 +190,7 @@ impl TransactionApi for TransactionAPIImpl {
         // System deploys: Slash / CloseBlock (no precharge/refund).
         for s in &report.system_deploys {
             let tx_type = match &s.system_deploy {
-                SystemDeployData::Slash(_) => TransactionType::SlashingDeploy {
+                SystemDeployData::Slash { .. } => TransactionType::SlashingDeploy {
                     block_hash: block_hash_hex.clone(),
                 },
                 SystemDeployData::CloseBlock => TransactionType::CloseBlock {

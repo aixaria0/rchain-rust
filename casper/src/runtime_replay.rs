@@ -432,7 +432,10 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             }
         };
         let deploy = match system_deploy_data {
-            SystemDeployData::Slash(validator) => SystemDeploy::slash(validator, rand),
+            SystemDeployData::Slash {
+                validator,
+                severity,
+            } => SystemDeploy::slash(validator, *severity, rand),
             SystemDeployData::CloseBlock => {
                 SystemDeploy::close_block(block_number, *fringe_state_hash, rand)
             }
@@ -548,7 +551,10 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                     .close_block(*block_number, *fringe_state_hash)
                     .await?
             }
-            NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
+            NativeSystemDeployOp::Slash {
+                validator,
+                severity,
+            } => native.slash(validator, *severity).await?,
         };
         let eval_result = EvaluateResult {
             cost: Cost::new(0, "native-system-deploy"),

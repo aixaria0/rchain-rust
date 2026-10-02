@@ -1,11 +1,12 @@
 //! Block creation (port of `blocks/proposer/BlockCreator.scala`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
+use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::block_version::CURRENT;
 use rchain_models::casper::protocol::casper_message::{
     ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
@@ -49,7 +50,7 @@ impl BlockCreator {
         dag: &dyn BlockDagStorage,
         pre_state: &ParentsMergedState,
         deploys: &[DeployId],
-        to_slash: &BTreeSet<Validator>,
+        to_slash: &BTreeMap<Validator, SlashSeverity>,
         change_epoch: bool,
         suppress_attestation: bool,
     ) -> Result<BlockCreatorResult, String> {
@@ -107,14 +108,13 @@ impl BlockCreator {
                 .map(|(_, d)| d)
                 .collect();
 
-            // Slash + close-block system deploys.
+            // Slash + close-block system deploys. `to_slash` is a `BTreeMap`, so its iteration order is
+            // already the canonical one the seed index depends on.
             let mut system_deploys: Vec<SystemDeploy> = Vec::new();
-            let mut sorted_to_slash: Vec<&Validator> = to_slash.iter().collect();
-            sorted_to_slash.sort();
-            for (i, v) in sorted_to_slash.into_iter().enumerate() {
+            for (i, (v, severity)) in to_slash.iter().enumerate() {
                 let seed =
                     rand.split_byte(u8::try_from(selected.len() + i).map_err(|e| e.to_string())?);
-                system_deploys.push(SystemDeploy::slash(v, seed));
+                system_deploys.push(SystemDeploy::slash(v, *severity, seed));
             }
             let close_seed = rand.split_byte(
                 u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,

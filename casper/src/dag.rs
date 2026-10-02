@@ -589,6 +589,7 @@ mod tests {
         SignedDeployDataCodec,
     };
     use rchain_models::block::state_hash::StateHash;
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
     use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
     use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec};
@@ -619,6 +620,7 @@ mod tests {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: StateHash::new([0u8; 32]),
@@ -1601,6 +1603,7 @@ mod tests {
         let cleared = BlockMetadata {
             validation_failed: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             ..failed_meta.clone()
         };
         storage.update_metadata(cleared).await.unwrap();
@@ -1674,6 +1677,7 @@ mod tests {
         let cleared = BlockMetadata {
             validation_failed: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             ..failed_meta.clone()
         };
         storage.insert(cleared, block(failed)).await.unwrap();

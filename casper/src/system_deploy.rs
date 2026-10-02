@@ -8,6 +8,7 @@ use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::Par;
 use rchain_models::block::state_hash::StateHash;
+use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::casper::protocol::casper_message::Event;
 use rchain_models::rholang::RhoType::{RhoBoolean, RhoString, RhoTupleN};
 use rchain_models::validator::Validator;
@@ -112,6 +113,10 @@ pub enum NativeSystemDeployOp {
     },
     Slash {
         validator: Validator,
+        /// **How much of the victim's holding this slash takes** (AUDIT C199). Read from the block's
+        /// own `SystemDeployData::Slash`, so play and replay size the confiscation identically and a
+        /// receiving node can check the tier against its own derivation.
+        severity: SlashSeverity,
     },
 }
 
@@ -159,7 +164,11 @@ impl SystemDeploy {
         }
     }
 
-    pub fn slash(validator: &Validator, rand: Blake2b512Random) -> SystemDeploy {
+    pub fn slash(
+        validator: &Validator,
+        severity: SlashSeverity,
+        rand: Blake2b512Random,
+    ) -> SystemDeploy {
         SystemDeploy {
             source: "",
             normalizer_env: BTreeMap::new(),
@@ -167,6 +176,7 @@ impl SystemDeploy {
             return_channel: Par::default(),
             op: Some(NativeSystemDeployOp::Slash {
                 validator: *validator,
+                severity,
             }),
         }
     }

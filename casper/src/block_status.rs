@@ -1,6 +1,7 @@
 //! Block validation status (port of `BlockStatus.scala`).
 
 use rchain_models::block_metadata::FailureCause;
+use rchain_models::block_metadata::SlashSeverity;
 
 /// The outcome of validating a block (port of `BlockStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -188,26 +189,57 @@ impl BlockStatus {
     /// *binary* rather than by one *chain*, and they are a lockstep-upgrade concern rather than a
     /// per-operator one — the deviation register names them as coupled to the rule version.
     pub fn is_slashing_offence(&self) -> bool {
+        self.slash_severity().is_some()
+    }
+
+    /// **How much of what the sender holds this refusal may take** — the tier, with `None` for the
+    /// refusals that are not offences at all (AUDIT C199).
+    ///
+    /// [`Self::is_slashing_offence`] is this predicate's `is_some`, so the two can never disagree; the
+    /// tier is what the slash is *sized* by, and it is graded by the character of the offence rather
+    /// than by the size of the bond, because a rule that always took everything made an operator's
+    /// worst case total — and a stake nobody is willing to bond is a consensus problem, not a
+    /// disciplinary one.
+    ///
+    /// **The three tiers, and the argument for each boundary:**
+    ///
+    /// * [`SlashSeverity::Malicious`] — the block asserts something **forged**: a deploy whose
+    ///   signature does not verify against the key it names is an impersonation, and nothing accidental
+    ///   produces one. (Equivocation joins this tier when it becomes slashable at all — today the H-1
+    ///   gate refuses it and it never reaches a status.)
+    /// * [`SlashSeverity::Misdemeanour`] — a rule the author's **own block** breaks with something to
+    ///   gain: a DAG position it is not entitled to (`InvalidBlockNumber`, `InvalidSequenceNumber`,
+    ///   `JustificationRegression`), a deploy it may not carry (`InvalidRepeatDeploy`,
+    ///   `InvalidDeployShardId`, `InvalidPhloLimit`).
+    /// * [`SlashSeverity::HonestMistake`] — a **bound** crossed where the block is otherwise
+    ///   self-consistent, which a stale deploy pool, a clock skew or a local budget error explains:
+    ///   `ContainsExpiredDeploy` and `ContainsFutureDeploy` are the measured K1 class (a *client* bug
+    ///   produced exactly those deploys), and `TooManyDeploys` / `ExceedsBlockPhloLimit` are the port's
+    ///   own two budgets.
+    ///
+    /// The boundary is a judgement, and it lives in one table so a later reading can move a status
+    /// without hunting the rule.
+    pub fn slash_severity(&self) -> Option<SlashSeverity> {
         match self {
-            // The block's own signed fields, or the DAG's structure. No node-local input.
+            BlockStatus::InvalidDeploySignature => Some(SlashSeverity::Malicious),
+
             BlockStatus::InvalidBlockNumber
             | BlockStatus::InvalidSequenceNumber
             | BlockStatus::JustificationRegression
-            | BlockStatus::InvalidDeployShardId
-            | BlockStatus::ContainsFutureDeploy
-            | BlockStatus::InvalidPhloLimit
             | BlockStatus::InvalidRepeatDeploy
-            | BlockStatus::ContainsExpiredDeploy
-            // Version-coupled constants: identical on every node running this rule version.
+            | BlockStatus::InvalidDeployShardId
+            | BlockStatus::InvalidPhloLimit => Some(SlashSeverity::Misdemeanour),
+
+            BlockStatus::ContainsExpiredDeploy
+            | BlockStatus::ContainsFutureDeploy
             | BlockStatus::TooManyDeploys
-            | BlockStatus::ExceedsBlockPhloLimit
-            | BlockStatus::InvalidDeploySignature => true,
+            | BlockStatus::ExceedsBlockPhloLimit => Some(SlashSeverity::HonestMistake),
 
             // **`Attributable`, and yet not an offence** — each reads an input this node owns, so
             // another node can reach the opposite verdict for the same block.
             BlockStatus::ContainsLowCostDeploy
             | BlockStatus::TooManyJustifications
-            | BlockStatus::InvalidVersion => false,
+            | BlockStatus::InvalidVersion => None,
 
             // Never the block's fault (`Divergence`, `Cascade`), and `Valid` is not a refusal.
             BlockStatus::Valid
@@ -216,7 +248,7 @@ impl BlockStatus {
             | BlockStatus::InvalidRejectedDeploy
             | BlockStatus::InvalidBondsCache
             | BlockStatus::UnjustifiedSlash
-            | BlockStatus::NeglectedInvalidBlock => false,
+            | BlockStatus::NeglectedInvalidBlock => None,
         }
     }
 }

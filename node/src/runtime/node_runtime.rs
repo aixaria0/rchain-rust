@@ -2158,6 +2158,7 @@ async fn check_shard_data_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_models::block_metadata::SlashSeverity;
 
     /// A block store whose every read fails, so a read error is observable as one.
     struct FailingBlockStore;
@@ -2615,6 +2616,7 @@ mod tests {
                     validation_failed: false,
                     slashable: false,
                     failure_cause: None,
+                    slash_severity: SlashSeverity::Unspecified,
                     restore_attempts: 0,
                     member_of_fringe: None,
                     fringe: std::collections::BTreeSet::new(),

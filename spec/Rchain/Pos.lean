@@ -1,4 +1,5 @@
 import Rchain.Casper.Stake
+import Init.Omega
 
 /-!
 # Laws 44–47 — Proof-of-Stake: the epoch gate, the reward split, and the dust
@@ -475,5 +476,83 @@ theorem the_reward_is_committed_before_the_leave :
         requests := [⟨⟨0⟩, 9⟩], claims := [], committed := [(⟨0⟩, 0)],
         epochLength := 1, quarantineLength := 0 })).committed ⟨0⟩ = 5 := by
   decide
+
+/-! ## The slash, graded by the offence (AUDIT C199)
+
+The transitions above are the port's `close_block`. This section is the port's `slash`, and it is here
+because it is the other half of what a validator's stake is exposed to: the epoch says what a validator
+*earns*, and this says what it can **lose**.
+
+**Before C199 the model had no slash at all**, which is why the rule could be argued in prose for as long
+as it was: the port took the whole bond, the register recorded that it did, and nothing here could state
+that a *bounded* loss was even a thing to ask for. The bound is now a theorem, and so is the property
+that keeps the offender's balance from shrinking the pot for everyone else (C197). -/
+
+/-- What a validator holds in the PoS system: its **bond**, its **accrued and unwithdrawn rewards**, and
+    an **escrowed claim**. The staking vault holds all three, and the port's `slash` clears all three. -/
+def atRisk (s : PosState) (v : Validator) : Nat :=
+  lookup s.pool v + lookup s.committed v
+    + (s.claims.filter (fun c => c.who = v)).foldl (fun acc c => acc + c.bond) 0
+
+/-- The tiers, in basis points of everything at risk (`SlashSeverity::basis_points`). -/
+def malicious : Nat := 10000
+
+def misdemeanour : Nat := 2500
+
+def honestMistake : Nat := 1000
+
+/-- **A slash, graded by the offence** (`slash`, `native_state.rs`): the validator leaves the pool, the
+    active set, the requests, the claims and the committed ledger; `bps` basis points of what it held go
+    to the Coop vault, and **the remainder returns to its own vault**.
+
+    `bps = 10000` is the pre-tier rule — it takes everything — and it is what a record written before the
+    tiers existed replays to. -/
+def slash (s : PosState) (v : Validator) (bps : Nat) : PosState :=
+  let risk := atRisk s v
+  let taken := risk * bps / 10000
+  { vault := s.vault - risk
+  , coop := s.coop + taken
+  , user := s.user + (risk - taken)
+  , pool := s.pool.filter (fun p => p.1 ≠ v)
+  , active := s.active.filter (fun p => p.1 ≠ v)
+  , requests := s.requests.filter (fun r => r.who ≠ v)
+  , claims := s.claims.filter (fun c => c.who ≠ v)
+  , committed := s.committed.filter (fun p => p.1 ≠ v)
+  , epochLength := s.epochLength
+  , quarantineLength := s.quarantineLength }
+
+/-- A tier never takes more than everything: `bps ≤ 10000` bounds the confiscation by what is at risk. -/
+theorem taken_le_risk (s : PosState) (v : Validator) {bps : Nat} (h : bps ≤ 10000) :
+    atRisk s v * bps / 10000 ≤ atRisk s v := by
+  have h1 : atRisk s v * bps ≤ 10000 * atRisk s v := by
+    rw [Nat.mul_comm 10000]
+    exact Nat.mul_le_mul_left _ h
+  exact Nat.div_le_of_le_mul h1
+
+/-- **A slash is a transfer, not a mint**: the three vaults sum to what they summed to before. This is
+    `slash`'s version of the conservation law the epoch's own transitions carry. -/
+theorem slash_conserves (s : PosState) (v : Validator) {bps : Nat}
+    (hbps : bps ≤ 10000) (hvault : atRisk s v ≤ s.vault) :
+    totalRev (slash s v bps) = totalRev s := by
+  have htaken := taken_le_risk s v hbps
+  simp only [totalRev, slash]
+  omega
+
+/-- **A milder tier never takes more** — the user-facing sentence "a punishment befitting the crime",
+    stated as an order on the tiers. Without it `bps` would be a number with no meaning. -/
+theorem a_milder_tier_takes_no_more (s : PosState) (v : Validator) {b₁ b₂ : Nat} (h : b₁ ≤ b₂) :
+    (slash s v b₁).coop ≤ (slash s v b₂).coop := by
+  simp only [slash]
+  exact Nat.add_le_add_left (Nat.div_le_div_right (Nat.mul_le_mul_left _ h)) _
+
+/-- **Nothing is left behind.** The validator is out of every ledger the slash touches, so no stranded
+    entry can go on reducing the pot for every other validator — which is exactly the defect C197
+    recorded. A list that was filtered by `≠ v` and is then filtered by `= v` is empty, and that is all
+    this says. -/
+theorem slash_clears_every_ledger (s : PosState) (v : Validator) (bps : Nat) :
+    (slash s v bps).pool.filter (fun p => p.1 = v) = []
+      ∧ (slash s v bps).committed.filter (fun p => p.1 = v) = []
+      ∧ (slash s v bps).claims.filter (fun c => c.who = v) = [] := by
+  refine ⟨?_, ?_, ?_⟩ <;> simp only [slash] <;> simp [List.filter_filter]
 
 end Rchain

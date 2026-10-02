@@ -29,7 +29,7 @@ use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_block_storage::dag::message_state::DagMessageState;
 use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::{BlockMetadata, FailureCause};
+use rchain_models::block_metadata::{BlockMetadata, FailureCause, SlashSeverity};
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, RholangState, SignedDeployData,
 };
@@ -176,6 +176,7 @@ fn record(h: BlockHash, sender: Validator, cause: FailureCause, attempts: u32) -
         // A `Divergence` is never attributable, which is what the first commit of this unit pins.
         slashable: matches!(cause, FailureCause::Attributable),
         failure_cause: Some(cause),
+        slash_severity: SlashSeverity::Unspecified,
         restore_attempts: attempts,
         fringe: BTreeSet::new(),
         fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),

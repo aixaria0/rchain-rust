@@ -13,7 +13,7 @@ use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::Par;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::{BlockMetadata, FailureCause};
+use rchain_models::block_metadata::{BlockMetadata, FailureCause, SlashSeverity};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
@@ -182,7 +182,13 @@ async fn slash_is_unjustified(
         }
     }
     let justified = crate::validate::slashable_senders(&metadata);
-    Ok(!slashed.is_subset(&justified))
+    // **The tier is checked, not taken** (AUDIT C199). A victim must be an offender *at the tier this
+    // node derives*: without that, a proposer would size the confiscation freely and the tiers would
+    // be advice. A slash recorded before the tiers existed carries `Unspecified` — which takes
+    // everything — and a legacy record derives the same, so an old block replays unchanged.
+    Ok(slashed
+        .iter()
+        .any(|(victim, tier)| justified.get(victim) != Some(tier)))
 }
 
 /// The tip height at which a finality stall was last logged. A `static` because the alternative is
@@ -623,6 +629,7 @@ where
         // status; setting it here as well is what once made the flag survive a disagreement it did
         // not describe).
         failure_cause: validation_failed.then_some(FailureCause::Divergence),
+        slash_severity: SlashSeverity::Unspecified,
         slashable: false,
         fringe: pre_state.fringe,
         fringe_state_hash: StateHash::from_slice(pre_state.fringe_state.as_bytes()),
