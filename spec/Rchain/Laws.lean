@@ -2680,7 +2680,7 @@ def laws : List Law := [
       (`Rchain/Concurrent.lean`) is the repo's own proof that the flat calculus fixes no schedule at \
       all — so starvation is registered `open` rather than defined as a shape. **Not modelled either**: \
       the protocol's inactivity leak (the honest fix for a net that stays below two thirds), which \
-      needs a state change this layer does not have (#24, #39). **`Drift` has a port-side instance \
+      needs a state change this layer does not have, and no open issue owns it (#24 and #39 are both closed). **`Drift` has a port-side instance \
       now, not only C171's**: the LFS block walk's give-up rule (`MAX_IDLE_ROUNDS`, \
       `casper/src/engine/lfs_block_requester.rs`, §6, issue #102) is a `Paced` condition on a measure \
       the state already kept — `LfsState::finished`, monotone because `done` only adds and `add` \
@@ -2816,7 +2816,7 @@ def laws : List Law := [
       fix, said plainly**: a net that stays below two thirds permanently (three equal validators minus \
       one is exactly two thirds) still cannot finalise, and the honest repair there is an inactivity leak \
       — a state change that burns a silent validator's stake — which belongs with the shard-configuration \
-      and validator-lifecycle work (#24, #39), not with a recency window" },
+      and validator-lifecycle work — unowned: #24 and #39 are both closed — not with a recency window" },
   { number := 53, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/validate.rs:neglected_invalid_block_detects_bonded_invalid_justification",

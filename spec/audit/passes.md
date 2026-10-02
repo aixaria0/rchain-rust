@@ -4744,7 +4744,7 @@ never-spoke, ahead-of-tip, return).
 because a cadence that suppresses *every* round traps liveness). And a net that loses more than a third
 of its stake **permanently** still cannot finalise — the honest fix there is an inactivity leak, which is
 a state change (burning a silent validator's stake) and belongs with the shard-configuration and
-validator-lifecycle work (#24, #39), not with a recency window.
+validator-lifecycle work — unowned: #24 and #39 are both closed — not with a recency window.
 
 ## 27. The memory ceiling is glibc's heap, and the audit that had to break its own instruments to say so (#117)
 
@@ -5030,7 +5030,10 @@ of this pass: an artifact saying something the evidence does not.
 #102 into `Terminal` would have deleted `candidate:lfs-sync-recovery` with it, so **C181** files it — the
 latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes. The other four
 (`candidate:inactivity-leak`, `candidate:rooted-namespace`, `candidate:startup-rebuild-envelope`,
-`candidate:host-supplied-clock`) stay where they are, on issues that remain open.
+`candidate:host-supplied-clock`) stay where they are. *(This sentence said "on issues that remain open";
+corrected 2026-10-02 by the economics review — of the four, `candidate:inactivity-leak` is owned by
+nothing, because the two citations it used to carry, #24 and #39, are both closed and #24 is a qucalc/gov
+conformance item.)*
 
 ### And a register row corrected in passing
 

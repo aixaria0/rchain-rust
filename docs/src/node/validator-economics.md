@@ -61,9 +61,10 @@ else. Not blocks proposed, not attestations made, not deploys executed, and not 
 was **live at all**. An absent validator is paid on the same terms as one that ran all epoch, because
 there is **no inactivity leak, no decay and no eviction** in this tree: a stopped validator's stake stays
 in the pool and counts in the finality denominator for ever. That is measured and written up in
-[The public testnet](testnet.md) (the *Do not onboard a validator yet* measurements), and issue
-[#148](https://github.com/rchain-community/rchain-rust/issues/148) is the consequence: a validator that
-bonds and goes offline freezes finality **and still collects its share**.
+[The public testnet](testnet.md) (the *Do not onboard a validator yet* measurements), and
+[#149](https://github.com/rchain-community/rchain-rust/issues/149) owns the consequence — its
+predecessor #148 was closed into it with the close condition carried verbatim: a validator that bonds
+and goes offline makes production unbounded and freezes finality, **and still collects its share**.
 
 So the protocol's only performance input is the liveness hypothesis finality carries — `Participation`,
 named in [Progress: the shapes of non-progress](../formal/progress.md) — and liveness affects whether the
@@ -94,6 +95,20 @@ there and not repeated here.
   regime "the largest stake earns most" is false, and what is true instead is the residual **O3**:
   per-unit-of-stake income *favours* a stake split across several keys, since each key draws
   independently.
+
+**How large that reversal is, on the shipped rule** (derived from `select_active`'s uniform draw; pot 1,
+six rival keys at stake 10, cap 4, 200,000 trials):
+
+| how one stake of 40 is held | expected income |
+|---|---|
+| one key of 40 | **0.326** — *below* the flat pro-rata benchmark of 0.400 |
+| four keys of 10 | 0.400 |
+| twenty keys of 2 | **0.528** — **62 % more** than holding it whole |
+
+So above the cap the operative lever is **the number of keys, not the size of the stake** — per-unit
+income falls as one's own stake grows, because a large drawn key inflates the normaliser the share
+divides by. This is O3 read from the validator's side rather than the network's, and it is a property of
+the rule as shipped, not of any proposal.
 
 Which regime a net is in is a property of its size, not a policy — and the two are the same code path
 (`select_active` returns the whole eligible pool when the cap does not bite).
@@ -190,20 +205,46 @@ party — the operator's own capital, with no one between the operator and the b
 the issue named with it; per [`AGENTS.md`](../../../AGENTS.md) the plans and hypotheticals behind them
 belong outside this repository, and none of it is policy.
 
-1. **Should the pot be weighted by participation rather than only by stake?** Today the reward reads no
-   participation at all (above). A participation-weighted share would scale each validator's share by a
-   liveness measure the protocol already computes — the live weight set,
-   `block-storage/src/dag/liveness.rs`. Tracked on
+**A review of these questions from fresh concluded that neither of the two obvious improvements works as
+stated.** Both conclusions are arguments about the code above, not preferences.
+
+1. **Should the reward be validator-agnostic and network-weighted — a pooled staking contract?** *Not on
+   this protocol, and it would make risk worse.* A pool exists to bond stake that is not the operator's,
+   and the two primitives that needs are not both present: `bond` takes only the deploy signer's own
+   unforgeable `deployerId` (`rholang/src/system_processes.rs:1707`), and a reward is paid only to the
+   vault derived from `fromPublicKey(validator)` (`rholang/src/native_state.rs:1086`). So **every pool
+   reachable today is one more validator key** — which *concentrates* the whole-bond slash on the operator
+   rather than spreading it, and leaves members with no on-chain claim at all. Above the cap it is worse:
+   merging many small stakes into one key **forfeits** precisely the key-count income the draw pays
+   (above). A pool that would actually spread risk needs a new primitive — bonding from a named vault, or
+   a delegation leaf — which is a genesis-plus-hard-fork change, not a contract. Tracked on
    [#150](https://github.com/rchain-community/rchain-rust/issues/150).
-2. **Should the reward be validator-agnostic and network-weighted?** The case argued for a pool that is
-   indifferent to which validator does the work and spreads both the reward and the *risk* across the
-   network. Nothing in this tree does this, and the shape above is why it is not a contract we can write
-   today: `bond` draws the stake from the caller's own unforgeable `deployerId`, so no contract can bond
-   on a depositor's behalf. #150 cites an external `Game_Theory_QLF.md` (a `welfare_game_potential`
-   result); that file is **not in this repository** and its content is not restated here.
+2. **Should the pot be weighted by participation as well as stake?** *It cannot do what it looks like it
+   does.* The pot is a fixed pie of phlo already burned, so a multiplier is pure **reallocation** — with
+   `p` in `[0,1]` it is exactly a haircut on absent stake, not a new reward axis. A uniform multiplier is
+   a no-op, and a **correlated** absence (a cartel offline, a partition) is unpunishable by any
+   per-validator score. The only signal available without new consensus state — the live weight set
+   (`block-storage/src/dag/liveness.rs`) — is derived from the block's **own chosen justification set**,
+   and nothing requires a block to carry every message it has seen, so the proposer of the boundary block
+   could make a rival read absent and take the withheld share; that is the same lever that forced the
+   epoch seed onto the last *finalised* fringe (residual O1). An epoch-accurate or volume-based score
+   would need a counter leaf written on the block path, where native writes today ride only system
+   deploys, breaking play/replay symmetry; either way it is hard-fork class. The claim
+   [#150](https://github.com/rchain-community/rchain-rust/issues/150) attributes to an external result (a
+   `welfare_game_potential`) does **not** survive stake-weighting: the ratio form stake-weighting forces
+   has no exact potential. That external file is not in this repository and is not restated here.
 3. **Should a deploy's phlo be shared with the block that executed it?** Today it is not: the phlo joins
    the pot and is split by stake, so the executor is paid like every other active validator. Also on
    [#150](https://github.com/rchain-community/rchain-rust/issues/150).
+
+**And what the economy actually suffers from, which none of the three touches.** The honest loser above is
+a validator with a *small* stake and one key, whose expected income is neither large nor stable; the
+liveness defects are [#149](https://github.com/rchain-community/rchain-rust/issues/149) and
+[#172](https://github.com/rchain-community/rchain-rust/issues/172); and **absence** is not a
+reward-formula question at all. The instrument that prices a validator which stops is an **inactivity
+leak** — a state change that burns a silent validator's stake — and this tree has neither the state nor
+any issue that owns the design (the citations this page and the law register used to carry, #24 and #39,
+are both closed and one of them is about something else).
 
 (The stranded-rewards divergence above is *not* an open question of this kind — the oracle states the
 intent, so it is a registered finding (C197) rather than a design choice.)
