@@ -3061,7 +3061,61 @@ def laws : List Law := [
       than a thing the code cannot express — which is the difference between a law and a comment, and \
       the reason Law 51's vocabulary exists one level up. **What it does not claim**: that any \
       particular budget is safe. `SearchBudget::NODE` is a provisional number (C184) and this clause \
-      says only that whatever it is, two nodes that finish with it agree" }
+      says only that whatever it is, two nodes that finish with it agree" },
+  { number := 56, clause := "a", layer := "Rholang",
+    statement := "**A name is rooted in the identity that owns it.** `publish(path, value)` is \
+      accepted iff the path's owner prefix equals the caller's **derived** REV address — derived \
+      from the deployer id (`rho:rev:address(\"fromDeployerId\", …)`), never supplied by the caller — \
+      so a write outside your own root is *inexpressible* rather than refused, and a caller with no \
+      derivable identity is refused before any shared state is touched. Versions are append-only and \
+      `seal` closes a path; the mutable pointer lives only in the **alias tier**, which one authority \
+      governs.",
+    status := .provedModel,
+    declarations := [`Rchain.NsPath, `Rchain.NsState, `Rchain.Verdict, `Rchain.publish,
+      `Rchain.setAlias, `Rchain.writekeyValid, `Rchain.unguardedPublish],
+    axioms := [],
+    rust := ["casper/src/genesis/resources/rgov/MasterDictionary.rho",
+      "casper/src/genesis/rgov.rs", "casper/src/genesis/mod.rs"],
+    rustWitness := [
+      "casper/tests/master_dictionary.rs:the_four_must_fail_cases",
+      "casper/tests/master_dictionary.rs:publish_is_append_only_and_versions_are_pinned",
+      "casper/tests/master_dictionary.rs:seal_closes_a_path_and_the_key_still_resolves",
+      "casper/tests/master_dictionary.rs:a_granted_key_works_until_it_is_revoked",
+      "casper/tests/genesis_registry.rs:only_the_ceremony_key_can_reach_the_admin_handle"],
+    witness := [`Rchain.a_stranger_publishing_under_alices_root_is_refused,
+      `Rchain.alice_publishing_under_her_own_root_is_accepted,
+      `Rchain.a_forged_identity_is_refused,
+      `Rchain.an_unguarded_publish_hits_anothers_root,
+      `Rchain.a_sealed_path_refuses_a_further_version_and_keeps_its_versions,
+      `Rchain.a_non_root_may_not_set_a_short_name,
+      `Rchain.a_revoked_writekey_is_refused],
+    falsifiable := some "**the falsifier is the same function with the ownership test removed.** \
+      `unguardedPublish` differs from `publish` in exactly that one comparison, and \
+      `an_unguarded_publish_hits_anothers_root` proves that the inputs \
+      `a_stranger_publishing_under_alices_root_is_refused` refuses are *accepted* by it — so the \
+      refusal is a claim about the guard rather than a restatement of the code. The controls keep the \
+      other three clauses honest in the same way: `alice_publishing_under_her_own_root_is_accepted` \
+      and `the_root_may_set_a_short_name` show the refusals are not a `publish` that refuses \
+      everything, and `a_sealed_path_refuses_a_further_version_and_keeps_its_versions` carries both \
+      halves (the refusal *and* the surviving version), because a seal that also destroyed the log \
+      would satisfy the first alone. The Rust side is `casper/tests/master_dictionary.rs`, which runs \
+      the four must-fail cases against the **deployed** dictionary — writing under another's root, a \
+      granted key after `revoke`, publishing to a sealed path, a non-root setting a short name — and \
+      `rgov.rs::the_deployer_id_is_only_ever_the_address_derivation`, which asserts the disclosure \
+      rule of SECURITY.md over the contract's source",
+    note := "**This is the design #71's thread converged on, and it is why #71 was only half closed.** \
+      #71's stopgap published a `grant` capability, which answers \"who may write\" by *grant*; it does \
+      not answer who may claim a name at block 0, whether a publish overwrites or extends, or whether \
+      the bundled classes belong in genesis. The rooted design answers the first by *derivation* — the \
+      owner prefix comes from the caller's identity, so there is nothing to claim and no admission \
+      policy to freeze — and this row's clauses b and c answer the other two: `publish` appends rather \
+      than overwrites, and the alias tier is the one governed pointer. **What it does not claim**: \
+      anything about *encoding*. The model is over abstract tokens because the law is about which \
+      comparisons decide a write; the base58 form, and the fact that a forged id derives `Nil` rather \
+      than a different address, are properties of `rho:rev:address` and are pinned by \
+      `casper/tests/master_dictionary.rs`, not here. Nor does it claim that a contract cannot *disclose* \
+      a deployer id it was given: that is a discipline over the chain's contracts, not a mechanism the \
+      calculus can enforce, and the source scan is the floor under it" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

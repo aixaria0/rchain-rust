@@ -223,10 +223,10 @@ docker exec -i "$BOOTSTRAP" sh -c 'cat > /tmp/handshake.rho' <<'RHO'
 new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:stdout`),
     capCh, getMeCh, stuffCh in {
   out!("stage:1 lookup sent") |
-  rl!(`rho:id:wxc4mwdh7otq4fd6iuxt84inepssyz5tugojf7ao68dkh4ebbncy`, *capCh) |
+  rl!(`rho:id:fbcb5xks6kygyyeixsuq1ahpcb6jwahpmt5s5byfwfpcmi64bpqo`, *capCh) |
   for (MCAread <- capCh) {
-    out!("stage:2 readcap resolved") |
-    MCAread!("GetMe", *getMeCh) |
+    out!("stage:2 resolve facet resolved") |
+    MCAread!("resolve", ["GetMe"], *getMeCh) |
     for (GetMe <- getMeCh) {
       out!(["stage:3 getme-entry", *GetMe]) |
       new logCh in {

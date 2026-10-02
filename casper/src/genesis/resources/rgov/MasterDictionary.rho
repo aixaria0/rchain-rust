@@ -1,0 +1,538 @@
+// MasterDictionary.rho — the rooted-name master dictionary (issue #99).
+//
+// **This file is OURS, not vendored.** It has no upstream; `resources/rgov/` holds the port's own
+// governance set and `tools/audit-vendored-sources.sh` reports that class by count rather than
+// diffing it against `legacy/`. The three `rho:id` keys it publishes are Rust-side constants
+// (`rgov::masterdict_*_uri`), substituted into this text at build time exactly as the class URIs are.
+//
+// ---------------------------------------------------------------------------------------------
+// The rule
+//
+// A name is rooted in the identity that owns it: `<revAddr>/<path>`. The owner prefix is **derived**
+// from the caller's deployer id (`rho:rev:address("fromDeployerId", …)`), never supplied by the
+// caller, so a name outside your own root is refused rather than granted. Short names are a separate,
+// governed tier holding *aliases* to rooted paths — re-pointing one is deliberate and visible, and it
+// never rewrites what an earlier client already resolved. Versions are append-only: `resolveAt(p, 3)`
+// answers the same thing for ever, and `seal(p)` closes a path to further versions. The mutable
+// pointer lives only in the alias tier.
+//
+// ---------------------------------------------------------------------------------------------
+// The shape rules, each tied to a bug the prototype hit
+//
+// 1. **One instance, never a constructor.** This is a top-level `new … in { … }`; publishing a
+//    factory instead would let a caller instantiate an empty dictionary and "write into nothing".
+// 2. **One state cell, consumed and restored — exactly once per arm.** `stateCh` holds the whole
+//    state, and every arm takes it with a *linear* receive (`<-`, not a peek: a peek lets two writers
+//    read the same value, which is the lost-update shape behind the prototype's "second dictionary"
+//    bug). **The restore is the arm's own last act before it answers: a read puts `state` back, a
+//    write puts the NEW state back and never the old one.** A restore at the top of the facet plus a
+//    second one after a write would leave TWO datums on the cell — a second dictionary, exactly the
+//    bug the reference implementation hit — and an arm that answers without restoring at all kills
+//    the cell for the life of the chain. "Every refusal answers" is therefore a shape rule here, not
+//    politeness.
+// 3. **`(verb, args)` dispatch, one arity per verb.** A verb that is not recognised, or recognised
+//    with the wrong argument count, falls to the `_` arm and answers `("dir-error", "bad verb or
+//    arity")`. Nothing completes by doing nothing. (A call at the wrong *outer* arity still receives
+//    nothing — a rholang contract matches only at its own arity — which is why each facet publishes
+//    exactly one arity.)
+// 4. **The caller's identity arrives as an argument.** `rho:rchain:deployerId` is bound by the
+//    normalizer when the deploy is normalised, so a contract installed at genesis that *binds* it
+//    freezes the genesis identity for ever — that is the documented `Group.rho` defect
+//    (`rgov.rs:216-224`). Here that frozen binding is used deliberately and exactly once: `root` is
+//    derived from the identity that installs the dictionary, so the root authority is fixed by
+//    construction. Every *caller's* identity arrives as `args[0]` and is derived inside the call.
+// 5. **Guard `Nil` before touching the cell.** A forged or absent deployer id derives `Nil`
+//    (`RevAddress!("fromDeployerId", "not-an-id", *ch)` answers `Nil`), and a `Nil` owner would make
+//    one shared row writable by anyone, so the guards run before the state is consumed — and an arm
+//    that refuses without ever having consumed the cell restores nothing, which is correct.
+//
+// **The disclosure rule (SECURITY.md).** A deployer id is a bearer value: `*deployerId` must appear
+// ONLY as the address derivation — never in a state cell, a returned value, a message body, or
+// forwarded to a facet you do not control. Disclosure is transfer, and the failure is silent. Every
+// occurrence of the binder in this file is asserted to be one of the permitted forms by
+// `rgov.rs::the_deployer_id_is_only_ever_the_address_derivation`.
+//
+// **One flat scope on purpose.** Every helper and all three facets are peers in a single `new`, not
+// a ladder of nested `new`s. Deep `new` nesting is expensive to normalise (the blessed terms need a
+// 32 MiB stack for much the same reason) and it makes the bound-name chain long for no benefit.
+
+new
+  deployerId(`rho:rchain:deployerId`),
+  RevAddress(`rho:rev:address`),
+  insertArbitrary(`rho:registry:insertArbitrary`),
+  lookup(`rho:registry:lookup`),
+  stateCh,
+  rootCh,
+  pathOf,
+  resolveName,
+  resolveAt,
+  appendVersion,
+  setSealed,
+  bumpEpoch,
+  setAlias,
+  dropAlias,
+  resolveFacet,
+  publishFacet,
+  rootFacet
+in {
+  // The root authority: the identity that installs the dictionary. Frozen here by construction —
+  // see shape rule 4 — and rotatable afterwards only by the holder (`setRootAuthority`).
+  RevAddress!("fromDeployerId", *deployerId, *rootCh) |
+  for (@rootAddr <- rootCh) {
+
+    // ---------------- the one state cell ----------------
+    // versions : path  -> [v0, v1, …]      append-only
+    // sealed   : path  -> true             no further versions
+    // epoch    : path  -> Nat              bumped by `revoke`; a writekey carries its grant epoch
+    // alias    : short -> target           a rooted path, or a registered uri
+    // root     : the root authority's address
+    stateCh!({
+      "versions": {},
+      "sealed": {},
+      "epoch": {},
+      "alias": {},
+      "root": rootAddr
+    }) |
+
+    // ---------------- internal helpers (not published) ----------------
+    // Each takes the *state value*, never the cell: the cell is consumed and restored by the arm,
+    // exactly once, so a helper cannot leak the linear discipline.
+
+    /// The path a name denotes: an alias target if `name` is an alias, else `name` itself if it is a
+    /// published path, else `Nil`. Absence is not an error.
+    contract pathOf(@state, @name, ret) = {
+      new aCh in {
+        aCh!(state.getOrElse("alias", {}).getOrElse(name, Nil)) |
+        for (@hit <- aCh) {
+          if (hit != Nil) { ret!(hit) }
+          else {
+            if (state.getOrElse("versions", {}).contains(name)) { ret!(name) } else { ret!(Nil) }
+          }
+        }
+      }
+    } |
+
+    /// `resolve`: an alias answers what it points at — the latest version if the target is a
+    /// published path, the target itself if it is a registered uri — and an unknown name is `Nil`.
+    contract resolveName(@state, @name, ret) = {
+      new pCh in {
+        pathOf!(state, name, *pCh) |
+        for (@path <- pCh) {
+          if (path == Nil) { ret!(Nil) }
+          else {
+            new vCh in {
+              vCh!(state.getOrElse("versions", {}).getOrElse(path, [])) |
+              for (@log <- vCh) {
+                if (log.length() == 0) { ret!(path) } else { ret!(log.nth(log.length() - 1)) }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    /// `resolveAt`: exactly one version for ever. A path with no such version answers `Nil`.
+    contract resolveAt(@state, @name, @v, ret) = {
+      new pCh in {
+        pathOf!(state, name, *pCh) |
+        for (@path <- pCh) {
+          new vCh in {
+            vCh!(state.getOrElse("versions", {}).getOrElse(path, [])) |
+            for (@log <- vCh) {
+              if (v < log.length()) { ret!(log.nth(v)) } else { ret!(Nil) }
+            }
+          }
+        }
+      }
+    } |
+
+    /// Append a version, answering `(newState, index)` — the index is what `publish` reports.
+    contract appendVersion(@state, @path, @value, ret) = {
+      new aCh in {
+        aCh!(state.getOrElse("versions", {})) |
+        for (@versions <- aCh) {
+          new bCh in {
+            bCh!(versions.getOrElse(path, [])) |
+            for (@log <- bCh) {
+              ret!((state.set("versions", versions.set(path, log ++ [value])), log.length()))
+            }
+          }
+        }
+      }
+    } |
+
+    /// One edit to one sub-map each.
+    contract setSealed(@state, @path, ret) = {
+      ret!(state.set("sealed", state.getOrElse("sealed", {}).set(path, true)))
+    } |
+
+    contract bumpEpoch(@state, @path, ret) = {
+      new eCh in {
+        eCh!(state.getOrElse("epoch", {}).getOrElse(path, 0)) |
+        for (@now <- eCh) {
+          ret!(state.set("epoch", state.getOrElse("epoch", {}).set(path, now + 1)))
+        }
+      }
+    } |
+
+    contract setAlias(@state, @short, @target, ret) = {
+      ret!(state.set("alias", state.getOrElse("alias", {}).set(short, target)))
+    } |
+
+    contract dropAlias(@state, @short, ret) = {
+      ret!(state.set("alias", state.getOrElse("alias", {}).delete(short)))
+    } |
+
+    // ---------------- resolveFacet: public reads ----------------
+    // Every arm restores the cell exactly once, as its own last act before answering (rule 2).
+    contract resolveFacet(@verb, @args, ret) = {
+      for (@state <- stateCh) {
+        match (verb, args) {
+          // `resolve(name)` — an alias answers what it points at; a rooted path answers its latest
+          // version; an unknown name is `Nil`.
+          ("resolve", [name]) => { stateCh!(state) | resolveName!(state, name, *ret) }
+          // `resolveAt(name, v)` — that version, for ever.
+          ("resolveAt", [name, v]) => { stateCh!(state) | resolveAt!(state, name, v, *ret) }
+          ("versionsOf", [name]) => {
+            new pCh in {
+              pathOf!(state, name, *pCh) |
+              for (@path <- pCh) {
+                stateCh!(state) | ret!(state.getOrElse("versions", {}).getOrElse(path, []))
+              }
+            }
+          }
+          ("ownerOf", [name]) => {
+            new pCh in {
+              pathOf!(state, name, *pCh) |
+              for (@path <- pCh) {
+                if (path == Nil) { stateCh!(state) | ret!(Nil) }
+                else {
+                  // The owner prefix is everything before the first `/`.
+                  new iCh in {
+                    iCh!(path.indexOf("/")) |
+                    for (@i <- iCh) {
+                      stateCh!(state) |
+                      if (i < 0) { ret!(Nil) } else { ret!(path.substring(0, i)) }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          ("sealed", [name]) => {
+            new pCh in {
+              pathOf!(state, name, *pCh) |
+              for (@path <- pCh) {
+                stateCh!(state) |
+                if (path == Nil) { ret!(false) }
+                else { ret!(state.getOrElse("sealed", {}).contains(path)) }
+              }
+            }
+          }
+          ("epochOf", [name]) => {
+            new pCh in {
+              pathOf!(state, name, *pCh) |
+              for (@path <- pCh) {
+                stateCh!(state) |
+                if (path == Nil) { ret!(0) }
+                else { ret!(state.getOrElse("epoch", {}).getOrElse(path, 0)) }
+              }
+            }
+          }
+          // The alias tier, as data: the raw target, and the whole map.
+          ("targetOf", [short]) => {
+            new aCh in {
+              aCh!(state.getOrElse("alias", {})) |
+              for (@m <- aCh) { stateCh!(state) | ret!(m.getOrElse(short, Nil)) }
+            }
+          }
+          ("aliases", []) => { stateCh!(state) | ret!(state.getOrElse("alias", {})) }
+          _ => { stateCh!(state) | ret!(("dir-error", "bad verb or arity")) }
+        }
+      }
+    } |
+
+    // ---------------- publishFacet: self-scoped writes ----------------
+    // The identity is derived and Nil-guarded BEFORE the cell is touched (rule 5), so a refusal that
+    // never consumed the cell has nothing to restore.
+    contract publishFacet(@verb, @args, ret) = {
+      match (verb, args) {
+        ("publish", [id, path, value]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (path.startsWith(me ++ "/") == false) {
+                    stateCh!(state) | ret!(("dir-error", "not your namespace"))
+                  }
+                  else {
+                    if (state.getOrElse("sealed", {}).contains(path)) {
+                      stateCh!(state) | ret!(("dir-error", "sealed"))
+                    }
+                    else {
+                      new aCh in {
+                        appendVersion!(state, path, value, *aCh) |
+                        for (@(newState, idx) <- aCh) {
+                          stateCh!(newState) | ret!(("published", path, idx))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        // A writekey is a contract bound to ONE path and to the epoch it was granted at, so `revoke`
+        // retires every key already handed out for that path.
+        ("grant", [id, path]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (path.startsWith(me ++ "/") == false) {
+                    stateCh!(state) | ret!(("dir-error", "not your namespace"))
+                  }
+                  else {
+                    new wCh in {
+                      wCh!(state.getOrElse("epoch", {}).getOrElse(path, 0)) |
+                      for (@grantedEpoch <- wCh) {
+                        new writekey in {
+                          contract writekey(@value, result) = {
+                            for (@s <- stateCh) {
+                              if (s.getOrElse("epoch", {}).getOrElse(path, 0) != grantedEpoch) {
+                                stateCh!(s) | result!(("dir-error", "revoked"))
+                              }
+                              else {
+                                if (s.getOrElse("sealed", {}).contains(path)) {
+                                  stateCh!(s) | result!(("dir-error", "sealed"))
+                                }
+                                else {
+                                  new bCh in {
+                                    appendVersion!(s, path, value, *bCh) |
+                                    for (@(newState, idx) <- bCh) {
+                                      stateCh!(newState) | result!(("published", path, idx))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          } |
+                          stateCh!(state) |
+                          ret!(*writekey)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        ("seal", [id, path]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (path.startsWith(me ++ "/") == false) {
+                    stateCh!(state) | ret!(("dir-error", "not your namespace"))
+                  }
+                  else {
+                    new sCh in {
+                      setSealed!(state, path, *sCh) |
+                      for (@newState <- sCh) { stateCh!(newState) | ret!(("sealed", path)) }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        ("revoke", [id, path]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (path.startsWith(me ++ "/") == false) {
+                    stateCh!(state) | ret!(("dir-error", "not your namespace"))
+                  }
+                  else {
+                    new bCh in {
+                      bumpEpoch!(state, path, *bCh) |
+                      for (@newState <- bCh) { stateCh!(newState) | ret!(("revoked", path)) }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => ret!(("dir-error", "bad verb or arity"))
+      }
+    } |
+
+    // ---------------- rootFacet: the alias tier's governor ----------------
+    // Published like the other two — authority is checked *inside*, by comparing the caller's derived
+    // address to `state.root`, so a resolvable facet still refuses.
+    contract rootFacet(@verb, @args, ret) = {
+      match (verb, args) {
+        ("alias", [id, short, target]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (state.getOrElse("root", "") != me) {
+                    stateCh!(state) | ret!(("dir-error", "not the root authority"))
+                  }
+                  else {
+                    new aCh in {
+                      setAlias!(state, short, target, *aCh) |
+                      for (@newState <- aCh) {
+                        stateCh!(newState) | ret!(("alias", short, target))
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        ("unalias", [id, short]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (state.getOrElse("root", "") != me) {
+                    stateCh!(state) | ret!(("dir-error", "not the root authority"))
+                  }
+                  else {
+                    new dCh in {
+                      dropAlias!(state, short, *dCh) |
+                      for (@newState <- dCh) { stateCh!(newState) | ret!(("unalias", short)) }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        // Rotation: the holder names its successor's address. The successor proves it is the
+        // successor the same way every caller proves who it is — by deriving from an id it holds.
+        ("setRootAuthority", [id, successor]) => {
+          new meCh in {
+            RevAddress!("fromDeployerId", id, *meCh) |
+            for (@me <- meCh) {
+              if (me == Nil) { ret!(("dir-error", "no identity")) }
+              else {
+                for (@state <- stateCh) {
+                  if (state.getOrElse("root", "") != me) {
+                    stateCh!(state) | ret!(("dir-error", "not the root authority"))
+                  }
+                  else {
+                    stateCh!(state.set("root", successor)) | ret!(("root", successor))
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => ret!(("dir-error", "bad verb or arity"))
+      }
+    } |
+
+    // ---------------- the admin handle ----------------
+    // The genesis terms that follow (the `GetMe` feature) are vendored contracts gated on reading
+    // `@[*deployerId, "MasterContractAdmin"]`. The testnet template used to park `{"read", "write",
+    // "grant"}` there — an identity nothing holds after block 1, which is issue #71's defect. This
+    // datum replaces it, and it is written by the identity that *does* hold it: the ceremony key
+    // that installs the dictionary. `grant` is absent on purpose — a rooted name is derived, so
+    // there is nothing to grant — and so is `write`: what a holder needs is the self-scoped publish
+    // facet, not the old overwrite-any-key writer.
+    @[*deployerId, "MasterContractAdmin"]!({
+      "read": bundle+{*resolveFacet},
+      "write": bundle+{*publishFacet},
+      "root": bundle+{*rootFacet}
+    }) |
+
+    // ---------------- publish the three facets under constant keys ----------------
+    new resolveCh, publishCh, rootChUri in {
+      insertArbitrary!(bundle+{*resolveFacet}, *resolveCh) |
+      insertArbitrary!(bundle+{*publishFacet}, *publishCh) |
+      insertArbitrary!(bundle+{*rootFacet}, *rootChUri) |
+      for (URI <- resolveCh) {
+        @"rnode:genesis:rgov-uri"!(["masterdict-resolve", *URI])
+      } |
+      for (URI <- publishCh) {
+        @"rnode:genesis:rgov-uri"!(["masterdict-publish", *URI])
+      } |
+      for (URI <- rootChUri) {
+        @"rnode:genesis:rgov-uri"!(["masterdict-root", *URI])
+      }
+    } |
+
+    // ---------------- the genesis alias tier ----------------
+    // The names the wallet's editor and the rgov feature ask the dictionary for.
+    //
+    // **Each one is *published in*, then aliased** — which is what "Genesis content is the
+    // dictionary's facets plus one root capability, everything else is deployed later and published
+    // in" means concretely. The alias tier holds strings, so a class's uri alone would make
+    // `resolve("Directory")` answer a `rho:id:` string where the old directory answered the
+    // **contract**; publishing the class under the operator's own root and pointing the short name
+    // at that path keeps what a name means exactly as it was, and makes it re-pointable: the
+    // operator can publish a new version at the same path and every client follows.
+    //
+    // `Echo` and `Log` name no class of their own (their `rho` files never call `insertArbitrary`),
+    // so they are published from the `Directory` class, as the template's `SLOT_ALIASES` did.
+    //
+    // `GetMe`/`SendThem` are published the same way, by `memberDirectory`, at exactly these paths.
+    new bootCh, dirCCh, echCCh, logCCh, inbCCh, issCCh, kudCCh, rolCCh, chaCCh, balCCh, groCCh in {
+      lookup!(`__URI_DIRECTORY__`, *dirCCh) |
+      for (@c <- dirCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Directory", c], *bootCh) } |
+      lookup!(`__URI_INBOX__`, *inbCCh) |
+      for (@c <- inbCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Inbox", c], *bootCh) } |
+      lookup!(`__URI_ISSUE__`, *issCCh) |
+      for (@c <- issCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Issue", c], *bootCh) } |
+      lookup!(`__URI_KUDOS__`, *kudCCh) |
+      for (@c <- kudCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Kudos", c], *bootCh) } |
+      lookup!(`__URI_ROLL__`, *rolCCh) |
+      for (@c <- rolCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Roll", c], *bootCh) } |
+      lookup!(`__URI_CHAT__`, *chaCCh) |
+      for (@c <- chaCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Chat", c], *bootCh) } |
+      lookup!(`__URI_BALLOT__`, *balCCh) |
+      for (@c <- balCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Ballot", c], *bootCh) } |
+      lookup!(`__URI_GROUP__`, *groCCh) |
+      for (@c <- groCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Group", c], *bootCh) } |
+      // `Echo` and `Log` name the Directory class, as upstream's `SLOT_ALIASES` does. Each does its
+      // own lookup: a `lookup` answers **once**, so a second receive on the same channel would wait
+      // for ever and the name it guards would never be published.
+      lookup!(`__URI_DIRECTORY__`, *echCCh) |
+      for (@c <- echCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Echo", c], *bootCh) } |
+      lookup!(`__URI_DIRECTORY__`, *logCCh) |
+      for (@c <- logCCh) { publishFacet!("publish", [*deployerId, rootAddr ++ "/Log", c], *bootCh) } |
+      rootFacet!("alias", [*deployerId, "Directory", rootAddr ++ "/Directory"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Echo", rootAddr ++ "/Echo"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Log", rootAddr ++ "/Log"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Inbox", rootAddr ++ "/Inbox"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Issue", rootAddr ++ "/Issue"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Kudos", rootAddr ++ "/Kudos"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Roll", rootAddr ++ "/Roll"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Chat", rootAddr ++ "/Chat"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Ballot", rootAddr ++ "/Ballot"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "Group", rootAddr ++ "/Group"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "GetMe", rootAddr ++ "/GetMe"], *bootCh) |
+      rootFacet!("alias", [*deployerId, "SendThem", rootAddr ++ "/SendThem"], *bootCh)
+    }
+  }
+}

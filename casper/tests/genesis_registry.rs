@@ -100,6 +100,22 @@ fn deploy_signed_by(term: &str, seed: u8) -> SignedDeployData {
     d
 }
 
+/// The REV address that `deploy_signed_by(term, seed)`'s deployer id derives to — what the
+/// dictionary's `publish` verb computes for that caller, so a probe can name a path under its own
+/// root without guessing.
+fn rev_address_of(seed: u8) -> String {
+    use rchain_crypto::private_key::PrivateKey;
+    use rchain_crypto::signatures::secp256k1::Secp256k1;
+    use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+    let sk = PrivateKey::new(vec![seed; 32]);
+    let pk = Secp256k1
+        .to_public(&sk)
+        .expect("a fixed 32-byte scalar is a valid key");
+    rchain_rholang::util::rev_address::RevAddress::from_public_key(&pk)
+        .expect("a secp256k1 public key has a REV address")
+        .to_base58()
+}
+
 fn proof_of_stake() -> ProofOfStake {
     ProofOfStake {
         minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
@@ -748,27 +764,30 @@ fn a_fresh_chain_answers_two_group_creations_in_one_deploy() {
     });
 }
 
-/// The three extra directory slots the wallet's editor asks for answer a **value**, not `Nil`.
+/// The three class names the wallet's editor asks for resolve to a **value**, not `Nil`.
 ///
-/// `extraSlots` is our own term (upstream's template has seven slots, none of them `Chat`/`Ballot`/
-/// `Group`), and it called the directory's write capability with two arguments where
-/// `Directory.rho:56` takes three — so no receive matched, nothing was written, and every read of
-/// those names answered `Nil`. A `Nil` slot is indistinguishable from a broken one for a consumer,
-/// which is why this asserts the *value* and not merely that a receive fired (the trap AUDIT C21
-/// records: `MCAread!("Chat", *ch)` answers `Nil` for an absent key, and a bare pattern matches
-/// `Nil`).
+/// These were directory *slots* written once by `extraSlots`, our own term — which called the
+/// directory's write capability with two arguments where `Directory.rho:56` takes three, so no
+/// receive matched, nothing was written, and every read of those names answered `Nil` (AUDIT C21).
+/// Under the rooted dictionary (issue #99) they are alias-tier names instead: the genesis bootstrap
+/// points `Chat`/`Ballot`/`Group` at the class URIs, and `resolve` answers what the alias points at.
+///
+/// The trap is unchanged and that is why this asserts the *value* and not merely that a receive
+/// fired: a name the dictionary does not know answers `Nil`, and a `Nil` is indistinguishable from
+/// broken for a consumer.
 #[test]
-fn the_extra_slots_answer_a_directory_read() {
+fn the_class_names_resolve_through_the_alias_tier() {
     with_big_stack(async {
         let rm = build_runtime_manager().await;
         let rand = fixed_rand();
-        let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
+        let resolve =
+            rchain_casper::genesis::rgov::masterdict_resolve_uri().expect("the resolve facet key");
         let term = r#"new rl(`rho:registry:lookup`), ch, chatCh, ballotCh, groupCh in {
-                 rl!(`READCAP`, *ch) |
+                 rl!(`RESOLVE`, *ch) |
                  for (MCAread <- ch) {
-                   MCAread!("Chat", *chatCh) |
-                   MCAread!("Ballot", *ballotCh) |
-                   MCAread!("Group", *groupCh) |
+                   MCAread!("resolve", ["Chat"], *chatCh) |
+                   MCAread!("resolve", ["Ballot"], *ballotCh) |
+                   MCAread!("resolve", ["Group"], *groupCh) |
                    for (@c <- chatCh) {
                      if (c == Nil) { @"out"!("slot:Chat-nil") } else { @"out"!("slot:Chat-value") }
                    } |
@@ -780,7 +799,7 @@ fn the_extra_slots_answer_a_directory_read() {
                    }
                  }
                }"#
-            .replace("READCAP", &readcap);
+            .replace("RESOLVE", &resolve);
         let mut terms = default_blessed_terms(
             &proof_of_stake(),
             &Registry {
@@ -1009,7 +1028,7 @@ fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
 ///
 /// This is what `scripts/bootstrap-rgov.ts` used to arrange at runtime (with a recorded URI that
 /// goes stale per chain). Genesis arranges it instead, for the fixed testnet key, so a client
-/// hardcodes `readcap_uri()` and needs no bootstrap.
+/// hardcodes `masterdict_resolve_uri()` and needs no bootstrap.
 ///
 /// Two shapes here are load-bearing, and both were learned the hard way:
 ///
@@ -1030,19 +1049,20 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
     with_big_stack(async {
         let rm = build_runtime_manager().await;
         let rand = fixed_rand();
-        let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
+        let resolve =
+            rchain_casper::genesis::rgov::masterdict_resolve_uri().expect("the resolve facet key");
 
         // 1. The wallet's own path, as a client key distinct from the chain's ceremony key, so the
         //    deployer is a *new* member and the `createMe` branch is the one exercised.
         let handshake = r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
                  capCh, getMeCh, stuffCh
                in {
-                 rl!(`READCAP`, *capCh) |
+                 rl!(`RESOLVE`, *capCh) |
                  // Bind bare, call bare — the convention the rgov contracts themselves use
                  // (`memberIdGovRev`'s imports, the master-directory template). Mixing it with the
                  // wallet's `for (@X <- ch)` + `@X!` is a parse error, not a silent miss.
                  for (MCAread <- capCh) {
-                   MCAread!("GetMe", *getMeCh) |
+                   MCAread!("resolve", ["GetMe"], *getMeCh) |
                    for (GetMe <- getMeCh) {
                      @"out"!(["getme-entry", *GetMe]) |
                      new logCh in {
@@ -1053,7 +1073,7 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
                    }
                  }
                }"#
-        .replace("READCAP", &readcap);
+        .replace("RESOLVE", &resolve);
 
         // 2. The ceremony key's leg — the key the feature's epilogue bootstraps at genesis, and the
         //    key `tools/devnet.sh`'s client actually signs with.
@@ -1062,9 +1082,9 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
                in {
                  for (@i <<- @[*deployerId, "inbox"]) { @"out"!("bootstrap-inbox") } |
                  for (@d <<- @[*deployerId, "dictionary"]) { @"out"!("bootstrap-dictionary") } |
-                 rl!(`READCAP`, *capCh) |
+                 rl!(`RESOLVE`, *capCh) |
                  for (MCAread <- capCh) {
-                   MCAread!("GetMe", *getMeCh) |
+                   MCAread!("resolve", ["GetMe"], *getMeCh) |
                    for (GetMe <- getMeCh) {
                      new logCh in {
                        for (@line <= logCh) { Nil } |
@@ -1074,7 +1094,7 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
                    }
                  }
                }"#
-        .replace("READCAP", &readcap);
+        .replace("RESOLVE", &resolve);
 
         let mut terms = default_blessed_terms(
             &proof_of_stake(),
@@ -1247,46 +1267,48 @@ fn installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check() {
     });
 }
 
-/// **Issue #71: the published grant capability can own a name, and that is what it is for.**
+/// **The publish facet is what replaced the grant capability, and a publish reads back.**
 ///
-/// The master directory's `{"read", "write", "grant"}` used to be parked on
-/// `@[*deployerId, "MasterContractAdmin"]` — keyed by the *genesis* deployer, an identity nothing
-/// holds after genesis — so the directory was immutable from block 1 onward, and an application
-/// trying to register got silence: a call the directory's `write` cannot match is not an error, and
-/// law 38 makes silence indistinguishable from success. That is what made it expensive to diagnose
-/// from outside, and it is why this test reads the value back rather than asserting that some
-/// receive fired.
+/// #71's stopgap published `grant` — a minter returning a writer bound to *one* key. Its job was to
+/// answer "who may claim a name" without freezing an admission policy, and the rooted dictionary
+/// (issue #99) answers that question by **derivation** instead: a publish is scoped to the caller's
+/// own root, so there is nothing to claim and nothing to grant, and the `grantcap` key is gone.
 ///
-/// The probe is written the way a consumer writes it: resolve `grantcap_uri()`, take a writer for
-/// **one** key, write through it, and read back through the read cap. Its shape half is
-/// `the_extra_slots_term_writes_the_names_the_wallet_asks_for`, which a `contains` on the source
-/// text can satisfy while the term still does nothing.
+/// The probe is written the way a consumer writes it: resolve `masterdict_publish_uri()`, publish
+/// under your own root, and read the value back through `masterdict_resolve_uri()`. It reads the
+/// *value* rather than asserting that a receive fired, because a call the dictionary cannot match is
+/// not an error and law 38 makes silence indistinguishable from success — the trap that made #71
+/// expensive to diagnose from outside.
 #[test]
-fn the_published_grant_capability_owns_exactly_one_key() {
+fn the_publish_facet_is_self_scoped_and_reads_back() {
     with_big_stack(async {
         let rm = build_runtime_manager().await;
         let rand = fixed_rand();
-        let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
-        let grantcap = rchain_casper::genesis::rgov::grantcap_uri().expect("the grant cap key");
-        let term = r#"new rl(`rho:registry:lookup`), rcCh, gcCh, writerCh, ack, readCh in {
-                 rl!(`READCAP`, *rcCh) |
-                 rl!(`GRANTCAP`, *gcCh) |
-                 for (MCAread <- rcCh; grant <- gcCh) {
-                   grant!("probeKey", *writerCh) |
-                   for (writer <- writerCh) {
-                     writer!("probeValue", *ack) |
-                     for (_ <- ack) {
-                       MCAread!("probeKey", *readCh) |
-                       for (@v <- readCh) {
-                         if (v == Nil) { @"out"!("grant:read-nil") }
-                         else { @"out"!("grant:read-value") }
-                       }
+        let resolve =
+            rchain_casper::genesis::rgov::masterdict_resolve_uri().expect("the resolve facet key");
+        let publish =
+            rchain_casper::genesis::rgov::masterdict_publish_uri().expect("the publish facet key");
+        // The caller's own root: the address its deployer id derives to.
+        let own = format!("{}/probeKey", rev_address_of(11));
+        let term = r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
+                 pcCh, rcCh, ack, readCh
+               in {
+                 rl!(`PUBLISH`, *pcCh) |
+                 rl!(`RESOLVE`, *rcCh) |
+                 for (pub <- pcCh; reader <- rcCh) {
+                   pub!("publish", [*deployerId, "OWN", "probeValue"], *ack) |
+                   for (_ <- ack) {
+                     reader!("resolve", ["OWN"], *readCh) |
+                     for (@v <- readCh) {
+                       if (v == Nil) { @"out"!("publish:read-nil") }
+                       else { @"out"!("publish:read-value") }
                      }
                    }
                  }
                }"#
-        .replace("READCAP", &readcap)
-        .replace("GRANTCAP", &grantcap);
+        .replace("PUBLISH", &publish)
+        .replace("RESOLVE", &resolve)
+        .replace("OWN", &own);
         let mut terms = default_blessed_terms(
             &proof_of_stake(),
             &Registry {
@@ -1332,71 +1354,56 @@ fn the_published_grant_capability_owns_exactly_one_key() {
             .collect();
 
         assert!(
-            !tags.contains(&"grant:read-nil".to_string()),
-            "the writer `grant` handed back must reach the same map the read cap reads, or an \
+            !tags.contains(&"publish:read-nil".to_string()),
+            "a publish under the caller's own root must land where the resolve facet reads, or an \
              application cannot register itself ever: {tags:?}"
         );
         assert!(
-            tags.contains(&"grant:read-value".to_string()),
-            "and the value written through it must read back as a value. The control is in the same \
-             probe — a `Nil` here is `grantcap_uri()` naming nothing, which is the silent failure \
-             this test exists to catch: {tags:?}"
+            tags.contains(&"publish:read-value".to_string()),
+            "and it must read back as a value. The control is in the same probe — a `Nil` here is \
+             the derived path not matching the caller's address, which is the silent failure this \
+             test exists to catch: {tags:?}"
         );
     });
 }
 
-/// **The parked capability is `write`, it is a *peek* away from the ceremony key, and it is not
-/// reachable by anyone else.** This settles the lead #71's own 2026-09-27 update names as the thing
-/// to check before designing the fix: "recover the capability and publish it under a name an app can
-/// reach" and "make the operator's write path actually usable" are different changes, and the second
-/// is much smaller.
+/// **The dictionary's admin handle is written by the key that installs it, and only that key can
+/// reach it.** This is the surviving half of what #71's thread settled: "recover the capability and
+/// publish it under a name an app can reach" and "make the operator's write path usable" are
+/// different changes, and the second is the smaller one.
 ///
-/// Both halves are measured here, with the same probe text signed by two keys:
+/// #71's parked datum held `{"read", "write", "grant"}` — a capability nothing could reach after
+/// block 1. The rooted dictionary (issue #99) replaces it with a handle it writes **itself**, for
+/// its own deployer: `{"read": resolveFacet, "write": publishFacet, "root": rootFacet}`. So the
+/// datum is no longer a capability parked out of reach; it is the handshake the genesis terms that
+/// follow the dictionary use — and `grant` is absent on purpose, because a rooted name is *derived*,
+/// so there is nothing to grant.
 ///
-/// - **the ceremony key still holds it** — the datum sits on `@[*deployerId, "MasterContractAdmin"]`,
-///   keyed by that key, and both genesis consumers read it with `<<-` (a *peek*), so nothing consumed
-///   it and a later deploy by the same key finds it. The directory is therefore **operator-mutable**;
-/// - **no other key can** — a deploy signed by a stranger keys the channel to *its own* id, matches
-///   nothing, and the write does not happen. So it is **application-immutable**, which is the state
-///   issue #71 reports.
+/// Both halves are measured with the same probe text signed by two keys:
 ///
-/// The stranger's probe announces that it *started* before it tries, and the absence assertions are
-/// read beside that start tag: without it, "no write" and "the deploy never ran" are the same
+/// - **the ceremony key reaches it** — the datum sits on `@[*deployerId, "MasterContractAdmin"]`,
+///   keyed by that key, and it is read with `<<-` (a *peek*), so nothing consumes it;
+/// - **no other key can** — a deploy signed by a stranger keys the channel to *its own* id and
+///   matches nothing. So the handle is **operator-held and application-immutable**, which is the
+///   state issue #71 reports.
+///
+/// The stranger's probe announces that it *started* before it tries, and the absence assertions sit
+/// beside those start tags: without them, "nothing happened" and "the deploy never ran" are the same
 /// observation, which is law 38 and the exact trap this whole family keeps setting.
 #[test]
-fn only_the_ceremony_key_still_holds_the_parked_capability() {
+fn only_the_ceremony_key_can_reach_the_admin_handle() {
     with_big_stack(async {
         let rm = build_runtime_manager().await;
         let rand = fixed_rand();
-        let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
 
-        // One probe text, two signers: read the channel your own deployer keyed, write through the
-        // capability if it is there, and say which of the two happened.
-        let write_probe = |tag: &str, key: &str| {
-            r#"new deployerId(`rho:rchain:deployerId`), ack in {
+        let probe = |tag: &str| {
+            r#"new deployerId(`rho:rchain:deployerId`) in {
                      @"out"!("probe:TAG:start") |
-                     for (@{"write": *MCAwrite, ..._} <<- @[*deployerId, "MasterContractAdmin"]) {
-                       MCAwrite!("KEY", "written-by-TAG", *ack) |
-                       for (_ <- ack) { @"out"!("probe:TAG:wrote") }
+                     for (@{"read": *R, "write": *W, "root": *A, ..._} <<- @[*deployerId, "MasterContractAdmin"]) {
+                       @"out"!("probe:TAG:handle")
                      }
                    }"#
             .replace("TAG", tag)
-            .replace("KEY", key)
-        };
-        // Read the key back through the *published* read cap, which any deployer can resolve.
-        let read_probe = |key: &str| {
-            format!(
-                r#"new rl(`rho:registry:lookup`), rcCh, readCh in {{
-                     rl!(`{readcap}`, *rcCh) |
-                     for (MCAread <- rcCh) {{
-                       MCAread!("{key}", *readCh) |
-                       for (@v <- readCh) {{
-                         if (v == Nil) {{ @"out"!("read:{key}:absent") }}
-                         else {{ @"out"!("read:{key}:present") }}
-                       }}
-                     }}
-                   }}"#
-            )
         };
 
         let mut terms = default_blessed_terms(
@@ -1411,13 +1418,8 @@ fn only_the_ceremony_key_still_holds_the_parked_capability() {
         .expect("blessed terms");
         // The ceremony key is `[7u8; 32]` (`ceremony_identity`); `deploy_signed_by` derives the
         // deployer from the seed, so these two differ in exactly the signer.
-        terms.push(deploy_signed_by(&write_probe("ceremony", "ceremonyKey"), 7));
-        terms.push(deploy_signed_by(
-            &write_probe("stranger", "strangerKey"),
-            11,
-        ));
-        terms.push(deploy_signed_by(&read_probe("ceremonyKey"), 12));
-        terms.push(deploy_signed_by(&read_probe("strangerKey"), 13));
+        terms.push(deploy_signed_by(&probe("ceremony"), 7));
+        terms.push(deploy_signed_by(&probe("stranger"), 11));
 
         let (_, _, results) = rm
             .compute_genesis(
@@ -1451,36 +1453,24 @@ fn only_the_ceremony_key_still_holds_the_parked_capability() {
             .filter_map(|p| RhoString::unapply(p).map(str::to_string))
             .collect();
 
-        // The control that makes the absences below mean something: both probes ran.
+        // The control that makes the absence below mean something: both probes ran.
         for tag in ["probe:ceremony:start", "probe:stranger:start"] {
             assert!(
                 tags.contains(&tag.to_string()),
-                "both probes must have run, or an absent write is indistinguishable from a deploy \
+                "both probes must have run, or an absent handle is indistinguishable from a deploy \
                  that never happened: {tags:?}"
             );
         }
         assert!(
-            tags.contains(&"probe:ceremony:wrote".to_string()),
-            "the ceremony key must still hold the parked `write`: the datum is keyed by its own \
-             deployerId and both genesis consumers read it with a `<<-` peek, so nothing consumed \
-             it. Without this the parked capability is *lost* rather than operator-held, which is \
-             the other reading of this issue: {tags:?}"
+            tags.contains(&"probe:ceremony:handle".to_string()),
+            "the dictionary must park its admin handle for the key that installs it. The genesis \
+             terms that follow read it with a `<<-` peek, so nothing consumes it: {tags:?}"
         );
         assert!(
-            tags.contains(&"read:ceremonyKey:present".to_string()),
-            "and what it wrote must be visible through the read cap, because a directory the \
-             operator can write but clients cannot read is not a directory: {tags:?}"
-        );
-        assert!(
-            !tags.contains(&"probe:stranger:wrote".to_string()),
-            "no other key may reach the parked capability — the channel is keyed to the *caller's* \
-             deployerId, so a stranger matches nothing and its write silently does not happen. This \
-             is the application-immutability of #71, measured beside the operator-mutability above: \
-             {tags:?}"
-        );
-        assert!(
-            !tags.contains(&"read:strangerKey:present".to_string()),
-            "and the stranger's key must not be in the directory: {tags:?}"
+            !tags.contains(&"probe:stranger:handle".to_string()),
+            "no other key may reach it — the channel is keyed to the *caller's* deployerId, so a \
+             stranger matches nothing. That is the application-immutability of #71, measured beside \
+             the operator-held half above: {tags:?}"
         );
     });
 }

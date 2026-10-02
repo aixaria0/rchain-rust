@@ -5033,9 +5033,11 @@ of this pass: an artifact saying something the evidence does not.
 
 `candidate:` slugs live in the register's `laws` column and, until this pass, in issue prose alone. Closing
 #102 into `Terminal` would have deleted `candidate:lfs-sync-recovery` with it, so **C181** files it — the
-latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes. The other four
-(`candidate:inactivity-leak`, `candidate:rooted-namespace`, `candidate:startup-rebuild-envelope`,
-`candidate:host-supplied-clock`) stay where they are. *(This sentence said "on issues that remain open";
+latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes. The other three
+(`candidate:inactivity-leak`, `candidate:startup-rebuild-envelope`, `candidate:host-supplied-clock`)
+stay where they are. `candidate:rooted-namespace` was the fourth and has since been **promoted to Law 56**
+by C202 (§58) — the name layer's authorization rule, decided and landed rather than left as a candidate.
+*(This sentence said "on issues that remain open";
 corrected 2026-10-02 by the economics review — of the four, `candidate:inactivity-leak` is owned by
 nothing, because the two citations it used to carry, #24 and #39, are both closed and #24 is a qucalc/gov
 conformance item.)*
@@ -6609,6 +6611,7 @@ whose proposer attached the deploy records *its own sender at its own height* in
 store, the block's `state` carries the record for a receiver to replay, and the replay reaches the same
 post-state hash.
 
+<<<<<<< HEAD
 **And the proposer's *attachment* of the deploy is pinned, which it was not when this landed.**
 `create_block`'s list construction was inline, so the only way to reach it was through a whole proposer —
 a runtime, a DAG and a signing identity, which no test in this tree builds — and deleting the
@@ -6700,3 +6703,78 @@ comment where it happened.
 **One tool change.** `tools/devnet.sh` takes per-node extra `rnode run` flags
 (`DEVNET_EXTRA_FLAGS_<container name>`), because every arm here is one node set differently from its peers
 and the shared flag string is shared on purpose (AUDIT C46).
+=======
+**One link is not pinned by a test, and it is named here rather than left to be discovered**:
+`block_creator`'s *attachment* of the deploy to the proposer's own block. Pinning it needs a live
+proposer fixture (a runtime, a DAG and a signing identity), which no test in this tree builds, and the
+two arms above would both stay green if the attachment were deleted. What that would cost is the
+proposer's **own** record — it would stop being paid at the boundaries it did not act in, and a chain
+whose validators all omitted it would simply have the rule do nothing, which is the shipped default
+anyway. There is no way to harm another validator by omitting it, which is why this is a gap in
+*coverage* and not in safety.
+
+## 58. The name layer had no authorization rule, and now it is derived (C202, #99)
+
+**What was wrong was not a defect but a missing decision, and the register had no row for it.** The name
+layer at block 0 was the vendored `Directory.rho` *class* plus a template that wrote ten slots into one
+instance of it. Nothing stated who might write a name. #71 found the symptom — the template parked
+`{"read","write","grant"}` on `@[*deployerId, "MasterContractAdmin"]` keyed by the *genesis* deployer, an
+identity nothing holds after block 1, so from genesis onward nothing could write and an application got
+silence rather than a refusal (law 40 over law 38) — and fixed it by **publishing** the restricted half,
+`grant`, which answers "who may write" by *grant*. That left three questions the thread recorded as open
+rather than answered: who may claim a name at block 0, whether a publish overwrites or extends, and whether
+the bundled classes belong in genesis at all.
+
+**The rule, and it is the reason the class is small.** `publish(path, value)` succeeds iff the path's owner
+prefix equals the caller's **derived** REV address — derived from the deployer id by
+`rho:rev:address("fromDeployerId", …)`, never supplied by the caller. So the first question does not get an
+answer, it *dissolves*: there is nothing to claim and no admission policy to freeze, because a name outside
+your own root is **inexpressible** rather than refused. `grant` survives in a narrower form — a writekey
+bound to one path *and one epoch*, so `revoke` retires every key already issued for it. The other two are
+answered by construction: `publish` **appends** (a version, once written, is answered by
+`resolveAt(path, v)` for ever), and the name layer's only mutable pointer is the **alias tier**, which one
+authority governs and which can be re-pointed without a genesis change. The classes stay installed; the
+names stop being frozen. All three are recorded as decisions in `spec/GENESIS.md`.
+
+**Law 56 states it, and its falsifier is a second relation rather than a schedule.** `C180`→Law 55 was the
+precedent: a `candidate:` slug in issue prose, promoted to a register row when the statement existed. Here
+that is `spec/Rchain/Namespace.lean` — `publish`, `setAlias`, `writekeyValid` over an abstract state, every
+theorem discharged by `decide` over concrete values, and `unguardedPublish` beside `publish` differing by
+exactly the ownership comparison. `an_unguarded_publish_hits_anothers_root` proves the relation *without* the
+guard accepts what the one with it refuses, and `alice_publishing_under_her_own_root_is_accepted` is the
+control that stops "refuses everything" from satisfying the refusal theorems.
+
+**The Rust half is the prototype's case table, run against the deployed dictionary.** `#99`'s closes-when
+required exactly that — "the probes pass against the deployed dictionary, the four must-fail cases included"
+— so `casper/tests/master_dictionary.rs` drives genesis and then runs each case as a deploy *signed by a real
+key*, because every verb derives the caller's identity from the deployer id and a placeholder would read a
+refusal it did not intend. The four: writing under another's root, a granted key after `revoke`, publishing
+to a sealed path, and a non-root identity setting a short name. Plus append-only publish with pinned
+versions, `ownerOf`, absence-is-not-an-error, a forged id, and an unknown verb and a wrong arity answering
+rather than doing nothing.
+
+**Disclosure is a discipline, and the one part a mechanism cannot close.** `SECURITY.md` is exact about it:
+a deployer id is a bearer value — "Nothing was forged. The identity was disclosed, and disclosure is
+transfer" — and a contract that stores `*deployerId` and hands it out transfers that whole namespace. No
+rule inside the calculus prevents that. What can be checked is that the dictionary itself never does it, so
+`rgov.rs::the_deployer_id_is_only_ever_the_address_derivation` asserts it over the contract's source: every
+occurrence of the binder is the derivation, the binder itself, the admin-handle key, or a call to one of the
+dictionary's own facets. It is a line scan, and a floor rather than a proof — it cannot see a value that
+reaches a client by another name — which is why the `.rho` says so too.
+
+**Hard fork (#51 category A).** The dictionary *is* genesis content, so this moves every chain's genesis
+post-state and the install order is pinned by `blessed_terms_are_ordered_by_dependency`. The retired names
+are `readcap_uri`, `grantcap_uri`, `extra_directory_slots_source` and the vendored template's installation;
+their readers moved to the dictionary's three facets, and `memberDirectory` now publishes `GetMe`/`SendThem`
+into the operator's own root — the alias tier holds strings, and the two features are *contracts*, so the
+short names point at the paths they are published to. `spec/GENESIS.md`'s manifest and
+`docs/src/node/testnet.md`'s rebuild note carry the change.
+
+**What it does not claim.** Not that a contract cannot disclose a deployer id it was given — that is the
+discipline above, over the chain's contracts, and nothing here enforces it. Not anything about *encoding*:
+the law is over abstract tokens, and the base58 form plus the fact that a forged id derives `Nil` are
+properties of `rho:rev:address`, pinned by the Rust tests rather than modelled. And not that the alias tier
+is now safe to hand out: it has exactly one governor, the identity that installs the dictionary, and a
+network with a different answer to "who governs the short names" must change the genesis rather than the
+dictionary.
+>>>>>>> 0af44d75b (spec: law 56 states the rooted namespace, and C201 records the decision (#99))
