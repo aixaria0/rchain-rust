@@ -104,24 +104,40 @@ existed decodes to. See [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) for 
 `payExecutor_conserves` in [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) for the conservation
 that holds across it.
 
-**The absence rule, off by default.** A block writes its own sender and height into `pos:last_spoke`
-(B4): one entry per block, chosen by nobody, because the payload is empty and every node reads the values
-off the block it is processing. On that record, `absence-slack` arms an income-only rule: at an epoch
-boundary, a drawn validator whose entry is older than `absence-slack` heights *forfeits that epoch's
-reward*, which stays in the vault for a later epoch.
+**The absence rule, off by default.** A validator's epoch reward is scaled by its **participation**: how
+far behind the last finalised fringe its latest *message* sits. Each node derives that itself from its own
+DAG — the same object the epoch's seed is anchored to, and for the same reason, since it is agreed by
+more than two thirds and a lone proposer does not move it. Nothing about it is carried on the wire.
 
-Three properties, and each is why the rule is shaped as it is. It **cannot touch a bond** — it removes an
-entry from the rewards a boundary is about to commit, and a stake is not reachable from there. It **is
-not a slash** — nothing about it appears in `mark_failed`, the offence predicate, or any exemption ledger.
-And it **recovers in full**: the record is written by the validator's own signature, so one block puts it
-back inside the slack immediately, and the next boundary pays it exactly as if it had never been away.
+Two heights parameterise the weight, and the reason there are two is a property rather than a taste: a
+rule that pays an honest validator *in full* and reaches zero somewhere else cannot be a function of a
+single threshold, because the ramp would have to begin at lag zero and would put a haircut on every live
+validator.
+
+- `participation-grace` — inside this many heights of the boundary, the share is whole.
+- `absence-slack` — the **knee**: at this lag the weight reaches zero, with a linear ramp between.
+
+`participation-grace = absence-slack` is a simple threshold rule — full inside, nothing past it — and
+that is what a configuration written before the grace existed resolves to.
+
+Three properties, and each is why the rule is shaped as it is. It **cannot touch a bond** — it scales the
+rewards a boundary is about to commit, and a stake is not reachable from there. It **is not a slash** —
+nothing about it appears in `mark_failed`, the offence predicate, or any exemption ledger. And it
+**recovers in full**: the weight is a function of the fringe, so one message puts a validator back inside
+the grace and the next boundary pays it exactly as if it had never been away.
 
 **The shipped default is `absence-slack = 0`, which is off.** That is `Pos.rhox`'s behaviour — in the
 contract absence costs nothing and an absent validator is paid for being drawn — and it is a rule the
 contract does not have, so a network chooses it rather than inheriting it. It is also **not a fix for the
 liveness defect**: a validator that goes offline still freezes finality and still counts in the
 denominator ([#149](https://github.com/rchain-community/rchain-rust/issues/149)); this rule only decides
-that it is not paid for the boundary it sat out.
+that it is paid less for the boundary it sat out.
+
+**Arming it is a genesis decision, and the numbers are the network's to make.** Both parameters live in
+the genesis params record, so two nodes that disagree compute different post-states — and the value a
+network picks has to come from how far behind the fringe its *live* validators actually sit on its own
+chain, which is a property of its block rate and its active-set size rather than something this port can
+hand it. Nothing in the shipped configuration arms the rule.
 
 ## Who is paid: the drawn set, and where "pro-rata" stops holding
 

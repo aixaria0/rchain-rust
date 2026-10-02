@@ -2249,11 +2249,14 @@ def laws : List Law := [
     rustWitness := [
       "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
       "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary",
-      "rholang/src/property_tests.rs:law44_the_absence_rule_only_ever_removes_entries",
-      "rholang/src/property_tests.rs:law44_a_validator_inside_the_slack_is_kept",
-      "rholang/src/property_tests.rs:law44_a_validator_outside_the_slack_is_not_paid",
+      "rholang/src/property_tests.rs:law44_the_absence_rule_never_raises_a_reward",
+      "rholang/src/property_tests.rs:law44_a_validator_inside_the_grace_is_kept",
+      "rholang/src/property_tests.rs:law44_a_validator_outside_the_knee_is_not_paid",
       "rholang/src/property_tests.rs:law44_a_validator_that_never_spoke_is_not_paid",
-      "rholang/src/property_tests.rs:law44_a_zero_slack_withholds_nothing"],
+      "rholang/src/property_tests.rs:law44_a_zero_knee_withholds_nothing",
+      "rholang/src/property_tests.rs:law44_between_the_grace_and_the_knee_a_validator_is_paid_in_part",
+      "rholang/src/native_state.rs:the_boundary_pays_on_the_participation_it_is_handed",
+      "casper/src/runtime_manager.rs:a_boundarys_participation_reaches_play_and_replay_alike"],
     statement := "Membership takes effect at an **epoch boundary**: the epoch sequence runs only when \
       `blockNumber % epochLength = 0`, and off a boundary a bond is pooled but not activated, a \
       withdrawal is staged but not moved, and no claim is paid. The same machine carries the **slash**, \
@@ -2329,7 +2332,22 @@ def laws : List Law := [
       itself (`if boundary then … else s` restates its own definition, which is the `vacuous` shape) \
       but the **conservation** an epoch preserves: the staking vault plus the Coop vault plus every user \
       vault is invariant, which is what makes a payout a transfer rather than a mint. That is this \
-      row's Programme C item" },
+      row's Programme C item. **The absence rule's third form, and what it cost (2026-10-02, #150).** \
+      It was first a filter over a per-validator record in native state (`pos:last_spoke`), read out of \
+      the boundary block's **pre-state** — which is a function of the proposer's justification set, and \
+      nothing requires a block to justify everything it has seen, so the penalty could be *aimed* at a \
+      chosen rival. It also measured the wrong event: an attestation block carries no system deploys and \
+      so recorded nothing, while an attestation *is* a message. It now reads a participation map derived \
+      from the **last finalised fringe**, which is what the epoch seed reads and for the same reason, and \
+      the record it replaced is **retired** — leaf, codecs, op, proto field (reserved) and variant, with \
+      the block-level system-deploy list losing an entry. **Two things that cost are stated here rather \
+      than left to the diff**: retiring the entry shifts every positional seed in that list down by one, \
+      which is a consensus change of the same class as an insertion; and a block written before the \
+      retirement is refused at **replay** rather than at the wire, because an unknown proto oneof field \
+      decodes to `Empty` and `replay_block_system_deploy` is what rejects an `Empty` entry in a block's \
+      system-deploy list. The read's residual is the seed's own: the steering space is \"one per \
+      reachable fringe\", so a stale fringe moves every validator's reading back together and singles \
+      nobody out, but it is a reduction and not a closure" },
   { number := 45, layer := "PoS",
     rustWitness := ["rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust"],
     statement := "The epoch's split: `pot * (bondᵢ / minimumBond) / (activeBonds / minimumBond)` per \

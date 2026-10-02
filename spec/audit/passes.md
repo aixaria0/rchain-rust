@@ -345,8 +345,8 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | The block path **verifies every deploy's signature** — `validate::deploy_signatures` in `block_summary`'s pure list, refusing with `InvalidDeploySignature` before any replay | `legacy/casper/src/main/scala/coop/rchain/casper/Validate.scala:92-116` — `blockSummary` validates the deploy's shard, window and dedup and **never its signature**; `legacy/models/src/main/scala/coop/rchain/models/NormalizerEnv.scala:33-36` binds `deployerId` from `deploy.pk` with nothing having checked it either. So the oracle has the *same* defect on both paths, which is why this row records a **shared defect** rather than a port divergence — the port simply closes it in the stricter of the two trees | a deploy's `deployer` is the field the replay reads to decide whose vault is charged and paid, so an unauthenticated one is an authorization claim rather than a malformed datum: a bonded proposer could name any account, put arbitrary bytes in `sig`, and have every validator debit that account and pay the proposer's term, with a post-state hash the proposer computed honestly — the block was **valid and unattributable** (AUDIT C120). The check belongs in `block_summary` beside `phloLimit`, for the reason that list's own comment gives, and it is the second instance of the port choosing to be stricter there than the oracle (the first is that `blockSummary` here checks `phloPrice` and `phloLimit` at all, which the Scala does not). **Hard fork:** a block whose deploy signature does not verify was accepted before and is refused now, so a chain upgrading in place diverges on such a block — and the honest reading of that is that only a proposer which *forged* the deploy could have produced one, which is the point of the refusal rather than a cost of it |
 | The node's own block metadata **carries the `slashable` flag** (`BlockMetadataProto.slashable = 22`), where the port dropped it | — (no Scala counterpart: `BlockMetadata.slashable` is this port's own distinction, and the Scala has neither the field nor the rule that reads it) | the flag is the input to C110's slash rule, and the port hard-coded it to `false` in `from_proto` while writing it into every stored metadata — so the rule had no reachable input, a proposer's `to_slash` was always empty, and the **receiving** side refused *every* `Slash` as unjustified (`slash_is_unjustified` is `!slashed.is_subset(&justified)`, and `justified` was always empty). Carrying it restores the economic consequence of an attributable failure, which C111 left as the only seizure rule in the tree (AUDIT C122). **Hard fork:** a proposer on a fixed node may include a `Slash` an unfixed one would not, and a fixed node accepts a justified `Slash` that an unfixed one refuses with `UnjustifiedSlash` — so a chain upgrading in place diverges on any block containing one; lockstep upgrade is the practice, and this is the row that says so. The metadata is node-local and never on the wire, so the field itself changes no format and no state hash. **Narrowed 2026-10-02 (C198, §52):** `slashable` is now derived from `BlockStatus::is_slashing_offence`, not from `FailureCause::Attributable` — the three statuses that read a per-node knob or the compiled version set are no longer offences, because a node that reached the opposite verdict about blame would refuse the slashing block and split rather than disagree. |
 | **A slash is graded by the offence** — `Malicious` takes everything the validator holds in the PoS system, `Misdemeanour` a quarter, `HonestMistake` a tenth, with the remainder **returned to its own vault** (`SlashSeverity` / `BlockStatus::slash_severity` / `NativeSystemState::slash`) | `Pos.rhox:470-482` — the contract transfers `allBonds.get(slashedValidator)`, **the whole bond**, and has no notion of fault at all (its only guard is an auth token) | the *fault* distinction is this port's (C110, C173) and the *gradation* is C199's. The deviation here is the tiers: before C199 the port took the whole bond, as the oracle does. **Hard fork (#51 category A):** the same offence now moves a different amount, so bond and reward amounts move, every downstream block hash moves, and a fixed node and an unfixed one compute different post-states for a block containing a slash — lockstep upgrade is the practice, and this is the row that says so |
-| **Every block records its own producer's last-spoke height** — a block-level system deploy (`SystemDeployData::RecordSpoke`, an **empty** proto message) whose execution writes the block's own `sender` and `block_number` into `pos:last_spoke` (`rholang/src/native_state.rs`) | — (the contract has no per-validator activity record at all: `Pos.rhox`'s `activeValidators` is membership, not activity, and nothing in it is written by a block about itself) | the record is empty *on purpose*, and that is its security argument: the speaker and the height are read by every node off the block it is processing, so there is nothing in the payload for a proposer to choose — it cannot write another validator's entry and cannot claim a height that is not its own, and omitting the deploy costs it its own record and nothing else. This is the primitive the absence rule reads, and the one any honest performance score would have to be built on: every other candidate signal — the live weight set's justifications — is chosen by the block's own author. **Hard fork (#51 category A):** every block's `state` now carries the entry, so the block hash and the post-state hash of a fixed node differ from an unfixed one's; lockstep upgrade is the practice |
-| **An absent validator forfeits the epoch's reward** — `PosParams::absence_slack` heights: at a boundary a drawn validator whose `pos:last_spoke` entry is older than `boundary − slack` (or missing) is dropped from `epoch_rewards`' output before it is committed (`apply_absence`, `rholang/src/native_state.rs`) | `Pos.rhox:244-249` — the contract pays every member of `activeValidators` its share unconditionally; there is no absence term anywhere in it | the rule is **income only**, and structurally so rather than by promise: its whole effect is to remove an entry from the map a boundary is about to commit, so no bond, no pool entry and no ledger is reachable from it — a validator that was not paid is not a validator that was slashed. The withheld reward stays in the staking vault (nothing debits it) and is distributed by a later epoch, so conservation is untouched. **And it is fully recoverable**: the rule reads only the height in `pos:last_spoke`, which a validator writes itself by signing one block, so one block puts it back in full at its next boundary. `absence_slack = 0` — the shipped default — disables it, which is the contract's behaviour exactly, and it is what a params record written before the field decodes to. **Hard fork (#51 category A)** for any network that arms it: the committed reward amounts move, so the pot and every post-state after the boundary move with them. The model carries it (`Rchain.absenceAdjusted`) with `absence_never_raises`, `a_returning_validator_is_paid_in_full` and `the_absence_rule_moves_no_stake` |
+| **A boundary's participation comes from the last finalised fringe** — the epoch's participation rule reads each drawn validator's latest *message* height as of the last finalised fringe, derived by every node from its own DAG (`multi_parent_casper::participation_for_block` → `NativeSystemDeployOp::CloseBlock` → `apply_weight`, `rholang/src/native_state.rs`) | — (the contract has no per-validator activity signal at all: `Pos.rhox`'s `activeValidators` is membership, not activity, and nothing in it is a function of who has been messaging) | **the read is the deviation, and it took two attempts to get right.** It first read a per-validator record in native state (`pos:last_spoke`, written by a block-level system deploy whose payload was empty), which failed twice over: the read was the boundary block's **pre-state** — a function of the proposer's justification set, and nothing requires a block to justify everything it has seen, so the penalty could be *aimed* at a chosen rival — and the *write* happened only on a proposal, so a validator that attested and carried nothing recorded nothing and read as absent. The fringe is what the epoch seed already reads (see the seed's own row) and for the same reason, and it measures **messages**, so an attestation counts. **The residual, stated rather than implied**: the steering space becomes "one per reachable fringe" — normally one, occasionally a handful for a proposer willing to present a stale fringe — so a stale fringe moves every validator's reading back together and singles nobody out, but a reduction is not a closure, and it is registered beside the seed's. The record and its proto field are **retired**; the field is *reserved* rather than reused, and a block written before the retirement is refused at **replay** rather than at the wire, because an unknown oneof field decodes to `Empty` and `replay_block_system_deploy` is what rejects an `Empty` entry in a block's system-deploy list. **Hard fork (#51 category A):** a boundary's committed rewards move *and* the retirement shifts every positional seed in the block-level system-deploy list down by one, so a fixed node and an unfixed one compute different post-states for the same block; lockstep upgrade is the practice |
+| **A validator's epoch reward is scaled by its participation** — `PosParams::absence_slack` is the *knee* (the lag at which the weight reaches zero) and `PosParams::participation_grace` the *flat part* before it, with a linear ramp between; inside the grace the share is whole, past the knee it is zero, and the withheld fraction stays in the staking vault for a later epoch (`apply_weight`, `rholang/src/native_state.rs`) | `Pos.rhox:244-249` — the contract pays every member of `activeValidators` its share unconditionally; there is no absence term anywhere in it | the rule is **income only**, and structurally so rather than by promise: its whole effect is to *scale* the rewards a boundary is about to commit, so no bond, no pool entry and no ledger is reachable from it — a validator that was paid less is not a validator that was slashed. **Two parameters rather than one, and that is a property rather than a taste**: a rule that pays an honest validator *in full* and reaches zero somewhere else cannot be a function of a single threshold, because the ramp would have to begin at lag zero and would put a haircut on every live validator. `grace == knee` reproduces a binary threshold rule exactly, which is also what a params record written before the grace existed decodes to — zero there would silently ramp every chain that had armed the rule. `absence_slack = 0` — the shipped default — disables it, which is the contract's behaviour exactly. **Hard fork (#51 category A)** for any network that arms it: the committed reward amounts move, so the pot and every post-state after the boundary move with them. The model carries it (`Rchain.participationWeight`, `Rchain.absenceAdjusted`) and carries law 46 *through* it (`Rchain.weighted_rewards_le_pot`), and its biting statement is paired with a decided instance (`Rchain.the_ramp_is_a_ramp`) because the implication alone is satisfied vacuously by a weight that never withholds |
 | **The block's producer is paid a share of what its deploys burned** — `PosParams::executor_share` basis points of a deploy's burned phlo, taken out of the staking vault at the end of the deploy's cost accounting (`SystemDeploy::pay_executor` → `NativeSystemState::pay_executor`) and paid to the block's own signed `sender`; the shipped default is 2 500, a quarter | `Pos.rhox:397-404` and `:417-454` — the charge is deposited to `posVault` (`deposit!(deployerId, amount, posVaultAddr)`) and the unconsumed part transferred back out of it (`posVault!("transfer", deployerRevAddress, refundAmount, posAuthKey)`); the contract makes **no payment to a block's producer at all**, so every burned photon reaches the epoch pot and is split across the drawn active set whether its validator proposed or not | the deviation is the payment, and it is a **reallocation inside a fixed pie** rather than an emission: the pie is what was burned, and before this the whole of it went to the drawn set, which pays a validator for *being drawn* and nothing for the work of producing the block it is paid from. The signal is the one thing the protocol can read without new state — the block's own signed `sender`, set before its deploys run and identical on play and replay — so it needs no participation score, no counter leaf and no third party's report, and it cannot be steered by anyone but the signer. **Hard fork (#51 category A):** the payment moves REV between two vaults, so a block's post-state hash differs between a fixed node and an unfixed one, and the epoch pot — and therefore every drawn validator's reward — is smaller by the shares paid. `executor_share = 0` is the contract's behaviour exactly, and it is what a params record written before the field existed decodes to (a forty-byte record still reads). Registered with the plan's B2; the model carries it as `payExecutor` with `payExecutor_conserves` (“a transfer, not a mint”), `payExecutor_leaves_the_stake` (the pool, the active set and the committed ledger are untouched) and `producer_pay_is_monotone` (the payment is a function of the work) |
 | **An equivocation is slashable, and its proof travels in the block** — the `Slash` system deploy carries an `EquivocationEvidenceProto` header (`EquivocationEvidenceProto.blockHash/sender/seqNum/sig/sigAlgorithm`), the H-1 gate records the refused block's header (`BlockDagStorage::recorded_equivocations`), and a receiver re-checks the offence against **its own DAG** (`validate::equivocation_is_proved`) | — (the Scala has no equivocation *slashing* at all: `BlockDagKeyValueStorage` refuses the second block and keeps nothing, so the fault is free) | the H-1 *refusal* is the oracle's; the penalty is this port's (AUDIT C200, and #150's risk plan). **Hard fork (#51 category A):** a fixed node proposes a `Slash` an unfixed one cannot, and **accepts** one an unfixed one refuses as `UnjustifiedSlash` — so a chain upgrading in place diverges on any block containing one; lockstep upgrade is the practice, and this is the row that says so. The payload is a fixed-width header rather than the refused block because it lands in consensus state and a refused block's size is whatever its sender chose |
 | `Secp256k1::verify_bytes` **refuses a message that is not the 32-byte prehash** (a named `PREHASH_LEN`), where the dependency truncates a longer one to its leftmost 32 bytes | `Secp256k1.scala` / `NativeSecp256k1` take exactly 32 bytes and the Scala's doc warns of an **assertion exception** on other lengths, so the oracle either asserts (a crash, if the JNI assertion is enabled) or its C++ truncates — the ambiguity is C134's and is unresolved in the oracle | the truncation made this function answer for a *prefix* of its message, which on `rho:crypto:secp256k1Verify` is a verdict a contract can receive for a message nobody signed. The port refuses: a defined `false` for an input that is not a prehash, which is neither the crash nor the silent truncation the oracle offers, and is the same preference this register records elsewhere — a refusal at the boundary rather than a value from a failure. Safe for every caller because `signature_hash` produces 32 bytes for `secp256k1` and `secp256k1:eth` alike (AUDIT C134). **Hard fork:** a deploy whose contract verified a suffixed message was answered `true` before and `false` now, so a chain upgrading in place diverges on it; lockstep upgrade is the practice, and this is the row that says so |
@@ -6577,56 +6577,85 @@ visible rather than accidentally right.
 **Hard fork (#51 category A)** for both: the draw changes which validators are in the finality weight set
 and what each is paid, and the producer's share changes the epoch pot and every post-state hash after it.
 
-### B4: the activity record, and the absence rule
+### B4: the participation rule, and the read that took two attempts
 
-**The problem the primitive solves.** Every candidate "performance" signal this tree had was chosen by
-the block's own author. The live weight set is derived from a block's **justification set**, and nothing
-requires a block to carry every message it has seen — so the author of a boundary block could make a
-rival read absent and take the withheld share. That is the same lever that forced the epoch seed onto
-the last *finalised* fringe (residual O1), and it is why the review could not state a participation
-multiplier honestly. `pos:last_spoke` is the signal that is not the proposer's: a block writes exactly
-one entry, its own sender's, at its own height, and the payload is **empty** so there is nothing in it to
-lie about.
+**The problem, which the first attempt did not actually solve.** Every candidate "performance" signal
+this tree had was chosen by the block's own author. The live weight set is derived from a block's
+**justification set**, and nothing requires a block to carry every message it has seen — so the author of
+a boundary block could make a rival read absent and take the withheld share. That is the same lever that
+forced the epoch seed onto the last *finalised* fringe (residual O1), and it is why the review could not
+state a participation multiplier honestly.
 
-**The rule, and its three conditions.** The plan set three: income only, never confusable with a slash,
-and a full recovery for an honest validator that was briefly away. `apply_absence` is a function of the
-epoch's rewards and of how long each validator has been silent — a bond is not an argument to it — so the
-first two are structural. The third is a property of what the record *is*: one signed block writes the
-entry, so a validator that comes back is inside the slack again immediately and the rule has no memory of
-the lapse. The shipped default is `absence-slack = 0`: off, which is `Pos.rhox`'s behaviour, because this
-is a rule the contract does not have and a network should choose it rather than inherit it.
+The first answer was `pos:last_spoke`: a block-level system deploy with an **empty** payload, whose
+execution writes the block's own `sender` and `block_number` into native state. That closed the *write* —
+no proposer can forge another validator's entry — and this section recorded it as closing the problem.
+**It did not close the read**, and that is the correction this section now carries. The rule read that
+leaf out of the boundary block's **pre-state**, and a pre-state is a function of the proposer's
+justification set — the tree says so itself in `close_block` step 5, which is the comment explaining why
+the *seed* had to move onto the fringe. So the penalty could still be aimed at a chosen rival, singly:
+omit that validator's message and its entry reads stale while everyone else's does not. The proposer was
+never its own victim, since its own record is written earlier in the same block. And the signal measured
+the wrong event: an attestation block builds `Vec::new()` system deploys, so a validator that attested
+and carried nothing recorded nothing and read as absent.
+
+**The rule now, and its three conditions.** The participation is each validator's latest **message**
+height in the last finalised fringe, derived by every node from its own DAG
+(`multi_parent_casper::participation_for_block`) and carried into the `CloseBlock` op. The reward is
+scaled by a **weight**: whole inside a grace, ramping to zero at a knee, zero past it. Income only,
+never confusable with a slash, and a full recovery are structural — a bond is not an argument to the
+weight, and the weight is a function of the fringe, so one message puts a validator back inside the grace
+and the rule has no memory of the lapse. The shipped default is `absence-slack = 0`: off, which is
+`Pos.rhox`'s behaviour, because this is a rule the contract does not have and a network should choose it
+rather than inherit it.
 
 **What it is not.** It is not a fix for #149. A validator that goes offline still freezes finality and
-still counts in the denominator; this rule only decides that it is not *paid* for the boundary it sat
-out. Calling it a liveness fix would be the kind of over-claim the register exists to catch.
+still counts in the denominator; this rule only decides that it is not *paid in full* for the boundary it
+sat out. Calling it a liveness fix would be the kind of over-claim the register exists to catch.
 
-**Falsified, and red under the mutation named.** `the_absence_rule_takes_income_only_and_releases_it_on_a_single_block`
-covers all four arms in one place: the record is the key and height it was given and nothing else; a
-validator silent past the slack (and one that never spoke at all) is absent from the committed ledger;
-the **pool is unchanged** for both, which is the "never the bond" arm; and after one block at height 16
-the same validator is paid again at the next boundary, which is the recovery arm. The `absence-slack = 0`
-arm is in the same test, with the control that the absent validator is then paid the whole pot exactly as
-`Pos.rhox` would. `a_block_records_its_own_producer_and_the_replay_agrees` is the fold's arm: a block
-whose proposer attached the deploy records *its own sender at its own height* in the manager's native
-store, the block's `state` carries the record for a receiver to replay, and the replay reaches the same
-post-state hash.
+**The residual, stated rather than implied.** The fringe read is a *reduction* in steering space, not a
+closure: `latest_fringe` takes the fringe a justification *carries*, so a proposer willing to present a
+stale fringe still has a choice — of fringes rather than of subsets. What it buys is the property a
+penalty needs: a stale fringe moves **every** validator's reading back together, so it cannot single one
+out, which the pre-state read could. It is the seed's own residual (O1) and is registered beside it.
 
-**And the proposer's *attachment* of the deploy is pinned, which it was not when this landed.**
+**Falsified, and red under the mutations named.** `the_absence_rule_takes_income_only_and_releases_it_on_a_single_block`
+covers the binary shape's arms in one place: a validator silent past the knee (and one that never spoke
+at all) is paid **zero** — the key survives a scaling, so the assertion is `Some(0)` and not absence; the
+**pool is unchanged** for both, which is the "never the bond" arm; and after one block the same validator
+is paid again, which is the recovery arm. `the_boundary_pays_on_the_participation_it_is_handed` plays one
+boundary twice with two maps and requires the whole pot and nothing, so a rule that ignored its argument
+fails. `law44_between_the_grace_and_the_knee_a_validator_is_paid_in_part` asserts **both** halves of the
+ramp — strictly less than the share and strictly more than nothing — and goes red when the ramp is
+replaced by a cliff, which is the arm the binary rule could not have had.
+`a_boundarys_participation_reaches_play_and_replay_alike` is the fold's arm: the participation is the one
+input to `close_block` that is not on the wire, so it pins that play and replay feed the same value to
+the same arithmetic — and its third arm replays with a *different* map and requires a *different*
+post-state, without which the agreement arm is satisfied by a replay that ignores its argument.
+
+**And the proposer's *attachment* of the list is pinned, which it was not when this first landed.**
 `create_block`'s list construction was inline, so the only way to reach it was through a whole proposer —
 a runtime, a DAG and a signing identity, which no test in this tree builds — and deleting the
-`RecordSpoke` push left every other test in the tree green. The list is now
-`block_system_deploys` (`casper/src/blocks/proposer/block_creator.rs`), a function for the same reason
-`slashable_offenders` is one, and `the_proposer_attaches_the_list_the_replay_will_read` pins it: the
-block's own record first, the slashes next in `to_slash`'s canonical order with their tiers and evidence,
-the close last carrying the fringe's state hash — and, for every entry, the **positional seed the replay
-will derive for it** (`rand.split_byte(terms.len() + i)`, spelled the same way on both sides). Removing
-the `RecordSpoke` push turns both new tests red.
+`RecordSpoke` push left every other test in the tree green. The list is now `block_system_deploys`
+(`casper/src/blocks/proposer/block_creator.rs`), a function for the same reason `slashable_offenders` is
+one, and `the_proposer_attaches_the_list_the_replay_will_read` pins it: the slashes in `to_slash`'s
+canonical order with their tiers and evidence, then the close carrying the fringe's state hash — and, for
+every entry, the **positional seed the replay will derive for it** (`rand.split_byte(terms.len() + i)`,
+spelled the same way on both sides).
 
-What the positional arm protects is the thing that was never expressible before: the two sides agree
-about seeds *because the lists are the same list*, so an entry inserted anywhere but the end moves every
-seed after it. The one property still left to a comment is `create_block`'s choice of `selected.len()`
-(the deploys actually in the pool) over `deploys.len()` (the ones requested) — pinned only by its own
-note, and predating this change.
+That positional arm is what caught the retirement, and it is worth saying plainly: **removing an entry
+shifts every seed in the list down by one**, exactly as inserting one does. Retiring `RecordSpoke` is
+therefore a consensus change of the same class as adding a deploy, which is why the list is a function
+whose order a test can read rather than an inline block. The one property still left to a comment is
+`create_block`'s choice of `selected.len()` (the deploys actually in the pool) over `deploys.len()` (the
+ones requested) — pinned only by its own note, and predating this change.
+
+**One thing this section lost, stated because it was a real strength.** The falsifier for the read used
+to *compare two implementations*: a test wrote a `pos:last_spoke` entry contradicting the participation
+map and asserted the map won, so restoring `self.last_spoke()` turned it red. With the record retired
+there is one read and no rival, so that comparison is no longer available — a falsifier that compares two
+implementations evaporates when one is deleted. What replaces it is a pair (inside the grace pays the
+whole pot, past the knee pays nothing), which is weaker in kind: it pins that the argument is
+load-bearing, not that it beat an alternative.
 
 ## 56. B3: the free performance, taken where it is provably free (issue #144, #150)
 
@@ -6766,4 +6795,84 @@ properties of `rho:rev:address`, pinned by the Rust tests rather than modelled. 
 is now safe to hand out: it has exactly one governor, the identity that installs the dictionary, and a
 network with a different answer to "who governs the short names" must change the genesis rather than the
 dictionary.
+
+## 59. The participation rule read a value the proposer chose, and measured the wrong event (C203, #150)
+
+The rule that prices absence was landed in §55 and this section is its correction. It read
+`pos:last_spoke` — a per-validator activity record written by a block-level system deploy with an empty
+payload — out of the boundary block's **pre-state**. §55 recorded that as solving the steerability
+problem, and it solved the *write*: no proposer can forge another validator's entry. **The read is a
+different question and it was not solved.**
+
+**A pre-state is a function of the proposer's justification set**, and nothing requires a block to
+justify everything it has seen. The tree says so itself, in `close_block` step 5 — the comment that
+explains why the *epoch seed* had to move off the pre-state and onto the last finalised fringe. The
+absence rule kept the hole the seed had left: **aim the penalty at one validator**. Omit that
+validator's message and its entry reads stale while every other validator's stays current. The proposer
+is never its own victim: `record_spoke` is pushed first in the block's own system-deploy list and
+`close_block` last, so its own record is written before the rule runs.
+
+**And the signal measured the wrong event.** `record_spoke` is a block-level system deploy, and an
+**attestation** block builds `Vec::new()` system deploys — so a validator that is live, attesting, and
+simply not drawn to carry deploys recorded *nothing*, and the rule read it as absent. Every arm of the
+rule's own tests passed, because they wrote the record by hand.
+
+### The fix, and where it stops
+
+The participation is now each validator's latest **message** height **in the last finalised fringe**,
+derived by every node from its own DAG (`multi_parent_casper::participation_for_block`) and carried into
+`NativeSystemDeployOp::CloseBlock`. Attestations *are* messages, so attesting counts. Nothing about it is
+published, exactly as nothing about the fringe state hash is: `CloseBlock`'s fields never reach the wire,
+so play and replay agree by construction.
+
+**It is a reduction in steering space, not a closure, and this section states it rather than letting the
+word "fringe" imply more.** `latest_fringe` takes the fringe a justification *carries*, so a proposer
+willing to present a stale fringe still has a choice — of fringes rather than of subsets. What it buys is
+the property a *penalty* needs: a stale fringe moves **every** validator's reading back together, so it
+cannot single one out, which the pre-state read could. It carries the seed's own residual (O1).
+
+The record is **retired**: the leaf, its codecs, the accessor pair, the `RecordSpoke` op, the
+`SystemDeployData` variant and the proto field. Two consequences are load-bearing and neither is obvious:
+
+* **The proto field is reserved, not reused, and the refusal is at replay rather than at the wire.**
+  prost decodes an unknown oneof field to `None`, which this port reads as `SystemDeployData::Empty` —
+  deliberately, because the cost-accounting deploys record as `Empty` too. So a block from before the
+  retirement *decodes*, and `replay_block_system_deploy` is what rejects it, as an `Empty` entry in a
+  block's system-deploy list. Right outcome, wrong place.
+* **Removing an entry shifts every positional seed in the block-level list**, exactly as inserting one
+  does. The replay rebuilds each seed from a position (`rand.split_byte(terms.len() + i)`), so the
+  retirement is a consensus change of the same class as adding a deploy.
+
+### Falsified, and one falsifier lost
+
+Three arms, each red under the mutation named in §6's row:
+
+* `law44_between_the_grace_and_the_knee_a_validator_is_paid_in_part` asserts **both** halves of the ramp —
+  strictly less than the share and strictly more than nothing. Replace the ramp with a cliff and it goes
+  red; a rule that merely zeroed the band would satisfy the upper half alone.
+* `a_boundarys_participation_reaches_play_and_replay_alike` is the fold's arm, and its third part is the
+  falsifier: the same block replayed with a **different** participation must reach a **different**
+  post-state. Without it the agreement arm is satisfied by a replay that ignores its argument.
+* `the_boundary_pays_on_the_participation_it_is_handed` plays one boundary twice with two maps and
+  requires the whole pot and nothing.
+
+**What this section lost, and it was a real strength.** The read's original falsifier *compared two
+implementations*: a test wrote a `pos:last_spoke` entry contradicting the map and asserted the map won,
+so restoring `self.last_spoke()` turned it red. With the record retired there is one read and no rival —
+**a falsifier that compares two implementations evaporates when one is deleted** — and what replaces it
+is weaker in kind: it pins that the argument is load-bearing, not that it beat an alternative. That is
+the honest cost of the retirement and it is why the two remaining arms are stated as a pair.
+
+### What it does not claim
+
+Not that a stale fringe is harmless: it moves the whole reading, which is a real if blunt lever. Not that
+the weight's numbers are right — `absence_slack` and `participation_grace` both ship `0`, so the rule is
+**off** and its arithmetic is dead code until a network arms it, and the measurement that would set the
+values by the distribution of a live validator's lag is **not done**. And not that this prices absence in
+the way a staker would notice: the withheld fraction returns to the vault for a later epoch, so the rule
+prices the *epoch* a validator sat out and not the behaviour.
+
+**Hard fork (#51 category A):** the committed rewards move for any chain that arms the rule, the genesis
+params record grows a field, and the retirement shifts a positional seed. Lockstep upgrade is the
+practice.
 

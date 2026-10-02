@@ -311,12 +311,28 @@ bonds on a chain with that epoch does not become active for another 10000 blocks
 block's producer is paid out of the phlo its deploys burned — a quarter, unless you say otherwise — so two
 nodes that disagree about it pay the producer different amounts and compute different post-states for the
 same block. It is **optional in a config file** (a config written before the key existed resolves to the
-shipped 2 500 rather than failing to start), which makes it the one parameter a joiner can omit and still
-get a working node that disagrees with its peers about amounts. State it explicitly:
+shipped 2 500 rather than failing to start). State it explicitly:
 
 ```
 --executor-share 2500     # or 0, for the contract's own behaviour: producers are paid nothing extra
 ```
+
+**`participation-grace` is the other omissible one, and its default is not a number.** It is the flat part
+of the participation weight — the lag inside which a validator is paid its whole epoch share, with
+`absence-slack` the knee where the weight reaches zero. Omitting it resolves to **`absence-slack`**, not
+to zero, because a config that predates the key describes a chain running the simple threshold rule
+(`grace == knee`); defaulting to zero would silently ramp every chain that had armed the rule. That makes
+it the second parameter a joiner can omit and still get a working node that disagrees with its peers
+about amounts — and the more dangerous of the two, since omitting it *changes the shape of the rule*
+rather than only its size. If your network arms `absence-slack`, state the grace too:
+
+```
+--absence-slack 300       # the knee: past this many heights behind the fringe, the share is zero
+--participation-grace 150 # and inside this many, it is whole, with a ramp between
+```
+
+Leaving `absence-slack` at its shipped `0` disables the rule whatever the grace says, so a network that
+has not chosen to price absence can ignore both.
 
 ### A validator is slashed for a block that fails validation, not for staying silent
 
