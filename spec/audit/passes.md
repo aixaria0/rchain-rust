@@ -6253,3 +6253,38 @@ already-synced block`), the halt stayed at **0**, and `/metrics` and `/api/statu
 #157's own deliverable, visible only once a third field was added beside the two dead ones. It is C195
 (law 26a, the routing layer's invariant that a request naming neither shard nor key resolves to the
 primary), fixed in `8b2a6b282`.
+
+## 50. The storm's pace bound was not the caller's (C196)
+
+C171's fix entered this branch and CI's test job went red on a test that had passed at every earlier
+commit of it: `node/tests/api_surface.rs`'s arm 2 — a same-origin `POST /api/v1/propose` — answered **400**
+where it asserts 200. Reproduced locally, the body was `Failure: NoNewDeploys ...`: the second propose on
+the test's standalone node produced no block. The cause was the pace term itself. `attestation_suppressed`
+returned `true` for *every* proposal on a caught-up node with no deploy to attest to, and nothing
+distinguished the node's own attestation from a caller asking for a block.
+
+**The bound was right about the storm and wrong about who the storm is.** #70 is a node *reacting* to
+remote blocks — the attest-on-new-blocks tap and autopropose, each an attestation that is in turn a remote
+block for the next. A caller's propose is not a reaction: it is the documented way to force a block on an
+idle node. `tools/devnet.sh` states the contract ("A block is created only when one of these fires: … or
+(c) an explicit `propose`/`POST /api/v1/propose`", on a node started `--no-autopropose`) and
+`tools/devnet-test.sh`'s step 5 asserts it (`POST /api/propose returns 200`). Both were broken by the fix
+as first written, and neither is hypothetical: the devnet harness drives blocks through exactly this route
+with autopropose off.
+
+**The fix carries provenance.** `ProposeSource` now travels with the queued request — `Explicit { is_async }`
+for admin HTTP, the gRPC propose service and `--propose-on-deploy`, `Automatic` for the autopropose tap and
+timer, the attest-on-new-blocks tap, and the follow-up a colliding request resolves to — and the pace term
+applies only to an `Automatic` proposal. An explicit propose on a reachable quorum attests, which is the
+pre-C171 rule; the storm arm is unchanged, because every tap is `Automatic`.
+
+**Falsifiers, both red before the correction.** The unit one,
+`an_explicit_propose_is_not_paced_by_the_storm_bound`, asserts `attestation_suppressed(false, false, true,
+false, false)` is `false` where the `paced` arm beside it asserts `true` for the identical inputs. The
+node-level one is the CI failure itself: `the_read_routes_answer_and_their_refusals_are_defined` (arm 2),
+observed red locally and green after, with the exemption neutralized to `if false` to confirm the term
+under test is the one the arm pins.
+
+**What this was.** Not a new consensus rule — a first-instance over-reach of a fix that had not yet left the
+branch. It is C196 (law 51a's `Paced`): the bound is a pace condition on the storm's `Drift`, and the
+correction narrows *which steps* it paces rather than removing it.

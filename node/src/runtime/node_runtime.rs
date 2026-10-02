@@ -32,7 +32,7 @@ use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::blocks::block_processor;
 use rchain_casper::blocks::block_receiver::{self, BlockReceiverState};
 use rchain_casper::blocks::block_retriever::BlockRetriever;
-use rchain_casper::blocks::proposer::proposer::{Proposer, ProposerResult};
+use rchain_casper::blocks::proposer::proposer::{ProposeSource, Proposer, ProposerResult};
 use rchain_casper::conf::ShardSpec;
 use rchain_casper::dag::BlockDagKeyValueStorage;
 use rchain_casper::engine::node_launch::{self, PeerMessage};
@@ -689,8 +689,8 @@ pub struct ShardParts {
 /// `Setup.setupNodeProgram`). Built in [`setup`] (so `BlockApiImpl` can get the trigger + state);
 /// consumed in [`setup_node_program`] to drive the proposer stream.
 pub struct ProposerParts {
-    pub queue_tx: mpsc::Sender<(bool, tokio::sync::oneshot::Sender<ProposerResult>)>,
-    pub queue_rx: mpsc::Receiver<(bool, tokio::sync::oneshot::Sender<ProposerResult>)>,
+    pub queue_tx: mpsc::Sender<(ProposeSource, tokio::sync::oneshot::Sender<ProposerResult>)>,
+    pub queue_rx: mpsc::Receiver<(ProposeSource, tokio::sync::oneshot::Sender<ProposerResult>)>,
     pub state: Arc<tokio::sync::Mutex<ProposerState>>,
 }
 
@@ -1556,7 +1556,7 @@ async fn setup_shard_runtime(
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                     push_proposer_health(&tap_metrics, &tap_source, &tap_health);
                     let (otx, _orx) = tokio::sync::oneshot::channel();
-                    if let Err(e) = tap_tx.try_send((true, otx)) {
+                    if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
                         tap_log.warn(
                             LogSource::new("coop.rchain.node.runtime.Setup"),
                             &format!(
@@ -1601,7 +1601,7 @@ async fn setup_shard_runtime(
                         }
                         push_proposer_health(&timer_metrics, &timer_source, &timer_health);
                         let (otx, _orx) = tokio::sync::oneshot::channel();
-                        if let Err(e) = timer_tx.try_send((true, otx)) {
+                        if let Err(e) = timer_tx.try_send((ProposeSource::Automatic, otx)) {
                             timer_log.warn(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(
@@ -1662,7 +1662,7 @@ async fn setup_shard_runtime(
                     answered.insert(sender, height);
                 }
                 let (otx, _orx) = tokio::sync::oneshot::channel();
-                if let Err(e) = tap_tx.try_send((true, otx)) {
+                if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
                     tap_log.warn(
                         LogSource::new("coop.rchain.node.runtime.Setup"),
                         &format!(
@@ -1978,7 +1978,7 @@ pub async fn setup_shard(
     // `proposerStateRefOpt` in `Setup.setupNodeProgram`). The proposer stream itself is driven in
     // `setup_node_program`, but the trigger + state must be available to `BlockApiImpl` here.
     let (proposer_queue_tx, proposer_queue_rx) =
-        mpsc::channel::<(bool, tokio::sync::oneshot::Sender<ProposerResult>)>(100);
+        mpsc::channel::<(ProposeSource, tokio::sync::oneshot::Sender<ProposerResult>)>(100);
     let proposer_state: Option<Arc<tokio::sync::Mutex<ProposerState>>> = validator_opt
         .as_ref()
         .map(|_| Arc::new(tokio::sync::Mutex::new(ProposerState::default())));
@@ -1989,7 +1989,8 @@ pub async fn setup_shard(
                 let tx = tx.clone();
                 Box::pin(async move {
                     let (otx, orx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send((is_async, otx)).await;
+                    // A caller asked, and waits: `Explicit`, so C171's pace bound does not apply.
+                    let _ = tx.send((ProposeSource::Explicit { is_async }, otx)).await;
                     orx.await.unwrap_or(ProposerResult::Empty)
                 })
             },
