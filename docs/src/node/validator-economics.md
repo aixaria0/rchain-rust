@@ -1,0 +1,231 @@
+# Validator economics
+
+What a validator is **paid**, what it can **lose**, and how the two line up. The mechanics live
+elsewhere and this page links them rather than restating them: the native PoS state and the epoch in
+[`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md), the reward arithmetic and its theorems in
+[`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) (laws 44–47 — see
+[`spec/LAWS.md`](../../../spec/LAWS.md) for their status, which is the authority and is never restated
+here), and the active-set draw with its residuals in [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md)
+§3 item 12.
+
+**What follows is of two kinds, and each part says which.** A sentence about the protocol's behaviour
+names the artifact that holds it — a `.rs` or `.lean` file. A sentence about what the rewards *should* be
+is **design discussion**: not implemented, not proved, tracked on an issue rather than decided here. Per
+[`AGENTS.md`](../../../AGENTS.md), plans and hypotheticals live outside this repository, so this page
+keeps only the questions.
+
+## The pot is deploy phlo, not a mint
+
+The staking vault is funded at genesis with **exactly** the bond sum, so the epoch pot is **zero at
+genesis**; from then on the pot is the phlo the deploys since the last boundary actually burned. A
+deploy is charged its maximum phlo by `pre_charge` (`rholang/src/native_state.rs:1788`) and the unused
+surplus returns to the deployer through `refund` (`:1838`), so what stays in the vault is what was spent.
+The pot is `epoch_pot` (`:668`) — the vault less every outstanding claim — and the transfer table is in
+[`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) § *The staking vault*.
+
+Two consequences follow directly.
+
+- **Rewards are paid out of fees, not minted.** Nothing creates REV at a boundary; the epoch moves it
+  from the vault to the validators.
+- **The validator that executed a deploy is paid exactly as one that executed nothing.** The deploy's
+  phlo goes into the pot, and the pot is split by stake (below), not by who did the work.
+
+## The formula: proportional to stake, in units of the minimum bond
+
+At each epoch boundary every pooled validator's share is committed by `epoch_rewards`
+(`:1373`), computed by `epoch_reward` (`:706`):
+
+```
+reward_i = pot * (bond_i / minimumBond) / (activeBonds / minimumBond)
+```
+
+Two integer divisions. Their consequence is proved rather than assumed: the shares do **not** sum to the
+pot, and the remainder is not lost — it stays in the pot and the next epoch distributes it.
+`spec/Rchain/Pos.lean` states it as the inequality `sum_rewards_le_pot` and decides a strict instance
+(`the_dust_is_real`); the port pays **zero**, rather than faulting, in the two cases where the contract's
+formula is undefined (a zero minimum bond, or a zero normaliser — `epoch_reward`'s early returns at
+`:707`).
+
+**Derived** (arithmetic on the two lines above, no artifact needed): the split is proportional to stake
+only in whole multiples of `minimum_bond`. At the default `bond-minimum = 1`
+(`node/src/configuration/defaults.conf:319`) the flooring never bites and the share is exactly
+stake-proportional. Set `minimum_bond = 3` and two validators holding **4** and **5** both floor to a
+factor of `1` — they are paid **the same**, whatever the pot. (That is a property of a validator's `bond`
+under a configured minimum; it is not `PosParams::default()`, whose minimum is `0` and under which
+`epoch_reward` returns zero for everyone.)
+
+## What the formula does not read
+
+The inputs are the pot, `minimum_bond`, `active_bonds` and the validator's own `bond` — and nothing
+else. Not blocks proposed, not attestations made, not deploys executed, and not whether the validator
+was **live at all**. An absent validator is paid on the same terms as one that ran all epoch, because
+there is **no inactivity leak, no decay and no eviction** in this tree: a stopped validator's stake stays
+in the pool and counts in the finality denominator for ever. That is measured and written up in
+[The public testnet](testnet.md) (the *Do not onboard a validator yet* measurements), and issue
+[#148](https://github.com/rchain-community/rchain-rust/issues/148) is the consequence: a validator that
+bonds and goes offline freezes finality **and still collects its share**.
+
+So the protocol's only performance input is the liveness hypothesis finality carries — `Participation`,
+named in [Progress: the shapes of non-progress](../formal/progress.md) — and liveness affects whether the
+chain *finalises*, not what a validator *earns*. Nothing in the reward is a function of the work a node
+did.
+
+## Who is paid: the drawn set, and where "pro-rata" stops holding
+
+`epoch_rewards` pays the **active** set. It writes an entry for **every** pooled validator and the entry
+is `0` for anyone outside the active set, so a validator that is bonded but not drawn for the epoch earns
+nothing in it.
+
+The active set is not a ranking. It is recomputed only at an epoch boundary (`select_active`, `:580`),
+and when the cap bites it is a **seeded uniform sample without replacement** from the eligible pool —
+positive stake, not withdrawing — with the cap set by `number-of-active-validators`
+(`node/src/configuration/defaults.conf:334`, default `100`). The seed comes from the last **finalised**
+fringe, one boundary ahead. The reason, the residuals, and the alternative are in
+[`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 item 12; the residuals are named **O1–O4**
+there and not repeated here.
+
+**There are two regimes, and they differ in the answer to "does the largest stake earn most?"**
+
+- **The cap does not bite** — the eligible pool is within `number-of-active-validators`, which on a
+  bonded network of ≤100 validators is simply all of it. Every pooled validator is active, nobody is
+  undrawn, and the split is stake-proportional: the largest bond takes the largest share.
+- **The cap bites.** Membership is a uniform draw, so expected income is close to **uniform across the
+  drawn members** whatever their stake, and a member that is not drawn earns nothing that epoch. In this
+  regime "the largest stake earns most" is false, and what is true instead is the residual **O3**:
+  per-unit-of-stake income *favours* a stake split across several keys, since each key draws
+  independently.
+
+Which regime a net is in is a property of its size, not a policy — and the two are the same code path
+(`select_active` returns the whole eligible pool when the cap does not bite).
+
+## The asymmetry: a whole bond at risk, one epoch's phlo at reward
+
+What is at stake is the validator's **entire** bond, and what is earned is its share of one epoch's
+burned phlo. The two exits from the active set are not symmetric, and the asymmetry is deliberate rather
+than an accident of the code — [Running a public testnet of your own](running-a-public-testnet.md) states
+it:
+
+> A silent validator is not slashed; it is a drag instead. […] The protocol is asymmetric: going offline
+> is free, while a block that *fails validation on another node* costs the sender its stake.
+
+So a validator that never proposes keeps its bond and (if drawn) still earns; a validator that proposes a
+block another node attributes a failure to loses the bond. Nothing in this tree **underwrites** the
+second risk — no insurance, no partial slash, no reward floor, and (below) no delegation to spread it.
+That is an observation about the code, not a theorem about incentives: it says what the protocol does,
+not that the balance is the one a rational operator would choose.
+
+## Slashing: behavioural, trustless, and full
+
+A slash is decided by **what the block did**, not by who is watching, and every node checks the
+producer's work.
+
+**Behavioural.** A failure is recorded in one place, `mark_failed`
+(`casper/src/multi_parent_casper.rs:835`), which sets `validation_failed: true` for **every** cause but
+`slashable: true` for only one:
+
+```rust
+validation_failed: true,
+slashable: matches!(cause, FailureCause::Attributable),
+```
+
+The cause is `FailureCause` (`models/src/block_metadata.rs`) — `Attributable` (the block's own fault,
+together with the DAG's structure), `Divergence` (this node's state or replay disagreed — the measured
+`InvalidStateHash`, [#105](https://github.com/rchain-community/rchain-rust/issues/105)), or `Cascade` (a
+justification failed). **Only `Attributable` is slashable**, because "one transient failure must not
+fabricate slash evidence against every validator above it"
+([#125](https://github.com/rchain-community/rchain-rust/issues/125)). The partition is
+`BlockStatus::failure_cause` (`casper/src/block_status.rs:129`).
+
+**Trustless.** The offence set is the senders of justifications whose metadata is `slashable`, intersected
+with the bonded set — `slashable_senders` (`casper/src/validate.rs:142`), called through
+`slashable_offenders` (`casper/src/blocks/proposer/proposer.rs:1637`). What makes the rule the
+*protocol's* rather than the proposer's is the receiving side: `slash_is_unjustified`
+(`casper/src/interpreter_util.rs:170`) refuses a block whose slashes are not a subset of the slashable
+senders **in the receiving node's own DAG**. The proposer's opinion of the victim carries no weight, and
+the slash service is not auth-gated — that per-node check is the guard (AUDIT C110,
+[`spec/audit/passes.md`](../../../spec/audit/passes.md)).
+
+**Full.** `slash` (`rholang/src/native_state.rs:1421`) removes the validator from the pool, the active
+set, the withdrawers and the pending withdrawers, and moves **the whole bond** to the Coop vault. There
+is no partial slash and no percentage parameter: a slash is confiscation, not deactivation.
+
+That is the whole of the answer to "does slashing punish a software fault?" — the protocol already
+declines to. A node that cannot replay a block, or replays it to a *different* state, records
+`Divergence`, not `Attributable`, and a `Divergence` is never an offence.
+
+**One divergence from the oracle, and it is not the bond.** `Pos.rhox`'s slash also **deletes** the
+offender's accrued rewards from the committed map, in the same write as the bond zeroing; this port does
+not, and the entry is then unreachable in both directions — never paid, because the epoch pays pool
+members (`:1253`) and claims in `withdrawers` (`:1281`) and the slashed validator is in neither, and never
+removed, because the only `committed.remove` in the file is the claim payment (`:1291`). Two
+consensus-visible consequences: the accrued rewards are stranded in the staking vault, and since
+`epoch_pot` (`:668`) subtracts every committed entry they keep reducing the distributable pot, so the port
+pays a smaller remainder than the oracle after any slash of a validator the epoch had reached. It is
+**registered as an open finding** — C197 in [`spec/AUDIT.md`](../../../spec/AUDIT.md), with the fork
+classification as what it owes, because deleting the entry *raises* the pot and so moves reward amounts.
+
+## Admission: trust, self-bond, staged exit
+
+The economics above are closed by who may take part.
+
+- **Bonding is permissioned.** `bond` (`:1086`) refuses a key that is not in the **trusted** set
+  (`pos:trusted`); a trusted stakeholder admits a key with `pos!("trust", …)`. A genesis validator is
+  trusted by construction.
+- **A key can only bond itself.** The bond takes the caller's own unforgeable `GDeployerId`, so a
+  byte-array argument cannot bond another key (`rholang/src/system_processes.rs:1714`). **There is no
+  delegation and no delegated-stake market in this tree** — no staking pool, no restaking, no
+  liquid-staking mechanism anywhere in it.
+- **Exiting is staged and quarantined.** `withdraw` (`:1164`) only *stages* a request: the validator
+  stays bonded and active and keeps earning until the next epoch boundary, when the bond leaves the pool
+  and is escrowed until `quarantine-length` has passed; it is then paid `bond + committed` rewards. See
+  [Operating the node](operating.md) and [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) § *Dynamic
+  validators* for the lifecycle.
+
+The practical shape of that: the party that can be slashed is the party that staked, and it is the same
+party — the operator's own capital, with no one between the operator and the bond.
+
+## Open questions (tracked, not decided)
+
+**Everything in this section is design discussion, not implemented and not proved.** Each item lives on
+the issue named with it; per [`AGENTS.md`](../../../AGENTS.md) the plans and hypotheticals behind them
+belong outside this repository, and none of it is policy.
+
+1. **Should the pot be weighted by participation rather than only by stake?** Today the reward reads no
+   participation at all (above). A participation-weighted share would scale each validator's share by a
+   liveness measure the protocol already computes — the live weight set,
+   `block-storage/src/dag/liveness.rs`. Tracked on
+   [#150](https://github.com/rchain-community/rchain-rust/issues/150).
+2. **Should the reward be validator-agnostic and network-weighted?** The case argued for a pool that is
+   indifferent to which validator does the work and spreads both the reward and the *risk* across the
+   network. Nothing in this tree does this, and the shape above is why it is not a contract we can write
+   today: `bond` draws the stake from the caller's own unforgeable `deployerId`, so no contract can bond
+   on a depositor's behalf. #150 cites an external `Game_Theory_QLF.md` (a `welfare_game_potential`
+   result); that file is **not in this repository** and its content is not restated here.
+3. **Should a deploy's phlo be shared with the block that executed it?** Today it is not: the phlo joins
+   the pot and is split by stake, so the executor is paid like every other active validator. Also on
+   [#150](https://github.com/rchain-community/rchain-rust/issues/150).
+
+(The stranded-rewards divergence above is *not* an open question of this kind — the oracle states the
+intent, so it is a registered finding (C197) rather than a design choice.)
+
+Any accepted change to any of the above is **hard-fork class**: rewards and slashing are consensus state,
+so a change is a deviation from `Pos.rhox` registered in
+[`spec/audit/passes.md`](../../../spec/audit/passes.md) §6 and classified on
+[#51](https://github.com/rchain-community/rchain-rust/issues/51) category A.
+
+## See also
+
+- [Consensus (Casper)](consensus.md) — the fringe, the `> 2/3` rule, and the weight set the draw feeds.
+- [Running a validator: hardware requirements](validator-requirements.md) — what a node *costs*; this
+  page is what it *earns*.
+- [Running a public testnet of your own](running-a-public-testnet.md) — the slash rule and the
+  offline-is-free asymmetry stated for an operator.
+- [Progress: the shapes of non-progress](../formal/progress.md) — the `Participation` hypothesis, and why
+  an inactivity leak is out of scope.
+- [Blockchain multi-stakeholder governance](../qucalc/multi-stakeholder-governance.md) — the governance
+  framing around validator-only decision-making.
+
+> **Formal.** The epoch gate, the reward split and the three-stage withdrawal are laws 44–47, modelled in
+> [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) and emitted to
+> [`spec/LAWS.md`](../../../spec/LAWS.md) — read the status there, not here. The active-set draw and its
+> residuals (**O1–O4**) are [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 item 12.

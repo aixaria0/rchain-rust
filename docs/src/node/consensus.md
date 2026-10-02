@@ -61,6 +61,9 @@ over the speaking subset alone would be reached by any self-consistent group, an
 groups would finalise different histories
 ([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
 
+Who is *in* that weight set — and what a validator is paid for being in it — is
+[Validator economics](validator-economics.md).
+
 ## Block validity (Laws 16–17)
 
 Before a block is added to the DAG, the node validates it:

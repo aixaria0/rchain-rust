@@ -309,19 +309,32 @@ bonds on a chain with that epoch does not become active for another 10000 blocks
 
 ### A validator is slashed for a block that fails validation, not for staying silent
 
-`block_creator` attaches a `slash` system deploy for every bonded validator whose latest justification
-carries `validation_failed`:
+The proposer attaches a `slash` system deploy for every bonded validator whose latest justification is
+marked **`slashable`** — and `slashable` is set for one cause only:
 
 ```rust
-let offenders = pre_state.justifications.iter()
-    .filter(|m| m.validation_failed)
-    .map(|m| m.sender)
-    .collect();
-let to_slash = offenders.intersection(&bonded);
+// casper/src/multi_parent_casper.rs  (mark_failed)
+validation_failed: true,
+slashable: matches!(cause, FailureCause::Attributable),
+
+// casper/src/blocks/proposer/proposer.rs  (slashable_offenders)
+crate::validate::slashable_senders(justifications)
+    .into_iter()
+    .filter(|sender| bonded.contains(sender))
+    .collect()
 ```
 
-and `NativeSystemState::slash` removes that validator from the pool, the active set, the withdrawers and the
-pending withdrawers, and moves its stake to the Coop multisig vault - confiscation, not deactivation.
+`validation_failed` is `true` for **every** failure; `slashable` only when the failure is the block's own
+fault (`FailureCause::Attributable`). A block a node could not replay, or replayed to a *different* state
+(`Divergence`), and a child refused because a justification failed (`Cascade`), are **not** slashed — one
+transient failure must not fabricate slash evidence against every validator above it
+([#125](https://github.com/rchain-community/rchain-rust/issues/125)). And every receiving node checks the
+producer's work: a block whose slashes are not a subset of the slashable senders *in the receiver's own
+DAG* is refused, so the proposer's opinion of the victim carries no weight (AUDIT C110).
+
+`NativeSystemState::slash` removes that validator from the pool, the active set, the withdrawers and the
+pending withdrawers, and moves its whole bond to the Coop multisig vault — confiscation, not deactivation.
+The full rule, and what a validator is paid, are in [Validator economics](validator-economics.md).
 
 Two consequences worth knowing before running a network.
 

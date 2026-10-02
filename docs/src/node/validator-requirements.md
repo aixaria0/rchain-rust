@@ -193,9 +193,12 @@ Any modern general-purpose desktop or laptop with an NVMe SSD is enough to *run*
 CPU/RAM needs are modest. Four caveats matter more than raw specs:
 
 1. **Uptime, not horsepower.** A validator that sleeps, hibernates, or is shut down falls out of sync
-   and (once slashing/epochs are enforced) is penalized. A laptop runs it fine; a laptop you carry
-   around and close is a bad *validator*. This is the real reason for an always-on box or VPS — not
-   because the CPU is insufficient.
+   and stops proposing. That costs it nothing directly — this tree has **no inactivity leak**, so a
+   silent validator keeps its bond and, while it is in the drawn active set, its share of the epoch
+   ([Validator economics](validator-economics.md)); a slash needs a block that *fails validation*, not a
+   node that is absent. What it costs is the network: finality needs the active validators to speak, so
+   one absent validator holds everyone back. A laptop runs it fine; a laptop you carry around and close
+   is a bad *validator*. That, not the CPU, is the reason for an always-on box or VPS.
 2. **Disk capacity grows.** The 1 TB reservations are not needed up front, but a busy shard's RSpace
    trie + block store + deploy event logs accumulate. A 128–256 GB SSD is fine to start and eventually
    fills on a heavily used chain.

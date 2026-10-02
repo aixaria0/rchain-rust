@@ -64,6 +64,11 @@ assumption would this fix break?" a question with an answer.
 | `Finiteness` | the term's depth bounds its pending set (Law 20's own note) | an unbounded path set, where the order is not well-founded | the deleted `law20_deadlock_freedom` |
 | `Fair` | — **named and not modelled** | — | — (see below) |
 
+**What violates `Participation` is not what the protocol penalizes.** A validator that stops speaking
+breaks this hypothesis and holds back finality; it is not slashed, and it keeps its bond and its share
+while it is in the drawn active set — the incentive the hypothesis does *not* carry is
+[Validator economics](../node/validator-economics.md).
+
 **`Fair` is named and not modelled, and that is a theorem of this tree rather than an oversight.** "An
 enabled step that no schedule takes" is unstatable over a transition *relation* — a relation does not say
 when a step is taken — and `reduce_not_deterministic` (`spec/Rchain/Concurrent.lean`) is the repo's own

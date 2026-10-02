@@ -199,6 +199,8 @@ approval), and the *signed decision of record* is the audit trail (`rho:registry
   design and the self-signed envelope model.
 - [`references.md`](references.md) — upstream `Group_Decisions.md`, `Governance.md`, and
   `Consensus.md` in the forked quantum-os repo.
+- [Validator economics](../node/validator-economics.md) — what the validators governed *here* are paid
+  and can lose, which is the economic context this page's validator-role argument sits in.
 
 ## Funding
 
