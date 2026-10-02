@@ -3,7 +3,16 @@
 //! The cats-effect `Time[F]`/`Timer[F]` abstraction is simplified to plain functions.
 
 use std::sync::OnceLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+// `std::time::{Instant, SystemTime}` compile for `wasm32-unknown-unknown` but panic at runtime — the
+// target has no clock in `std` — so the wasm build takes the host's clock (`web-time`, backed by
+// `performance.now`/`Date`). No production path here calls `std`'s clock directly on that target
+// (`candidate:host-supplied-clock`, issue #98).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Current epoch time in milliseconds (port of `Time.currentMillis`).
 pub fn current_millis() -> i64 {
@@ -20,9 +29,17 @@ pub fn nano_time() -> i64 {
 }
 
 /// Sleep for the given duration (port of `Time.sleep`).
+///
+/// **No-op on `wasm32-unknown-unknown`**, which has neither a blocking sleep in `std` nor threads to
+/// block on: a wasm host drives time asynchronously, so a synchronous sleep cannot be honoured. The
+/// reducer must not depend on `sleep` for pacing; the wasm arm is kept only so the signature holds.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sleep(duration: Duration) {
     std::thread::sleep(duration);
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn sleep(_duration: Duration) {}
 
 #[cfg(test)]
 mod tests {

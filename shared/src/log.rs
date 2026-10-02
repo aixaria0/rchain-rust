@@ -12,7 +12,13 @@
 //! was impossible from the logs alone. Both halves are here now, and the level is chosen by the
 //! operator (`--log-level`, see `node/src/configuration/commandline/options.rs`).
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+// The wasm build takes the host's clock (`web-time`); `std`'s panics there (issue #98).
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(target_arch = "wasm32")]
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Identifies the source class of a log message (port of `LogSource`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

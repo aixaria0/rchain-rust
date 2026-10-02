@@ -14,7 +14,17 @@ rchain-models = { path = "../models" }
 rchain-crypto = { path = "../crypto" }
 rchain-rspace = { path = "../rspace" }
 rchain-shared = { path = "../shared" }
+
+# The reducer's tokio use is `spawn`/`JoinSet` on the current-thread runtime (`reduce.rs`), which is
+# `rt`. `rt-multi-thread` is **rejected on `wasm32-unknown-unknown`** — tokio's own
+# `compile_error!` names the supported set (sync, macros, io-util, rt, time) — and needs OS threads
+# the target does not have, so it is host-only (issue #98). The multi-thread runtime is used only by
+# tests, which run on the host.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

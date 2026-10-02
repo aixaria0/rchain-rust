@@ -22,3 +22,14 @@ serde = { version = "1", features = ["derive"] }
 # `PrivateKey` zeroes its buffer on drop (AUDIT §12). MIT OR Apache-2.0, already in the lock
 # file as a transitive dependency of `k256`/`p256`.
 zeroize = "1"
+
+# **wasm32 RNG backends (issue #98).** `getrandom` refuses to compile for `wasm32-unknown-unknown`
+# without a JS backend, and it reaches this crate twice through `crypto_box` (0.2) and
+# `k256`/`p256`/`rand` (0.4). Naming the crate here with the target feature turns the backend on for
+# the transitive copies too (features unify per crate version) while leaving every host build
+# untouched. A `custom` backend is not an option: it needs an `unsafe extern` symbol, and the crate
+# graph is `#![forbid(unsafe_code)]`. See `.cargo/config.toml` for the matching `getrandom_backend`
+# cfg that 0.4 also requires.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

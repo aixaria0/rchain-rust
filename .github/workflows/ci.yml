@@ -189,6 +189,18 @@ jobs:
         # only be satisfied by adding bookkeeping rows is the thing it exists to avoid.
         run: tools/check-review-ledger.sh --gate
 
+      - name: Reducer wasm32 check
+        # Issue #98: the reducer must stay compilable for `wasm32-unknown-unknown` — the in-browser
+        # ZFA endgame, where every room member runs the reducer with RSpace behind a host-provided
+        # storage trait. A **check** is the right gate: it is the compile boundary, it is cheap, and
+        # it refuses a regression (a new `getrandom` route, a `std` clock) without needing a wasm
+        # runtime in CI. The failures it catches are not visible on the host, because the host
+        # toolchain never selects these backends.
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p rchain-rspace --target wasm32-unknown-unknown
+          cargo check -p rchain-rholang --target wasm32-unknown-unknown
+
       - name: Test
         run: cargo test --workspace --all-features
 

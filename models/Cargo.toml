@@ -10,12 +10,17 @@ num-bigint = { version = "0.5", features = ["serde"] }
 num-traits = "0.2"
 prost = "0.14"
 serde = { version = "1", features = ["derive"] }
-tonic = "0.14"
-# tonic 0.14 split its prost support out: the generated services reference `tonic_prost::ProstCodec`
-# and the build-time builder lives in `tonic-prost-build` (see `build.rs`).
-tonic-prost = "0.14"
 rchain-crypto = { path = "../crypto" }
 rchain-shared = { path = "../shared" }
+
+# **wasm32 has no gRPC stack (issue #98).** `tonic` depends on `hyper` → `h2` → `mio`, none of which
+# compile for `wasm32-unknown-unknown`, and the reducer needs only the `prost` *messages* (the `Par`
+# wire types), never a service. `build.rs` therefore emits no clients/servers for the wasm target, and
+# these two are host-only. tonic 0.14 split its prost support out: the generated services reference
+# `tonic_prost::ProstCodec`, hence both crates move together.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tonic = "0.14"
+tonic-prost = "0.14"
 
 [build-dependencies]
 prost-build = "0.14"
