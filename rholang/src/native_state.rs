@@ -1460,6 +1460,38 @@ impl NativeSystemState {
             );
         }
 
+        // **The measurement a network needs before it can arm the rule** (B4, #150). The weight is a
+        // function of how far behind the last finalised fringe each *drawn* validator's latest message
+        // sits, and nothing in this port can say what that distribution is on a network's own chain —
+        // its block rate and its active-set size decide it, and both are the network's. So a boundary
+        // reports it: one line, the drawn set's lags in order, which is exactly what `absence_slack`
+        // (the knee) and `participation_grace` (the flat part below it) have to be chosen against.
+        //
+        // **Logged whether or not the rule is armed**, because the point is to measure *before*
+        // choosing a value — and a value chosen without it is a guess about someone else's chain.
+        {
+            let mut lags: Vec<i64> = rewards
+                .keys()
+                .filter_map(|v| participation.get(v))
+                .map(|h| block_number.saturating_sub(i64::from(*h)))
+                .collect();
+            lags.sort_unstable();
+            let never_spoke = rewards.len() - lags.len();
+            if !lags.is_empty() {
+                eprintln!(
+                    "[pos] participation lag at boundary {}: drawn={} never_spoke={} min={} median={} \
+                     p90={} max={} (heights behind the last finalised fringe)",
+                    block_number,
+                    rewards.len(),
+                    never_spoke,
+                    lags[0],
+                    lags[lags.len() / 2],
+                    lags[lags.len() * 9 / 10],
+                    lags[lags.len() - 1],
+                );
+            }
+        }
+
         // 2. Staged withdrawals become claims against the vault.
         for (validator, deadline) in std::mem::take(&mut pending) {
             if let Some(bond) = pool.remove(&validator) {
