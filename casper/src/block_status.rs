@@ -158,6 +158,67 @@ impl BlockStatus {
             | BlockStatus::InvalidVersion => FailureCause::Attributable,
         }
     }
+
+    /// **Whether a refusal of this status may take the sender's bond** — the offence predicate, and it
+    /// is deliberately **narrower than `Attributable`** (AUDIT C198).
+    ///
+    /// `Attributable` answers *whose fault the refusal is*, and it is the right test for blame. It is
+    /// the wrong test for **slashing**, because three of its fourteen members read an input that
+    /// belongs to the **receiving node** rather than to the block:
+    ///
+    /// * `ContainsLowCostDeploy` — this node's `casper.min-phlo-price`;
+    /// * `TooManyJustifications` — this node's `casper.max-number-of-parents`;
+    /// * `InvalidVersion` — this software's `SUPPORTED` list.
+    ///
+    /// **None of the three is genesis identity.** `GenesisBlockData` (`casper/src/conf.rs`) and
+    /// `PosParams` (`rholang/src/native_state.rs`) carry neither knob, so two correctly-configured
+    /// operators can hold different values and neither is wrong — there is no committed value to be
+    /// wrong *about*.
+    ///
+    /// **And a disagreement about blame is not a tolerated divergence here — it is a chain split.**
+    /// [`slash_is_unjustified`](../../../casper/src/interpreter_util.rs) refuses any block whose
+    /// slashes are not a subset of what the *receiving* node re-derives from its own metadata. So
+    /// node A, whose knob makes a block an offence, proposes `Slash(X)`; node B, whose knob does not,
+    /// finds it unjustified and refuses A's block — permanently. A staker then loses its whole bond
+    /// for a disagreement about a local setting, which is the case this predicate exists to remove.
+    ///
+    /// So an offence needs inputs that are **the same on every node running this rule version**: the
+    /// block's own signed fields, the DAG's structure, and the **version-coupled constants**
+    /// (`DEPLOY_LIFESPAN`, `MAX_BLOCK_DEPLOYS`, `MAX_BLOCK_PHLO`). The constants are shared by one
+    /// *binary* rather than by one *chain*, and they are a lockstep-upgrade concern rather than a
+    /// per-operator one — the deviation register names them as coupled to the rule version.
+    pub fn is_slashing_offence(&self) -> bool {
+        match self {
+            // The block's own signed fields, or the DAG's structure. No node-local input.
+            BlockStatus::InvalidBlockNumber
+            | BlockStatus::InvalidSequenceNumber
+            | BlockStatus::JustificationRegression
+            | BlockStatus::InvalidDeployShardId
+            | BlockStatus::ContainsFutureDeploy
+            | BlockStatus::InvalidPhloLimit
+            | BlockStatus::InvalidRepeatDeploy
+            | BlockStatus::ContainsExpiredDeploy
+            // Version-coupled constants: identical on every node running this rule version.
+            | BlockStatus::TooManyDeploys
+            | BlockStatus::ExceedsBlockPhloLimit
+            | BlockStatus::InvalidDeploySignature => true,
+
+            // **`Attributable`, and yet not an offence** — each reads an input this node owns, so
+            // another node can reach the opposite verdict for the same block.
+            BlockStatus::ContainsLowCostDeploy
+            | BlockStatus::TooManyJustifications
+            | BlockStatus::InvalidVersion => false,
+
+            // Never the block's fault (`Divergence`, `Cascade`), and `Valid` is not a refusal.
+            BlockStatus::Valid
+            | BlockStatus::InvalidStateHash
+            | BlockStatus::InvalidPreStateHash
+            | BlockStatus::InvalidRejectedDeploy
+            | BlockStatus::InvalidBondsCache
+            | BlockStatus::UnjustifiedSlash
+            | BlockStatus::NeglectedInvalidBlock => false,
+        }
+    }
 }
 
 impl std::fmt::Display for BlockStatus {
@@ -348,5 +409,74 @@ mod tests {
 
         // A rejected block's status is never equal to `Valid`, which is what the caller tests.
         assert_ne!(BlockStatus::InvalidBondsCache, BlockStatus::Valid);
+    }
+
+    /// **The offence predicate is narrower than `Attributable`, and the difference is exactly the
+    /// three statuses whose input the receiving node owns** (AUDIT C198).
+    ///
+    /// Asserted from both sides over `ALL`, so a status added later has to be *decided* here rather
+    /// than defaulted: every offence must at least be `Attributable` (the predicate never escalates
+    /// beyond blame), and the `Attributable` statuses it withholds must be exactly these three.
+    #[test]
+    fn the_offence_predicate_is_narrower_than_attributable() {
+        let offences: Vec<BlockStatus> = ALL
+            .iter()
+            .copied()
+            .filter(BlockStatus::is_slashing_offence)
+            .collect();
+        assert_eq!(
+            offences,
+            vec![
+                BlockStatus::InvalidBlockNumber,
+                BlockStatus::InvalidRepeatDeploy,
+                BlockStatus::InvalidSequenceNumber,
+                BlockStatus::InvalidDeployShardId,
+                BlockStatus::JustificationRegression,
+                BlockStatus::ContainsExpiredDeploy,
+                BlockStatus::ContainsFutureDeploy,
+                BlockStatus::InvalidPhloLimit,
+                BlockStatus::InvalidDeploySignature,
+                BlockStatus::TooManyDeploys,
+                BlockStatus::ExceedsBlockPhloLimit,
+            ],
+            "an offence is the block's own signed fields, the DAG's structure, or a version-coupled \
+             constant — nothing a receiving node's configuration supplies"
+        );
+
+        for status in ALL {
+            if status.is_slashing_offence() {
+                assert_eq!(
+                    status.failure_cause(),
+                    FailureCause::Attributable,
+                    "{status:?} is an offence, so it must at least be the block's own fault"
+                );
+            }
+        }
+
+        // The three withheld, each because the input it reads belongs to the node, not the block:
+        // `casper.min-phlo-price`, `casper.max-number-of-parents`, and the compiled `SUPPORTED`.
+        // None is in `GenesisBlockData` or `PosParams`, so there is no committed value an operator
+        // could be wrong about — which is why the disagreement cannot be resolved by blaming anyone.
+        // `Valid` is excluded because it is not a refusal at all — `failure_cause` classifies it
+        // `Attributable` only so a new variant has to be decided rather than defaulted, and
+        // `is_valid` is the predicate the block processor branches on.
+        let withheld: Vec<BlockStatus> = ALL
+            .iter()
+            .copied()
+            .filter(|s| {
+                *s != BlockStatus::Valid
+                    && s.failure_cause() == FailureCause::Attributable
+                    && !s.is_slashing_offence()
+            })
+            .collect();
+        assert_eq!(
+            withheld,
+            vec![
+                BlockStatus::ContainsLowCostDeploy,
+                BlockStatus::TooManyJustifications,
+                BlockStatus::InvalidVersion,
+            ],
+            "exactly these three `Attributable` refusals must not take a bond"
+        );
     }
 }

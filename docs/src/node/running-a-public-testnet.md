@@ -324,13 +324,18 @@ crate::validate::slashable_senders(justifications)
     .collect()
 ```
 
-`validation_failed` is `true` for **every** failure; `slashable` only when the failure is the block's own
-fault (`FailureCause::Attributable`). A block a node could not replay, or replayed to a *different* state
-(`Divergence`), and a child refused because a justification failed (`Cascade`), are **not** slashed — one
-transient failure must not fabricate slash evidence against every validator above it
-([#125](https://github.com/rchain-community/rchain-rust/issues/125)). And every receiving node checks the
-producer's work: a block whose slashes are not a subset of the slashable senders *in the receiver's own
-DAG* is refused, so the proposer's opinion of the victim carries no weight (AUDIT C110).
+`validation_failed` is `true` for **every** failure; `slashable` only when the refusal is *evidence
+against the sender*. That is narrower than "the block's own fault" in one way and wider in none: a block a
+node could not replay, or replayed to a *different* state (`Divergence`), and a child refused because a
+justification failed (`Cascade`), are **not** slashed — one transient failure must not fabricate slash
+evidence against every validator above it
+([#125](https://github.com/rchain-community/rchain-rust/issues/125)) — **and neither are the three
+refusals that read a setting this node owns** rather than the block: the fee floor
+`casper.min-phlo-price`, the width `casper.max-number-of-parents`, and the compiled version set
+`SUPPORTED`. Those are `Attributable` and still refused, but not offences, because another node with a
+different value would refuse the slashing block rather than agree to it (AUDIT C198). And every receiving
+node checks the producer's work: a block whose slashes are not a subset of the slashable senders *in the
+receiver's own DAG* is refused, so the proposer's opinion of the victim carries no weight (AUDIT C110).
 
 `NativeSystemState::slash` removes that validator from the pool, the active set, the withdrawers and the
 pending withdrawers, and moves its whole bond to the Coop multisig vault — confiscation, not deactivation.

@@ -737,7 +737,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&init_block_meta, status.failure_cause()),
+                mark_failed(&init_block_meta, status),
                 status,
             ))
         }
@@ -756,7 +756,7 @@ where
     match validated {
         Err(status) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata, status.failure_cause()),
+                mark_failed(&block_metadata, status),
                 status,
             ))
         }
@@ -766,7 +766,7 @@ where
         // failure.
         Ok(false) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata, FailureCause::Divergence),
+                mark_failed(&block_metadata, BlockStatus::InvalidStateHash),
                 BlockStatus::InvalidStateHash,
             ))
         }
@@ -777,7 +777,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata, status.failure_cause()),
+                mark_failed(&block_metadata, status),
                 status,
             ))
         }
@@ -789,7 +789,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata, status.failure_cause()),
+                mark_failed(&block_metadata, status),
                 status,
             ))
         }
@@ -816,14 +816,20 @@ where
     Ok(block_metadata)
 }
 
-/// Mark a block unusable here, recording **why** (AUDIT C173).
+/// Mark a block unusable here, recording **why** (AUDIT C173), and whether the sender may be slashed
+/// for it (AUDIT C198).
 ///
-/// The cause decides attribution, so this is the single place a failure's `slashable` bit comes from:
-/// only [`FailureCause::Attributable`] is the block's own fault. Before this split every
-/// `ValidateError::ValidationFailed` went through a `mark_failed_attributable` that set `slashable`
-/// unconditionally — including `NeglectedInvalidBlock`, a refusal of a child *because a justification
-/// failed* — so one transient failure fabricated slash evidence against every validator above it
-/// (#125).
+/// **Two questions, and they are not the same one.** `ValidationFailed` carries the `BlockStatus`,
+/// and the status answers both: `failure_cause` is *whose fault the refusal is*, and
+/// [`BlockStatus::is_slashing_offence`] is *whether that fault may take the sender's bond*. The
+/// second is narrower, because three statuses read an input the **receiving node** owns (see that
+/// method) and a node that reaches the opposite verdict refuses the slashing block rather than
+/// tolerating the difference — a split, not a disagreement.
+///
+/// Before C173 every `ValidateError::ValidationFailed` went through a `mark_failed_attributable` that
+/// set `slashable` unconditionally — including `NeglectedInvalidBlock`, a refusal of a child *because
+/// a justification failed* — so one transient failure fabricated slash evidence against every
+/// validator above it (#125).
 ///
 /// The genuinely unattributable case (an unreadable pre-state, a store error, an unrecoverable
 /// mergeable-channel sidecar) still surfaces as `ValidateError::Internal` and inserts **no** metadata
@@ -832,12 +838,12 @@ where
 /// `restore_attempts` is carried over rather than reset, so the cap in
 /// [`restore_divergent_justifications`] is a per-block-lifetime budget: a record that flaps between
 /// restored and failed cannot buy unlimited revalidations.
-fn mark_failed(meta: &BlockMetadata, cause: FailureCause) -> BlockMetadata {
+fn mark_failed(meta: &BlockMetadata, status: BlockStatus) -> BlockMetadata {
     BlockMetadata {
         validated: true,
         validation_failed: true,
-        slashable: matches!(cause, FailureCause::Attributable),
-        failure_cause: Some(cause),
+        slashable: status.is_slashing_offence(),
+        failure_cause: Some(status.failure_cause()),
         ..meta.clone()
     }
 }
@@ -1124,6 +1130,7 @@ mod restore_tests {
 #[cfg(test)]
 mod mark_failed_tests {
     use super::mark_failed;
+    use crate::block_status::BlockStatus;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::{BlockMetadata, FailureCause};
     use rchain_models::validator::Validator;
@@ -1149,42 +1156,62 @@ mod mark_failed_tests {
         }
     }
 
-    /// `mark_failed` marks the block unusable and records the cause it was given.
+    /// `mark_failed` marks the block unusable, records the cause the status implies, and decides the
+    /// offence from the status.
     #[test]
     fn mark_failed_marks_the_block_and_records_the_cause() {
-        let marked = mark_failed(&meta(), FailureCause::Attributable);
+        let marked = mark_failed(&meta(), BlockStatus::InvalidBlockNumber);
         assert!(marked.validation_failed, "still unusable here");
         assert_eq!(marked.failure_cause, Some(FailureCause::Attributable));
         assert!(marked.validated);
+        assert!(
+            marked.slashable,
+            "and its own bad block_number is an offence"
+        );
     }
 
-    /// **Only an attributable failure is the block's fault.** This is the split AUDIT C173 asks for:
-    /// before it, every `ValidateError::ValidationFailed` went through a single marker that set
-    /// `slashable`, so a `NeglectedInvalidBlock` — a child refused *because a justification failed* —
-    /// was marked as an offender, and one transient failure fabricated slash evidence against every
-    /// validator above it.
+    /// **Two questions, and this test is where they part company.**
     ///
-    /// Red before the split: `NeglectedInvalidBlock` was slashable.
+    /// `failure_cause` is *whose fault the refusal is* (AUDIT C173 — before that split, every
+    /// `ValidateError::ValidationFailed` set `slashable`, so `NeglectedInvalidBlock`, a child refused
+    /// *because a justification failed*, was an offender). `slashable` is *whether that fault may
+    /// take the sender's bond* (AUDIT C198), and it is narrower: a status can be `Attributable` and
+    /// still not be an offence, when the input it reads belongs to the receiving node.
+    ///
+    /// Red before each split, in turn: `NeglectedInvalidBlock` was slashable before C173, and
+    /// `TooManyJustifications` was before C198.
     #[test]
-    fn only_an_attributable_failure_is_slashable() {
+    fn an_attributable_refusal_is_not_always_an_offence() {
+        // The block's own fault, from the block and the DAG alone: an offence.
+        let offence = mark_failed(&meta(), BlockStatus::InvalidBlockNumber);
+        assert_eq!(offence.failure_cause, Some(FailureCause::Attributable));
+        assert!(offence.slashable);
+
+        // `Attributable`, and **not** an offence: `max-number-of-parents` is this node's own setting,
+        // so a peer with a different one would refuse the slashing block instead of agreeing to it.
+        let local = mark_failed(&meta(), BlockStatus::TooManyJustifications);
+        assert_eq!(local.failure_cause, Some(FailureCause::Attributable));
+        assert!(local.validation_failed, "still unusable here");
         assert!(
-            mark_failed(&meta(), FailureCause::Attributable).slashable,
-            "the block's own fault is what a proposer may slash for"
+            !local.slashable,
+            "a knob the receiving node owns cannot be evidence against the sender"
         );
 
-        let cascaded = mark_failed(&meta(), FailureCause::Cascade);
-        assert!(cascaded.validation_failed, "still unusable here");
+        // Not the block's fault at all — C173's split, unchanged.
+        let cascaded = mark_failed(&meta(), BlockStatus::NeglectedInvalidBlock);
+        assert!(cascaded.validation_failed);
         assert_eq!(cascaded.failure_cause, Some(FailureCause::Cascade));
         assert!(
             !cascaded.slashable,
-            "a child refused because its parent failed is not an offender"
+            "a child refused because its parent failed"
         );
 
-        let diverged = mark_failed(&meta(), FailureCause::Divergence);
+        let diverged = mark_failed(&meta(), BlockStatus::InvalidStateHash);
         assert!(diverged.validation_failed);
+        assert_eq!(diverged.failure_cause, Some(FailureCause::Divergence));
         assert!(
             !diverged.slashable,
-            "a node whose state differs is not evidence that the block is at fault"
+            "a node whose state differs is not evidence"
         );
     }
 }
