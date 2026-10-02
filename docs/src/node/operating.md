@@ -282,6 +282,46 @@ testnet](running-a-public-testnet.md) works both through.
 
 ---
 
+## Reading a PoS position, including a delegated one
+
+Two reads, and the difference between them matters:
+
+- **`GET /api/v1/pos`** — one shard's state in one object: the epoch, the boundary countdown, the
+  active set, and the pending withdrawals with their countdowns. Nothing about delegation, deliberately:
+  the delegation ledger is unbounded in how many people have delegated, and hanging it here would make a
+  single status call's size a function of that.
+- **`GET /api/v1/pos/delegations?delegator=<65-byte hex>`** — **one delegator's positions**, across
+  every operator it has staked with. Scoped to the key you ask about, which is the bounded direction:
+
+  ```sh
+  curl -s "http://localhost:40403/api/v1/pos/delegations?delegator=04f700a4…" | jq
+  ```
+
+  Each entry is `{operator, amount, accruedRewards, pendingUndelegation}`:
+  - `amount` is the principal still attributed to you on that operator's key. It is **not** the
+    operator's bond — `getBonds` answers that, and it is the *aggregate* of every delegation to it, so
+    it is attributable to no single delegator;
+  - `accruedRewards` is what that delegation has earned and not yet been paid. It is held apart from the
+    operator's own committed rewards, which is what makes it yours to see;
+  - `pendingUndelegation` is `null`, or `{deadline, blocksRemaining}` when you have staged an exit.
+    **`deadline` is a block height, not the height you requested at** — it already contains the
+    quarantine — and `blocksRemaining` is the distance to it, floored at zero.
+  A malformed key answers `400` rather than an empty list: an empty list is a *true* answer about a
+  delegator with no positions, and a caller who mistyped its own key must not be told that.
+
+The same two reads are reachable from rholang, for a contract rather than an operator:
+`rho:rchain:pos!("getDelegations", delegatorKeyBytes, *ret)` replies a list of
+`(operatorKey, amount, accruedRewards, pendingDeadlineOrNil)` tuples — see
+[`spec/API-SCHEMA.md`](../../../spec/API-SCHEMA.md)'s `rho:rchain:pos` row. `examples/pos-delegations.rho`
+is a runnable probe.
+
+**What a delegator is exposed to** is [Validator economics](validator-economics.md)'s subject rather than
+this page's, but the short form is: your principal sits inside the operator's bond, so it is at the same
+slash tier as the operator's own stake, and the operator's participation scales the reward your share is
+drawn from.
+
+---
+
 ## The Docker multi-node network (bare topology)
 
 `tools/devnet.sh up --nodes N` boots a bare **1–5 node** network (one bootstrap + `N-1` unbonded peers)

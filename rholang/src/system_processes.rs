@@ -1759,7 +1759,8 @@ impl SystemProcesses {
                             })
                             .collect();
                         eprintln!("[pos] getDelegations -> {} entries", entries.len());
-                        cc.produce(&rand, &[RhoList::apply(entries)], ret, path).await
+                        cc.produce(&rand, &[RhoList::apply(entries)], ret, path)
+                            .await
                     }
                     "bond" => {
                         let [deployer_id, amount, ret] = rest else {

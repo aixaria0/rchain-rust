@@ -28,6 +28,7 @@ use rchain_casper::protocol::comm_util::ConnectionsCell;
 use rchain_comm::discovery::NodeDiscovery;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_models::block_hash::BlockHash;
+use rchain_models::validator::Validator;
 use rchain_shared::base16;
 use rchain_shared::rate_limiter::RateLimiter;
 use rchain_shared::refined::{Port, ShardId};
@@ -253,6 +254,45 @@ async fn api_shards(State(state): State<HttpState>) -> Response {
 async fn api_pos_status(State(state): State<HttpState>) -> Response {
     match state.pos.pos_status().await {
         Ok(status) => Json(status).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// **The delegator-scoped PoS read** (#193): one key's positions, across every operator it has staked
+/// with. Separate from `/api/v1/pos` rather than a field on its response, because that read is a
+/// single object about a shard and the delegation ledger is unbounded in delegator count — hanging it
+/// off the status read would make one call's size a function of how many people have ever delegated.
+#[derive(Deserialize)]
+struct PosDelegationsQuery {
+    delegator: String,
+}
+
+async fn api_pos_delegations(
+    State(state): State<HttpState>,
+    Query(query): Query<PosDelegationsQuery>,
+) -> Response {
+    // `400` rather than an empty list for a malformed key: an empty list is a *true answer* about a
+    // delegator with no positions, and a caller that mistyped its own key must not be told that.
+    let Some(bytes) = base16::decode(&query.delegator) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "delegator must be a hex-encoded 65-byte public key" })),
+        )
+            .into_response();
+    };
+    let Ok(delegator) = Validator::try_from(bytes.as_slice()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "delegator must be a hex-encoded 65-byte public key" })),
+        )
+            .into_response();
+    };
+    match state.pos.delegator_positions(&delegator).await {
+        Ok(positions) => Json(positions).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e })),
@@ -1044,6 +1084,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/pos", get(api_pos_status))
+        .route("/api/v1/pos/delegations", get(api_pos_delegations))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route(
@@ -1530,6 +1571,31 @@ mod tests {
                     blocks_remaining: 60,
                 }],
             })
+        }
+
+        /// The delegation read the route table also mounts (#193). Non-round values for the same
+        /// reason `pos_status`'s are: a handler that dropped or transposed a field fails on these and
+        /// would pass on zeros.
+        async fn delegator_positions(
+            &self,
+            delegator: &Validator,
+        ) -> Result<Vec<crate::web::pos_read::DelegatorPosition>, String> {
+            use crate::web::pos_read::{DelegatorPosition, PendingUndelegation};
+            // Empty for any key but the one the route's own test asks about, so a handler that
+            // ignored `?delegator=` and returned a hard-coded list would be visible as a non-empty
+            // answer about a key that has never delegated.
+            if *delegator != Validator::try_from([7u8; 65].as_slice()).expect("65 bytes") {
+                return Ok(Vec::new());
+            }
+            Ok(vec![DelegatorPosition {
+                operator: Validator::try_from([8u8; 65].as_slice()).expect("65 bytes"),
+                amount: 40,
+                accrued_rewards: 17,
+                pending_undelegation: Some(PendingUndelegation {
+                    deadline: 260,
+                    blocks_remaining: 60,
+                }),
+            }])
         }
     }
 
@@ -2230,6 +2296,59 @@ mod tests {
         // contains the quarantine (AUDIT C206 — the rename is the fix's user-visible half).
         assert_eq!(json["pendingWithdrawals"][0]["deadline"], 260);
         assert_eq!(json["pendingWithdrawals"][0]["blocksRemaining"], 60);
+    }
+
+    /// **#193's read, rendered.** The stub answers for exactly one key (65 bytes of `0x07`) and
+    /// returns an empty list for any other, so a handler that ignored `?delegator=` and returned a
+    /// fixed list is visible here rather than passing.
+    #[tokio::test]
+    async fn api_v1_pos_delegations_answers_one_delegators_positions() {
+        let response = api_pos_delegations(
+            State(state()),
+            Query(PosDelegationsQuery {
+                delegator: rchain_shared::base16::encode(&[7u8; 65]),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1, "{json}");
+        assert_eq!(json[0]["amount"], 40);
+        assert_eq!(json[0]["accruedRewards"], 17);
+        assert_eq!(json[0]["pendingUndelegation"]["deadline"], 260);
+        assert_eq!(json[0]["pendingUndelegation"]["blocksRemaining"], 60);
+        assert!(json[0]["operator"].as_str().unwrap().starts_with("0808"));
+
+        // And a key that has never delegated gets an empty list — the scoping is the handler's, not
+        // the stub's, so asking about a *different* key must not return the first one's position.
+        let other = api_pos_delegations(
+            State(state()),
+            Query(PosDelegationsQuery {
+                delegator: rchain_shared::base16::encode(&[6u8; 65]),
+            }),
+        )
+        .await;
+        let body = to_bytes(other.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 0, "{json}");
+    }
+
+    /// A key that cannot be parsed is a **`400`, not an empty list**: an empty list is a *true
+    /// answer* about a delegator with no positions, and a caller that mistyped its own key must not
+    /// be told that.
+    #[tokio::test]
+    async fn api_v1_pos_delegations_refuses_a_key_it_cannot_parse() {
+        for bad in ["nothex", "aabb", ""] {
+            let response = api_pos_delegations(
+                State(state()),
+                Query(PosDelegationsQuery {
+                    delegator: bad.to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad:?}");
+        }
     }
 
     /// The gate: without a gateway, or with the feature switched off, the transaction routes answer

@@ -1,39 +1,44 @@
 #!/usr/bin/env bash
 #
-# **The #193 live arm: delegated stake end to end on a two-validator net (C204).**
+# **The #193 live arm: delegated stake end to end, and the fork point at the first `delegate` deploy.**
 #
-# What is measured, in the order the primitive's own close condition names them:
+# Rewritten 2026-10-02 after the first version's readings turned out to be the *instrument's* fault
+# (AUDIT C205, closed as an artifact — see `n203-native-write-probe.md`). Two things changed and both
+# are load-bearing:
 #
-#   1. **`delegate` on a live network.** Validator 1's vault holds REV (genesis funds the deployer,
-#      which is validator 1 by default), and it delegates 40 of it to **validator 2's key** — a key it
-#      does not control. The deploy's own reply is the first check: `(true, Nil)`.
-#   2. **The aggregate reaches consensus.** The operator's `pos:bonds` entry goes 100 → 140 and, after a
-#      boundary, so does the *active* set — which is what `compute_bonds`, finality and the block's bond
-#      cache read. This is the "no Casper change was needed" claim observed on chain rather than
-#      reasoned about.
-#   3. **A boundary splits the operator's reward** across its own stake and the delegation, with the
-#      operator keeping the remainder — `Σ delegators + operator == the reward` exactly.
-#   4. **`undelegate` → boundary → quarantine payout.** The principal leaves the operator's aggregate at
-#      the boundary and is paid, with the delegator's **accrued** reward, to the **delegator's own**
-#      vault. Nothing of it goes to the operator, which is the sharpest failure mode in the primitive.
-#   5. **The fork point** (`RUN_DIVERGENCE=1`, needs an unupgraded image): the same delegate deploy with
-#      validator 2 running the **old binary**. Its `rho:rchain:pos` has no `delegate` arm, so it cannot
-#      reproduce the block's post-state and must refuse it — a fork point at the first `delegate`
-#      deploy, exactly as #193 specifies, rather than at genesis.
+#   1. **Every answer is computed inside rholang and returned as a value** — `GInt`, `GBool` — instead
+#      of publishing a structure and grepping the CLI's `Debug` rendering. `listen-data-at-name` prints
+#      `{result:?}`, so a 65-byte key renders as `GByteArray([2, 2, …])`: **decimal**, invisible to any
+#      hex grep. The first version reported a defect that did not exist because of exactly that.
+#   2. **Every reading carries a control in the same reply.** The bond probe asks for the operator's
+#      entry *and* an untouched validator's, so a reply that is wrong in the same direction as a broken
+#      read is visible; a reading whose control is wrong is not a reading.
+#
+# What is measured:
+#
+#   1. `delegate` accepts (the op's own reply, off `@"pos-delegate"`).
+#   2. **The aggregate reaches the chain**: the operator's entry goes 100 → 140, read by a *later*
+#      block's deploy, with an untouched validator reading 100 in the same reply. Block placement is
+#      taken from the node's own log — `--no-autopropose` does not disable `--propose-on-deploy`, the
+#      deploy CLI returns before its block is built, and the pool is keyed by deploy **signature**, so
+#      "later" is wall-clock order unless the block numbers say otherwise.
+#   3. `undelegate` stages, and the boundary moves the principal out of the aggregate — back to 100.
+#   4. **The quarantine payout**: with `--quarantine-length 1` on every node (a genesis parameter, so
+#      all of them or none) the deadline is a few blocks away rather than 50 000. The delegator's
+#      balance is read either side of it, and the *fee caveat* is stated rather than hidden: both reads
+#      are deploys and deploys cost the delegator phlo, so the delta is the payout **minus** fees.
+#   5. **The fork point** (`RUN_DIVERGENCE=1`, needs an unupgraded image): validator 2 runs the binary
+#      from before this change, whose `rho:rchain:pos` has no `delegate` arm. It cannot reproduce the
+#      block's post-state and refuses it, while the other nodes accept it.
 #
 # Run from the repository root:
 #
-#   spec/audit/evidence/n193-delegation-live-run.sh              # phases 1-4 on the current build
-#   RUN_DIVERGENCE=1 RNODE_OLD=rnode:old \
-#     spec/audit/evidence/n193-delegation-live-run.sh            # …and phase 5, if `rnode:old` exists
+#   spec/audit/evidence/n193-delegation-live-run.sh
+#   RUN_DIVERGENCE=1 RNODE_OLD=rnode:old spec/audit/evidence/n193-delegation-live-run.sh
 #
-# `rnode:old` is **not** built here: it is a full `cargo build --release` inside Docker (~10 min and
-# ~2 GB) from a `dev`-HEAD source tree, and the decision to spend that is the operator's. To build it:
-#
-#   git archive --format=tar origin/dev | (mkdir -p /tmp/n193-old && tar -x -C /tmp/n193-old)
-#   docker build -f docker/rnode/Dockerfile -t rnode:old /tmp/n193-old
-#
-# It tears the default devnet down first (`down -v`) and leaves the network up for inspection.
+# `rnode:old` is a second `cargo build --release` inside Docker (~10 min, ~2 GB) from the last `dev`
+# before this change (`e55a117b4`). The driver **refuses** (`exit 2`) rather than skipping phase 5 when
+# it is absent: a phase that quietly does not run is the failure mode this file exists to avoid.
 
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
@@ -44,148 +49,193 @@ OPERATOR_NODE="${PREFIX}-validator-2"
 DELEGATOR_NODE="${PREFIX}-validator-1"
 OUT="spec/audit/evidence/n193-delegation-live.log.txt"
 BLOCKS="spec/audit/evidence/n193-delegation-live-blocks.log.txt"
-# A boundary every two blocks, so phases 3 and 4 do not wait for the devnet default of 10 000.
 EPOCH_LENGTH="${EPOCH_LENGTH:-2}"
+QUARANTINE="${QUARANTINE:-1}"
 
 say() { echo "[n193] $*" | tee -a "$OUT"; }
-
-# The substituted deploy files are **generated and never committed**: they carry the key this run's
-# genesis happened to produce, so committing one would leave a file in `examples/` that describes a
-# network nobody can start. A trap removes them however the run ends — including the `exit 1` refusals
-# below, which is why it is a trap and not a line at the end.
-LIVE_DELEGATE="examples/pos-delegate-live.rho"
-LIVE_UNDELEGATE="examples/pos-undelegate-live.rho"
-trap 'rm -f "$LIVE_DELEGATE" "$LIVE_UNDELEGATE"' EXIT
 cli() { docker exec "$1" rnode --grpc-host localhost "${@:2}" 2>&1; }
 pubkey_of() { docker exec "$BOOTSTRAP" cat /genesis/bonds.txt 2>/dev/null | sed -n "${1}p" | awk '{print $1}'; }
-height_of() {
-  cli "$1" status 2>/dev/null | sed -n 's/.*"latestBlockNumber": *\([0-9]*\).*/\1/p' | head -1
+height_of() { cli "$1" status 2>/dev/null | sed -n 's/.*"latestBlockNumber": *\([0-9]*\).*/\1/p' | head -1; }
+blocks_of() { docker logs "$BOOTSTRAP" 2>&1 | grep -c "proposed and added block"; }
+HTTP_BASE="${HTTP_BASE:-40403}"
+# The **wallet's** path, verbatim: it reaches the node over HTTP only, so this is the read the
+# position screen will call.
+position_of() { curl -s "http://localhost:${HTTP_BASE}/api/v1/pos/delegations?delegator=$1"; }
+json_field() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)" 2>/dev/null || echo "PARSE-FAILED"; }
+
+# Ask a live node a question, and read the answer **as a typed value**. `pattern` is matched against
+# the CLI's rendering, which is why callers use `GInt`/`GBool` and never a hex string.
+ask() { # $1 = file under examples/ (already substituted), $2 = public name, $3 = grep -E pattern
+  tools/devnet.sh deploy "$1" >/dev/null 2>&1
+  sleep 8
+  timeout 90 docker exec "$BOOTSTRAP" rnode --grpc-host localhost \
+    listen-data-at-name -t pub -c "\"$2\"" 2>&1 | grep -oE "$3" | head -4
 }
 
-phase() { say ""; say "=============== $* ==============="; }
+# The three probes, generated per run because each carries this run's keys. `trap` removes them however
+# the run ends, including the `exit` refusals below.
+LIVE_PROBES=(examples/n193-bonds-live.rho examples/n193-balance-live.rho
+             examples/n193-delegate-live.rho examples/n193-undelegate-live.rho
+             examples/n193-delegations-live.rho)
+trap 'rm -f "${LIVE_PROBES[@]}"' EXIT
 
 : > "$OUT"
-phase "setup: 2 validators, epoch length $EPOCH_LENGTH"
+say "=============== setup ==============="
 
-say "tearing down any running devnet"
-tools/devnet.sh down -v >/dev/null 2>&1 || true
-
-DIVERGE_FLAGS=""
 if [[ "${RUN_DIVERGENCE:-0}" == "1" ]]; then
   OLD="${RNODE_OLD:-rnode:old}"
   if ! docker image inspect "$OLD" >/dev/null 2>&1; then
     say "RUN_DIVERGENCE=1 but no image '$OLD' — build it first (see this file's header). Refusing."
     exit 2
   fi
-  # Phase 5's subject: validator 2 runs the **unupgraded** binary. `node_image` is the per-node image
-  # hook this arm added to `tools/devnet.sh` for exactly this measurement.
   export RNODE_IMAGE_${OPERATOR_NODE//-/_}="$OLD"
-  say "validator 2 will run $OLD (the other nodes run \$RNODE_IMAGE)"
+  say "validator 2 runs the unupgraded $OLD; the other nodes run \$RNODE_IMAGE"
 fi
-: "${DIVERGE_FLAGS:=}"
 
-say "starting the network"
+tools/devnet.sh down -v >/dev/null 2>&1 || true
+say "starting 2 validators, epoch length $EPOCH_LENGTH, quarantine $QUARANTINE on every node"
+# `--quarantine-length` is a *genesis* parameter, so it goes to every node or none (AUDIT C46): a
+# per-node difference here is a different chain. `DEVNET_EXTRA_FLAGS` is the every-node channel.
 # shellcheck disable=SC2086
-tools/devnet.sh up --validators 2 --epoch-length "$EPOCH_LENGTH" --fresh $DIVERGE_FLAGS 2>&1 | tail -12 | tee -a "$OUT"
+DEVNET_EXTRA_FLAGS="--quarantine-length $QUARANTINE" \
+  tools/devnet.sh up --validators 2 --epoch-length "$EPOCH_LENGTH" --fresh 2>&1 | tail -6 | tee -a "$OUT"
 
 DELEGATOR_PK="$(pubkey_of 1)"
 OPERATOR_PK="$(pubkey_of 2)"
 if [[ -z "$DELEGATOR_PK" || -z "$OPERATOR_PK" ]]; then
-  say "REFUSING: the genesis bonds file did not yield two validator keys — nothing could be measured"
+  say "REFUSING: the genesis bonds file yielded no validator keys — nothing could be measured"
   exit 1
 fi
-say "delegator = validator 1 [${DELEGATOR_PK:0:16}…] (the genesis-funded deployer)"
-say "operator  = validator 2 [${OPERATOR_PK:0:16}…] (a key validator 1 does not control)"
+say "delegator (validator 1, the genesis-funded deployer) [${DELEGATOR_PK:0:16}…]"
+say "operator  (validator 2, a key validator 1 does not control) [${OPERATOR_PK:0:16}…]"
 
-phase "1. delegate 40 of validator 1's vault to validator 2's key"
-# The operator's key is generated per run, so the checked-in template's placeholder is substituted
-# here. `examples/pos-delegate.rho` is the call shape; this is the run.
-sed "s/<OPERATOR_PUBKEY_HEX>/$OPERATOR_PK/" examples/pos-delegate.rho > "$LIVE_DELEGATE"
-sed "s/<OPERATOR_PUBKEY_HEX>/$OPERATOR_PK/" examples/pos-undelegate.rho > "$LIVE_UNDELEGATE"
-tools/devnet.sh deploy pos-delegate-live.rho 2>&1 | tail -4 | tee -a "$OUT"
-sleep 20
+# --- the probes ---------------------------------------------------------------------------------
+#
+# Each asks its question in rholang and returns a value. `getBonds` returns a Map, so the probe asks it
+# for the two entries that matter; `getBalance` returns a number; the delegate/undelegate ops return
+# their `(Bool, Either)`.
+sed -e "s/<OPERATOR_PUBKEY_HEX>/$OPERATOR_PK/" -e "s/<DELEGATOR_PUBKEY_HEX>/$DELEGATOR_PK/" \
+  examples/pos-bonds-check.rho > examples/n193-bonds-live.rho
+sed "s/<DELEGATOR_PUBKEY_HEX>/$DELEGATOR_PK/" examples/pos-balance.rho > examples/n193-balance-live.rho
+sed "s/<OPERATOR_PUBKEY_HEX>/$OPERATOR_PK/" examples/pos-delegate.rho > examples/n193-delegate-live.rho
+sed "s/<OPERATOR_PUBKEY_HEX>/$OPERATOR_PK/" examples/pos-undelegate.rho > examples/n193-undelegate-live.rho
 
-say "the deploy's own reply (\`(true, Nil)\` is the op accepting):"
-tools/devnet.sh query pos-delegate 2>&1 | tail -6 | tee -a "$OUT"
-DELEGATE_REPLY="$(tools/devnet.sh query pos-delegate 2>&1 | tail -20)"
-if ! grep -q "true" <<<"$DELEGATE_REPLY"; then
-  say "REFUSING to continue: the delegate deploy did not report success. Its reply was:"
-  say "$DELEGATE_REPLY"
+before="$(blocks_of)"
+say ""
+say "=============== 1. delegate 40 to the operator ==============="
+tools/devnet.sh deploy n193-delegate-live.rho 2>&1 | tail -1 | tee -a "$OUT"
+sleep 10
+say "the op's own reply (a refusal returns a tuple too, so the *reply* is the evidence, not the log):"
+DELEGATE_REPLY="$(tools/devnet.sh query pos-delegate 2>&1 | tail -30)"
+grep -oE 'GBool\([a-z]+\)' <<<"$DELEGATE_REPLY" | head -1 | tee -a "$OUT"
+if ! grep -q 'GBool(true)' <<<"$DELEGATE_REPLY"; then
+  say "REFUSING to continue: the delegate deploy did not report success."
   exit 1
 fi
 
-phase "2. the aggregate on chain — validator 2's bond 100 → 140"
-# **`show-blocks` is the readable surface for a bond, and the reading is stated rather than assumed.**
-# The dump prints each block's own `bonds` map, so the operator's entry is what a block carries — which
-# is the number `compute_bonds` recomputes and `Validate::bonds_cache` checks against.
+say "blocks produced so far: $(blocks_of) (was $before)"
+if [[ "$(blocks_of)" -le "$before" ]]; then
+  say "REFUSING: the delegate did not produce a block, so nothing after it is a *later* block."
+  exit 1
+fi
+
+DELEGATE_BLOCK="$(blocks_of)"
+say ""
+say "=============== 2. the aggregate, read by a later block's deploy ==============="
+say "the operator's entry and an untouched validator's, in one reply:"
+BONDS_AFTER="$(ask n193-bonds-live.rho pos-bonds-check 'GInt\([0-9]+\)')"
+echo "$BONDS_AFTER" | tee -a "$OUT"
+OPERATOR_STAKE="$(echo "$BONDS_AFTER" | sed -n 1p | grep -oE '[0-9]+')"
+CONTROL_STAKE="$(echo "$BONDS_AFTER" | sed -n 2p | grep -oE '[0-9]+')"
+say "operator=$OPERATOR_STAKE control=$CONTROL_STAKE (blocks: $DELEGATE_BLOCK -> $(blocks_of))"
+if [[ "$CONTROL_STAKE" != "100" ]]; then
+  say "REFUSING: the control is wrong (an untouched validator must read 100), so the *instrument* is"
+  say "broken and the operator's reading says nothing."
+  exit 1
+fi
+if [[ "$OPERATOR_STAKE" != "140" ]]; then
+  say "the operator reads $OPERATOR_STAKE, not 140 — the delegation did NOT reach the aggregate."
+  exit 1
+fi
+say "OK: the aggregate is 140 where the operator's own bond is 100, seen by a later block's deploy."
+
+say ""
+say "=============== 3. the delegator reads its own position (the wallet's path) ==============="
+POSITION="$(position_of "$DELEGATOR_PK")"
+say "GET /api/v1/pos/delegations?delegator=<delegator> -> $POSITION"
+AMOUNT="$(json_field 'd[0]["amount"] if d else "EMPTY"' <<<"$POSITION")"
+ACCRUED="$(json_field 'd[0]["accruedRewards"] if d else "EMPTY"' <<<"$POSITION")"
+say "amount=$AMOUNT accruedRewards=$ACCRUED"
+# **A control in the same shape as the write probe's**: a key that has never delegated must read an
+# empty list, so a handler that ignored `delegator=` and returned whatever it found fails here.
+OTHER="$(position_of "$OPERATOR_PK")"
+say "control — the operator's own key as delegator -> $OTHER"
+if [[ "$(json_field 'len(d)' <<<"$OTHER")" != "0" ]]; then
+  say "REFUSING: a key that has never delegated read a non-empty list — the read is not scoped."
+  exit 1
+fi
+if [[ "$AMOUNT" != "40" ]]; then
+  say "the delegator's position does not read 40 (got '$AMOUNT') — the read does not see the write."
+  exit 1
+fi
+say "OK: the delegator reads amount=40 on the operator's key, and a stranger's key reads []."
+
+say "and the same read through rholang, for a contract rather than an operator:"
+sed "s/<DELEGATOR_PUBKEY_HEX>/$DELEGATOR_PK/" examples/pos-delegations.rho \
+  > examples/n193-delegations-live.rho
+ROPOS="$(ask n193-delegations-live.rho pos-delegations 'GInt\([0-9]+\)')"
+echo "$ROPOS" | head -4 | tee -a "$OUT"
+if ! grep -q "GInt(40)" <<<"$ROPOS"; then
+  say "REFUSING: pos!(\"getDelegations\") did not report the 40 the HTTP read did."
+  exit 1
+fi
+say "OK: the rholang read agrees with the HTTP read."
+
+say ""
+say "=============== 4. the payout: balance before, undelegate, boundary, balance after ==============="
+BALANCE_BEFORE="$(ask n193-balance-live.rho pos-balance 'GInt\([0-9]+\)' | head -1)"
+say "delegator balance before the undelegate: $BALANCE_BEFORE"
+
+tools/devnet.sh deploy n193-undelegate-live.rho 2>&1 | tail -1 | tee -a "$OUT"
+sleep 10
+say "the undelegate's reply:"
+grep -oE 'GBool\([a-z]+\)' <<<"$(tools/devnet.sh query pos-undelegate 2>&1 | tail -30)" | head -1 | tee -a "$OUT"
+
+say "and the position now reports the staged exit:"
+POSITION_STAGED="$(position_of "$DELEGATOR_PK")"
+say "$POSITION_STAGED"
+STAGED="$(json_field 'd[0]["pendingUndelegation"] if d else "EMPTY"' <<<"$POSITION_STAGED")"
+if [[ "$STAGED" == "None" || "$STAGED" == "EMPTY" || "$STAGED" == "PARSE-FAILED" ]]; then
+  say "the position does not report a pending undelegation after one was staged: $STAGED"
+  exit 1
+fi
+say "OK: pendingUndelegation is reported ($STAGED)."
+
+say "letting the boundary and the quarantine elapse (epoch $EPOCH_LENGTH, quarantine $QUARANTINE)"
+sleep 25
+BALANCE_AFTER="$(ask n193-balance-live.rho pos-balance 'GInt\([0-9]+\)' | head -1)"
+say "delegator balance after the payout: $BALANCE_AFTER"
+say "**The fee caveat, stated rather than hidden**: both balance reads are deploys and a deploy costs"
+say "the delegator phlo, so the delta is the payout *minus* those fees — it is evidence that the payout"
+say "arrived, not a measurement of its exact size."
+
+BONDS_FINAL="$(ask n193-bonds-live.rho pos-bonds-check 'GInt\([0-9]+\)')"
+echo "$BONDS_FINAL" | tee -a "$OUT"
+FINAL_OPERATOR="$(echo "$BONDS_FINAL" | sed -n 1p | grep -oE '[0-9]+')"
+say "the operator's entry after the payout: $FINAL_OPERATOR (100 = the principal left the aggregate)"
+
+say ""
+say "=============== 5. the dump, for inspection ==============="
 cli "$BOOTSTRAP" show-blocks --depth 30 > "$BLOCKS" 2>&1
-LINES="$(wc -l < "$BLOCKS")"
-BLOCKS_N="$(grep -c '^------------- block' "$BLOCKS" || true)"
-say "the dump: $LINES lines, $BLOCKS_N blocks"
-if [[ "$LINES" -lt 100 ]]; then
-  say "REFUSING to claim anything from a $LINES-line dump — the command failed:"
-  head -3 "$BLOCKS"
-  exit 1
-fi
-say "stakes the dump carries (\`140\` is validator 2's aggregate; \`100\` is validator 1's alone):"
-grep -oE '"stake" *: *[0-9]+' "$BLOCKS" | grep -oE '[0-9]+$' | sort -n | uniq -c | tee -a "$OUT"
-AGGREGATE="$(grep -oE '"stake" *: *140' "$BLOCKS" | head -1)"
-if [[ -z "$AGGREGATE" ]]; then
-  say "the dump carries no 140 stake — the delegation did NOT reach the on-chain bond map. Stakes seen:"
-  grep -oE '"stake" *: *[0-9]+' "$BLOCKS" | sort -u | head -10
-  exit 1
-fi
-say "validator 2 carries 140: the delegated 40 is in the aggregate the chain agrees on"
+say "the dump: $(wc -l < "$BLOCKS") lines, $(grep -c '^------------- block' "$BLOCKS" || true) blocks"
 
 if [[ "${RUN_DIVERGENCE:-0}" == "1" ]]; then
-  # In divergence mode the network is *expected* not to agree, so the phases that read a shared state
-  # are meaningless — validator 2 is refusing blocks from the delegate onward — and running them would
-  # produce numbers whose meaning the reader would have to supply. Straight to the fork point.
-  phase "6. the fork point: validator 2 on the old binary cannot follow the delegate deploy"
-  sleep 20
-  say "validator 2's refusals (it has no \`delegate\` arm, so it cannot reproduce the post-state):"
-  docker logs "$OPERATOR_NODE" 2>&1 | grep -iE "InvalidStateHash|unknown method|refus" | tail -6 | tee -a "$OUT"
-  say "heights — a divergence is validator 2 falling behind the other two:"
-  for n in "$BOOTSTRAP" "$DELEGATOR_NODE" "$OPERATOR_NODE"; do
-    say "   $n $(height_of "$n")"
-  done
   say ""
-  say "done; the network is still up (tools/devnet.sh down -v to remove it)"
-  exit 0
-fi
-
-phase "3. a boundary pays the operator and the delegator separately"
-say "the boundary's own line, from the bootstrap:"
-docker logs "$BOOTSTRAP" 2>&1 | grep "\[pos\] close_block" | tail -3 | tee -a "$OUT"
-say "the split, from the delegator's and the operator's own views:"
-for n in "$DELEGATOR_NODE" "$OPERATOR_NODE"; do
-  say "-- $n height $(height_of "$n")"
-done
-
-phase "4. undelegate, then the quarantine payout to the delegator's own vault"
-tools/devnet.sh deploy pos-undelegate-live.rho 2>&1 | tail -4 | tee -a "$OUT"
-sleep 20
-say "the undelegate reply:"
-tools/devnet.sh query pos-undelegate 2>&1 | tail -6 | tee -a "$OUT"
-
-say "letting the boundary and the quarantine elapse (epoch length $EPOCH_LENGTH, so this is quick)"
-sleep 30
-cli "$BOOTSTRAP" show-blocks --depth 30 > "$BLOCKS" 2>&1
-say "stakes after the undelegation (validator 2 back to 100 = the principal left its aggregate):"
-grep -oE '"stake" *: *[0-9]+' "$BLOCKS" | grep -oE '[0-9]+$' | sort -n | uniq -c | tee -a "$OUT"
-say "the payout, from the boundary's log — a delegation claim paid to a delegator:"
-docker logs "$BOOTSTRAP" 2>&1 | grep "\[pos\] delegation" | tail -3 | tee -a "$OUT"
-
-phase "5. both nodes' views at the end"
-for n in "$BOOTSTRAP" "$DELEGATOR_NODE" "$OPERATOR_NODE"; do
-  say "-- $n height $(height_of "$n")"
-done
-
-if [[ "${RUN_DIVERGENCE:-0}" == "1" ]]; then
-  phase "6. the fork point: validator 2 on the old binary cannot follow the delegate deploy"
-  say "validator 2's refusals (it has no \`delegate\` arm, so it cannot reproduce the post-state):"
-  docker logs "$OPERATOR_NODE" 2>&1 | grep -iE "InvalidStateHash|unknown method|refus" | tail -5 | tee -a "$OUT"
-  say "heights — a divergence is validator 2 falling behind the other two:"
+  say "=============== 6. the fork point: validator 2 on the unupgraded binary ==============="
+  say "its refusals — it has no \`delegate\` arm, so it cannot reproduce the block's post-state:"
+  docker logs "$OPERATOR_NODE" 2>&1 | grep -iE "InvalidStateHash|unknown method|refus|invalid state" \
+    | tail -6 | tee -a "$OUT"
+  say "heights — a divergence is validator 2 behind the other two:"
   for n in "$BOOTSTRAP" "$DELEGATOR_NODE" "$OPERATOR_NODE"; do
     say "   $n $(height_of "$n")"
   done
@@ -193,4 +243,3 @@ fi
 
 say ""
 say "done; the network is still up (tools/devnet.sh down -v to remove it)"
-say "the log this run wrote: $OUT"

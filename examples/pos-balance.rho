@@ -1,0 +1,21 @@
+// Read one key's REV balance, and publish it as a number.
+//
+// The payout probe for #193's live arm: the delegator's balance is read either side of the quarantine
+// payout, so the increase is evidence the payout arrived. `rho:rev:address` derives the address from
+// the public key inside rholang — no address is passed in from the shell, so the probe cannot be
+// asking about a different account than the one the run measured.
+//
+// **What it does not isolate, stated here rather than left to the reader**: both reads are deploys and
+// a deploy costs its deployer phlo, so the delta is the payout *minus* those fees. It is evidence that
+// the payout arrived, not a measurement of its exact size.
+//
+//   tools/devnet.sh deploy pos-balance.rho && tools/devnet.sh query pos-balance
+new revAddr(`rho:rev:address`), vault(`rho:rchain:revVault`), ret1, ret2 in {
+  revAddr!("fromPublicKey", "<DELEGATOR_PUBKEY_HEX>".hexToBytes(), *ret1) |
+  for (@addr <- ret1) {
+    vault!("getBalance", addr, *ret2) |
+    for (@bal <- ret2) {
+      @"pos-balance"!(bal)
+    }
+  }
+}
