@@ -52,6 +52,40 @@ pub enum ProposerResult {
     },
 }
 
+/// Who asked for a proposal. This is **provenance**, not the caller's `is_async` (which only decides
+/// whether an acknowledgement is sent before the work runs) — and it is what decides whether C171's
+/// pace bound applies.
+///
+/// C171's bound is the #70 attestation storm's: a node that reacts to **every** remote block — each
+/// one an attestation that is in turn a remote block for the next — attests to a net that is already
+/// live. What it paces is therefore a proposal the node raised **on its own**: the autopropose tap and
+/// timer, the attest-on-new-blocks tap, and the follow-up a colliding request resolves to. A caller's
+/// proposal is not a reaction, and C171 must not silence it: `tools/devnet.sh` documents that "an
+/// explicit `propose`/`POST /api/v1/propose`" creates a block on a node started `--no-autopropose`,
+/// and `tools/devnet-test.sh` asserts `POST /api/propose` answers 200 on a node whose last deploy is
+/// already in a block. Both are the contract `Explicit` preserves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposeSource {
+    /// A caller asked — admin HTTP, the gRPC propose service, the CLI, and `--propose-on-deploy`
+    /// (which a deployer's request drives and which always carries that deploy, so the pace bound
+    /// never applies to it anyway). Carries the caller's `is_async`: whether to acknowledge with
+    /// `Started` before the work runs. This is the only source that is acknowledged, because it is
+    /// the only one with a caller left to read it.
+    Explicit { is_async: bool },
+    /// The node asked itself: the autopropose tap and timer, the attest-on-new-blocks tap, and the
+    /// follow-up a colliding request resolves to. Nobody waits for the result, so nothing is
+    /// acknowledged — and this is the traffic C171 paces.
+    Automatic,
+}
+
+impl ProposeSource {
+    /// Whether the caller is quick to ask for a `Started` acknowledgement before the work runs.
+    /// Automatic proposals have no live receiver to read one.
+    fn acknowledges(&self) -> bool {
+        matches!(self, ProposeSource::Explicit { is_async: true })
+    }
+}
+
 /// Whether `sender` is in the bonds map the DAG reports — extracted from the
 /// `check_active_validator` closure so that its failure behaviour is testable without a proposer
 /// fixture (the `load_node`/`load_node_from_store` split, applied to a DAG read).
@@ -114,7 +148,9 @@ pub struct Proposer {
     check_active_validator:
         Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync>,
     create_block: Arc<
-        dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync,
+        dyn Fn(&ValidatorIdentity, ProposeSource) -> BoxFuture<Result<BlockCreatorResult, String>>
+            + Send
+            + Sync,
     >,
     validate_block:
         Arc<dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync>,
@@ -133,7 +169,10 @@ impl Proposer {
             dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
         >,
         create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
         >,
@@ -159,7 +198,10 @@ impl Proposer {
         }
     }
 
-    async fn do_propose(&self) -> Result<(ProposeResult, Option<BlockMessage>), String> {
+    async fn do_propose(
+        &self,
+        source: ProposeSource,
+    ) -> Result<(ProposeResult, Option<BlockMessage>), String> {
         // A DAG that cannot be read is an error, not `NotBonded` (AUDIT C67): the oracle's
         // `lookupUnsafe` raises, and reporting "not bonded" would stop this node proposing on a wrong
         // reason with nothing in the log.
@@ -191,7 +233,7 @@ impl Proposer {
             Err(e) => return Err(format!("cannot decide whether this node is bonded: {e}")),
         }
 
-        match (self.create_block)(&self.validator).await? {
+        match (self.create_block)(&self.validator, source).await? {
             BlockCreatorResult::NoNewDeploys => Ok((
                 ProposeResult {
                     propose_status: ProposeStatus::NoNewDeploys,
@@ -283,19 +325,19 @@ impl Proposer {
 
     pub async fn propose(
         &self,
-        is_async: bool,
+        source: ProposeSource,
         propose_id: tokio::sync::oneshot::Sender<ProposerResult>,
     ) -> Result<(ProposeResult, Option<BlockMessage>), String> {
         let validator = Validator::from_slice(self.validator.public_key.bytes());
         let next_seq = (self.get_latest_seq_number)(validator).await + 1;
 
-        if is_async {
+        if source.acknowledges() {
             let _ = propose_id.send(ProposerResult::Started {
                 seq_number: next_seq,
             });
-            self.do_propose().await
+            self.do_propose(source).await
         } else {
-            let result = self.do_propose().await;
+            let result = self.do_propose(source).await;
             let proposer_result = match &result {
                 Ok((result, Some(block))) => ProposerResult::Success {
                     status: result.propose_status.clone(),
@@ -371,7 +413,10 @@ impl Proposer {
         };
 
         let create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
         > = {
@@ -387,7 +432,7 @@ impl Proposer {
             // refusal freezes, so it cannot say when the wait has gone on too long. This can.
             let blocked_since_advance: Arc<std::sync::atomic::AtomicI64> =
                 Arc::new(std::sync::atomic::AtomicI64::new(0));
-            Arc::new(move |vi: &ValidatorIdentity| {
+            Arc::new(move |vi: &ValidatorIdentity, source: ProposeSource| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
                 let block_store = block_store.clone();
@@ -412,6 +457,7 @@ impl Proposer {
                         epoch_length,
                         dummy_deploy_opt.as_ref(),
                         &blocked_since_advance,
+                        source,
                     )
                     .await
                 })
@@ -565,6 +611,7 @@ async fn create_block<'a, F, Fut>(
     epoch_length: i32,
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
     blocked_since_advance: &std::sync::atomic::AtomicI64,
+    source: ProposeSource,
 ) -> Result<BlockCreatorResult, String>
 where
     F: Fn(BlockHash) -> Fut + Sync,
@@ -793,6 +840,9 @@ where
         new_state_transition,
         quorum_reachable,
         cadence_due(&pre_state.justifications, &creators_validator, tip),
+        // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting
+        // to remote blocks, and a caller's explicit propose is not a reaction.
+        source == ProposeSource::Automatic,
     );
 
     // User deploys: filter future / expired / replayed, then cap at what the block can seed — the pool
@@ -1089,10 +1139,13 @@ mod tests {
             dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
         > = Arc::new(|_v| Box::pin(async { Ok(true) }));
         let create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
-        > = Arc::new(move |_v| {
+        > = Arc::new(move |_v, _source| {
             let create = create.clone();
             Box::pin(async move { Ok(create) })
         });
@@ -1147,7 +1200,10 @@ mod tests {
     async fn no_new_deploys_returns_failure() {
         let p = proposer(BlockCreatorResult::NoNewDeploys);
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (result, block_opt) = p.propose(false, tx).await.unwrap();
+        let (result, block_opt) = p
+            .propose(ProposeSource::Explicit { is_async: false }, tx)
+            .await
+            .unwrap();
         assert_eq!(result.propose_status, ProposeStatus::NoNewDeploys);
         assert!(block_opt.is_none());
         assert!(matches!(rx.await.unwrap(), ProposerResult::Failure { .. }));
@@ -1157,7 +1213,10 @@ mod tests {
     async fn created_block_returns_success() {
         let p = proposer(BlockCreatorResult::Created(block()));
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (result, block_opt) = p.propose(false, tx).await.unwrap();
+        let (result, block_opt) = p
+            .propose(ProposeSource::Explicit { is_async: false }, tx)
+            .await
+            .unwrap();
         assert_eq!(result.propose_status, ProposeStatus::ProposeSuccess);
         assert!(block_opt.is_some());
         assert!(matches!(rx.await.unwrap(), ProposerResult::Success { .. }));
@@ -1175,10 +1234,13 @@ mod tests {
             dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
         > = Arc::new(|_v| Box::pin(async { Ok(true) }));
         let create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
                 + Sync,
-        > = Arc::new(|_v| Box::pin(async { Ok(BlockCreatorResult::Created(block())) }));
+        > = Arc::new(|_v, _source| Box::pin(async { Ok(BlockCreatorResult::Created(block())) }));
         let validate: Arc<
             dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
         > = Arc::new(|_b| Box::pin(async { Err(ValidateError::SelfEquivocation) }));
@@ -1205,7 +1267,10 @@ mod tests {
         );
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (result, block_opt) = p.propose(false, tx).await.unwrap();
+        let (result, block_opt) = p
+            .propose(ProposeSource::Explicit { is_async: false }, tx)
+            .await
+            .unwrap();
         assert_eq!(
             result.propose_status,
             ProposeStatus::NotEnoughNewBlocks,
@@ -1271,7 +1336,11 @@ fn cadence_due(justifications: &[BlockMetadata], own: &Validator, tip: BlockHeig
 /// A pair of bounds, and the order matters:
 ///
 /// - nothing to finalise → suppress. An idle chain must not grow.
-/// - the quorum is reachable → attest now. The ordinary case, unchanged.
+/// - the quorum is reachable → attest a deploy-bearing block promptly (it needs the quorum), and an
+///   attestation only while this node is itself behind (C171: the #70 storm is attesting to every
+///   remote block, each an attestation that is in turn a remote block for the next). **Only a
+///   `paced` proposal** — one the node raised on its own — is bounded this way; a caller's explicit
+///   propose is not a reaction to a remote block and is not silenced (`ProposeSource`).
 /// - the quorum is unreachable, but a state transition exists to attest to **and** this node has itself
 ///   been quiet for longer than `ATTESTATION_WINDOW` → attest anyway, at that reduced cadence.
 /// - otherwise → suppress.
@@ -1292,12 +1361,27 @@ fn attestation_suppressed(
     new_state_transition: bool,
     quorum_reachable: bool,
     cadence_due: bool,
+    paced: bool,
 ) -> bool {
     if nothing_to_finalize {
         return true;
     }
     if quorum_reachable {
-        return false;
+        // A deploy licenses a prompt attestation — it is the thing that needs the quorum — but an
+        // attestation *without* a deploy is the #70 storm (C171): one empty block per remote block,
+        // each an attestation that is in turn a remote block for the next. Gate that case on our own
+        // quiet, so a caught-up node does not re-attest to its peers' attestations while a node left
+        // behind still catches up.
+        //
+        // **The pace bound is the storm's, so it applies only to a proposal the node raised on its
+        // own** (`paced`). A caller's explicit propose is not a reaction to a remote block, and
+        // silencing it would break the documented contract that an explicit propose produces a block
+        // on a `--no-autopropose` node (`tools/devnet.sh`; `tools/devnet-test.sh`'s step 5). This is
+        // the pre-C171 rule for that case.
+        if !paced {
+            return false;
+        }
+        return !(new_state_transition || cadence_due);
     }
     !(new_state_transition && cadence_due)
 }
@@ -1456,6 +1540,7 @@ mod attestation_suppression_tests {
                 true,  // new_state_transition: a parent carries deploys — the ordinary case
                 false, // quorum_reachable: 200 of 400 is not a supermajority
                 false, // cadence_due: we spoke within the window
+                true,  // paced: the node's own proposal
             ),
             "the quorum is unreachable (200 of 400), so suppression must not be defeated by a \
              deploy-bearing parent"
@@ -1471,23 +1556,44 @@ mod attestation_suppression_tests {
     #[test]
     fn but_a_node_quiet_past_the_window_speaks_again() {
         assert!(
-            !attestation_suppressed(false, true, false, true),
+            !attestation_suppressed(false, true, false, true, true),
             "a node that has been quiet past the window must attest even while the quorum is out of \
              reach, or a stalled chain can never discover that a peer returned"
         );
     }
 
-    /// The ordinary case, unchanged: a reachable quorum attests immediately, whatever the cadence.
+    /// **The C171 fix.** A deploy-bearing block is attested promptly even with the quorum reachable — it
+    /// is the thing that needs the quorum — but an attestation *without* a deploy is the #70 storm and
+    /// is gated by our own quiet: a caught-up node withholds, a node left behind still speaks.
     #[test]
-    fn a_reachable_quorum_attests_without_waiting_for_the_cadence() {
-        assert!(!attestation_suppressed(false, true, true, false));
-        assert!(!attestation_suppressed(false, false, true, false));
+    fn a_reachable_quorum_attests_a_deploy_promptly_but_gates_the_storm() {
+        // A deploy licenses an immediate attestation.
+        assert!(!attestation_suppressed(false, true, true, false, true));
+        // An attestation without a deploy, while caught up, is the storm and is withheld.
+        assert!(attestation_suppressed(false, false, true, false, true));
+        // But a node left behind still attests, so a stalled chain can discover a peer returned.
+        assert!(!attestation_suppressed(false, false, true, true, true));
+    }
+
+    /// **And the pace bound is the storm's, not the caller's.** An explicit propose is not the node
+    /// reacting to a remote block, so it attests whenever the quorum is reachable — the pre-C171 rule.
+    /// This is the contract `tools/devnet.sh` documents ("an explicit `propose`/`POST /api/v1/propose`"
+    /// creates a block on a `--no-autopropose` node) and `tools/devnet-test.sh`'s step 5 asserts
+    /// (`POST /api/propose` answers 200). Silencing it is the regression this pins: an operator asking
+    /// a caught-up node for a block gets one; a caught-up node asking *itself* (the `paced` arm above)
+    /// is the storm and is withheld.
+    #[test]
+    fn an_explicit_propose_is_not_paced_by_the_storm_bound() {
+        assert!(
+            !attestation_suppressed(false, false, true, false, false),
+            "a caller's explicit propose must not be silenced by the C171 pace bound"
+        );
     }
 
     /// And an idle chain still produces nothing: suppression outranks every other term.
     #[test]
     fn an_idle_chain_suppresses_whatever_else_is_true() {
-        assert!(attestation_suppressed(true, true, true, true));
+        assert!(attestation_suppressed(true, true, true, true, true));
     }
 
     /// The pace bound is read from the DAG, so it needs no new state: our own latest message's height

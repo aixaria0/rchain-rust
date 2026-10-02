@@ -32,7 +32,7 @@ use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::blocks::block_processor;
 use rchain_casper::blocks::block_receiver::{self, BlockReceiverState};
 use rchain_casper::blocks::block_retriever::BlockRetriever;
-use rchain_casper::blocks::proposer::proposer::{Proposer, ProposerResult};
+use rchain_casper::blocks::proposer::proposer::{ProposeSource, Proposer, ProposerResult};
 use rchain_casper::conf::ShardSpec;
 use rchain_casper::dag::BlockDagKeyValueStorage;
 use rchain_casper::engine::node_launch::{self, PeerMessage};
@@ -689,8 +689,8 @@ pub struct ShardParts {
 /// `Setup.setupNodeProgram`). Built in [`setup`] (so `BlockApiImpl` can get the trigger + state);
 /// consumed in [`setup_node_program`] to drive the proposer stream.
 pub struct ProposerParts {
-    pub queue_tx: mpsc::Sender<(bool, tokio::sync::oneshot::Sender<ProposerResult>)>,
-    pub queue_rx: mpsc::Receiver<(bool, tokio::sync::oneshot::Sender<ProposerResult>)>,
+    pub queue_tx: mpsc::Sender<(ProposeSource, tokio::sync::oneshot::Sender<ProposerResult>)>,
+    pub queue_rx: mpsc::Receiver<(ProposeSource, tokio::sync::oneshot::Sender<ProposerResult>)>,
     pub state: Arc<tokio::sync::Mutex<ProposerState>>,
 }
 
@@ -1556,7 +1556,7 @@ async fn setup_shard_runtime(
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                     push_proposer_health(&tap_metrics, &tap_source, &tap_health);
                     let (otx, _orx) = tokio::sync::oneshot::channel();
-                    if let Err(e) = tap_tx.try_send((true, otx)) {
+                    if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
                         tap_log.warn(
                             LogSource::new("coop.rchain.node.runtime.Setup"),
                             &format!(
@@ -1601,7 +1601,7 @@ async fn setup_shard_runtime(
                         }
                         push_proposer_health(&timer_metrics, &timer_source, &timer_health);
                         let (otx, _orx) = tokio::sync::oneshot::channel();
-                        if let Err(e) = timer_tx.try_send((true, otx)) {
+                        if let Err(e) = timer_tx.try_send((ProposeSource::Automatic, otx)) {
                             timer_log.warn(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(
@@ -1643,21 +1643,26 @@ async fn setup_shard_runtime(
             // Our own sender bytes: `Validator` is exactly `Validator::from_slice(public_key.bytes())`
             // (see `block_creator.rs`), so comparing bytes identifies our own blocks.
             let me: Vec<u8> = identity.public_key.bytes().to_vec();
-            // The highest remote height this tap has already answered (`None` = none yet).
-            let last_attested_height: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
+            // The highest height this tap has answered, **per sender** (AUDIT C192). A single height
+            // gate answers only the first block of a round that comes to rest at one height — one block
+            // per validator, all at the same height — and seals it, because nothing above that height
+            // exists or can now be produced. Per-sender answers each peer's block at the resting height,
+            // so the round advances; the gate still bounds a burst to one request per sender per height.
+            let answered: Arc<Mutex<BTreeMap<Vec<u8>, i64>>> =
+                Arc::new(Mutex::new(BTreeMap::new()));
             Some(Arc::new(move |block: &BlockMessage| {
                 let height = i64::from(block.block_number);
+                let sender = block.sender.as_bytes().to_vec();
                 {
-                    let mut last = last_attested_height
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    if !attest_warranted(&me, block.sender.as_bytes(), height, *last) {
+                    let mut answered = answered.lock().unwrap_or_else(|p| p.into_inner());
+                    let last_for_sender = answered.get(&sender).copied();
+                    if !attest_warranted(&me, &sender, height, last_for_sender) {
                         return;
                     }
-                    *last = Some(height);
+                    answered.insert(sender, height);
                 }
                 let (otx, _orx) = tokio::sync::oneshot::channel();
-                if let Err(e) = tap_tx.try_send((true, otx)) {
+                if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
                     tap_log.warn(
                         LogSource::new("coop.rchain.node.runtime.Setup"),
                         &format!(
@@ -1973,7 +1978,7 @@ pub async fn setup_shard(
     // `proposerStateRefOpt` in `Setup.setupNodeProgram`). The proposer stream itself is driven in
     // `setup_node_program`, but the trigger + state must be available to `BlockApiImpl` here.
     let (proposer_queue_tx, proposer_queue_rx) =
-        mpsc::channel::<(bool, tokio::sync::oneshot::Sender<ProposerResult>)>(100);
+        mpsc::channel::<(ProposeSource, tokio::sync::oneshot::Sender<ProposerResult>)>(100);
     let proposer_state: Option<Arc<tokio::sync::Mutex<ProposerState>>> = validator_opt
         .as_ref()
         .map(|_| Arc::new(tokio::sync::Mutex::new(ProposerState::default())));
@@ -1984,7 +1989,8 @@ pub async fn setup_shard(
                 let tx = tx.clone();
                 Box::pin(async move {
                     let (otx, orx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send((is_async, otx)).await;
+                    // A caller asked, and waits: `Explicit`, so C171's pace bound does not apply.
+                    let _ = tx.send((ProposeSource::Explicit { is_async }, otx)).await;
                     orx.await.unwrap_or(ProposerResult::Empty)
                 })
             },
@@ -2802,7 +2808,7 @@ fn tap_validated_blocks(
 /// quorum *is* reachable, none of the above limits the rate: a node attests promptly, its attestation is a
 /// remote block for its peers, and they attest in turn. On an all-live net that is the `--attest-on-new-blocks`
 /// storm recorded on #70 — 276 blocks in about a minute, finalised only to block 11 — and it is still
-/// unbound: #70 is rolled into #126, whose open half is exactly this. The per-remote-height rule above is not
+/// unbound: #70 is rolled into #126, whose open half is exactly this. The per-sender rule above is not
 /// a bound at all while the height itself keeps advancing, so the pace
 /// half belongs on *our own* quiet (`our latest message at least k heights behind`) and is not here yet. See
 /// `docs/src/node/running-a-public-testnet.md`, "Attesting on every remote block is a block storm".
@@ -2812,9 +2818,9 @@ fn attest_warranted(
     me: &[u8],
     sender: &[u8],
     height: i64,
-    last_attested_height: Option<i64>,
+    last_attested_height_for_sender: Option<i64>,
 ) -> bool {
-    sender != me && last_attested_height.map_or(true, |last| height > last)
+    sender != me && last_attested_height_for_sender.map_or(true, |last| height > last)
 }
 
 /// The regression guard for C182's first defect: the shape's metrics must carry buckets that reach the
@@ -3062,6 +3068,7 @@ mod proposer_health_metric_tests {
 #[cfg(test)]
 mod attest_warranted_tests {
     use super::attest_warranted;
+    use std::collections::BTreeMap;
 
     #[test]
     fn any_remote_block_at_a_new_height_is_a_reason_to_attest() {
@@ -3091,51 +3098,49 @@ mod attest_warranted_tests {
         assert!(attest_warranted(&me, &other, 8, Some(7)));
     }
 
-    /// **The same rule, run as a sequence, is a deadlock — and this is the test that shows it is the
-    /// rule and not the rig.** The assertion above is a single call; the defect is what the calls do in
-    /// order, which no case in this module exercises.
-    ///
-    /// Reproduce a node's tap over a round: a deploy-bearing block at height 1, then the peer
-    /// attestations that answer it. On a three-or-more validator net the peers all react before any of
-    /// them has produced, so every one of their blocks lands at **height 1** — that is the measured
-    /// shape of the `n149` sweep (`n149-results.md`: genesis plus eight blocks, all at height 1, no
-    /// height 2), not an assumption. The node answers the **first** and refuses every other, and
-    /// because nothing above height 1 exists or can now exist, it will refuse every block that ever
-    /// arrives from a peer afterwards. The chain is sealed with its deploy unfinalised.
-    ///
-    /// The control is the same sequence one height apart, which is what a two-validator net produces:
-    /// every call is answered, and the height keeps advancing. So the difference between the two nets
-    /// is *whether a round comes to rest at one height*, and the rule that seals one of them is the
-    /// rule this module already asserts bounds the storm.
+    /// **The falsifier for the C192 fix.** A per-*height* gate answers only the first block of a round
+    /// that comes to rest at one height — the measured `n149` shape (genesis plus N blocks, all at
+    /// height 1, no height 2) — and seals it, because nothing above that height can be produced once
+    /// every node's tap has refused the height. Keyed per-*sender* instead, the gate answers each
+    /// peer's block at the resting height, so the round advances; a burst is still bounded to one
+    /// request per sender per height.
     #[test]
-    fn a_round_that_comes_to_rest_at_one_height_is_sealed_by_its_own_bound() {
+    fn a_round_that_comes_to_rest_at_one_height_is_answered_for_every_peer() {
         let me = vec![1u8; 65];
         let peers: Vec<Vec<u8>> = (2..9u8).map(|i| vec![i; 65]).collect();
 
-        // Three or more validators: seven peers' attestations, all at height 1. The node answers one.
-        let mut last: Option<i64> = None;
-        let answered = peers
+        // Three or more validators: seven peers' attestations, all at height 1. Per-sender, every one
+        // is a reason to attest, so the round advances instead of sealing.
+        let mut answered: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
+        let count = peers
             .iter()
             .filter(|p| {
+                let last = answered.get(*p).copied();
                 let w = attest_warranted(&me, p, 1, last);
                 if w {
-                    last = Some(1);
+                    answered.insert((*p).clone(), 1);
                 }
                 w
             })
             .count();
         assert_eq!(
-            answered, 1,
-            "one height is answered once, so the round's other six attestations get no reply from us"
-        );
-        // And nothing can rescue it: no peer block can exceed a height that no block reaches, so every
-        // later block from a peer is refused too.
-        assert!(
-            !peers.iter().any(|p| attest_warranted(&me, p, 1, last)),
-            "the height can never be exceeded, because nothing above it will ever be produced"
+            count, 7,
+            "every peer's block at the resting height is answered, so the round is not sealed"
         );
 
-        // The control: the same number of blocks, one height apart — a two-validator net's shape.
+        // And the bound survives: the same peer at the same height is not answered twice, while its
+        // strictly newer height still is.
+        assert!(
+            !attest_warranted(&me, &peers[0], 1, answered.get(&peers[0]).copied()),
+            "a peer at a height already answered is not answered again"
+        );
+        assert!(
+            attest_warranted(&me, &peers[0], 2, answered.get(&peers[0]).copied()),
+            "a peer's strictly newer height still is"
+        );
+
+        // The control: the same number of blocks, one height apart — a two-validator net's shape. Still
+        // all answered; the per-sender gate does not change this.
         let mut last: Option<i64> = None;
         let answered = (1..=7)
             .filter(|h| {
@@ -3148,8 +3153,7 @@ mod attest_warranted_tests {
             .count();
         assert_eq!(
             answered, 7,
-            "when the height keeps advancing, every block is a reason to attest — so the two nets \
-             differ by whether a round comes to rest at one height, not by the count"
+            "when the height keeps advancing, every block is a reason to attest"
         );
     }
 }

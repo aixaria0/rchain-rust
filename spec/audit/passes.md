@@ -4501,6 +4501,15 @@ insufficient, because heights keep advancing on a chain that cannot finalise. Re
 rather than folded into C170 because it is open, and the `owes` cell names the falsifier that would
 close it.
 
+**Fixed 2026-10-01.** The pace half lives in `attestation_suppressed` (the proposer's suppression
+clause reads `cadence_due`, the "our own quiet" term — the §23 body's `attest_warranted` citation was
+one layer off). A reachable quorum now attests a deploy-bearing block promptly (it needs the quorum)
+but gates an attestation-without-a-deploy on `cadence_due`, so a caught-up node does not re-attest to
+its peers' attestations — the storm's fuel. Falsifier:
+`a_reachable_quorum_attests_a_deploy_promptly_but_gates_the_storm` (red when the pace term is deleted).
+The devnet block-growth re-measurement is not re-run; the unit falsifier pins the decision that the
+126-blocks figure was the symptom of. C171 → `done`.
+
 ## 24. The DAG index and the store it indexes: the same measurement's other failure
 
 The same 2026-09-29 run produced a second, independent finding one layer down, and it is the one that
@@ -4811,6 +4820,14 @@ correcting the *record* rather than the node:
   with **5.7 MiB** of RSS between them) and **11 regions of exactly 64 MiB** which *are* the arena heaps.
   The count came from one size class and the size from another, and "fully resident" is the inverse of
   the truth for the class it names. `owes`: replace the sentence with the measured histogram.
+
+**Closed 2026-10-01.** Each part is satisfied by work that already existed, recorded here so the row is
+not left standing on a superseded evidence base: the current samplers echo their configuration into each
+artifact's header (`n149-sweep-run.sh` writes `tree`/`image`/`sweep`/`windows`), the Stage A sampler
+(`n117-after-fix-run.sh`) resolves the cgroup from the container id and reads the peak while the node
+lives — the fix this very § names — and `docs/src/node/validator-requirements.md:141-150` states the
+measured histogram. The `target/n105/` arms this section audited are gone; nothing in the tree re-reads
+them. C176 → `done`.
 
 ### The record this pass corrects
 
@@ -6003,6 +6020,14 @@ calls and none of them could see a sequence.
 height, or on the tip — and it is deliberately not guessed here. Nor is this a cost finding: unlike
 #148's storm, production is *bounded* (exactly N blocks) and stops. What it shares with #148 is the
 frozen finality; what it does not share is the growth.
+
+**Fixed 2026-10-01.** The tap is keyed per-*sender* rather than per height — `attest_warranted` now takes
+the sender's last answered height, and the tap keeps a per-sender map — so a round that comes to rest at
+one height answers each peer's block (one request per sender per height) and advances instead of sealing.
+The falsifier is inverted: `a_round_that_comes_to_rest_at_one_height_is_answered_for_every_peer` asserts
+seven answers against seven peers at one height, and still refuses a repeated peer at an already-answered
+height. C192 → `done`. The storm bound this does **not** close is C171's (the per-sender gate is no bound
+while the height keeps advancing; that pace half is #126's open half), so C192 and C171 stay distinct.
 ## 45. The restoring rule clears nothing, and says it did (C193)
 
 **Found by checking the premise of #156's repair rather than by looking for it.** The team's recommendation
@@ -6207,3 +6232,59 @@ counted, on its own gauge — `stale_snapshot_self_equivocations`, published on 
 bumps, the status reads `NotEnoughNewBlocks`). Node-local, so §6 and `#51` §A are not engaged.
 
 
+
+## 49. The routing layer reported a healthy proposer for ever (C195, #157)
+
+§48's devnet re-verification exposed a second defect behind the first: `/metrics` reported
+`stale_snapshot_self_equivocations` live (12), but `/api/status` answered `0` — and the two #157 fields
+beside it had been equally dead the whole time. `ShardRoutingBlockApi` implements `BlockApi` but never
+overrode `proposer_health()`, so it fell back to the trait's all-zero default, and the status surface read
+"healthy" regardless of the proposer. "Quiet" and "broken" are the two states #157 exists to tell apart, and
+the routing layer had collapsed them.
+
+**The fix is one delegated method** — `proposer_health()` resolves to the primary like `status()` — plus a
+router test that proves the primary's marker reaches the caller rather than the default
+(`the_primary_answers_every_unrouted_method`, now fifteen unrouted methods). **Re-verified on the devnet**,
+the thing the first run could not: after `reset 1`, the race fired once (`collided with this node's own
+already-synced block`), the halt stayed at **0**, and `/metrics` and `/api/status` now agree —
+`stale_snapshot_self_equivocations` reads **1** on both surfaces.
+
+**What this was.** Not a consensus defect and not a new bug the race introduced — a pre-existing gap in
+#157's own deliverable, visible only once a third field was added beside the two dead ones. It is C195
+(law 26a, the routing layer's invariant that a request naming neither shard nor key resolves to the
+primary), fixed in `8b2a6b282`.
+
+## 50. The storm's pace bound was not the caller's (C196)
+
+C171's fix entered this branch and CI's test job went red on a test that had passed at every earlier
+commit of it: `node/tests/api_surface.rs`'s arm 2 — a same-origin `POST /api/v1/propose` — answered **400**
+where it asserts 200. Reproduced locally, the body was `Failure: NoNewDeploys ...`: the second propose on
+the test's standalone node produced no block. The cause was the pace term itself. `attestation_suppressed`
+returned `true` for *every* proposal on a caught-up node with no deploy to attest to, and nothing
+distinguished the node's own attestation from a caller asking for a block.
+
+**The bound was right about the storm and wrong about who the storm is.** #70 is a node *reacting* to
+remote blocks — the attest-on-new-blocks tap and autopropose, each an attestation that is in turn a remote
+block for the next. A caller's propose is not a reaction: it is the documented way to force a block on an
+idle node. `tools/devnet.sh` states the contract ("A block is created only when one of these fires: … or
+(c) an explicit `propose`/`POST /api/v1/propose`", on a node started `--no-autopropose`) and
+`tools/devnet-test.sh`'s step 5 asserts it (`POST /api/propose returns 200`). Both were broken by the fix
+as first written, and neither is hypothetical: the devnet harness drives blocks through exactly this route
+with autopropose off.
+
+**The fix carries provenance.** `ProposeSource` now travels with the queued request — `Explicit { is_async }`
+for admin HTTP, the gRPC propose service and `--propose-on-deploy`, `Automatic` for the autopropose tap and
+timer, the attest-on-new-blocks tap, and the follow-up a colliding request resolves to — and the pace term
+applies only to an `Automatic` proposal. An explicit propose on a reachable quorum attests, which is the
+pre-C171 rule; the storm arm is unchanged, because every tap is `Automatic`.
+
+**Falsifiers, both red before the correction.** The unit one,
+`an_explicit_propose_is_not_paced_by_the_storm_bound`, asserts `attestation_suppressed(false, false, true,
+false, false)` is `false` where the `paced` arm beside it asserts `true` for the identical inputs. The
+node-level one is the CI failure itself: `the_read_routes_answer_and_their_refusals_are_defined` (arm 2),
+observed red locally and green after, with the exemption neutralized to `if false` to confirm the term
+under test is the one the arm pins.
+
+**What this was.** Not a new consensus rule — a first-instance over-reach of a fix that had not yet left the
+branch. It is C196 (law 51a's `Paced`): the bound is a pace condition on the storm's `Drift`, and the
+correction narrows *which steps* it paces rather than removing it.

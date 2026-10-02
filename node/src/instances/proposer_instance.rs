@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 
 use rchain_casper::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
-use rchain_casper::blocks::proposer::proposer::{Proposer, ProposerResult};
+use rchain_casper::blocks::proposer::proposer::{ProposeSource, Proposer, ProposerResult};
 use rchain_casper::state::ProposerState;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
@@ -60,8 +60,8 @@ fn log_propose_result(log: &Arc<dyn Log>, result: &(ProposeResult, Option<BlockM
 
 /// Create the proposer stream (port of `ProposerInstance.create`).
 pub fn create(
-    propose_requests_rx: mpsc::Receiver<(bool, oneshot::Sender<ProposerResult>)>,
-    propose_requests_tx: mpsc::Sender<(bool, oneshot::Sender<ProposerResult>)>,
+    propose_requests_rx: mpsc::Receiver<(ProposeSource, oneshot::Sender<ProposerResult>)>,
+    propose_requests_tx: mpsc::Sender<(ProposeSource, oneshot::Sender<ProposerResult>)>,
     proposer: Proposer,
     state: Arc<tokio::sync::Mutex<ProposerState>>,
     log: Arc<dyn Log>,
@@ -72,7 +72,7 @@ pub fn create(
     let proposer = Arc::new(proposer);
 
     input
-        .map(move |(is_async, propose_id_def)| {
+        .map(move |(source, propose_id_def)| {
             let lock = lock.clone();
             let trigger = trigger.clone();
             let state = state.clone();
@@ -93,7 +93,7 @@ pub fn create(
                 {
                     state.lock().await.curr_propose_result = Some(r_rx);
                 }
-                let r = proposer.propose(is_async, propose_id_def).await;
+                let r = proposer.propose(source, propose_id_def).await;
                 let r = match r {
                     Ok(r) => r,
                     Err(e) => (
@@ -115,9 +115,12 @@ pub fn create(
                 drop(permit);
 
                 // Re-enqueue a follow-up propose if a request arrived while this one was running.
+                // `Automatic`: the colliding caller already got `Empty` (a 400, "another propose is
+                // in progress"), so this follow-up serves no caller — it is the node retrying on its
+                // own, and it is paced like the taps it usually came from.
                 if trigger.swap(false, Ordering::SeqCst) {
                     let (d_tx, d_rx) = oneshot::channel();
-                    let _ = tx.send((false, d_tx)).await;
+                    let _ = tx.send((ProposeSource::Automatic, d_tx)).await;
                     // Keep the receiver alive until the re-queued propose completes it.
                     std::mem::forget(d_rx);
                 }
