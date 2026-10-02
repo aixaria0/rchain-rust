@@ -46,8 +46,12 @@ Three, and each rules out a way the observation could have been the instrument's
   **in one deploy, the rholang send survived and the native write did not**.
 - **`withdraw` behaves the same, and it is not this change's code.** `pos-withdraw.rho` (checked in
   before #193) reports `[pos] called: withdraw` / `[pos] ok` / `[deploy] … ok cost=1902`, and then
-  `GET /api/v1/pos` answers `"pendingWithdrawals": []`. `withdraw` writes one leaf
-  (`pos:pending_withdrawers`) and nothing else, so there is no room for a partial success to explain it.
+  `GET /api/v1/pos` answers `"pendingWithdrawals": []`. **⚠ This control does not survive the follow-up
+  probe and must not be relied on**: on a later run the *same* deploy against the *same* route answers
+  `"pendingWithdrawals":[{"validator":"04f700a4…"}]`, so what this sentence recorded was not a property
+  of `withdraw`. `n203-native-write-probe.md` §2 has the correction and is the authority; this bullet is
+  left standing, marked, rather than quietly removed, because a record that hides the reading it got
+  wrong is not a record.
 - **It is not a boundary rewriting the ledger.** Run B brought the network up with the **default** epoch
   length, so no boundary ran at all, and deployed the same delegation: `getBonds` again answers
   **100 and 100**. The write is gone before any `close_block` could touch it.
@@ -78,9 +82,12 @@ is a hypothesis this arm did not test**, and it is written as one rather than as
   falsifiers that each went red under a mutation) are unaffected: they are correct at the layer the unit
   tests exercise, and those tests call `NativeSystemState` directly — which is exactly the layer this
   defect is *below*.
-- **`bond`, `withdraw`, `trust` and `delegate` are all unreachable in practice** until it is fixed. That
-  makes this finding more consequential than the primitive that exposed it, and it is filed as its own
-  row rather than folded into #193's.
+- **Every PoS op whose effect a deploy reads back is unreliable** until it is fixed — `getBonds`,
+  `getActiveValidators`, `getTrusted`, and the `(Bool, Either)` reply of `bond`/`withdraw`/`trust`/
+  `delegate`. **In the corrected form** (`n203-native-write-probe.md`): the writes are not shown to be
+  lost, but the *reads* disagree with the node's own view, and the wallet's entire interface is a deploy
+  reading the state back. That makes the finding more consequential than the primitive that exposed it,
+  and it is filed as its own row rather than folded into #193's.
 
 ## 5. What the arm leaves behind
 

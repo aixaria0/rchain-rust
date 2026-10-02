@@ -6971,10 +6971,16 @@ deploy commits — and its native write is absent from the node's native state a
 deploy's *tuple-space* publish reads back. Three controls make it a finding rather than an instrument:
 `withdraw`, code that predates this pass, behaves identically (`GET /api/v1/pos` answers
 `"pendingWithdrawals": []` after a successful `withdraw`), and it reproduces with the default epoch
-length, so no `close_block` ran to rewrite anything. **It is registered as C205 and it blocks `bond`,
-`withdraw`, `trust` and `delegate` alike**, which is why C204 stays open with its evidence criterion
-unmet rather than being talked into a pass: a consensus rule measured on a network whose deploys cannot
-write native state has not been measured. **The defect is not new and its issue is closed**: #74
+length, so no `close_block` ran to rewrite anything. **It is registered as C205, and the pass's own follow-up probe narrowed it and corrected the first
+write-up** (`spec/audit/evidence/n203-native-write-probe.md`): what is measured is not that the write is
+lost — `withdraw`, replying `(true, Nil)` the same way, is afterwards visible in the node's live native
+state through `GET /api/v1/pos` — but that **a deploy's read of native state disagrees with the node's
+own**. That is why C204 stays open with its evidence criterion unmet rather than being talked into a
+pass: the arm's `getBonds` is a *deploy* read, so it cannot distinguish "the delegation did not take
+effect" from "it took effect and the read could not see it". The probe file also eliminates four
+candidates by measurement — the base block path (`compute_state` puts the write in the post-state, so
+the loss is above it), the multi-parent merge, any merge at all (`0 merges` in the failing run), and the
+autopropose keep-alive deploy — so the next unit does not re-derive them. **The defect is not new and its issue is closed**: #74
 ("Post-genesis validator admission does not take effect") was found the same way on a live testnet, was
 closed by the `NativeChangesStore` sidecar, and reproduces here on `1a5c9539c` — with jimscarver's own
 2026-09-25 comments on that issue measuring the same thing and ruling out both slashing and **the

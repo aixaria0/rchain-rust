@@ -1,0 +1,14 @@
+// Read the trusted-stakeholder set back from a live node, and publish it on a public name.
+//
+// The second half of the #203 probe. Deployed as a **separate, later** deploy from `pos-trust.rho` on
+// purpose: read inside the same deploy and the answer comes out of the execution overlay, where the
+// write is always present — which is exactly why the defect is invisible to a single deploy and to
+// every unit test that reads the state it just wrote.
+//
+// `getTrusted` answers a `Set`, so the newcomer's key appearing here is the whole assertion.
+new pos(`rho:rchain:pos`), ret in {
+  pos!("getTrusted", *ret) |
+  for (@trusted <- ret) {
+    @"pos-trusted"!(trusted)
+  }
+}
