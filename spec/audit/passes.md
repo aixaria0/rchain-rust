@@ -6907,14 +6907,15 @@ practice.
 
 ## 60. Delegated stake: a third party's principal on an operator's key (C204, #193)
 
-**This pass is a decision and its model. Nothing in it is implemented yet, and that is stated here rather
-than left for a reader to discover.** #193 asked for a delegation primitive and settled on a shape; this
-pass lands the shape in `spec/RUST-FIRST.md` and `spec/Rchain/Pos.lean` (law 57), registers the five
-deviations it makes, and leaves the Rust — the four leaves, the two ops, the split, the fan-out and their
-falsifiers — to the same change's second unit. It is the first pass in this register to open a row for
-work it has not done, and it does so deliberately: a decided consensus deviation that is invisible until
-its implementation lands is exactly the omission the register exists to catch, and `in progress` is the
-state that says so. **C204 tracks it and names what closes it.**
+**This pass landed in two units, and it was written to say which half existed at each step.** #193 asked
+for a delegation primitive and settled on a shape. The first unit landed the shape — `spec/RUST-FIRST.md`
+and `spec/Rchain/Pos.lean` (law 57) — and registered the four deviations it makes, opening **C204** as the
+first row in this register to track work the pass had decided but not yet implemented. The second unit
+landed the Rust: the four leaf codecs, the two `rho:rchain:pos` ops, the boundary move and split, the
+slash fan-out and the two refusals, with twelve `rustWitness` entries on law 57 and a mutation run against
+every falsifier. **C204 stays open**, because what this register asks of a consensus rule is not a unit
+test but end-to-end evidence: the in-process measurement and the devnet arm are the change's third unit,
+and the row names them.
 
 **The shape, and why it is the cheap one.** The wallet can bond, unbond and read a position but cannot
 offer delegation, because the protocol has no primitive for staking REV on a validator the staker does not

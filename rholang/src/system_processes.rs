@@ -1772,6 +1772,92 @@ impl SystemProcesses {
                         };
                         cc.produce(&rand, &[out], ret, path).await
                     }
+                    // **Delegated stake** (law 57, #193). A *method on this channel* rather than a
+                    // block-level system deploy: `delegate` is reached by an ordinary deploy, so it
+                    // needs no `SystemDeployData` variant and replays from this deploy's own COMM
+                    // trace, unlike `CloseBlock`/`Slash`/`RecordSpoke`. Nothing else in the node had to
+                    // learn about it — the aggregate it writes is what `select_active` already draws
+                    // from, so `compute_bonds`, the block's bond cache and finality follow for free.
+                    "delegate" => {
+                        let [deployer_id, operator, amount, ret] = rest else {
+                            eprintln!("[pos] bad argument shape: delegate");
+                            return Err(illegal_arg(
+                                "delegate expects deployerId, operator public key, amount and return \
+                                 channel",
+                            ));
+                        };
+                        // Capability, not data (see `bond`): the *delegator* is whoever signed the
+                        // deploy, so the principal can only ever come out of the signer's own vault.
+                        let delegator = RhoDeployerId::unapply(deployer_id)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| illegal_arg("delegate expects a deployerId"))?;
+                        // The operator is a *named* key rather than the caller — which is the whole
+                        // point of the primitive, and why this is not `bond`.
+                        let operator = RhoByteArray::unapply(operator)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("delegate expects a 65-byte validator public key")
+                            })?;
+                        let amount = RhoNumber::unapply(amount)
+                            .ok_or_else(|| illegal_arg("delegate expects a number amount"))?;
+                        let amount =
+                            NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
+                        let out = match native
+                            .delegate(&delegator, &operator, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                eprintln!("[pos] ok");
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    "undelegate" => {
+                        let [deployer_id, operator, ret] = rest else {
+                            eprintln!("[pos] bad argument shape: undelegate");
+                            return Err(illegal_arg(
+                                "undelegate expects deployerId, operator public key and return \
+                                 channel",
+                            ));
+                        };
+                        // Capability, not data (see `bond`): only the delegator may withdraw its own
+                        // delegation.
+                        let delegator = RhoDeployerId::unapply(deployer_id)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| illegal_arg("undelegate expects a deployerId"))?;
+                        let operator = RhoByteArray::unapply(operator)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("undelegate expects a 65-byte validator public key")
+                            })?;
+                        let out = match native
+                            .undelegate(&delegator, &operator, block_number)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                eprintln!("[pos] ok");
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
                     "trust" | "untrust" => {
                         let [deployer_id, target, ret] = rest else {
                             eprintln!("[pos] bad argument shape: trust/untrust");

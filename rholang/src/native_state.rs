@@ -748,8 +748,9 @@ fn is_epoch_boundary(params: &PosParams, block_number: i64) -> bool {
 }
 
 /// The epoch's distributable pot: the staking vault less every outstanding claim on it — the bonded
-/// pool, the escrowed withdrawals, and the rewards already committed but not yet paid
-/// (`Pos.rhox:249`: `posBalance - totalBond - totalWithdraw - totalCommittedRewards`).
+/// pool, the escrowed withdrawals, the rewards already committed but not yet paid, **and the
+/// delegators' accrued rewards** (`Pos.rhox:249`: `posBalance - totalBond - totalWithdraw -
+/// totalCommittedRewards`, plus law 57's `pos:delegated_rewards`).
 ///
 /// **Floored at zero.** The Scala computes this in `Long`, so a vault that cannot cover the
 /// outstanding claims yields a *negative* pot and therefore negative rewards; this port's balances are
@@ -765,7 +766,14 @@ fn epoch_pot(
     bonds: &BTreeMap<Validator, NonNegI64>,
     withdrawers: &BTreeMap<Validator, Withdrawal>,
     committed: &BTreeMap<Validator, NonNegI64>,
+    delegated_rewards: &BTreeMap<DelegationKey, NonNegI64>,
 ) -> Result<i64, String> {
+    // **Four claim ledgers, not three** (law 57, #193). A delegator's accrued reward is a claim against
+    // the staking vault that `committed` does not carry — it is held apart from the operator's entry on
+    // purpose, so the operator cannot be paid it — and leaving it out of this sum would distribute the
+    // same REV twice: once to the delegator at its claim's payout, and once to the drawn set through a
+    // pot that never had it subtracted. Absent (or empty) contributes zero, so a chain with no
+    // delegations computes exactly the number it computed before this parameter existed.
     let claims: i128 = bonds
         .values()
         .map(|s| i128::from(i64::from(*s)))
@@ -775,6 +783,10 @@ fn epoch_pot(
             .map(|w| i128::from(i64::from(w.bond)))
             .sum::<i128>()
         + committed
+            .values()
+            .map(|s| i128::from(i64::from(*s)))
+            .sum::<i128>()
+        + delegated_rewards
             .values()
             .map(|s| i128::from(i64::from(*s)))
             .sum::<i128>();
@@ -1349,6 +1361,21 @@ impl NativeSystemState {
         if !pool.contains_key(validator) {
             return Ok(Err("User is not bonded".to_string()));
         }
+        // **A validator with outstanding delegations may not withdraw** (law 57, #193). `withdraw`
+        // stages the whole of a key's bond, and with delegations that whole is not the operator's: at
+        // the boundary the aggregate would move into an escrow the delegator has no claim on, and a
+        // slash reaching that escrow could not tell whose money it was. This is one half of the
+        // invariant that keeps one meaning per ledger; `delegate` refusing while a withdrawal is
+        // pending is the other. The operator resolves it by waiting for its delegators to leave, which
+        // is a boundary each — not by anything the protocol lets it do to them.
+        let ledger = self.delegations().await?;
+        if ledger.keys().any(|key| key.operator == *validator) {
+            return Ok(Err(
+                "A validator with outstanding delegations cannot withdraw: its bond is not all its \
+                 own, and the staged claim would hold stake it has no title to."
+                    .to_string(),
+            ));
+        }
         let params = self.params().await?;
         // The **normalised** divisor, not the raw field (AUDIT C135): `epoch_divisor` is what
         // `is_epoch_boundary` divides by, and `epoch_length <= 0` means a one-block epoch, so
@@ -1429,6 +1456,13 @@ impl NativeSystemState {
         let mut withdrawers = self.withdrawers().await?;
         let mut pending = self.pending_withdrawers().await?;
         let mut committed = self.committed_rewards().await?;
+        // The four delegation ledgers (law 57, #193). Read on every boundary and written only when they
+        // change — the setters clear an empty leaf rather than writing an empty value, so a chain that
+        // has never delegated leaves all four **absent** and writes nothing here at all.
+        let mut delegations = self.delegations().await?;
+        let mut pending_delegations = self.pending_delegations().await?;
+        let mut delegation_claims = self.delegation_claims().await?;
+        let mut delegated_rewards = self.delegated_rewards().await?;
 
         // 1. The epoch's rewards, from the state as it stands — and then the **participation rule**
         // (B4, #150), which can only ever *scale down* what this boundary is about to commit. The
@@ -1442,21 +1476,70 @@ impl NativeSystemState {
         // validator's reading back together and singles nobody out. This is the same move step 5 below
         // makes for the epoch seed, and for the same reason.
         let rewards = apply_weight(
-            self.epoch_rewards(&pool, &withdrawers, &committed, &params)
+            self.epoch_rewards(&pool, &withdrawers, &committed, &delegated_rewards, &params)
                 .await?,
             participation,
             block_number,
             i64::from(params.participation_grace),
             i64::from(params.absence_slack),
         );
+        // **The split** (law 57, #193). Each drawn validator's share is divided across its own stake
+        // and its delegations; the delegators' parts are credited to `pos:delegated_rewards` and the
+        // operator keeps the remainder. The split is **exact** — `Σ shares + the operator's remainder
+        // == the reward` — so a key with delegators commits the same total it would have committed
+        // alone, which is what keeps law 46 (`sum_rewards_le_pot`) a statement about the reward rather
+        // than about the split.
         for (validator, reward) in &rewards {
+            let held = delegations_of(&delegations, validator);
+            if held.is_empty() {
+                // **The dormancy path, kept as its own branch rather than folded into the general
+                // one.** With no delegations the split is the identity, and taking this branch is what
+                // writes exactly the `committed` entry the pre-#193 port wrote: no zero-valued
+                // delegated-reward entries, no division, and nothing a reader has to convince
+                // themselves is a no-op.
+                let carried = committed
+                    .get(validator)
+                    .copied()
+                    .unwrap_or(NonNegI64::zero());
+                committed.insert(
+                    *validator,
+                    balance_plus(carried, i64::from(*reward), "committed reward")?,
+                );
+                continue;
+            }
+            // The operator's own stake is the aggregate **less** what the ledger says is delegated to
+            // it — the ledger is the attribution, the pool is the total. A pool entry smaller than its
+            // own ledger is a state this mechanism cannot repair, so it is refused rather than paid
+            // out of a negative stake.
+            let aggregate = pool.get(validator).copied().unwrap_or(NonNegI64::zero());
+            let own = checked_i64(
+                i128::from(i64::from(aggregate))
+                    - i128::from(delegated_total(&delegations, validator)?),
+                "the operator's own stake",
+            )?;
+            if own < 0 {
+                return Err(format!(
+                    "the aggregate bond {} is smaller than the delegations to it — the ledger and the \
+                     pool disagree",
+                    i64::from(aggregate)
+                ));
+            }
+            let amounts: Vec<i64> = held.iter().map(|(_, amount)| *amount).collect();
+            let (shares, operator_share) = split_reward(i64::from(*reward), own, &amounts)?;
+            for ((key, _), share) in held.iter().zip(shares.iter()) {
+                let accrued = delegated_rewards
+                    .get(key)
+                    .copied()
+                    .unwrap_or(NonNegI64::zero());
+                delegated_rewards.insert(*key, balance_plus(accrued, *share, "delegated reward")?);
+            }
             let carried = committed
                 .get(validator)
                 .copied()
                 .unwrap_or(NonNegI64::zero());
             committed.insert(
                 *validator,
-                balance_plus(carried, i64::from(*reward), "committed reward")?,
+                balance_plus(carried, operator_share, "committed reward")?,
             );
         }
 
@@ -1505,6 +1588,43 @@ impl NativeSystemState {
             // `spec/audit/passes.md` §6.
         }
 
+        // 2b. The same move for staged **undelegations** (law 57, #193), and it comes after step 1 for
+        // the same reason step 2 does: the epoch the principal spent its last blocks in has already
+        // paid it by now. The principal leaves the **operator's aggregate** pool entry — not a ledger
+        // of its own — and is escrowed under the delegator's name with the request's deadline, so from
+        // here it is a claim against the vault with an owner who is not the operator.
+        for (key, deadline) in std::mem::take(&mut pending_delegations) {
+            let Some(amount) = delegations.remove(&key) else {
+                // The delegation is gone — the operator was slashed, which clears its whole ledger
+                // (law 57's `a_slash_clears_the_delegations`) — so there is nothing to escrow. Dropping
+                // the request is the same payable outcome as the zero-value claim step 2's comment
+                // describes, without the tombstone.
+                continue;
+            };
+            let Some(aggregate) = pool.get(&key.operator).copied() else {
+                continue;
+            };
+            let Some(remaining) = i64::from(aggregate).checked_sub(i64::from(amount)) else {
+                // Unreachable while the invariant "the aggregate contains every delegation to it"
+                // holds. If it ever did not, refunding the ledger's amount out of a smaller pool entry
+                // would mint the difference, so the request is dropped and the stake stays where the
+                // pool says it is.
+                continue;
+            };
+            let remaining =
+                NonNegI64::try_from(remaining).map_err(|e| format!("undelegation move: {e}"))?;
+            // A pool entry that reaches zero is **removed**, mirroring step 2's filter: an operator
+            // whose own stake was zero and whose last delegation has left is no longer a pooled
+            // validator, and leaving a zero entry behind would refuse its next `bond` as "already
+            // bonded" while `select_active` skipped it for having no stake.
+            if remaining == NonNegI64::zero() {
+                pool.remove(&key.operator);
+            } else {
+                pool.insert(key.operator, remaining);
+            }
+            delegation_claims.insert(key, DelegationClaim { amount, deadline });
+        }
+
         // 3. Pay the claims whose quarantine has elapsed.
         let due: Vec<Validator> = withdrawers
             .iter()
@@ -1529,6 +1649,35 @@ impl NativeSystemState {
             );
         }
 
+        // 3b. Pay the **delegation** claims whose quarantine has elapsed (law 57, #193) — the same
+        // three-stage shape as step 3, one ledger over: the claim pays `principal + accrued rewards`
+        // and both entries are removed. **The accrued reward is read from `pos:delegated_rewards` and
+        // not from `committed`**, which is the whole point of holding it apart: `committed[operator]`
+        // is money the operator is paid, so a delegator's share left there would be the operator's to
+        // keep. The destination is the **delegator's own** vault, derived from its own key.
+        let due_delegations: Vec<DelegationKey> = delegation_claims
+            .iter()
+            .filter(|(_, claim)| claim.deadline <= block_number)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in due_delegations {
+            let Some(claim) = delegation_claims.remove(&key) else {
+                continue;
+            };
+            let accrued = delegated_rewards.remove(&key).unwrap_or(NonNegI64::zero());
+            let payable = balance_plus(claim.amount, i64::from(accrued), "delegation payment")?;
+            self.debit_pos_vault(payable).await?;
+            let address = self.vault_address(&key.delegator)?;
+            let balance = self
+                .vault_balance(&address)
+                .await?
+                .unwrap_or(NonNegI64::zero());
+            self.set_vault_balance(
+                &address,
+                balance_plus(balance, i64::from(payable), "delegation refund")?,
+            );
+        }
+
         // 4. The active set for the epoch that starts now.
         //
         // The seed was written one boundary *ago* — at `B_{k-1}`, from `B_{k-1}`'s pre-state — so the
@@ -1543,6 +1692,13 @@ impl NativeSystemState {
         self.set_pending_withdrawers(&pending);
         self.set_committed_rewards(&committed);
         self.set_active(&active);
+        // The four delegation ledgers, written through the setters that **clear an empty leaf** rather
+        // than writing an empty value: on a chain that has never delegated these are no-ops that touch
+        // no key, which is what keeps this boundary's post-state byte-identical to the pre-#193 one.
+        self.set_delegations(&delegations).await?;
+        self.set_pending_delegations(&pending_delegations).await?;
+        self.set_delegation_claims(&delegation_claims).await?;
+        self.set_delegated_rewards(&delegated_rewards).await?;
 
         // 5. The seed the **next** boundary will draw with.
         //
@@ -1602,14 +1758,20 @@ impl NativeSystemState {
         pool: &BTreeMap<Validator, NonNegI64>,
         withdrawers: &BTreeMap<Validator, Withdrawal>,
         committed: &BTreeMap<Validator, NonNegI64>,
+        delegated_rewards: &BTreeMap<DelegationKey, NonNegI64>,
         params: &PosParams,
     ) -> Result<BTreeMap<Validator, NonNegI64>, String> {
         let active = self.active().await?;
+        // **The per-validator share is computed on the aggregate**, which is what makes a delegation
+        // count in the draw and in the pot's division alike; the *split* of that share across the
+        // key's owner and its delegators is the caller's step, not this one. Delegated stake therefore
+        // enters the numerator and the denominator through `pool` alone — there is no second term here.
         let pot = epoch_pot(
             self.pos_vault_balance().await?,
             pool,
             withdrawers,
             committed,
+            delegated_rewards,
         )?;
         let active_bonds: i128 = pool
             .iter()
@@ -1678,6 +1840,10 @@ impl NativeSystemState {
         let mut withdrawers = self.withdrawers().await?;
         let mut pending = self.pending_withdrawers().await?;
         let mut committed = self.committed_rewards().await?;
+        let mut delegations = self.delegations().await?;
+        let mut pending_delegations = self.pending_delegations().await?;
+        let mut delegation_claims = self.delegation_claims().await?;
+        let mut delegated_rewards = self.delegated_rewards().await?;
 
         let bond = pool.remove(validator).map(i64::from).unwrap_or(0);
         active.remove(validator);
@@ -1688,8 +1854,69 @@ impl NativeSystemState {
         pending.remove(validator);
         let accrued = committed.remove(validator).map(i64::from).unwrap_or(0);
 
+        // **The delegated holdings, collected per delegator** (law 57, #193) — because a delegator is
+        // the payee, and the same delegator may hold a principal, an escrow and an accrual on one key.
+        //
+        // Two different sums come out of this, and keeping them straight is the crux: `delegator_risk`
+        // is the **weight** each delegator's share is proportional to, while what the slash *takes from
+        // the staking vault* is `at_risk`. A principal appears in both — it is inside the aggregate
+        // `bond` **and** it is the delegator's largest at-risk holding — so it is counted once by
+        // subtracting `delegated_principal` out of the offender's own part below rather than by leaving
+        // it out of either. The model's `atRisk` reads the same way, and for the same reason.
+        let mut delegator_risk: BTreeMap<Validator, i64> = BTreeMap::new();
+        // Read the principals **before** the ledger is drained below — they are needed twice, once as
+        // weights for the fan-out and once to net out of the aggregate bond, and the second use has to
+        // happen while the ledger still holds them.
+        let delegated_principal = delegated_total(&delegations, validator)?;
+        for key in operator_keys(&delegations, validator) {
+            let amount = delegations.remove(&key).map(i64::from).unwrap_or(0);
+            add_delegator_risk(&mut delegator_risk, key.delegator, amount)?;
+        }
+        for key in operator_keys(&delegation_claims, validator) {
+            let claim = delegation_claims
+                .remove(&key)
+                .map(|claim| i64::from(claim.amount))
+                .unwrap_or(0);
+            let reward = delegated_rewards.remove(&key).map(i64::from).unwrap_or(0);
+            add_delegator_risk(&mut delegator_risk, key.delegator, claim)?;
+            add_delegator_risk(&mut delegator_risk, key.delegator, reward)?;
+        }
+        // An accrual with no claim: the ordinary case for a *live* delegation, whose principal is
+        // still in the pool. An accrual and a claim go together at a payout, so this loop finds
+        // nothing for a pair the one above has already cleared.
+        for key in operator_keys(&delegated_rewards, validator) {
+            let reward = delegated_rewards.remove(&key).map(i64::from).unwrap_or(0);
+            add_delegator_risk(&mut delegator_risk, key.delegator, reward)?;
+        }
+        // A staged request dies with the delegation it names: the ledger entry it would have escrowed
+        // is gone, so letting it outlive the operator could only produce a claim of zero.
+        for key in operator_keys(&pending_delegations, validator) {
+            pending_delegations.remove(&key);
+        }
+        let delegators: Vec<Validator> = delegator_risk.keys().copied().collect();
+        let delegated_risk: Vec<i64> = delegator_risk.values().copied().collect();
+
+        // **What the offender's own key was holding** — and the subtraction is the whole subtlety of
+        // this function. `bond` is the **aggregate**, so the delegators' principals are already inside
+        // it; adding them again (they are also in `delegator_risk`, as the weights the fan-out needs)
+        // would overstate `at_risk` by exactly the delegated stake, and a tier applied to an overstated
+        // sum confiscates more than the offender's key holds — a slash that mints.
+        let own_stake = checked_i64(
+            i128::from(bond) - i128::from(delegated_principal),
+            "the offender's own stake",
+        )?;
+        if own_stake < 0 {
+            return Err(format!(
+                "the aggregate bond {bond} is smaller than the delegations to it ({delegated_principal}) \
+                 — the ledger and the pool disagree"
+            ));
+        }
+        let operator_part = checked_i64(
+            i128::from(own_stake) + i128::from(escrowed) + i128::from(accrued),
+            "the offender's own holdings",
+        )?;
         let at_risk = checked_i64(
-            i128::from(bond) + i128::from(escrowed) + i128::from(accrued),
+            i128::from(operator_part) + delegated_risk.iter().map(|w| i128::from(*w)).sum::<i128>(),
             "slashed holdings",
         )?;
         let confiscated =
@@ -1708,22 +1935,65 @@ impl NativeSystemState {
             let coop = self.coop_balance().await?;
             self.set_coop_balance(balance_plus(coop, confiscated, "slash coop")?);
         }
-        // …and the rest is the validator's, back in its own vault.
+        // …and the rest is **fanned out** (law 57, #193): the offender's own part back to its own
+        // vault, and each delegator's part to **its own** vault. Never the whole of it to the
+        // offender's — which is the single most likely way to get this wrong, because before
+        // delegations existed `returned` was one payment to one address, and a delegator's principal
+        // is inside the aggregate `bond` this function just removed.
+        //
+        // The division is the same `pro_rata` the epoch split uses, with `operator_part` as the base
+        // that is divided *by* but issued no share: each delegator is paid its proportion of what it
+        // had at risk and the offender keeps the integer-division remainder. The payments therefore sum
+        // to `returned` exactly, which is what keeps this a transfer — `confiscated + Σ payments ==
+        // at_risk == what the staking vault released`.
         if returned > 0 {
+            let shares = pro_rata(returned, operator_part, &delegated_risk)?;
             self.debit_pos_vault(NonNegI64::try_from(returned).map_err(|e| e.to_string())?)
                 .await?;
-            let address = self.vault_address(validator)?;
-            let balance = self
-                .vault_balance(&address)
-                .await?
-                .unwrap_or(NonNegI64::zero());
-            self.set_vault_balance(&address, balance_plus(balance, returned, "slash return")?);
+            let paid: i128 = shares.iter().map(|s| i128::from(*s)).sum();
+            let operator_share = checked_i64(
+                i128::from(returned) - paid,
+                "the offender's share of its own slash",
+            )?;
+            if operator_share > 0 {
+                let address = self.vault_address(validator)?;
+                let balance = self
+                    .vault_balance(&address)
+                    .await?
+                    .unwrap_or(NonNegI64::zero());
+                self.set_vault_balance(
+                    &address,
+                    balance_plus(balance, operator_share, "slash return")?,
+                );
+            }
+            for (delegator, share) in delegators.iter().zip(shares.iter()) {
+                if *share <= 0 {
+                    continue;
+                }
+                let address = self.vault_address(delegator)?;
+                let balance = self
+                    .vault_balance(&address)
+                    .await?
+                    .unwrap_or(NonNegI64::zero());
+                self.set_vault_balance(
+                    &address,
+                    balance_plus(balance, *share, "delegated slash return")?,
+                );
+            }
         }
 
         self.set_bonds(&pool);
         self.set_active(&active);
         self.set_withdrawers(&withdrawers);
         self.set_committed_rewards(&committed);
+        // The offender leaves every delegation ledger, not only the pool: `a_slash_clears_the_delegations`
+        // is the model's statement of it, and the setters clear an empty leaf rather than writing an
+        // empty value, so a slashed operator on a chain with no other delegations leaves all four
+        // leaves exactly as absent as they were.
+        self.set_delegations(&delegations).await?;
+        self.set_pending_delegations(&pending_delegations).await?;
+        self.set_delegation_claims(&delegation_claims).await?;
+        self.set_delegated_rewards(&delegated_rewards).await?;
         // The pending-withdrawal entry this removes is in `pending`, and a slash that leaves it behind
         // hands it to whatever occupies this validator key next: a later accepted bond is then moved into
         // a claim at the epoch boundary instead of joining the active set. Found by the PoS review, which
@@ -3300,6 +3570,7 @@ mod tests {
                 &native.bonds().await.unwrap(),
                 &native.withdrawers().await.unwrap(),
                 &native.committed_rewards().await.unwrap(),
+                &native.delegated_rewards().await.unwrap(),
             )
             .unwrap(),
             3,
@@ -3530,6 +3801,7 @@ mod tests {
             &native.bonds().await.unwrap(),
             &native.withdrawers().await.unwrap(),
             &native.committed_rewards().await.unwrap(),
+            &native.delegated_rewards().await.unwrap(),
         )
         .unwrap()
     }
@@ -5052,5 +5324,1125 @@ mod epoch_seed_writer_tests {
             b.active().await.unwrap(),
             "the genesis draw must be a pure function of the genesis file"
         );
+    }
+}
+
+// ==================================================================================================
+// Delegated stake (`pos:delegations` and its three siblings, law 57, #193)
+//
+// Appended rather than placed with its siblings, for the reason the `pos:epoch_seed` section above
+// gives: this file's line numbers are cited by Lean declarations and by hand-maintained spec rows, and
+// an insertion anywhere above them shifts every one. The tail of this file is append-only.
+//
+// **What the primitive is.** A key that holds REV but does not run a node can stake it on one that
+// does. `pos:bonds` becomes the **aggregate** stake on a key — the operator's own plus every
+// delegation to it — which is the whole of what delegation changes for consensus: `compute_bonds`
+// reads `pos:active`, `select_active` derives it from the pool, and so a delegated principal counts in
+// the draw and in what a slash reaches exactly as the operator's own does. The four leaves here
+// record *whose* the aggregate is, and the four rules that read them are `delegate`, `undelegate`,
+// the epoch split in `close_block`, and the fan-out in `slash`.
+//
+// **The one shape this file has never had before: a map keyed by a pair.** Every other PoS leaf is
+// keyed by a single `Validator`; a delegation belongs to two identities, so the key is
+// `DelegationKey` and the canonical encoding is two 65-byte identities rather than one.
+// ==================================================================================================
+
+/// **A delegation's key: one operator and one delegator**, so the ledger is a map from pairs.
+///
+/// Ordered by `Validator`'s own `Ord` — operator first, then delegator — which is what makes the
+/// canonical encoding deterministic without a second sort rule: a `BTreeMap<DelegationKey, _>` iterates
+/// in exactly the order the fixed-stride encoding writes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct DelegationKey {
+    pub operator: Validator,
+    pub delegator: Validator,
+}
+
+/// An escrowed undelegated principal (`pos:delegation_claims`): the amount out of the pool and the
+/// block it may be paid at. `Withdrawal`'s shape with a delegator as the payee — and, like it, the
+/// amount is the **principal only**: the accrued reward is read from the ledger at payment time, which
+/// is what lets a delegator be paid for the epoch it left in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DelegationClaim {
+    pub amount: NonNegI64,
+    pub deadline: i64,
+}
+
+/// Two 65-byte identities and one LE amount. Shared by `pos:delegations`, `pos:pending_delegations`
+/// and `pos:delegated_rewards` — the three are the same record read as a principal, a deadline and a
+/// credit respectively.
+const DELEGATION_ENTRY_LEN: usize = 2 * VALIDATOR_LEN + 8;
+
+/// Two identities, a LE amount and a LE deadline — `pos:delegation_claims`, the analogue of
+/// `WITHDRAWER_ENTRY_LEN`.
+const DELEGATION_CLAIM_LEN: usize = 2 * VALIDATOR_LEN + 8 + 8;
+
+/// Leaf key for the delegated-principal ledger (`(operator, delegator) → amount`).
+pub fn pos_delegations_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:delegations")
+}
+
+/// Leaf key for staged undelegation requests (`(operator, delegator) → deadline`).
+pub fn pos_pending_delegations_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:pending_delegations")
+}
+
+/// Leaf key for escrowed undelegated principals (`(operator, delegator) → (amount, deadline)`).
+pub fn pos_delegation_claims_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:delegation_claims")
+}
+
+/// Leaf key for a delegator's accrued reward (`(operator, delegator) → amount`). Held **apart** from
+/// the operator's `pos:committed` entry on purpose: money in that map is money the operator is paid,
+/// so a delegator's share credited there would be the operator's to keep.
+pub fn pos_delegated_rewards_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:delegated_rewards")
+}
+
+/// Canonically encode a `(operator, delegator) → NonNegI64` map: two 65-byte identities then the LE
+/// amount, in `BTreeMap` order.
+pub fn encode_delegations(ledger: &BTreeMap<DelegationKey, NonNegI64>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ledger.len() * DELEGATION_ENTRY_LEN);
+    for (key, amount) in ledger {
+        out.extend_from_slice(key.operator.as_bytes());
+        out.extend_from_slice(key.delegator.as_bytes());
+        out.extend_from_slice(&i64::from(*amount).to_le_bytes());
+    }
+    out
+}
+
+/// Decode [`encode_delegations`]' output. Refuses a length that is not a whole number of entries, and
+/// refuses a negative amount — a leaf written by a buggy peer is an error rather than a silently
+/// negative stake.
+pub fn decode_delegations(bytes: &[u8]) -> Result<BTreeMap<DelegationKey, NonNegI64>, String> {
+    decode_delegation_amounts(bytes, "delegations")
+}
+
+/// Canonically encode the accrued-reward ledger — the same record as [`encode_delegations`], and
+/// deliberately the same codec: the port's `committed` map shares `encode_bonds` for the same reason,
+/// because the two are the same wire shape and a second codec is a second thing to get wrong.
+pub fn encode_delegated_rewards(ledger: &BTreeMap<DelegationKey, NonNegI64>) -> Vec<u8> {
+    encode_delegations(ledger)
+}
+
+/// Decode [`encode_delegated_rewards`]' output.
+pub fn decode_delegated_rewards(
+    bytes: &[u8],
+) -> Result<BTreeMap<DelegationKey, NonNegI64>, String> {
+    decode_delegation_amounts(bytes, "delegated rewards")
+}
+
+/// The shared body of the two amount-valued delegation ledgers. `leaf` names the caller for the error
+/// message, which is the only thing that differs between them.
+fn decode_delegation_amounts(
+    bytes: &[u8],
+    leaf: &str,
+) -> Result<BTreeMap<DelegationKey, NonNegI64>, String> {
+    if bytes.len() % DELEGATION_ENTRY_LEN != 0 {
+        return Err(format!(
+            "{leaf} encoding has {} bytes, not a multiple of {DELEGATION_ENTRY_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for chunk in bytes.chunks_exact(DELEGATION_ENTRY_LEN) {
+        let operator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+        let delegator = Validator::from_slice(&chunk[VALIDATOR_LEN..2 * VALIDATOR_LEN]);
+        let amount: [u8; 8] = chunk[2 * VALIDATOR_LEN..DELEGATION_ENTRY_LEN]
+            .try_into()
+            .map_err(|_| format!("{leaf}: invalid amount field"))?;
+        let amount = NonNegI64::try_from(i64::from_le_bytes(amount))
+            .map_err(|_| format!("{leaf}: negative amount"))?;
+        out.insert(
+            DelegationKey {
+                operator,
+                delegator,
+            },
+            amount,
+        );
+    }
+    Ok(out)
+}
+
+/// Canonically encode staged undelegation requests: two identities then the LE deadline.
+pub fn encode_pending_delegations(pending: &BTreeMap<DelegationKey, i64>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pending.len() * DELEGATION_ENTRY_LEN);
+    for (key, deadline) in pending {
+        out.extend_from_slice(key.operator.as_bytes());
+        out.extend_from_slice(key.delegator.as_bytes());
+        out.extend_from_slice(&deadline.to_le_bytes());
+    }
+    out
+}
+
+/// Decode [`encode_pending_delegations`]' output.
+pub fn decode_pending_delegations(bytes: &[u8]) -> Result<BTreeMap<DelegationKey, i64>, String> {
+    if bytes.len() % DELEGATION_ENTRY_LEN != 0 {
+        return Err(format!(
+            "pending delegations encoding has {} bytes, not a multiple of {DELEGATION_ENTRY_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for chunk in bytes.chunks_exact(DELEGATION_ENTRY_LEN) {
+        let operator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+        let delegator = Validator::from_slice(&chunk[VALIDATOR_LEN..2 * VALIDATOR_LEN]);
+        let deadline: [u8; 8] = chunk[2 * VALIDATOR_LEN..DELEGATION_ENTRY_LEN]
+            .try_into()
+            .map_err(|_| "pending delegations: invalid deadline field".to_string())?;
+        out.insert(
+            DelegationKey {
+                operator,
+                delegator,
+            },
+            i64::from_le_bytes(deadline),
+        );
+    }
+    Ok(out)
+}
+
+/// Canonically encode escrowed undelegated principals: two identities, the LE amount, the LE deadline.
+pub fn encode_delegation_claims(claims: &BTreeMap<DelegationKey, DelegationClaim>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(claims.len() * DELEGATION_CLAIM_LEN);
+    for (key, claim) in claims {
+        out.extend_from_slice(key.operator.as_bytes());
+        out.extend_from_slice(key.delegator.as_bytes());
+        out.extend_from_slice(&i64::from(claim.amount).to_le_bytes());
+        out.extend_from_slice(&claim.deadline.to_le_bytes());
+    }
+    out
+}
+
+/// Decode [`encode_delegation_claims`]' output.
+pub fn decode_delegation_claims(
+    bytes: &[u8],
+) -> Result<BTreeMap<DelegationKey, DelegationClaim>, String> {
+    if bytes.len() % DELEGATION_CLAIM_LEN != 0 {
+        return Err(format!(
+            "delegation claims encoding has {} bytes, not a multiple of {DELEGATION_CLAIM_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for chunk in bytes.chunks_exact(DELEGATION_CLAIM_LEN) {
+        let operator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+        let delegator = Validator::from_slice(&chunk[VALIDATOR_LEN..2 * VALIDATOR_LEN]);
+        let amount: [u8; 8] = chunk[2 * VALIDATOR_LEN..2 * VALIDATOR_LEN + 8]
+            .try_into()
+            .map_err(|_| "delegation claims: invalid amount field".to_string())?;
+        let deadline: [u8; 8] = chunk[2 * VALIDATOR_LEN + 8..DELEGATION_CLAIM_LEN]
+            .try_into()
+            .map_err(|_| "delegation claims: invalid deadline field".to_string())?;
+        let amount = NonNegI64::try_from(i64::from_le_bytes(amount))
+            .map_err(|_| "delegation claims: negative amount".to_string())?;
+        out.insert(
+            DelegationKey {
+                operator,
+                delegator,
+            },
+            DelegationClaim {
+                amount,
+                deadline: i64::from_le_bytes(deadline),
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// **The pro-rata split both halves of delegated stake run**, mirroring `Rchain.proRata` in
+/// `spec/Rchain/Pos.lean` (law 57).
+///
+/// `amount` is divided across `weights` in order, and `base` is a weight that is **part of the
+/// denominator but is issued no share** — the operator's own stake in the epoch split, and `0` in the
+/// slash's refund fan-out. One floor per share, so the shares sum to at most `amount` and the
+/// difference is the dust, which the caller gives to the operator.
+///
+/// Exact integers throughout, as everywhere else in this mechanism: `i128` for the product, a checked
+/// conversion out, and no float anywhere.
+pub(crate) fn pro_rata(amount: i64, base: i64, weights: &[i64]) -> Result<Vec<i64>, String> {
+    let total: i128 = i128::from(base) + weights.iter().map(|w| i128::from(*w)).sum::<i128>();
+    let mut out = Vec::with_capacity(weights.len());
+    for w in weights {
+        // A zero denominator divides to zero rather than faulting, which is the same choice
+        // `epoch_reward` makes where the contract's arithmetic is undefined, and it can only be
+        // reached by an empty delegation list with a zero base.
+        let share = if total == 0 {
+            0
+        } else {
+            checked_i64(
+                i128::from(amount) * i128::from(*w) / total,
+                "pro-rata share",
+            )?
+        };
+        out.push(share);
+    }
+    Ok(out)
+}
+
+/// The principal an operator's key carries on behalf of others: the sum of its delegations, in the
+/// ledger's canonical order.
+///
+/// Fallible rather than saturating. A sum of `NonNegI64` values can exceed `i64`, and clamping it to
+/// `i64::MAX` would be a *silent* partiality of exactly the kind `spec/TYPE-SYSTEM.md` forbids: the
+/// caller would go on to compare an aggregate against a wrong total instead of refusing.
+fn delegated_total(
+    ledger: &BTreeMap<DelegationKey, NonNegI64>,
+    operator: &Validator,
+) -> Result<i64, String> {
+    checked_i64(
+        ledger
+            .iter()
+            .filter(|(key, _)| key.operator == *operator)
+            .map(|(_, amount)| i128::from(i64::from(*amount)))
+            .sum::<i128>(),
+        "delegated total",
+    )
+}
+
+/// The delegators of one operator, with their principals, in canonical order.
+fn delegations_of(
+    ledger: &BTreeMap<DelegationKey, NonNegI64>,
+    operator: &Validator,
+) -> Vec<(DelegationKey, i64)> {
+    ledger
+        .iter()
+        .filter(|(key, _)| key.operator == *operator)
+        .map(|(key, amount)| (*key, i64::from(*amount)))
+        .collect()
+}
+
+/// The keys of one operator in any of the four delegation ledgers, in canonical order.
+///
+/// Generic over the value type so the four ledgers share one traversal: the slash's fan-out and the
+/// boundary's move both need "everything that belongs to this key", and four near-identical loops
+/// would be four places for the filter to drift.
+fn operator_keys<K>(
+    ledger: &BTreeMap<DelegationKey, K>,
+    operator: &Validator,
+) -> Vec<DelegationKey> {
+    ledger
+        .keys()
+        .filter(|key| key.operator == *operator)
+        .copied()
+        .collect()
+}
+
+/// Accumulate one delegator's at-risk holdings, refusing an overflow rather than wrapping or clamping.
+///
+/// A delegator is **one payee** however many roles it has on one operator's key — a principal, an
+/// escrow carried over from an undelegation, and an accrual — so the fan-out sums them under the
+/// delegator, and the sum is what its share is proportional to.
+fn add_delegator_risk(
+    parts: &mut BTreeMap<Validator, i64>,
+    delegator: Validator,
+    amount: i64,
+) -> Result<(), String> {
+    let held = parts.entry(delegator).or_insert(0);
+    *held = held
+        .checked_add(amount)
+        .ok_or_else(|| format!("a delegator's holdings overflow: {held} + {amount}"))?;
+    Ok(())
+}
+
+/// **Split one validator's epoch reward across its own stake and its delegations**, returning the
+/// delegators' shares (canonical order, same order as [`delegations_of`]) and the operator's
+/// remainder.
+///
+/// The denominator is the operator's **aggregate** stake — `own + Σ amounts` — which is the pool entry
+/// itself, so this is a partition of a reward computed *before* the split: `Σ shares + operator ==
+/// reward` exactly, for any inputs (law 57's `split_sums_to_the_reward`). That exactness is what makes
+/// a validator with delegators commit the same total it would have committed alone, and so what keeps
+/// law 46 true through the split rather than only before it.
+///
+/// **With no delegations this is the identity**: no shares, and the operator's remainder is the whole
+/// reward — the arithmetic half of the port's dormancy requirement.
+pub(crate) fn split_reward(
+    reward: i64,
+    own: i64,
+    amounts: &[i64],
+) -> Result<(Vec<i64>, i64), String> {
+    let shares = pro_rata(reward, own, amounts)?;
+    let paid: i128 = shares.iter().map(|s| i128::from(*s)).sum();
+    let remainder = checked_i64(i128::from(reward) - paid, "operator reward remainder")?;
+    Ok((shares, remainder))
+}
+
+impl NativeSystemState {
+    /// Write a `pos:*` leaf, or **clear it when the value is empty**.
+    ///
+    /// This is not the same as writing an empty map. `set_bonds` and its siblings put unconditionally,
+    /// so an empty value is a real trie leaf and a **different state root** from an absent one — which
+    /// matters here and nowhere else, because the delegation leaves must be *absent* on a chain that
+    /// has never delegated. That is what puts this primitive's fork point at the first `delegate`
+    /// deploy rather than at genesis (law 57, pass §60).
+    ///
+    /// The `get` before the `delete` is deliberate: a delete of a key that is not there would still be
+    /// a store action, and the point of this function is that it changes nothing when there is nothing
+    /// to change.
+    async fn store_delegation_leaf(
+        &self,
+        key: Blake2b256Hash,
+        value: Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        match value {
+            Some(bytes) => {
+                self.store.put(PREFIX_POS, key, bytes);
+                Ok(())
+            }
+            None => {
+                if self.store.get(PREFIX_POS, &key).await?.is_some() {
+                    self.store.delete(PREFIX_POS, &key);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The delegated-principal ledger (`pos:delegations`). Absent reads as empty, like every other
+    /// ledger here.
+    pub async fn delegations(&self) -> Result<BTreeMap<DelegationKey, NonNegI64>, String> {
+        match self.store.get(PREFIX_POS, &pos_delegations_key()).await? {
+            Some(bytes) => decode_delegations(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Write the delegated-principal ledger, clearing the leaf when it becomes empty.
+    pub async fn set_delegations(
+        &self,
+        ledger: &BTreeMap<DelegationKey, NonNegI64>,
+    ) -> Result<(), String> {
+        let value = (!ledger.is_empty()).then(|| encode_delegations(ledger));
+        self.store_delegation_leaf(pos_delegations_key(), value)
+            .await
+    }
+
+    /// Staged undelegation requests (`pos:pending_delegations`).
+    pub async fn pending_delegations(&self) -> Result<BTreeMap<DelegationKey, i64>, String> {
+        match self
+            .store
+            .get(PREFIX_POS, &pos_pending_delegations_key())
+            .await?
+        {
+            Some(bytes) => decode_pending_delegations(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Write the staged undelegation requests, clearing the leaf when it becomes empty.
+    pub async fn set_pending_delegations(
+        &self,
+        pending: &BTreeMap<DelegationKey, i64>,
+    ) -> Result<(), String> {
+        let value = (!pending.is_empty()).then(|| encode_pending_delegations(pending));
+        self.store_delegation_leaf(pos_pending_delegations_key(), value)
+            .await
+    }
+
+    /// Escrowed undelegated principals (`pos:delegation_claims`).
+    pub async fn delegation_claims(
+        &self,
+    ) -> Result<BTreeMap<DelegationKey, DelegationClaim>, String> {
+        match self
+            .store
+            .get(PREFIX_POS, &pos_delegation_claims_key())
+            .await?
+        {
+            Some(bytes) => decode_delegation_claims(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Write the escrowed undelegated principals, clearing the leaf when it becomes empty.
+    pub async fn set_delegation_claims(
+        &self,
+        claims: &BTreeMap<DelegationKey, DelegationClaim>,
+    ) -> Result<(), String> {
+        let value = (!claims.is_empty()).then(|| encode_delegation_claims(claims));
+        self.store_delegation_leaf(pos_delegation_claims_key(), value)
+            .await
+    }
+
+    /// Delegators' accrued rewards (`pos:delegated_rewards`).
+    pub async fn delegated_rewards(&self) -> Result<BTreeMap<DelegationKey, NonNegI64>, String> {
+        match self
+            .store
+            .get(PREFIX_POS, &pos_delegated_rewards_key())
+            .await?
+        {
+            Some(bytes) => decode_delegated_rewards(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Write the delegators' accrued rewards, clearing the leaf when it becomes empty. `epoch_pot`
+    /// subtracts this ledger as well as `committed`, or a boundary would distribute a delegator's
+    /// accrued reward a second time.
+    pub async fn set_delegated_rewards(
+        &self,
+        rewards: &BTreeMap<DelegationKey, NonNegI64>,
+    ) -> Result<(), String> {
+        let value = (!rewards.is_empty()).then(|| encode_delegated_rewards(rewards));
+        self.store_delegation_leaf(pos_delegated_rewards_key(), value)
+            .await
+    }
+
+    /// **Delegate stake to an operator's key** (`delegate`, law 57).
+    ///
+    /// The principal leaves the **delegator's own** vault — the caller's identity is what authorises
+    /// it, exactly as `bond` does — and joins the staking vault; the operator's `pos:bonds` entry
+    /// becomes the aggregate, and the ledger records whose the difference is. It activates exactly as
+    /// `bond` does: the pool follows at once and `pos:active` only at the boundary.
+    ///
+    /// **Open admission, and the refusals that make it safe.** No commission, no consent step and no
+    /// `pos:trusted` requirement: the point of the primitive is a key with REV and no node, which is by
+    /// definition a key that was never admitted to the stakeholder group. What is refused is what would
+    /// make the accounting ambiguous or unbounded:
+    ///
+    /// - **self-delegation** — the operator's own stake and a delegation to itself would be the same
+    ///   money counted as two parties, and the split would pay one of them twice;
+    /// - an **operator that is not in the pool**, because there is no entry to enlarge;
+    /// - an operator with a **pending withdrawal**, because that request will move the whole pool entry
+    ///   into an escrow the delegator has no claim on (and `withdraw` refuses the other direction, so a
+    ///   validator is never simultaneously withdrawing and delegated-to);
+    /// - an amount below **`minimum_bond`**, which is the per-delegation floor and therefore the DoS
+    ///   control on a ledger unbounded in the number of delegators (`spec/RUST-VS-SCALA.md` §3 item 12,
+    ///   residual O5);
+    /// - and an amount the delegator's vault cannot cover, which is a failure rather than a partial
+    ///   transfer.
+    ///
+    /// **`maximum_bond` deliberately does not apply.** It bounds what a validator may stake as itself;
+    /// a delegation is floored and not capped, because refusing a delegation on account of *another*
+    /// delegator's principal would make one staker's entry decide a stranger's.
+    pub async fn delegate(
+        &self,
+        delegator: &Validator,
+        operator: &Validator,
+        amount: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        if delegator == operator {
+            return Ok(Err(
+                "A key cannot delegate to itself: its own stake and the delegation would be the \
+                 same money counted as two parties."
+                    .to_string(),
+            ));
+        }
+        let mut pool = self.bonds().await?;
+        if !pool.contains_key(operator) {
+            return Ok(Err(
+                "The operator is not bonded: only a pooled key can carry delegated stake."
+                    .to_string(),
+            ));
+        }
+        let pending = self.pending_withdrawers().await?;
+        if pending.contains_key(operator) {
+            return Ok(Err(
+                "The operator has a pending withdrawal: delegating would put the principal into an \
+                 escrow the delegator has no claim on."
+                    .to_string(),
+            ));
+        }
+        let params = self.params().await?;
+        let stake = i64::from(amount);
+        if stake < i64::from(params.minimum_bond) {
+            return Ok(Err(format!(
+                "A delegation is below the minimum ({} < {}).",
+                stake,
+                i64::from(params.minimum_bond)
+            )));
+        }
+        let address = self.vault_address(delegator)?;
+        let balance = self
+            .vault_balance(&address)
+            .await?
+            .unwrap_or(NonNegI64::zero());
+        if i64::from(balance) < stake {
+            return Ok(Err(format!(
+                "insufficient funds to delegate {stake} (have {})",
+                i64::from(balance)
+            )));
+        }
+        self.set_vault_balance(&address, balance_plus(balance, -stake, "delegation debit")?);
+        self.credit_pos_vault(amount).await?;
+
+        let aggregate = pool.get(operator).copied().unwrap_or(NonNegI64::zero());
+        pool.insert(*operator, balance_plus(aggregate, stake, "aggregate bond")?);
+        self.set_bonds(&pool);
+
+        let mut ledger = self.delegations().await?;
+        let key = DelegationKey {
+            operator: *operator,
+            delegator: *delegator,
+        };
+        let held = ledger.get(&key).copied().unwrap_or(NonNegI64::zero());
+        // Insert-or-accumulate, mirroring `insert(k, lookup k + amount)`: a second delegation from the
+        // same delegator **adds** to the first rather than replacing it (law 57's
+        // `a_second_delegation_accumulates`). A replace here would silently burn the earlier principal
+        // while the pool entry kept it, so the two would disagree for ever.
+        ledger.insert(key, balance_plus(held, stake, "delegated principal")?);
+        self.set_delegations(&ledger).await?;
+        Ok(Ok(()))
+    }
+
+    /// **Stage an undelegation** (`undelegate`, law 57).
+    ///
+    /// A request and nothing else: the principal stays in the operator's pool entry and in the ledger,
+    /// still earning and still at risk, until the boundary moves it into `pos:delegation_claims` with a
+    /// deadline — after which it is paid `principal + accrued rewards` to the **delegator's own** vault
+    /// at the first boundary past its quarantine. This is law 47's three-stage shape, seen from a
+    /// delegator, and the staging is the point: undelegating cannot be used to dodge a slash that is
+    /// already in flight, which paying at once would allow.
+    ///
+    /// Refused when there is no delegation to withdraw — an undelegation of nothing would otherwise
+    /// create a claim the boundary would pay zero for, and the pending map would carry a tombstone for
+    /// a pair that never delegated.
+    pub async fn undelegate(
+        &self,
+        delegator: &Validator,
+        operator: &Validator,
+        block_number: i64,
+    ) -> Result<Result<(), String>, String> {
+        let ledger = self.delegations().await?;
+        let key = DelegationKey {
+            operator: *operator,
+            delegator: *delegator,
+        };
+        if !ledger.contains_key(&key) {
+            return Ok(Err("There is no delegation to withdraw.".to_string()));
+        }
+        let params = self.params().await?;
+        // The same normalised divisor `withdraw` uses (AUDIT C135): the deadline is
+        // `quarantine_length + divisor * (1 + block_number / divisor)`.
+        let divisor = i128::from(epoch_divisor(&params));
+        let deadline = checked_i64(
+            i128::from(params.quarantine_length)
+                + divisor * (1 + i128::from(block_number) / divisor),
+            "undelegate deadline",
+        )?;
+        let mut pending = self.pending_delegations().await?;
+        pending.insert(key, deadline);
+        self.set_pending_delegations(&pending).await?;
+        Ok(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod delegation_tests {
+    use super::*;
+
+    fn nn(v: i64) -> NonNegI64 {
+        NonNegI64::try_from(v).expect("a test amount is non-negative")
+    }
+
+    fn validator(byte: u8) -> Validator {
+        Validator::from_slice(&[byte; 65])
+    }
+
+    fn vault_address_of(v: &Validator) -> String {
+        RevAddress::from_public_key(&PublicKey::new(v.as_bytes().to_vec()))
+            .expect("a test key is a valid public key")
+            .to_base58()
+    }
+
+    fn fringe(byte: u8) -> Blake2b256Hash {
+        Blake2b256Hash::create(&[byte])
+    }
+
+    /// The total REV the native state holds — the two mechanism vaults plus every address given. Every
+    /// step of delegated stake is a transfer between these places, so this is the assertion that makes
+    /// "the fan-out is a transfer" a property rather than a reading of the code. It is the same
+    /// instrument the withdrawal tests use, and it is what would catch a fan-out that paid a delegator
+    /// out of a vault nobody debited.
+    async fn total_rev(native: &NativeSystemState, addresses: &[String]) -> i64 {
+        let mut total = i64::from(native.coop_balance().await.unwrap())
+            + i64::from(native.pos_vault_balance().await.unwrap());
+        for address in addresses {
+            total += native
+                .vault_balance(address)
+                .await
+                .unwrap()
+                .map(i64::from)
+                .unwrap_or(0);
+        }
+        total
+    }
+
+    async fn balance_of(native: &NativeSystemState, v: &Validator) -> i64 {
+        native
+            .vault_balance(&vault_address_of(v))
+            .await
+            .unwrap()
+            .map(i64::from)
+            .unwrap_or(0)
+    }
+
+    /// A state with one bonded, trusted, active validator at `stake`. `minimum_bond` is 1 so the reward
+    /// formula has a normaliser (`epoch_reward` pays zero for everyone at a zero minimum), and the other
+    /// parameters are the permissive defaults — in particular `absence_slack` 0, which disables the
+    /// participation weight, so a boundary's reward here is the formula's and nothing else.
+    async fn with_operator(operator: Validator, stake: i64) -> NativeSystemState {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let mut bonds = BTreeMap::new();
+        bonds.insert(operator, nn(stake));
+        native
+            .install_genesis(&PosGenesis {
+                bonds,
+                trusted: [operator].into_iter().collect(),
+                params: PosParams {
+                    minimum_bond: nn(1),
+                    ..PosParams::default()
+                },
+            })
+            .unwrap();
+        native
+    }
+
+    /// Fund a **user** vault — deliberately not `credit_pos_vault`, so a test can tell phlo in the
+    /// staking vault from a delegator's own money.
+    async fn fund(native: &NativeSystemState, v: &Validator, amount: i64) {
+        native.set_vault_balance(&vault_address_of(v), nn(amount));
+    }
+
+    /// **The four leaves are absent until the first delegation.** This is the store half of law 57's
+    /// dormancy requirement, and the reason the primitive's fork point is the first `delegate` deploy
+    /// rather than genesis: `set_*` is an unconditional `put`, so an *empty* map is already a real trie
+    /// leaf and a different state root from an absent one. The assertion reads the **store**, not the
+    /// reader — a reader that treats absent and empty alike cannot see the difference, which is exactly
+    /// why this test does not use one.
+    ///
+    /// Red under the mutation that makes the four setters `put` unconditionally, including on an empty
+    /// map: the boundary below writes every ledger it is handed.
+    #[tokio::test]
+    async fn the_delegation_leaves_are_absent_until_the_first_delegation() {
+        let native = with_operator(validator(1), 40).await;
+        native.credit_pos_vault(nn(100)).await.unwrap();
+        native
+            .close_block(1, fringe(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        for key in [
+            pos_delegations_key(),
+            pos_pending_delegations_key(),
+            pos_delegation_claims_key(),
+            pos_delegated_rewards_key(),
+        ] {
+            assert!(
+                native.store.get(PREFIX_POS, &key).await.unwrap().is_none(),
+                "a boundary on a chain that has never delegated must not write the leaf"
+            );
+        }
+        // …and the delegation itself is what creates one.
+        let delegator = validator(2);
+        fund(&native, &delegator, 60).await;
+        native
+            .delegate(&delegator, &validator(1), nn(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(native
+            .store
+            .get(PREFIX_POS, &pos_delegations_key())
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// The Lean fixture `the_split_is_not_the_identity`, decided on the Rust side too. A split that paid
+    /// every delegator an equal share, or dropped the base from the denominator, fails here as well as
+    /// in the model — and `[1, 2]` with base 40 is in the fixture because `[1, 1, 1]` (the first version
+    /// of the model's clause) is satisfied by the equal-share mutant: three equal weights pay `100 / 3`
+    /// either way.
+    #[test]
+    fn the_split_is_not_the_identity() {
+        assert_eq!(pro_rata(100, 30, &[10, 61]).unwrap(), vec![9, 60]);
+        assert_eq!(pro_rata(100, 0, &[30, 70]).unwrap(), vec![30, 70]);
+        assert_eq!(pro_rata(100, 40, &[1, 2]).unwrap(), vec![2, 4]);
+        // The operator's remainder is the rest, so the two halves add up to the reward exactly.
+        let (shares, remainder) = split_reward(100, 30, &[10, 61]).unwrap();
+        assert_eq!(shares.iter().sum::<i64>() + remainder, 100);
+        // …and with no delegations the split is the identity.
+        let (shares, remainder) = split_reward(100, 30, &[]).unwrap();
+        assert!(shares.is_empty());
+        assert_eq!(remainder, 100);
+    }
+
+    #[test]
+    fn the_delegation_leaves_round_trip_or_refuse() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let key = DelegationKey {
+            operator,
+            delegator,
+        };
+
+        let ledger = BTreeMap::from([(key, nn(60))]);
+        assert_eq!(
+            decode_delegations(&encode_delegations(&ledger)).unwrap(),
+            ledger
+        );
+        assert!(
+            decode_delegations(&[0u8; 3]).is_err(),
+            "a partial entry is refused, not truncated"
+        );
+        // A negative amount is refused rather than read as a negative stake.
+        let mut bytes = encode_delegations(&ledger);
+        let end = bytes.len();
+        bytes[end - 8..].copy_from_slice(&(-1i64).to_le_bytes());
+        assert!(decode_delegations(&bytes).is_err());
+
+        let rewards = BTreeMap::from([(key, nn(12))]);
+        assert_eq!(
+            decode_delegated_rewards(&encode_delegated_rewards(&rewards)).unwrap(),
+            rewards
+        );
+
+        let pending = BTreeMap::from([(key, 7i64)]);
+        assert_eq!(
+            decode_pending_delegations(&encode_pending_delegations(&pending)).unwrap(),
+            pending
+        );
+
+        let claims = BTreeMap::from([(
+            key,
+            DelegationClaim {
+                amount: nn(5),
+                deadline: 9,
+            },
+        )]);
+        assert_eq!(
+            decode_delegation_claims(&encode_delegation_claims(&claims)).unwrap(),
+            claims
+        );
+        // The two strides differ, so a claim leaf read as a delegation ledger is refused rather than
+        // silently misparsed — which is the whole reason each has its own length.
+        assert!(decode_delegation_claims(&encode_delegations(&ledger)).is_err());
+    }
+
+    /// **A delegation enlarges the operator's pool entry by exactly its amount, and a second one from
+    /// the same delegator adds to the first rather than replacing it.**
+    ///
+    /// The second half is the one worth having a test for: the pool entry accumulates either way, so an
+    /// implementation that *replaced* the ledger entry would keep the aggregate right and quietly burn
+    /// the earlier principal — the ledger and the pool would disagree for ever after, and every later
+    /// split would divide by a total that includes stake the ledger says nobody owns.
+    ///
+    /// Red under the mutation that makes `delegate` insert instead of accumulate.
+    #[tokio::test]
+    async fn a_delegation_enlarges_the_pool_and_a_second_one_accumulates() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let key = DelegationKey {
+            operator,
+            delegator,
+        };
+        let native = with_operator(operator, 40).await;
+        fund(&native, &delegator, 100).await;
+
+        native
+            .delegate(&delegator, &operator, nn(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(i64::from(native.bonds().await.unwrap()[&operator]), 100);
+        assert_eq!(
+            balance_of(&native, &delegator).await,
+            40,
+            "the principal left the delegator's own vault"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            100,
+            "…and joined the staking vault, where the epoch pot is measured"
+        );
+
+        native
+            .delegate(&delegator, &operator, nn(40))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.delegations().await.unwrap()[&key]),
+            100,
+            "a second delegation adds to the first"
+        );
+        assert_eq!(i64::from(native.bonds().await.unwrap()[&operator]), 140);
+    }
+
+    /// **A boundary splits a drawn validator's reward across its delegations**, with the operator
+    /// keeping the remainder — and `Σ delegators + operator == the reward` exactly, which is what keeps
+    /// law 46 a statement about the reward rather than about the split.
+    ///
+    /// Red under the mutation that credits the whole reward to `committed` (the delegators' entry is
+    /// then absent) and under one that credits the whole reward to the delegators (the operator's
+    /// remainder is then zero).
+    #[tokio::test]
+    async fn a_boundary_splits_the_reward_across_the_delegations() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let key = DelegationKey {
+            operator,
+            delegator,
+        };
+        let native = with_operator(operator, 40).await;
+        // 100 of phlo into the staking vault, on top of the bond sum genesis funds it with.
+        native.credit_pos_vault(nn(100)).await.unwrap();
+        fund(&native, &delegator, 60).await;
+        native
+            .delegate(&delegator, &operator, nn(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(i64::from(native.bonds().await.unwrap()[&operator]), 100);
+
+        native
+            .close_block(1, fringe(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The pot is the vault (100 of phlo + 100 of aggregate bond) less the bond and the ledgers:
+        // 100. The key holds all of it, so the reward is the whole pot.
+        let delegated = native.delegated_rewards().await.unwrap();
+        let committed = native.committed_rewards().await.unwrap();
+        assert_eq!(
+            i64::from(delegated[&key]),
+            60,
+            "the delegator's proportion of the 100 reward"
+        );
+        assert_eq!(
+            i64::from(committed[&operator]),
+            40,
+            "the operator's remainder — its own stake's share plus the dust"
+        );
+        assert_eq!(
+            i64::from(delegated[&key]) + i64::from(committed[&operator]),
+            100,
+            "the split is exact: the key committed what it would have committed alone"
+        );
+    }
+
+    /// **A slash fans out to each delegator's own vault, at every tier.** This is the sharpest
+    /// correctness risk in the primitive: before delegations existed `returned` was one payment to one
+    /// address, and the offender's aggregate bond is what the function removes — so a remainder paid
+    /// whole to the offender hands a delegator's principal to the party it was delegated to.
+    ///
+    /// Every tier, because the fan-out is a division: `Malicious` leaves nothing to divide and would
+    /// pass vacuously if it were the only case.
+    ///
+    /// Red under the mutation that credits `returned` to `vault_address(validator)` as before.
+    #[tokio::test]
+    async fn a_slash_fans_out_to_each_delegators_own_vault_at_every_tier() {
+        for severity in [
+            SlashSeverity::HonestMistake,
+            SlashSeverity::Misdemeanour,
+            SlashSeverity::Malicious,
+        ] {
+            let operator = validator(1);
+            let delegator = validator(2);
+            let native = with_operator(operator, 40).await;
+            fund(&native, &delegator, 60).await;
+            native
+                .delegate(&delegator, &operator, nn(60))
+                .await
+                .unwrap()
+                .unwrap();
+            let addresses = [vault_address_of(&operator), vault_address_of(&delegator)];
+            let before = total_rev(&native, &addresses).await;
+
+            native.slash(&operator, severity).await.unwrap().unwrap();
+
+            // The aggregate bond is the whole of what is at risk here — no accrued reward, no escrow —
+            // and the offender's own stake is 40 of it against the delegator's 60.
+            let at_risk = 100i64;
+            let returned = at_risk - at_risk * severity.basis_points() / 10_000;
+            let expected = returned * 60 / 100;
+            assert_eq!(
+                balance_of(&native, &delegator).await,
+                expected,
+                "the delegator's share of the remainder, at {severity:?}"
+            );
+            assert_eq!(
+                balance_of(&native, &operator).await + balance_of(&native, &delegator).await,
+                returned,
+                "the fan-out pays out exactly the remainder, at {severity:?}"
+            );
+            assert_eq!(
+                total_rev(&native, &addresses).await,
+                before,
+                "a slash is a transfer, not a mint, at {severity:?}"
+            );
+            assert!(
+                native.delegations().await.unwrap().is_empty(),
+                "the offender leaves every delegation ledger, at {severity:?}"
+            );
+            assert!(native.delegated_rewards().await.unwrap().is_empty());
+            assert!(native.delegation_claims().await.unwrap().is_empty());
+        }
+    }
+
+    /// **The three stages of an undelegation**, and the accrued reward travelling to the delegator with
+    /// the principal: a request that moves nothing, a boundary that takes the principal out of the
+    /// operator's **aggregate** and escrows it, and a payout to the **delegator's** own vault of
+    /// `principal + accrued` — read from `pos:delegated_rewards`, not from the operator's `committed`
+    /// entry, which is the whole reason the two ledgers are separate.
+    ///
+    /// Red under the mutation that pays a delegation claim to `vault_address(operator)`.
+    #[tokio::test]
+    async fn an_undelegation_is_staged_then_paid_to_the_delegator() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let key = DelegationKey {
+            operator,
+            delegator,
+        };
+        let native = with_operator(operator, 40).await;
+        native.credit_pos_vault(nn(100)).await.unwrap();
+        fund(&native, &delegator, 60).await;
+        native
+            .delegate(&delegator, &operator, nn(60))
+            .await
+            .unwrap()
+            .unwrap();
+        // One epoch's split, so there is an accrued reward for the claim to carry.
+        native
+            .close_block(1, fringe(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.delegated_rewards().await.unwrap()[&key]),
+            60
+        );
+
+        // Stage: the request moves nothing, and the principal is still in the aggregate.
+        native
+            .undelegate(&delegator, &operator, 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.bonds().await.unwrap()[&operator]),
+            100,
+            "a staged undelegation moves no stake, so it cannot dodge a slash in flight"
+        );
+
+        // The boundary takes it out of the aggregate and escrows it in the delegator's name.
+        native
+            .close_block(2, fringe(2), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.bonds().await.unwrap()[&operator]),
+            40,
+            "the operator is left with its own stake"
+        );
+        assert_eq!(
+            i64::from(native.delegation_claims().await.unwrap()[&key].amount),
+            60
+        );
+        assert!(native.delegations().await.unwrap().is_empty());
+
+        // Past the quarantine the delegator is paid the principal **and** the accrued reward.
+        let addresses = [vault_address_of(&operator), vault_address_of(&delegator)];
+        let before = total_rev(&native, &addresses).await;
+        native
+            .close_block(3, fringe(3), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            balance_of(&native, &delegator).await,
+            120,
+            "60 of principal and 60 of accrued reward, to the delegator's own vault"
+        );
+        assert_eq!(
+            balance_of(&native, &operator).await,
+            0,
+            "and none of it to the operator"
+        );
+        assert!(native.delegation_claims().await.unwrap().is_empty());
+        assert_eq!(
+            total_rev(&native, &addresses).await,
+            before,
+            "the payout is a transfer"
+        );
+    }
+
+    /// **The refusals that keep one meaning per ledger.** Each is the negative of an invariant the
+    /// other functions rely on, so a missing one shows up later as an ambiguous escrow rather than as a
+    /// refusal here.
+    #[tokio::test]
+    async fn the_delegation_refusals() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let native = with_operator(operator, 40).await;
+        fund(&native, &delegator, 60).await;
+
+        let refusal = |r: Result<Result<(), String>, String>| {
+            r.expect("a refusal is a value, not an error").is_err()
+        };
+        assert!(
+            refusal(native.delegate(&operator, &operator, nn(1)).await),
+            "a key cannot delegate to itself"
+        );
+        assert!(
+            refusal(native.delegate(&delegator, &validator(9), nn(1)).await),
+            "an operator that is not in the pool carries nothing"
+        );
+        assert!(
+            refusal(native.delegate(&delegator, &operator, nn(0)).await),
+            "below the per-delegation floor"
+        );
+        assert!(
+            refusal(native.delegate(&delegator, &operator, nn(61)).await),
+            "more than the delegator's vault holds"
+        );
+        assert!(
+            refusal(native.undelegate(&delegator, &operator, 1).await),
+            "there is no delegation to withdraw"
+        );
+        // …and once the operator has staged a withdrawal, a delegation may not join the aggregate it
+        // is about to move into an escrow the delegator has no claim on.
+        native.withdraw(&operator, 1).await.unwrap().unwrap();
+        assert!(
+            refusal(native.delegate(&delegator, &operator, nn(1)).await),
+            "the operator is withdrawing"
+        );
+    }
+
+    /// The other half of that invariant: a validator whose bond is not all its own cannot stage a
+    /// withdrawal of it. Red under the mutation that removes the guard — the boundary then moves the
+    /// aggregate, including the delegator's principal, into a claim only the operator can be paid.
+    #[tokio::test]
+    async fn a_validator_with_delegations_cannot_withdraw() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let native = with_operator(operator, 40).await;
+        fund(&native, &delegator, 60).await;
+        native
+            .delegate(&delegator, &operator, nn(60))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            native.withdraw(&operator, 1).await.unwrap().is_err(),
+            "the aggregate is not all the operator's"
+        );
+        // The delegator's own route out is unaffected, and it is a route the operator cannot take.
+        assert!(native
+            .undelegate(&delegator, &operator, 1)
+            .await
+            .unwrap()
+            .is_ok());
+        // With the delegation gone the operator may withdraw again.
+        native
+            .close_block(1, fringe(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(native.withdraw(&operator, 2).await.unwrap().is_ok());
     }
 }

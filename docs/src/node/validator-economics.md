@@ -309,13 +309,13 @@ The economics above are closed by who may take part.
   (`pos:trusted`); a trusted stakeholder admits a key with `pos!("trust", …)`. A genesis validator is
   trusted by construction.
 - **A key can only bond itself.** The bond takes the caller's own unforgeable `GDeployerId`, so a
-  byte-array argument cannot bond another key (`rholang/src/system_processes.rs:1714`). **There is no
-  delegation and no delegated-stake market in this tree** — no staking pool, no restaking, no
-  liquid-staking mechanism anywhere in it. **A delegation primitive is decided and modelled but not
-  implemented** (2026-10-02, [#193](https://github.com/rchain-community/rchain-rust/issues/193), law 57,
-  `spec/AUDIT.md` **C204**), so this sentence is still true of the tree: there is no code here a staker
-  can call, and it will stop being true when the second unit of that change lands rather than when the
-  decision was taken.
+  byte-array argument cannot bond another key (`rholang/src/system_processes.rs:1714`). **A key can,
+  however, stake on another key**: `rho:rchain:pos!("delegate", *deployerId, operatorPubKey, amount,
+  *ret)` moves the principal out of the *delegator's* own vault and adds it to the operator's bond
+  (2026-10-02, [#193](https://github.com/rchain-community/rchain-rust/issues/193), law 57). There is
+  still **no staking pool, no restaking and no liquid-staking mechanism** in this tree: delegation
+  attributes stake to an operator's key and gives the delegator no transferable claim, no share and no
+  vote — see item 1 below for what it does and does not buy.
 - **Exiting is staged and quarantined.** `withdraw` (`:1164`) only *stages* a request: the validator
   stays bonded and active and keeps earning until the next epoch boundary, when the bond leaves the pool
   and is escrowed until `quarantine-length` has passed; it is then paid `bond + committed` rewards. See
@@ -328,10 +328,10 @@ party — the operator's own capital, with no one between the operator and the b
 ## Open questions (tracked, not decided)
 
 **Everything in this section is design discussion, not implemented and not proved** — with one qualified
-exception, marked in place: item 1's mechanism is now **decided and its arithmetic proved** (law 57,
-2026-10-02), and only its Rust is owed. Each item lives on the issue named with it; per
-[`AGENTS.md`](../../../AGENTS.md) the plans and hypotheticals behind them belong outside this repository,
-and none of it is policy.
+exception, marked in place: item 1's mechanism is now **decided, its arithmetic proved and its Rust
+landed** (law 57, 2026-10-02), and only its end-to-end evidence is owed. Each item lives on the issue
+named with it; per [`AGENTS.md`](../../../AGENTS.md) the plans and hypotheticals behind them belong
+outside this repository, and none of it is policy.
 
 **A review of these questions from fresh concluded that neither of the two obvious improvements works as
 stated.** Both conclusions are arguments about the code above, not preferences.
@@ -376,14 +376,15 @@ stated.** Both conclusions are arguments about the code above, not preferences.
 
    **What is landed and what is owed, because this section's own rule is that a claim names its
    artifact.** The mechanism is specified in
-   [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) § *Delegated stake* and modelled as **law 57** in
+   [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) § *Delegated stake*, modelled as **law 57** in
    [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) — the split's exactness, its identity with no
-   delegators, the aggregate reaching the slash, and the clearing of the ledgers. **The Rust is not
-   written**: the leaves, the two `rho:rchain:pos` ops, the boundary move, the fan-out and the read
-   surface are the same change's second unit, tracked as **C204** in
-   [`spec/AUDIT.md`](../../../spec/AUDIT.md), and the register row says so rather than leaving it to be
-   discovered. So the paragraphs above are a decision and a proof about the arithmetic, not a description
-   of a node you can run.
+   delegators, the aggregate reaching the slash, and the clearing of the ledgers — and implemented in
+   `rholang/src/native_state.rs` + `rholang/src/system_processes.rs`, with twelve `rustWitness` entries
+   on law 57. **What is owed is the end-to-end evidence** and the read surface: the in-process
+   measurement, a devnet run of delegate → boundary → undelegate → quarantine payout, and the
+   delegator-scoped view on `GET /api/v1/pos` are the change's third unit, tracked as **C204** in
+   [`spec/AUDIT.md`](../../../spec/AUDIT.md) — which stays open until they land, so the economics above
+   are a decision, a proof about the arithmetic and a working primitive, but not yet a measured one.
 2. **Should the pot be weighted by participation as well as stake?** *It cannot do what it looks like it
    does.* The pot is a fixed pie of phlo already burned, so a multiplier is pure **reallocation** — with
    `p` in `[0,1]` it is exactly a haircut on absent stake, not a new reward axis. A uniform multiplier is
