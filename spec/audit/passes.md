@@ -6713,16 +6713,27 @@ the bootstrap ran to 26, and stopped finality for the whole network. Over 26 blo
 every bonds entry still 100. So C198 does what it claims — the disagreement costs nobody their bond — and
 does not fix what it never claimed to: a mis-set floor still wedges a network.
 
-**And C201, which the A2 run found rather than looked for.** The same proposer logged that slash **59
-times, one per block, for ever** — for a validator already out of the pool. `add_recorded_equivocations`
-filters on `bonded` (`compute_bonds(pre_state_hash)`, i.e. `pos:active` at the pre-state), which should
-have excluded it, so the observation and the code cannot both be right. The row is open, with the half
-that is measured: `a_slashed_validator_is_absent_from_the_bonds_at_the_post_state` shows the leaf is
-written and read correctly **at a post-state**, so what is left is *which hash* the proposer reads — the
-merged pre-state, reconstructed by `MergeScope::merge` from the native sidecar (#74) — and the fixture
-that would finish it is named in the row's owed column. It is a `todo` rather than a note because the read
-in question is the proposer's own view of who is bonded, which also feeds `check_active_validator` and the
-attestation quorum.
+**And C201, which the A2 run found rather than looked for — resolved, and it is a coupling rather than a
+defect.** The same proposer logged that slash **59 times, one per block, for ever**, for a validator
+already out of the pool. Three units finished it. **The observation is real and now measured**: a second
+live arm with an instrument in the same fold admitted the offender on **every** proposal, from a
+`pre_state` that never changed while **133 distinct parent sets** did
+(`spec/audit/evidence/c201-proposer-read-results.md`). **Three eliminations, each pinned by a test that
+did not exist before**: the native fold is correct (C201's own fixture passes — a slashing branch's write
+does reach a merged root); the **fringe** is not pinned by a stale carrier (`latest_fringe` follows what a
+parent *carries*, so a fresh carrier always beats a taller stale one); and the **scope** is not pinned by a
+stalled fringe (`from_dag` derives the conflict scope from the parents, so an advancing parent grows it
+even with the fringe held fixed). **The mechanism, from the instrument's last two columns**: `pre_state`
+**equals** the merge's `fringe` state, and the count of deploy ids the merge **rejected** grows
+monotonically **6 → 398** — so the merge is returning its base unchanged because it refuses the conflict
+scope wholesale. On this arm the offender's twins are refused by the H-1 gate on every block, so its
+messages stop advancing and **finality freezes** (the mechanism §52's #148 work measured); with the fringe
+fixed the base is fixed, and a `Slash` carried in a block that is not *in* the base is invisible to the
+next proposer, which re-proposes it — **idempotently**, since the offender is already out of the pool, so
+`slash` confiscates nothing and both nodes replay it identically. **What it does not claim**: that the
+wholesale refusal is wrong, or why every chain in that scope was refused. What it does claim is that the
+refusal is what makes a non-finalising chain stop applying its own recent blocks — a statement about
+`MergeScope`'s resolution, found by this investigation and named here rather than filed elsewhere.
 
 **Two corrections this work owes, both recorded where they were made.** Each driver's first version
 reported an absence that its own command had produced: the A1 driver grepped a `show-blocks -d 30` (no

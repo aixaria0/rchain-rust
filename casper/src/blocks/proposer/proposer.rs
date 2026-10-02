@@ -794,7 +794,8 @@ where
             .map(|(v, _)| rchain_shared::base16::encode(v.as_bytes()))
             .collect();
         eprintln!(
-            "[pos] c201: pre_state={} bonded={} recorded={} admitted={:?} justifications={} parents={:?}",
+            "[pos] c201: pre_state={} bonded={} recorded={} admitted={:?} justifications={} \
+             fringe={} rejected={} parents={:?}",
             pre_state_hash.to_hex(),
             bonded.len(),
             recorded_equivocations.len(),
@@ -804,6 +805,12 @@ where
             // `ParentsMergedState` the pre-state came from, so the two cannot disagree about which
             // merge produced which.
             pre_state.justifications.len(),
+            // **And the two things that could pin it.** `fringe` is eight bytes of the fringe the merge
+            // used: if it never moves, the base half is pinned. `rejected` is how many deploy ids the
+            // merge *refused* — a non-zero value here means the conflict scope's work was thrown away,
+            // which is the only remaining way a growing conflict scope contributes nothing.
+            &rchain_shared::base16::encode(pre_state.fringe_state.as_bytes())[..8],
+            pre_state.rejected_deploys.len(),
             pre_state
                 .justifications
                 .iter()

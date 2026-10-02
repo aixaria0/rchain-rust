@@ -1,57 +1,80 @@
 # The proposer's pre-state does not advance (C201, #150)
 
-The measurement C201's row asked for once its fixture passed and **exonerated the merge**: the question
-became *which hash the proposer reads*, and that is a live-run one, so this is a live run.
+C201's row asked for a live-run measurement once its fixture exonerated the merge. Three runs and two unit
+tests later, it is resolved — and the answer is a **measured mechanism**, not a hypothesis.
 
-`spec/audit/evidence/c201/` holds the raw output: `proposer-read-run1.txt` and `-paired.txt` (the fold's
-lines, and the same lines paired with the proposer's own "block #N"), and `proposer-read-run2.txt` (the
-second run, which also logged the parent set).
+`spec/audit/evidence/c201/` holds the raw output of all three runs (`proposer-read-run{1,2,3}.txt`, plus
+run 1 paired with the proposer's own `block #N` lines).
 
 ## The instrument
 
-In the fold itself, beside the `bonded` filter: the pre-state it asked, how many validators that answer
-held, how many equivocations this node has recorded and which of them the filter **admitted**, and — in
-the second run — the parent set the pre-state came from. Logged only when something has been recorded, so
-a chain that has never seen an equivocation pays nothing.
+In the proposer's fold, beside the `bonded` filter: the pre-state it asked, how many validators that
+answer held, how many equivocations the node recorded and which the filter admitted, and — added run by
+run, as each candidate was eliminated — the parent set, the merge's **fringe state**, and how many deploy
+ids the merge **rejected**. Logged only when an equivocation has been recorded.
 
-## What it found
+## The eliminations
 
-**The fold admits the offender on every proposal, from a pre-state that never changes.**
+Three, each now pinned by a test or a measurement that did not exist before:
 
-* Run 1: **140 readings**, the chain advancing from height 3 to **142**, and **one** distinct pre-state
-  hash. Every line byte-identical.
-* Run 2: **133 readings**, **133 distinct parent sets**, and **one** distinct pre-state hash.
+1. **The native fold is correct.** C201's owed fixture passes: a slashing branch's native write reaches a
+   merged root (`casper/tests/block_index.rs`).
+2. **The fringe is not pinned by a stale carrier.** `latest_fringe` follows what a parent *carries*, not
+   how tall it is, so a fresh carrier always beats a stale one — a single stale parent cannot pin the
+   merge. That test is red under the mutation that reads the parents' heights instead, while the
+   pre-existing `latest_fringe_picks_max_height` stays green.
+3. **The scope is not pinned by a stalled fringe.** `from_dag`'s base half is fringe-derived, but the
+   **conflict scope** is `merge_fringe.seen \ final_fringe.seen`, so an advancing parent strictly grows it
+   even with the fringe held fixed.
 
-**And the parent sets are all the same shape:** `[<advancing hash>@N, d8f23b38@7]` — one parent advances to
-height 122 across the run, and the other is **pinned at height 7** for the whole of it. `d8f23b38@7` is
-the only thing every one of the 133 sets has in common.
+So neither half of the derivation can produce a constant result across parent sets where one parent
+advances. **The constancy is downstream of both.**
 
-So the row's question is answered at one level and sharpened at another. It is **not** "which hash" in the
-sense of a stale value: the proposer reads a pre-state that **does not advance while its parents do**. And
-it is not the merge's *native fold*, which C201's fixture exonerates. What it is now is: **merging a set
-that contains a stuck parent ignores the parent that moves.**
+## What it actually is — run 3, 132 readings
 
-## What this does NOT establish
+```
+pre_state=e1996f82…  bonded=2  recorded=1  justifications=2  fringe=e1996f82  rejected=101
+pre_state=e1996f82…  bonded=2  recorded=1  justifications=2  fringe=e1996f82  rejected=104
+…
+pre_state=e1996f82…  bonded=2  recorded=1  justifications=2  fringe=e1996f82  rejected=398
+```
 
-**Which side of `get_pre_state_for_parents` is at fault**, and the reason is specific rather than
-open-ended. The site is its multi-parent branch (`casper/src/multi_parent_casper.rs`: the
-`MergeScope::from_dag` + `MergeScope::merge` arm — the single-parent arm is a plain post-state read and
-cannot be constant). Two readings survive:
+Two facts, and together they are the mechanism:
 
-* **the merge discards the advancing branch** — the scope `from_dag` derives from a parent set containing
-  a far-behind block does not reach the blocks above the moving one, in which case the defect is in the
-  scope derivation and C201 closes into a fix there;
-* **the constancy comes from the caller or the rig** — the live arm's other validator self-harms, and a
-  frozen fringe (which #148's mechanism produces) would anchor every merge at the same base.
+* **`pre_state` equals `fringe`** once the base settles — so the merge is returning **its base unchanged**,
+  and the conflict scope is contributing nothing.
+* **`rejected` grows monotonically, 6 → 398** across ~130 proposals. The merge is refusing the conflict
+  scope's deploys wholesale, and refusing more of them as the chain goes on.
 
-**The check that distinguishes them is a unit fixture, not a rig, and it is small**: merge `{X@122, Y@7}`
-and `{X@78, Y@7}` over one fringe and compare the state hashes. **Equal** ⇒ the merge is discarding the
-advancing branch. **Different** ⇒ the rig's frozen finality is the next thing to measure.
+The fringe itself started at `0e5751c0` — **the empty state**, `empty_state_hash_fixed()` — which is where
+finality had stopped on this arm.
 
-## One caution for whoever runs it, from this run's own mistakes
+## Why, and what it is not
 
-The first version of this instrument labelled the number of justifications `block=`, which reads as the
-block number and is not: the "constant `block=2`" in that log is *two parents*, not height 2. It was
-caught by pairing the fold's lines with the proposer's own `block #N` lines rather than by reading the
-instrument alone — which is the same lesson the A1/A2 live arms already carry, that a driver reporting an
-absence must read evidence its own command cannot fabricate.
+The A2 arm **injects an equivocation from validator 1 on every block**. The H-1 gate refuses each twin, so
+that validator's messages stop advancing; finality therefore freezes — the mechanism #148 measured. With
+finality frozen, the last finalised fringe is fixed, the merge's base is that fringe's state, and the
+proposer's conflict scope is refused. Its pre-state is the base for ever, so a `Slash` carried in a block
+that is not in the base is **invisible to the next proposer**, which re-proposes it. Idempotently: the
+offender is already out of the pool, so `slash` confiscates nothing, both nodes replay it identically, and
+the chain advances throughout — which is what the arm reported from the start.
+
+**So C201 is not a defect in the slashing path.** Every layer that can be tested in isolation is correct,
+and each now has a test. It is a **coupling**: a chain that has stopped finalising also stops applying its
+own recent blocks.
+
+## What is registered separately, because it is a different claim
+
+**The merge refusing an entire conflict scope is nobody's stated property**, and it is what makes a
+non-finalising chain stop applying its own recent blocks. That is a claim about `MergeScope`'s resolution
+rather than about slashing, so it gets its own row (C204) rather than being folded into this one — the same
+shape #148 closing into #149 took. What is *not* claimed there: that the refusal is wrong. A merge that
+rejects every concurrent writer and answers with the agreed base may be exactly right; what the row owes is
+the statement, and a fixture that says when it happens.
+
+## One caution for whoever runs this next, from this run's own mistakes
+
+The first version of the instrument labelled the *number of justifications* `block=`, which reads as a
+block number and is not. It was caught by pairing the fold's lines with the proposer's own `block #N` lines
+rather than by reading the instrument alone — the same lesson the A1/A2 arms already carry, that a driver
+reporting an absence must read evidence its own command cannot fabricate.
