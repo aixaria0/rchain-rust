@@ -210,4 +210,68 @@ mod tests {
         assert_eq!(latest.len(), 1);
         assert_eq!(latest.iter().next().unwrap().id, 11);
     }
+
+    /// **The fringe is what the parents *carry*, not how tall they are** — and this is the test that
+    /// decides a question AUDIT C201 turned into (a proposer's pre-state that never advanced across 133
+    /// distinct parent sets, `spec/audit/evidence/c201/`).
+    ///
+    /// `latest_fringe` reads `fringe_height`, which is the max height of the members of a justification's
+    /// **carried** `fringe` — so the parent that has advanced furthest in its own *height* does not win;
+    /// the one carrying the freshest fringe does. The two directions are pinned separately, because the
+    /// live measurement turns on which of them holds:
+    ///
+    /// * **a fresher carrier wins over a taller stale one.** So a single parent carrying a stale fringe
+    ///   cannot pin the merge — the answer a network that is merely partitioned behind one block gets.
+    /// * **when every carrier is stale, the stale fringe comes back.** That is what a network whose
+    ///   finality has *stopped* looks like from here, and it is the shape that pinned the pre-state on
+    ///   the rig: nothing carried a fresher fringe because nothing was finalising.
+    ///
+    /// A `latest_fringe` that read the *parents'* heights instead would fail the first assertion — the
+    /// tall stale parent would win — which is the mutation this exists to catch.
+    #[test]
+    fn latest_fringe_follows_the_carried_fringe_not_the_height_of_its_carrier() {
+        let at = |h: i64| BlockHeight::try_from(h).expect("a height");
+        let tall_stale = Message {
+            height: at(9),
+            fringe: [10].into_iter().collect(),
+            ..msg(1, &[], &[])
+        };
+        let short_fresh = Message {
+            height: at(2),
+            fringe: [20].into_iter().collect(),
+            ..msg(2, &[], &[])
+        };
+        let map: BTreeMap<i32, Message<i32, i32>> = [
+            (10, msg(10, &[], &[])),
+            (20, msg(20, &[], &[])),
+            (1, tall_stale.clone()),
+            (2, short_fresh),
+        ]
+        .into_iter()
+        .collect();
+
+        let mixed: BTreeSet<_> = [map[&1].clone(), map[&2].clone()].into_iter().collect();
+        assert_eq!(
+            latest_fringe(&map, &mixed).iter().next().map(|m| m.id),
+            Some(20),
+            "the carrier of the fresher fringe wins however short it is — a stale one cannot pin the \
+             merge while anything fresher is in the set"
+        );
+
+        // And now nothing fresher is in the set: both parents carry `{10}` at different heights, and the
+        // fringe does not move with them. This is a *shape*, not a defect — a block declares the fringe
+        // it finalised, so a network where nobody finalised further declares the same one everywhere.
+        let stale_too = Message {
+            height: at(40),
+            fringe: [10].into_iter().collect(),
+            ..msg(3, &[], &[])
+        };
+        let all_stale: BTreeSet<_> = [map[&1].clone(), stale_too].into_iter().collect();
+        let pinned = latest_fringe(&map, &all_stale);
+        assert_eq!(
+            pinned.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![10],
+            "with every carrier stale the fringe is pinned, and a parent 40 heights taller changes nothing"
+        );
+    }
 }
