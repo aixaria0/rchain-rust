@@ -794,11 +794,25 @@ where
             .map(|(v, _)| rchain_shared::base16::encode(v.as_bytes()))
             .collect();
         eprintln!(
-            "[pos] c201: pre_state={} bonded={} recorded={} admitted={:?}",
+            "[pos] c201: pre_state={} bonded={} recorded={} admitted={:?} justifications={} parents={:?}",
             pre_state_hash.to_hex(),
             bonded.len(),
             recorded_equivocations.len(),
-            admitted
+            admitted,
+            // **The other half of the question**: if the pre-state is constant while the chain
+            // advances, the interesting fact is what the *parents* were. Taken from the same
+            // `ParentsMergedState` the pre-state came from, so the two cannot disagree about which
+            // merge produced which.
+            pre_state.justifications.len(),
+            pre_state
+                .justifications
+                .iter()
+                .map(|m| format!(
+                    "{}@{}",
+                    &rchain_shared::base16::encode(m.block_hash.as_bytes())[..8],
+                    m.block_num
+                ))
+                .collect::<Vec<_>>()
         );
     }
     add_recorded_equivocations(&mut to_slash, recorded_equivocations, &bonded);
