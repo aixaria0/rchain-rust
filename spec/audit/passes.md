@@ -359,6 +359,10 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | **A new block justifies the `latest_msgs` as of the last round boundary, not `latest_msgs`** (`DagMessageState::round_parents`, `block-storage/src/dag/message_state.rs`; the proposer reads it in `get_pre_state_for_new_block`) | `BlockCreator`'s `getPreStateForNewBlock` builds the parent set as `dag.latestMessages.map(_.id)`, every sender's newest message | the oracle's parent set is one its **own** finalizer cannot advance on. `calculate_next_fringe_support_map` derives each candidate's `seen_by` from `parents ∖ next_layer`, so a parent set that *is* every sender's newest message has almost no remainder: the head of each round has an empty one and the later movers have seen a prefix. Measured in-process through the production entry point with three live validators at the devnet's `100/100/50`: `Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }`, refusing before the quorum is ever consulted. With the round snapshot the same chain publishes a fringe and tracks the tip at a constant 12-height lag (48/60, 168/180, 348/360). Nothing else moves: heights stay `max + 1`, the validity rules are untouched, and the gate is unchanged. **What this is not:** not a validation fork — a block justifying a snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's blocks — but it *is* a proposer divergence, because the two produce different blocks on the same history, which is why it is registered rather than assumed. The `150 of 250` the devnet logged is this defect's half-fixed shape, reproduced in-process on the way to the correction. AUDIT C185; pass §35. |
 | **A block's justification set is bounded by `max-number-of-parents`, refused on the receiving side** (`casper/src/validate.rs::justification_count`, read off `casper.max-number-of-parents`, whose shipped default moved from `2147483647` to `255`; the proposer refuses to build a block above it in `proposer.rs::create_block`) | **the oracle composes no per-block bound at all** — the same fact the `ExceedsBlockPhloLimit` row records — and this tree carries no `legacy/` to check a Scala `maxNumberOfParents` against, so the honest statement is that the key was configuration in this port and nothing more: no proposer cap and no validation rule, while two doc comments (`proposer.rs`, `validate.rs`) and **C123's fix rationale** each asserted it bounded exactly this set. **Hard fork (#51 category A):** a block justifying more parents than the bound is valid today and refused after, so an upgraded node rejects what an unupgraded one accepts. `0` or negative disables the check, which is how a chain keeps the pre-#153 semantics exactly rather than by accident. **It is also the tenth key of AUDIT C143's class** — parsed into `NodeConf` and read by nothing — which C143's own list of nine did not reach; the register's disposition for that class is to *refuse* the key, and this key takes the other horn of it, enforcing the setting rather than rejecting it, because unlike the keepalive and random-port knobs its documented purpose is one this port can honour. AUDIT C191; #153. |
+| **A validator's bond may be other people's stake: `pos:bonds` carries the *aggregate*, and `pos:delegations` attributes it** — `rho:rchain:pos!("delegate", …)` moves a principal from the **delegator's own** vault into the staking vault and adds it to the operator's pool entry, so the entry a slash reaches and the weight `select_active` draws on are the operator's own stake **plus** every delegation to it; the ledger `pos:delegations` (`(operator, delegator) → amount`) records which part is whose, and `pos:pending_delegations`, `pos:delegation_claims` and `pos:delegated_rewards` carry the staged exit, its escrow and a delegator's accrued share | `Pos.rhox:355-404` — the contract's `bond` writes `allBonds` out of the **deployer's own** vault only (`deposit!(deployerId, amount, posVaultAddr)`) and nothing in `Pos.rhox` lets a key carry another's stake: there is no delegation primitive, no ledger to attribute one, and `getBonds` returns a per-key bond that is self-funded by construction | A delegator spends from its own vault through its own `deployerId` and the **protocol** attributes the stake elsewhere — so this needs no capability `spec/RUST-FIRST.md`'s B2 declined, and the alternative shape (bonding from a named vault, which would) is the one issue #193 rejected for that reason. Admission is open — any bonded operator is delegable-to, with no commission and no consent step — and the per-delegation floor is `minimum_bond`, reused rather than a new parameter. **Hard fork (#51 category A):** an operator's post-state depends on a third party's deploys, so every block hash from the first delegation onward differs between a fixed and an unfixed node. **What makes the fork point late rather than at genesis is stated as a requirement**: the four leaves are absent on a chain that never delegates and no setter is called until its value is non-empty — `set_*` is an unconditional `put`, so an empty write is a different trie root from an absent leaf (`pos:epoch_seed` is the precedent) — and with no delegations the aggregate *is* the stake, so such a chain's post-state is byte-identical to one without the primitive. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
+| **An epoch's reward for a key with delegators is split pro-rata, and a delegator's share is credited to `pos:delegated_rewards` rather than to the operator's `pos:committed`** — after `epoch_rewards` and the participation weight, each drawn validator's reward is divided across its own stake and its delegations in canonical key order; the operator keeps the integer-division remainder, and `epoch_pot` subtracts **both** ledgers | `Pos.rhox:241-256` — `getCurrentEpochRewards` computes one share per **validator** and `commitCurrentEpochRewards` (`:568-576`) writes it to that validator's `committedRewards` entry; there is no second party for a share to belong to, because there is no delegation | Crediting a delegator's share to the operator's `committed` entry would put money the operator may spend into the operator's ledger — the single most likely way to get this primitive wrong, which is why the split is a separate leaf rather than an extra field. The split is **exact** (`split_sums_to_the_reward`): the delegators' shares plus the operator's remainder are the reward the key was paid, so a validator with delegators commits the same total it would have alone and law 46's `sum_rewards_le_pot` survives the split rather than needing restatement. It is the **identity** with no delegators (`split_with_no_delegators_is_the_operator`), which is what makes the dormancy claim above hold arithmetically and not only at the store. The rule is one `proRata` shared with the fan-out below. **Hard fork (#51 category A):** the split moves REV between two ledgers, so every block hash from the first post-delegation boundary differs. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
+| **A slash fans the untaken remainder out to each delegator's own vault, and clears the delegation ledgers** — `atRisk` reads the operator's **aggregate** pool entry, so the tier applies to a delegator's principal exactly as to the operator's; `returned` is distributed pro-rata by each party's at-risk contribution — the operator's own part to its vault, each delegator's part to **its own** vault — with the dust to the operator, and the offender is removed from `pos:delegations`, `pos:pending_delegations`, `pos:delegation_claims` and `pos:delegated_rewards` together | `Pos.rhox:470-482` — the contract's slash moves the whole bond to the Coop vault and **deletes the validator's own entries**; the port already deviates by returning the untaken remainder to the offender's own vault (AUDIT C199), and there is no third party in the contract for a remainder to belong to | This is the sharpest correctness risk in the primitive and it is stated as such: the port's post-C199 slash pays `at_risk − taken` to `vault_address(validator)`, and with delegations present that hands a delegator's principal to the party it was delegated to. The fan-out is the same `proRata` the reward split uses (with `base = 0`, since every principal is at risk), so its sum arithmetic is one theorem rather than two. **The model cannot state the per-vault attribution and says so**: `PosState.user` is the total over every user vault, so `spec/Rchain/Pos.lean`'s law 57 proves the *amounts* and the clearing, and which vault is credited is pinned by a Rust witness — the identical simplification the withdrawal path already carries. An escrowed (`pos:delegation_claims`) principal is reached too, mirroring the validator's own escrowed claim, because it stays at risk until its deadline passes. **Hard fork (#51 category A):** the payment destination changes the block's post-state. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
+| **`withdraw` refuses while delegations are outstanding, and `delegate` refuses while a withdrawal is pending** — so a validator is never simultaneously withdrawing and delegated-to | — (no counterpart: with no delegation primitive there is no second ledger for a withdrawal to be ambiguous against) | Without both refusals the escrow accounting is two-valued: a staged withdrawal moves the operator's **whole** pool entry — which may contain delegated principal — into `pos:withdrawers`, where the delegator has no claim, and a slash reaching that escrow could not tell whose money it was. Refusing both directions keeps one meaning per ledger, and the cost is a refusal an honest operator can always resolve by waiting a boundary. The two are also what make the slash's `at_risk` well-formed: with the invariant held, an operator's escrowed claim never contains delegated principal. `delegate` refuses three more inputs for the same reason — an operator not in the pool, self-delegation (`operator == delegator`), and an amount below `minimum_bond` — and the last of those is the DoS control on a ledger unbounded in delegator count (`spec/RUST-VS-SCALA.md` §3 item 12, residual **O5**). **Hard fork (#51 category A):** a refusal the oracle does not have changes which deploys succeed. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 
 ---
 
@@ -6900,4 +6904,75 @@ it either.
 **Hard fork (#51 category A):** the committed rewards move for any chain that arms the rule, the genesis
 params record grows a field, and the retirement shifts a positional seed. Lockstep upgrade is the
 practice.
+
+## 60. Delegated stake: a third party's principal on an operator's key (C204, #193)
+
+**This pass is a decision and its model. Nothing in it is implemented yet, and that is stated here rather
+than left for a reader to discover.** #193 asked for a delegation primitive and settled on a shape; this
+pass lands the shape in `spec/RUST-FIRST.md` and `spec/Rchain/Pos.lean` (law 57), registers the five
+deviations it makes, and leaves the Rust — the four leaves, the two ops, the split, the fan-out and their
+falsifiers — to the same change's second unit. It is the first pass in this register to open a row for
+work it has not done, and it does so deliberately: a decided consensus deviation that is invisible until
+its implementation lands is exactly the omission the register exists to catch, and `in progress` is the
+state that says so. **C204 tracks it and names what closes it.**
+
+**The shape, and why it is the cheap one.** The wallet can bond, unbond and read a position but cannot
+offer delegation, because the protocol has no primitive for staking REV on a validator the staker does not
+control — so the only way to stake is to run a node, which needs an existing trusted stakeholder to admit
+your key and puts the whole bond at the tier on your own capital. Of the two mechanisms the issue
+evaluated, this pass takes the **delegation ledger**: `pos:bonds` becomes the **aggregate** stake on a key
+and `pos:delegations` records who owns which part. The other direction — bonding from a named vault —
+needs a third party to spend a named account, which is the capability `spec/RUST-FIRST.md`'s B2 decision
+declined; the ledger needs no capability at all, because a delegator spends from **its own** vault through
+**its own** `deployerId` and the protocol does the attributing. The oracle also already keeps one bonds map
+(`Pos.rhox:16`), so the aggregation is a shape-preserving deviation rather than a new structure.
+
+**What makes it small.** `compute_bonds` reads **`pos:active`** (`casper/src/runtime_manager.rs`), which
+`select_active` derives from the pool — so once delegated stake is folded into `pos:bonds`, the aggregate
+reaches finality, liveness, `Validate::bonds_cache`, the block's own `bonds` field, the proposer's
+`bonded` set and the HTTP read with **no Casper change at all**. And a new method on `rho:rchain:pos` is
+reached by an ordinary deploy, so `delegate`/`undelegate` need no `SystemDeployData` variant and replay
+from the deploy's own COMM trace. The change is confined to `native_state.rs`, `system_processes.rs` and
+the spec, and the four §6 rows above are its whole deviation surface.
+
+**And what keeps the fork point late.** A chain that never delegates must change nothing, so the four
+leaves are never written at genesis and no setter is called until its value is non-empty — `set_*` is an
+unconditional `put`, so an empty write is a trie leaf and a different root from an absent one, which is
+the `pos:epoch_seed` precedent. Together with the aggregate equalling the stake when there are no
+delegations, the first `delegate` deploy is the fork point rather than genesis. **The store half of that
+claim is the Rust's and is owed; the arithmetic half is proved** (`split_with_no_delegators_is_the_operator`).
+
+**The model, and the honest edge of it.** Law 57 states the split's exactness (so law 46 is preserved
+rather than restated), the identity with no delegators, the accumulation of a second delegation from the
+same delegator, the aggregate reaching a slash's `atRisk`, the no-move property of a staged undelegation,
+and the clearing of all four ledgers. **What it cannot state, and says so in the row**: which vault a
+refund reaches. `PosState.user` is the total over every user vault, so the per-vault fan-out is
+inexpressible in this model and is pinned by a Rust witness — the same simplification the withdrawal path
+already carries. `atRisk` deliberately does **not** add `s.delegations`, because a delegator's principal
+is already inside the aggregate pool entry and counting it twice would overstate what a slash may take;
+what it does add are the two delegated holdings that are not in the pool.
+
+**The fixture was measured against wrong implementations before it was trusted, and the first version of
+it was nearly vacuous.** `the_split_is_not_the_identity` decides three clauses; compiled against them were
+a split that pays the operator everything, one that pays every delegator an equal share, and one that
+drops the base from the denominator. **Clauses 1 and 3 refute all three; clause 2 refutes only the
+first**, because with `base = 0` it cannot tell a rule that divides by the base from one that ignores it —
+recorded in the row rather than left implied. And the third clause read `[1, 1, 1]` when it was written,
+which is the same degeneracy one level down: three equal weights pay `100 / 3` under the real rule *and*
+under the equal-share mutant, so it distinguished nothing the first clause did not. It is `[1, 2]` with
+base 40 now, which reads `[2, 4]` where the equal-share mutant reads `[2, 2]` and the base-drop mutant
+`[33, 66]`. **A fixture clause no plausible mutant fails is not a check** — AUDIT C149's lesson, applied
+to a fixture written by someone who had just read it.
+
+**Found by this pass and fixed in the same commit, and recorded here rather than as a check-off row
+because it names no law: the authoritative document's own register total was hand-written, stale, and
+outside the scan that exists to catch exactly that.** `AGENTS.md` read
+`73 entries — 46 proved-model, 19 proved-tied` for a register holding **47** proved-model entries — stale
+before this pass and one further out after it. `tools/emit-lean-counts.sh`'s hand-written-total scan looks
+for a stale number followed by `laws`/`entries`/`axioms`, which is the class that actually rots, and a
+count followed by a *status name* is outside it. Two markers and two keys fix it rather than a
+hand-correction: `proved-model-entries` and `proved-tied-entries`, with the comment in the script recording
+why they are counted **by row** — the existing `-laws` keys count distinct law numbers, so using one in a
+sentence that decomposes `entries` silently understates (it read 37 where the answer was 48, and the
+marker as first written would have shipped that number into `AGENTS.md`).
 

@@ -175,7 +175,34 @@ structure PosRequest where
   deadline : Nat
 deriving DecidableEq
 
-/-- The PoS state: the three coin fields, the four ledgers, the active set, and the two parameters the
+/-- A delegation (law 57): `amount` of a delegator's principal attributed to an operator's key
+    (`pos:delegations`, `rholang/src/native_state.rs`). The port's record shape is exactly this triple,
+    which is why the accrued-reward leaf (`pos:delegated_rewards`) reuses it — the same three fields,
+    read as a credit rather than a principal. -/
+structure PosDelegation where
+  operator : Validator
+  delegator : Validator
+  amount : Nat
+deriving DecidableEq
+
+/-- A staged undelegation (`pos:pending_delegations`, law 57). Like `PosRequest` it records only a
+    deadline: the principal stays in the pool, earning, until the boundary that acts on it. -/
+structure PosUndelegation where
+  operator : Validator
+  delegator : Validator
+  deadline : Nat
+deriving DecidableEq
+
+/-- An escrowed undelegated principal (`pos:delegation_claims`, law 57): out of the pool, held until the
+    deadline, and — like `PosClaim` — still reachable by a slash on its operator until then. -/
+structure PosDelegationClaim where
+  operator : Validator
+  delegator : Validator
+  amount : Nat
+  deadline : Nat
+deriving DecidableEq
+
+/-- The PoS state: the three coin fields, the eight ledgers, the active set, and the two parameters the
     transition reads.
 
     `user` is the **total** over every user vault rather than a map: every transfer in this mechanism
@@ -190,7 +217,9 @@ structure PosState where
   coop : Nat
   /-- The total over every user vault. -/
   user : Nat
-  /-- The bond pool (`pos:bonds`): every pooled validator and its stake. -/
+  /-- The bond pool (`pos:bonds`): every pooled validator and its stake — the **aggregate** since law 57,
+      the operator's own bond plus every delegation to its key, which is what makes a delegated principal
+      count in the draw and in what a slash reaches. -/
   pool : List (Validator × Nat)
   /-- The active set (`pos:active`) — recomputed by step 4, never by `bond` — **carrying the stakes it
       selected**, because that is what the port's leaf holds: a `BTreeMap<Validator, NonNegI64>` with
@@ -205,6 +234,19 @@ structure PosState where
   claims : List PosClaim
   /-- Committed rewards (`pos:committed`) — a claim ledger, not coins. -/
   committed : List (Validator × Nat)
+  /-- Delegated principals (`pos:delegations`, law 57): a third party's stake attributed to an operator's
+      key. The principal itself is **not** here rather than in `pool` — `pool` carries the aggregate — so
+      this ledger is the attribution, not a second copy of the stake. -/
+  delegations : List PosDelegation
+  /-- Staged undelegations (`pos:pending_delegations`, law 57) — a request, like `requests`. -/
+  undelegations : List PosUndelegation
+  /-- Escrowed undelegated principals (`pos:delegation_claims`, law 57): the amount out of the pool and
+      the block it may be paid at. Its operator is recorded for the same reason `claims` keeps its
+      `who` — a slash still reaches it until the deadline passes. -/
+  delegationClaims : List PosDelegationClaim
+  /-- Accrued delegators' rewards (`pos:delegated_rewards`, law 57): the same triple read as a credit
+      rather than a principal, so a delegator's share of an epoch is not the operator's to spend. -/
+  delegatedRewards : List PosDelegation
   /-- `epochLength` (`PosParams.epoch_length`). -/
   epochLength : Nat
   /-- `quarantineLength` (`PosParams.quarantine_length`). -/
@@ -474,6 +516,7 @@ theorem the_reward_is_committed_before_the_leave :
     lookup (movePending (commitRewards (fun _ => 5)
       { vault := 40, coop := 0, user := 0, pool := [(⟨0⟩, 40)], active := [(⟨0⟩, 40)],
         requests := [⟨⟨0⟩, 9⟩], claims := [], committed := [(⟨0⟩, 0)],
+        delegations := [], undelegations := [], delegationClaims := [], delegatedRewards := [],
         epochLength := 1, quarantineLength := 0 })).committed ⟨0⟩ = 5 := by
   decide
 
@@ -489,10 +532,20 @@ that a *bounded* loss was even a thing to ask for. The bound is now a theorem, a
 that keeps the offender's balance from shrinking the pot for everyone else (C197). -/
 
 /-- What a validator holds in the PoS system: its **bond**, its **accrued and unwithdrawn rewards**, and
-    an **escrowed claim**. The staking vault holds all three, and the port's `slash` clears all three. -/
+    an **escrowed claim**. The staking vault holds all three, and the port's `slash` clears all three.
+
+    **Delegated stake enters this sum exactly once, and through `pool`.** A delegation's principal is
+    *inside* the operator's aggregate `pool` entry — that is what "aggregate" means — so the ledger
+    `s.delegations` is deliberately **not** added here: doing so would count a delegator's REV twice and
+    overstate what a slash may take. What *is* added is the two delegated holdings that have left the
+    pool or never joined it: a delegator's accrued reward (`pos:delegated_rewards`, which is a credit
+    against the vault that `committed` does not carry) and an escrowed undelegated principal
+    (`pos:delegation_claims`, out of the pool until its deadline passes, like `claims`). -/
 def atRisk (s : PosState) (v : Validator) : Nat :=
   lookup s.pool v + lookup s.committed v
     + (s.claims.filter (fun c => c.who = v)).foldl (fun acc c => acc + c.bond) 0
+    + (s.delegatedRewards.filter (fun d => d.operator = v)).foldl (fun acc d => acc + d.amount) 0
+    + (s.delegationClaims.filter (fun c => c.operator = v)).foldl (fun acc c => acc + c.amount) 0
 
 /-- The tiers, in basis points of everything at risk (`SlashSeverity::basis_points`). -/
 def malicious : Nat := 10000
@@ -518,6 +571,10 @@ def slash (s : PosState) (v : Validator) (bps : Nat) : PosState :=
   , requests := s.requests.filter (fun r => r.who ≠ v)
   , claims := s.claims.filter (fun c => c.who ≠ v)
   , committed := s.committed.filter (fun p => p.1 ≠ v)
+  , delegations := s.delegations.filter (fun d => d.operator ≠ v)
+  , undelegations := s.undelegations.filter (fun u => u.operator ≠ v)
+  , delegationClaims := s.delegationClaims.filter (fun c => c.operator ≠ v)
+  , delegatedRewards := s.delegatedRewards.filter (fun d => d.operator ≠ v)
   , epochLength := s.epochLength
   , quarantineLength := s.quarantineLength }
 
@@ -827,5 +884,203 @@ theorem the_ramp_is_a_ramp :
       ∧ participationWeight 10 5 15 = 5000
       ∧ participationWeight 15 5 15 = 0
       ∧ participationWeight 20 5 15 = 0 := by decide
+
+/-! ## Delegated stake (law 57)
+
+Every section above assumes the stake a key carries is the operator's own. This one models the case the
+protocol could not previously express: a **delegator** — a key that holds REV, signs its own deploys, and
+has no intention of running a node — bonding that REV *through* an operator's key and holding a claim on
+what it earns.
+
+The port's shape is one substitution and four ledgers. The substitution is `pos:bonds`: a key's entry
+becomes the **aggregate**, the operator's own stake plus every delegation to it, which is exactly what
+`delegate` below writes and why `atRisk` reads it without adding `s.delegations` a second time. The
+ledgers are `pos:delegations` (who owns what, modelled as `PosDelegation`), `pos:pending_delegations` (a
+staged exit), `pos:delegation_claims` (the escrow it becomes) and `pos:delegated_rewards` (a delegator's
+accrued share of an epoch, which must not sit in the operator's `committed` map where the operator could
+be paid it).
+
+**What this section can and cannot say, and why.** `PosState.user` is the *total* over every user vault
+rather than a map — the state's own doc gives the reason, and the withdrawal path already carries the
+same simplification. So the arithmetic below pins **how much** a delegator is owed and
+`delegate_conserves` pins that no coin is minted, but no theorem here can say *which* vault was credited;
+`fanOut`'s per-vault attribution is the Rust's, and it is pinned by a Rust witness rather than restated
+here. What is *not* deferred is the part a map is not needed for: that the split of one validator's reward
+is **exact** (so a validator with delegators commits the same total it would have alone, and law 46 is not
+weakened), that it is the **identity** when nobody has delegated (so a chain that never delegates writes
+the state it wrote before this law existed), and that a second delegation from the same delegator adds to
+the first rather than replacing it. -/
+
+/-- The principal one operator's key carries on behalf of others — the sum the port's `pos:delegations`
+    lookup returns for one operator, and the amount that must already be inside its `pos:bonds` entry.
+    Written as a recursion rather than a `foldl` so that the two cons cases below are `simp`, which is
+    what makes "a second delegation accumulates" a computation instead of an induction. -/
+def delegatedTotal : List PosDelegation → Validator → Nat
+  | [], _ => 0
+  | d :: rest, op => (if d.operator = op then d.amount else 0) + delegatedTotal rest op
+
+/-- **A second delegation from the same delegator adds to the first.** The port inserts into
+    `pos:delegations` with `lookup k + amount`, so a delegator's principal is the **sum** of its
+    transfers and not its last one; the model keeps two records and this says the totals agree. Without
+    it an implementation that *replaced* the entry would satisfy every pro-rata theorem above, because
+    those read a list of amounts and cannot see whether two of them should have been one. -/
+theorem a_second_delegation_accumulates (ds : List PosDelegation) (op del : Validator) (a b : Nat) :
+    delegatedTotal (⟨op, del, b⟩ :: ⟨op, del, a⟩ :: ds) op = delegatedTotal ds op + a + b := by
+  simp only [delegatedTotal, if_true]
+  omega
+
+/-- **The total is one operator's, and no other's.** Two delegators of the same operator sum; a third
+    party's delegation to a different operator is invisible here — the misattribution an aggregate
+    computed over the whole ledger instead of one key would produce. -/
+theorem the_total_belongs_to_one_operator :
+    delegatedTotal [⟨⟨1⟩, ⟨2⟩, 10⟩, ⟨⟨1⟩, ⟨3⟩, 5⟩, ⟨⟨7⟩, ⟨8⟩, 4⟩] ⟨1⟩ = 15
+      ∧ delegatedTotal [⟨⟨1⟩, ⟨2⟩, 10⟩, ⟨⟨1⟩, ⟨3⟩, 5⟩, ⟨⟨7⟩, ⟨8⟩, 4⟩] ⟨7⟩ = 4
+      ∧ delegatedTotal [⟨⟨1⟩, ⟨2⟩, 10⟩, ⟨⟨1⟩, ⟨3⟩, 5⟩, ⟨⟨7⟩, ⟨8⟩, 4⟩] ⟨9⟩ = 0 := by decide
+
+/-- **The pro-rata split, with the base that is divided by but not paid.** `amount` is divided across
+    `weights` in order; `base` joins the **denominator** without being issued a share. Both halves of
+    delegated stake are this function: the reward split has `base` the operator's own stake (it is paid,
+    but as the remainder rather than by this formula — see `split_sums_to_the_reward`), and the slash's
+    refund has `base = 0`, the principals being the whole of what was at risk. One floor per share, so the
+    shares sum to at most `amount` and the difference is the dust the operator keeps. -/
+def proRata (amount base : Nat) (weights : List Nat) : List Nat :=
+  let total := base + nsum weights
+  weights.map (fun w => amount * w / total)
+
+/-- **The shares never exceed what is being shared**, so the operator's remainder is a `Nat` subtraction
+    rather than a truncation and no implementation can pay out more than it holds. No hypothesis: the
+    base is inside the denominator, so `Σ weights ≤ total` holds by construction, and a zero denominator
+    makes every share zero. -/
+theorem proRata_sum_le (amount base : Nat) (weights : List Nat) :
+    nsum (proRata amount base weights) ≤ amount := by
+  have hstep : nsum (proRata amount base weights)
+      ≤ nsum (weights.map (fun w => amount * w)) / (base + nsum weights) := by
+    simpa only [proRata, List.map_map, Function.comp_def] using
+      list_sum_div_le (base + nsum weights) (weights.map (fun w => amount * w))
+  have hsum : nsum (weights.map (fun w => amount * w)) = amount * nsum weights :=
+    nsum_map_mul_left amount weights
+  have hle : nsum weights ≤ base + nsum weights := Nat.le_add_left _ _
+  have hmul : amount * nsum weights ≤ (base + nsum weights) * amount := by
+    rw [Nat.mul_comm (base + nsum weights) amount]
+    exact Nat.mul_le_mul_left amount hle
+  calc nsum (proRata amount base weights)
+      ≤ nsum (weights.map (fun w => amount * w)) / (base + nsum weights) := hstep
+    _ = amount * nsum weights / (base + nsum weights) := by rw [hsum]
+    _ ≤ amount := Nat.div_le_of_le_mul hmul
+
+/-- **The split is exact.** The delegators' shares plus the operator's remainder are the reward the key
+    was paid — so a validator with delegators commits the same total it would have committed alone, and
+    law 46 (`sum_rewards_le_pot`) is a statement about the reward *before* this split and therefore
+    survives it rather than needing to be restated. -/
+theorem split_sums_to_the_reward (reward own : Nat) (amounts : List Nat) :
+    nsum (proRata reward own amounts) + (reward - nsum (proRata reward own amounts)) = reward := by
+  have h := proRata_sum_le reward own amounts
+  omega
+
+/-- **Dormancy, stated in the model.** With no delegators the split issues no share at all and the
+    operator's remainder is the whole reward — so a chain where `delegate` has never been called writes
+    the same `pos:committed` entry it wrote before this law existed. This is the arithmetic half of the
+    port's byte-identical-post-state requirement; the store half is that the four new leaves are left
+    **absent** rather than written empty. -/
+theorem split_with_no_delegators_is_the_operator (reward own : Nat) :
+    proRata reward own [] = [] ∧ reward - nsum (proRata reward own []) = reward := by
+  simp [proRata, nsum]
+
+/-- **The shares are proportional, and the dust is real — decided, not described.** The first clause is
+    the reward split: a reward of 100 on an operator holding 30 with principals 10 and 61 divides by 101
+    and pays 9 and 60, leaving 31 to the operator — the floor bites, the two shares **differ** from each
+    other and from zero, and the operator's remainder is neither the whole reward nor nothing. The second
+    is the refund, where `base = 0` and the principals are the whole denominator, so 100 over `[30, 70]`
+    is exact. The third keeps a non-zero base with a denominator that does not divide.
+
+    **The fixture is the point, and it was measured rather than argued** (AUDIT C149, three times in this
+    file now). Three plausible wrong splits were compiled against these clauses: the operator keeps
+    everything (`weights.map (fun _ => 0)`), every delegator gets an equal share
+    (`weights.map (fun _ => amount / (base + weights.length))`), and the base is dropped from the
+    denominator (`weights.map (fun w => amount * w / nsum weights)`). All three are refuted by the first
+    and third clauses. **The second clause refutes none of them and is not meant to** — it is the exact
+    end of the range, included to show the dust is not always present, and with `base = 0` it cannot tell
+    a rule that divides by the base from one that ignores it, which is the base-drop mutant's own
+    degenerate case. **The third clause read `[1, 1, 1]` when it was written, and that was nearly vacuous
+    for the same reason**: three equal weights pay `100 / 3` each under the real rule *and* under the
+    equal-share mutant, so it distinguished nothing that the first clause did not. `[1, 2]` with base 40
+    gives `[2, 4]`, which the equal-share mutant reads as `[2, 2]` and the base-drop mutant as `[33, 66]`.
+    A fixture clause that no plausible mutant fails is a clause that is not a check. -/
+theorem the_split_is_not_the_identity :
+    proRata 100 30 [10, 61] = [9, 60]
+      ∧ proRata 100 0 [30, 70] = [30, 70]
+      ∧ proRata 100 40 [1, 2] = [2, 4] := by decide
+
+/-- **A delegation** (`delegate`, `rholang/src/native_state.rs`): the principal leaves the delegator's own
+    vault and joins the **staking vault**, and the operator's pool entry becomes the **aggregate** — which
+    is the whole of what a delegation changes for consensus, since `compute_bonds` reads the active set
+    that `select_active` draws from the pool. It activates exactly as `bond` does: the pool follows at
+    once and `active` only at the boundary, so a delegation cannot conjure a slot mid-epoch.
+
+    The principal is **not** recorded in `pool` a second time; the ledger records who owns the part that
+    is there, which is why `atRisk` reads the pool entry without adding this ledger. -/
+def delegate (s : PosState) (op del : Validator) (amount : Nat) : PosState :=
+  { s with
+    user := s.user - amount
+    vault := s.vault + amount
+    pool := setKey s.pool op (lookup s.pool op + amount)
+    delegations := ⟨op, del, amount⟩ :: s.delegations }
+
+/-- **A staged undelegation** (`undelegate`): the request records a deadline and moves **nothing** — the
+    principal stays in the operator's pool entry and in the ledger, still earning and still at risk, until
+    the boundary acts on it. Law 47's first stage, seen from a delegator, and the reason undelegating
+    cannot be used to escape a slash that is already in flight. -/
+def undelegate (s : PosState) (op del : Validator) (n : Nat) : PosState :=
+  { s with undelegations := ⟨op, del, withdrawDeadline s n⟩ :: s.undelegations }
+
+/-- A delegation is a transfer, not a mint: the three vaults sum to what they summed to before. The
+    hypothesis is the port's refusal — an unfunded delegation fails rather than truncating the debit. -/
+theorem delegate_conserves (s : PosState) (op del : Validator) (amount : Nat)
+    (h : amount ≤ s.user) : totalRev (delegate s op del amount) = totalRev s := by
+  simp only [delegate, totalRev]
+  omega
+
+/-- `setKey` at a key puts that key's value there: the lemma `a_delegation_enlarges_the_pool` needs, and
+    the reason `setKey` is the port's insert-or-replace rather than a plain cons. -/
+theorem lookup_setKey_self (l : List (Validator × Nat)) (v : Validator) (x : Nat) :
+    lookup (setKey l v x) v = x := by
+  induction l with
+  | nil => simp [setKey, lookup]
+  | cons hd tl ih =>
+    by_cases hhd : hd.1 = v
+    · simp [setKey, lookup, hhd]
+    · by_cases htl : tl.any (fun p => p.1 = v)
+      · have hany : (hd :: tl).any (fun p => p.1 = v) = true := by simp [List.any_cons, hhd, htl]
+        have ih' : lookup (tl.map (fun p => if p.1 = v then (v, x) else p)) v = x := by
+          simpa [setKey, htl] using ih
+        simp [setKey, hany, List.map_cons, lookup, hhd, ih']
+      · have hany : (hd :: tl).any (fun p => p.1 = v) = false := by simp [List.any_cons, hhd, htl]
+        simp [setKey, hany, lookup]
+
+/-- **The operator's key carries the delegator's principal**: after a delegation its aggregate pool entry
+    is larger by exactly the amount delegated. This is the sentence "a delegator's principal sits inside
+    the operator's bond" as a computation, and it is what makes the slash's reach — and the draw's weight
+    — a consequence of the aggregate rather than a claim about it. -/
+theorem a_delegation_enlarges_the_pool (s : PosState) (op del : Validator) (amount : Nat) :
+    lookup (delegate s op del amount).pool op = lookup s.pool op + amount := by
+  simp only [delegate]
+  exact lookup_setKey_self s.pool op (lookup s.pool op + amount)
+
+/-- An undelegation moves no coin: the request is a deadline and nothing else. -/
+theorem undelegate_moves_no_coins (s : PosState) (op del : Validator) (n : Nat) :
+    totalRev (undelegate s op del n) = totalRev s := by
+  simp [undelegate, totalRev]
+
+/-- **A slash clears the delegation ledgers too.** The offender's delegators are out of the ledger, the
+    staged requests, the escrow and the accrued rewards together, so no delegator's entry can go on
+    reducing the pot — or stay claimable against a key that no longer carries the stake it was delegated
+    to. This is `slash_clears_every_ledger` extended to the four leaves law 57 adds; the per-vault
+    attribution of the refund it is paid for is the Rust's, per this section's header. -/
+theorem a_slash_clears_the_delegations (s : PosState) (v : Validator) (bps : Nat) :
+    (slash s v bps).delegations.filter (fun d => d.operator = v) = []
+      ∧ (slash s v bps).undelegations.filter (fun u => u.operator = v) = []
+      ∧ (slash s v bps).delegationClaims.filter (fun c => c.operator = v) = []
+      ∧ (slash s v bps).delegatedRewards.filter (fun d => d.operator = v) = [] := by
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> simp only [slash] <;> simp [List.filter_filter]
 
 end Rchain

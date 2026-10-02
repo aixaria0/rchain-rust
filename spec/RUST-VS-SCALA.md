@@ -252,6 +252,28 @@ concrete, auditable ways:
      `splitting_a_stake_across_keys_does_not_buy_slots`.
    - **O4 — the absolute security budget now fluctuates** epoch to epoch, more so with a cap. It
      should be measured by simulation over many seeds with a stated tolerance rather than asserted.
+   - **O5 — a delegation buys draw *weight*, and the direction it buys is concentration** (added
+     2026-10-02 with the delegation primitive, #193). The issue that specified the primitive expected
+     the opposite and said so in its constraints — that the draw being uniform over *keys* meant "a
+     delegation buys a larger share of a drawn key but not draw weight". **That was written before O3
+     closed and is no longer true of the tree**: the draw is stake-weighted, and a delegation joins the
+     operator's aggregate `pos:bonds` entry, which is exactly what `select_active` weights. So a
+     delegator's REV buys weight through the operator's key that it could not buy alone — and the
+     measured regime from O3 is what says *which* weight: **0.5328 / 0.4000 / 0.1770** for one key of 40,
+     four of 10, twenty of 2 against the cap. Delegating into **one large operator therefore earns above
+     pro-rata**, so the primitive gives a small staker access to a concentration it cannot assemble
+     alone rather than spreading anything, and no document should describe it as spreading risk. The
+     consequence is not a defect in the primitive — it is O3's cap regime, and the primitive makes it
+     reachable at a smaller stake — but it is the reason a "pooled staking" story must not be told about
+     it, which is the same conclusion `docs/src/node/validator-economics.md`'s open question 1 reached
+     before the primitive existed. **Two costs of the ledger are named rather than left to be found**:
+     `pos:delegations` is unbounded in the number of delegators per operator (the per-delegation floor,
+     reused from `minimum_bond`, is the DoS control — there is no cap on the count, which is a residual
+     rather than a decision), and the boundary walk, which was already `O(validators)`, becomes
+     `O(validators + delegations)`; the slash fan-out is `O(delegators of the offender)` and is paid only
+     on a slash. Both are the linear-in-the-ledger pattern the rest of the epoch already has, so neither
+     is a new class — but neither is measured, and a bound that is not measured is a claim rather than a
+     bound.
 
    **What the consumer sweep found, since the rule is read in more places than the five named.**
    Every reader of `pos:active` needed no change — they decode the leaf, compare it to a state, or

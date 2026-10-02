@@ -311,7 +311,11 @@ The economics above are closed by who may take part.
 - **A key can only bond itself.** The bond takes the caller's own unforgeable `GDeployerId`, so a
   byte-array argument cannot bond another key (`rholang/src/system_processes.rs:1714`). **There is no
   delegation and no delegated-stake market in this tree** — no staking pool, no restaking, no
-  liquid-staking mechanism anywhere in it.
+  liquid-staking mechanism anywhere in it. **A delegation primitive is decided and modelled but not
+  implemented** (2026-10-02, [#193](https://github.com/rchain-community/rchain-rust/issues/193), law 57,
+  `spec/AUDIT.md` **C204**), so this sentence is still true of the tree: there is no code here a staker
+  can call, and it will stop being true when the second unit of that change lands rather than when the
+  decision was taken.
 - **Exiting is staged and quarantined.** `withdraw` (`:1164`) only *stages* a request: the validator
   stays bonded and active and keeps earning until the next epoch boundary, when the bond leaves the pool
   and is escrowed until `quarantine-length` has passed; it is then paid `bond + committed` rewards. See
@@ -323,9 +327,11 @@ party — the operator's own capital, with no one between the operator and the b
 
 ## Open questions (tracked, not decided)
 
-**Everything in this section is design discussion, not implemented and not proved.** Each item lives on
-the issue named with it; per [`AGENTS.md`](../../../AGENTS.md) the plans and hypotheticals behind them
-belong outside this repository, and none of it is policy.
+**Everything in this section is design discussion, not implemented and not proved** — with one qualified
+exception, marked in place: item 1's mechanism is now **decided and its arithmetic proved** (law 57,
+2026-10-02), and only its Rust is owed. Each item lives on the issue named with it; per
+[`AGENTS.md`](../../../AGENTS.md) the plans and hypotheticals behind them belong outside this repository,
+and none of it is policy.
 
 **A review of these questions from fresh concluded that neither of the two obvious improvements works as
 stated.** Both conclusions are arguments about the code above, not preferences.
@@ -341,8 +347,43 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    weighted draw (0.1770 for twenty keys of 2 against 0.5328 for one key of 40, above) — a pool
    *concentrates* the stake it claims to spread, and it concentrates the cap's reward too. A pool that
    would actually spread risk needs a new primitive — bonding from a named vault, or a delegation leaf —
-   which is a genesis-plus-hard-fork change, not a contract. Tracked on
-   [#150](https://github.com/rchain-community/rchain-rust/issues/150).
+   which is a genesis-plus-hard-fork change, not a contract.
+
+   **Decided 2026-10-02, and it is the second of those two: a delegation leaf**
+   ([#193](https://github.com/rchain-community/rchain-rust/issues/193)). `pos:bonds` becomes the
+   **aggregate** stake on a key — the operator's own plus every delegation to it — and a new ledger
+   `pos:delegations` records who owns which part, so the stake counts in the draw and in what a slash
+   reaches exactly as the operator's own does while the attribution has an on-chain home. Direction 2 was
+   rejected for a reason worth stating: bonding from a named vault needs a third party to spend a named
+   account, the capability [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md)'s B2 decision declined,
+   while the ledger needs no capability at all — a delegator spends from **its own** vault through **its
+   own** `deployerId` and the protocol attributes the stake.
+
+   **The economics of the primitive, stated as it actually is rather than as a pool would be sold.**
+   *It does not spread risk.* A delegation joins the operator's aggregate entry, which is what the
+   stake-weighted draw weights — so a delegator's REV **does** buy draw weight through the operator's
+   key, and the cap regime decides what that weight is worth: the measurement above (**0.5328 / 0.4000 /
+   0.1770** for one key of 40, four of 10, twenty of 2) says **delegating into one large operator earns
+   above pro-rata**. The primitive gives a small staker access to a concentration it could not assemble
+   alone; it does not give it a diversified position, and no one should describe it as spreading stake. A
+   delegator also takes the operator's behaviour with the operator's key: its principal is inside the
+   bond a slash reaches (pro-rata, at the same tier as the operator's own stake), and the operator's
+   participation weight scales the reward the delegators' share is drawn from, so an operator that stops
+   attesting withholds its delegators' income with its own. No commission is charged and none is
+   specified, and the operator can neither refuse a delegation nor set terms — all of which is the shape
+   [#193](https://github.com/rchain-community/rchain-rust/issues/193) settled on and RCHIP #32's
+   staking-pool interface does not.
+
+   **What is landed and what is owed, because this section's own rule is that a claim names its
+   artifact.** The mechanism is specified in
+   [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) § *Delegated stake* and modelled as **law 57** in
+   [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) — the split's exactness, its identity with no
+   delegators, the aggregate reaching the slash, and the clearing of the ledgers. **The Rust is not
+   written**: the leaves, the two `rho:rchain:pos` ops, the boundary move, the fan-out and the read
+   surface are the same change's second unit, tracked as **C204** in
+   [`spec/AUDIT.md`](../../../spec/AUDIT.md), and the register row says so rather than leaving it to be
+   discovered. So the paragraphs above are a decision and a proof about the arithmetic, not a description
+   of a node you can run.
 2. **Should the pot be weighted by participation as well as stake?** *It cannot do what it looks like it
    does.* The pot is a fixed pie of phlo already burned, so a multiplier is pure **reallocation** — with
    `p` in `[0,1]` it is exactly a haircut on absent stake, not a new reward axis. A uniform multiplier is
@@ -392,5 +433,6 @@ so a change is a deviation from `Pos.rhox` registered in
 
 > **Formal.** The epoch gate, the reward split and the three-stage withdrawal are laws 44–47, modelled in
 > [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) and emitted to
-> [`spec/LAWS.md`](../../../spec/LAWS.md) — read the status there, not here. The active-set draw and its
-> residuals (**O1–O4**) are [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 item 12.
+> [`spec/LAWS.md`](../../../spec/LAWS.md) — read the status there, not here. **Delegated stake is law
+> 57**, in the same file, and its deviations are `spec/audit/passes.md` §6. The active-set draw and its
+> residuals (**O1–O5**) are [`spec/RUST-VS-SCALA.md`](../../../spec/RUST-VS-SCALA.md) §3 item 12.
