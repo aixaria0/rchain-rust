@@ -281,7 +281,7 @@ fn blessed_terms_named(
 }
 
 /// Copy the **published** entries of the vendored governance contracts onto the constant keys this
-/// node chooses (`rgov::contract_uri_for`, `rgov::readcap_uri`).
+/// node chooses (`rgov::contract_uri_for`, `rgov::masterdict_resolve_uri`).
 ///
 /// A class registers with `insertArbitrary` — upstream's shape, which consumers destructure — so its
 /// own URI is `blake2b256` of the deploy's RNG state: deterministic on genesis, but moved by
@@ -316,13 +316,13 @@ pub async fn seed_rgov_aliases_from(
             continue;
         };
         let target = match name.as_str() {
-            // The two capabilities the master directory mints. `readcap` is published by the
-            // template; `grantcap` by our own `extraSlots` term, because publishing it is a change
-            // to the vendored file's behaviour and that term is already ours. `write` is published
-            // by neither, on purpose: a `write` holder could swap any application under a client's
-            // feet, while `grant` returns a writer bound to one key (`Directory.rho:22`).
-            "readcap" => rgov::readcap_uri()?,
-            "grantcap" => rgov::grantcap_uri()?,
+            // The dictionary's three facets, which it registers with `insertArbitrary` like a class
+            // and then publishes on the same channel. They replace the `readcap`/`grantcap` pair: a
+            // client that reached for the read capability reaches the resolve facet instead, and
+            // there is no grant capability to reach for.
+            "masterdict-resolve" => rgov::masterdict_resolve_uri()?,
+            "masterdict-publish" => rgov::masterdict_publish_uri()?,
+            "masterdict-root" => rgov::masterdict_root_uri()?,
             _ => rgov::contract_uri_for(&name)?,
         };
         if native
@@ -348,13 +348,13 @@ pub async fn seed_rgov_aliases_from(
 }
 
 /// Every governance key a fresh chain must resolve, for the ceremony's completeness check: the
-/// classes, the master directory's two published capabilities, and every seeded shorthand.
+/// classes, the master dictionary's three facets, and every seeded shorthand.
 ///
-/// **Both capabilities are required, and the second one is required because its absence is silent.**
-/// A chain whose `grantcap` never landed does not fail anything: an application resolving it gets
-/// `Nil`, calls it, matches no receive, and its registration simply does not happen — which is the
-/// diagnostic trap issue #71 records. So a missing `grantcap` is a genesis defect, and the ceremony
-/// is the only place it can be caught before a chain ships.
+/// **All three facets are required, and each one's absence is silent.** A chain whose resolve facet
+/// never landed does not fail anything: a client resolving it gets `Nil`, calls it, matches no
+/// receive, and its read simply does not happen — the diagnostic trap issue #71 records, one layer
+/// down. So a missing facet is a genesis defect, and the ceremony is the only place it can be caught
+/// before a chain ships.
 pub async fn missing_governance_keys(
     native: &rchain_rholang::native_state::NativeSystemState,
 ) -> Result<Vec<String>, String> {
@@ -370,7 +370,11 @@ pub async fn missing_governance_keys(
             missing.push(uri);
         }
     }
-    for uri in [rgov::readcap_uri()?, rgov::grantcap_uri()?] {
+    for uri in [
+        rgov::masterdict_resolve_uri()?,
+        rgov::masterdict_publish_uri()?,
+        rgov::masterdict_root_uri()?,
+    ] {
         if native
             .registry_lookup(&uri)
             .await
@@ -666,8 +670,10 @@ mod tests {
                 "ballot",
                 "chat",
                 "group",
-                "masterDirectory",
-                "extraSlots",
+                // **A genesis change, deliberately** (issue #99): the rooted master dictionary
+                // replaces the testnet template and its extra-slots term. It installs before the
+                // feature, because the feature publishes into the namespace the dictionary owns.
+                "masterDictionary",
                 "memberDirectory",
             ],
             "the install order is part of the chain's identity — a change here is a genesis change"

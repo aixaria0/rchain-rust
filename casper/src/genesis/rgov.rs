@@ -9,46 +9,48 @@
 //! What is installed, in order (`governance_deploys`):
 //!
 //! 1. the eight classes (`RGOV_CORE`), each registering exactly as upstream wrote it;
-//! 2. the master directory (`master_directory_template`, upstream's seven slots rendered with the
-//!    class constants) — it publishes the deployer's `MasterContractAdmin` capability and mints the
-//!    **read cap**;
-//! 3. `extra_directory_slots_source` — our own term filling the three slots upstream's template
-//!    omits (`Chat`, `Ballot`, `Group`), because the wallet's editor asks the directory for those
-//!    names and an unwritten slot answers `Nil`. It also **publishes the grant capability**
-//!    ([`grantcap_uri`]), which the template mints and then parks where nothing can reach it (issue
-//!    #71) — see that function for why the publish lands here rather than in the vendored file;
-//! 4. the `GetMe`/`SendThem` feature, which is what a client's first call resolves.
+//! 2. the **rooted-name master dictionary** ([`master_dictionary_source`], issue #99) — the chain's
+//!    name layer. It replaced the testnet *master-directory template* and our `extraSlots` term:
+//!    where the template wrote seven (then ten) *slots* into a map reachable only through a parked
+//!    capability, the dictionary has a **rooted tier** (a name is `<revAddr>/<path>`, derived from
+//!    the caller's deployer id) and a **governed alias tier** holding the short names. It publishes
+//!    three facets, parks its own admin handle for the ceremony key, publishes each class under the
+//!    operator's root, and aliases the names to those paths;
+//! 3. the `GetMe`/`SendThem` feature, which is what a client's first call resolves. Under the
+//!    dictionary it *publishes* the two features into the operator's own root (rather than writing
+//!    them into a directory's map) and the alias tier points `GetMe`/`SendThem` at them.
 //!
 //! **Two registrations must not be conflated.** A *class* registers with `insertArbitrary`
 //! (upstream's shape) and keeps that shape: every consumer destructures the **bare** value
 //! (`for (Dir <- lookCh)`), so converting it to `insertSigned` — whose value is `(nonce, value)` —
-//! breaks the template silently (a deploy that "processes with success" and produces nothing, which
+//! breaks the consumers silently (a deploy that "processes with success" and produces nothing, which
 //! is how this was found). To give clients a hardcodable key anyway, each class *publishes* the URI
 //! it was given and genesis copies the entry onto the constant key ([`contract_uri_for`]). Everything
 //! this module changes is asserted against the vendored text, so a drift upstream fails the build.
 //!
-//! **Who holds the master directory's admin capability — the ceremony key.** Steps 2–4 are signed by
-//! the key that creates the genesis block (`create_genesis_block`'s `ValidatorIdentity`), which is the
-//! standard genesis-ceremony arrangement: the capability belongs to the network's operator, who runs
-//! the ceremony, and nothing else on the chain can redirect a client's first governance call.
+//! **Who holds the admin handle — the ceremony key.** Step 3 is signed by the key that creates the
+//! genesis block (`create_genesis_block`'s `ValidatorIdentity`), which is the standard
+//! genesis-ceremony arrangement: the handle belongs to the network's operator, who runs the ceremony,
+//! and nothing else on the chain can redirect a client's first governance call.
 //!
-//! It has to be *one* key, and that is not a detail: the template publishes its
-//! `@[*deployerId, "MasterContractAdmin"]` capability for its own deployer and the feature's
-//! registration is gated on reading it back. Signed by three different keys the gate never opens, the
-//! feature registers nothing, the directory answers `Nil` for `GetMe`, and a client gets silence —
-//! verified on a node: the handshake reached "directory answered GetMe" and never entered `getMe`.
+//! It has to be *one* key, and that is not a detail: the dictionary parks
+//! `@[*deployerId, "MasterContractAdmin"]` for its own deployer and the feature's registration is
+//! gated on reading it back. Signed by a different key the gate never opens, the feature registers
+//! nothing, the name layer answers `Nil` for `GetMe`, and a client gets silence — verified on a node:
+//! the handshake reached "directory answered GetMe" and never entered `getMe`.
 //!
 //! It must also be a key whose private half is **not** public. An earlier revision used a key derived
 //! from a string literal in this module (`blake2b256("rnode/genesis/rgov/testnet-governance")`), which
-//! meant anyone reading the source could exercise that capability — on any network that installed it.
+//! meant anyone reading the source could exercise that handle — on any network that installed it.
 //! That is why the ceremony identity is threaded in rather than a constant.
 //!
 //! Signing by the ceremony key does **not** move anything a client hardcodes: the eight class keys are
-//! the classes' own fixed keys, and the read cap is derived from the deploy *order* (the deploy's RNG
-//! state), not from the signer — `the_published_keys_are_constants` asserts exactly that.
+//! the classes' own fixed keys, and the dictionary's three facet keys are derived from *named strings*
+//! (`masterdict_*_uri`), not from the deploy's RNG state or the signer —
+//! `the_published_keys_are_constants` asserts that the three are distinct and hardcodable.
 //!
-//! **Still open for a public network:** a network that would rather each client run its own directory
-//! (rather than the operator holding the shared one) must not install steps 2–4 at all — that is the
+//! **Still open for a public network:** a network that would rather each client run its own dictionary
+//! (rather than the operator holding the shared one) must not install steps 2–3 at all — that is the
 //! genesis flag-gate to land next. `spec/GENESIS.md` carries the full list.
 
 use rchain_crypto::hash::blake2b256::hash as blake2b256;
@@ -72,8 +74,16 @@ const CHAT_RHO: &str = include_str!("resources/rgov/Chat.rho");
 const GROUP_RHO: &str = include_str!("resources/rgov/Group.rho");
 /// The `GetMe`/`SendThem` feature: what a client's first governance call (`newInbox`) looks up.
 const MEMBER_DIRECTORY_RHO: &str = include_str!("resources/rgov/MemberDirectory.rho");
-const MASTER_DIRECTORY_RHO: &str =
-    include_str!("resources/rgov/create-master-contract-directory-testnet.rho");
+/// The **rooted-name master dictionary** (issue #99) — the term that owns the chain's name layer.
+///
+/// **Ours, not vendored.** It has no upstream, so it sits beside the port's rgov set rather than in
+/// `vendored-originals/`; `tools/audit-vendored-sources.sh` reports that class by count.
+///
+/// It replaces two things the testnet setup installed: the master-directory *template* (whose seven
+/// slots the alias tier now holds) and the `readcap`/`grantcap` pair (whose reader is now the
+/// dictionary's `resolve` facet, and whose one-key writer has no work — a rooted name is derived,
+/// so there is nothing to grant). See [`masterdict_resolve_uri`].
+const MASTER_DICTIONARY_RHO: &str = include_str!("resources/rgov/MasterDictionary.rho");
 
 /// `accounting.MAX_VALUE` — the nonce every system contract registers with (the element consumers
 /// destructure and ignore: `for (@(_, X) <- ch)`).
@@ -129,31 +139,39 @@ pub fn contract_uri_for(name: &str) -> Result<String, String> {
     )))
 }
 
-/// The key the master directory's **read capability** is published under — the value a governance
-/// client needs as its `ReadcapURI`, and the one genuinely per-deployer artifact the testnet setup
-/// makes constant (`spec/GENESIS.md`).
-pub fn readcap_uri() -> Result<String, String> {
-    Ok(build_uri(&blake2b256(b"rnode/genesis/rgov-readcap")))
+/// The key the master dictionary's **resolve facet** is published under — what a governance client
+/// resolves to read a name (`resolve`, `resolveAt`, `targetOf`, `aliases`, …).
+///
+/// This is where the read capability went. It was `readcap_uri`, minted by the testnet template and
+/// published under its own constant; it is now a facet of the dictionary, so a client reaches the
+/// name layer the same way it reaches everything else. `spec/GENESIS.md` records the replacement.
+pub fn masterdict_resolve_uri() -> Result<String, String> {
+    Ok(build_uri(&blake2b256(b"rnode/genesis/masterdict-resolve")))
 }
 
-/// The key the master directory's **grant capability** is published under — the minter an
-/// application resolves to obtain a writer for *its own* key.
+/// The key the **publish facet** is published under — the self-scoped write side.
 ///
-/// This is the capability the testnet template used to mint and then park out of reach:
-/// `{"read", "write", "grant"}` went to `@[*deployerId, "MasterContractAdmin"]`, keyed by the
-/// **genesis** deployer, and no identity after genesis holds that key. So the directory was
-/// immutable from block 1 onward, and an application trying to register got silence rather than an
-/// error — law 40 (a call at the wrong arity does nothing) over law 38 (silence is not failure),
-/// which is what made it expensive to diagnose from outside (issue #71).
+/// Every verb derives the caller's address from the id it is handed
+/// (`rho:rev:address("fromDeployerId", …)`), so a write outside the caller's own root is not
+/// *refused* so much as **inexpressible**: the caller never supplies the owner prefix.
 ///
-/// **`grant`, and not `write`, deliberately.** `Directory.rho`'s `grant(@key, ret)` returns a
-/// writer bound to **one key**, so a holder can own its own name and nothing else; publishing
-/// `write` would let any holder swap any application under a client's feet. What this constant does
-/// *not* decide is the admission policy — who may claim a name, and whether a claimed name may be
-/// overwritten or only extended — which is a governance question, recorded as open in
-/// `spec/GENESIS.md` rather than answered by a key name.
-pub fn grantcap_uri() -> Result<String, String> {
-    Ok(build_uri(&blake2b256(b"rnode/genesis/rgov-grantcap")))
+/// This is where the grant capability went, and it is the point of #99. `grant(@key, ret)` existed
+/// to answer "who may claim a name" by handing out a writer bound to one key; a rooted name is
+/// **derived** from the caller's identity, so there is nothing to claim and nothing to grant — and
+/// the admission policy nobody had written is no longer needed.
+pub fn masterdict_publish_uri() -> Result<String, String> {
+    Ok(build_uri(&blake2b256(b"rnode/genesis/masterdict-publish")))
+}
+
+/// The key the **root facet** is published under — the alias tier's governor (`alias`, `unalias`,
+/// `setRootAuthority`).
+///
+/// Published like the other two on purpose: authority is checked *inside* the contract, by
+/// comparing the caller's derived address to the dictionary's `root`, so a facet anyone can resolve
+/// still refuses everyone but the holder. The root is the identity that installs the dictionary —
+/// the genesis ceremony's key — and it can hand the role on with `setRootAuthority`.
+pub fn masterdict_root_uri() -> Result<String, String> {
+    Ok(build_uri(&blake2b256(b"rnode/genesis/masterdict-root")))
 }
 
 /// The channel a vendored class publishes its registered URI on, as `["<name>", <uri>]`.
@@ -222,17 +240,20 @@ pub fn source(name: &str) -> Result<String, String> {
             // answers nothing — **silently**, because an unmatched receive is not an error (AUDIT
             // C25; the vendored contract was unusable, and the group slot with it).
             //
-            // The repair addresses the directory the way a client does: the master read capability is
-            // published under a *constant* URI (`readcap_uri`, `spec/GENESIS.md`), which is exactly
-            // the path the wallet's own `getMe` handshake takes (`genesis_registry.rs`, its
-            // `READCAP` leg). `lookup` is already bound at the file's head (`:8`), so the replacement
+            // The repair addresses the name layer the way a client does: the dictionary's **resolve
+            // facet** is published under a *constant* URI ([`masterdict_resolve_uri`], `spec/GENESIS.md`),
+            // and `resolve("Directory")` is what the wallet's own `getMe` handshake asks the same
+            // dictionary for. `lookup` is already bound at the file's head (`:8`), so the replacement
             // adds no dependency the contract did not have.
-            let readcap = readcap_uri()?;
+            //
+            // `for (f <- capCh)` binds a **name**, not a value — `@f` would bind the contract as a
+            // value and a value cannot be called.
+            let resolve = masterdict_resolve_uri()?;
             let source = replace_once(
                 &source,
                 "          for(@{\"read\": *masterRead, ..._} <<- @[*deployerId, \"dictionary\"]) {\n            stdout!({\"read\": *masterRead}) |\n            masterRead!(\"Directory\", *ret)\n          } |",
                 &format!(
-                    "          new capCh in {{\n            lookup!(`{readcap}`, *capCh) |\n            for (masterRead <- capCh) {{\n              stdout!({{ \"read\": *masterRead }}) |\n              masterRead!(\"Directory\", *ret)\n            }}\n          }} |"
+                    "          new capCh in {{\n            lookup!(`{resolve}`, *capCh) |\n            for (masterRead <- capCh) {{\n              stdout!({{ \"read\": *masterRead }}) |\n              masterRead!(\"resolve\", [\"Directory\"], *ret)\n            }}\n          }} |"
                 ),
                 "Group.rho's `new` reading the deployer's dictionary",
             )?;
@@ -241,17 +262,59 @@ pub fn source(name: &str) -> Result<String, String> {
         }
         "memberDirectory" => {
             // The feature. Its registration epilogue ends with a demo `sendThem` to a hardcoded
-            // address; the rest of the epilogue is what a client needs (it registers `GetMe` and
-            // `SendThem` into the master directory, and publishes the *deployer's* inbox/dictionary).
+            // address; the rest of the epilogue is what a client needs.
+            //
+            // Under the rooted dictionary (issue #99) it no longer writes into a directory's slot
+            // map. `GetMe`/`SendThem` are **published into the operator's own rooted namespace**, at
+            // `<rootAddr>/GetMe` and `<rootAddr>/SendThem`, and the dictionary's alias tier points
+            // the short names there — the operator *is* the root authority, so the names are its own.
+            // That is why the two writes had to become `publish` calls with a derived path, and why
+            // the two reads had to change shape: the old `MCAread!(key, ret)` is the resolve facet's
+            // `resolve` verb now. The gates around them (`for (@{"read"|"write": …} <<- @[*deployerId,
+            // "MasterContractAdmin"])`) are unchanged — the dictionary parks that handle itself.
             let source = cut_statement(
                 MEMBER_DIRECTORY_RHO,
                 "sendThem!([\"1111NkGJcLb9UdKg27bE1MXhaXwd2Sdhssn3i3EcWnZy11VLyW3zH\"",
             )?;
+            let source = replace_once(
+                &source,
+                "MCAread!(\"Inbox\", *inboxCh)",
+                "MCAread!(\"resolve\", [\"Inbox\"], *inboxCh)",
+                "the feature's Inbox read",
+            )?;
+            let source = replace_once(
+                &source,
+                "MCAread!(\"Directory\", *dirCh)",
+                "MCAread!(\"resolve\", [\"Directory\"], *dirCh)",
+                "the feature's Directory read",
+            )?;
+            // `RevAddress` is not bound at this file's head, so each substitution binds it.
+            let source = replace_once(
+                &source,
+                "MCAwrite!(\"GetMe\", bundle+{*getMe}, *mcaUpdateRet1)",
+                "new meCh1, RevAddress(`rho:rev:address`) in {\n\
+                 \x20        RevAddress!(\"fromDeployerId\", *deployerId, *meCh1) |\n\
+                 \x20        for (@me1 <- meCh1) {\n\
+                 \x20          MCAwrite!(\"publish\", [*deployerId, me1 ++ \"/GetMe\", bundle+{*getMe}], *mcaUpdateRet1)\n\
+                 \x20        }\n\
+                 \x20      }",
+                "the GetMe publish",
+            )?;
+            let source = replace_once(
+                &source,
+                "MCAwrite!(\"SendThem\", bundle+{*sendThem}, *mcaUpdateRet2)",
+                "new meCh2, RevAddress(`rho:rev:address`) in {\n\
+                 \x20        RevAddress!(\"fromDeployerId\", *deployerId, *meCh2) |\n\
+                 \x20        for (@me2 <- meCh2) {\n\
+                 \x20          MCAwrite!(\"publish\", [*deployerId, me2 ++ \"/SendThem\", bundle+{*sendThem}], *mcaUpdateRet2)\n\
+                 \x20        }\n\
+                 \x20      }",
+                "the SendThem publish",
+            )?;
             Ok(load(&source))
         }
-        // Not classes: the directory itself, then the slots upstream's template leaves out.
-        "masterDirectory" => master_directory_template(),
-        "extraSlots" => extra_directory_slots_source(),
+        // Not a class: the master dictionary itself.
+        "masterDictionary" => master_dictionary_source(),
         other => Err(format!("rgov: unknown vendored contract `{other}`")),
     }
 }
@@ -268,7 +331,7 @@ pub fn governance_deploys(
     ceremony: &ValidatorIdentity,
 ) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
     let mut out = deploys_named(shard_id)?;
-    for name in ["masterDirectory", "extraSlots", "memberDirectory"] {
+    for name in ["masterDictionary", "memberDirectory"] {
         out.push((name, signed_deploy(name, shard_id, &ceremony.private_key)?));
     }
     Ok(out)
@@ -467,118 +530,39 @@ pub fn derive_uri(private_key_hex: &str) -> Result<String, String> {
     Ok(build_uri(&blake2b256(pk.bytes())))
 }
 
-/// The master-directory template with the member URIs substituted for the installed constants.
+/// The master dictionary with the class URIs substituted for the installed constants.
 ///
-/// Upstream's template carries the seven member URIs as literals at the top (as recorded from a
-/// *testnet* deployment) — those are exactly the values that go stale, which is what this whole
-/// module removes. Substituting here rather than at deploy time means a client can deploy the
-/// returned term verbatim and get a master directory whose members are the same on every chain of
-/// this port.
+/// Its genesis alias tier holds ten short names, and every one points at a *constant*: the eight
+/// classes register with `insertArbitrary` (an rng-derived uri) and publish what they were given,
+/// and genesis copies each entry onto [`contract_uri_for`]'s key. Substituting here rather than at
+/// deploy time is what makes the dictionary's answers identical on every chain of this port.
 ///
-/// The member order is upstream's: `directory`, `echo`, `inbox`, `issue`, `kudos`, `roll`, `log`.
-/// `Echo.rho` and `mq.rho` (the `log` slot) never call `insertArbitrary` — they define classes and
-/// publish no URI — so their slots reuse the `Directory` URI, exactly as `bootstrap-rgov.ts` does
-/// with its `SLOT_ALIASES`.
-pub fn master_directory_template() -> Result<String, String> {
-    // The literals upstream shipped, in the template's own order (asserted below).
-    let recorded: [&str; 7] = [
-        "rho:id:o9b5otixodhpkxgtbsz1ja5sak43gdhei69ukc9swp355qi8dkm3n7",
-        "rho:id:yupw4m3mfjn9smxtsja5igqqdxyqpnjzjg16aqzdwhzcbqkhxz8f5n",
-        "rho:id:fqfifaqpwp9o4joyybmg9w8iiczfcyq8f66br9zmg8fqompigccgju",
-        "rho:id:urj8148w4ufm8mw8kgz6kddb97bccezk98won98aw11coxdnwn6sr1",
-        "rho:id:eifmzammsbx8gg5fjghjn34pw6hbi6hqep7gyk4bei96nmra11m4hi",
-        "rho:id:kiijxigqydnt7ds3w6w3ijdszswfysr3hpspthuyxz4yn3ksn4ckzf",
-        "rho:id:fbjgow69qme33wk9jwhbjd8ofy36w7gjyup6gfc5d3tsfwfq8s4144",
+/// `Echo` and `Log` name no class of their own — their `rho` files never call `insertArbitrary` —
+/// so they point at `directory`, exactly as `bootstrap-rgov.ts` does with its `SLOT_ALIASES`.
+pub fn master_dictionary_source() -> Result<String, String> {
+    let aliases: [(&str, &str); 8] = [
+        ("__URI_DIRECTORY__", "directory"),
+        ("__URI_INBOX__", "inbox"),
+        ("__URI_ISSUE__", "issue"),
+        ("__URI_KUDOS__", "kudos"),
+        ("__URI_ROLL__", "roll"),
+        ("__URI_CHAT__", "chat"),
+        ("__URI_BALLOT__", "ballot"),
+        ("__URI_GROUP__", "group"),
     ];
-    let directory = contract_uri_for("directory")?;
-    let installed: [String; 7] = [
-        directory.clone(),
-        directory.clone(),
-        contract_uri_for("inbox")?,
-        contract_uri_for("issue")?,
-        contract_uri_for("kudos")?,
-        contract_uri_for("roll")?,
-        directory,
-    ];
-    let mut out = MASTER_DIRECTORY_RHO.to_string();
-    for (recorded_uri, installed_uri) in recorded.iter().zip(&installed) {
-        if !out.contains(recorded_uri) {
+    let mut out = MASTER_DICTIONARY_RHO.to_string();
+    for (placeholder, class) in aliases {
+        if !out.contains(placeholder) {
             return Err(format!(
-                "rgov: the master-directory template no longer carries {recorded_uri}"
+                "rgov: the master dictionary no longer carries {placeholder}"
             ));
         }
-        out = out.replace(recorded_uri, installed_uri);
+        out = out.replace(placeholder, &contract_uri_for(class)?);
     }
-    // The read cap this deploy mints is the `ReadcapURI` a governance client hardcodes, and the
-    // template announces it only on `stdout` and the deploy-scoped `deployId`. Publish it so genesis
-    // can copy it onto `readcap_uri()`.
-    let announced =
-        "stdout!({ \"ReadcapURI\": *URI})\n               | deployId!({ \"ReadcapURI\": *URI })";
-    if !out.contains(announced) {
-        return Err("rgov: the template's ReadcapURI announcement moved".into());
+    if out.contains("__URI_") {
+        return Err("rgov: an unresolved placeholder survives in the master dictionary".into());
     }
-    out = out.replace(
-        announced,
-        &format!("{announced}\n               | @\"{URI_PUBLISH_CHANNEL}\"!([\"readcap\", *URI])"),
-    );
     Ok(load(&out))
-}
-
-/// The three class slots the wallet's editor asks for that upstream's template does not fill, **and
-/// the publication of the master directory's grant capability**.
-///
-/// Upstream's template hardcodes seven member slots; the wallet's snippets look `Chat`, `Ballot` and
-/// `Group` up in the directory, and a slot that was never written answers `Nil` — which a client
-/// cannot tell from "broken" (`spec/GENESIS.md`). Rather than rewrite upstream's seven-slot body,
-/// this is **our own** term, authored here so it is auditable as ours: it takes the master
-/// directory's capabilities that the template published and writes the three classes in.
-///
-/// **Why the grant capability is published from here and not from the template.** The template mints
-/// `{"read", "write", "grant"}` and parks all three on `@[*deployerId, "MasterContractAdmin"]`,
-/// keyed by the *genesis* deployer — an identity nothing holds after genesis. Publishing `grant` is
-/// therefore a change, and the vendored file is kept byte-faithful to upstream wherever it can be
-/// (that is what the vendoring discipline is for); this term already reads that parked datum and is
-/// already ours, so the publish lands here. `read` is published by the template under
-/// [`readcap_uri`], `write` stays unpublished on purpose, and [`grantcap_uri`] is the third.
-///
-/// The published uri is announced on [`URI_PUBLISH_CHANNEL`] exactly as a class registration is, so
-/// `seed_rgov_aliases_from` copies it onto the constant key and a client can hardcode it.
-pub fn extra_directory_slots_source() -> Result<String, String> {
-    let (chat, ballot, group) = (
-        contract_uri_for("chat")?,
-        contract_uri_for("ballot")?,
-        contract_uri_for("group")?,
-    );
-    Ok(load(&format!(
-        r#"new
-   deployerId(`rho:rchain:deployerId`),
-   lookup(`rho:registry:lookup`),
-   insertArbitrary(`rho:registry:insertArbitrary`)
-in {{
-   for (@{{"write": *MCAwrite, "grant": *MCAgrant, ..._}} <<- @[*deployerId, "MasterContractAdmin"]) {{ Nil
-   |  new chatCh, ballotCh, groupCh, ack, grantCh
-      in {{
-         // Publish the grant capability under a constant key, so an application can own a name.
-         // `grant(@key, ret)` returns a writer bound to one key (`Directory.rho:22`), which is the
-         // restricted half of what the parked datum held: `write` is left unpublished on purpose.
-         insertArbitrary!(*MCAgrant, *grantCh) |
-         for (URI <- grantCh) {{ @"{publish_channel}"!(["grantcap", *URI]) }} |
-         lookup!(`{chat}`, *chatCh) |
-         lookup!(`{ballot}`, *ballotCh) |
-         lookup!(`{group}`, *groupCh) |
-         // `Directory.rho:56` is `write(@key, @value, ret)` — three arguments. Called with two, no
-         // receive matches, so **nothing was written** and every consumer of these three slots read
-         // `Nil` (the wallet's editor asks the directory for exactly these class names). Silent, like
-         // the rest of this family; pinned by `the_extra_slots_answer_a_directory_read`.
-         for (C_Chat <- chatCh) {{ MCAwrite!("Chat", *C_Chat, *ack) }} |
-         for (C_Ballot <- ballotCh) {{ MCAwrite!("Ballot", *C_Ballot, *ack) }} |
-         for (C_Group <- groupCh) {{ MCAwrite!("Group", *C_Group, *ack) }}
-      }}
-   }}
-}}
-"#,
-        publish_channel = URI_PUBLISH_CHANNEL
-    )))
 }
 
 #[cfg(test)]
@@ -617,7 +601,7 @@ mod tests {
     fn every_rendered_contract_parses_and_normalizes() {
         for name in RGOV_CORE
             .iter()
-            .chain(&["masterDirectory", "extraSlots", "memberDirectory"])
+            .chain(&["masterDictionary", "memberDirectory"])
         {
             let term = source(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
@@ -652,20 +636,20 @@ mod tests {
         }
     }
 
-    /// The three governance terms are signed by **one** key, and the classes are not: the template
-    /// publishes its `MasterContractAdmin` capability for its own deployer and the feature's
-    /// registration is gated on reading it back, so a mismatch there leaves `GetMe` unregistered and
-    /// answering `Nil` — a stall with no error anywhere (verified on a node).
+    /// The two governance terms are signed by **one** key, and the classes are not: the dictionary
+    /// parks its admin handle for its own deployer and the feature's registration is gated on reading
+    /// it back, so a mismatch there leaves `GetMe` unregistered and answering `Nil` — a stall with no
+    /// error anywhere (verified on a node).
     #[test]
     fn the_governance_terms_are_signed_by_the_ceremony_key() {
         let ceremony = ceremony_identity();
         let deploys = governance_deploys("root", &ceremony).expect("the governance set builds");
         for (name, deploy) in &deploys {
-            if ["masterDirectory", "extraSlots", "memberDirectory"].contains(name) {
+            if ["masterDictionary", "memberDirectory"].contains(name) {
                 assert_eq!(
                     deploy.deployer,
                     ceremony.public_key.bytes().to_vec(),
-                    "{name}: the admin capability must belong to the ceremony key"
+                    "{name}: the admin handle must belong to the ceremony key"
                 );
             } else {
                 assert_ne!(
@@ -703,20 +687,25 @@ mod tests {
             // Derived from a named string, so a reader can recompute it.
             assert!(uri.starts_with("rho:id:"), "{uri}");
         }
-        let readcap = readcap_uri().unwrap();
-        println!("readcap -> {readcap}");
-        assert!(readcap.starts_with("rho:id:"));
-        // The grant capability (#71). It is a published key like the two above, and it is *not* a
-        // class key: it is minted by the master directory and published by `extraSlots`, so a
-        // genesis that installs the template but not that term names a key nothing resolves.
-        let grantcap = grantcap_uri().unwrap();
-        println!("grantcap -> {grantcap}");
-        assert!(grantcap.starts_with("rho:id:"));
-        assert_ne!(
-            grantcap, readcap,
-            "`grantcap` must be its own key: a client that resolved the read cap where it asked for \
-             the grant capability would get a reader it cannot write through, silently"
-        );
+        // The dictionary's three facets (issue #99). They replace the `readcap`/`grantcap` pair, and
+        // they must be *distinct* keys: a client that resolved the publish facet where it asked for
+        // the resolve facet would get a library it cannot read through, and one that resolved
+        // either where it asked for the root facet would get a governor it cannot govern with —
+        // silently, since a call at the wrong arity does nothing (law 40 over law 38).
+        let keys = [
+            ("masterdict-resolve", masterdict_resolve_uri().unwrap()),
+            ("masterdict-publish", masterdict_publish_uri().unwrap()),
+            ("masterdict-root", masterdict_root_uri().unwrap()),
+        ];
+        for (name, uri) in &keys {
+            println!("{name} -> {uri}");
+            assert!(uri.starts_with("rho:id:"), "{uri}");
+        }
+        for (i, (n1, u1)) in keys.iter().enumerate() {
+            for (n2, u2) in keys.iter().skip(i + 1) {
+                assert_ne!(u1, u2, "{n1} and {n2} must be different keys");
+            }
+        }
     }
 
     /// `memberIdGovRev` imports its dependencies by URI; the install order guarantees those exist,
@@ -739,23 +728,69 @@ mod tests {
         );
     }
 
-    /// The master-directory template ships with the installed URIs, and none of the recorded
-    /// testnet URIs survive — those are the stale values the vendoring exists to remove.
+    /// The master dictionary ships with the installed class URIs, and none of the recorded testnet
+    /// URIs survive — those are the stale values the vendoring exists to remove.
     #[test]
-    fn the_master_directory_template_carries_the_installed_uris() {
-        let term = master_directory_template().unwrap();
-        for name in ["directory", "inbox", "issue", "kudos", "roll"] {
+    fn the_master_dictionary_carries_the_installed_uris() {
+        let term = master_dictionary_source().unwrap();
+        for name in [
+            "directory",
+            "inbox",
+            "issue",
+            "kudos",
+            "roll",
+            "chat",
+            "ballot",
+            "group",
+        ] {
             let uri = contract_uri_for(name).unwrap();
-            assert!(term.contains(&uri), "the template must name the {name} URI");
+            assert!(
+                term.contains(&uri),
+                "the dictionary must name the {name} URI"
+            );
         }
         assert!(
             !term.contains("o9b5otixodhpkxgtbsz1ja5sak43gdhei69ukc9swp355qi8dkm3n7"),
             "no recorded testnet URI may survive"
         );
         assert!(
-            normalizes(&term),
-            "the substituted template must parse and normalize"
+            !term.contains("__URI_"),
+            "every placeholder must be substituted"
         );
+        assert!(
+            normalizes(&term),
+            "the substituted dictionary must parse and normalize"
+        );
+    }
+
+    /// **SECURITY.md's rule, as a source scan rather than a review.** A deployer id is a *bearer
+    /// value*: "Nothing was forged. The identity was disclosed, and disclosure is transfer." So
+    /// `*deployerId` may appear only as **the address derivation**, as its own binder, as the key of
+    /// the admin handle the dictionary parks for itself, or forwarded to one of the dictionary's
+    /// *own* facets — which derive the address and discard the id. Never as a state value, a
+    /// returned value, or a body handed to a facet the dictionary does not control.
+    ///
+    /// A line scan is a floor, not a proof — it cannot see a value that reaches a client by another
+    /// name — but it is the check a future verb would have to get past.
+    #[test]
+    fn the_deployer_id_is_only_ever_the_address_derivation() {
+        for (i, line) in MASTER_DICTIONARY_RHO.lines().enumerate() {
+            if !line.contains("deployerId") || line.trim_start().starts_with("//") {
+                continue;
+            }
+            let t = line.trim();
+            let permitted = t.contains("RevAddress!(\"fromDeployerId\", *deployerId")
+                || t.contains("deployerId(`rho:rchain:deployerId`)")
+                || t.contains("@[*deployerId, \"MasterContractAdmin\"]")
+                || t.contains("rootFacet!(\"alias\", [*deployerId,")
+                || t.contains("publishFacet!(\"publish\", [*deployerId,");
+            assert!(
+                permitted,
+                "line {}: the deployer id may appear only in the address derivation, its binder, \
+                 the admin-handle key, or a call to the dictionary's own root facet:\n  {t}",
+                i + 1
+            );
+        }
     }
 
     /// The self-test traffic upstream runs at deploy time is gone: genesis must not send test
@@ -768,67 +803,20 @@ mod tests {
         assert!(!source("directory").unwrap().contains("got capabilities"));
         assert!(!source("ballot").unwrap().contains("testing Ballot"));
         assert!(!source("group").unwrap().contains("got em"));
-        // The feature's epilogue keeps its registration and drops its demo send.
+        // The feature's epilogue keeps its registration and drops its demo send. Under the rooted
+        // dictionary the registration is a `publish` into the operator's own root, with the path
+        // derived from the id — so the assertion names the new shape, not the old slot write.
         let feature = source("memberDirectory").unwrap();
-        assert!(feature.contains("MCAwrite!(\"GetMe\""));
+        assert!(
+            feature.contains("MCAwrite!(\"publish\", [*deployerId, me1 ++ \"/GetMe\""),
+            "the feature must still register `GetMe` — as a rooted publish now"
+        );
+        assert!(
+            feature.contains("MCAwrite!(\"publish\", [*deployerId, me2 ++ \"/SendThem\""),
+            "and `SendThem` with it"
+        );
         assert!(
             !feature.contains("sendThem!([\"1111NkGJcLb9UdKg27bE1MXhaXwd2Sdhssn3i3EcWnZy11VLyW3zH")
-        );
-    }
-
-    /// The three slots upstream's template omits are filled by our own term — the wallet's editor
-    /// asks the directory for these names, and an unwritten slot answers `Nil`.
-    #[test]
-    fn the_extra_slots_term_writes_the_names_the_wallet_asks_for() {
-        let term = source("extraSlots").unwrap();
-        for (name, key) in [("Chat", "chat"), ("Ballot", "ballot"), ("Group", "group")] {
-            assert!(
-                term.contains(&format!("MCAwrite!(\"{name}\"")),
-                "the directory needs a {name} slot"
-            );
-            assert!(
-                term.contains(&contract_uri_for(key).unwrap()),
-                "{name} must be looked up by its published key"
-            );
-        }
-        // It writes through the capability the master directory published, not a hardcoded one.
-        assert!(term.contains("@[*deployerId, \"MasterContractAdmin\"]"));
-        // ...and with the capability's own arity: `Directory.rho:56` is `write(@key, @value, ret)`.
-        // A two-argument call matched no receive and wrote nothing, and *this test* — a `contains`
-        // on the source text — was happy with it. The behavioural pin is
-        // `the_extra_slots_answer_a_directory_read`; this one keeps the shape honest so the two
-        // cannot drift apart silently again.
-        for name in ["Chat", "Ballot", "Group"] {
-            assert!(
-                term.contains(&format!("MCAwrite!(\"{name}\", *C_{name}, *ack)")),
-                "every slot write must pass the reply channel the directory's `write` takes"
-            );
-        }
-        // **Issue #71: the grant capability is published rather than parked.** The parked datum
-        // carried `grant` as well as `write`, and this term is what reads it — so it is where the
-        // publish lands, and the shape is asserted here. The behavioural half is
-        // `the_published_grant_capability_owns_exactly_one_key` in `tests/genesis_registry.rs`; a
-        // `contains` on the source text cannot tell a working publish from a two-argument call that
-        // matches nothing, which is exactly what went wrong with the slot writes above.
-        assert!(
-            term.contains("\"grant\": *MCAgrant"),
-            "the parked capability must be destructured for `grant`, or there is nothing to publish"
-        );
-        assert!(
-            term.contains("insertArbitrary!(*MCAgrant, *grantCh)"),
-            "the grant capability must be registered, or nothing can resolve it"
-        );
-        assert!(
-            term.contains(&format!(
-                "for (URI <- grantCh) {{ @\"{URI_PUBLISH_CHANNEL}\"!([\"grantcap\", *URI]) }}"
-            )),
-            "the registered uri must be announced on the publish channel, or the constant key \
-             `grantcap_uri()` names nothing"
-        );
-        assert!(
-            !term.contains("insertArbitrary!(*MCAwrite"),
-            "`write` must stay unpublished: a `write` holder could swap any application under a \
-             client's feet, which `grant`'s one-key writer exists to avoid"
         );
     }
 
@@ -841,19 +829,19 @@ mod tests {
     fn published_uri_refuses_a_list_shorter_than_two() {
         use rchain_models::rholang::RhoType::{RhoList, RhoString, RhoUri};
 
-        let one = RhoList::apply(vec![RhoString::apply("readcap".to_string())]);
+        let one = RhoList::apply(vec![RhoString::apply("sample".to_string())]);
         assert_eq!(published_uri(&one), None, "a one-element datum has no uri");
 
         let empty = RhoList::apply(vec![]);
         assert_eq!(published_uri(&empty), None, "and neither has an empty one");
 
         let two = RhoList::apply(vec![
-            RhoString::apply("readcap".to_string()),
-            RhoUri::apply("rholang://readcap".to_string()),
+            RhoString::apply("sample".to_string()),
+            RhoUri::apply("rholang://sample".to_string()),
         ]);
         assert_eq!(
             published_uri(&two),
-            Some(("readcap".to_string(), "rholang://readcap".to_string())),
+            Some(("sample".to_string(), "rholang://sample".to_string())),
             "the well-formed datum still parses"
         );
     }
