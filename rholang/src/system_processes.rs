@@ -1704,6 +1704,63 @@ impl SystemProcesses {
                             .collect();
                         cc.produce(&rand, &[RhoSet::apply(ps)], ret, path).await
                     }
+                    // **The delegator's own position** (law 57, #193), symmetric with `getBonds`.
+                    //
+                    // Scoped to the key the caller asks about, so the read is bounded by *that*
+                    // delegator rather than by the whole `pos:delegations` ledger — which is unbounded
+                    // in the number of delegators and whose per-delegation floor is the only DoS
+                    // control (`spec/RUST-VS-SCALA.md` §3 item 12, residual O5). An operator-scoped
+                    // listing (every delegator of one key) is the other direction and is deliberately
+                    // not here: it is the unbounded one, and nothing needs it yet.
+                    //
+                    // Each entry's four fields come from three leaves: the principal from
+                    // `pos:delegations`, the accrued reward from `pos:delegated_rewards`, the staged
+                    // exit's deadline from `pos:pending_delegations` (or `Nil` when nothing is
+                    // staged).
+                    "getDelegations" => {
+                        let [delegator, ret] = rest else {
+                            return Err(illegal_arg(
+                                "getDelegations expects a delegator public key and a return channel",
+                            ));
+                        };
+                        let delegator = RhoByteArray::unapply(delegator)
+                            .and_then(|b| Validator::try_from(b).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("getDelegations expects a 65-byte delegator public key")
+                            })?;
+                        // **The accessors, never a `set_*`.** An absent leaf reads as an empty map, and
+                        // a *write* of an empty map from a read path would put a trie leaf under a
+                        // chain that has never delegated and move its root — the dormancy requirement
+                        // law 57 states and `spec/RUST-FIRST.md` § *Dormancy* records.
+                        let ledger = native.delegations().await.map_err(|e| illegal_arg(&e))?;
+                        let pending = native
+                            .pending_delegations()
+                            .await
+                            .map_err(|e| illegal_arg(&e))?;
+                        let rewards = native
+                            .delegated_rewards()
+                            .await
+                            .map_err(|e| illegal_arg(&e))?;
+                        let entries: Vec<Par> = ledger
+                            .iter()
+                            .filter(|(key, _)| key.delegator == delegator)
+                            .map(|(key, amount)| {
+                                let accrued = rewards.get(key).map_or(0, |r| i64::from(*r));
+                                let staged = match pending.get(key) {
+                                    Some(deadline) => RhoNumber::apply(*deadline),
+                                    None => RhoNil::apply(),
+                                };
+                                RhoTupleN::apply(vec![
+                                    RhoByteArray::apply(key.operator.as_bytes().to_vec()),
+                                    RhoNumber::apply(i64::from(*amount)),
+                                    RhoNumber::apply(accrued),
+                                    staged,
+                                ])
+                            })
+                            .collect();
+                        eprintln!("[pos] getDelegations -> {} entries", entries.len());
+                        cc.produce(&rand, &[RhoList::apply(entries)], ret, path).await
+                    }
                     "bond" => {
                         let [deployer_id, amount, ret] = rest else {
                             eprintln!("[pos] bad argument shape: bond");
