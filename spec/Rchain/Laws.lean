@@ -2262,14 +2262,19 @@ def laws : List Law := [
       the remainder returns to its own vault, so the loss is bounded by the tier and a milder tier never \
       takes more. And the same vault pays for **work**: a share of a deploy's burned phlo goes to the \
       block's own signed sender (`payExecutor`), which is a transfer inside the staking vault — it moves \
-      income, never stake, and it is monotone in what the deploy burned. A boundary may also **withhold** \
-      a drawn validator's reward for the epoch it sat out (`absenceAdjusted`), which is income only: the \
-      rule is a function of the reward and of how long the validator has been silent, so no stake is \
-      reachable from it and a validator inside the slack is paid in full — **and** a validator past it, \
-      under a rule that is on and with something to lose, is paid *nothing* (`absence_withholds`). That \
-      last clause is not decoration: every other absence statement is satisfied by a rule that withholds \
-      nothing at all, so it is the one that makes \"the rule withholds\" a claim rather than a reading of \
-      the definition",
+      income, never stake, and it is monotone in what the deploy burned. A boundary may also **scale** a \
+      drawn validator's reward by its participation (`absenceAdjusted`, over `participationWeight`), which \
+      is income only: the weight is a function of the reward and of how far behind the last finalised \
+      fringe the validator's latest *message* sits, so no stake is reachable from it. The weight is the \
+      whole `10000` inside a **grace**, ramps linearly to `0` at a **knee**, and is never more than the \
+      whole — which is what carries law 46 through the rule (`weighted_rewards_le_pot`: the split is \
+      unchanged, and the rule only multiplies its outputs by at most one). **A partial weight withholds** \
+      (`absence_withholds`), and that theorem is deliberately paired with the decided instance \
+      `the_ramp_is_a_ramp`, because it is an *implication*: a weight that was always `10000` satisfies it \
+      **vacuously** — measured, not argued, since that mutation fails the instance and leaves the \
+      implication alone. Neither is a check without the other, which is the absence rule's own vacuity \
+      one level up. `grace = knee` reproduces a binary threshold rule rather than losing it, and \
+      `knee = 0` is the off switch",
     status := .provedModel,
     declarations := [`Rchain.PosState, `Rchain.PosClaim, `Rchain.PosRequest, `Rchain.totalRev,
       `Rchain.divisor, `Rchain.isBoundary, `Rchain.bond, `Rchain.epochStep, `Rchain.closeBlock,
@@ -2284,10 +2289,14 @@ def laws : List Law := [
       `Rchain.producer_pay_is_monotone,
       `Rchain.absenceAdjusted, `Rchain.absence_never_raises,
       `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake,
-      `Rchain.absence_withholds],
+      `Rchain.absence_withholds,
+      `Rchain.participationWeight, `Rchain.participationWeight_le, `Rchain.participationWeight_full,
+      `Rchain.participationWeight_zero, `Rchain.participationWeight_antitone,
+      `Rchain.nsum_zipWith_le_map, `Rchain.weighted_rewards_le_pot,
+      `Rchain.absence_withholds_past_the_knee, `Rchain.the_ramp_is_a_ramp],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
-    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone, `Rchain.absence_never_raises, `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake, `Rchain.absence_withholds],
+    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone, `Rchain.absence_never_raises, `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake, `Rchain.absence_withholds, `Rchain.participationWeight_le, `Rchain.participationWeight_full, `Rchain.participationWeight_zero, `Rchain.participationWeight_antitone, `Rchain.weighted_rewards_le_pot, `Rchain.absence_withholds_past_the_knee, `Rchain.the_ramp_is_a_ramp],
     falsifiable := some "`the_epoch_gate_does_nothing_off_a_boundary` builds the off-boundary state — a \
       staged withdrawal *and* a full reward pot — and asserts the whole state is unchanged, then that \
       the same call at the boundary moves it and pays it; the bond half is in the same test (pooled at \

@@ -622,31 +622,110 @@ The rule is stated here as what it is: **a function of an epoch's reward and of 
 has been silent**, and of nothing else. That is the whole of "income only, never the bond" — it cannot
 reach a stake because a stake is not one of its arguments. -/
 
-/-- **The absence rule** (`native_state.rs`'s `apply_absence`): a validator that has not signed a block
-    within `slack` heights of the boundary forfeits *that epoch's* reward. `slack = 0` is the off
-    switch, and off is `Pos.rhox`'s behaviour: in the contract absence costs nothing. -/
-def absenceAdjusted (silentFor slack reward : Nat) : Nat :=
-  if slack = 0 then reward else if silentFor ≤ slack then reward else 0
+/-- **The participation weight**: basis points of a drawn validator's epoch share that it is paid, as a
+    function of how far behind the last finalised fringe its latest message sits.
 
-/-- **The rule never raises a reward.** It pays or it withholds, and there is no third thing — which is
-    what makes it a penalty rather than a second reward axis. -/
-theorem absence_never_raises (silentFor slack reward : Nat) :
-    absenceAdjusted silentFor slack reward ≤ reward := by
+    `grace` is the lag inside which the weight is the whole share, `knee` the lag at which it reaches
+    zero, and the ramp between is linear. **Two parameters rather than one, and that is a property rather
+    than a taste**: a rule that pays an honest validator *in full* and reaches zero elsewhere cannot be a
+    function of a single threshold, because the ramp would have to begin at lag zero — which puts a
+    haircut on every live validator, including one that missed nothing. `grace = knee` reproduces a
+    binary threshold rule exactly, so this is the general case and the cliff is its instance. -/
+def participationWeight (behind grace knee : Nat) : Nat :=
+  if behind ≤ grace then 10000
+  else if knee ≤ behind then 0
+  else 10000 * (knee - behind) / (knee - grace)
+
+/-- **A weight is never more than the whole share.** This is the fact that carries `sum_rewards_le_pot`
+    through the rule: every adjusted share is bounded by the share it adjusts, so an epoch under this
+    rule still cannot pay out more than its pot. -/
+theorem participationWeight_le (behind grace knee : Nat) :
+    participationWeight behind grace knee ≤ 10000 := by
+  unfold participationWeight
+  split
+  · exact Nat.le_refl _
+  · split
+    · exact Nat.zero_le _
+    · refine Nat.div_le_of_le_mul ?_
+      rw [Nat.mul_comm (knee - grace) 10000]
+      exact Nat.mul_le_mul_left 10000 (by omega : knee - behind ≤ knee - grace)
+
+/-- **The weight is full inside the grace.** "An honest, temporarily-offline validator recovers fully",
+    as arithmetic: having been away for less than the grace is indistinguishable from never having been
+    away, so the rule has no memory to recover from. -/
+theorem participationWeight_full {behind grace knee : Nat} (h : behind ≤ grace) :
+    participationWeight behind grace knee = 10000 := by
+  simp only [participationWeight, h, if_true]
+
+/-- **And it reaches zero at the knee** — the weight is a penalty with a floor, not a curve that
+    asymptotes: past the knee a validator is paid nothing for the epoch it sat out.
+
+    **`grace < behind` is not decoration**: it rules out the full-share branch, and without it the
+    statement is false — `participationWeight 5 10 5` is `10000`, not `0`, because a knee below the
+    grace is a shape the first branch already answers. So the statement is about the *graded* shape,
+    where `grace ≤ knee`; the cliff is `grace = knee`, and there the two branches meet with no ramp
+    between them. -/
+theorem participationWeight_zero {behind grace knee : Nat}
+    (hg : grace < behind) (h : knee ≤ behind) :
+    participationWeight behind grace knee = 0 := by
+  unfold participationWeight
+  rw [if_neg (by omega), if_pos h]
+
+/-- **A validator further behind is paid no more.** Stated because a weight is only a *penalty for
+    absence* if it is monotone in the absence; a function that paid a quieter validator more would
+    satisfy every other theorem here. -/
+theorem participationWeight_antitone {b₁ b₂ grace knee : Nat} (h : b₁ ≤ b₂) :
+    participationWeight b₂ grace knee ≤ participationWeight b₁ grace knee := by
+  by_cases hfull : b₁ ≤ grace
+  · -- The nearer one is already paid in full, so the further one can be at most that.
+    rw [participationWeight_full hfull]
+    exact participationWeight_le b₂ grace knee
+  · by_cases hzero : knee ≤ b₂
+    · -- The further one is already at the floor, and a weight is never negative.
+      rw [participationWeight_zero (by omega) hzero]
+      exact Nat.zero_le _
+    · -- Both are on the interior of the ramp: same denominator, and `b₁ ≤ b₂` shrinks the numerator.
+      have hnf : ¬ b₂ ≤ grace := fun hb => hfull (h.trans hb)
+      rw [participationWeight, participationWeight,
+        if_neg hnf, if_neg hzero, if_neg hfull,
+        if_neg (show ¬ knee ≤ b₁ by omega)]
+      exact Nat.div_le_div_right (Nat.mul_le_mul_left 10000 (by omega))
+
+/-- **The absence rule** (`native_state.rs`'s `apply_weight`): a validator's epoch reward is scaled by
+    its participation weight. `knee = 0` is the off switch, and off is `Pos.rhox`'s behaviour: in the
+    contract absence costs nothing.
+
+    The rule is still **income only, never the bond**, and structurally so — a stake is not one of its
+    arguments. The withheld fraction stays in the staking vault (nothing debits it), so the next epoch
+    distributes it and conservation is untouched. -/
+def absenceAdjusted (behind grace knee reward : Nat) : Nat :=
+  if knee = 0 then reward else reward * participationWeight behind grace knee / 10000
+
+/-- **The rule never raises a reward.** It pays a fraction or the whole, and there is no third thing —
+    which is what makes it a penalty rather than a second reward axis. It rests entirely on the weight's
+    own bound, which is why that bound is stated before this. -/
+theorem absence_never_raises (behind grace knee reward : Nat) :
+    absenceAdjusted behind grace knee reward ≤ reward := by
   unfold absenceAdjusted
   split
   · exact Nat.le_refl _
-  · split <;> omega
+  · have h1 : reward * participationWeight behind grace knee ≤ 10000 * reward := by
+      rw [Nat.mul_comm 10000]
+      exact Nat.mul_le_mul_left _ (participationWeight_le behind grace knee)
+    exact Nat.div_le_of_le_mul h1
 
-/-- **A validator inside the slack is paid in full** — "an honest, temporarily-offline validator
-    recovers fully", as arithmetic: having been away for less than the slack is indistinguishable from
-    never having been away, so the rule has no memory to recover from. -/
-theorem a_returning_validator_is_paid_in_full {silentFor slack reward : Nat}
-    (h : silentFor ≤ slack) :
-    absenceAdjusted silentFor slack reward = reward := by
+/-- **A validator inside the grace is paid in full** — "an honest, temporarily-offline validator
+    recovers fully", as arithmetic: having been away for less than the grace is indistinguishable from
+    never having been away, so the rule has no memory to recover from. Note the hypothesis is over the
+    **grace** and not the knee, which is the whole reason the weight has two parameters. -/
+theorem a_returning_validator_is_paid_in_full {behind grace knee reward : Nat}
+    (h : behind ≤ grace) :
+    absenceAdjusted behind grace knee reward = reward := by
   unfold absenceAdjusted
-  by_cases hs : slack = 0
-  · simp [hs]
-  · simp [hs, h]
+  by_cases hk : knee = 0
+  · simp [hk]
+  · rw [if_neg hk, participationWeight_full h, Nat.mul_comm reward 10000]
+    exact Nat.mul_div_right reward (by decide : 0 < 10000)
 
 /-- **And the rule moves no stake.** Committing a reward leaves the pool and the active set exactly as
     they were — for *any* reward function, which is what makes the statement about the transition
@@ -656,23 +735,97 @@ theorem the_absence_rule_moves_no_stake (r : Validator → Nat) (s : PosState) :
     (commitRewards r s).pool = s.pool ∧ (commitRewards r s).active = s.active :=
   ⟨rfl, rfl⟩
 
-/-- **And it withholds.** The three theorems above pin only that the rule never *raises* a reward —
+/-- **A partial weight withholds.** The theorems above pin only that the rule never *raises* a reward —
     which an implementation that changed nothing at all would satisfy, and which was for a time exactly
-    what the tree had: `absence_never_raises` is a `≤`, `a_returning_validator_is_paid_in_full` constrains
-    only the inside-slack case, and `the_absence_rule_moves_no_stake` does not mention `absenceAdjusted`
-    at all. The `else 0` branch was exercised by no theorem anywhere.
+    what the tree had: `absence_never_raises` is a `≤`, `a_returning_validator_is_paid_in_full`
+    constrains only the grace, and `the_absence_rule_moves_no_stake` does not mention `absenceAdjusted`
+    at all.
 
-    This is the other half, and it is what makes the rule a rule: a validator silent **past** the slack,
-    under a rule that is **on**, and with something to lose, is paid nothing rather than its share. The
-    three hypotheses are each load-bearing — drop `0 < slack` and the off switch returns the reward
-    untouched; drop `slack < silentFor` and the validator is inside the slack and paid in full; drop
-    `0 < reward` and `0 < reward` is the only thing left to prove. -/
-theorem absence_withholds {silentFor slack reward : Nat}
-    (hon : 0 < slack) (hover : slack < silentFor) (hreward : 0 < reward) :
-    absenceAdjusted silentFor slack reward < reward := by
-  have hs : slack ≠ 0 := by omega
-  have hle : ¬ silentFor ≤ slack := by omega
-  simp only [absenceAdjusted, hs, if_false, hle]
-  exact hreward
+    This is the other half, and it is the **graded** statement rather than the binary one: any weight
+    strictly below the whole, under a rule that is on, and with something to lose, pays less than the
+    share. The hypotheses are each load-bearing — drop `knee ≠ 0` and the off switch returns the reward
+    untouched, drop `participationWeight < 10000` and the validator is inside the grace, drop
+    `0 < reward` and there is nothing left to prove. -/
+theorem absence_withholds {behind grace knee reward : Nat}
+    (hon : knee ≠ 0)
+    (hpartial : participationWeight behind grace knee < 10000)
+    (hreward : 0 < reward) :
+    absenceAdjusted behind grace knee reward < reward := by
+  unfold absenceAdjusted
+  rw [if_neg hon, Nat.div_lt_iff_lt_mul (by decide : 0 < 10000)]
+  exact Nat.mul_lt_mul_of_pos_left hpartial hreward
+
+/-- **The binary rule's statement, as the strictest instance of the graded one.** Past the knee the
+    weight is zero, so the validator is paid *nothing* for the epoch it sat out — which is the rule the
+    tree shipped before this was graded, preserved here as an instance rather than dropped, so a reader
+    comparing the two finds the old statement inside the new one. -/
+theorem absence_withholds_past_the_knee {behind grace knee reward : Nat}
+    (hon : knee ≠ 0) (hgk : grace < knee) (hknee : knee ≤ behind) :
+    absenceAdjusted behind grace knee reward = 0 := by
+  unfold absenceAdjusted
+  rw [if_neg hon, participationWeight_zero (by omega) hknee, Nat.mul_zero, Nat.zero_div]
+
+/-- `Σ zipWith f xs ys ≤ Σ map g xs` when `f` is bounded by `g` pointwise and the lists agree in
+    length — the step that composes a per-validator scaling with the split. -/
+theorem nsum_zipWith_le_map {bonds weights : List Nat} (hlen : weights.length = bonds.length)
+    (f : Nat → Nat → Nat) (g : Nat → Nat) (h : ∀ b w, w ∈ weights → f b w ≤ g b) :
+    nsum (List.zipWith f bonds weights) ≤ nsum (bonds.map g) := by
+  induction bonds generalizing weights with
+  | nil => simp [nsum]
+  | cons b rest ih =>
+    match weights with
+    | [] => simp at hlen
+    | w :: wl =>
+      have hlen' : wl.length = rest.length := by simp at hlen ⊢; omega
+      have hr : ∀ b' w', w' ∈ wl → f b' w' ≤ g b' := fun b' w' hw' => h b' w' (by simp [hw'])
+      simp only [List.zipWith_cons_cons, List.map_cons, nsum]
+      exact Nat.add_le_add (h b w (by simp)) (ih hlen' hr)
+
+/-- **An epoch under the participation rule still cannot pay out more than its pot** — the composition
+    `sum_rewards_le_pot` could not state on its own, because the rule's effect is a per-validator
+    scaling that happens *after* the split. It is the clause of #150's close condition that reads "the
+    invariant must survive whatever replaces the formula": the split is unchanged and still bounded by
+    the pot, and the rule only ever multiplies each of its outputs by something at most the whole, so
+    the scaled total is bounded by the total.
+
+    The two hypotheses are the ones the weight supplies: `hw` is `participationWeight_le` at every
+    drawn validator, and the other two are `sum_rewards_le_pot`'s own. -/
+theorem weighted_rewards_le_pot (pot minimumBond activeBonds : Nat) (bonds weights : List Nat)
+    (hlen : weights.length = bonds.length)
+    (hactive : activeBonds = nsum bonds) (hD : 0 < activeBonds / minimumBond)
+    (hw : ∀ w ∈ weights, w ≤ 10000) :
+    nsum (List.zipWith (fun b w => reward pot minimumBond activeBonds b * w / 10000) bonds weights)
+      ≤ pot := by
+  refine le_trans
+    (nsum_zipWith_le_map hlen
+      (fun b w => reward pot minimumBond activeBonds b * w / 10000)
+      (fun b => reward pot minimumBond activeBonds b) ?_) ?_
+  · intro b w hmem
+    have h1 : reward pot minimumBond activeBonds b * w
+        ≤ 10000 * reward pot minimumBond activeBonds b := by
+      rw [Nat.mul_comm 10000]
+      exact Nat.mul_le_mul_left _ (hw w hmem)
+    exact Nat.div_le_of_le_mul h1
+  · exact sum_rewards_le_pot pot minimumBond activeBonds bonds hactive hD
+
+/-- **The ramp is a ramp, decided rather than described.** Four points across the weight's four regions —
+    inside the grace, two places on the interior, at the knee and past it — so an implementation that
+    ignored the ramp, or the grace, or the knee fails on a computation. A fixture whose weights are all
+    equal is the degeneracy AUDIT C149 recorded in this file once already.
+
+    **This is not a companion to `absence_withholds`; it is what makes it bite.** That theorem is an
+    implication whose hypothesis is `participationWeight behind grace knee < 10000`, so a weight that was
+    *always* `10000` satisfies it **vacuously** — and that is measured rather than argued: replacing the
+    weight with the constant `10000` leaves the implication's truth untouched and fails *this*
+    declaration, with `decide` reporting that the proposition is false. The implication and the instance
+    are therefore a pair, and neither alone is a check. It is the same trap as the absence rule's own,
+    one level up: there the theorems were satisfied by a rule that withheld nothing, here by a weight
+    that never withholds. -/
+theorem the_ramp_is_a_ramp :
+    participationWeight 5 5 15 = 10000
+      ∧ participationWeight 6 5 15 = 9000
+      ∧ participationWeight 10 5 15 = 5000
+      ∧ participationWeight 15 5 15 = 0
+      ∧ participationWeight 20 5 15 = 0 := by decide
 
 end Rchain
