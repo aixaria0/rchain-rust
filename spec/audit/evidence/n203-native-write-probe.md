@@ -1,83 +1,93 @@
-# #203 — what a deploy can see of native state, and an over-claim corrected
+# #203 (C205): the defect does not exist — a void measurement, and the instrument that closed it
 
-Run 2026-10-02 on tree `17966d93` (the delegation branch), two-validator and **one-validator** devnets
-built from that tree, driven by the probes in `examples/` (`pos-trust.rho`, `pos-trusted.rho`,
-`pos-withdraw.rho`, `pos-bonds.rho`).
+Run 2026-10-02 on tree `1f7b1697` (branch `c205-native-write`), one- and two-validator devnets built
+from that tree, `--no-autopropose`, blocks placed by `--propose-on-deploy` and **confirmed from the
+node's own log** before any reading was taken.
 
-**This file exists because the first write-up of this finding claimed more than the measurements
-support, and the correction is the most useful thing in it.** Read §3 before §2.
+## 1. The result
 
-## 1. What was run, and what it showed
+**C205 is an artifact and closes.** Two measurements, each with a positive control in the same reply:
 
-`pos!("trust", *deployerId, "<65-byte key>".hexToBytes(), *ret)` from an ordinary deploy, then a
-**separate, later** deploy of `pos!("getTrusted", *ret)` reading the set back:
+| what | measurement | control | verdict |
+|---|---|---|---|
+| a deploy in block **1** trusts a key; a deploy in block **2** asks whether it is trusted | `trusted.contains(newcomer)` → **`true`** | `trusted.contains(genesis validator)` → **`true`** | the write is **visible** to a later block's deploy |
+| a deploy in block **2** delegates 40 to validator 2's key; a deploy in **block 3** asks what that key carries | `bonds.get(operator)` → **`140`** | `bonds.get(validator 1)` → **`100`** | the aggregate is **visible** to a later block's deploy |
 
-- the `trust` op replies `(true, Nil)` — read back from the public name `@"pos-trust"`, so the op
-  accepted rather than merely reducing successfully (a refusal returns a tuple too, which is why the
-  reply and not the log is the evidence);
-- the later `getTrusted` deploy's reply **does not contain the trusted key**;
-- and this reproduces with `--no-autopropose` (no dummy deploys) on **one** validator (no second
-  branch), with the node logging **`0 merges`** over the whole run.
+So a user deploy's native write **is** seen by a later block's deploy, on a live network, for both the
+`trust` leaf and the delegation ledger's effect on the pool. Nothing is lost and nothing is stale.
 
-## 2. The claim that was drawn from that, and why it was too strong
+## 2. Why the earlier reading said otherwise — the whole finding
 
-The first version of AUDIT C205 said *the write is absent from the node's native state*. That is not
-what was measured, and a control contradicts it.
+`tools/devnet.sh query` reads through `listen-data-at-name`, which prints `{result:?}` — a **derived
+`Debug`**. A 65-byte key therefore renders as `GByteArray([2, 2, 2, …])`, **decimal bytes**
+(`models/src/rholang.rs:40`), and **no hex grep can match it**. Every "the newcomer is absent"
+conclusion in the previous write-up came from grepping that output for `0202…`. The hex strings that
+*did* match (`04f700a4…`, `9f52f05d…`) are from the surrounding `LightBlockInfo`, which is a different
+structure on the same line rendering in a different format.
 
-`withdraw` writes `pos:pending_withdrawers`, and `GET /api/v1/pos` exposes it. On the same network, the
-same minute:
+**Nothing about the set was ever inspected.** The reading was void, and it was published as a negative
+result, twice — as AUDIT C205 and as a correction to it that narrowed the wrong thing.
 
-```
-$ curl -s http://localhost:40403/api/v1/pos
-"pendingWithdrawals":[{"validator":"04f700a417754b77…","stagedAtBlock":60000,"blocksRemaining":109996}]
-```
+Two further confounds were live at the same time, and both are now eliminated by construction rather
+than by argument:
 
-The `withdraw` deploy's reply was `(true, Nil)`, same as `trust`'s — and its write **is visible in the
-node's live native store**, read without any deploy and without any block. So the node does hold a
-native write made by a user deploy. The first write-up generalised from `trust`'s absence to a claim
-about the state, and `withdraw` refutes that generalisation.
+- **Deploy ordering.** `--no-autopropose` does **not** disable `--propose-on-deploy` (`tools/devnet.sh`
+  — the flag flips only `AUTOPROPOSE`), the deploy CLI returns on `ProposerResult::Started` *before the
+  block is built*, and the pool is a `BTreeMap` keyed by deploy **signature** — so "later" was
+  wall-clock order, not execution order. The runs above take the block numbers from the node's own log
+  (`proposed and added block #N`) and require the two deploys to be in different blocks.
+- **The pre-state lead is retracted.** A previous dump showed 49 blocks with only 3 distinct
+  `preStateHash` values, which looked like blocks building on a stale state. On a controlled chain the
+  same dump is **linear**: block 1's `postStateHash` is block 2's `preStateHash` is block 3's, and
+  empty blocks legitimately share a post-state. The two-validator dump was read as if it were a chain;
+  it is a DAG in which concurrent blocks share a parent.
 
-**The honest statement of what is measured is narrower and stranger:**
+## 3. The instrument, which is the durable part
 
-> A native write made by one user deploy is **visible to a non-deploy read of the same node's native
-> state**, and **invisible to a later user deploy's read of it**.
+`examples/pos-trusted.rho` and the probe pattern it fixes: **compute the answer inside rholang and
+return a boolean, with a control in the same reply.**
 
-Both halves were measured on one network within a minute of each other, and they cannot both be true of
-a single consistent view. Something gives the block path and the HTTP route different native state.
+- `trusted.contains(k)` is `ESet`'s own membership test (`rholang/src/reduce.rs:1329-1356`), so the
+  comparison happens on the values and no rendering is involved.
+- **The second element is a positive control.** It asks about a key that is trusted *by construction*.
+  A reply of `(false, false)` means the instrument is broken, not that the subject is absent — which is
+  the fault that produced this whole episode. The first version of this probe had no control, and its
+  silence read as a finding.
 
-## 3. What is eliminated, and how
+`examples/pos-bonds-check-live.rho` applies the same shape to a number: the operator's entry and an
+untouched validator's, so a reply that is wrong in the same direction as a broken read is visible.
 
-- **Not the base block path.** `casper/tests/deploy_native_write.rs` plays the same op through
-  `RuntimeManager::compute_state` — the proposer's own entry point — and reads the write back out of the
-  post-state it commits to. **It passes.** Written as a falsifier and green, it says the loss is above
-  this layer; it is kept as a regression guard.
-- **Not the multi-parent merge.** Reproduces on one validator.
-- **Not any merge at all.** The run logging `0 merges` reproduces it.
-- **Not the autopropose deploy / the dev-mode keep-alive.** Reproduces with `--no-autopropose`.
-- **Not the store backend.** `checkpoint_with_native` has one implementation, shared by the in-memory
-  and durable repositories.
-- **Not the probes.** The first version of `pos-trust.rho` carried a 67-byte key where `trust` requires
-  65, so the deploy *failed* and read exactly like a reproduced bug. Found by reading the
-  `[deploy] … FAILED` line instead of the count of successful-looking lines.
+## 4. What the four-lens root-cause analysis produced, given there was nothing to root-cause
 
-## 4. What this means for #193, restated
+Run before this phase, at the requester's direction: four investigators on distinct lenses (reader
+reset, write path, runtime identity, adversarial). All four converged on a **stale pre-state hand-off**
+as the only mechanism that could produce the stated symptoms — and the identity lens mapped every
+runtime and store in a running node precisely enough that its table is worth keeping for the next
+investigation of this area. **The adversarial lens is the one that ended it**: it identified the
+rendering confound (decimal `Debug` on that surface) and the deploy-ordering confound, and it stated
+the observation that would settle the question. That observation was one run, above.
 
-C204's live arm could not distinguish "the delegation did not take effect" from "the delegation took
-effect and the read could not see it" — because `getBonds` is a **deploy** read, and deploy reads are
-the half that is stale here. So C204 stays open on a defect this file narrows rather than on one it
-identifies, and the delegation itself is neither cleared nor implicated.
+**The lesson worth carrying: the analysis was correct to be suspicious of the measurement, and the
+three mechanism-building lenses were all building on a reading none of them could have checked.** The
+cheapest test was also the decisive one, and it should have come before any mechanism work.
 
-## 5. Where the next unit starts
+## 5. What is actually wrong, from the same runs
 
-The two reads disagree, so the question is **which native state a deploy's read is given**. The
-candidates, in the order this investigation would take them:
+One real defect, found while building the control and unrelated to any of the above:
 
-1. `RSpace::reset` re-points `native_store` at a `start_hash` reader *and* clears the overlay — so a
-   block whose `start_hash` reader predates the previous block's native changes would read exactly this.
-   Compare the reader a block path is handed with the one `/api/v1/pos` reads.
-2. `save_native_changes` / `load_native_changes` keyed by `(post_state_hash, sender, seq_num)`: whether
-   the entry a block reads was written by the play path, the replay path, or `regenerate_sidecars`, and
-   whether those three agree.
+**`GET /api/v1/pos` misreports a withdrawal's timing.** `withdraw` stores the **deadline**
+(`quarantine_length + divisor·(1 + block_number/divisor)`, `rholang/src/native_state.rs:1385-1392`),
+while `pos_read.rs:31-33` labels it `stagedAtBlock` and `:137-140` computes
+`blocks_remaining = staged_at_block + quarantine_length − latest` — adding the quarantine a second
+time. Measured live: `{"stagedAtBlock":60000,"blocksRemaining":109996}` at chain height 4, where the
+truth is a deadline of 60000 and about 59996 blocks remaining. **The operator's number is wrong by
+50,000 blocks**, on the route AUDIT C148 exists to provide. Filed separately.
 
-Both are checkable in-process — the falsifier in `casper/tests/deploy_native_write.rs` is the harness
-for it, extended one step further along the node's pipeline than `compute_state`.
+## 6. What this means for #193
+
+**C204's blocker is gone and its live arm can proceed.** The delegation was never implicated: the
+`getBonds` reading of 100 that stalled it was taken through the same unreliable route, and under the
+block-verified instrument the same operation reads **140**. So the delegation primitive works end to
+end on a live network as far as this probe goes — bond→delegate→a later block's read — and C204's
+remaining criterion is the full path (boundary split, undelegate, quarantine payout) plus the
+unupgraded-node fork point.

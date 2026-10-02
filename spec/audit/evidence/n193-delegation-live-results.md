@@ -1,5 +1,13 @@
 # #193's live arm — results: **the arm failed, and the reason is a pre-existing defect**
 
+> **⚠ SUPERSEDED 2026-10-02. The defect this file reports does not exist, and C205 is closed as an
+> artifact.** Every *absent* reading below came from grepping `listen-data-at-name`'s output for hex, on
+> a surface that renders a 65-byte key as `GByteArray([2, 2, …])` — **decimal bytes**. Under an
+> instrument that computes the answer in rholang with a positive control, the same operation reads back
+> correctly (`spec/audit/evidence/n203-native-write-probe.md`). The file is kept **unamended below its
+> own corrections**, because a record that edits away the reading it got wrong is not a record; read the
+> probe file as the authority and this one as what was believed at the time.
+
 Run 2026-10-02 on tree `1a5c9539c` (the delegation change, `delegation/2-rust` + the arm's own rig
 change), against the pre-registration `n193-delegation-live-preregistration.md`. Image built from the
 tree under test (`rnode:local`, the `GIT_HEAD_COMMIT` build-arg carrying `1a5c9539c`).
