@@ -1679,6 +1679,69 @@ mod tests {
         assert_eq!(base, None);
     }
 
+    /// **A pinned fringe still grows the conflict scope when a parent advances (C201).**
+    ///
+    /// `from_dag`'s base half is derived from the fringes alone — `final_scope`, the base and the base
+    /// state — so a fringe that cannot advance cannot advance the base either. The **conflict scope** is
+    /// the other half: it is `merge_fringe.seen \ final_fringe.seen`, derived from the *parents*.
+    ///
+    /// That is the fact that bounds C201's diagnosis, and it was written because the A2 rig measured a
+    /// pre-state that never changed across 133 parent sets while one parent advanced to height 122
+    /// (`spec/audit/evidence/c201/`). With the fringe held fixed, a parent further along contributes
+    /// strictly more to the scope — so **the scope is not where that constancy comes from**, and a pinned
+    /// fringe alone cannot explain it. What is left is that those blocks' chains were rejected in the
+    /// merge, or that the caller never handed the merge an advancing parent at all.
+    ///
+    /// A `from_dag` that derived the conflict scope from the fringe rather than the parents would fail
+    /// this, which is the mutation it exists to catch.
+    #[test]
+    fn a_pinned_fringe_still_grows_the_conflict_scope_with_a_parent_that_advances() {
+        // g <- x2 <- x3 <- x4, with y a sibling off g that never advances.
+        let g = msg(1, &[], &[1]);
+        let y = msg(2, &[1], &[1, 2]);
+        let x2 = msg(3, &[1], &[1, 3]);
+        let x3 = msg(4, &[3], &[1, 3, 4]);
+        let x4 = msg(5, &[4], &[1, 3, 4, 5]);
+        let dag = BTreeMap::from([
+            (g.id, g.clone()),
+            (y.id, y.clone()),
+            (x2.id, x2.clone()),
+            (x3.id, x3.clone()),
+            (x4.id, x4.clone()),
+        ]);
+        // The fringe neither parent can advance past — `g` alone, which is the stalled-network shape.
+        let pinned: BTreeSet<BlockHash> = [g.id].into_iter().collect();
+        let no_children: BTreeMap<BlockHash, BTreeSet<BlockHash>> = BTreeMap::new();
+
+        let scope_of = |x: &Message<BlockHash, Validator>| {
+            MergeScope::from_dag(
+                &[x.id, y.id].into_iter().collect(),
+                &pinned,
+                &no_children,
+                &dag,
+            )
+            .expect("a well-formed dag")
+        };
+        let (early, base_early) = scope_of(&x2);
+        let (late, base_late) = scope_of(&x4);
+
+        assert_eq!(
+            early.final_scope, late.final_scope,
+            "the fringe-derived half is the pinned one, which is the premise"
+        );
+        assert_eq!(base_early, base_late, "and so is the base it implies");
+        assert!(
+            early.conflict_scope.len() < late.conflict_scope.len(),
+            "the parent-derived half grows with the parent: {} then {}",
+            early.conflict_scope.len(),
+            late.conflict_scope.len()
+        );
+        assert!(
+            late.conflict_scope.contains(&x4.id),
+            "and the block the advancing parent added is in it"
+        );
+    }
+
     /// A fringe hash that is **not in the DAG** is an error naming which fringe and which hash —
     /// never a silent omission, which would merge a scope that is quietly missing a branch.
     #[test]

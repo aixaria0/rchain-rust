@@ -45,3 +45,96 @@
       9 2
 block 22
 15
+3
+2026-10-02T19:03:08.370Z WARN  [casper.blocks.Proposer] EQUIVOCATION INJECTION: broadcasting a second block #2 (seq 1) from this node's own key. Every peer will record this node as having equivocated and may slash it. This is the devnet-only `--equivocation-injection`.
+2026-10-02T19:03:08.867Z WARN  [casper.blocks.Proposer] EQUIVOCATION INJECTION: broadcasting a second block #3 (seq 2) from this node's own key. Every peer will record this node as having equivocated and may slash it. This is the devnet-only `--equivocation-injection`.
+20
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+17
+     17 1
+      6 2
+block 19
+9
+7
+2026-10-02T19:16:39.729Z WARN  [casper.blocks.Proposer] EQUIVOCATION INJECTION: broadcasting a second block #6 (seq 5) from this node's own key. Every peer will record this node as having equivocated and may slash it. This is the devnet-only `--equivocation-injection`.
+2026-10-02T19:16:40.219Z WARN  [casper.blocks.Proposer] EQUIVOCATION INJECTION: broadcasting a second block #7 (seq 6) from this node's own key. Every peer will record this node as having equivocated and may slash it. This is the devnet-only `--equivocation-injection`.
+28
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+21
+     21 1
+     10 2
+block 23
+17
+5
+2026-10-02T19:43:40.010Z WARN  [casper.blocks.Proposer] EQUIVOCATION INJECTION: broadcasting a second block #4 (seq 3) from this node's own key. Every peer will record this node as having equivocated and may slash it. This is the devnet-only `--equivocation-injection`.
+2026-10-02T19:43:40.306Z WARN  [casper.blocks.Proposer] EQUIVOCATION INJECTION: broadcasting a second block #5 (seq 4) from this node's own key. Every peer will record this node as having equivocated and may slash it. This is the devnet-only `--equivocation-injection`.
+24
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+[pos] slashing 1 bonded validator(s) whose block failed validation here (tier and share): 04dbe32c Malicious/10000bps (equivocation evidence)
+19
+     19 1
+      8 2
+block 21
+13

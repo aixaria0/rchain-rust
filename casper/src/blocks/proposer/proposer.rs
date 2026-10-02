@@ -774,7 +774,55 @@ where
     let mut to_slash: BTreeMap<Validator, ProposedSlash> =
         slashable_offenders(&pre_state.justifications, &bonded);
     // **And the equivocations this node has itself seen** (AUDIT C200).
-    add_recorded_equivocations(&mut to_slash, dag.recorded_equivocations().await, &bonded);
+    //
+    // **The instrument is AUDIT C201's, and it is here because the row asked for a measurement rather
+    // than a fixture.** The live A2 arm showed this fold taking a `Slash` for an offender the *block's
+    // own* bonds map had already dropped, on every block — 59 of them. The merge is exonerated (C201's
+    // fixture passes: a slashing branch's native write does reach a merged root), so what is left is
+    // **which hash this fold reads**, and that is what these two lines report: the pre-state it asked,
+    // how many validators that answer held, and — for every equivocation this node has recorded —
+    // whether the `bonded` filter admitted it. A run that takes the slash while `admitted` names the
+    // offender is the bug; one that never admits it means the repeated slash has another cause.
+    //
+    // Logged only when there is something recorded, so a chain that has never seen an equivocation pays
+    // nothing for it.
+    let recorded_equivocations = dag.recorded_equivocations().await;
+    if !recorded_equivocations.is_empty() {
+        let admitted: Vec<String> = recorded_equivocations
+            .iter()
+            .filter(|(v, _)| bonded.contains(v))
+            .map(|(v, _)| rchain_shared::base16::encode(v.as_bytes()))
+            .collect();
+        eprintln!(
+            "[pos] c201: pre_state={} bonded={} recorded={} admitted={:?} justifications={} \
+             fringe={} rejected={} parents={:?}",
+            pre_state_hash.to_hex(),
+            bonded.len(),
+            recorded_equivocations.len(),
+            admitted,
+            // **The other half of the question**: if the pre-state is constant while the chain
+            // advances, the interesting fact is what the *parents* were. Taken from the same
+            // `ParentsMergedState` the pre-state came from, so the two cannot disagree about which
+            // merge produced which.
+            pre_state.justifications.len(),
+            // **And the two things that could pin it.** `fringe` is eight bytes of the fringe the merge
+            // used: if it never moves, the base half is pinned. `rejected` is how many deploy ids the
+            // merge *refused* — a non-zero value here means the conflict scope's work was thrown away,
+            // which is the only remaining way a growing conflict scope contributes nothing.
+            &rchain_shared::base16::encode(pre_state.fringe_state.as_bytes())[..8],
+            pre_state.rejected_deploys.len(),
+            pre_state
+                .justifications
+                .iter()
+                .map(|m| format!(
+                    "{}@{}",
+                    &rchain_shared::base16::encode(m.block_hash.as_bytes())[..8],
+                    m.block_num
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+    add_recorded_equivocations(&mut to_slash, recorded_equivocations, &bonded);
     if !to_slash.is_empty() {
         // The consequence, logged where it is decided. The validation failure that caused it is already
         // logged by the block processor; nothing connected the two, so a slashing used to be visible only as
