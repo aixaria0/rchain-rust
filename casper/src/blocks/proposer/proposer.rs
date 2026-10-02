@@ -19,6 +19,7 @@ use rchain_crypto::signatures::signed::Signed;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
+use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, DeployData, SignedDeployData};
 use rchain_models::validator::Validator;
 use rchain_sdk::consensus::is_super_majority;
@@ -718,20 +719,28 @@ where
         .filter(|(_, b)| i64::from(**b) > 0)
         .map(|(v, _)| *v)
         .collect();
-    let to_slash: BTreeSet<Validator> = slashable_offenders(&pre_state.justifications, &bonded);
+    let to_slash: BTreeMap<Validator, SlashSeverity> =
+        slashable_offenders(&pre_state.justifications, &bonded);
     if !to_slash.is_empty() {
         // The consequence, logged where it is decided. The validation failure that caused it is already
         // logged by the block processor; nothing connected the two, so a slashing used to be visible only as
-        // the pool getting smaller later on (`getBonds` counting one fewer validator).
+        // the pool getting smaller later on (`getBonds` counting one fewer validator). The tier is logged
+        // with it, because it decides how much of the bond leaves — and an operator reading a slash wants
+        // to know both.
         eprintln!(
-            "[pos] slashing {} bonded validator(s) whose block failed validation here: {}",
+            "[pos] slashing {} bonded validator(s) whose block failed validation here (tier and share): {}",
             to_slash.len(),
             to_slash
                 .iter()
-                .map(|v| rchain_shared::base16::encode(v.as_bytes())
-                    .chars()
-                    .take(8)
-                    .collect::<String>())
+                .map(|(v, tier)| format!(
+                    "{} {:?}/{}bps",
+                    rchain_shared::base16::encode(v.as_bytes())
+                        .chars()
+                        .take(8)
+                        .collect::<String>(),
+                    tier,
+                    tier.basis_points()
+                ))
                 .collect::<Vec<_>>()
                 .join(" ")
         );
@@ -1433,6 +1442,7 @@ mod attestation_suppression_tests {
     use rchain_block_storage::dag::liveness;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1455,6 +1465,7 @@ mod attestation_suppression_tests {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
@@ -1637,10 +1648,10 @@ mod attestation_suppression_tests {
 fn slashable_offenders(
     justifications: &[rchain_models::block_metadata::BlockMetadata],
     bonded: &BTreeSet<Validator>,
-) -> BTreeSet<Validator> {
+) -> BTreeMap<Validator, SlashSeverity> {
     crate::validate::slashable_senders(justifications)
         .into_iter()
-        .filter(|sender| bonded.contains(sender))
+        .filter(|(sender, _)| bonded.contains(sender))
         .collect()
 }
 
@@ -1649,6 +1660,7 @@ mod slashable_offenders_tests {
     use super::slashable_offenders;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, SeqNum};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1665,6 +1677,13 @@ mod slashable_offenders_tests {
             validation_failed,
             slashable,
             failure_cause: None,
+            // A slashable record always carries a real tier (`mark_failed` sets it from the status), so
+            // the fixture does too; a test that wants a different one overwrites it.
+            slash_severity: if slashable {
+                SlashSeverity::Malicious
+            } else {
+                SlashSeverity::Unspecified
+            },
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
@@ -1672,14 +1691,20 @@ mod slashable_offenders_tests {
         }
     }
 
-    fn rule(justifications: &[BlockMetadata], bonded: &[Validator]) -> BTreeSet<Validator> {
+    fn rule(
+        justifications: &[BlockMetadata],
+        bonded: &[Validator],
+    ) -> BTreeMap<Validator, SlashSeverity> {
         slashable_offenders(justifications, &bonded.iter().copied().collect())
     }
 
     #[test]
     fn a_bonded_sender_of_a_disagreeing_block_is_slashable() {
         let v = Validator::new([1u8; 65]);
-        assert_eq!(rule(&[meta(v, true, true)], &[v]), BTreeSet::from([v]));
+        assert_eq!(
+            rule(&[meta(v, true, true)], &[v]),
+            BTreeMap::from([(v, SlashSeverity::Malicious)])
+        );
     }
 
     /// The point of the narrowing: a block this node could not replay says nothing about its sender, so a
@@ -1702,8 +1727,24 @@ mod slashable_offenders_tests {
                 &[meta(bonded, true, true), meta(observer, true, true)],
                 &[bonded]
             ),
-            BTreeSet::from([bonded])
+            BTreeMap::from([(bonded, SlashSeverity::Malicious)])
         );
+    }
+
+    /// **A validator answers for the worst thing it did** (AUDIT C199). Two failed blocks from one
+    /// sender — a tenth and a quarter — cost a quarter: not the sum, and not the milder one. The order
+    /// of the justifications must not matter, since two nodes can see them in different orders.
+    #[test]
+    fn a_validator_answers_for_its_worst_tier() {
+        let v = Validator::new([1u8; 65]);
+        let mut mild = meta(v, true, true);
+        mild.slash_severity = SlashSeverity::HonestMistake;
+        let mut bad = meta(v, true, true);
+        bad.slash_severity = SlashSeverity::Misdemeanour;
+
+        let expected = BTreeMap::from([(v, SlashSeverity::Misdemeanour)]);
+        assert_eq!(rule(&[mild.clone(), bad.clone()], &[v]), expected);
+        assert_eq!(rule(&[bad, mild], &[v]), expected);
     }
 }
 
@@ -1738,6 +1779,7 @@ mod active_validator_tests {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),

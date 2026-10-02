@@ -141,18 +141,24 @@ pub fn phlo_limit(b: &BlockMessage) -> BlockStatus {
 /// not replay something locally does not thereby condemn its sender.
 pub fn slashable_senders(
     justifications: &[rchain_models::block_metadata::BlockMetadata],
-) -> BTreeSet<rchain_models::validator::Validator> {
-    justifications
-        .iter()
-        .filter(|m| m.slashable)
-        .map(|m| m.sender)
-        .collect()
+) -> BTreeMap<rchain_models::validator::Validator, SlashSeverity> {
+    let mut out: BTreeMap<rchain_models::validator::Validator, SlashSeverity> = BTreeMap::new();
+    for m in justifications.iter().filter(|m| m.slashable) {
+        // A validator answers for the **worst** thing it did, not for a count: the slash is
+        // per-validator, and a second offence cannot be cheaper than the first.
+        out.entry(m.sender)
+            .and_modify(|tier| *tier = tier.harsher(m.slash_severity))
+            .or_insert(m.slash_severity);
+    }
+    out
 }
 
 /// The validators a block slashes, read off its system deploys. A slash that *failed* during the
 /// proposer's run carries no `SystemDeployData::Slash` (`ProcessedSystemDeploy::Failed` holds only an
 /// error message), so this reads exactly the slashes that took effect.
-pub fn slashed_validators(b: &BlockMessage) -> BTreeSet<rchain_models::validator::Validator> {
+pub fn slashed_validators(
+    b: &BlockMessage,
+) -> BTreeMap<rchain_models::validator::Validator, SlashSeverity> {
     b.state
         .system_deploys
         .iter()
@@ -161,9 +167,10 @@ pub fn slashed_validators(b: &BlockMessage) -> BTreeSet<rchain_models::validator
                 system_deploy,
                 ..
             } => match system_deploy {
-                rchain_models::casper::protocol::casper_message::SystemDeployData::Slash(v) => {
-                    Some(*v)
-                }
+                rchain_models::casper::protocol::casper_message::SystemDeployData::Slash {
+                    validator,
+                    severity,
+                } => Some((*validator, *severity)),
                 _ => None,
             },
             rchain_models::casper::protocol::casper_message::ProcessedSystemDeploy::Failed {
@@ -181,6 +188,7 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_block_storage::dag::finalizer::Message;
 use rchain_models::block_metadata::BlockMetadata;
+use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::validator::Validator;
 
 use crate::proto_util::{
@@ -1029,18 +1037,47 @@ mod tests {
         let mut b = block();
         b.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash(offender),
+            system_deploy: SystemDeployData::Slash {
+                validator: offender,
+                severity: SlashSeverity::Malicious,
+            },
         }];
-        assert_eq!(slashed_validators(&b), BTreeSet::from([offender]));
+        assert_eq!(
+            slashed_validators(&b),
+            BTreeMap::from([(offender, SlashSeverity::Malicious)])
+        );
 
-        // Evidence that holds `offender` responsible: the slash is covered.
+        // Evidence that holds `offender` responsible **at the tier the slash claims**: covered.
         let mut meta = BlockMetadata::from_block(&b);
         meta.sender = offender;
         meta.slashable = true;
+        meta.slash_severity = SlashSeverity::Malicious;
         let justified = slashable_senders(&[meta.clone()]);
+        let covers = |b: &BlockMessage, justified: &BTreeMap<_, _>| {
+            slashed_validators(b)
+                .iter()
+                .all(|(v, tier)| justified.get(v) == Some(tier))
+        };
         assert!(
-            slashed_validators(&b).is_subset(&justified),
-            "a slash of the validator its evidence condemns must be covered"
+            covers(&b, &justified),
+            "a slash of the validator its evidence condemns, at the tier the evidence derives, must \
+             be covered"
+        );
+
+        // **The tier is checked, not taken** (AUDIT C199). The same victim, the same evidence — and a
+        // slash claiming a harsher tier than the offence earns is refused. Without this a proposer
+        // would size the confiscation freely and the tiers would be advice.
+        let mut overclaimed = b.clone();
+        overclaimed.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash {
+                validator: offender,
+                severity: SlashSeverity::Misdemeanour,
+            },
+        }];
+        assert!(
+            !covers(&overclaimed, &justified),
+            "a slash whose tier is not the one this node derives must be refused"
         );
 
         // The attack this check exists for: the block slashes `innocent`, and nothing in the
@@ -1048,10 +1085,13 @@ mod tests {
         // the strength of its post-state hash alone.
         b.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash(innocent),
+            system_deploy: SystemDeployData::Slash {
+                validator: innocent,
+                severity: SlashSeverity::Malicious,
+            },
         }];
         assert!(
-            !slashed_validators(&b).is_subset(&justified),
+            !covers(&b, &justified),
             "slashing a validator no justification holds responsible must be refused — this is the \
              stake-confiscation path a proposer could take against any bonded peer"
         );
@@ -1063,7 +1103,7 @@ mod tests {
         merely_failed.validation_failed = true;
         merely_failed.slashable = false;
         assert!(
-            !slashed_validators(&b).is_subset(&slashable_senders(&[merely_failed])),
+            !covers(&b, &slashable_senders(&[merely_failed])),
             "an unattributable local failure must not license a slash"
         );
     }
@@ -1099,7 +1139,10 @@ mod tests {
         b.state.deploys = vec![];
         b.state.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash(Validator::new([0x44; 65])),
+            system_deploy: SystemDeployData::Slash {
+                validator: Validator::new([0x44; 65]),
+                severity: SlashSeverity::Malicious,
+            },
         }];
         assert_eq!(
             deploy_signatures(&b),
@@ -1150,6 +1193,7 @@ mod effectful_tests {
             validation_failed: failed,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),

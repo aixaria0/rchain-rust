@@ -88,6 +88,7 @@ use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
 use rchain_casper::gateway::GatewayLeg;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
+use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::casper::protocol::deploy_service::{
     BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
@@ -286,6 +287,7 @@ impl BlockApi for TestShardApi {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),

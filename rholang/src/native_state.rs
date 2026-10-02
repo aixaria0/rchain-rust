@@ -40,6 +40,7 @@ use std::sync::Arc;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::Par;
+use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::validator::Validator;
 use rchain_shared::refined::NonNegI64;
 use rchain_shared::serialize::Serialize;
@@ -1427,28 +1428,72 @@ impl NativeSystemState {
     /// and claims in `withdrawers` and the slashed validator is out of both, and **never removed**,
     /// because the only `committed.remove` in this file is the claim payment. Since `epoch_pot`
     /// subtracts *every* `committed` entry, the stranded balance went on shrinking the pot for every
-    /// other validator for ever. Deleting it returns that amount to the distributable pot, which is
-    /// what the oracle does.
-    pub async fn slash(&self, validator: &Validator) -> Result<Result<(), String>, String> {
+    /// other validator for ever.
+    ///
+    /// **What is confiscated is a *share* of everything the validator holds, and the tier decides how
+    /// much** (AUDIT C199). Three holdings are at risk, and all three are in the staking vault: the
+    /// pool **bond**, any **escrowed claim** (a staged withdrawal whose bond has already left the pool),
+    /// and the **accrued rewards**. The tier takes `basis_points` of their sum to the Coop vault and
+    /// **returns the remainder to the validator's own vault**, so the loss is exactly the tier — which
+    /// is the property an operator needs before bonding, and the reason a rule that always took
+    /// everything made staking a bad deal whatever the reward was.
+    ///
+    /// Both sides of that are vault-to-vault transfers, so nothing is minted or burned, and
+    /// `confiscated + returned == at_risk` exactly: the floor division's remainder is *returned*, not
+    /// kept. `SlashSeverity::Unspecified` — a slash recorded before the tiers existed — takes the whole
+    /// sum, which is what it would have done.
+    pub async fn slash(
+        &self,
+        validator: &Validator,
+        severity: SlashSeverity,
+    ) -> Result<Result<(), String>, String> {
         let mut pool = self.bonds().await?;
         let mut active = self.active().await?;
         let mut withdrawers = self.withdrawers().await?;
         let mut pending = self.pending_withdrawers().await?;
         let mut committed = self.committed_rewards().await?;
-        let stake = pool.remove(validator);
+
+        let bond = pool.remove(validator).map(i64::from).unwrap_or(0);
         active.remove(validator);
-        withdrawers.remove(validator);
+        let escrowed = withdrawers
+            .remove(validator)
+            .map(|claim| i64::from(claim.bond))
+            .unwrap_or(0);
         pending.remove(validator);
-        committed.remove(validator);
-        if let Some(stake) = stake {
-            // The stake leaves the staking vault for the Coop multisig vault (`Pos.rhox:470-482`:
-            // `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey)`). Debiting the source
-            // is what makes this a *transfer*: crediting the Coop vault on its own — which is what
-            // this did before the staking vault existed — mints the slashed bond out of nothing.
-            self.debit_pos_vault(stake).await?;
+        let accrued = committed.remove(validator).map(i64::from).unwrap_or(0);
+
+        let at_risk = checked_i64(
+            i128::from(bond) + i128::from(escrowed) + i128::from(accrued),
+            "slashed holdings",
+        )?;
+        let confiscated =
+            i64::try_from(i128::from(at_risk) * i128::from(severity.basis_points()) / 10_000)
+                .map_err(|e| format!("slash share: {e}"))?;
+        let returned = at_risk - confiscated;
+
+        // The confiscated share leaves the staking vault for the Coop multisig vault
+        // (`Pos.rhox:470-482`: `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey)`).
+        // Debiting the source is what makes this a *transfer*: crediting the Coop vault on its own —
+        // which is what this did before the staking vault existed — mints the slashed stake from
+        // nothing.
+        if confiscated > 0 {
+            self.debit_pos_vault(NonNegI64::try_from(confiscated).map_err(|e| e.to_string())?)
+                .await?;
             let coop = self.coop_balance().await?;
-            self.set_coop_balance(balance_plus(coop, i64::from(stake), "slash coop")?);
+            self.set_coop_balance(balance_plus(coop, confiscated, "slash coop")?);
         }
+        // …and the rest is the validator's, back in its own vault.
+        if returned > 0 {
+            self.debit_pos_vault(NonNegI64::try_from(returned).map_err(|e| e.to_string())?)
+                .await?;
+            let address = self.vault_address(validator)?;
+            let balance = self
+                .vault_balance(&address)
+                .await?
+                .unwrap_or(NonNegI64::zero());
+            self.set_vault_balance(&address, balance_plus(balance, returned, "slash return")?);
+        }
+
         self.set_bonds(&pool);
         self.set_active(&active);
         self.set_withdrawers(&withdrawers);
@@ -2061,7 +2106,11 @@ mod tests {
         conserved!("untrust");
 
         // A slash leaves the staking vault for the Coop vault.
-        native.slash(&v2).await.unwrap().unwrap();
+        native
+            .slash(&v2, SlashSeverity::Malicious)
+            .await
+            .unwrap()
+            .unwrap();
         conserved!("slash");
     }
 
@@ -2902,7 +2951,11 @@ mod tests {
         let addresses = [vault_address_of(&v)];
         let before = total_rev(&native, &addresses).await;
 
-        native.slash(&v).await.unwrap().unwrap();
+        native
+            .slash(&v, SlashSeverity::Unspecified)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(!native.bonds().await.unwrap().contains_key(&v));
         assert!(!native.active().await.unwrap().contains_key(&v));
@@ -2934,20 +2987,19 @@ mod tests {
         .unwrap()
     }
 
-    /// **The C197 falsifier: a slash drops the offender's accrued rewards, as the oracle does.**
-    ///
-    /// `Pos.rhox`'s slash deletes the validator's `committedRewards` entry in the same state write as
-    /// the bond zeroing. This port left it, and the entry was then unreachable in both directions —
-    /// never paid, because the epoch pays pool members and claims in `withdrawers` and the validator
-    /// is out of both, and never removed, because the only `committed.remove` is the claim payment —
-    /// so the balance sat in the staking vault and went on reducing the pot for every *other*
+    /// **The C197 falsifier, restated for the tiers: a slash clears the offender's accrued rewards
+    /// and *accounts* for them.** `Pos.rhox` deletes the entry; this port left it, and it was then
+    /// unreachable both ways — never paid (the epoch pays pool members and claims in `withdrawers`,
+    /// and the validator is out of both) and never removed (the only `committed.remove` is the claim
+    /// payment) — so the balance sat in the staking vault shrinking the pot for every *other*
     /// validator, for ever.
     ///
-    /// The pot is the testable consequence. `epoch_pot` subtracts every `committed` entry, and the
-    /// bond's confiscation is pot-neutral (the vault loses exactly what the pool loses), so the slash
-    /// must move the pot **up** by the accrued amount. Red before the fix, where it did not move.
+    /// The consequence is now visible in two places at once, and they must agree: the entry is gone,
+    /// **and** the amount left the staking vault — to the Coop vault under `Unspecified`, which is the
+    /// pre-tier rule and takes everything. Red before C197: the entry survived and the Coop vault did
+    /// not move by it.
     #[tokio::test]
-    async fn a_slash_clears_the_accrued_rewards_and_returns_them_to_the_pot() {
+    async fn a_slash_clears_the_accrued_rewards_and_accounts_for_them() {
         let native =
             native_with(&[validator(1)], PosParams::default(), &[(validator(1), 10)]).await;
         let v = validator(1);
@@ -2966,16 +3018,157 @@ mod tests {
             "40 of vault (10 bonded + 30 burned) less the 10 bonded less the 7 accrued"
         );
 
-        native.slash(&v).await.unwrap().unwrap();
+        native
+            .slash(&v, SlashSeverity::Unspecified)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(
             !native.committed_rewards().await.unwrap().contains_key(&v),
             "the offender's accrued rewards go with the bond"
         );
         assert_eq!(
+            i64::from(native.coop_balance().await.unwrap()),
+            17,
+            "the bond (10) and the accrued (7) both left for the Coop vault — the pre-tier rule \
+             takes everything at risk"
+        );
+        assert_eq!(
             pot_of(&native).await,
-            pot_before + i64::from(accrued),
-            "and they return to the distributable pot instead of shrinking it for ever"
+            pot_before,
+            "and the pot is unchanged: the vault loses exactly what the claims lose, so a slash \
+             neither shrinks nor subsidises what the epoch distributes"
+        );
+    }
+
+    /// **The A3 falsifier, first tier: a misdemeanour takes a quarter and gives the rest back.**
+    ///
+    /// Everything the validator holds in the PoS system is at risk — the bond, the accrued rewards,
+    /// and an escrowed withdrawal claim — and the tier takes a share of *that sum* while the
+    /// remainder returns to the validator's own vault. The two halves must add up: the floor
+    /// division's remainder is returned, never kept, so the loss is exactly the tier.
+    ///
+    /// Red before C199: the whole bond went to the Coop vault and nothing came back.
+    #[tokio::test]
+    async fn a_misdemeanour_takes_a_quarter_and_returns_the_rest() {
+        let native = native_with(
+            &[validator(1), validator(2)],
+            PosParams::default(),
+            &[(validator(1), 10)],
+        )
+        .await;
+        let v = validator(2);
+        fund(&native, &v, 100).await;
+        native
+            .bond(&v, NonNegI64::try_from(40).unwrap(), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        // An accrual that does not divide evenly by four, so the floor's remainder is exercised.
+        native.set_committed_rewards(&BTreeMap::from([(v, NonNegI64::try_from(7).unwrap())]));
+        native
+            .credit_pos_vault(NonNegI64::try_from(1_000).unwrap())
+            .await
+            .unwrap();
+
+        let wallet_before = i64::from(
+            native
+                .vault_balance(&vault_address_of(&v))
+                .await
+                .unwrap()
+                .unwrap_or(NonNegI64::zero()),
+        );
+        let at_risk = 40 + 7;
+        let confiscated = at_risk * 2_500 / 10_000; // 11
+        let returned = at_risk - confiscated; // 36
+
+        native
+            .slash(&v, SlashSeverity::Misdemeanour)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            i64::from(native.coop_balance().await.unwrap()),
+            confiscated,
+            "a quarter of everything at risk, floored"
+        );
+        let wallet_after = i64::from(
+            native
+                .vault_balance(&vault_address_of(&v))
+                .await
+                .unwrap()
+                .unwrap_or(NonNegI64::zero()),
+        );
+        assert_eq!(
+            wallet_after,
+            wallet_before + returned,
+            "and the remainder is the validator's again — including the floor's remainder, so \
+             confiscated + returned is exactly what was at risk"
+        );
+        assert!(!native.bonds().await.unwrap().contains_key(&v));
+        assert!(
+            !native.committed_rewards().await.unwrap().contains_key(&v),
+            "the validator is out of the pool and its claims are cleared either way"
+        );
+    }
+
+    /// **The tier a validator answers for is the worst it committed.** Two failed blocks from one
+    /// sender — a tenth and a quarter — cost a quarter, not two tenths and not the whole bond.
+    ///
+    /// And the *scope* is every holding, not the bond alone: an escrowed claim is at risk too, which
+    /// is the half a bond-only cap would have missed (and which used to be forfeited outright, since
+    /// `slash` removed the claim and nothing paid it).
+    #[tokio::test]
+    async fn a_slash_counts_the_escrowed_claim_and_takes_the_worst_tier() {
+        let native = native_with(
+            &[validator(1), validator(2)],
+            PosParams::default(),
+            &[(validator(1), 10)],
+        )
+        .await;
+        let v = validator(2);
+        fund(&native, &v, 100).await;
+        native
+            .bond(&v, NonNegI64::try_from(30).unwrap(), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        // Staged and past a boundary: 20 of the bond has left the pool and is escrowed, so what the
+        // validator has in the PoS system is a 10 bond plus a 20 claim.
+        native.set_bonds(&BTreeMap::from([
+            (validator(1), NonNegI64::try_from(10).unwrap()),
+            (v, NonNegI64::try_from(10).unwrap()),
+        ]));
+        native.set_withdrawers(&BTreeMap::from([(
+            v,
+            Withdrawal {
+                bond: NonNegI64::try_from(20).unwrap(),
+                deadline: 10_000,
+            },
+        )]));
+        native
+            .credit_pos_vault(NonNegI64::try_from(1_000).unwrap())
+            .await
+            .unwrap();
+
+        // Bond 10 + claim 20 = 30 at risk; a quarter is 7.
+        native
+            .slash(&v, SlashSeverity::Misdemeanour)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            i64::from(native.coop_balance().await.unwrap()),
+            7,
+            "the escrowed claim is part of what the tier is a share of — a bond-only cap would have \
+             missed it, and before C199 the claim was forfeited outright"
+        );
+        assert!(
+            !native.withdrawers().await.unwrap().contains_key(&v),
+            "and the claim is cleared with the rest of the validator's records"
         );
     }
 
@@ -3453,7 +3646,11 @@ mod tests {
             "the staged withdrawal must be in the store before the slash"
         );
 
-        native.slash(&slashed).await.unwrap().unwrap();
+        native
+            .slash(&slashed, SlashSeverity::Malicious)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(
             !native.pending_withdrawers().await.unwrap().contains_key(&slashed),

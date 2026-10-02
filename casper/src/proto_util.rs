@@ -108,6 +108,7 @@ pub fn unsigned_block_proto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_models::block_metadata::SlashSeverity;
 
     fn block() -> BlockMessage {
         BlockMessage {
@@ -176,6 +177,7 @@ mod tests {
                 validation_failed: false,
                 slashable: false,
                 failure_cause: None,
+                slash_severity: SlashSeverity::Unspecified,
                 restore_attempts: 0,
                 fringe: BTreeSet::new(),
                 fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),

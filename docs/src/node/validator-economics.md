@@ -170,9 +170,17 @@ senders **in the receiving node's own DAG**. The proposer's opinion of the victi
 the slash service is not auth-gated — that per-node check is the guard (AUDIT C110,
 [`spec/audit/passes.md`](../../../spec/audit/passes.md)).
 
-**Full.** `slash` (`rholang/src/native_state.rs:1421`) removes the validator from the pool, the active
-set, the withdrawers and the pending withdrawers, and moves **the whole bond** to the Coop vault. There
-is no partial slash and no percentage parameter: a slash is confiscation, not deactivation.
+**Graded, and bounded.** `slash` (`rholang/src/native_state.rs`) removes the validator from the pool, the
+active set, the withdrawers and the pending withdrawers — confiscation, not deactivation — and what it
+takes is a **share of everything that validator holds in the PoS system**: its bond, its accrued and
+unwithdrawn rewards, and an escrowed withdrawal claim. The share is set by the **tier of the offence**
+(`SlashSeverity`, and the table is `BlockStatus::slash_severity`): a **forged** deploy — a signature that
+does not verify against the key it names — takes all of it; a rule the author's own block breaks takes a
+**quarter**; and a bound a stale deploy pool or a clock skew explains takes a **tenth**. **The remainder
+returns to the validator's own vault**, so the loss is exactly the tier and the worst case is one an
+operator can read before bonding. A validator that offended more than once answers for the worst tier it
+committed. (Before 2026-10-02 the rule took the *whole* bond whatever the offence, which is the exposure
+the tiers exist to bound.)
 
 That is the whole of the answer to "does slashing punish a software fault?" — the protocol already
 declines to. A node that cannot replay a block, or replays it to a *different* state, records

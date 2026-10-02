@@ -15,6 +15,7 @@ use rchain_shared::serialize::Serialize;
 
 use crate::block::state_hash::StateHash;
 use crate::block_hash::BlockHash;
+use crate::block_metadata::SlashSeverity;
 use crate::casper::protocol::deploy_service::DeployInfo;
 use crate::proto::casper::PCost as PCostProto;
 use crate::proto::casper::*;
@@ -381,7 +382,16 @@ impl Event {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SystemDeployData {
-    Slash(Validator),
+    /// A slash, and **what it takes** (AUDIT C199): the victim, and the tier its offence earns.
+    ///
+    /// The tier travels in the state because a replayer reconstructs this deploy from here and has no
+    /// DAG to re-derive a tier from, and because a receiving node must be able to check it against its
+    /// own derivation rather than trust the proposer's arithmetic. Code `0` is a slash recorded before
+    /// the tiers existed, and it takes everything — which is what it did.
+    Slash {
+        validator: Validator,
+        severity: SlashSeverity,
+    },
     CloseBlock,
     Empty,
 }
@@ -389,9 +399,12 @@ pub enum SystemDeployData {
 impl SystemDeployData {
     pub fn from_proto(p: &SystemDeployDataProto) -> Result<Self, crate::errors::ModelsError> {
         match &p.system_deploy {
-            Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => Ok(
-                SystemDeployData::Slash(Validator::try_from(sd.slashed_validator.as_slice())?),
-            ),
+            Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => {
+                Ok(SystemDeployData::Slash {
+                    validator: Validator::try_from(sd.slashed_validator.as_slice())?,
+                    severity: SlashSeverity::from_code(sd.slash_severity),
+                })
+            }
             Some(system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_)) => {
                 Ok(SystemDeployData::CloseBlock)
             }
@@ -401,10 +414,14 @@ impl SystemDeployData {
 
     pub fn to_proto(&self) -> SystemDeployDataProto {
         match self {
-            SystemDeployData::Slash(validator) => SystemDeployDataProto {
+            SystemDeployData::Slash {
+                validator,
+                severity,
+            } => SystemDeployDataProto {
                 system_deploy: Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
                         slashed_validator: validator.as_bytes().to_vec(),
+                        slash_severity: severity.to_code(),
                     },
                 )),
             },

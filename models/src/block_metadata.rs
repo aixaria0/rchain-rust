@@ -40,6 +40,81 @@ pub enum FailureCause {
     Cascade,
 }
 
+/// **How much of what a validator holds a slash may take**, by the character of the offence
+/// (AUDIT C199).
+///
+/// The bond is the stake at risk, and a rule that always took *all* of it made an operator's worst
+/// case total: one refusal cost the whole bond while going offline cost nothing. The tiers put the
+/// punishment next to the fault — forgery is punished in full, a rule the author's own block breaks
+/// costs a quarter, and crossing a bound a stale pool or a clock skew explains costs a tenth.
+///
+/// A tier is a fraction of **everything the validator holds in the PoS system** — its bond, its
+/// accrued and unwithdrawn rewards, and an escrowed withdrawal claim — and the remainder is
+/// **returned to its own vault**, so the loss is exactly the tier. That is why the tiers are stated as
+/// a share rather than an amount: the bound is the thing an operator needs to know before bonding.
+///
+/// **`Unspecified` is not a tier; it is the pre-tier rule.** A record written before the tiers existed
+/// carries code `0` and must slash in full, which is what it would have done. No new offence writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SlashSeverity {
+    /// Deliberate: the block asserts something forged. Full confiscation.
+    Malicious,
+    /// A rule the author's own block breaks with something to gain — a DAG position it is not entitled
+    /// to, a deploy it may not carry. A quarter.
+    Misdemeanour,
+    /// A bound crossed where the block is otherwise self-consistent — the class a stale deploy pool, a
+    /// clock skew or a local budget error explains. A tenth.
+    HonestMistake,
+    /// A record written before the tiers existed. Slashes in full, as it would have.
+    Unspecified,
+}
+
+impl SlashSeverity {
+    /// The share of everything at risk this tier confiscates, in basis points of the total.
+    pub fn basis_points(self) -> i64 {
+        match self {
+            SlashSeverity::Malicious => 10_000,
+            SlashSeverity::Misdemeanour => 2_500,
+            SlashSeverity::HonestMistake => 1_000,
+            // The pre-tier rule was the whole bond, and a legacy record has to replay to the state it
+            // was written in.
+            SlashSeverity::Unspecified => 10_000,
+        }
+    }
+
+    /// The protobuf code for this tier (see `BlockMetadataProto.slashSeverity`).
+    pub fn to_code(self) -> i32 {
+        match self {
+            SlashSeverity::Malicious => 1,
+            SlashSeverity::Misdemeanour => 2,
+            SlashSeverity::HonestMistake => 3,
+            SlashSeverity::Unspecified => 0,
+        }
+    }
+
+    /// Read a tier back from its protobuf code. `0` — a record predating the tiers, or one that never
+    /// carried an offence — is `Unspecified`, which slashes in full.
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            1 => SlashSeverity::Malicious,
+            2 => SlashSeverity::Misdemeanour,
+            3 => SlashSeverity::HonestMistake,
+            _ => SlashSeverity::Unspecified,
+        }
+    }
+
+    /// The harsher of two tiers, for a validator that offended more than once. `Unspecified` is the
+    /// weakest — it is the absence of a recorded tier, not a punishment.
+    pub fn harsher(self, other: SlashSeverity) -> SlashSeverity {
+        if other.basis_points() > self.basis_points() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
 impl FailureCause {
     /// The protobuf code for this cause (see `BlockMetadataProto.failureCause`).
     pub fn to_code(self) -> i32 {
@@ -106,6 +181,17 @@ pub struct BlockMetadata {
     /// ineligible, which is the safe direction.
     pub failure_cause: Option<FailureCause>,
 
+    /// **How much of what the sender holds a slash for this failure may take** (AUDIT C199).
+    ///
+    /// The tier for the *offence*, recorded here because the slash is built from this metadata: a
+    /// proposer reads its own records to decide what to slash, and a receiving node re-derives the same
+    /// tier from its own copy before accepting the slash. It is node-local, like `slashable` beside it
+    /// — the *tier itself* travels to the state through the block's own `SystemDeployData::Slash`.
+    ///
+    /// [`SlashSeverity::Unspecified`] is the absence of a recorded tier (a record written before this
+    /// existed), and it slashes in full, which is what such a record would have done.
+    pub slash_severity: SlashSeverity,
+
     /// How many times this node has re-validated the record in an attempt to clear it. Persisted so
     /// [`FailureCause::Divergence`]'s attempt cap survives a restart rather than resetting to zero.
     pub restore_attempts: u32,
@@ -150,6 +236,7 @@ impl BlockMetadata {
             validation_failed: b.validation_failed,
             slashable: b.slashable,
             failure_cause: FailureCause::from_code(b.failure_cause),
+            slash_severity: SlashSeverity::from_code(b.slash_severity),
             restore_attempts: b.restore_attempts,
             fringe: b
                 .fringe
@@ -195,6 +282,7 @@ impl BlockMetadata {
             validation_failed: self.validation_failed,
             slashable: self.slashable,
             failure_cause: self.failure_cause.map(|c| c.to_code()).unwrap_or(0),
+            slash_severity: self.slash_severity.to_code(),
             restore_attempts: self.restore_attempts,
             fringe: self.fringe.iter().map(|f| f.as_bytes().to_vec()).collect(),
             fringe_state_hash: self.fringe_state_hash.as_bytes().to_vec(),
@@ -229,6 +317,7 @@ impl BlockMetadata {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: StateHash::new([0u8; 32]),
@@ -261,6 +350,7 @@ mod tests {
             validation_failed: true,
             slashable: false,
             failure_cause: Some(FailureCause::Divergence),
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 2,
             fringe: [block_hash(5)].into_iter().collect(),
             fringe_state_hash: StateHash::new([9u8; 32]),
@@ -304,6 +394,7 @@ mod tests {
             let meta = BlockMetadata {
                 validation_failed: true,
                 failure_cause: Some(cause),
+                slash_severity: SlashSeverity::Unspecified,
                 restore_attempts: 1,
                 ..BlockMetadata::from_block(&base)
             };

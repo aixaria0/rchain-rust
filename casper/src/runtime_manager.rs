@@ -889,7 +889,10 @@ impl RuntimeManager {
                     .close_block(*block_number, *fringe_state_hash)
                     .await?
             }
-            NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
+            NativeSystemDeployOp::Slash {
+                validator,
+                severity,
+            } => native.slash(validator, *severity).await?,
         };
         let eval_result = EvaluateResult {
             cost: rchain_rholang::accounting::Cost::new(0, "native-system-deploy"),
@@ -932,9 +935,13 @@ impl RuntimeManager {
             Ok(()) => {
                 let system_deploy = match &deploy.op {
                     Some(NativeSystemDeployOp::CloseBlock { .. }) => SystemDeployData::CloseBlock,
-                    Some(NativeSystemDeployOp::Slash { validator }) => {
-                        SystemDeployData::Slash(*validator)
-                    }
+                    Some(NativeSystemDeployOp::Slash {
+                        validator,
+                        severity,
+                    }) => SystemDeployData::Slash {
+                        validator: *validator,
+                        severity: *severity,
+                    },
                     _ => SystemDeployData::Empty,
                 };
                 let processed = ProcessedSystemDeploy::Succeeded {

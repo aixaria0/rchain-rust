@@ -500,6 +500,7 @@ fn vote_of(outcome: &ShardOutcome) -> Vote {
 
 #[cfg(test)]
 mod tests {
+    use rchain_models::block_metadata::SlashSeverity;
     use std::sync::Mutex;
 
     use crate::runtime_manager::CapturedReply;
@@ -561,6 +562,7 @@ mod tests {
                 validation_failed: false,
                 slashable: false,
                 failure_cause: None,
+                slash_severity: SlashSeverity::Unspecified,
                 restore_attempts: 0,
                 member_of_fringe: None,
                 fringe: std::collections::BTreeSet::new(),

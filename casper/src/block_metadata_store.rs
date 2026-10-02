@@ -104,6 +104,7 @@ impl BlockMetadataStore {
 mod tests {
     use super::*;
     use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMetadataCodec};
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
     use rchain_shared::typed_store::KeyValueTypedStoreCodec;
 
@@ -163,6 +164,7 @@ mod tests {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
@@ -261,11 +263,16 @@ mod tests {
             "the whole metadata round-trips, not only the flag"
         );
 
-        // The consequence, which is the finding: a stored attributable failure is evidence.
+        // The consequence, which is the finding: a stored attributable failure is evidence — with the
+        // **tier** it earned, which is what decides how much of the bond the slash takes (AUDIT C199).
         assert_eq!(
-            crate::validate::slashable_senders(&[read_back]),
-            BTreeSet::from([attributable.sender]),
-            "a validator that stored an attributable failure must be whom the slash rule names"
+            crate::validate::slashable_senders(std::slice::from_ref(&read_back)),
+            std::collections::BTreeMap::from([(
+                attributable.sender,
+                read_back.slash_severity
+            )]),
+            "a validator that stored an attributable failure must be whom the slash rule names, at \
+             the tier the record carries"
         );
     }
 

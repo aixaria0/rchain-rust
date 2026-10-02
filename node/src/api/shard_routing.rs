@@ -292,6 +292,7 @@ impl BlockApi for ShardRoutingBlockApi {
 mod tests {
     use super::*;
     use rchain_casper::runtime_manager::ReplySource;
+    use rchain_models::block_metadata::SlashSeverity;
     use std::sync::Mutex;
 
     use rchain_models::casper::protocol::casper_message::DeployData;
@@ -481,6 +482,7 @@ mod tests {
                 validation_failed: false,
                 slashable: false,
                 failure_cause: None,
+                slash_severity: SlashSeverity::Unspecified,
                 restore_attempts: 0,
                 member_of_fringe: None,
                 fringe: std::collections::BTreeSet::new(),

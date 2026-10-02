@@ -120,6 +120,12 @@ message ProcessedDeployProto {
 
 message SlashSystemDeployDataProto {
   bytes slashedValidator = 1;
+  // **How much of the victim's holding this slash takes** (AUDIT C199): 0 = a slash recorded before
+  // the tiers existed, which takes all of it; 1 = malicious, 2 = a misdemeanour, 3 = an honest
+  // mistake. It is in the *state* rather than in the node's metadata because a replayer reconstructs
+  // the system deploy from here and has no DAG to re-derive a tier from — and because a receiving
+  // node has to be able to check it against its own derivation rather than take the proposer's word.
+  int32 slashSeverity = 2;
 }
 
 message CloseBlockSystemDeployDataProto {
@@ -226,6 +232,11 @@ message BlockMetadataProto {
   // How many times this node has tried to restore the record. Persisted so the attempt cap in
   // `restore_divergent_justifications` survives a restart.
   uint32 restoreAttempts        = 24;
+  // How much of what the sender holds a slash for this failure may take (AUDIT C199): 0 = a record
+  // written before the tiers existed, which slashes in full; 1 = malicious (all of it), 2 = a
+  // misdemeanour (a quarter), 3 = an honest mistake (a tenth). Node-local, like `slashable` beside it
+  // — the *tier* travels to the slash through the block's own system deploy, not through here.
+  int32 slashSeverity           = 25;
   repeated bytes fringe         = 30;
   bytes fringeStateHash         = 31;
   bytes memberOfFringe          = 40;

@@ -11,7 +11,7 @@ use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::{BlockMetadata, FailureCause};
+use rchain_models::block_metadata::{BlockMetadata, FailureCause, SlashSeverity};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
@@ -542,6 +542,7 @@ fn revalidated_record(stored: &BlockMetadata, fresh: Option<BlockMetadata>) -> B
         Some(fresh) => BlockMetadata {
             validation_failed: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             slashable: stored.slashable,
             restore_attempts: attempts,
             ..fresh
@@ -843,6 +844,9 @@ fn mark_failed(meta: &BlockMetadata, status: BlockStatus) -> BlockMetadata {
         validated: true,
         validation_failed: true,
         slashable: status.is_slashing_offence(),
+        slash_severity: status
+            .slash_severity()
+            .unwrap_or(SlashSeverity::Unspecified),
         failure_cause: Some(status.failure_cause()),
         ..meta.clone()
     }
@@ -896,6 +900,7 @@ mod tests {
             validation_failed: true,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),
@@ -947,6 +952,7 @@ mod newest_justification_tests {
     use super::newest_justification;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_shared::refined::BlockHeight;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -962,6 +968,7 @@ mod newest_justification_tests {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
@@ -1009,6 +1016,7 @@ mod newest_justification_tests {
 mod restore_tests {
     use super::{restore_is_warranted, revalidated_record, RESTORE_ATTEMPT_LIMIT};
     use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::block_metadata::{BlockMetadata, FailureCause};
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, SeqNum};
@@ -1026,6 +1034,7 @@ mod restore_tests {
             validation_failed: failed,
             slashable: false,
             failure_cause: cause,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: attempts,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
@@ -1132,6 +1141,7 @@ mod mark_failed_tests {
     use super::mark_failed;
     use crate::block_status::BlockStatus;
     use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::block_metadata::{BlockMetadata, FailureCause};
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, SeqNum};
@@ -1149,6 +1159,7 @@ mod mark_failed_tests {
             validation_failed: false,
             slashable: false,
             failure_cause: None,
+            slash_severity: SlashSeverity::Unspecified,
             restore_attempts: 0,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
