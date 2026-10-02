@@ -80,3 +80,9 @@ JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_d
 # `RUSTFLAGS` it sets applies only to `--target wasm32-unknown-unknown` invocations.
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+# **The wasm test runner (issue #98).** `cargo test --target wasm32-unknown-unknown` launches through
+# this on PATH, from `wasm-bindgen-cli` — whose version must equal the `wasm-bindgen` crate's, which is
+# why CI installs it from the version in `Cargo.lock` rather than a literal. `wasm-bindgen-test` then
+# runs the `#[wasm_bindgen_test]` fns under node, which is what makes `crypto/tests/wasm_law19.rs` and
+# `rspace/tests/wasm_roundtrip.rs` real tests rather than compile-only ones.
+runner = "wasm-bindgen-test-runner"

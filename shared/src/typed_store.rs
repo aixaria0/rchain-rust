@@ -52,6 +52,39 @@ impl<K, V> KeyValueTypedStoreCodec<K, V> {
             v_codec,
         }
     }
+
+    /// Run `f` against the byte store.
+    ///
+    /// On a threaded target the synchronous store work is offloaded to tokio's blocking pool — the
+    /// store is a `tokio::sync::Mutex`, and `blocking_lock` is the lock a blocking task must take.
+    ///
+    /// On `wasm32-unknown-unknown` there is no blocking pool to offload to, so the same work runs
+    /// inline: `lock().await` on the same runtime-free mutex. Without this arm the whole store
+    /// *compiles* for wasm (which is why the check in #187 passed) but panics on the first call,
+    /// because `spawn_blocking` needs threads the target does not have (issue #98).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn with_store<R, F>(&self, f: F) -> Result<R, String>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut (dyn KeyValueStore + Send + Sync)) -> Result<R, String> + Send + 'static,
+    {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = store.blocking_lock();
+            f(guard.as_mut())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn with_store<R, F>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&mut (dyn KeyValueStore + Send + Sync)) -> Result<R, String>,
+    {
+        let mut guard = self.store.lock().await;
+        f(guard.as_mut())
+    }
 }
 
 #[async_trait]
@@ -62,13 +95,7 @@ where
 {
     async fn get(&self, keys: &[K]) -> Result<Vec<Option<V>>, String> {
         let encoded: Vec<Vec<u8>> = keys.iter().map(|k| self.k_codec.encode(k)).collect();
-        let store = self.store.clone();
-        let raw = tokio::task::spawn_blocking(move || {
-            let store = store.blocking_lock();
-            store.get(&encoded)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        let raw = self.with_store(move |store| store.get(&encoded)).await?;
         raw.into_iter()
             .map(|opt| opt.map(|bytes| self.v_codec.decode(&bytes)).transpose())
             .collect()
@@ -79,46 +106,22 @@ where
             .iter()
             .map(|(k, v)| (self.k_codec.encode(k), self.v_codec.encode(v)))
             .collect();
-        let store = self.store.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut store = store.blocking_lock();
-            store.put(encoded)
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        self.with_store(move |store| store.put(encoded)).await
     }
 
     async fn delete(&self, keys: &[K]) -> Result<usize, String> {
         let encoded: Vec<Vec<u8>> = keys.iter().map(|k| self.k_codec.encode(k)).collect();
-        let store = self.store.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut store = store.blocking_lock();
-            store.delete(&encoded)
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        self.with_store(move |store| store.delete(&encoded)).await
     }
 
     async fn contains(&self, keys: &[K]) -> Result<Vec<bool>, String> {
         let encoded: Vec<Vec<u8>> = keys.iter().map(|k| self.k_codec.encode(k)).collect();
-        let store = self.store.clone();
-        let raw = tokio::task::spawn_blocking(move || {
-            let store = store.blocking_lock();
-            store.get(&encoded)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        let raw = self.with_store(move |store| store.get(&encoded)).await?;
         Ok(raw.into_iter().map(|opt| opt.is_some()).collect())
     }
 
     async fn to_map(&self) -> Result<BTreeMap<K, V>, String> {
-        let store = self.store.clone();
-        let raw = tokio::task::spawn_blocking(move || {
-            let store = store.blocking_lock();
-            store.entries()
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        let raw = self.with_store(move |store| store.entries()).await?;
         raw.into_iter()
             .map(|(k, v)| {
                 let k = self.k_codec.decode(&k)?;
@@ -129,13 +132,7 @@ where
     }
 
     async fn count(&self) -> Result<usize, String> {
-        let store = self.store.clone();
-        tokio::task::spawn_blocking(move || {
-            let store = store.blocking_lock();
-            store.num_records()
-        })
-        .await
-        .map_err(|e| e.to_string())
+        self.with_store(move |store| Ok(store.num_records())).await
     }
 }
 

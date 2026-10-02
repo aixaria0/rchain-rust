@@ -33,3 +33,8 @@ zeroize = "1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+# The wasm-target test harness (`tests/wasm_law19.rs`), so Law 19 is pinned on the real target and not
+# only on the host. Target-scoped so no host build or other target pulls the runner (issue #98).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
