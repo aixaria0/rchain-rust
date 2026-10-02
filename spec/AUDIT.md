@@ -102,20 +102,19 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 1 · DONE 240** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 1 · DONE 240** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  35 of 241 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  36 of 242 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 241 are settled: **176 name the evidence that holds them** and **65 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C207` | **a user deploy's native write is lost when its block is merged, so `bond`/`withdraw`/`trust`/`delegate` take effect on no network that merges.** Measured with a typed read (`pos!("getDelegations", …)`, computed in rholang): `delegate` writes the delegation ledger and the operator's aggregate, and on a chain that merges both are gone within a few blocks. The ablation, each row a run from `down -v`: 2 validators with `--no-autopropose` at epoch 2 **and** at the default epoch (no boundary) both read `GInt(40)` indefinitely; 2 validators with **autopropose** read `ps: []` at both epoch lengths; **1 validator** with autopropose — no concurrent branch — reads `GBool(true)`. **So the boundary is exonerated and the trigger is concurrent block production**: the failing run logs `318 merges · widest scope 6 chains / 18 conflict pairs`. **This is the phenomenon C205 chased and could not see**, and C205's closure stands: its reading was void (a derived `Debug` renders a 65-byte key as decimal, so the hex greps could not match), and every run behind it used `--no-autopropose` — except the first, whose `delegate`→`getBonds` reading of 100 was right about a real loss and wrong about its cause. **The mechanism is named and not measured**: `merge` re-applies a block's native changes from `load_native_changes(post_state_hash, sender, seq_num)`, and the play path saves that entry from `last_native_changes` *accumulated across its checkpoints* while the replay path saves it from a single one. **The register recorded this class as closed** — #74 was closed by the `NativeChangesStore` sidecar, and C205's retraction removed the row saying it had come back. **Consequence for #193: the delegation cannot work on a multi-validator network**, which is what C204's live arm needs. | find where a *user* deploy's native changes are dropped on the merge path — the sidecar entry the play path and the replay path each save, and whether a merge's `native.fold` is handed them — then pin it by extending `casper/tests/deploy_native_write.rs` (which passes for `compute_state`) to drive the same assertion through a merge; the #193 live arm's phase 2 is the end-to-end falsifier | §60 |
 
 ### T1 coverage — closed
 

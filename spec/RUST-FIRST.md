@@ -178,6 +178,14 @@ to the operator.
   simultaneously withdrawing and delegated-to. A delegation is also refused when the operator is not in
   the pool, when the delegator names itself, and below `minimum_bond` — the per-delegation floor, which
   is the DoS control on an unbounded ledger.
+- **A delegator can read its own position** — `rho:rchain:pos!("getDelegations", delegatorKey, *ret)`
+  replies one entry per operator that key has staked with, and `GET /api/v1/pos/delegations?delegator=…`
+  renders the same thing for a client that only reaches HTTP (which is the wallet). **Scoped to the key
+  asked about**, because the ledger is unbounded in *delegators* and the bounded direction is the one
+  keyed by the delegator; the operator-scoped listing is the unbounded direction and is not offered.
+  The three numbers — principal, accrued reward, staged deadline — come from three leaves, and a read
+  path never writes: an absent leaf reads as an empty map, and a `set_*` of an empty map here would put
+  a trie leaf under a chain that has never delegated (see *Dormancy*).
 
 ### Dormancy, and where the fork point is
 

@@ -1,0 +1,23 @@
+// Read a delegator's own PoS positions back from a live node, and publish them.
+//
+// The read side of #193, sibling to `pos-bonds.rho`. `getBonds` answers the **pool** — an operator's
+// aggregate, which is attributable to no delegator — so before this arm a delegator could send REV to
+// an operator and never see the position again. `getDelegations` is scoped to the key asked about, so
+// the reply is bounded by *that* delegator rather than by the whole ledger, which is unbounded in
+// delegator count (`spec/RUST-VS-SCALA.md` §3 item 12, residual O5).
+//
+// Each entry is a 4-tuple: `(operatorKey, amount, accruedRewards, pendingDeadlineOrNil)`. The fourth
+// is the staged undelegation's **deadline** — `pending_delegations`' value, which is law 47's deadline
+// and already contains the quarantine — or `Nil` when nothing is staged.
+//
+// **The key below is a placeholder.** A devnet's keys are generated per run, so a run substitutes the
+// delegator's own; the checked-in copy is the call shape, kept so the interface is reviewable without
+// running anything. `spec/audit/evidence/n193-delegation-live-run.sh` is what does the substituting.
+//
+//   tools/devnet.sh deploy pos-delegations.rho && tools/devnet.sh query pos-delegations
+new pos(`rho:rchain:pos`), ret in {
+  pos!("getDelegations", "<DELEGATOR_PUBKEY_HEX>".hexToBytes(), *ret) |
+  for (@entries <- ret) {
+    @"pos-delegations"!(entries)
+  }
+}

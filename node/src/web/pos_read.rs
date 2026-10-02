@@ -40,6 +40,41 @@ pub struct PendingWithdrawal {
     pub blocks_remaining: i64,
 }
 
+/// **One operator a delegator has staked with** (law 57, #193).
+///
+/// The three numbers come from three leaves — the principal from `pos:delegations`, the accrued
+/// reward from `pos:delegated_rewards`, the staged exit from `pos:pending_delegations` — and they are
+/// reported together because a delegator's question is "what is my position", not "what does leaf X
+/// say".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatorPosition {
+    /// The operator's public key, as lowercase hex (`Validator`'s serialization).
+    pub operator: Validator,
+    /// The principal delegated to this operator and still attributed to the delegator.
+    pub amount: i64,
+    /// Reward accrued to this delegation and not yet paid. Held apart from the operator's committed
+    /// rewards, which is what makes it the delegator's to see.
+    pub accrued_rewards: i64,
+    /// The staged exit, if one is in flight; `None` when nothing is staged.
+    pub pending_undelegation: Option<PendingUndelegation>,
+}
+
+/// An undelegation that has been requested and not yet acted on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUndelegation {
+    /// **The block the boundary may act on it at** — `pending_delegations`' value, which is law 47's
+    /// *deadline* (`quarantine_length + divisor·(1 + block_number/divisor)`) and already contains the
+    /// quarantine. **Named `deadline` rather than `stagedAtBlock` for the reason AUDIT C206 landed**:
+    /// the stored value is not the height the request was made at, and calling it one is the mistake
+    /// that made the withdrawal countdown wrong by the whole quarantine.
+    pub deadline: i64,
+    /// Blocks to that deadline, floored at zero. The **same** `blocks_remaining` the withdrawal
+    /// countdown uses — one definition of the countdown, not two.
+    pub blocks_remaining: i64,
+}
+
 /// What the node can say about its own PoS state, in one read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +97,20 @@ pub struct PosStatus {
 #[async_trait]
 pub trait PosReadApi: Send + Sync {
     async fn pos_status(&self) -> Result<PosStatus, String>;
+    /// **One delegator's positions, across every operator it has staked with** (#193).
+    ///
+    /// Scoped to the caller-supplied key, and that is a deliberate choice rather than a shape: the
+    /// `pos:delegations` ledger is unbounded in the number of *delegators* per operator, so the read
+    /// that is bounded is the one keyed by the delegator. The operator-scoped listing — every
+    /// delegator of one key — is the unbounded direction and is not offered.
+    ///
+    /// It is a separate method rather than a field on [`PosStatus`] for the same reason: that read is
+    /// a single object about a shard, and hanging an unbounded ledger off it would make one status
+    /// call's size a function of how many people have ever delegated.
+    async fn delegator_positions(
+        &self,
+        delegator: &Validator,
+    ) -> Result<Vec<DelegatorPosition>, String>;
 }
 
 /// The real read: the primary shard's live native state, plus the status API for the head's height.
@@ -108,6 +157,38 @@ impl PosReadApi for ShardPosRead {
                 })
                 .collect(),
         })
+    }
+
+    async fn delegator_positions(
+        &self,
+        delegator: &Validator,
+    ) -> Result<Vec<DelegatorPosition>, String> {
+        let native = NativeSystemState::new(self.runtime.runtime().native_store());
+        let latest = self
+            .web_api
+            .status()
+            .await
+            .map_err(|e| e.to_string())?
+            .latest_block_number;
+        // **Accessors only — a read path never writes.** Each absent leaf reads as an empty map; a
+        // `set_*` here would put a trie leaf under a chain that has never delegated and move its root
+        // (law 57's dormancy requirement).
+        let ledger = native.delegations().await?;
+        let pending = native.pending_delegations().await?;
+        let rewards = native.delegated_rewards().await?;
+        Ok(ledger
+            .iter()
+            .filter(|(key, _)| key.delegator == *delegator)
+            .map(|(key, amount)| DelegatorPosition {
+                operator: key.operator,
+                amount: i64::from(*amount),
+                accrued_rewards: rewards.get(key).map_or(0, |r| i64::from(*r)),
+                pending_undelegation: pending.get(key).map(|deadline| PendingUndelegation {
+                    deadline: *deadline,
+                    blocks_remaining: blocks_remaining(latest, *deadline),
+                }),
+            })
+            .collect())
     }
 }
 
@@ -198,5 +279,22 @@ mod tests {
             deadline + 50 - 250,
             "the stored value already contains the quarantine; adding it again is AUDIT C206"
         );
+    }
+
+    /// **A staged undelegation is read with the same arithmetic** (#193). `undelegate` writes its
+    /// deadline with the identical rule `withdraw` uses — the same `quarantine_length +
+    /// divisor·(1 + block/divisor)` — so the two countdowns must not be two definitions. This asserts
+    /// they agree rather than restating the formula a third time.
+    #[test]
+    fn a_staged_undelegation_counts_down_with_the_same_arithmetic() {
+        let (latest, epoch, quarantine) = (250, 100, 50);
+        let withdrawal = quarantine + epoch * (1 + latest / epoch);
+        let undelegation = quarantine + epoch * (1 + latest / epoch);
+        assert_eq!(withdrawal, undelegation, "one rule, two callers");
+        assert_eq!(blocks_remaining(latest, undelegation), 100);
+        assert_eq!(blocks_remaining(350, undelegation), 0);
+        // Floored, not negative: a deadline that has passed is not an operator error to report as a
+        // negative number of blocks.
+        assert_eq!(blocks_remaining(400, undelegation), 0);
     }
 }

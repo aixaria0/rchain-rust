@@ -1,0 +1,23 @@
+// Ask a live node what stake two keys carry, and publish the two answers **as numbers**.
+//
+// The bond probe for #193's live arm, and its shape is the point rather than an accident. The first
+// version of this arm published the whole pool and compared what the CLI rendered; that rendering is a
+// derived `Debug`, so a key comes out as `GByteArray([2, 2, …])` — decimal — and the reading rested on
+// a grep that could not match. Here the comparison is an `EMap` lookup in rholang and the reply is a
+// number, which nothing can obscure.
+//
+// **The two answers are a measurement and its control.** The first is the operator whose key carries a
+// delegation; the second is a genesis validator that has delegated nothing and must read exactly its
+// own bond. A reply that is wrong in the same direction as a broken read is then visible — and a
+// reading whose control is wrong is not a reading.
+//
+//   tools/devnet.sh deploy pos-bonds-check.rho && tools/devnet.sh query pos-bonds-check
+new pos(`rho:rchain:pos`), ret in {
+  pos!("getBonds", *ret) |
+  for (@bonds <- ret) {
+    @"pos-bonds-check"!(
+      (bonds.get("<OPERATOR_PUBKEY_HEX>".hexToBytes()),
+       bonds.get("<DELEGATOR_PUBKEY_HEX>".hexToBytes()))
+    )
+  }
+}
