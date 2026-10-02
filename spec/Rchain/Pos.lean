@@ -656,4 +656,23 @@ theorem the_absence_rule_moves_no_stake (r : Validator → Nat) (s : PosState) :
     (commitRewards r s).pool = s.pool ∧ (commitRewards r s).active = s.active :=
   ⟨rfl, rfl⟩
 
+/-- **And it withholds.** The three theorems above pin only that the rule never *raises* a reward —
+    which an implementation that changed nothing at all would satisfy, and which was for a time exactly
+    what the tree had: `absence_never_raises` is a `≤`, `a_returning_validator_is_paid_in_full` constrains
+    only the inside-slack case, and `the_absence_rule_moves_no_stake` does not mention `absenceAdjusted`
+    at all. The `else 0` branch was exercised by no theorem anywhere.
+
+    This is the other half, and it is what makes the rule a rule: a validator silent **past** the slack,
+    under a rule that is **on**, and with something to lose, is paid nothing rather than its share. The
+    three hypotheses are each load-bearing — drop `0 < slack` and the off switch returns the reward
+    untouched; drop `slack < silentFor` and the validator is inside the slack and paid in full; drop
+    `0 < reward` and `0 < reward` is the only thing left to prove. -/
+theorem absence_withholds {silentFor slack reward : Nat}
+    (hon : 0 < slack) (hover : slack < silentFor) (hreward : 0 < reward) :
+    absenceAdjusted silentFor slack reward < reward := by
+  have hs : slack ≠ 0 := by omega
+  have hle : ¬ silentFor ≤ slack := by omega
+  simp only [absenceAdjusted, hs, if_false, hle]
+  exact hreward
+
 end Rchain

@@ -2262,7 +2262,11 @@ def laws : List Law := [
       income, never stake, and it is monotone in what the deploy burned. A boundary may also **withhold** \
       a drawn validator's reward for the epoch it sat out (`absenceAdjusted`), which is income only: the \
       rule is a function of the reward and of how long the validator has been silent, so no stake is \
-      reachable from it and a validator inside the slack is paid in full",
+      reachable from it and a validator inside the slack is paid in full — **and** a validator past it, \
+      under a rule that is on and with something to lose, is paid *nothing* (`absence_withholds`). That \
+      last clause is not decoration: every other absence statement is satisfied by a rule that withholds \
+      nothing at all, so it is the one that makes \"the rule withholds\" a claim rather than a reading of \
+      the definition",
     status := .provedModel,
     declarations := [`Rchain.PosState, `Rchain.PosClaim, `Rchain.PosRequest, `Rchain.totalRev,
       `Rchain.divisor, `Rchain.isBoundary, `Rchain.bond, `Rchain.epochStep, `Rchain.closeBlock,
@@ -2276,10 +2280,11 @@ def laws : List Law := [
       `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake,
       `Rchain.producer_pay_is_monotone,
       `Rchain.absenceAdjusted, `Rchain.absence_never_raises,
-      `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake],
+      `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake,
+      `Rchain.absence_withholds],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
-    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone, `Rchain.absence_never_raises, `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake],
+    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone, `Rchain.absence_never_raises, `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake, `Rchain.absence_withholds],
     falsifiable := some "`the_epoch_gate_does_nothing_off_a_boundary` builds the off-boundary state — a \
       staged withdrawal *and* a full reward pot — and asserts the whole state is unchanged, then that \
       the same call at the boundary moves it and pays it; the bond half is in the same test (pooled at \
