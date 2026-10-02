@@ -167,6 +167,14 @@ jobs:
         # every workflow; nothing refused a regression.
         run: tools/check-workflow-pins.sh
 
+      - name: Conflict-marker gate
+        # Git's markers are ordinary text to everything that is not git, so a conflict that survived a
+        # rebase reads as a document saying two things at once — it happened here, in
+        # `spec/audit/passes.md`, through the whole formal gate and into `dev` on 2026-10-02. Every
+        # other check in this job reads a *structured* file, which is exactly why prose was unguarded.
+        # Seconds, and it is the check that would have refused that merge.
+        run: tools/check-no-conflict-markers.sh
+
       - name: Ingress-queue bound gate
         # Every queue on the ingress -> validate -> process path must be bounded, because a peer streams
         # valid-signed blocks into it and an unbounded hop lets that peer fill memory faster than the

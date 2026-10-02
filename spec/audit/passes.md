@@ -6611,7 +6611,6 @@ whose proposer attached the deploy records *its own sender at its own height* in
 store, the block's `state` carries the record for a receiver to replay, and the replay reaches the same
 post-state hash.
 
-<<<<<<< HEAD
 **And the proposer's *attachment* of the deploy is pinned, which it was not when this landed.**
 `create_block`'s list construction was inline, so the only way to reach it was through a whole proposer —
 a runtime, a DAG and a signing identity, which no test in this tree builds — and deleting the
@@ -6703,16 +6702,6 @@ comment where it happened.
 **One tool change.** `tools/devnet.sh` takes per-node extra `rnode run` flags
 (`DEVNET_EXTRA_FLAGS_<container name>`), because every arm here is one node set differently from its peers
 and the shared flag string is shared on purpose (AUDIT C46).
-=======
-**One link is not pinned by a test, and it is named here rather than left to be discovered**:
-`block_creator`'s *attachment* of the deploy to the proposer's own block. Pinning it needs a live
-proposer fixture (a runtime, a DAG and a signing identity), which no test in this tree builds, and the
-two arms above would both stay green if the attachment were deleted. What that would cost is the
-proposer's **own** record — it would stop being paid at the boundaries it did not act in, and a chain
-whose validators all omitted it would simply have the rule do nothing, which is the shipped default
-anyway. There is no way to harm another validator by omitting it, which is why this is a gap in
-*coverage* and not in safety.
-
 ## 58. The name layer had no authorization rule, and now it is derived (C202, #99)
 
 **What was wrong was not a defect but a missing decision, and the register had no row for it.** The name
@@ -6777,4 +6766,4 @@ properties of `rho:rev:address`, pinned by the Rust tests rather than modelled. 
 is now safe to hand out: it has exactly one governor, the identity that installs the dictionary, and a
 network with a different answer to "who governs the short names" must change the genesis rather than the
 dictionary.
->>>>>>> 0af44d75b (spec: law 56 states the rooted namespace, and C201 records the decision (#99))
+
