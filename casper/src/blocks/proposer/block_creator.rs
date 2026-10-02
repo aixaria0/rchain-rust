@@ -186,9 +186,8 @@ impl BlockCreator {
 ///
 /// A function rather than an inline block, for the reason `slashable_offenders` is one: the *list* is
 /// what consensus turns on, and it was reachable only through `create_block` — which needs a runtime, a
-/// DAG and a signing identity, so nothing in the tree pinned it. That was a real gap: deleting the
-/// `RecordSpoke` push below left every other test green, and the loss would have been the proposer's
-/// own activity record (see `spec/audit/passes.md` §55).
+/// DAG and a signing identity, so nothing in the tree pinned it. That was a real gap, and the entry it
+/// hid was the proposer's own activity record (see `spec/audit/passes.md` §55).
 ///
 /// **The order is load-bearing, not cosmetic.** The replay rebuilds each entry's random seed from its
 /// *position* in the recorded list (`runtime_replay.rs`'s `replay_deploys`:
@@ -198,10 +197,14 @@ impl BlockCreator {
 /// rather than the requested one for the same reason (a requested deploy absent from the pool would
 /// otherwise shift them all; S2/S4).
 ///
-/// Three entries, and each is a rule: the block **accounts for itself** first (B4), then one `Slash`
-/// per offender in `to_slash`'s canonical `BTreeMap` order (C110, C199, C200), then the `CloseBlock`
-/// that carries the **fringe's** state hash — the value the next epoch's draw is anchored to, and the
-/// one input here that is not the proposer's to choose (O1).
+/// **Two entries now, and the first one used to be the activity record** (B4, #150). Retiring
+/// `RecordSpoke` shifted every seed in this list down by one, which is a consensus change rather than a
+/// tidy-up — it is the same class as an insertion, just in the other direction — and it is why the
+/// positional rule above is spelled out rather than assumed.
+///
+/// Each entry is a rule: one `Slash` per offender in `to_slash`'s canonical `BTreeMap` order (C110,
+/// C199, C200), then the `CloseBlock` that carries the **fringe's** state hash and the participation
+/// derived from it — the two inputs here that are not the proposer's to choose (O1).
 fn block_system_deploys(
     to_slash: &BTreeMap<Validator, ProposedSlash>,
     deploy_count: usize,
@@ -211,20 +214,19 @@ fn block_system_deploys(
     rand: &Blake2b512Random,
 ) -> Result<Vec<SystemDeploy>, String> {
     let mut system_deploys: Vec<SystemDeploy> = Vec::new();
-    system_deploys.push(SystemDeploy::record_spoke(seed_at(rand, deploy_count)?));
     for (i, (v, slash)) in to_slash.iter().enumerate() {
         system_deploys.push(SystemDeploy::slash(
             v,
             slash.severity,
             slash.evidence.clone(),
-            seed_at(rand, deploy_count + 1 + i)?,
+            seed_at(rand, deploy_count + i)?,
         ));
     }
     system_deploys.push(SystemDeploy::close_block(
         block_number,
         fringe_state,
         participation,
-        seed_at(rand, deploy_count + 1 + to_slash.len())?,
+        seed_at(rand, deploy_count + to_slash.len())?,
     ));
     Ok(system_deploys)
 }
@@ -280,29 +282,26 @@ mod block_system_deploy_tests {
             block_system_deploys(&to_slash, deploy_count, 12, fringe, BTreeMap::new(), &rand)
                 .expect("a list of system deploys");
 
-        // Three entries: the block's own record, two slashes, and the close — in that order.
+        // Three entries: two slashes and the close, in that order. It was four until `RecordSpoke` was
+        // retired, and the shift is the point of the seed arm below rather than a detail of this one.
         assert_eq!(
             deploys.len(),
-            4,
-            "the block records itself and closes itself"
-        );
-        assert_eq!(
-            deploys[0].op,
-            Some(NativeSystemDeployOp::RecordSpoke),
-            "the block accounts for itself first, so the replay's first positional seed is its own"
+            3,
+            "two offenders and the close that pays them out"
         );
         // `to_slash` is a `BTreeMap`, so validator 1 precedes validator 2 whatever order it was built
         // in — which is the property the seed indices depend on.
         assert_eq!(
-            deploys[1].op,
+            deploys[0].op,
             Some(NativeSystemDeployOp::Slash {
                 validator: Validator::new([1u8; 65]),
                 severity: SlashSeverity::HonestMistake,
                 evidence: None,
-            })
+            }),
+            "the first entry is now the first slash, where the retired record used to be"
         );
         assert_eq!(
-            deploys[2].op,
+            deploys[1].op,
             Some(NativeSystemDeployOp::Slash {
                 validator: Validator::new([2u8; 65]),
                 severity: SlashSeverity::Malicious,
@@ -311,7 +310,7 @@ mod block_system_deploy_tests {
             "the tier and the evidence travel with the slash"
         );
         assert_eq!(
-            deploys[3].op,
+            deploys[2].op,
             Some(NativeSystemDeployOp::CloseBlock {
                 block_number: 12,
                 fringe_state_hash: fringe,
@@ -320,7 +319,10 @@ mod block_system_deploy_tests {
             "and the close carries the fringe's own state hash, which is not the proposer's to choose"
         );
 
-        // **The positional seeds.** This is `replay_deploys`'s derivation, spelled the same way.
+        // **The positional seeds.** This is `replay_deploys`'s derivation, spelled the same way — and
+        // it is what catches the retirement: with the entry gone every seed in the list moved down by
+        // one, and a proposer that kept the old offsets and a replay that used the new ones would agree
+        // about nothing.
         for (i, deploy) in deploys.iter().enumerate() {
             let expected =
                 rand.split_byte(u8::try_from(deploy_count + i).expect("a test position"));
@@ -332,10 +334,10 @@ mod block_system_deploy_tests {
         }
     }
 
-    /// A block with nothing to slash still records itself, and still closes: the two entries that are
-    /// always there are not conditional on anything.
+    /// A block with nothing to slash still closes — and closing is now the *only* entry that is always
+    /// there, since the block's own activity record is retired.
     #[test]
-    fn a_block_with_no_offenders_still_records_itself_and_closes() {
+    fn a_block_with_no_offenders_still_closes() {
         let rand = Blake2b512Random::from_init(&[1u8; 32]);
         let deploys = block_system_deploys(
             &BTreeMap::new(),
@@ -346,10 +348,9 @@ mod block_system_deploy_tests {
             &rand,
         )
         .expect("a list of system deploys");
-        assert_eq!(deploys.len(), 2);
-        assert_eq!(deploys[0].op, Some(NativeSystemDeployOp::RecordSpoke));
+        assert_eq!(deploys.len(), 1);
         assert!(matches!(
-            deploys[1].op,
+            deploys[0].op,
             Some(NativeSystemDeployOp::CloseBlock { .. })
         ));
     }

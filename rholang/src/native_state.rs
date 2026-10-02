@@ -106,20 +106,11 @@ pub fn pos_committed_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:committed")
 }
 
-/// **Leaf key for the height of the last block each validator signed** — `validator → BlockHeight`
-/// (B4, #150).
-///
-/// The one per-validator **activity** record in state, and it exists because every other candidate
-/// signal was proposer-steerable: a block writes only its **own** entry, from its own signed `sender`
-/// and its own `block_number`, and each node replays that write from the same two values. Nothing a
-/// proposer can put in a block changes what another validator's entry says.
-///
-/// What it is for: an income-only absence rule, and any later score that needs to know whether a
-/// validator has been doing the work — neither of which could be stated honestly against a signal the
-/// proposer chose.
-pub fn pos_last_spoke_key() -> Blake2b256Hash {
-    Blake2b256Hash::create(b"pos:last_spoke")
-}
+// **`pos:last_spoke` was the per-validator activity record** — `validator → BlockHeight`, written by a
+// block-level system deploy, and the key the absence rule used to read. Retired 2026-10-02 (B4, #150):
+// the participation now comes from the last finalised fringe, which every node derives from the DAG, so
+// the leaf was a consensus-visible write that nothing read. Its key is not reused — a leaf that came
+// back under the same name would be read by nothing and trusted by assumption.
 
 /// Leaf key for the immutable PoS parameters.
 pub fn pos_params_key() -> Blake2b256Hash {
@@ -279,42 +270,6 @@ pub fn encode_bonds(bonds: &BTreeMap<Validator, NonNegI64>) -> Vec<u8> {
         out.extend_from_slice(&i64::from(*stake).to_le_bytes());
     }
     out
-}
-
-/// Encode the last-spoke map (B4, #150): the same wire shape as [`encode_bonds`] — a 65-byte
-/// validator and a little-endian `i64` — with the block height in the value slot.
-///
-/// Deliberately the same shape rather than a second codec: `BlockHeight` and `NonNegI64` are both a
-/// non-negative `i64` in a fixed-width slot, and a reader who has met one map has met both.
-pub fn encode_last_spoke(spoke: &BTreeMap<Validator, BlockHeight>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(spoke.len() * BOND_ENTRY_LEN);
-    for (v, height) in spoke {
-        out.extend_from_slice(v.as_bytes());
-        out.extend_from_slice(&i64::from(*height).to_le_bytes());
-    }
-    out
-}
-
-/// Decode a last-spoke map (inverse of [`encode_last_spoke`]).
-pub fn decode_last_spoke(bytes: &[u8]) -> Result<BTreeMap<Validator, BlockHeight>, String> {
-    if bytes.len() % BOND_ENTRY_LEN != 0 {
-        return Err(format!(
-            "last-spoke encoding has {} bytes, not a multiple of {BOND_ENTRY_LEN}",
-            bytes.len()
-        ));
-    }
-    let mut out = BTreeMap::new();
-    for chunk in bytes.chunks_exact(BOND_ENTRY_LEN) {
-        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
-        let height_bytes: [u8; 8] = chunk[VALIDATOR_LEN..BOND_ENTRY_LEN]
-            .try_into()
-            .map_err(|_| "last-spoke encoding: invalid height length".to_string())?;
-        let height = i64::from_le_bytes(height_bytes);
-        let height = BlockHeight::try_from(height)
-            .map_err(|_| format!("negative last-spoke height {height}"))?;
-        out.insert(validator, height);
-    }
-    Ok(out)
 }
 
 /// Decode a bonds map (inverse of [`encode_bonds`]).
@@ -1025,42 +980,6 @@ impl NativeSystemState {
     pub fn set_active(&self, active: &BTreeMap<Validator, NonNegI64>) {
         self.store
             .put(PREFIX_POS, pos_active_key(), encode_bonds(active));
-    }
-
-    /// **The height of the last block each validator signed** (B4, #150) — the activity record the
-    /// absence rule reads. Absent from the map means the validator has never signed a block on this
-    /// chain, which is the same thing the rule needs to know as "very long ago".
-    pub async fn last_spoke(&self) -> Result<BTreeMap<Validator, BlockHeight>, String> {
-        match self
-            .store
-            .get(PREFIX_POS, &pos_last_spoke_key())
-            .await
-            .map_err(|e| e.to_string())?
-        {
-            Some(bytes) => decode_last_spoke(&bytes),
-            None => Ok(BTreeMap::new()),
-        }
-    }
-
-    /// **Record that `speaker` signed a block at `height`** (B4, #150).
-    ///
-    /// A block writes exactly one entry — its own sender's — and the value it writes is its own
-    /// height, so the write is a function of the block alone. It is a *record*, not a reward or a
-    /// penalty: nothing reads it until an epoch boundary, and nothing about it can touch a bond.
-    ///
-    /// Nothing prunes the map. Its size is bounded by the number of distinct keys that have ever
-    /// signed a block on this chain, which is the bond pool plus anything ever slashed out of it —
-    /// small, and the entries are 73 bytes each.
-    pub async fn record_spoke(
-        &self,
-        speaker: &Validator,
-        height: BlockHeight,
-    ) -> Result<(), String> {
-        let mut spoke = self.last_spoke().await?;
-        spoke.insert(*speaker, height);
-        self.store
-            .put(PREFIX_POS, pos_last_spoke_key(), encode_last_spoke(&spoke));
-        Ok(())
     }
 
     /// The active-validator set (the consensus validator set).
@@ -4133,52 +4052,73 @@ mod tests {
         );
     }
 
-    /// **The rule reads the fringe, and the `pos:last_spoke` store is not consulted at all** (B4, #150).
+    /// **The boundary pays on the participation it is handed, and on nothing else** (B4, #150).
     ///
-    /// This is the falsifier for the read, and it is deliberately built so that the two sources
-    /// *disagree*: the store says the validator has been silent since height 1, the participation the
-    /// caller derived from the fringe says height 9, and the boundary is at 12 with a slack of 5 — so
-    /// the store's reading drops it and the fringe's pays it. **Restoring `close_block`'s read to
-    /// `self.last_spoke()` turns this red**, which is the whole point: the store is written by whichever
-    /// block a proposer chose to justify and a proposer may omit what it has seen, while the fringe is
-    /// the >2/3-agreed object. A test that merely agreed with the store would pin neither.
+    /// The test is deliberately a **pair**: one validator, one stake, one boundary played twice with two
+    /// different participations — a lag inside the grace and a lag past the knee — must be paid the
+    /// whole share and nothing respectively. A single generous arm would pass against a rule that
+    /// ignored the argument entirely, which is the shape this is here to exclude.
+    ///
+    /// **What this test used to be, and why it is not that any more.** Until `pos:last_spoke` was
+    /// retired it was a *falsifier*: it wrote a store entry contradicting the map and asserted the map
+    /// won, so restoring `close_block`'s read to `self.last_spoke()` turned it red. With the store gone
+    /// there is only one read and no rival to falsify against — the old form's strength came from both
+    /// reads existing — so the pair above carries what is left: the argument is load-bearing, in both
+    /// directions.
     #[tokio::test]
-    async fn the_absence_rule_reads_the_fringe_and_not_the_spoke_store() {
+    async fn the_boundary_pays_on_the_participation_it_is_handed() {
         let params = PosParams {
             minimum_bond: NonNegI64::try_from(1).unwrap(),
             epoch_length: 1,
-            absence_slack: NonNegI64::try_from(5).unwrap(),
+            absence_slack: NonNegI64::try_from(10).unwrap(),
+            // The cliff, so the pair below is "inside" against "past" with no ramp in between.
+            participation_grace: NonNegI64::try_from(10).unwrap(),
             ..PosParams::default()
         };
         let native = native_with(&[validator(1)], params, &[(validator(1), 4)]).await;
         let payer = PublicKey::new(vec![9u8; 65]);
         let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+
+        // **Inside the grace at height 20**: behind by one, so the whole pot — the only drawn
+        // validator takes all of it.
         native.set_vault_balance(&payer_addr, nn(10));
         native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
-
-        // The **store** says the validator has been silent since height 1 — outside the slack's reach.
+        let inside = BTreeMap::from([(validator(1), BlockHeight::try_from(19).unwrap())]);
         native
-            .record_spoke(&validator(1), BlockHeight::try_from(1).unwrap())
-            .await
-            .unwrap();
-
-        // The **fringe** the caller derived says height 9, which is inside it.
-        let participation = BTreeMap::from([(validator(1), BlockHeight::try_from(9).unwrap())]);
-        native
-            .close_block(12, fringe_state(12), &participation)
+            .close_block(20, fringe_state(20), &inside)
             .await
             .unwrap()
             .unwrap();
+        let paid_inside = i64::from(
+            *native
+                .committed_rewards()
+                .await
+                .unwrap()
+                .get(&validator(1))
+                .expect("a validator inside the grace is paid"),
+        );
+        assert_eq!(
+            paid_inside, 10,
+            "the whole pot, and the only drawn validator's"
+        );
 
-        assert!(
+        // **Past the knee at height 40**: behind by ten, so nothing is added. The assertion is that the
+        // *committed* figure is unchanged rather than absent — a scaling keeps the key and pays a zero.
+        let outside = BTreeMap::from([(validator(1), BlockHeight::try_from(30).unwrap())]);
+        native
+            .close_block(40, fringe_state(40), &outside)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
             native
                 .committed_rewards()
                 .await
                 .unwrap()
                 .get(&validator(1))
-                .is_some(),
-            "the participation the caller derived is what the boundary pays on; a rule that read the \
-             store instead would have dropped this validator, whose store entry is eight heights stale"
+                .map(|r| i64::from(*r)),
+            Some(10),
+            "a boundary played with a validator past the knee adds nothing to what it was already owed"
         );
     }
 

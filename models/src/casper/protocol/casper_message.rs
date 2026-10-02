@@ -409,14 +409,15 @@ pub enum SystemDeployData {
         evidence: Option<Vec<u8>>,
     },
     CloseBlock,
-    /// **The block's producer records that it signed a block at this height** (B4, #150).
+    /// **The cost-accounting deploys record as this** — a pre-charge, a refund and the producer's
+    /// payment carry no block-level payload of their own — and a block written before the `RecordSpoke`
+    /// variant was retired (B4, #150, 2026-10-02) reads as this too, because its proto field 3 is now
+    /// *reserved* and prost decodes an unknown oneof field to `None`.
     ///
-    /// Empty on purpose. The *speaker* and the *height* are the block's own `sender` and
-    /// `block_number`, which every node reads off the block it is processing — so this deploy's
-    /// presence is the whole of its payload, and there is nothing here for a proposer to lie about:
-    /// it cannot write another validator's entry, and it cannot claim a height that is not its own.
-    /// Its absence costs the proposer its own activity record and nothing more.
-    RecordSpoke,
+    /// **Those two are distinguished at replay, not here**: `replay_block_system_deploy` refuses an
+    /// `Empty` entry in a block's system-deploy list, and the cost-accounting deploys reach replay by a
+    /// different route. So an old block is rejected rather than silently no-oped — the right outcome
+    /// from the wrong place, which is worth knowing before reading this arm as "nothing to do".
     Empty,
 }
 
@@ -528,9 +529,9 @@ impl SystemDeployData {
             Some(system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_)) => {
                 Ok(SystemDeployData::CloseBlock)
             }
-            Some(system_deploy_data_proto::SystemDeploy::RecordSpokeSystemDeploy(_)) => {
-                Ok(SystemDeployData::RecordSpoke)
-            }
+            // An unknown oneof field in the schema as sent reads as `None` here, and `Empty` is what
+            // that means — a block from before `RecordSpoke` was retired lands in this arm, and
+            // `replay_block_system_deploy` is what refuses it. See the variant's own doc.
             None => Ok(SystemDeployData::Empty),
         }
     }
@@ -549,13 +550,6 @@ impl SystemDeployData {
                         equivocation_evidence: evidence.clone().unwrap_or_default(),
                     },
                 )),
-            },
-            SystemDeployData::RecordSpoke => SystemDeployDataProto {
-                system_deploy: Some(
-                    system_deploy_data_proto::SystemDeploy::RecordSpokeSystemDeploy(
-                        RecordSpokeSystemDeployDataProto {},
-                    ),
-                ),
             },
             SystemDeployData::CloseBlock => SystemDeployDataProto {
                 system_deploy: Some(

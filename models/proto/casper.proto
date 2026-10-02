@@ -160,22 +160,25 @@ message EquivocationEvidenceProto {
 message CloseBlockSystemDeployDataProto {
 }
 
-// **The block says who produced it** (B4, #150), so that the chain has a per-validator *activity*
-// record at all.
+// **Field 3 was `RecordSpokeSystemDeployDataProto`** (B4, #150), retired 2026-10-02 with the primitive
+// it named. It carried nothing and existed to make a block record its own producer's height in
+// `pos:last_spoke`; the participation the absence rule reads now comes from the last finalised fringe,
+// which every node derives from the DAG rather than reading out of native state, so nothing has to be
+// recorded per block and nothing reads the record.
 //
-// The message is deliberately **empty**, and that is the property that makes the record
-// unsteerable: the speaker and the height are the block's own `sender` and `block_number`, read from
-// the block being processed by every node, so a proposer cannot write another validator's entry and
-// cannot claim a height that is not its own. What the presence of this deploy records is that the
-// block's producer spoke at the block's own height — nothing a proposer can choose.
-message RecordSpokeSystemDeployDataProto {
-}
-
+// **Reserved rather than reused, and where the refusal actually happens.** A block written by the
+// pre-retirement code carries field 3; prost decodes an unknown oneof field to `None`, which this port
+// reads as `SystemDeployData::Empty` — that reading is deliberate and load-bearing elsewhere, since the
+// cost-accounting deploys record as `Empty` too. So the refusal is not at the wire: it is at replay,
+// where `replay_block_system_deploy` refuses an `Empty` entry in a block's **system-deploy list**. The
+// block is rejected, with an internal error rather than a named status, which is worth stating plainly
+// rather than implying a cleaner refusal than there is.
 message SystemDeployDataProto {
+  reserved 3;
+  reserved "recordSpokeSystemDeploy";
   oneof systemDeploy {
     SlashSystemDeployDataProto slashSystemDeploy = 1;
     CloseBlockSystemDeployDataProto closeBlockSystemDeploy = 2;
-    RecordSpokeSystemDeployDataProto recordSpokeSystemDeploy = 3;
   }
 }
 

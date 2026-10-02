@@ -557,13 +557,11 @@ impl BlockIndex {
                     event_list,
                     system_deploy: SystemDeployData::Empty,
                 } => (sys_deploy_id(&block_hash, 3), event_list),
-                // The block's own account of itself (B4, #150). It contributes an index like the
-                // others — a merge has to fold its one native write, which is why the id is distinct
-                // from every other kind's.
-                ProcessedSystemDeploy::Succeeded {
-                    event_list,
-                    system_deploy: SystemDeployData::RecordSpoke,
-                } => (sys_deploy_id(&block_hash, 4), event_list),
+                // **Index 4 was `SystemDeployData::RecordSpoke`** (B4, #150), retired with the variant
+                // it named. It is not reused: the index is a fold position, and a retired one staying
+                // vacant is cheaper to read than a kind that silently inherited a number. A block from
+                // before the retirement decodes its field 3 as `Empty` and takes the arm above, which
+                // is why that block is refused at replay rather than merged under a stale id.
                 ProcessedSystemDeploy::Failed { .. } => continue,
             };
             let event_log_index = Self::create_event_log_index(
