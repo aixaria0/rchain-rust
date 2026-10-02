@@ -461,30 +461,22 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
 /// A pass here means the stale read is the proposer's *hash choice* and not the merge. **A failure is
 /// the merge's native reconstruction, and this row closes into a fix there (#74) rather than here** —
 /// which is why the assertion names both possibilities rather than only the expected one.
-/// **⚠ IGNORED, because it fails — and the failure is the finding, not a fixture to fix away.**
+/// **C201's owed fixture, and it passes — which is the answer the row asked for.** The row said a pass
+/// would mean "the stale read is in the proposer's hash choice and not in the merge", and that is what
+/// it says.
 ///
-/// What is established, in both fixture shapes tried:
+/// **What it took to get there is the useful part, because the first two shapes were wrong and their
+/// failures looked like the defect.** The merge refuses two accepted writers of one native key that have
+/// not seen each other, and every block's cost accounting writes the **staking vault** — so a bare pair
+/// of siblings both write it, one chain is rejected, and `reject_whole_blocks` takes that block's
+/// **whole** native write set with it, the slash included. That is what the first shapes measured: not a
+/// lost write, but a conflict the fixture had given the merge no way to order. **Tell it that the
+/// slashing branch has seen the other and the victim is gone**, which is the shape a merge over a chain
+/// with an order has.
 ///
-/// * **The slashing branch alone carries its write.** The single-branch control in here passes: merge
-///   the slashing branch by itself and the victim is gone from `pos:active` at the merged root. So the
-///   merge *can* fold this branch's native write, and the two-branch arm below is not measuring an
-///   unreadable index.
-/// * **With a benign sibling in the conflict scope, it does not.** The victim is present at the merged
-///   root. Whether that is a lost write or a chain-bookkeeping effect is exactly what C201's row still
-///   owes — and the second shape below is why I will not call it yet.
-/// * **And a second shape fails differently, which is why the first is not conclusive.** Give the
-///   slashing branch a deploy too — the faithful shape, since a block that slashes in a live run is an
-///   ordinary block — and the merge refuses outright: *"both write native key `04/1073…` and neither
-///   has seen the other; conflict resolution must reject one"*. That key is the **staking vault**, which
-///   every block's cost accounting writes, so the refusal is about two unreconciled siblings writing one
-///   hot leaf — a `final_scope`/`ancestry` question, not a slash question. A real merge resolves it
-///   because the finalised fringe orders the writers, and this fixture does not build that.
-///
-/// So the honest state is: **the fixture needs a faithful final scope before its failure means
-/// anything**, and the two shapes above are the evidence a next attempt starts from. It is `#[ignore]`d
-/// rather than deleted so that attempt begins with a running reproduction, and rather than left live so
-/// that the suite does not carry a known failure. C201's row carries the same account.
-#[ignore = "C201 open: needs a final_scope that orders the writers before the two-branch arm means anything"]
+/// The single-branch control is kept because it is what made the two-branch failure legible: without it,
+/// a failure says only "something about this merge is wrong" rather than "the merge can fold this branch
+/// and something *else* is dropping it".
 #[tokio::test]
 async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
     use rchain_models::block_metadata::SlashSeverity;
@@ -637,10 +629,16 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
          merge cannot read this branch's index and the two-branch arm below is measuring the wrong thing"
     );
 
+    // **And the ordering, which is what a real merge has and this fixture did not.** `fold` applies a
+    // key's writers ancestors-first and *refuses* two accepted writers that have not seen each other —
+    // and every block's cost accounting writes the staking vault, so two unreconciled siblings both
+    // write it. Telling the merge that `a` has seen `b` is what a merge over a chain with an order has
+    // and what a bare pair of siblings does not; without it, one of the two chains is rejected and a
+    // rejected chain takes its block's **whole** native write with it, the slash included.
     let scope = MergeScope {
         final_scope: BTreeSet::new(),
         conflict_scope: BTreeSet::from([a.block_hash, b.block_hash]),
-        ancestry: BTreeMap::new(),
+        ancestry: BTreeMap::from([(a.block_hash, BTreeSet::from([b.block_hash]))]),
     };
     let (merged, _rejected) = MergeScope::merge(
         &scope,
