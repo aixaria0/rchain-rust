@@ -29,11 +29,14 @@ use crate::api::web_api::WebApi;
 #[serde(rename_all = "camelCase")]
 pub struct PendingWithdrawal {
     pub validator: Validator,
-    /// The block number the withdrawal was staged at (`pendingWithdrawers`' value).
-    pub staged_at_block: i64,
-    /// Blocks still to be produced before the boundary pays it out — the number the row's own
-    /// trigger says an operator currently has to derive by hand. Never negative; a withdrawal whose
-    /// quarantine has already elapsed reads `0` rather than wrapping.
+    /// **The block the boundary may pay it at** — `pendingWithdrawers`' value, which is law 47's
+    /// *deadline* (`quarantine_length + divisor·(1 + block_number/divisor)`), not the height the
+    /// request was made at. The two differ by the quarantine and more, and the earlier version of this
+    /// struct called it `stagedAtBlock` and carried a number an operator could not use (AUDIT C206).
+    pub deadline: i64,
+    /// Blocks to that deadline: `deadline − latest`, floored at zero. **It is not `deadline +
+    /// quarantine − latest`** — the stored value already contains the quarantine, so adding it again
+    /// reported a withdrawal as 50 000 blocks further away than it was (AUDIT C206).
     pub blocks_remaining: i64,
 }
 
@@ -98,14 +101,10 @@ impl PosReadApi for ShardPosRead {
             active_validators: active.into_iter().collect(),
             pending_withdrawals: pending
                 .into_iter()
-                .map(|(validator, staged_at_block)| PendingWithdrawal {
+                .map(|(validator, deadline)| PendingWithdrawal {
                     validator,
-                    staged_at_block,
-                    blocks_remaining: blocks_remaining(
-                        latest,
-                        staged_at_block,
-                        params.quarantine_length,
-                    ),
+                    deadline,
+                    blocks_remaining: blocks_remaining(latest, deadline),
                 })
                 .collect(),
         })
@@ -133,10 +132,14 @@ fn blocks_until_boundary(block_number: i64, epoch_length: i64) -> i64 {
     }
 }
 
-/// Blocks left before a withdrawal staged at `staged_at_block` is paid out, floored at zero.
-fn blocks_remaining(latest: i64, staged_at_block: i64, quarantine_length: i64) -> i64 {
-    let due = staged_at_block.saturating_add(quarantine_length);
-    due.saturating_sub(latest).max(0)
+/// Blocks left before a withdrawal whose deadline is `deadline` is paid out, floored at zero.
+///
+/// `deadline` is `pendingWithdrawers`' stored value, which **already contains the quarantine** (law
+/// 47: it is `quarantine_length + divisor·(1 + block/divisor)`). The earlier version took the value as
+/// a staging height and added `quarantine_length` to it a second time, reporting a withdrawal as
+/// 50 000 blocks further away than it was (AUDIT C206).
+fn blocks_remaining(latest: i64, deadline: i64) -> i64 {
+    deadline.saturating_sub(latest).max(0)
 }
 
 #[cfg(test)]
@@ -164,18 +167,36 @@ mod tests {
         assert_eq!(blocks_until_boundary(42, 0), 0);
     }
 
-    /// A staged withdrawal counts down to its payout and stops at zero — the number the docs tell
-    /// the operator to derive from the epoch boundary, which is exactly what this replaces.
+    /// **AUDIT C206's falsifier.** A staged withdrawal counts down to the deadline the *store* holds,
+    /// and the values are **derived from the rule** rather than chosen — `withdraw` writes
+    /// `quarantine_length + divisor·(1 + block/divisor)` (`rholang/src/native_state.rs`), so a request
+    /// at block 250 of an epoch of length 100 under a quarantine of 50 holds **350**.
+    ///
+    /// The earlier version of this test passed `(latest, staged, quarantine)` and asserted against a
+    /// *staging height* the store never contains, so it agreed with an implementation that added the
+    /// quarantine a second time and reported every pending withdrawal 50 000 blocks too far away.
     #[test]
-    fn a_pending_withdrawal_counts_down_and_never_goes_negative() {
-        // Staged at 250 with a quarantine of 100 → due at 350.
-        assert_eq!(blocks_remaining(250, 250, 100), 100);
-        assert_eq!(blocks_remaining(300, 250, 100), 50);
-        assert_eq!(blocks_remaining(350, 250, 100), 0);
-        // Past due is zero rather than a negative countdown: a withdrawal that has not been paid
-        // out yet is not an operator error to be reported as a negative number of blocks.
-        assert_eq!(blocks_remaining(400, 250, 100), 0);
-        // The degenerate quarantine setting.
-        assert_eq!(blocks_remaining(10, 10, 0), 0);
+    fn a_pending_withdrawal_counts_down_to_the_deadline_the_store_holds() {
+        let deadline = 50 + 100 * (1 + 250 / 100);
+        assert_eq!(
+            deadline, 350,
+            "the deadline `withdraw` writes for a request at block 250"
+        );
+        assert_eq!(blocks_remaining(250, deadline), 100);
+        assert_eq!(blocks_remaining(300, deadline), 50);
+        assert_eq!(blocks_remaining(350, deadline), 0);
+        // Past due is zero rather than a negative countdown: a withdrawal that has not been paid out
+        // yet is not an operator error to be reported as a negative number of blocks.
+        assert_eq!(blocks_remaining(400, deadline), 0);
+        // The degenerate quarantine: a deadline of the current height is due now.
+        assert_eq!(blocks_remaining(10, 10), 0);
+
+        // **The mutation the defect was, stated so it cannot come back**: adding the quarantine to a
+        // value that already contains it reads 150 here where the answer is 100.
+        assert_ne!(
+            blocks_remaining(250, deadline),
+            deadline + 50 - 250,
+            "the stored value already contains the quarantine; adding it again is AUDIT C206"
+        );
     }
 }
