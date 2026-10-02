@@ -1411,22 +1411,35 @@ impl NativeSystemState {
     }
 
     /// Remove a validator and confiscate its stake to the Coop slashing vault (port of the PoS
-    /// `slash` behavior). A pending withdrawal is cancelled (the stake is forfeited).
+    /// `slash` behavior). A pending withdrawal is cancelled (the stake is forfeited) and the
+    /// validator's **accrued** rewards are dropped with it (AUDIT C197).
     ///
     /// Removal is **immediate** in the contract, unlike bonding: the slashing contract deletes the
     /// validator from `activeValidators` and zeroes its bond in the same state update as the transfer
     /// (`Pos.rhox:486-495`), so law 44's epoch gate does not apply to it. What the contract does not
     /// do is take the validator out of `pendingWithdrawers`; the port does, with the same payable
     /// outcome (see the note in `close_block`).
+    ///
+    /// **The accrued rewards go too, and leaving them behind was a deviation** (C197). `Pos.rhox`'s
+    /// state update deletes the offender's `committedRewards` entry in the same write as the bond
+    /// zeroing (`committedRewards: … .delete(slashedValidator)`). This port did not, and the entry was
+    /// then unreachable in both directions: **never paid**, because `close_block` pays pool members
+    /// and claims in `withdrawers` and the slashed validator is out of both, and **never removed**,
+    /// because the only `committed.remove` in this file is the claim payment. Since `epoch_pot`
+    /// subtracts *every* `committed` entry, the stranded balance went on shrinking the pot for every
+    /// other validator for ever. Deleting it returns that amount to the distributable pot, which is
+    /// what the oracle does.
     pub async fn slash(&self, validator: &Validator) -> Result<Result<(), String>, String> {
         let mut pool = self.bonds().await?;
         let mut active = self.active().await?;
         let mut withdrawers = self.withdrawers().await?;
         let mut pending = self.pending_withdrawers().await?;
+        let mut committed = self.committed_rewards().await?;
         let stake = pool.remove(validator);
         active.remove(validator);
         withdrawers.remove(validator);
         pending.remove(validator);
+        committed.remove(validator);
         if let Some(stake) = stake {
             // The stake leaves the staking vault for the Coop multisig vault (`Pos.rhox:470-482`:
             // `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey)`). Debiting the source
@@ -1439,6 +1452,7 @@ impl NativeSystemState {
         self.set_bonds(&pool);
         self.set_active(&active);
         self.set_withdrawers(&withdrawers);
+        self.set_committed_rewards(&committed);
         // The pending-withdrawal entry this removes is in `pending`, and a slash that leaves it behind
         // hands it to whatever occupies this validator key next: a later accepted bond is then moved into
         // a claim at the epoch boundary instead of joining the active set. Found by the PoS review, which
@@ -2906,6 +2920,62 @@ mod tests {
             total_rev(&native, &addresses).await,
             before,
             "a slashing is a transfer to the Coop vault, not a mint"
+        );
+    }
+
+    /// The current epoch pot, read the way `close_block` reads it.
+    async fn pot_of(native: &NativeSystemState) -> i64 {
+        epoch_pot(
+            native.pos_vault_balance().await.unwrap(),
+            &native.bonds().await.unwrap(),
+            &native.withdrawers().await.unwrap(),
+            &native.committed_rewards().await.unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// **The C197 falsifier: a slash drops the offender's accrued rewards, as the oracle does.**
+    ///
+    /// `Pos.rhox`'s slash deletes the validator's `committedRewards` entry in the same state write as
+    /// the bond zeroing. This port left it, and the entry was then unreachable in both directions —
+    /// never paid, because the epoch pays pool members and claims in `withdrawers` and the validator
+    /// is out of both, and never removed, because the only `committed.remove` is the claim payment —
+    /// so the balance sat in the staking vault and went on reducing the pot for every *other*
+    /// validator, for ever.
+    ///
+    /// The pot is the testable consequence. `epoch_pot` subtracts every `committed` entry, and the
+    /// bond's confiscation is pot-neutral (the vault loses exactly what the pool loses), so the slash
+    /// must move the pot **up** by the accrued amount. Red before the fix, where it did not move.
+    #[tokio::test]
+    async fn a_slash_clears_the_accrued_rewards_and_returns_them_to_the_pot() {
+        let native =
+            native_with(&[validator(1)], PosParams::default(), &[(validator(1), 10)]).await;
+        let v = validator(1);
+        // Some phlo burned since the last boundary, so the pot is positive.
+        native
+            .credit_pos_vault(NonNegI64::try_from(30).unwrap())
+            .await
+            .unwrap();
+        // …and an epoch's share this validator has earned and not withdrawn.
+        let accrued = NonNegI64::try_from(7).unwrap();
+        native.set_committed_rewards(&BTreeMap::from([(v, accrued)]));
+
+        let pot_before = pot_of(&native).await;
+        assert_eq!(
+            pot_before, 23,
+            "40 of vault (10 bonded + 30 burned) less the 10 bonded less the 7 accrued"
+        );
+
+        native.slash(&v).await.unwrap().unwrap();
+
+        assert!(
+            !native.committed_rewards().await.unwrap().contains_key(&v),
+            "the offender's accrued rewards go with the bond"
+        );
+        assert_eq!(
+            pot_of(&native).await,
+            pot_before + i64::from(accrued),
+            "and they return to the distributable pot instead of shrinking it for ever"
         );
     }
 
