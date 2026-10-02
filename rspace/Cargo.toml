@@ -17,6 +17,15 @@ rchain-crypto = { path = "../crypto" }
 rchain-shared = { path = "../shared" }
 tokio = { version = "1", features = ["sync"] }
 
-[dev-dependencies]
+# Host-only test infrastructure. The in-crate `#[cfg(test)]` property sweep needs `proptest`, and its
+# runtime needs tokio's multi-thread executor — neither is usable for `wasm32-unknown-unknown`
+# (`proptest` pulls `wait-timeout`, which is native-only; `rt-multi-thread` is rejected on the target).
+# Scoping them to the host keeps the wasm test target buildable (issue #98).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+# The wasm-target harness for `tests/wasm_roundtrip.rs` — the store + RSpace round-trip that would
+# have caught `spawn_blocking` on a threadless target (issue #98).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
