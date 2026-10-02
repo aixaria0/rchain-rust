@@ -106,7 +106,7 @@ claim agreement without saying which kind it is — the register's `status` disc
 | `takesStep p = true ↔ ∃ q', ReduceP p q'` | the `enabled_iff` field | **theorem**, supplied per instance |
 | a `for` that matches nothing: no step, **no error** (Law 38/40) | `Void`: no rule fires and nothing errors | **theorem**, one layer up — C174's block was never refused, the gate simply never fired |
 | a **join** part-filled | — | **not modelled, because** `spec/Rchain/Silence.lean` records that boundary |
-| an inactivity leak | — | **not modelled, because** it needs a state change (burning silent stake) — owed and unowned: #24 and #39 are both closed |
+| an inactivity leak | — | **not modelled, and now a decision rather than a debt** (2026-10-02, §59): it burns a silent validator's *bond*, which the constraint governing this workstream refuses — a staker must not lose its bond through no fault of its own, and a partition is the canonical case. The port's instrument instead is an **income-only** participation rule (law 44), which scales an epoch's reward and cannot reach a stake |
 
 The layers differ in exactly one way, and it is the distinction this vocabulary exists to keep sharp: in
 the **closed** calculus nothing outside the term can add a send, so a lone receive is silent *forever* —

@@ -22,6 +22,7 @@ use rchain_rholang::runtime::ReplayRhoRuntime;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::base16;
 use rchain_shared::log::{Log, LogSource};
+use rchain_shared::refined::BlockHeight;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::block_status::BlockStatus;
@@ -48,6 +49,7 @@ pub async fn replay_block(
     replay_runtime: &ReplayRhoRuntime,
     block: &BlockMessage,
     fringe_state_hash: &Blake2b256Hash,
+    participation: &BTreeMap<Validator, BlockHeight>,
     rand: &Blake2b512Random,
 ) -> Result<Blake2b256Hash, ReplayFailure> {
     let start_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
@@ -62,6 +64,7 @@ pub async fn replay_block(
             rand,
             block_data,
             fringe_state_hash,
+            participation,
             with_cost_accounting,
             // Genesis PoS descriptors (pool/trusted/params) come from the network's genesis
             // configuration; the trie is authoritative for every non-genesis block, so this value is
@@ -540,6 +543,10 @@ where
             prev_fringe_lookup: FringeData::fringe_hash_of(&BTreeSet::new()),
             prev_fringe: BTreeSet::new(),
             fringe_bonds_map: block.bonds.clone(),
+            // Genesis has no parents and therefore no fringe, so it has no participation: an empty map,
+            // which is the honest reading rather than one invented from the bonds. A boundary's rule
+            // reads the participation of *its own* merge, not this one.
+            participation: BTreeMap::new(),
             fringe_rejected_deploys: BTreeSet::new(),
             pre_state_hash: genesis_pre_state_hash,
             rejected_deploys: BTreeSet::new(),
@@ -586,8 +593,15 @@ where
         let forked = runtime
             .fork_replay_runtime(pre_state.pre_state_hash)
             .await?;
-        let replay_result =
-            replay_block(runtime, &forked, block, &pre_state.fringe_state, &rand).await;
+        let replay_result = replay_block(
+            runtime,
+            &forked,
+            block,
+            &pre_state.fringe_state,
+            &pre_state.participation,
+            &rand,
+        )
+        .await;
         // Read the recomputed hash *before* `handle_errors` consumes the result, so the disagreement
         // can be reported with both sides (#139).
         let recomputed = replay_result.as_ref().ok().cloned();
@@ -714,6 +728,7 @@ mod tests {
             prev_fringe_lookup: hash(0x44),
             prev_fringe: BTreeSet::new(),
             fringe_bonds_map: BTreeMap::new(),
+            participation: BTreeMap::new(),
             fringe_rejected_deploys: BTreeSet::new(),
             pre_state_hash: hash(0x11),
             rejected_deploys: BTreeSet::new(),

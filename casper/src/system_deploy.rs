@@ -12,7 +12,7 @@ use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::casper::protocol::casper_message::Event;
 use rchain_models::rholang::RhoType::{RhoBoolean, RhoString, RhoTupleN};
 use rchain_models::validator::Validator;
-use rchain_shared::refined::NonNegI64;
+use rchain_shared::refined::{BlockHeight, NonNegI64};
 
 /// A user-level system-deploy error (port of `SystemDeployUserError`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +110,16 @@ pub enum NativeSystemDeployOp {
     CloseBlock {
         block_number: i64,
         fringe_state_hash: Blake2b256Hash,
+        /// **Where each validator's latest message sat in that same fringe** — the participation the
+        /// epoch reward's absence rule reads. A validator the map does not mention is one the fringe does
+        /// not contain at all, which is as absent as it gets.
+        ///
+        /// Carried for the reason the state hash above is: not published, recomputed by every node, so
+        /// play and replay agree by construction rather than by a check. What it replaces is the same
+        /// signal read from the block's **pre-state** (`pos:last_spoke`), which is proposer-steerable —
+        /// a pre-state is a function of the justification set, and nothing requires a block to justify
+        /// everything it has seen. That is exactly the hole `close_block` step 5 documents for the seed.
+        participation: BTreeMap<Validator, BlockHeight>,
     },
     Slash {
         validator: Validator,
@@ -121,14 +131,6 @@ pub enum NativeSystemDeployOp {
         /// can check the offence against its own DAG. `None` is the metadata-justified kind.
         evidence: Option<Vec<u8>>,
     },
-    /// **The block records that its producer spoke at its own height** (B4, #150).
-    ///
-    /// Carries nothing, and that is the design: the *speaker* and the *height* are the block's own
-    /// `sender` and `block_number`, which every node reads off the block it is processing, so there is
-    /// nothing here for a proposer to choose — it cannot write another validator's entry and cannot
-    /// claim a height that is not its own. The model's counterpart is
-    /// `spec/Rchain/Pos.lean`'s absence section.
-    RecordSpoke,
     /// **Pay the block's producer for the work it did** (B2, #150): a share of what this deploy
     /// burned, taken out of the staking vault by [`NativeSystemState::pay_executor`].
     ///
@@ -172,21 +174,6 @@ impl SystemDeploy {
         }
     }
 
-    /// **The block accounts for itself** (B4, #150): a block-level system deploy carrying nothing,
-    /// whose execution writes the block's own sender and height into `pos:last_spoke`.
-    ///
-    /// Built by the proposer for its own blocks and reconstructed by every receiver from the recorded
-    /// `SystemDeployData::RecordSpoke`, so both sides run it at the same point in the same sequence.
-    pub fn record_spoke(rand: Blake2b512Random) -> SystemDeploy {
-        SystemDeploy {
-            source: "",
-            normalizer_env: BTreeMap::new(),
-            rand,
-            return_channel: Par::default(),
-            op: Some(NativeSystemDeployOp::RecordSpoke),
-        }
-    }
-
     /// **Pay the block's producer** (B2, #150). Built by both folds from the block's own `sender` and
     /// the deploy's burned amount, so play and replay pay the same address the same amount; the share
     /// itself is applied by the native state from `PosParams`.
@@ -210,6 +197,7 @@ impl SystemDeploy {
     pub fn close_block(
         block_number: i64,
         fringe_state_hash: Blake2b256Hash,
+        participation: BTreeMap<Validator, BlockHeight>,
         rand: Blake2b512Random,
     ) -> SystemDeploy {
         SystemDeploy {
@@ -220,6 +208,7 @@ impl SystemDeploy {
             op: Some(NativeSystemDeployOp::CloseBlock {
                 block_number,
                 fringe_state_hash,
+                participation,
             }),
         }
     }

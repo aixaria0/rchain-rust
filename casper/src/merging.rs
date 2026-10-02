@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rchain_block_storage::block_store::BlockStore;
+use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_block_storage::dag::finalizer::Message;
 use rchain_block_storage::dag::finalizer::NoAdvance;
 use rchain_block_storage::dag::message_map;
@@ -38,7 +39,7 @@ use rchain_sdk::dag::merging::{
     compute_relation_map_for_merge_set, resolve_conflict_set_with_census, SearchBudget,
     SearchCensus,
 };
-use rchain_shared::refined::NonNegI64;
+use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::serialize::Serialize;
 
 use crate::block_random_seed::BlockRandomSeed;
@@ -253,6 +254,15 @@ pub struct ParentsMergedState {
     pub prev_fringe: BTreeSet<BlockHash>,
     pub prev_fringe_lookup: Blake2b256Hash,
     pub fringe_bonds_map: BTreeMap<Validator, NonNegI64>,
+    /// **The participation the epoch reward's absence rule reads** (B4, #150): each validator's latest
+    /// message height *in the fringe this merge computed*, from `liveness::latest_heights` over the
+    /// fringe's own messages.
+    ///
+    /// Derived here, where that `Message` set is still alive, and deliberately from the **same**
+    /// `prev_fringe` the `fringe_state` above is looked up under — re-deriving it from the DAG
+    /// representation instead is the one way play and replay could disagree about *which* fringe was
+    /// meant, which is what the `prev_fringe`/`prev_fringe_lookup` pair below exists to make legible.
+    pub participation: BTreeMap<Validator, BlockHeight>,
     pub fringe_rejected_deploys: BTreeSet<Vec<u8>>,
     pub pre_state_hash: Blake2b256Hash,
     pub rejected_deploys: BTreeSet<Vec<u8>>,
@@ -547,13 +557,11 @@ impl BlockIndex {
                     event_list,
                     system_deploy: SystemDeployData::Empty,
                 } => (sys_deploy_id(&block_hash, 3), event_list),
-                // The block's own account of itself (B4, #150). It contributes an index like the
-                // others — a merge has to fold its one native write, which is why the id is distinct
-                // from every other kind's.
-                ProcessedSystemDeploy::Succeeded {
-                    event_list,
-                    system_deploy: SystemDeployData::RecordSpoke,
-                } => (sys_deploy_id(&block_hash, 4), event_list),
+                // **Index 4 was `SystemDeployData::RecordSpoke`** (B4, #150), retired with the variant
+                // it named. It is not reused: the index is a fold position, and a retired one staying
+                // vacant is cheaper to read than a kind that silently inherited a number. A block from
+                // before the retirement decodes its field 3 as `Empty` and takes the arm above, which
+                // is why that block is refused at replay rather than merged under a stale id.
                 ProcessedSystemDeploy::Failed { .. } => continue,
             };
             let event_log_index = Self::create_event_log_index(
@@ -700,6 +708,7 @@ impl BlockIndex {
     /// the value it just computed from the merge, and the node's indexing loops have the DAG.
     pub async fn get_block_index(
         runtime: &RuntimeManager,
+        dag: &dyn BlockDagStorage,
         block_store: &BlockStore,
         block_hash: BlockHash,
         fringe_state_hash: Blake2b256Hash,
@@ -744,6 +753,7 @@ impl BlockIndex {
                 None => {
                     regenerate_sidecars(
                         runtime,
+                        dag,
                         &block,
                         &sender,
                         pre_state_hash,
@@ -756,6 +766,7 @@ impl BlockIndex {
             Err(err) if err.starts_with("Mergeable store invalid state hash") => {
                 regenerate_sidecars(
                     runtime,
+                    dag,
                     &block,
                     &sender,
                     pre_state_hash,
@@ -824,6 +835,7 @@ impl BlockIndex {
 /// genesis is never a merge parent.
 async fn regenerate_sidecars(
     runtime: &RuntimeManager,
+    dag: &dyn BlockDagStorage,
     block: &BlockMessage,
     sender: &[u8],
     pre_state_hash: Blake2b256Hash,
@@ -856,6 +868,12 @@ async fn regenerate_sidecars(
     // advertise nothing at all.
     INDEX_REPLAY_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let replay_started = std::time::Instant::now();
+    // **The participation the epoch's absence rule reads** (B4, #150), derived on this arm only —
+    // deriving it on every index lookup would put a fringe walk on the restart's hot path for a value
+    // only a fallback replay consumes. It is the *same* derivation the merge that validated this block
+    // performed (`participation_for_block`), and it has to be: the post-state comparison below refuses
+    // a replay that computes anything else.
+    let participation = crate::multi_parent_casper::participation_for_block(dag, block).await?;
     let forked = runtime.fork_replay_runtime(pre_state_hash).await?;
     let rand = BlockRandomSeed::random_generator_from_block(block);
     let with_cost_accounting = !block.justifications.is_empty();
@@ -868,6 +886,7 @@ async fn regenerate_sidecars(
             &rand,
             BlockData::from_block(block),
             &fringe_state_hash,
+            &participation,
             with_cost_accounting,
             // Genesis PoS descriptors; consumed only on the genesis replay path
             // (`is_genesis_pre_state`). See `interpreter_util.rs`.
@@ -2405,6 +2424,7 @@ mod boundary_merge_tests {
                     number_of_active_validators: 10,
                     executor_share: nn(0),
                     absence_slack: nn(0),
+                    participation_grace: nn(0),
                 },
             })
             .unwrap();
@@ -2455,7 +2475,7 @@ mod boundary_merge_tests {
                 .unwrap(),
         }
         native
-            .close_block(number, Blake2b256Hash::create(&[fringe]))
+            .close_block(number, Blake2b256Hash::create(&[fringe]), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();

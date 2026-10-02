@@ -57,7 +57,7 @@ is, the same discipline the register applies to `status`:
 | `Relation.ReflTransGen Reduce`, already used by `Rchain/Concurrent.lean` | `Reach` | **definitional** — `Reach` *is* that closure |
 | `takesStep p = true ↔ ∃ q', ReduceP p q'` | `enabled_iff` | **theorem**, per instance: each supplies its own sound/complete pair |
 | a `for` that matches nothing: no step, **no error** (Law 38/40) | `Void`: a requirement nothing satisfies, no rule fires and nothing errors | **theorem**, one layer up: C174's block was never refused, the gate simply never fired |
-| a **join** (`for (x <- a; y <- b)`) — outside the model, as `Rchain/Silence.lean` says | an inactivity leak — outside *this* model | **not modelled, because** the protocol side has no rule for it yet (#24, #39) |
+| a **join** (`for (x <- a; y <- b)`) — outside the model, as `Rchain/Silence.lean` says | an inactivity leak — outside *this* model | **not modelled, and a decision rather than a debt** (2026-10-02, §59): the protocol side has an **income-only** participation rule instead (law 44), because a leak burns a silent validator's *bond* and a partition is the canonical way a staker loses a bond through no fault of its own |
 
 The layers differ in exactly one way, and it is the distinction this vocabulary exists to keep sharp: in
 the **closed** calculus nothing outside the term can add a send, so a lone receive is silent *forever*;

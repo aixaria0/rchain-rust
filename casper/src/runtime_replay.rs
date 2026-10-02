@@ -23,6 +23,7 @@ use rchain_models::rholang::RhoType::RhoNumber;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::types::count_free_vars;
+use rchain_models::validator::Validator;
 use rchain_rholang::accounting::{Cost, CostAccounting};
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::evaluate_result::EvaluateResult;
@@ -38,6 +39,7 @@ use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 use rchain_rspace::native_store::InMemNativeStore;
 use rchain_rspace::trace::Log;
 use rchain_rspace::util::ReplayException;
+use rchain_shared::refined::BlockHeight;
 
 use crate::event_converter::to_rspace_event;
 use crate::genesis::contracts::Vault;
@@ -135,6 +137,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         system_deploys: &[ProcessedSystemDeploy],
         block_data: BlockData,
         fringe_state_hash: &Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -148,6 +151,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             system_deploys,
             block_number,
             fringe_state_hash,
+            participation,
             with_cost_accounting,
             pos_genesis,
             vaults,
@@ -165,6 +169,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         system_deploys: &[ProcessedSystemDeploy],
         block_number: i64,
         fringe_state_hash: &Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
         with_cost_accounting: bool,
         pos_genesis: &PosGenesis,
         vaults: &[Vault],
@@ -244,6 +249,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                     sd,
                     block_number,
                     fringe_state_hash,
+                    participation,
                     rand.split_byte(u8::try_from(terms.len() + i).map_err(|_| {
                         ReplayFailure::internal_error("deploy count exceeds 255".to_string())
                     })?),
@@ -450,6 +456,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         processed: &ProcessedSystemDeploy,
         block_number: i64,
         fringe_state_hash: &Blake2b256Hash,
+        participation: &BTreeMap<Validator, BlockHeight>,
         rand: Blake2b512Random,
     ) -> Result<NumberChannelsDiff, ReplayFailure> {
         let system_deploy_data = match processed {
@@ -464,10 +471,12 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 severity,
                 evidence,
             } => SystemDeploy::slash(validator, *severity, evidence.clone(), rand),
-            SystemDeployData::RecordSpoke => SystemDeploy::record_spoke(rand),
-            SystemDeployData::CloseBlock => {
-                SystemDeploy::close_block(block_number, *fringe_state_hash, rand)
-            }
+            SystemDeployData::CloseBlock => SystemDeploy::close_block(
+                block_number,
+                *fringe_state_hash,
+                participation.clone(),
+                rand,
+            ),
             SystemDeployData::Empty => {
                 return Err(ReplayFailure::internal_error("Expected system deploy"));
             }
@@ -575,21 +584,13 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             NativeSystemDeployOp::PayExecutor { executor, burned } => {
                 native.pay_executor(executor, *burned).await?
             }
-            // The block's own account of itself (B4, #150), from *this* runtime's block data — which
-            // is the block being replayed, so the entry written is the same one the play path wrote.
-            NativeSystemDeployOp::RecordSpoke => {
-                let block_data = self.runtime.block_data();
-                let speaker =
-                    rchain_models::validator::Validator::try_from(block_data.sender.bytes())
-                        .map_err(|e| format!("recordSpoke: block sender: {e}"))?;
-                native.record_spoke(&speaker, block_data.block_number).await
-            }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
                 fringe_state_hash,
+                participation,
             } => {
                 native
-                    .close_block(*block_number, *fringe_state_hash)
+                    .close_block(*block_number, *fringe_state_hash, participation)
                     .await?
             }
             NativeSystemDeployOp::Slash {

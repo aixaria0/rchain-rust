@@ -510,6 +510,7 @@ mod tests {
                     GenesisBlockData {
                         executor_share: 2500,
                         absence_slack: 0,
+                        participation_grace: 0,
                         genesis_data_dir: PathBuf::from("/var/lib/rnode/genesis"),
                         bonds_file: "/var/lib/rnode/genesis/bonds.txt".to_string(),
                         wallets_file: "/var/lib/rnode/genesis/wallets.txt".to_string(),
@@ -1088,6 +1089,7 @@ mod tests {
                     GenesisBlockData {
                         executor_share: 2500,
                         absence_slack: 0,
+                        participation_grace: 0,
                         genesis_data_dir: PathBuf::from("/var/lib/rnode/genesis"),
                         bonds_file: "/var/lib/rnode/genesis/bonds1.txt".to_string(),
                         wallets_file: "/var/lib/rnode/genesis/wallets1.txt".to_string(),

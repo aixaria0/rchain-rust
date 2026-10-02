@@ -40,9 +40,17 @@ pub struct ProofOfStake {
     /// "at most the whole" invariant has to hold where a config becomes a number and where the number
     /// is read back.
     pub executor_share: NonNegI64,
-    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
-    /// #150), in heights. Refined like its neighbours, and carried straight into `PosParams`.
+    /// **The lag at which a validator's participation weight reaches zero** (B4, #150), in heights.
+    /// Refined like its neighbours, and carried straight into `PosParams`.
     pub absence_slack: NonNegI64,
+    /// **How far behind the last finalised fringe a validator's latest message may sit and still be
+    /// paid its whole share** (B4, #150), in heights: the flat part of the weight, with the ramp running
+    /// from here to `absence_slack`. Carried straight into `PosParams`.
+    ///
+    /// **`genesis::proof_of_stake_from_config` is where a config that omits it becomes the binary
+    /// rule**, because that is the boundary between "a file a person wrote" and "the value consensus
+    /// uses". See [`crate::conf::GenesisBlockData::participation_grace`].
+    pub participation_grace: NonNegI64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,

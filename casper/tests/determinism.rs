@@ -7,6 +7,8 @@
 mod common;
 use common::fringe_state;
 
+use std::collections::BTreeMap;
+
 use rchain_casper::genesis::contracts::Vault;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
@@ -94,6 +96,7 @@ async fn play_and_replay_agree_for_deployer_id_binding_deploy() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -159,6 +162,7 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -376,6 +380,7 @@ async fn play_and_replay_agree_for_failed_user_deploy_with_recorded_error() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -454,6 +459,7 @@ async fn play_and_replay_agree_for_escrow_round_trip_deploy() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -532,6 +538,7 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -564,6 +571,7 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -600,6 +608,7 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],
@@ -681,7 +690,7 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
         block_number: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
         ..BlockData::empty()
     };
-    let close = SystemDeploy::close_block(1, fringe_state(1), rand.split_byte(9));
+    let close = SystemDeploy::close_block(1, fringe_state(1), BTreeMap::new(), rand.split_byte(9));
     let (play_hash, user_results, sys_results) = rm
         .compute_state(
             &post,
@@ -712,6 +721,7 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
             &rand,
             block_data,
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &pos_genesis,
             &[],
@@ -785,7 +795,7 @@ async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_st
 
     // What the **proposer** had: its own derived fringe.
     let proposer_fringe = fringe_state(1);
-    let close = SystemDeploy::close_block(1, proposer_fringe, rand.split_byte(9));
+    let close = SystemDeploy::close_block(1, proposer_fringe, BTreeMap::new(), rand.split_byte(9));
     let (declared_post_state, user_results, sys_results) = rm
         .compute_state(
             &genesis_post,
@@ -816,6 +826,7 @@ async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_st
             &rand,
             block_data.clone(),
             &proposer_fringe,
+            &BTreeMap::new(),
             true,
             &pos_genesis,
             &[],
@@ -844,6 +855,7 @@ async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_st
             &rand,
             block_data,
             &other_fringe,
+            &BTreeMap::new(),
             true,
             &pos_genesis,
             &[],
@@ -928,6 +940,7 @@ async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             false,
             &PosGenesis::default(),
             &vaults,
@@ -949,6 +962,7 @@ async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             false,
             &PosGenesis::default(),
             &[],
@@ -1050,6 +1064,7 @@ async fn the_producer_is_paid_a_share_of_the_burned_phlo_on_play_and_replay() {
             &rand,
             block_data,
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &pos,
             &[],

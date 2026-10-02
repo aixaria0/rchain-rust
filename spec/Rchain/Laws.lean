@@ -2249,11 +2249,14 @@ def laws : List Law := [
     rustWitness := [
       "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
       "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary",
-      "rholang/src/property_tests.rs:law44_the_absence_rule_only_ever_removes_entries",
-      "rholang/src/property_tests.rs:law44_a_validator_inside_the_slack_is_kept",
-      "rholang/src/property_tests.rs:law44_a_validator_outside_the_slack_is_not_paid",
+      "rholang/src/property_tests.rs:law44_the_absence_rule_never_raises_a_reward",
+      "rholang/src/property_tests.rs:law44_a_validator_inside_the_grace_is_kept",
+      "rholang/src/property_tests.rs:law44_a_validator_outside_the_knee_is_not_paid",
       "rholang/src/property_tests.rs:law44_a_validator_that_never_spoke_is_not_paid",
-      "rholang/src/property_tests.rs:law44_a_zero_slack_withholds_nothing"],
+      "rholang/src/property_tests.rs:law44_a_zero_knee_withholds_nothing",
+      "rholang/src/property_tests.rs:law44_between_the_grace_and_the_knee_a_validator_is_paid_in_part",
+      "rholang/src/native_state.rs:the_boundary_pays_on_the_participation_it_is_handed",
+      "casper/src/runtime_manager.rs:a_boundarys_participation_reaches_play_and_replay_alike"],
     statement := "Membership takes effect at an **epoch boundary**: the epoch sequence runs only when \
       `blockNumber % epochLength = 0`, and off a boundary a bond is pooled but not activated, a \
       withdrawal is staged but not moved, and no claim is paid. The same machine carries the **slash**, \
@@ -2262,10 +2265,19 @@ def laws : List Law := [
       the remainder returns to its own vault, so the loss is bounded by the tier and a milder tier never \
       takes more. And the same vault pays for **work**: a share of a deploy's burned phlo goes to the \
       block's own signed sender (`payExecutor`), which is a transfer inside the staking vault — it moves \
-      income, never stake, and it is monotone in what the deploy burned. A boundary may also **withhold** \
-      a drawn validator's reward for the epoch it sat out (`absenceAdjusted`), which is income only: the \
-      rule is a function of the reward and of how long the validator has been silent, so no stake is \
-      reachable from it and a validator inside the slack is paid in full",
+      income, never stake, and it is monotone in what the deploy burned. A boundary may also **scale** a \
+      drawn validator's reward by its participation (`absenceAdjusted`, over `participationWeight`), which \
+      is income only: the weight is a function of the reward and of how far behind the last finalised \
+      fringe the validator's latest *message* sits, so no stake is reachable from it. The weight is the \
+      whole `10000` inside a **grace**, ramps linearly to `0` at a **knee**, and is never more than the \
+      whole — which is what carries law 46 through the rule (`weighted_rewards_le_pot`: the split is \
+      unchanged, and the rule only multiplies its outputs by at most one). **A partial weight withholds** \
+      (`absence_withholds`), and that theorem is deliberately paired with the decided instance \
+      `the_ramp_is_a_ramp`, because it is an *implication*: a weight that was always `10000` satisfies it \
+      **vacuously** — measured, not argued, since that mutation fails the instance and leaves the \
+      implication alone. Neither is a check without the other, which is the absence rule's own vacuity \
+      one level up. `grace = knee` reproduces a binary threshold rule rather than losing it, and \
+      `knee = 0` is the off switch",
     status := .provedModel,
     declarations := [`Rchain.PosState, `Rchain.PosClaim, `Rchain.PosRequest, `Rchain.totalRev,
       `Rchain.divisor, `Rchain.isBoundary, `Rchain.bond, `Rchain.epochStep, `Rchain.closeBlock,
@@ -2279,10 +2291,15 @@ def laws : List Law := [
       `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake,
       `Rchain.producer_pay_is_monotone,
       `Rchain.absenceAdjusted, `Rchain.absence_never_raises,
-      `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake],
+      `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake,
+      `Rchain.absence_withholds,
+      `Rchain.participationWeight, `Rchain.participationWeight_le, `Rchain.participationWeight_full,
+      `Rchain.participationWeight_zero, `Rchain.participationWeight_antitone,
+      `Rchain.nsum_zipWith_le_map, `Rchain.weighted_rewards_le_pot,
+      `Rchain.absence_withholds_past_the_knee, `Rchain.the_ramp_is_a_ramp],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
-    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone, `Rchain.absence_never_raises, `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake],
+    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone, `Rchain.absence_never_raises, `Rchain.a_returning_validator_is_paid_in_full, `Rchain.the_absence_rule_moves_no_stake, `Rchain.absence_withholds, `Rchain.participationWeight_le, `Rchain.participationWeight_full, `Rchain.participationWeight_zero, `Rchain.participationWeight_antitone, `Rchain.weighted_rewards_le_pot, `Rchain.absence_withholds_past_the_knee, `Rchain.the_ramp_is_a_ramp],
     falsifiable := some "`the_epoch_gate_does_nothing_off_a_boundary` builds the off-boundary state — a \
       staged withdrawal *and* a full reward pot — and asserts the whole state is unchanged, then that \
       the same call at the boundary moves it and pays it; the bond half is in the same test (pooled at \
@@ -2315,7 +2332,22 @@ def laws : List Law := [
       itself (`if boundary then … else s` restates its own definition, which is the `vacuous` shape) \
       but the **conservation** an epoch preserves: the staking vault plus the Coop vault plus every user \
       vault is invariant, which is what makes a payout a transfer rather than a mint. That is this \
-      row's Programme C item" },
+      row's Programme C item. **The absence rule's third form, and what it cost (2026-10-02, #150).** \
+      It was first a filter over a per-validator record in native state (`pos:last_spoke`), read out of \
+      the boundary block's **pre-state** — which is a function of the proposer's justification set, and \
+      nothing requires a block to justify everything it has seen, so the penalty could be *aimed* at a \
+      chosen rival. It also measured the wrong event: an attestation block carries no system deploys and \
+      so recorded nothing, while an attestation *is* a message. It now reads a participation map derived \
+      from the **last finalised fringe**, which is what the epoch seed reads and for the same reason, and \
+      the record it replaced is **retired** — leaf, codecs, op, proto field (reserved) and variant, with \
+      the block-level system-deploy list losing an entry. **Two things that cost are stated here rather \
+      than left to the diff**: retiring the entry shifts every positional seed in that list down by one, \
+      which is a consensus change of the same class as an insertion; and a block written before the \
+      retirement is refused at **replay** rather than at the wire, because an unknown proto oneof field \
+      decodes to `Empty` and `replay_block_system_deploy` is what rejects an `Empty` entry in a block's \
+      system-deploy list. The read's residual is the seed's own: the steering space is \"one per \
+      reachable fringe\", so a stale fringe moves every validator's reading back together and singles \
+      nobody out, but it is a reduction and not a closure" },
   { number := 45, layer := "PoS",
     rustWitness := ["rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust"],
     statement := "The epoch's split: `pot * (bondᵢ / minimumBond) / (activeBonds / minimumBond)` per \
@@ -2702,8 +2734,12 @@ def laws : List Law := [
       unstatable over a transition *relation*, and `Rchain.reduce_not_deterministic` \
       (`Rchain/Concurrent.lean`) is the repo's own proof that the flat calculus fixes no schedule at \
       all — so starvation is registered `open` rather than defined as a shape. **Not modelled either**: \
-      the protocol's inactivity leak (the honest fix for a net that stays below two thirds), which \
-      needs a state change this layer does not have, and no open issue owns it (#24 and #39 are both closed). **`Drift` has a port-side instance \
+      the protocol's inactivity leak (a state change that burns a silent validator's *bond*) — and that \
+      is a **decision rather than a debt** (2026-10-02, §59): the constraint governing this workstream is \
+      that a staker must not lose its bond through no fault of its own, and a partition is the canonical \
+      case of exactly that, so the instrument the port has instead is an **income-only** participation \
+      rule (law 44) that scales an epoch's reward and cannot reach a stake. The citations this used to \
+      carry (#24, #39) are both closed; the leak is not owed by anyone. **`Drift` has a port-side instance \
       now, not only C171's**: the LFS block walk's give-up rule (`MAX_IDLE_ROUNDS`, \
       `casper/src/engine/lfs_block_requester.rs`, §6, issue #102) is a `Paced` condition on a measure \
       the state already kept — `LfsState::finished`, monotone because `done` only adds and `add` \
@@ -2837,9 +2873,13 @@ def laws : List Law := [
       finality while the third validator was stopped, and #105's run froze with the survivor at 91 %, \
       where the binding constraint was a *message* and not a stake share. **What clause b still does not \
       fix, said plainly**: a net that stays below two thirds permanently (three equal validators minus \
-      one is exactly two thirds) still cannot finalise, and the honest repair there is an inactivity leak \
-      — a state change that burns a silent validator's stake — which belongs with the shard-configuration \
-      and validator-lifecycle work — unowned: #24 and #39 are both closed — not with a recency window" },
+      one is exactly two thirds) still cannot finalise. **And that is a decision rather than a debt** \
+      (2026-10-02, §59): the instrument that would price it is an inactivity leak, a state change that \
+      burns a silent validator's *bond*, and the constraint governing this whole workstream is that a \
+      staker must not lose its bond through no fault of its own — a partition is the canonical case of \
+      exactly that. What the port has instead is an **income-only** participation rule (law 44), which \
+      scales a validator's epoch reward and cannot reach a stake. The citations this used to carry (#24, \
+      #39) are both closed, and the leak is not owed by anyone" },
   { number := 53, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/validate.rs:neglected_invalid_block_detects_bonded_invalid_justification",

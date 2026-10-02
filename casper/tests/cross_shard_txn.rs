@@ -8,7 +8,7 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -538,6 +538,7 @@ async fn two_shard_2pc_replay_rederives_the_post_state_hash() {
             &rand,
             BlockData::empty(),
             &fringe_state(1),
+            &BTreeMap::new(),
             true,
             &PosGenesis::default(),
             &[],

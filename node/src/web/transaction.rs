@@ -196,9 +196,10 @@ impl TransactionApi for TransactionAPIImpl {
                 SystemDeployData::CloseBlock => TransactionType::CloseBlock {
                     block_hash: block_hash_hex.clone(),
                 },
-                // The block's own activity record (B4, #150) moves no REV and appears in no
-                // transaction list; it is reported through the block, not as a transfer.
-                SystemDeployData::RecordSpoke => continue,
+                // Nothing to report: `Empty` covers the cost-accounting deploys (a pre-charge, a
+                // refund, a producer's payment) and, by the reserved proto field, a block from before
+                // `RecordSpoke` was retired — which replay refuses, so it never reaches here in
+                // practice. Neither moves REV as a transfer.
                 SystemDeployData::Empty => continue,
             };
             if let Some(single_report) = s.report.first() {
