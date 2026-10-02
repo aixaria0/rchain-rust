@@ -143,6 +143,15 @@ own below.
 
 ## Delegated stake (`pos:delegations`)
 
+**Read this section as a specification, not as a description of the tree.** The Rust that implements it
+is the same change's second unit — and until that lands, **no build of this tree has a `delegate`
+method**, so every sentence below about what `rho:rchain:pos!("delegate", …)` does is a statement about
+what it *will* do. Per [`AGENTS.md`](../AGENTS.md)'s rule that a claim a reader would take as implemented
+says so in the sentence that makes it: this is that sentence. [`spec/AUDIT.md`](AUDIT.md)'s **C204**
+carries the status, and it is the authority; the four leaves' dormancy, the split's arithmetic and the
+fan-out's conservation are already proved in `spec/Rchain/Pos.lean` (law 57) and hold in the model
+regardless of when the port catches up.
+
 A key that holds REV but does not run a node can stake it on one that does. `rho:rchain:pos!("delegate",
 *deployerId, operatorPubKey, amount, *ret)` moves `amount` from the **delegator's own** vault into the
 staking vault and adds it to the operator's `pos:bonds` entry, so the operator's key carries the
