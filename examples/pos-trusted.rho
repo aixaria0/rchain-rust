@@ -1,0 +1,27 @@
+// Ask a live node whether two keys are in the trusted set, and publish the two answers.
+//
+// **This is a rebuilt instrument, and the reason is worth keeping.** The first version published the
+// *set itself* and the investigation grepped the output for the newcomer's hex. It could not have
+// matched: `tools/devnet.sh query` reads through `listen-data-at-name`, which prints `{result:?}` — a
+// derived `Debug` — so a 65-byte key renders as `GByteArray([2, 2, …])`, **decimal bytes**, and no hex
+// grep can see it. The hex strings that *did* match came from the surrounding `LightBlockInfo`.
+// Nothing about the set was ever measured, and the void reading was published as a negative result.
+//
+// So the comparison happens **in rholang**, where the values are the values, and the reply is two
+// booleans. `trusted.contains(k)` is `ESet`'s own membership test (`rholang/src/reduce.rs:1329-1356`).
+//
+// **The second answer is a positive control and is not decoration.** `<GENESIS_HEX>` is a genesis
+// validator's key, which is trusted by construction, so a reply of `(false, false)` means the
+// *instrument* is broken — the same class of error the first version made — and not that the newcomer
+// is absent. A reading is only evidence when the control in the same reply is true.
+//
+//   tools/devnet.sh deploy pos-trusted.rho && tools/devnet.sh query pos-trusted
+new pos(`rho:rchain:pos`), ret in {
+  pos!("getTrusted", *ret) |
+  for (@trusted <- ret) {
+    @"pos-trusted"!(
+      (trusted.contains("<NEWCOMER_HEX>".hexToBytes()),
+       trusted.contains("<GENESIS_HEX>".hexToBytes()))
+    )
+  }
+}

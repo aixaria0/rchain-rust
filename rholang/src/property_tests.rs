@@ -815,6 +815,15 @@ mod delegation_laws {
         // **The delegators never take more than the reward between them** — the property
         // `pro_rata_sum_le` states, and what stops a share from being paid out of the operator's own
         // stake in the key.
+        //
+        // **This is also the slash's refund, and deliberately not a second property.** The refund is
+        // `pro_rata(returned, offender_part, delegators)` — the same function with the base being the
+        // offender's own holdings instead of the operator's stake — and `own` here is an independent
+        // draw rather than a value derived from `amounts`, so the base is *already* arbitrary over the
+        // same space. A third property asserting the same bound under different variable names would
+        // be padding dressed as coverage, which is the failure this register keeps finding; what the
+        // refund does need and has is its own **instance** (`the_refund_is_split_pro_rata` in the model,
+        // and its Rust twin in `delegation_tests`), because an instance is where a wrong *shape* shows.
         #[test]
         fn law57_the_delegators_never_take_more_than_the_reward(
             reward in 0i64..1_000_000_000,

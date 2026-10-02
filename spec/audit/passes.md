@@ -6965,6 +6965,31 @@ base 40 now, which reads `[2, 4]` where the equal-share mutant reads `[2, 2]` an
 `[33, 66]`. **A fixture clause no plausible mutant fails is not a check** — AUDIT C149's lesson, applied
 to a fixture written by someone who had just read it.
 
+**And the arm the pass owed reported a failure that turned out to be the *instrument's*, not the
+primitive's** (2026-10-02). The delegate op ran, reported success, and a later `getBonds` read showed 100
+where 140 was written — and that reading was published as **C205**, a defect in which a user deploy's
+native write was invisible to a later deploy's read. It was not. `tools/devnet.sh query` reads through
+`listen-data-at-name`, which prints a derived `Debug`, so a 65-byte key renders as
+`GByteArray([2, 2, …])` — **decimal bytes** — and the hex greps the whole reading rested on could not
+have matched it. **C205 is closed as an artifact.** Re-measured with the answer computed *inside* rholang
+and a positive control in the same reply (`spec/audit/evidence/n203-native-write-probe.md`): a `trust` in
+block 1 is visible to a deploy in block 2, with a genesis validator's key reading trusted in the same
+reply; and a `delegate` of 40 in block 2 reads back as **140** from block 3, with an untouched validator
+reading 100. Both block placements were taken from the node's own log. **So C204 was never blocked by a
+defect in the node** — its arm's `getBonds` went through the same unreliable route — and C204's live
+evidence can now be taken rather than retracted.
+
+The pass records this at length rather than quietly, because **three mechanism hypotheses were built on
+the void reading before the reading was checked**, and the four-lens root-cause analysis commissioned to
+explain it found nothing to explain: the adversary's two confounds — the `Debug` rendering, and a deploy
+ordering that is signature-keyed rather than wall-clock, `--no-autopropose` not disabling
+`--propose-on-deploy` — were the whole story. The cheapest test was also the decisive one, and it should
+have come first. What survives the analysis is the identity map (which runtimes share one
+`InMemNativeStore` and which fork), and one **real** defect found while building the control: `GET
+/api/v1/pos` reports a withdrawal's *deadline* as the block it was staged at and adds the quarantine a
+second time — wrong by 50,000 blocks in the observed row. That is **C206**, and it is unrelated to
+everything above.
+
 **Found by this pass and fixed in the same commit, and recorded here rather than as a check-off row
 because it names no law: the authoritative document's own register total was hand-written, stale, and
 outside the scan that exists to catch exactly that.** `AGENTS.md` read

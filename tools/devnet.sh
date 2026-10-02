@@ -460,6 +460,24 @@ rnode_run_common() {
   echo "$flags"
 }
 
+# The **image** one node runs, per node — the same shape as the flags above and for a strictly stronger
+# reason. `RNODE_IMAGE` is one image for the whole network, which is right for every measurement that
+# runs one build; a measurement of what an **unupgraded** node does beside an upgraded one needs two
+# binaries in one network, and that is the only way to observe a fork point directly rather than by
+# reasoning about one.
+#
+#   RNODE_IMAGE_devnet_validator_2="rnode:old" tools/devnet.sh up --validators 2
+#
+# Unset falls back to `$IMAGE`, so a network that names no per-node image is byte-for-byte the network
+# it was before this function existed. The variable name is the container name with dashes turned into
+# underscores, exactly as `DEVNET_EXTRA_FLAGS_<container>` is.
+node_image() {
+  local name="$1"
+  local var
+  var="RNODE_IMAGE_$(printf '%s' "$name" | tr '-' '_')"
+  if [[ -n "${!var:-}" ]]; then echo "${!var}"; else echo "$IMAGE"; fi
+}
+
 cmd_up() {
   # Mode globals: devnet defaults.
   local n=1 m=0
@@ -562,7 +580,7 @@ cmd_up() {
   # shellcheck disable=SC2046
   docker run $(docker_opts "$BOOTSTRAP" "$GRPC_BASE" "$HTTP_BASE" "$ADMIN_BASE") \
     -v "${genesis_dir}:/genesis:ro" \
-    "$IMAGE" $(rnode_run_common "$BOOTSTRAP") -s \
+    "$(node_image "$BOOTSTRAP")" $(rnode_run_common "$BOOTSTRAP") -s \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
       --validator-private-key "${VALIDATOR_PRIV[0]}"
 
@@ -592,7 +610,7 @@ cmd_up() {
     # shellcheck disable=SC2046
     docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
       -v "${genesis_dir}:/genesis:ro" \
-      "$IMAGE" $(rnode_run_common "$name") \
+      "$(node_image "$name")" $(rnode_run_common "$name") \
         --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
         --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
         --validator-private-key "${VALIDATOR_PRIV[$i]}"
@@ -607,7 +625,7 @@ cmd_up() {
     echo "==> starting $name (observer $i, bootstraps from $BOOTSTRAP)"
     # shellcheck disable=SC2046
     docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
-      "$IMAGE" $(rnode_run_common "$name") \
+      "$(node_image "$name")" $(rnode_run_common "$name") \
         --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404"
   done
 
@@ -762,7 +780,7 @@ cmd_reset() {
   # shellcheck disable=SC2046
   docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
     -v "${genesis_dir}:/genesis:ro" \
-    "$IMAGE" $(rnode_run_common "$name") \
+    "$(node_image "$name")" $(rnode_run_common "$name") \
       --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
       --validator-private-key "${VALIDATOR_PRIV[$idx]}"

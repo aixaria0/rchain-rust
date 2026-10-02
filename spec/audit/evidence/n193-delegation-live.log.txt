@@ -1,0 +1,34 @@
+[n193] 
+[n193] =============== setup: 2 validators, epoch length 2 ===============
+[n193] tearing down any running devnet
+[n193] starting the network
+==> starting devnet-validator-1 (validator 1, bootstraps from devnet-bootstrap)
+fbf5c138a39410c6b69ae4f7c65f90d22365c68b0617cf3bb0e70c6843ee9818
+==> devnet-bootstrap serving /api/v1/status (latestBlockNumber=1)
+
+==> up. Interact with:
+    tools/devnet.sh deploy <contract.rho>   # signed deploy to devnet-bootstrap
+    tools/devnet.sh query <name>            # listen for data at a public name
+    tools/devnet.sh propose [--admin]       # force a block
+    tools/devnet.sh status | logs <node> | diagnose | down
+
+    Public HTTP API:  http://localhost:40403/api/v1/status
+    Admin HTTP API:   http://localhost:40405/api/v1/propose
+[n193] delegator = validator 1 [04f700a417754b77…] (the genesis-funded deployer)
+[n193] operator  = validator 2 [04dbe32c2062240a…] (a key validator 1 does not control)
+[n193] 
+[n193] =============== 1. delegate 40 of validator 1's vault to validator 2's key ===============
+==> deploying pos-delegate-live.rho to devnet-bootstrap (validAfterBlockNumber=1)
+Response: Success!
+DeployId is: 30440220741408b8e9e0e6b663b1debfb7b1d798b3cd6662b2d9a60623a65eb4145d3abd022075507145621164c33a83f596934b642c169280120c2349f7d948d16da41b9aab
+[n193] the deploy's own reply ( is the op accepting):
+Listen at name: PubName("\"pos-delegate\"")
+Start monitoring for changes
+Detected changes:
+[DataWithBlockInfo { post_block_data: [Par { sends: [], receives: [], news: [], exprs: [ETuple(ETuple { ps: [Par { sends: [], receives: [], news: [], exprs: [GBool(true)], matches: [], unforgeables: [], bundles: [], connectives: [], locally_free: AlwaysEqual([]), connective_used: false, _sort: PhantomData<rchain_models::ast::ProcSort> }, Par { sends: [], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], locally_free: AlwaysEqual([]), connective_used: false, _sort: PhantomData<rchain_models::ast::ProcSort> }], locally_free: AlwaysEqual([]), connective_used: false })], matches: [], unforgeables: [], bundles: [], connectives: [], locally_free: AlwaysEqual([]), connective_used: false, _sort: PhantomData<rchain_models::ast::ProcSort> }], block: LightBlockInfo { version: 1, shard_id: "/root", block_hash: "223da43fda2f15cab4f1ae41c79f4678712148c956e98571546485c8eeff015c", block_number: 1, sender: "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4", seq_num: 1, pre_state_hash: "d515d9d361d1a80efce052b5f9aaacf75c54a563e1d9afdcc7c1c7bcc7e4ef9a", post_state_hash: "eddacd3dc275f35784be39b589fe00b5aca3a8eebd0f50ec4fefaa7d9b0a02f1", justifications: ["9fb0d5fa2573ec2bc65687870188380c1fb1cdee473ea094919e6ff67c41c351"], bonds: [BondInfo { validator: "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc", stake: 100 }, BondInfo { validator: "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4", stake: 100 }], sig_algorithm: "secp256k1", sig: "304502210094968162a7a33e085685e459d174d5f87d9f673c3b24228421968d52c77fbb0e0220589bd92f67997def43a6aa0c85b739ac236150db6bb43fae3168c668216ade09", block_size: "2823", deploy_count: 1, rejected_deploys: [], timestamp: 1790976672667 } }]
+[n193] 
+[n193] =============== 2. the aggregate on chain — validator 2's bond 100 → 140 ===============
+[n193] the dump: 1884 lines, 49 blocks
+[n193] stakes the dump carries ( is validator 2's aggregate;  is validator 1's alone):
+     98 100
+[n193] the dump carries no 140 stake — the delegation did NOT reach the on-chain bond map. Stakes seen:

@@ -6058,6 +6058,11 @@ mod delegation_tests {
         assert_eq!(pro_rata(100, 30, &[10, 61]).unwrap(), vec![9, 60]);
         assert_eq!(pro_rata(100, 0, &[30, 70]).unwrap(), vec![30, 70]);
         assert_eq!(pro_rata(100, 40, &[1, 2]).unwrap(), vec![2, 4]);
+        // **The refund's own instance**, which is the shape `slash`'s fan-out actually takes: a
+        // returned amount, the offender's own part as the base, and two unequal delegator parts. The
+        // Lean twin is `the_refund_is_split_pro_rata`, and it exists because #193's close condition
+        // asks for the delegated-slash refund to be proved *and* held by property tests.
+        assert_eq!(pro_rata(100, 40, &[30, 60]).unwrap(), vec![23, 46]);
         // The operator's remainder is the rest, so the two halves add up to the reward exactly.
         let (shares, remainder) = split_reward(100, 30, &[10, 61]).unwrap();
         assert_eq!(shares.iter().sum::<i64>() + remainder, 100);
@@ -6167,6 +6172,51 @@ mod delegation_tests {
             "a second delegation adds to the first"
         );
         assert_eq!(i64::from(native.bonds().await.unwrap()[&operator]), 140);
+    }
+
+    /// **A delegation reaches the *active* set, which is what Casper reads** — the measurement this
+    /// primitive's "no Casper change was needed" claim rests on.
+    ///
+    /// `compute_bonds` is the one canonical consensus read (`casper/src/runtime_manager.rs`): it
+    /// decodes `pos:active` and nothing else, and finality, `Validate::bonds_cache`, the block's own
+    /// `bonds` field and the proposer's `bonded` set all take their bonds from it. `select_active`
+    /// derives that leaf from the pool, so once a delegation is in the pool the aggregate reaches all
+    /// of them — and *that* is the claim, which the pool-level assertions do not cover: `bonds()` is
+    /// the pool, and the pool is not what any of those readers reads.
+    ///
+    /// Red under a `select_active` that netted the ledger back out of the stake it draws with (the
+    /// plausible wrong way to "keep delegation out of consensus"), and under a boundary that wrote
+    /// `pos:active` before the aggregate landed.
+    #[tokio::test]
+    async fn a_delegation_reaches_the_active_set_that_casper_reads() {
+        let operator = validator(1);
+        let delegator = validator(2);
+        let native = with_operator(operator, 40).await;
+        fund(&native, &delegator, 60).await;
+
+        native
+            .delegate(&delegator, &operator, nn(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.active().await.unwrap()[&operator]),
+            40,
+            "a delegation activates no sooner than a bond does — the pool now, the drawn set at the \
+             next boundary"
+        );
+
+        native
+            .close_block(1, fringe(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.active().await.unwrap()[&operator]),
+            100,
+            "the drawn set carries the aggregate, so every reader of `pos:active` — finality, the bond \
+             cache, the proposer's bonded set — sees the delegated stake"
+        );
     }
 
     /// **A boundary splits a drawn validator's reward across its delegations**, with the operator

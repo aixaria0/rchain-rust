@@ -1,0 +1,22 @@
+// Trust a fixed newcomer key from a deploy, and publish the op's reply.
+//
+// The first half of the #203 probe: `trust` is the op jimscarver's #74 reproduction used, because it
+// has the fewest preconditions of any native write — the caller need only already be trusted, and a
+// genesis validator is trusted by construction. So an ordinary deploy can make a native write with no
+// setup, which is what makes it the right op to reproduce "the write is acknowledged and lost".
+//
+//   tools/devnet.sh deploy pos-trust.rho && tools/devnet.sh deploy pos-trusted.rho
+//   tools/devnet.sh query pos-trusted     # the newcomer must appear
+//
+// **The key is exactly 65 bytes (130 hex characters) and that is load-bearing**: `trust` refuses any
+// other length, and a refusal reads exactly like the defect this probe exists to catch. The first
+// version of this file carried 134 characters and the deploy failed — which made a broken probe look
+// like a reproduced bug until the `[deploy] … FAILED` line was read.
+new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("trust", *deployerId,
+    "0202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202".hexToBytes(),
+    *ret) |
+  for (@result <- ret) {
+    @"pos-trust"!(result)
+  }
+}
