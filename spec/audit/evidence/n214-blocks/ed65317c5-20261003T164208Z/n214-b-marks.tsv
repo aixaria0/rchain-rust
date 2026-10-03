@@ -1,0 +1,8 @@
+arm	B
+t0	1791046150
+settle_deploy	1791046210
+kill	1791046240
+kill_end	1791046360
+restart	1791046360
+recover_end	1791046450
+stopped_node	v2

@@ -1798,6 +1798,13 @@ The cross-node sweep returned **65** distinct pairs. Each names both members and
 A barrier that appears in this list is not a barrier the acceptance case may lean on. The `Independence`
 column of the §1 worksheets carries the same labels, and §4 records the challenges that reclassified them.
 
+**One of these classes has since been measured, not argued.** The `[self-referential]` pattern — *a rule
+whose reference point is frozen by the failure it guards* — was confirmed on 2026-10-03 as the actual cause
+of the N ≥ 3 finality stall: the attestation guard's pace bound (`cadence_due`) is read against a tip that
+suppression itself freezes, so it can never clear (§3.5). This is the first entry in the list to move from
+a structural observation to a diagnosed defect, and it is the reason a barrier assessment belongs in an
+acceptance case rather than in a footnote.
+
 ---
 
 # 3. The acceptance checklist
@@ -1923,6 +1930,51 @@ rather than left to a default.
 
 **Limits.** One attempt per arm, one tree, one host, N=3 only. No bond was attempted, so A2.4 stays ⬜;
 A1.2 and A1.3 stay ⬜. A single attempt is not a rate.
+
+## 3.5 The cause of the stall, 2026-10-03
+
+**The finality gate is not what refuses. The attestation guard is**, and it holds a fixpoint.
+
+`attestation_suppressed` is `!(new_state_transition || cadence_due)` under `paced && quorum_reachable`
+(`casper/src/blocks/proposer/proposer.rs`). Once the deploy's round is complete, no immediate parent
+carries a deploy — so `new_state_transition` is false — and no validator is behind the tip, so
+`cadence_due` is false. `cadence_due` is measured as *heights behind the tip*, and **the tip is frozen by
+the suppression itself**: a caught-up node can never fall behind a tip that only its own attestation could
+advance. Every validator therefore suppresses, the round never closes, and the fringe — which needs the
+**next** round's snapshot before it can advance at all — never moves. **The chain stops exactly one round
+short of what finality requires**, which is why it produces blocks and finalises none.
+
+This is the `[self-referential]` shape §2.5 names: *a rule that gates progress on the progress it gates.*
+
+**Three independent confirmations.**
+
+1. **The gate's own log** (it renders its refusal, so it cannot disagree with the decision it explains):
+   `finality did not advance at tip 2: … 0 of 250 (0 full partition(s) among 3 candidate(s))` — three
+   candidate senders, and **none seen by the whole partition** — with **zero** `round gate escaped` lines.
+   The validators were *suppressed*, never round-blocked, which is why #213's A/B found the stall
+   independent of the escape. Captured in `spec/audit/evidence/n214-blocks/…/stall-lines.txt`.
+2. **Reproduced unchanged on `ed65317c5`** (which carries #216 = the C208 fix): identical block counts,
+   no finality, identical stall lines. C208 does not touch this mechanism.
+3. **The rotation experiment** (`spec/audit/evidence/n214-rotation-results.md`): six deploys addressed to
+   **one** validator — whichever one — leave finality at `none`; the same six deploying **in rotation**
+   across all three take it to **finalised 3**. Jim's observation on #214, reproduced as a measurement.
+
+The escape cannot rescue it, and the experiment measures why: with a single trigger point the gate climbs
+only to `100 of 250 (1 full partition among 3)` — exactly one validator's stake, which is the asymmetric
+parent set an escape produces — short of the 167 needed. **`ROUND_STALL_ESCAPE` moves the number from 0
+to 100; it cannot reach a supermajority.**
+
+**One correction to #215's premise, which this pass found and the register had not.** In a quiescent chain
+with `--autopropose` omitted **there is no attempt supply at all**: the taps fire once per remote height
+and the timer is off. So a rule consulted only inside `create_block` cannot fire — *including*
+`round_escape_owed` itself. #215's fix has a clock but still needs an attempt to consult it; its own commit
+message names this trap half a layer down ("the bound was never reached, because it counts *attempts*, and
+attempts are only supplied by something that asks this node to propose") without applying it to the fix.
+
+**Consequence for the checklist.** §3.1's ❌ stands and is now *explained* rather than merely observed: the
+deploy does not finalise because the round it needs never closes. A1.1 remains ❌ on this tree — a
+diagnosis is not a fix — and the row's evidence is the re-probe plus this cause. Whether the landed fix
+closes it is the next measurement, and the falsifier is named in issue #213.
 
 ---
 
@@ -2159,10 +2211,14 @@ of §0.7 exists to catch. And the audit itself committed it: see §0.9.
    1 with two marks and criterion 2's kill/restart. It failed both criteria with a committed artefact, and
    it raised the question that now matters most: **#214's N=3 pass does not reproduce**, so whether
    criterion 1 failed continuously or regressed is open.
-2. **A correction pass over §1** that re-derives each contested row against HEAD. The corrections are
+2. **The cause** — **found**, §3.5: the attestation guard's pace bound is read against a tip the
+   suppression freezes, so a fully-live chain settles into a fixpoint one round short of what the fringe
+   needs. Three independent confirmations (the gate's own log, a reproduction on HEAD, and a rotation
+   experiment). A fix is not landed; a diagnosis is not a repair, and A1.1 stays ❌ until one is measured.
+3. **A correction pass over §1** that re-derives each contested row against HEAD. The corrections are
    already written in §4 — every upheld challenge names what to change — so this is mechanical, not
    analytical.
-3. **A fetch in the setup**, which is the one thing §0.9 says no amount of care inside the analysis
+4. **A fetch in the setup**, which is the one thing §0.9 says no amount of care inside the analysis
    substitutes for.
 
 ---
