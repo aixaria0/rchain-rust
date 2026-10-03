@@ -86,6 +86,14 @@ collect_logs() {
   local dir="$1"
   for c in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
     docker logs "$c" 2>&1 | grep -E ' (WARN|ERROR) ' >> "$dir/logs-${c}.txt" || true
+    # The discriminator. `finality did not advance at tip N: …` carries the `full_partitions` count that
+    # separates "the fringe condition is never satisfied" (`0 full partitions`) from "satisfied but the
+    # quorum refuses" (`>= 1`, `supporting < 2/3`). Nothing else in the system exposes it; it is log-only.
+    docker logs "$c" 2>&1 | grep -o 'finality did not advance at tip [0-9]*: .*' \
+      >> "$dir/stall-lines.txt" || true
+    # If the round gate fired, the validators were round-blocked; if it did not, they were suppressed
+    # before reaching it. The two are opposite mechanisms and this line is how they are told apart.
+    docker logs "$c" 2>&1 | grep -c 'round gate escaped' >> "$dir/escape-count.txt" || true
   done
 }
 
