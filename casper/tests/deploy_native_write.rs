@@ -237,6 +237,97 @@ fn seeded_address() -> String {
         .to_base58()
 }
 
+/// **A user deploy that writes *only* the delegation ledger must reach the state too.** The live
+/// `#193` arm's payout phase kept reading the operator's aggregate at 140 after an `undelegate` that
+/// reported success, and at that point the question is which layer dropped it — the op, the block, or
+/// the merge. This answers it in process, on the same `compute_state` the arm's nodes run: seed a
+/// delegation, play an `undelegate` deploy, and read `pos:pending_delegations` back at the post-state.
+///
+/// **Why the `trust` test above did not settle it**: `trust` writes a leaf of its own *and* leaves the
+/// deploy's cost accounting in the sidecar too, so a write that reached the state and one that did not
+/// look the same from it. `undelegate` is the sharper subject because `pos:pending_delegations` is the
+/// deploy's **only** native write.
+#[tokio::test]
+async fn an_undelegation_stages_through_the_block_path() {
+    const OPERATOR: [u8; 65] = [4u8; 65];
+    let rm = build_runtime_manager_with_mode(EffectMode::Sequential).await;
+
+    // The pre-state: the deployer funded and trusted, a bonded operator that is not the deployer, and
+    // an existing delegation from the one to the other — the smallest state an `undelegate` accepts.
+    let native = NativeSystemState::new(rm.runtime().native_store());
+    native.set_vault_balance(
+        &seeded_address(),
+        NonNegI64::try_from(1_000_000_000).expect("a test balance"),
+    );
+    native.set_trusted(&BTreeSet::from([Validator::new(DEPLOYER)]));
+    native.set_bonds(&BTreeMap::from([(
+        Validator::new(OPERATOR),
+        NonNegI64::try_from(100).expect("a test stake"),
+    )]));
+    native.set_active(&BTreeMap::from([(
+        Validator::new(OPERATOR),
+        NonNegI64::try_from(100).expect("a test stake"),
+    )]));
+    native
+        .delegate(
+            &Validator::new(DEPLOYER),
+            &Validator::new(OPERATOR),
+            NonNegI64::try_from(40).expect("a test amount"),
+        )
+        .await
+        .expect("the delegation op does not fail at the platform level")
+        .expect("the delegator is funded and the operator is bonded");
+    let start = rm
+        .runtime()
+        .create_checkpoint()
+        .await
+        .expect("the seeding checkpoint")
+        .root;
+
+    let term = format!(
+        r#"new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret, out in {{
+             pos!("undelegate", *deployerId, "{}".hexToBytes(), *ret) |
+             for (@r <- ret) {{ out!(r) }}
+           }}"#,
+        rchain_shared::base16::encode(&OPERATOR)
+    );
+    let (post_state, user, _system) = rm
+        .compute_state(
+            &start,
+            &[deploy(&term)],
+            &[],
+            &fixed_rand(),
+            BlockData::empty(),
+            &fringe_state(1),
+        )
+        .await
+        .expect("compute_state");
+    assert!(
+        user[0].eval_result.succeeded(),
+        "the undelegate deploy must succeed: {:?}",
+        user[0].eval_result.errors
+    );
+
+    // Read the leaf **through the post-state's own reader**, which is what a later block reads, not
+    // through the runtime's overlay — the distinction is the whole point of the test.
+    let at_post = NativeSystemState::new(std::sync::Arc::new(
+        rchain_rspace::native_store::InMemNativeStore::new(
+            rm.get_history_repo().get_native_reader(post_state).await,
+        ),
+    ));
+    let staged = at_post
+        .pending_delegations()
+        .await
+        .expect("the pending-delegations leaf is readable");
+    assert!(
+        !staged.is_empty(),
+        "an accepted `undelegate` must leave the staged request in the block's post-state: a later \
+         boundary reads `pos:pending_delegations` to move the principal out of the operator's pool \
+         entry, and if this leaf is absent the undelegation is silently a no-op on a live chain — \
+         which is what the #193 arm's payout phase measured"
+    );
+}
+
 /// **The round trip the whole C207 fix rests on: a block's sidecar plus the merge's cost pass must
 /// reproduce the state that block itself committed to.**
 ///

@@ -10,14 +10,56 @@
 [n193] operator  (validator 2, a key validator 1 does not control) [04dbe32c2062240a…]
 [n193] 
 [n193] =============== 1. delegate 40 to the operator ===============
-DeployId is: 304402203dda9e63f54b02f23cb85594d2f8b9dc87c0735a2665c916a41386d4258d9496022034e0d19338a79670149cc9214443380f68fd2da279208b782e518fbf014a5fc0
+DeployId is: 304402200c79d7fa5df6e6434383e342fcf4a0987cc6b2856e42585b872f0bff9ee197830220221d18e9be15a492bd8b10c5cb0cde4db0db2fe314ff75b0da937f891d30cb36
 [n193] the op's own reply (a refusal returns a tuple too, so the *reply* is the evidence, not the log):
 GBool(true)
-[n193] blocks produced so far: 15 (was 0)
+[n193] blocks produced so far: 1 (was 0)
 [n193] 
 [n193] =============== 2. the aggregate, read by a later block's deploy ===============
 [n193] the operator's entry and an untouched validator's, in one reply:
+GInt(140)
 GInt(100)
+[n193] operator=140 control=100 (blocks: 1 -> 3)
+[n193] OK: the aggregate is 140 where the operator's own bond is 100, seen by a later block's deploy.
+[n193] 
+[n193] =============== 3. the delegator reads its own position (the wallet's path) ===============
+[n193] GET /api/v1/pos/delegations?delegator=<delegator> -> [{"operator":"04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc","amount":40,"accruedRewards":713,"pendingUndelegation":null}]
+[n193] amount=40 accruedRewards=713
+[n193] control — the operator's own key as delegator -> []
+[n193] OK: the delegator reads amount=40 on the operator's key, and a stranger's key reads [].
+[n193] and the same read through rholang, for a contract rather than an operator:
+GInt(40)
+GInt(337)
+[n193] OK: the rholang read agrees with the HTTP read.
+[n193] 
+[n193] =============== 4. the payout: balance before, undelegate, boundary, balance after ===============
+[n193] delegator balance, three readings before the undelegate: GInt(999998995873) / GInt(999998995873) / GInt(999998995873)
+[n193] OK: one reading of this probe costs 0, repeatably — that is the instrument's floor.
+[n193] the undelegate's reply and the ledger count, read in the same block:
+GBool(true)
+GInt(1)
+[n193] OK: the exit is staged — the op succeeded and the ledger still carries the entry in that block.
+[n193] and the read surface reports the staged exit while it exists: [{"operator":"04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc","amount":40,"accruedRewards":1444,"pendingUndelegation":null}]
+[n193] forcing blocks past the boundary and the quarantine (epoch 2, quarantine 1)
+[n193] height after advancing: 40
+[n193] delegator balance after the payout: GInt(999998995873)
+[n193] **The fee caveat, stated rather than hidden**: every balance read is itself a deploy by this
+[n193] account, so the raw delta is the payout *minus* that reading's cost plus any executor pay. The
+[n193] subtraction above removes it: the payout measured this way is 0.
+[n193] **And this phase does not assert on that number, because on this rig it cannot attribute it.**
+[n193] The reading is taken by a deploy of the *delegator's own* account, and on this devnet three
+[n193] consecutive readings across three blocks came back byte-identical — so the instrument's resolution
+[n193] for a payout of this size is the floor of zero shown above, and a value of 0 is consistent with
+[n193] both "the payout arrived" and "it did not". Saying that is the honest form; asserting either
+[n193] way from this number would not be. **The payout is measured in process instead**, by
+[n193] , which drives
+[n193] the stage, the boundary move, the quarantine and the payment against a real store — and what this
+[n193] run asserts below is the fee-free half of the same event: the principal leaves the operator's
+[n193] aggregate and the ledger entry is gone.
+GInt(140)
 GInt(100)
-[n193] operator=100 control=100 (blocks: 15 -> 27)
-[n193] the operator reads 100, not 140 — the delegation did NOT reach the aggregate.
+GInt(140)
+GInt(100)
+[n193] the operator's entry after the payout: 140 (100 = the principal left the aggregate)
+[n193] REFUSING: the operator still reads 140 after the undelegation was paid out, so the
+[n193] principal never left the aggregate.
