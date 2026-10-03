@@ -419,7 +419,7 @@ async fn a_merged_block_reproduces_its_own_post_state() {
     .await
     .expect("the block indexes from what its own run recorded");
 
-    let blocks = vec![index];
+    let blocks = [index];
     let lookup = move |h: BlockHash| {
         let found = blocks.iter().find(|b| b.block_hash == h).cloned();
         async move {
