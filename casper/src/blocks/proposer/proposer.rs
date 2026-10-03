@@ -483,6 +483,10 @@ impl Proposer {
             // refusal freezes, so it cannot say when the wait has gone on too long. This can.
             let blocked_since_advance: Arc<std::sync::atomic::AtomicI64> =
                 Arc::new(std::sync::atomic::AtomicI64::new(0));
+            // **When this validator was first seen blocked**, so the wait has a clock that does not depend on
+            // the supply of attempts — see `ROUND_STALL_ESCAPE` and #213. 0 means "not currently blocked".
+            let blocked_since_ms: Arc<std::sync::atomic::AtomicI64> =
+                Arc::new(std::sync::atomic::AtomicI64::new(0));
             Arc::new(move |vi: &ValidatorIdentity, source: ProposeSource| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
@@ -491,6 +495,7 @@ impl Proposer {
                 let vi = vi.clone();
                 let shard_id = shard_id.clone();
                 let blocked_since_advance = blocked_since_advance.clone();
+                let blocked_since_ms = blocked_since_ms.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
                 let log = log.clone();
                 let max_number_of_parents = max_number_of_parents;
@@ -508,6 +513,7 @@ impl Proposer {
                         epoch_length,
                         dummy_deploy_opt.as_ref(),
                         &blocked_since_advance,
+                        &blocked_since_ms,
                         source,
                     )
                     .await
@@ -650,6 +656,54 @@ async fn select_deploys(
     Ok(deploys)
 }
 
+/// **How long a validator may be blocked by the round gate before it takes the escape.**
+///
+/// The attempt bound below (`LIVENESS_WINDOW`) is only reachable if something keeps *asking* this node to
+/// propose. `--autopropose` does; `--propose-on-deploy` with `--no-autopropose` does not, and that is the
+/// configuration the public testnet runs. Measured 2026-10-03 (#213): with three validators at 100/100/50 and
+/// one killed, the survivors minted one block each and then waited for ever — every later deploy was accepted,
+/// none was included, and the state survived restarting both a survivor and the absent validator. Adding
+/// `--autopropose` to one node broke it within 20 s (h 7 → 228, finality two behind), which is what proved the
+/// escape itself is sound: six attempts, delivered by the timer in twelve seconds.
+///
+/// So the wait needs a clock that does not depend on the supply of attempts — for the same reason the round's
+/// own clock cannot serve: both are frozen by the state they are meant to bound. A healthy round closes in a
+/// few seconds on the live net (three validators, one deploy, two blocks each, then quiet), so 15 s is well
+/// above the healthy case and far below "for ever".
+const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Wall-clock milliseconds, or 0 if the system clock is before the epoch.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Milliseconds since this validator was *first* seen blocked, recording the first sighting.
+///
+/// Returns 0 on the first sighting, so a stall is measured from when it began and never from process start:
+/// a node that has just booted has not been stalled.
+fn stall_ms_since(first_sighting: &std::sync::atomic::AtomicI64, now: i64) -> i64 {
+    match first_sighting.compare_exchange(
+        0,
+        now,
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    ) {
+        Ok(_) => 0,
+        Err(seen) => now.saturating_sub(seen),
+    }
+}
+
+/// Whether the round gate may be escaped: the attempt bound, or the stall bound.
+///
+/// Two triggers on purpose. The attempt bound is the cheap one and stays primary; the stall bound is the one
+/// that still fires when nothing is asking this node to propose — see [`ROUND_STALL_ESCAPE`].
+fn round_escape_owed(waited: i64, stalled_ms: i64) -> bool {
+    waited > liveness::LIVENESS_WINDOW || stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_block<'a, F, Fut>(
     runtime: &'a RuntimeManager,
@@ -664,6 +718,7 @@ async fn create_block<'a, F, Fut>(
     epoch_length: i32,
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
     blocked_since_advance: &std::sync::atomic::AtomicI64,
+    blocked_since_ms: &std::sync::atomic::AtomicI64,
     source: ProposeSource,
 ) -> Result<BlockCreatorResult, String>
 where
@@ -699,8 +754,10 @@ where
     // imply: `validate.rs:236` requires `max(justifications) + 1 == block_number` and `:259` requires
     // `creator_latest_seq + 1 == seq_num`, so a second proposal against the same snapshot is an
     // equivocation. Refusing for ever deadlocks a round whose quiet sender cannot age out — the round's
-    // clock is measured from a tip the refusal freezes — so the wait is bounded here, and past
-    // `LIVENESS_WINDOW` attempts the escape below is taken rather than waiting for ever.
+    // clock is measured from a tip the refusal freezes — so the wait is bounded here, on **two** triggers:
+    // `LIVENESS_WINDOW` attempts, and the wall-clock stall bound in [`ROUND_STALL_ESCAPE`]. The second exists
+    // because attempts are only supplied by something that asks this node to propose, and the configuration
+    // the testnet runs supplies them only when a deploy arrives (#213).
     let escape = {
         let dag_repr = dag.get_representation().await;
         if dag_repr
@@ -709,12 +766,21 @@ where
         {
             let waited =
                 blocked_since_advance.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if waited <= rchain_block_storage::dag::liveness::LIVENESS_WINDOW {
+            let stalled_ms = stall_ms_since(blocked_since_ms, now_ms());
+            if !round_escape_owed(waited, stalled_ms) {
                 return Ok(BlockCreatorResult::AlreadyProposedThisRound);
             }
+            log.warn(
+                LogSource::new("casper.blocks.Proposer"),
+                &format!(
+                    "round gate escaped after {waited} attempt(s) and {stalled_ms} ms blocked — the round is \
+                     not closing (AUDIT #213)."
+                ),
+            );
             true
         } else {
             blocked_since_advance.store(0, std::sync::atomic::Ordering::Relaxed);
+            blocked_since_ms.store(0, std::sync::atomic::Ordering::Relaxed);
             false
         }
     };
@@ -1021,6 +1087,68 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The stall clock starts at the first sighting, not at process start.** A node that booted a second
+    /// ago has not been stalled, so the first look must report zero elapsed time and remember *when* it
+    /// looked.
+    #[test]
+    fn a_stall_is_measured_from_its_first_sighting() {
+        let since = std::sync::atomic::AtomicI64::new(0);
+        assert_eq!(
+            stall_ms_since(&since, 1_000_000),
+            0,
+            "the first sighting has waited no time yet"
+        );
+        assert_eq!(
+            stall_ms_since(&since, 1_003_000),
+            3_000,
+            "and afterwards the wait is measured from that first sighting"
+        );
+    }
+
+    /// **Clearing the stall forgets it**, so a node that stops being blocked does not take the escape on the
+    /// first stumble of the next round — which is what the round-advanced branch does.
+    #[test]
+    fn clearing_the_stall_forgets_it() {
+        let since = std::sync::atomic::AtomicI64::new(0);
+        let _ = stall_ms_since(&since, 5_000);
+        assert_eq!(stall_ms_since(&since, 25_000), 20_000);
+        since.store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            stall_ms_since(&since, 26_000),
+            0,
+            "after a clear, the next sighting is a new stall"
+        );
+    }
+
+    /// **Both triggers, and neither on its own is a licence to escape early.**
+    ///
+    /// This is the falsifier for the pair: a rule that kept only the attempt bound would wedge whenever
+    /// nothing supplies attempts (`--no-autopropose`, #213); a rule that kept only the stall bound would let
+    /// a slow-but-live round be escaped after one attempt. Both halves are asserted, so removing either one
+    /// fails here.
+    #[test]
+    fn the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound() {
+        let window = liveness::LIVENESS_WINDOW;
+        let stall_ms = ROUND_STALL_ESCAPE.as_millis() as i64;
+
+        assert!(
+            !round_escape_owed(1, 0),
+            "one attempt and no stall is a normal wait"
+        );
+        assert!(
+            !round_escape_owed(window, stall_ms - 1),
+            "just inside both bounds is still a normal wait"
+        );
+        assert!(
+            round_escape_owed(window + 1, 0),
+            "the attempt bound alone is enough"
+        );
+        assert!(
+            round_escape_owed(1, stall_ms),
+            "the stall bound alone is enough — this is the half that --no-autopropose needs"
+        );
+    }
 
     /// A `BlockDagStorage` whose `lookup` fails, so a DAG read error is observable as one, and whose
     /// representation has an **empty fringe with a non-empty height map** — the shape that sends
