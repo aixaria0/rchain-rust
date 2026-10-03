@@ -37,8 +37,8 @@ issues — and so had **no owner, no measurement and no falsifier**.
 
 | Criterion | Verdict | Basis |
 |---|---|---|
-| 1 — bounded production | 🟨 **reported, artefact absent** | the only positive run cites `0c6c65979`, which is **not an object in this repository** (`git cat-file -t` → *fatal: Not a valid object name*); the instrument it used samples a **height**, not a block count |
-| 2 — join and leave | ❌ **fail** | [#213](https://github.com/rchain-community/rchain-rust/issues/213): three validators at 100/100/50, one killed, the 80 % survivors mint one block each and then wedge permanently; the killed validator's return, and a survivor restart, both fail to recover. Sub-case (c) — a new validator bonds onto a running net — has **never been run**, and is blocked on (a) |
+| 1 — bounded production | ❌ **fail** | re-probed on `f9d36b9c4` (§3.4): two deploys, production **bounded** (6 blocks, then 1), every validator live — and **nothing finalises**, in either arm. The witness the criterion names is the deploy finalising, and it does not. #214's N=3 pass *"finality reached 3"* on `0c6c65979` does **not** reproduce, and that contradiction is open |
+| 2 — join and leave | ❌ **fail** | [#213](https://github.com/rchain-community/rchain-rust/issues/213): three validators at 100/100/50, one killed, the 80 % survivors mint one block each and then wedge permanently; the killed validator's return, and a survivor restart, both fail to recover. The re-probe (§3.4) finds the failure **upstream** of that: on `f9d36b9c4` nothing finalises with all three live, so the kill arm has no finality to remove. Sub-case (c) — a new validator bonds onto a running net — has **never been run**, and is blocked on (a) |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
 ## 0.3 Method
@@ -118,9 +118,54 @@ printed with the tag.
 ## 0.8 Open challenges
 
 The register (§4) holds **75 node-level challenges**, of which **70 were upheld** and 5 refuted, plus
-**6 acceptance-level challenges** (CH-ACC-01…06) raised directly against this page's own claims. The
-upheld set is the honest state of the analysis, and the largest class of them is not about the node at
-all: it is that the worksheet was built from **evidence superseded by the very fixes it describes**.
+**6 acceptance-level challenges** (CH-ACC-01…06) raised directly against this page's own claims. One of
+those six, **CH-ACC-03, has since been withdrawn** — it rested on a stale clone, not on the repository —
+and §0.9 records why. The upheld node-level set is the honest state of the analysis, and the largest
+class of them is not about the node at all: it is that the worksheet was built from **evidence superseded
+by the very fixes it describes**.
+
+## 0.9 Corrigendum — 2026-10-03
+
+An earlier edition of this page (PR #217, commit `0ee0c3e4f`) carried a **false claim about the
+repository**, and it is the class of error this page exists to catch. It is recorded here rather than
+edited away, because this register's own rule is that a withdrawn claim keeps its original text beside
+its correction.
+
+**What the page said.** That `0c6c65979` — the tree issue #214 cites for criterion 1's N=3 pass — *"is
+not an object in this repository"*, on the evidence of `git cat-file -t 0c6c65979` returning
+`fatal: Not a valid object name`. The claim appeared in the §0.2 verdict box, in §3.1's `A1.1` row, and
+as an upheld challenge, CH-ACC-03.
+
+**Why it was wrong.** The audit ran on tree `1e5a64ed4` from a clone that had **never been fetched**.
+`origin/dev` was two merges ahead, and `0c6c65979` — the merge of PR #212, 2026-10-03 11:11 — was among
+the objects the clone did not hold. The command did not fail because the object is absent; it failed
+because the local object database was stale. Both halves reproduce:
+
+```console
+$ git cat-file -t 0c6c65979                        # stale clone
+fatal: Not a valid object name 0c6c65979
+$ git fetch origin && git cat-file -t 0c6c65979    # fetched
+commit
+```
+
+**The second consequence, and the larger one.** The same stale clone meant the audit ran **without
+`#215`** — *"the round gate's escape needs a clock, not just a supply of attempts"* — which merged at
+**14:14 on 2026-10-03**, before the audit began at about 15:20. Criterion 2's ❌ is a measurement on
+`0c6c65979` and is correct *for that tree*; it is not a statement about the tip, and §3.2 now says so.
+
+**What this does to the audit's thesis.** The page's headline finding is that the project's account of
+itself was a fix behind its tree. **The audit was a fix behind its tree**, for the same reason, and no
+care applied *inside* the analysis could have caught it — the fault was in the setup, before the first
+agent ran. That is worth more than an apology: it is the rule. *Fetch before auditing, and never conclude
+"absent from the repository" from a command run against a clone of unknown age.* A probe's failure is not
+the defect.
+
+**What changed.** CH-ACC-03 → `refuted` (§4.1). §0.2's criterion-1 reason and §3.1's `A1.1` row now rest
+on a **committed run** rather than on the issue's report: the re-probe (§3.4) ran on the tip and found the
+deploy does not finalise, so criterion 1 is ❌ *with an artefact*, not 🟨 *reported, artefact absent*.
+§3.2 keeps its ❌ and now says the stall is upstream of the wedge. Nothing else in the page was found to
+depend on the stale tree — the worksheets were built and checked at `1e5a64ed4` and state that tree on
+their face.
 
 ---
 
@@ -1764,27 +1809,30 @@ a row the net has not earned.
 
 ## 3.1 Criterion 1 — Anyone can propose, and production is bounded
 
-> **§3.1 — 0 ✅ · 0 ❌ · 3 ⬜ · 1 🟨.** The criterion is **not met on this tree**.
+> **§3.1 — 0 ✅ · 1 ❌ · 3 ⬜.** The criterion **fails** on the current tip — see §3.4.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
-| A1.1 | In a 3-validator all-live net, one deploy mints a **bounded** number of blocks **and its block finalises** | production continues without bound, or the height merely stops without the deploy finalising | node argv `--propose-on-deploy --attest-on-new-blocks` with `--autopropose` **absent** (there is no `--no-autopropose` flag — see CH-ACC-04); 3 bonded validators 100/100/50; `--epoch-length 10` | `—` | `0c6c65979` — **not in this tree** | `tools/probe-blocks-per-deploy.sh` (samples `latestBlockNumber`, a **height**) | `last-finalized-block` ≥ the deploy block's height | 🟨 | CH-ACC-01, CH-ACC-02, CH-ACC-03 |
+| A1.1 | In a 3-validator all-live net, one deploy mints a **bounded** number of blocks **and its block finalises** | production continues without bound, or the height merely stops without the deploy finalising | node argv `--propose-on-deploy --attest-on-new-blocks` with `--autopropose` **absent** (there is no `--no-autopropose` flag — see CH-ACC-04); 3 bonded validators 100/100/50; `--epoch-length 10` | `spec/audit/evidence/n214-results.md` + `n214-blocks/f9d36b9c4-…/` | `f9d36b9c4` | `n149-sample.py` sampling `/api/last-finalized-block`, plus the block-hash union | `last-finalized-block` ≥ the deploy block's height | ❌ **fail** | CH-ACC-01, CH-ACC-02 |
 | A1.2 | N=5, all live, satisfies A1.1 | as A1.1 | as A1.1, N=5 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | as A1.1, N=8 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `—` | `—` | a block-hash union (the `n149-blocks/` shape), not `latestBlockNumber` | the block count equals the height delta, or the row is `fail` against the instrument | ⬜ untested | CH-ACC-02 |
 
-A1.1 is the criterion's only claimed pass. It is 🟨 rather than ✅ for three independent reasons, any one
-sufficient: **the tree it cites is not an object in this repository**, **the instrument reads the wrong
-quantity**, and **the witness is refused by rule 2** — a chain sealed by the #213 wedge satisfies
-"bounded production" *by construction*, so a bounded count is not, on its own, a pass.
+A1.1 **fails**, with a committed artefact behind it (§3.4). Production is bounded and the deploy does not
+finalise — the half the criterion says decides it. Note what this verdict does *not* rest on: the
+instrument's height/blocks confusion (CH-ACC-02) would make the *count* wrong, not make finality vanish;
+and the tree question (CH-ACC-03) is withdrawn (see §0.9). The row is ❌ because a deploy that is
+proposed and never finalised is the defect, and that is what the transcript shows.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
-> **§3.2 — 0 ✅ · 3 ❌ · 2 ⬜.** The criterion **fails**.
+> **§3.2 — 0 ✅ · 3 ❌ · 2 ⬜.** The criterion **fails** — and the re-probe (§3.4) says it fails
+> *upstream* of the wedge: on the current tip the net finalises nothing even with all three validators
+> live, so "do the survivors finalise past the kill" has no answer to give. See §0.9 and the note below.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
-| A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--dev-mode --epoch-length 10` | `—` (#213's `probe-a.md`/`probe-b.md` are referenced but **not landed**) | `1e5a64ed4` (dev tip at reproduction) | `tools/probe-blocks-per-deploy.sh` + the node's own logs | survivors' `last-finalized-block` advances past the kill height | ❌ **fail** | — |
+| A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--dev-mode --epoch-length 10` | `spec/audit/evidence/n214-results.md` (arm B) | `f9d36b9c4` | the sampler's `finalized` column + the node's own logs | survivors' `last-finalized-block` advances past the kill height | ❌ **fail** — and the pre-condition is false: nothing was finalising before the kill either (§3.4) | — |
 | A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `—` (same run) | as A2.1 | as A2.1 | finality resumes within `LIVENESS_WINDOW` heights of the restart | ❌ **fail** | — |
 | A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `—` | as A2.1 | as A2.1 | that deploy's block finalises | ❌ **fail** (three further deploys accepted, none proposed) | — |
 | A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator issues `trust` then `bond` against the live net | `—` | `—` | `rho:pos` bond state + the block producer of the new validator | the bond pool grows by one and the new validator's block appears | ⬜ **never run** | CH-ACC-06 |
@@ -1793,6 +1841,18 @@ quantity**, and **the witness is refused by rule 2** — a chain sealed by the #
 A2.4 has never been run, and cannot be run while A2.1 fails: **a bond takes effect on a merge, and the
 wedged chain merges nothing.** The C207 fix (`bond`/`withdraw`/`trust`/`delegate` were no-ops on any
 network that merges) landed 2026-10-03 and has therefore **never been exercised live**.
+
+**What moved after this audit ran.** `#215` — *"the round gate's escape needs a clock, not just a supply
+of attempts"* — merged to `dev` at **2026-10-03 14:14**, before this audit began but **not in the tree it
+ran on**. It adds a wall-clock trigger (`ROUND_STALL_ESCAPE = 15 s`) beside the attempt-counting one,
+because the existing bound counts *attempts* and attempts are only supplied by something that asks the
+node to propose. `#213` is **OPEN** — it was closed and then **reopened** — and a controlled A/B on the
+issue reports that *"the escape is exonerated, and finality's stall is independent of it"*. So the wedge's
+proximate cause has a landed fix; a finality stall that is independent of it does not, and it bears on
+criterion 1 as well. **The re-probe (§3.4) has since run on the tip and found the stall upstream of the
+wedge**: nothing finalises with all three validators live, so the kill arm could not discriminate. The
+rows above are ❌ on both trees — on `0c6c65979` as #213 measured it, and on `f9d36b9c4` as §3.4 records
+it — for different reasons, and §3.4 states which.
 
 ## 3.3 Criterion 3 — Every attack vector is handled
 
@@ -1817,6 +1877,52 @@ statement does not yet exist".
 
 The rate is the reason the gate is up: the register took **C195 through C207 in a single window**, and
 C207 alone meant the join path had **never worked on a network that merges**.
+
+---
+
+## 3.4 The re-probe, 2026-10-03
+
+The rows above were first written on `1e5a64ed4` from an unfetched clone (§0.9). This is the run that
+replaces that reading, on the current tip.
+
+**Tree `f9d36b9c4`** · image `sha256:eb2c2308…` · node binary `sha256:9659a2bc…`
+Protocol: `spec/audit/evidence/n214-preregistration.md`. Transcript: `n214-results.md` and
+`n214-blocks/f9d36b9c4-20261003T154406Z/`. Rig: three validators at 100/100/50, `--fresh`,
+`--propose-on-deploy` with `--autopropose` absent, `--attest-on-new-blocks`, `--epoch-length 10`.
+
+| arm | what it did | reading | verdict |
+|---|---|---|---|
+| **A** — criterion 1 | two deploys, 90 s apart, all three live throughout | blocks **6** then **1**; deploy blocks numbered 1 and 3; heights 1 → 4; **no sample reports a finalised block — 693 samples, all `none`** | ❌ **fail** |
+| **B** — criterion 2 | one pre-kill deploy; stop `v2` (the 50-stake validator); 120 s; restart; 90 s | survivors alive throughout; **no finalised block at any point — before the kill, in the kill window, or after the restart** | ❌ **fail** |
+
+**What arm A settles.** Production is bounded, all validators are live, and the deploy still does not
+finalise. That is criterion 1's failure stated in its own terms: the witness is the deploy finalising, and
+it does not.
+
+**What arm B settles, and what it cannot.** The net finalises nothing *with three validators live*, so the
+kill experiment has no finality to remove. Criterion 2 fails **upstream of the wedge** — this run does not
+reproduce #213's specific shape (survivors minting one block each and then stopping); it finds a state
+that is worse to reason about and simpler to state: **nothing finalises at all.**
+
+**The open contradiction.** #214 records criterion 1 *passing* at N=3 on `0c6c65979` — "finality reached
+3". On `f9d36b9c4`, with the configuration the issue names, nothing finalises in either arm. Either the
+configurations differ in a way not yet identified, or the behaviour changed between the two trees. **This
+is unresolved and it is the most load-bearing question this run produces**: it decides whether criterion 1
+failed for the last two days or regressed in them, and it should be settled before either reading is
+relied on. It also corroborates, on a third tree, the `n149` result (*finality never advances at N ≥ 3*)
+and the controlled A/B on #213 (*"finality's stall is independent of the escape"*).
+
+**One node-flag trap, recorded because it cost a run.** The first attempt omitted
+`--attest-on-new-blocks`. The node gates its attestation tap on `attest_on_new_blocks &&`
+`!no_attest_on_new_blocks`, and the positive flag is a clap `bool` that defaults **false** — so a node
+started without it never attests and nothing finalises at any validator count. The option's own doc
+string says *"Attestation is on by default"*, which is not what the code does. That first attempt is kept
+as **void** in `spec/audit/evidence/n214-void-attestation-off/`, because a run that failed for a rig
+reason is worth more recorded than deleted — and it is why the flag is pinned in the pre-registration
+rather than left to a default.
+
+**Limits.** One attempt per arm, one tree, one host, N=3 only. No bond was attempted, so A2.4 stays ⬜;
+A1.2 and A1.3 stay ⬜. A single attempt is not a rate.
 
 ---
 
@@ -1870,8 +1976,13 @@ acceptance rows in §3.
 > **The doubt.** Issue #214 cites the pass on `0c6c65979`. `git cat-file -t 0c6c65979` →
 > `fatal: Not a valid object name`. The run is not reproducible from this tree, so under the evidence
 > rule it is *reported*, not *demonstrated*.
-> **Resolution — `upheld`.** The artefact is absent.
-> **If upheld.** A1.1 is 🟨 until the run (or the commit) lands here.
+> **Resolution — `refuted`, 2026-10-03 (after this page was first published).** The observation was an
+> artifact of an **unfetched clone**, not a fact about the repository. `0c6c65979` resolves — it is the
+> merge of PR #212, dated 2026-10-03 11:11 — and was on `origin/dev` when this audit began. An earlier
+> edition of this page carried the challenge as `upheld` and used it in §0.2 and §3.1; the withdrawal is
+> recorded in §0.9 rather than edited away, per this register's own rule.
+> **If upheld.** *(Superseded — the challenge is withdrawn.)* The row's other two refusals stand on their
+> own: no committed run artefact exists, and the instrument reads a height, not a block count.
 
 > **CH-ACC-04 — the configuration names a flag the node does not have.** · class **configuration** ·
 > contests every `Configuration` cell in §3.1.
@@ -2038,14 +2149,21 @@ staleness is visible one level up, in the repository's own intent file, whose "o
 sentence names four defects that are all now `done` as the things blocking a two-validator net.
 
 That is the honest state of the journey this page was asked to map: **the project has moved faster than
-its own account of itself.** Criterion 2 is red and criterion 1 is unproven, but the deeper finding is
-that the ledger of what-is-true lags the tree — exactly the failure the evidence rule of §0.7 exists to
-catch.
+its own account of itself.** Criterion 2 is red on the audited tree and criterion 1 is unproven, but the
+deeper finding is that the ledger of what-is-true lags the tree — exactly the failure the evidence rule
+of §0.7 exists to catch. And the audit itself committed it: see §0.9.
 
-**What would close it.** Not more prose. A **correction pass** over §1 that re-derives each row against
-HEAD, and a re-run of the two criteria whose evidence is absent or misfiled. Both are cheap next to the
-wargame that produced this page: the corrections are already written in §4, and the runs are two
-`tools/probe-blocks-per-deploy.sh` marks plus one join.
+**What would close it.** Not more prose. Three things, in order:
+
+1. **A re-probe on the current tip** — **done**, §3.4, committed as `spec/audit/evidence/n214-*`. Criterion
+   1 with two marks and criterion 2's kill/restart. It failed both criteria with a committed artefact, and
+   it raised the question that now matters most: **#214's N=3 pass does not reproduce**, so whether
+   criterion 1 failed continuously or regressed is open.
+2. **A correction pass over §1** that re-derives each contested row against HEAD. The corrections are
+   already written in §4 — every upheld challenge names what to change — so this is mechanical, not
+   analytical.
+3. **A fetch in the setup**, which is the one thing §0.9 says no amount of care inside the analysis
+   substitutes for.
 
 ---
 
