@@ -7114,9 +7114,12 @@ absolute snapshots of the same PoS leaves — their reward pots differ by what e
 the merge rejects one whole, and a deploy riding the loser goes with it. It is pinned by
 `casper/src/merging.rs::boundary_merge_tests::sibling_boundaries_with_different_pots_merge`, which
 asserts exactly that resolution. It was measured here while running the #193 arm (at `epoch-length 2`
-with both validators proposing on every gossiped deploy, a `delegate` in block 206 was discarded and the
-identical deploy on a chain with no boundary in reach survived at 1 entry with the operator reading 140
-against a control of 100), and it is what the arm's rig now steps around: with `--no-autopropose`
-**and** `--no-propose-on-deploy` every block in that run is one the driver asked for, so no two are
-concurrent. Fixing it means composing a boundary the way cost accounting is now composed, which is the
-same design question as the set-valued ledgers and is left with them.
+with `--propose-on-deploy` on, both validators propose on every gossiped deploy, a `delegate` in block
+206 was discarded, and the identical deploy on a chain with no boundary in reach survived at 1 entry
+with the operator reading 140 against a control of 100). The arm's rig now starts the network with
+`--no-autopropose` **and** `--no-propose-on-deploy`, which removes the *gossiped-deploy* trigger — and
+the run's own measurement is that it does not remove every trigger: this node keeps proposing a block a
+second of its own accord once it has been asked for one, so the arm's `block()` is what keeps the run
+ordered rather than what makes it quiet. Fixing the boundary conflict means composing a boundary the
+way cost accounting is now composed, which is the same design question as the set-valued ledgers and is
+left with them.

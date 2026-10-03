@@ -1593,15 +1593,32 @@ impl NativeSystemState {
         // paid it by now. The principal leaves the **operator's aggregate** pool entry — not a ledger
         // of its own — and is escrowed under the delegator's name with the request's deadline, so from
         // here it is a claim against the vault with an owner who is not the operator.
+        // **The move reports itself**, for the reason the participation lag does: what a boundary does
+        // with a staged undelegation is consensus state, and when it does nothing there is no other
+        // way to tell "no request was staged" from "one was staged and dropped here". One line, and
+        // only when there is a request to report.
+        if !pending_delegations.is_empty() {
+            eprintln!(
+                "[pos] boundary {block_number}: {} staged undelegation(s) to move out of the pool",
+                pending_delegations.len()
+            );
+        }
         for (key, deadline) in std::mem::take(&mut pending_delegations) {
             let Some(amount) = delegations.remove(&key) else {
                 // The delegation is gone — the operator was slashed, which clears its whole ledger
                 // (law 57's `a_slash_clears_the_delegations`) — so there is nothing to escrow. Dropping
                 // the request is the same payable outcome as the zero-value claim step 2's comment
                 // describes, without the tombstone.
+                eprintln!(
+                    "[pos] boundary {block_number}: a staged undelegation has no ledger entry — dropped"
+                );
                 continue;
             };
             let Some(aggregate) = pool.get(&key.operator).copied() else {
+                eprintln!(
+                    "[pos] boundary {block_number}: a staged undelegation's operator is not in the pool \
+                     — dropped, and the ledger entry went with it"
+                );
                 continue;
             };
             let Some(remaining) = i64::from(aggregate).checked_sub(i64::from(amount)) else {
@@ -1623,6 +1640,12 @@ impl NativeSystemState {
                 pool.insert(key.operator, remaining);
             }
             delegation_claims.insert(key, DelegationClaim { amount, deadline });
+            eprintln!(
+                "[pos] boundary {block_number}: undelegation escrowed — {} out of the operator's pool \
+                 entry, which now reads {}",
+                i64::from(amount),
+                i64::from(remaining)
+            );
         }
 
         // 3. Pay the claims whose quarantine has elapsed.
@@ -1675,6 +1698,17 @@ impl NativeSystemState {
             self.set_vault_balance(
                 &address,
                 balance_plus(balance, i64::from(payable), "delegation refund")?,
+            );
+            // The other half of the pair with the escrow line above: a claim that is paid is a
+            // consensus state change like any other, and the only way to observe it from outside is
+            // to be told — a balance read is a deploy by the account being read, so it carries its own
+            // cost and cannot resolve a return of this size on a live chain.
+            eprintln!(
+                "[pos] boundary {block_number}: undelegation paid — {} to the delegator's own vault \
+                 ({} principal + {} accrued)",
+                i64::from(payable),
+                i64::from(claim.amount),
+                i64::from(accrued)
             );
         }
 

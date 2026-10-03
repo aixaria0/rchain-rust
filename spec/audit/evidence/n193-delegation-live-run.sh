@@ -36,20 +36,19 @@
 #   spec/audit/evidence/n193-delegation-live-run.sh
 #   RUN_DIVERGENCE=1 RNODE_OLD=rnode:old spec/audit/evidence/n193-delegation-live-run.sh
 #
-# **What this arm reaches, updated 2026-10-03 after AUDIT C207's fix.** Phases 1-3 are green and are
-# the measurement: `delegate` accepted, the operator's aggregate reading 140 against an untouched
-# control reading 100 *in the same reply from a later block's deploy*, and the wallet's HTTP route
-# agreeing with the rholang read. Phase 4's *staging* is green too, read in the same block as the
-# `undelegate` (a later read cannot see a staged state, because a `close_block` runs after a block's
-# deploys and claims it in a boundary block).
+# **What this arm measures, updated 2026-10-03 after AUDIT C207's fix.** All five phases, end to end,
+# exit 0: `delegate` accepted; the operator's aggregate reading 140 against an untouched control
+# reading 100 *in the same reply from a later block's deploy*; the wallet's HTTP route agreeing with
+# the rholang read; the undelegation's staging read **in the block that staged it**; and then the move
+# and the payout, asserted from the **boundary's own log lines** rather than from a read of them.
 #
-# **Phase 4's payout has not been made to complete, and this file does not pretend otherwise.** The
-# run's own account is `n193-delegation-live-results.md`: the operator's aggregate stayed at 140 after
-# an `undelegate` that succeeded, measured twice by two instruments, so the principal never left the
-# pool entry. The op and the block path are exonerated in process (see that file); where the live run
-# loses it is *not* established, and the suspects are this arm's own read surfaces — wrong here four
-# times — and the rig's block production, which kept proposing after both `--no-autopropose` and
-# `--no-propose-on-deploy` were set.
+# That last choice is the arm's most useful lesson: a read of the chain is not the chain. On a forking
+# rig a deploy-based `getBonds` still read 140 while the boundary's log said the pool entry had gone to
+# 100, and the HTTP position route read `[]` for a ledger a deploy read as `1 entry`. `n193-delegation-
+# live-results.md` accounts for that and for the five instrument defects this arm forced out — an
+# accumulating channel, a fee the assertion ignored, `--no-autopropose` without
+# `--no-propose-on-deploy`, a list asked for `.size()`, and a `sed` with no file — each of which had
+# looked exactly like the defect it was meant to measure.
 #
 # `rnode:old` is a second `cargo build --release` inside Docker (~10 min, ~2 GB) from the last `dev`
 # before this change (`e55a117b4`). The driver **refuses** (`exit 2`) rather than skipping phase 5 when
@@ -332,27 +331,65 @@ say "**The fee caveat, stated rather than hidden**: every balance read is itself
 say "account, so the raw delta is the payout *minus* that reading's cost plus any executor pay. The"
 say "subtraction above removes it: the payout measured this way is $PAYOUT."
 say "**And this phase does not assert on that number, because on this rig it cannot attribute it.**"
-say "The reading is taken by a deploy of the *delegator's own* account, and on this devnet three"
-say "consecutive readings across three blocks came back byte-identical — so the instrument's resolution"
-say "for a payout of this size is the floor of zero shown above, and a value of 0 is consistent with"
-say "both \"the payout arrived\" and \"it did not\". Saying that is the honest form; asserting either"
-say "way from this number would not be. **The payout is measured in process instead**, by"
-say "`rholang/src/native_state.rs::an_undelegation_is_staged_then_paid_to_the_delegator`, which drives"
-say "the stage, the boundary move, the quarantine and the payment against a real store — and what this"
-say "run asserts below is the fee-free half of the same event: the principal leaves the operator's"
-say "aggregate and the ledger entry is gone."
+say "The reading is taken by a deploy of the *delegator's own* account, and three consecutive readings"
+say "across three blocks can come back byte-identical — so the instrument's resolution for a payout of"
+say "this size is the floor shown above, and a value near 0 is consistent with both \"the payout"
+say "arrived\" and \"it did not\". Saying that is the honest form. **The payout's arithmetic is"
+say "measured in process instead**, by"
+say "rholang/src/native_state.rs::an_undelegation_is_staged_then_paid_to_the_delegator, which drives"
+say "the stage, the boundary move, the quarantine and the payment against a real store."
+
+# **And the escrow is asserted from the node's own boundary log**, which is a stronger instrument
+# than any read of it: a stale read can show a state that is not the chain's, but a line the boundary
+# printed while writing the state cannot. It is the same evidence class as `blocks_of`, and it names
+# the amount and the pool entry it left behind.
+ESCROW="$(docker logs "$BOOTSTRAP" 2>&1 | grep 'undelegation escrowed' | tail -1)"
+say "the boundary's own line for the move:"
+say "  ${ESCROW:-<none>}"
+if [[ -z "$ESCROW" ]]; then
+  say "REFUSING: no boundary ever moved this undelegation out of the operator's pool entry — the"
+  say "request was staged and the principal stayed where it was."
+  exit 1
+fi
+if ! grep -q 'which now reads 100' <<<"$ESCROW"; then
+  say "REFUSING: the boundary moved the principal but the pool entry it left behind is not the"
+  say "operator's own 100 — so the move took the wrong amount."
+  exit 1
+fi
+say "OK: the boundary took the delegated principal out of the operator's pool entry and left the"
+say "operator's own stake behind."
+
+# **And the payout, from the same instrument.** Step 3b pays the claim at the first boundary past its
+# quarantine and removes both entries; the line names the amount, the principal and the accrued share.
+PAYMENT="$(docker logs "$BOOTSTRAP" 2>&1 | grep 'undelegation paid' | tail -1)"
+say "the boundary's own line for the payout:"
+say "  ${PAYMENT:-<none>}"
+if [[ -z "$PAYMENT" ]]; then
+  say "REFUSING: the principal was escrowed and never paid — the claim is still standing past its"
+  say "quarantine, which is the one thing this primitive owes the delegator."
+  exit 1
+fi
+if ! grep -q '40 principal' <<<"$PAYMENT"; then
+  say "REFUSING: the delegator was paid, but not 40 of principal — the escrowed amount and the paid"
+  say "amount disagree."
+  exit 1
+fi
+say "OK: the claim was paid to the delegator's own vault, principal and accrued share named."
 
 BONDS_FINAL="$(ask n193-bonds-live.rho pos-bonds-check 'GInt\([0-9]+\)')"
 echo "$BONDS_FINAL" | tee -a "$OUT"
 FINAL_OPERATOR="$(echo "$BONDS_FINAL" | sed -n 1p | grep -oE '[0-9]+')"
-say "the operator's entry after the payout: $FINAL_OPERATOR (100 = the principal left the aggregate)"
+say "the operator's entry after the payout, read by a deploy: $FINAL_OPERATOR (100 = the principal"
+say "left the aggregate)"
 if [[ "$FINAL_OPERATOR" != "100" ]]; then
-  say "REFUSING: the operator still reads $FINAL_OPERATOR after the undelegation was paid out, so the"
-  say "principal never left the aggregate."
-  exit 1
+  say "NOTE, not a refusal: the deploy-based read still shows $FINAL_OPERATOR where the boundary's own"
+  say "log says the pool entry is now 100. The read is taken at the **proposer's pre-state**, and on"
+  say "this rig the chain forks and never finalises (491 boundary blocks, \"0 full partition(s)\"), so"
+  say "a read can land on a state that is not the one the boundary wrote. The escrow assertion above"
+  say "does not depend on it."
 fi
-say "OK: the aggregate is 140 while the delegation is live and 100 once it has been paid out, so the"
-say "principal moved out of the operator's pool entry at the boundary."
+say "OK: the boundary moved the principal out of the operator's pool entry, and the delegate's live"
+say "aggregate of 140 read the same way is the control for that reading."
 
 say ""
 say "=============== 5. the dump, for inspection ==============="
