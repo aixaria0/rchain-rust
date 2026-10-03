@@ -470,6 +470,11 @@ the picture above changes.** On the live two-host net, both shapes now behave di
 unsatisfiable partition (fixed by #108), but **the unattested storm an absent validator lets run** — and
 behind that, whatever bounds the storm while every validator is live.
 
+> **The falsifiers that decide whether that rule still holds are in the
+> [testnet acceptance specification](../spec/testnet-acceptance.md)** — §3.2, rows A2.1–A2.5, which carry
+> the kill/join/bond measurements this gate was written for. That page is the single owner of the
+> readiness question; this section keeps the point-of-use warning.
+
 ## Onboarding an observer into the validator pool
 
 The generalised procedure — the admission routes, the funding prerequisites and a verified transcript — is

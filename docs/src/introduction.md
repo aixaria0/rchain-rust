@@ -43,6 +43,8 @@ decade.
   the module-by-module status of the implementation.
 - **Part VI — QuCalc: native AI & governance** is the Rust-first extension: quantum operators mapped
   into the ρ-calculus, multi-stakeholder governance, and the experimental concurrent reducers.
+- **Part VII — Testnet acceptance** is the gate: a HAZOP worksheet and bow-tie analysis of the node, and
+  the acceptance checklist that decides whether the net is fit for outside validators.
 
 ## For AI agents
 

@@ -4,7 +4,7 @@
 
 > This document is the **specification of the node's state-transition determinism** — the statement that
 > the post-state hash of a block is a *pure function* of its inputs, founded in the law set
-> ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)). It is the target the Lean formalization
+> ([`spec/INVENTORY.md`](../../../spec/INVENTORY.md)). It is the target the Lean formalization
 > (`spec/Rchain/`) proves, and the target the Rust port's `play` and `replay` paths both implement. The
 > prior documents specify the components: [The laws](laws.md), [The concurrency model](concurrency.md),
 > and [Effect scheduling](scheduling.md). This page fixes the *block* level: what the block
