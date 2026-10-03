@@ -363,6 +363,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **An epoch's reward for a key with delegators is split pro-rata, and a delegator's share is credited to `pos:delegated_rewards` rather than to the operator's `pos:committed`** — after `epoch_rewards` and the participation weight, each drawn validator's reward is divided across its own stake and its delegations in canonical key order; the operator keeps the integer-division remainder, and `epoch_pot` subtracts **both** ledgers | `Pos.rhox:241-256` — `getCurrentEpochRewards` computes one share per **validator** and `commitCurrentEpochRewards` (`:568-576`) writes it to that validator's `committedRewards` entry; there is no second party for a share to belong to, because there is no delegation | Crediting a delegator's share to the operator's `committed` entry would put money the operator may spend into the operator's ledger — the single most likely way to get this primitive wrong, which is why the split is a separate leaf rather than an extra field. The split is **exact** (`split_sums_to_the_reward`): the delegators' shares plus the operator's remainder are the reward the key was paid, so a validator with delegators commits the same total it would have alone and law 46's `sum_rewards_le_pot` survives the split rather than needing restatement. It is the **identity** with no delegators (`split_with_no_delegators_is_the_operator`), which is what makes the dormancy claim above hold arithmetically and not only at the store. The rule is one `proRata` shared with the fan-out below. **Hard fork (#51 category A):** the split moves REV between two ledgers, so every block hash from the first post-delegation boundary differs. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 | **A slash fans the untaken remainder out to each delegator's own vault, and clears the delegation ledgers** — `atRisk` reads the operator's **aggregate** pool entry, so the tier applies to a delegator's principal exactly as to the operator's; `returned` is distributed pro-rata by each party's at-risk contribution — the operator's own part to its vault, each delegator's part to **its own** vault — with the dust to the operator, and the offender is removed from `pos:delegations`, `pos:pending_delegations`, `pos:delegation_claims` and `pos:delegated_rewards` together | `Pos.rhox:470-482` — the contract's slash moves the whole bond to the Coop vault and **deletes the validator's own entries**; the port already deviates by returning the untaken remainder to the offender's own vault (AUDIT C199), and there is no third party in the contract for a remainder to belong to | This is the sharpest correctness risk in the primitive and it is stated as such: the port's post-C199 slash pays `at_risk − taken` to `vault_address(validator)`, and with delegations present that hands a delegator's principal to the party it was delegated to. The fan-out is the same `proRata` the reward split uses (with `base = 0`, since every principal is at risk), so its sum arithmetic is one theorem rather than two. **The model cannot state the per-vault attribution and says so**: `PosState.user` is the total over every user vault, so `spec/Rchain/Pos.lean`'s law 57 proves the *amounts* and the clearing, and which vault is credited is pinned by a Rust witness — the identical simplification the withdrawal path already carries. An escrowed (`pos:delegation_claims`) principal is reached too, mirroring the validator's own escrowed claim, because it stays at risk until its deadline passes. **Hard fork (#51 category A):** the payment destination changes the block's post-state. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 | **`withdraw` refuses while delegations are outstanding, and `delegate` refuses while a withdrawal is pending** — so a validator is never simultaneously withdrawing and delegated-to | — (no counterpart: with no delegation primitive there is no second ledger for a withdrawal to be ambiguous against) | Without both refusals the escrow accounting is two-valued: a staged withdrawal moves the operator's **whole** pool entry — which may contain delegated principal — into `pos:withdrawers`, where the delegator has no claim, and a slash reaching that escrow could not tell whose money it was. Refusing both directions keeps one meaning per ledger, and the cost is a refusal an honest operator can always resolve by waiting a boundary. The two are also what make the slash's `at_risk` well-formed: with the invariant held, an operator's escrowed claim never contains delegated principal. `delegate` refuses three more inputs for the same reason — an operator not in the pool, self-delegation (`operator == delegator`), and an amount below `minimum_bond` — and the last of those is the DoS control on a ledger unbounded in delegator count (`spec/RUST-VS-SCALA.md` §3 item 12, residual **O5**). **Hard fork (#51 category A):** a refusal the oracle does not have changes which deploys succeed. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
+| **The merge composes cost accounting per accepted deploy instead of a block carrying it** — `pre_charge`, `refund` and `pay_executor` are three balance movements that sum to zero, so the merge re-applies them from what the chain already holds (`charge`, `refund` and `burned` are functions of the `ProcessedDeploy`; the producer is the host block's own signed `sender`), and a block's native sidecar carries only its **own** writes. Each accepted deploy's moves land in the vaults the three system deploys would have moved; a chain that wrote one of those slots itself keeps its absolute value in the sidecar, and only the moves of blocks that value had *not* seen are added on top | — (no counterpart: the Scala has no native-state merge, so it has no sidecar and no per-deploy cost composition to compare against) | **This replaces a conflict that was universal.** Cost accounting runs for *every* user deploy and all three moves touch `pos:vault`, so while the sidecar carried that slot every user-deploy block overlapped every concurrent sibling on it — and the merge's one recourse against two incomposable absolute snapshots is to reject a whole block, which took the deploy's own native writes (a delegation, a bond, a `trust`) with it. That made `bond`/`withdraw`/`trust`/`delegate` no-ops on any network with more than one proposer, while a *system* deploy escaped: `close_block` writes no `pos:vault` and two sibling boundaries compute identical values from one pre-state, so rejecting one leaves the other's equal write. **Hard fork (#51 category A):** the *conflict relation* changes, so which blocks a merge accepts, and therefore every block hash after the first concurrent user-deploy pair, differs between a fixed and an unfixed node. Lockstep upgrade is the practice. **The residual is filed rather than hidden**: two *concurrent* `delegate` blocks still conflict on `pos:delegations` and one is still rejected whole, and `trust`/`withdraw` are the same shape — a ledger is a set, not a sum (AUDIT C207) |
 
 ---
 
@@ -7002,3 +7003,123 @@ why they are counted **by row** — the existing `-laws` keys count distinct law
 sentence that decomposes `entries` silently understates (it read 37 where the answer was 48, and the
 marker as first written would have shipped that number into `AGENTS.md`).
 
+
+## 61. The native channel could not merge, and that made four primitives no-ops (C207, #207)
+
+**This pass was written to fix a defect that had already been recorded as closed twice.** #74
+("post-genesis validator admission does not take effect") was closed by adding the `NativeChangeStore`
+sidecar, which made the symptom go away for the cases that were tested. It came back. Three
+investigations followed — a five-lens root-cause analysis, a live ablation, a sidecar discriminator —
+and each produced an *artifact* rather than a fix, because each was faithful to its own brief: the
+analysis refuted the measurement it was given (C205, correctly), the ablation narrowed the trigger to
+concurrent block production without reaching the mechanism, and the discriminator exonerated the
+capture. **The failure was not carelessness. It was fixing the thing in front of us**: the sidecar is a
+symptom fix, the three passes were symptom-fix process, and the delegation primitive of §60 was built
+and shipped on top of a channel that cannot merge.
+
+### The root cause, stated once
+
+**The native channel recorded *snapshots*; every other mergeable effect in this tree records a
+*transition*.** The tuple space merges because the merge re-applies each accepted chain's deploy
+effects. Native state had no such record — the sidecar carries per-block **absolute whole-slot values**
+— and two absolute snapshots of one slot cannot be composed. So when two concurrent blocks touch a
+shared slot the merge has exactly one recourse: **reject a whole block**.
+
+One slot made that universal. `pre_charge`, `refund` and `pay_executor` run for **every user deploy**
+and all three write `pos:vault`, so *every* user-deploy block overlapped *every* concurrent sibling on
+that one slot, lost the resolution, and was rejected whole — and the rejection took the deploy's own
+native writes with it. So `bond`, `withdraw`, `trust` and `delegate` were **no-ops on any network that
+merges**, while the epoch machinery kept working, which is why nothing looked wrong for so long.
+
+**The asymmetry that hid it.** A *system* deploy escaped: `close_block` writes no `pos:vault`, and two
+sibling boundaries compute **identical** values from the same pre-state, so rejecting one leaves the
+other's equal write in place. A user deploy had no such twin. The measured shape of the escape is in
+`spec/audit/evidence/c207-merge-loses-native-writes.md`: two validators with `--no-autopropose` keep the
+write indefinitely, two with autopropose lose it, and one validator — no second proposer, no merge —
+keeps it.
+
+### The fix: cost accounting is a transition, and the merge composes it
+
+Cost accounting left the block's native set and is merged **per accepted deploy**. The three moves are
+pure balance movements that sum to zero, so unlike snapshots they *compose*, and each is a function of
+the `ProcessedDeploy` the block already carries plus the host block's own signed `sender` — which is
+why the merge can re-derive them instead of a sidecar carrying values:
+
+| move | amount | where the input lives |
+|---|---|---|
+| `pre_charge` | `deploy.data.total_phlo_charge()` | the deploy data |
+| `refund` | `processed.refund_amount()` | the `ProcessedDeploy` the block already carries |
+| `pay_executor` | `processed.burned_amount() × executor_share / 10000` | same, plus `PosParams` |
+| the producer | the **host block's** signed `sender` | the block itself |
+
+**Provenance is exact rather than heuristic.** `pre_charge`, `refund` and `pay_executor` are system
+deploys evaluated *outside* the deploy's own reduction (`play_deploy_with_cost_accounting_once`), so a
+mode set around exactly those three calls on the `InMemNativeStore` marks exactly their writes and
+nothing a user term can reach. `drain_changes_split` then reports the block's own writes apart from
+cost accounting's; the checkpoint still folds **both**, so a block's own post-state is unchanged, and
+only the own half travels in the sidecar. **A slot anything else writes stops being cost-only** — a
+`bond` debiting the deployer's own vault makes that slot the user's, and the sidecar carries its whole
+post-state value.
+
+**Where a chain wrote one of those slots itself**, the fold's absolute value *is* the descendant and was
+computed after that chain's own cost accounting, so its own moves are already inside it — as are the
+moves of every block it had seen. Only the moves of blocks the fold's winner did **not** see are added,
+which is exactly the composition a sequential execution reaches. That is why `fold` returns the winning
+*host* alongside the winning action and not only the value.
+
+**The `pre_charge` guard is applied to the state the merge is building.** A deploy's charge was
+affordable where it ran, but a concurrent deploy by the same payer is invisible to it and the two can
+together exceed the vault. A balance cannot go negative, so the merge **refuses** rather than inventing
+one — the fail-closed branch, reachable only when two accepted blocks each spent the same payer's REV
+without seeing each other.
+
+### The falsifiers, and the mutation each was run against
+
+Every one was run red with cost accounting back in the sidecar *and* the merge's pass disabled, green
+with the fix in place; the table and the readings are §6 of
+`spec/audit/evidence/c207-merge-loses-native-writes.md`.
+
+- `a_merged_block_reproduces_its_own_post_state` (`casper/tests/deploy_native_write.rs`) — the strongest
+  statement available, and the first in the tree to cover the *pair* of sidecar and merge: a real
+  `compute_state` run, indexed from what its own run recorded, merged alone against its own pre-state,
+  must reproduce **its own post-state hash**. It fails if the two disagree by one leaf in either
+  direction.
+- `a_cost_accounted_block_keeps_its_own_native_writes_through_the_merge` (`casper/src/merging.rs`) — the
+  reproduction inverted, with both halves asserted because either alone is satisfiable by a bad fix: the
+  concurrent sibling is **kept**, and the staking vault holds the **sum** of the two charges.
+- `equal_concurrent_vault_writes_do_not_destroy_rev` — the claim unchanged and its mechanism replaced:
+  REV conserved *by composition* rather than by rejecting a block.
+- `a_merge_reproduces_a_branchs_post_state_including_its_native_writes` and
+  `a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root` (`casper/tests/block_index.rs`) — the
+  first's sidecar is now legitimately **empty** for a block whose only native effect is cost accounting,
+  which is why the hash comparison carries the assertion; the second had been *shaped around* this
+  defect and now runs as the bare sibling pair it could not be before.
+
+**Hard fork (#51 category A)**: the conflict relation changes, so which blocks a merge accepts — and
+therefore every block hash after the first concurrent user-deploy pair — differs between a fixed and an
+unfixed node. Lockstep upgrade is the practice.
+
+### What this pass does not fix
+
+**The residual is a *set*, not a *sum*.** Two concurrent `delegate` blocks still conflict on
+`pos:delegations` and one is still rejected whole; `trust` (`pos:trusted`) and `withdraw`
+(`pos:pending_withdrawers`) are the same shape. Composing sets is a separate design and is not attempted
+here. C207 removed the conflict that was *universal* — cost accounting's `pos:vault`, which made every
+user-deploy block overlap every concurrent sibling; what remains is the conflict that is *structural*:
+a ledger is a set, and a set has no arithmetic.
+
+**And a *boundary* block still conflicts with a concurrent sibling boundary block.** This is
+pre-existing and by design rather than a new finding: two `close_block`s at one height carry different
+absolute snapshots of the same PoS leaves — their reward pots differ by what each block charged — so
+the merge rejects one whole, and a deploy riding the loser goes with it. It is pinned by
+`casper/src/merging.rs::boundary_merge_tests::sibling_boundaries_with_different_pots_merge`, which
+asserts exactly that resolution. It was measured here while running the #193 arm (at `epoch-length 2`
+with `--propose-on-deploy` on, both validators propose on every gossiped deploy, a `delegate` in block
+206 was discarded, and the identical deploy on a chain with no boundary in reach survived at 1 entry
+with the operator reading 140 against a control of 100). The arm's rig now starts the network with
+`--no-autopropose` **and** `--no-propose-on-deploy`, which removes the *gossiped-deploy* trigger — and
+the run's own measurement is that it does not remove every trigger: this node keeps proposing a block a
+second of its own accord once it has been asked for one, so the arm's `block()` is what keeps the run
+ordered rather than what makes it quiet. Fixing the boundary conflict means composing a boundary the
+way cost accounting is now composed, which is the same design question as the set-valued ledgers and is
+left with them.

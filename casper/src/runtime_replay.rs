@@ -325,10 +325,15 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             &PublicKey::new(processed_deploy.deploy.deployer.clone()),
             rand.split_byte(PRE_CHARGE_SPLIT_INDEX),
         );
+        // **The same cost-accounting window the play path opens** (AUDIT C207). It must be the same
+        // window on both paths or the two sidecars would name different effects for one block, and
+        // validation — which recomputes the post-state from the replay — would refuse it.
+        self.runtime.native_store().begin_cost_accounting();
         let (pre_result, pre_eval) = self
             .eval_system_deploy(&pre_charge)
             .await
             .map_err(ReplayFailure::internal_error)?;
+        self.runtime.native_store().end_cost_accounting();
         self.runtime.create_soft_checkpoint().await;
         if pre_eval.succeeded() {
             mergeable.extend(pre_eval.mergeable.iter().cloned());
@@ -366,6 +371,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             processed_deploy.refund_amount(),
             rand.split_byte(REFUND_SPLIT_INDEX),
         );
+        self.runtime.native_store().begin_cost_accounting();
         let (_refund_result, refund_eval) =
             self.replay_system_deploy_internal(&refund, None).await?;
         self.runtime.create_soft_checkpoint().await;
@@ -385,6 +391,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         let (_pay_result, pay_eval) = self
             .replay_system_deploy_internal(&pay_executor, None)
             .await?;
+        self.runtime.native_store().end_cost_accounting();
         self.runtime.create_soft_checkpoint().await;
         if pay_eval.succeeded() {
             mergeable.extend(pay_eval.mergeable.iter().cloned());

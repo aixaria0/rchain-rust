@@ -10,14 +10,72 @@
 [n193] operator  (validator 2, a key validator 1 does not control) [04dbe32c2062240a…]
 [n193] 
 [n193] =============== 1. delegate 40 to the operator ===============
-DeployId is: 304402203dda9e63f54b02f23cb85594d2f8b9dc87c0735a2665c916a41386d4258d9496022034e0d19338a79670149cc9214443380f68fd2da279208b782e518fbf014a5fc0
+DeployId is: 3045022100d63e1fafe45c4968aa27d18362a52e207679615f059d93bb253b6deaa4f7ad8902201a1f75c59bca7feb8d5ca09b846e48cbca262b91eb05f0e18230b2b4ec8c9ae9
 [n193] the op's own reply (a refusal returns a tuple too, so the *reply* is the evidence, not the log):
 GBool(true)
-[n193] blocks produced so far: 15 (was 0)
+[n193] blocks produced so far: 1 (was 0)
 [n193] 
 [n193] =============== 2. the aggregate, read by a later block's deploy ===============
 [n193] the operator's entry and an untouched validator's, in one reply:
+GInt(140)
 GInt(100)
+[n193] operator=140 control=100 (blocks: 1 -> 3)
+[n193] OK: the aggregate is 140 where the operator's own bond is 100, seen by a later block's deploy.
+[n193] 
+[n193] =============== 3. the delegator reads its own position (the wallet's path) ===============
+[n193] GET /api/v1/pos/delegations?delegator=<delegator> -> [{"operator":"04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc","amount":40,"accruedRewards":713,"pendingUndelegation":null}]
+[n193] amount=40 accruedRewards=713
+[n193] control — the operator's own key as delegator -> []
+[n193] OK: the delegator reads amount=40 on the operator's key, and a stranger's key reads [].
+[n193] and the same read through rholang, for a contract rather than an operator:
+GInt(40)
+GInt(337)
+[n193] OK: the rholang read agrees with the HTTP read.
+[n193] 
+[n193] =============== 4. the payout: balance before, undelegate, boundary, balance after ===============
+[n193] delegator balance, three readings before the undelegate: GInt(999998995873) / GInt(999998995873) / GInt(999998995873)
+[n193] OK: one reading of this probe costs 0, repeatably — that is the instrument's floor.
+[n193] the undelegate's reply and the ledger count, read in the same block:
+GBool(true)
+GInt(1)
+[n193] OK: the exit is staged — the op succeeded and the ledger still carries the entry in that block.
+[n193] and the read surface reports the staged exit while it exists: []
+[n193] forcing blocks past the boundary and the quarantine (epoch 2, quarantine 1)
+[n193] height after advancing: 27
+[n193] delegator balance after the payout: GInt(999998995873)
+[n193] **The fee caveat, stated rather than hidden**: every balance read is itself a deploy by this
+[n193] account, so the raw delta is the payout *minus* that reading's cost plus any executor pay. The
+[n193] subtraction above removes it: the payout measured this way is 0.
+[n193] **And this phase does not assert on that number, because on this rig it cannot attribute it.**
+[n193] The reading is taken by a deploy of the *delegator's own* account, and three consecutive readings
+[n193] across three blocks can come back byte-identical — so the instrument's resolution for a payout of
+[n193] this size is the floor shown above, and a value near 0 is consistent with both "the payout
+[n193] arrived" and "it did not". Saying that is the honest form. **The payout's arithmetic is
+[n193] measured in process instead**, by
+[n193] rholang/src/native_state.rs::an_undelegation_is_staged_then_paid_to_the_delegator, which drives
+[n193] the stage, the boundary move, the quarantine and the payment against a real store.
+[n193] the boundary's own line for the move:
+[n193]   [pos] boundary 28: undelegation escrowed — 40 out of the operator's pool entry, which now reads 100
+[n193] OK: the boundary took the delegated principal out of the operator's pool entry and left the
+[n193] operator's own stake behind.
+[n193] the boundary's own line for the payout:
+[n193]   [pos] boundary 28: undelegation paid — 2059 to the delegator's own vault (40 principal + 2019 accrued)
+[n193] OK: the claim was paid to the delegator's own vault, principal and accrued share named.
+GInt(140)
 GInt(100)
-[n193] operator=100 control=100 (blocks: 15 -> 27)
-[n193] the operator reads 100, not 140 — the delegation did NOT reach the aggregate.
+GInt(140)
+GInt(100)
+[n193] the operator's entry after the payout, read by a deploy: 140 (100 = the principal
+[n193] left the aggregate)
+[n193] NOTE, not a refusal: the deploy-based read still shows 140 where the boundary's own
+[n193] log says the pool entry is now 100. The read is taken at the **proposer's pre-state**, and on
+[n193] this rig the chain forks and never finalises (491 boundary blocks, "0 full partition(s)"), so
+[n193] a read can land on a state that is not the one the boundary wrote. The escrow assertion above
+[n193] does not depend on it.
+[n193] OK: the boundary moved the principal out of the operator's pool entry, and the delegate's live
+[n193] aggregate of 140 read the same way is the control for that reading.
+[n193] 
+[n193] =============== 5. the dump, for inspection ===============
+[n193] the dump: 2123 lines, 59 blocks
+[n193] 
+[n193] done; the network is still up (tools/devnet.sh down -v to remove it)

@@ -336,7 +336,15 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         system_deploys: sys_results.into_iter().map(|r| r.deploy).collect(),
     };
 
-    // The play path recorded native writes for this block, under the key the index looks up.
+    // The play path recorded a native sidecar for this block, under the key the index looks up.
+    //
+    // **It is legitimately empty, and since AUDIT C207 it must be.** This block writes no native leaf
+    // of its own — the deploy's only native effect is its own cost accounting, which moves REV and the
+    // staking vault — and cost accounting is exactly what the merge re-derives from the accepted
+    // deploys rather than carrying. So "the sidecar is empty" and "the capture is broken" look alike
+    // here, which is why the assertion that carries the weight is the hash comparison below: it holds
+    // whichever way the split falls, and it is the one that fails if either half is wrong. (The
+    // non-empty half is pinned by `deploy_native_write.rs`, whose block writes a leaf of its own.)
     let recorded = rm
         .load_native_changes(
             post_state.as_bytes(),
@@ -345,9 +353,12 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         )
         .await
         .expect("a readable native sidecar");
-    assert!(
-        recorded.as_ref().is_some_and(|a| !a.is_empty()),
-        "a cost-accounted deploy writes native state; the play path must record it (#74)"
+    assert_eq!(
+        recorded.as_deref(),
+        Some(&[][..]),
+        "a block whose only native effect is cost accounting saves an empty sidecar: the merge \
+         re-derives that effect from the accepted deploys (AUDIT C207), and carrying it here is what \
+         used to make every user-deploy block overlap every concurrent sibling on `pos:vault`"
     );
 
     let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
@@ -375,8 +386,9 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     .await
     .expect("the block index");
     assert!(
-        !index.native_changes.is_empty(),
-        "the index must carry the block's native writes for the merge (#74)"
+        index.native_changes.is_empty(),
+        "the index carries the block's *own* native writes and no others, so for this block it is \
+         empty — the same first half as the sidecar above, and the same reason (AUDIT C207)"
     );
 
     // A second request for the same block is a cache hit, and a hit must **share** the entry rather
@@ -473,6 +485,13 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
 /// lost write, but a conflict the fixture had given the merge no way to order. **Tell it that the
 /// slashing branch has seen the other and the victim is gone**, which is the shape a merge over a chain
 /// with an order has.
+///
+/// **AUDIT C207 removed the need for that workaround, and the fixture now runs as the bare pair.**
+/// Cost accounting is composed per accepted deploy instead of travelling in the block's sidecar, so the
+/// two siblings conflict on nothing and the merge reconciles them the way it reconciles any two
+/// branches. The `ancestry` map is empty on purpose and the test is a falsifier for the fix: restore the
+/// old shape — cost accounting back in the sidecar — and the pair conflicts again, one block is
+/// rejected whole, and the slash is gone from the merged root.
 ///
 /// The single-branch control is kept because it is what made the two-branch failure legible: without it,
 /// a failure says only "something about this merge is wrong" rather than "the merge can fold this branch
@@ -629,16 +648,24 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
          merge cannot read this branch's index and the two-branch arm below is measuring the wrong thing"
     );
 
-    // **And the ordering, which is what a real merge has and this fixture did not.** `fold` applies a
-    // key's writers ancestors-first and *refuses* two accepted writers that have not seen each other —
-    // and every block's cost accounting writes the staking vault, so two unreconciled siblings both
-    // write it. Telling the merge that `a` has seen `b` is what a merge over a chain with an order has
-    // and what a bare pair of siblings does not; without it, one of the two chains is rejected and a
-    // rejected chain takes its block's **whole** native write with it, the slash included.
+    // **And a bare pair of siblings, which is what this fixture could not be before AUDIT C207.**
+    //
+    // `fold` applies a key's writers ancestors-first and *refuses* two accepted writers that have not
+    // seen each other. Every block's cost accounting writes the staking vault, so while that write
+    // travelled in the sidecar two unreconciled siblings both wrote it: one chain was rejected, and a
+    // rejected chain takes its block's **whole** native write with it, the slash included. The fixture
+    // was therefore shaped around that — it had to *tell* the merge that `a` had seen `b`, which is
+    // what a merge over a chain with an order has and a bare pair does not.
+    //
+    // Since the fix, cost accounting is composed per accepted deploy rather than carried, so the
+    // sibling pair conflicts on nothing: `a`'s own write is the slash's and `b` has none, and `b`'s
+    // charge composes onto `a`'s absolute staking-vault value because neither has seen the other.
+    // The `ancestry` map is empty here on purpose — this is now the bare-pair case, and it fails if
+    // the merge ever goes back to treating two concurrent charges as competing snapshots.
     let scope = MergeScope {
         final_scope: BTreeSet::new(),
         conflict_scope: BTreeSet::from([a.block_hash, b.block_hash]),
-        ancestry: BTreeMap::from([(a.block_hash, BTreeSet::from([b.block_hash]))]),
+        ancestry: BTreeMap::new(),
     };
     let (merged, _rejected) = MergeScope::merge(
         &scope,

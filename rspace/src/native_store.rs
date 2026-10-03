@@ -95,23 +95,41 @@ impl NativeHistoryReader for NoopNativeReader {
     }
 }
 
-/// Snapshot of the native-store overlay (for soft-checkpoint revert). `Some(v)` is a written value,
-/// `None` is a tombstone (deletion).
+/// One overlay slot: the value it will hold, and **whether cost accounting is the only thing that
+/// wrote it in this block** (AUDIT C207).
+///
+/// The second half is what lets a block's sidecar carry its *own* native effects without carrying
+/// the cost-accounting ones. That matters because cost accounting writes `pos:vault` from **every**
+/// user deploy, so a block that carries a deploy overlaps every concurrent sibling on that slot —
+/// and the merge resolves an overlap by rejecting a whole block, which silently took the deploy's own
+/// writes (a delegation, a bond, a trust) with it. Splitting the two lets cost accounting move to the
+/// granularity the tuple space already merges at — per accepted deploy — while every other native
+/// write keeps the whole-block rule, unchanged.
+#[derive(Clone, Debug)]
+struct Slot {
+    value: Option<Vec<u8>>,
+    cost_only: bool,
+}
+
+/// Snapshot of the native-store overlay (for soft-checkpoint revert).
 #[derive(Clone, Default, Debug)]
 pub struct NativeStoreState {
-    overlay: BTreeMap<(u8, Blake2b256Hash), Option<Vec<u8>>>,
+    overlay: BTreeMap<(u8, Blake2b256Hash), Slot>,
 }
 
 /// The in-memory native store: a write-through overlay over a [`NativeHistoryReader`].
 pub struct InMemNativeStore {
-    /// Written keys and tombstones since the last `drain_changes` / `reset`. `Some(v)` = value,
-    /// `None` = deleted.
-    overlay: Mutex<BTreeMap<(u8, Blake2b256Hash), Option<Vec<u8>>>>,
+    /// Written keys and tombstones since the last `drain_changes` / `reset`.
+    overlay: Mutex<BTreeMap<(u8, Blake2b256Hash), Slot>>,
     /// The base reader for keys not present in the overlay (updated on checkpoint/reset).
     reader: RwLock<Arc<dyn NativeHistoryReader>>,
     /// Set once a non-noop reader is installed, so [`InMemNativeStore::live_entries`] can report that
     /// it is no longer looking at the whole state.
     has_history: AtomicBool,
+    /// **True while a cost-accounting system deploy is being evaluated.** Set around `pre_charge`,
+    /// `refund` and `pay_executor`, which run outside the deploy's own reduction, so every write made
+    /// while it is set is attributable to cost accounting and to nothing else.
+    cost_accounting: AtomicBool,
 }
 
 impl InMemNativeStore {
@@ -120,7 +138,27 @@ impl InMemNativeStore {
             overlay: Mutex::new(BTreeMap::new()),
             reader: RwLock::new(reader),
             has_history: AtomicBool::new(false),
+            cost_accounting: AtomicBool::new(false),
         }
+    }
+
+    /// Mark the writes that follow as cost accounting's, until [`Self::end_cost_accounting`].
+    ///
+    /// `pre_charge`, `refund` and `pay_executor` are system deploys evaluated *outside* the deploy's
+    /// own reduction (`play_deploy_with_cost_accounting_once`), which is what makes this exact: no
+    /// user term can run between the two calls, so no user write can be misattributed.
+    pub fn begin_cost_accounting(&self) {
+        self.cost_accounting.store(true, Ordering::SeqCst);
+    }
+
+    /// Stop marking writes as cost accounting's — see [`Self::begin_cost_accounting`].
+    pub fn end_cost_accounting(&self) {
+        self.cost_accounting.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether the write being made right now is cost accounting's.
+    fn in_cost_accounting(&self) -> bool {
+        self.cost_accounting.load(Ordering::SeqCst)
     }
 
     /// A store with no backing reader (reads return `None` until a reader is set).
@@ -132,8 +170,8 @@ impl InMemNativeStore {
     pub async fn get(&self, prefix: u8, key: &Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
         {
             let overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(v) = overlay.get(&(prefix, *key)) {
-                return Ok(v.clone());
+            if let Some(slot) = overlay.get(&(prefix, *key)) {
+                return Ok(slot.value.clone());
             }
         }
         let reader = self
@@ -146,37 +184,72 @@ impl InMemNativeStore {
 
     /// Write a native value into the overlay (and record a `Put` action).
     pub fn put(&self, prefix: u8, key: Blake2b256Hash, value: Vec<u8>) {
-        self.overlay
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((prefix, key), Some(value));
+        let cost = self.in_cost_accounting();
+        self.record(prefix, key, Some(value), cost);
     }
 
     /// Delete a native value (record a `Delete` action via a tombstone).
     pub fn delete(&self, prefix: u8, key: &Blake2b256Hash) {
-        self.overlay
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((prefix, *key), None);
+        let cost = self.in_cost_accounting();
+        self.record(prefix, *key, None, cost);
+    }
+
+    /// The one place a slot is written, so the cost-accounting flag cannot be forgotten at a call
+    /// site. **A slot stops being cost-only as soon as anything else writes it**: a user term that
+    /// touches the same leaf (a `bond` debiting the deployer's own vault) makes the slot the user's,
+    /// and the block's sidecar must carry it.
+    fn record(&self, prefix: u8, key: Blake2b256Hash, value: Option<Vec<u8>>, cost: bool) {
+        let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(slot) = overlay.get_mut(&(prefix, key)) {
+            slot.value = value;
+            slot.cost_only &= cost;
+            return;
+        }
+        overlay.insert(
+            (prefix, key),
+            Slot {
+                value,
+                cost_only: cost,
+            },
+        );
     }
 
     /// Drain the pending mutations, clearing the overlay (the caller folds the actions into a
-    /// checkpoint).
+    /// checkpoint). This is **every** action; the sidecar wants only the block's own.
     pub fn drain_changes(&self) -> Vec<NativeStoreAction> {
+        let (own, cost) = self.drain_changes_split();
+        let mut all = own;
+        all.extend(cost);
+        all
+    }
+
+    /// Drain the pending mutations as **(the block's own, the cost-accounting ones)**.
+    ///
+    /// Both halves belong in the checkpoint — the block's own post-state is what it is — but only the
+    /// **first** belongs in the block's sidecar, because the second is re-derived by the merge from
+    /// the accepted deploys (AUDIT C207). Splitting here rather than at the sidecar's save keeps the
+    /// two from drifting: one drain, one attribution.
+    pub fn drain_changes_split(&self) -> (Vec<NativeStoreAction>, Vec<NativeStoreAction>) {
         let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
-        let actions = overlay
-            .iter()
-            .map(|(&(prefix, key), value)| match value {
+        let mut own = Vec::with_capacity(overlay.len());
+        let mut cost = Vec::new();
+        for (&(prefix, key), slot) in overlay.iter() {
+            let action = match &slot.value {
                 Some(v) => NativeStoreAction::Put {
                     prefix,
                     key,
                     value: v.clone(),
                 },
                 None => NativeStoreAction::Delete { prefix, key },
-            })
-            .collect();
+            };
+            if slot.cost_only {
+                cost.push(action);
+            } else {
+                own.push(action);
+            }
+        }
         overlay.clear();
-        actions
+        (own, cost)
     }
 
     /// Capture the current overlay for a soft-checkpoint rollback.
@@ -223,8 +296,8 @@ impl InMemNativeStore {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
-            .filter_map(|(&(p, key), value)| match value {
-                Some(v) if p == prefix => Some((key, v.clone())),
+            .filter_map(|(&(p, key), slot)| match (p == prefix, &slot.value) {
+                (true, Some(v)) => Some((key, v.clone())),
                 _ => None,
             })
             .collect()

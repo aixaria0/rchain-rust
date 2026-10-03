@@ -1,17 +1,17 @@
 
-------------- block 24 ---------------
+------------- block 30 ---------------
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "edd0b3ad9eca1fd6c686f42cca48d579de27e2cd6cfdd59f96860057ab106068",
-  "blockNumber": 24,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 23,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "73abd60c1a233f939e2c23d92cbb4264b740f17c8118d8431cccb8441c20ab86",
+  "blockHash": "13cc799f7b33d1f2028e29b252b8df03f1cb93af47b2f496cd9da445bca4761e",
+  "blockNumber": 30,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 30,
+  "preStateHash": "b94b7878553f59ed71b071648707d0f82ff0f4620366260cfa9692318a3f515f",
+  "postStateHash": "e701da5254b80873ba58770f503e4099d9ab1865d5bf581fe928b3875147a0da",
   "justifications": [
-    "3f7335f808fb2ae1226ba9978d2a774b9e6754ca2077dd348e772c92c21aaf79",
-    "fd3b0426e67689ccd36f6adb0fd6d2df0f951713388a42249ab7270adca8c77c"
+    "b50f49ced2aeaeaeea451f304f80008cd9a42a634c5efe484157345bd35d5130",
+    "f9716bd346bd44792a3d79e059cf0e9b0f91c2bb222cb0d7608974339830dafa"
   ],
   "bonds": [
     {
@@ -24,16 +24,377 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220139870471e4f6fe27e948d807cfe9401833c61fea7ee7eae84c0aff17e0499a202202dd7013452272e3d70ac0de5316b6723ddd0f59d7f2ed109d5279c2e5e7450aa",
-  "blockSize": "896",
+  "sig": "3045022100c1055f3c4b2aaa627d8a7b59fc0052bce2e633942a0ed9120e3ab3f3fae591400220208dba27cffb3eec728b2762f3f2c15c90b4525a4acebefe01ce4ccc9d3c51f0",
+  "blockSize": "528",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "450e9b081cf46998afbe9dd1e6103f59b5c3b8bac30a2107143539b7ef6ca0c802"
+  ],
+  "timestamp": 1791013209042
+}
+-----------------------------------------------------
+
+
+------------- block 29 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "f9716bd346bd44792a3d79e059cf0e9b0f91c2bb222cb0d7608974339830dafa",
+  "blockNumber": 29,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 29,
+  "preStateHash": "dc9bfd45a6e113d9bb1911e835a8e7eeadb9c8847ab4c349246f817aa8124cc2",
+  "postStateHash": "b94b7878553f59ed71b071648707d0f82ff0f4620366260cfa9692318a3f515f",
+  "justifications": [
+    "2fa63ec323eda8416d9e636c9f3d6af2aab45162004fcc98b9619979af1a7366",
+    "a1c96b1088bb76088980c833ea71da9e2c68790debf5c910208cd14c4f3cc774"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "30440220441a5e95c2963b778f5c649f0968182b3ff30469b036ea8abd6ba8cfd211e80102202ce1ffaaa828a6e03bc82e760641076fbb89a2a294fe4160e3c43038037758e3",
+  "blockSize": "2759",
   "deployCount": 1,
   "rejectedDeploys": [
-    "02651eca1fa9b05c328715d40d89bdec73e8b3872be50c1dce9b25c6b1eda70a02",
-    "02afd80900596e9d3693b1865d28fce6385d6c64a40e50feebe4e45e9a535fed02",
-    "3045022100bce47807b275b5ad37db1a7dacf660a77f1bf6d610378dd41bd93c93f5afcb6602202018b447d6e5ae261b89809ba111c5eeb832958e16d4accbf6b716a4eee719df",
-    "3045022100e632b4fdb798a625431864a1ef8fa972972245b573a89e2c2ab62fd30ba5ff0c02201a5c06a1865b82060ed2c07dec6d83b9978729805cb352801bfce2856901080c"
+    "eeb00da5dfd8291ce17c426ac4d27d86bc3bd4bde6af38e382955c2e33e3749602"
   ],
-  "timestamp": 1790976692146
+  "timestamp": 1791013207498
+}
+-----------------------------------------------------
+
+
+------------- block 29 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "b50f49ced2aeaeaeea451f304f80008cd9a42a634c5efe484157345bd35d5130",
+  "blockNumber": 29,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 28,
+  "preStateHash": "dc9bfd45a6e113d9bb1911e835a8e7eeadb9c8847ab4c349246f817aa8124cc2",
+  "postStateHash": "dc9bfd45a6e113d9bb1911e835a8e7eeadb9c8847ab4c349246f817aa8124cc2",
+  "justifications": [
+    "2fa63ec323eda8416d9e636c9f3d6af2aab45162004fcc98b9619979af1a7366",
+    "a1c96b1088bb76088980c833ea71da9e2c68790debf5c910208cd14c4f3cc774"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "30450221009fd7f34dbe5f283723dc0000da66af873506afc0637ea6d71d61698a3280295a022033edf44a88f5564237f6c34f0df7af0e575176f456d7055affa1d0ea6a313a9e",
+  "blockSize": "523",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "eeb00da5dfd8291ce17c426ac4d27d86bc3bd4bde6af38e382955c2e33e3749602"
+  ],
+  "timestamp": 1791013208434
+}
+-----------------------------------------------------
+
+
+------------- block 28 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "a1c96b1088bb76088980c833ea71da9e2c68790debf5c910208cd14c4f3cc774",
+  "blockNumber": 28,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 28,
+  "preStateHash": "dc9bfd45a6e113d9bb1911e835a8e7eeadb9c8847ab4c349246f817aa8124cc2",
+  "postStateHash": "73e08832961abb18fd3a7441a1cc2cc3afc6645c3c878465b312038dd0351442",
+  "justifications": [
+    "0d2c9e3492183e48d0f1a69ebdd8ce0cb0f731f76c594f30ac5b438526156da7",
+    "c1b5561b31beeefe836d2a1c7add6fe93d097c54e6cfd47c47dea3cc168734d1"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 100
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3045022100fa5776538aa89d171f7f1a3ae2768f0a13f7671079191f8392edac35a752bf6f02202eb045def4e8795db5175795c59e0b0148433ae78ef79edd0a0cd3a03d1bc0ae",
+  "blockSize": "563",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b902",
+    "cd62c5c20fe3605d45bbbe02930bd5324ea466428a9ef217e45a3f71283da98502"
+  ],
+  "timestamp": 1791013205687
+}
+-----------------------------------------------------
+
+
+------------- block 28 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "2fa63ec323eda8416d9e636c9f3d6af2aab45162004fcc98b9619979af1a7366",
+  "blockNumber": 28,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 27,
+  "preStateHash": "dc9bfd45a6e113d9bb1911e835a8e7eeadb9c8847ab4c349246f817aa8124cc2",
+  "postStateHash": "73e08832961abb18fd3a7441a1cc2cc3afc6645c3c878465b312038dd0351442",
+  "justifications": [
+    "0d2c9e3492183e48d0f1a69ebdd8ce0cb0f731f76c594f30ac5b438526156da7",
+    "c1b5561b31beeefe836d2a1c7add6fe93d097c54e6cfd47c47dea3cc168734d1"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 100
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "304402202765f936957de1fb349a5da94aa70a8e8559d51f6dc638d788b94e5020042aaa0220188a041975e14406768d74822fcf0733b8f2bb5739b020217c11dcd38fd51e7c",
+  "blockSize": "562",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b902",
+    "cd62c5c20fe3605d45bbbe02930bd5324ea466428a9ef217e45a3f71283da98502"
+  ],
+  "timestamp": 1791013206566
+}
+-----------------------------------------------------
+
+
+------------- block 27 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "c1b5561b31beeefe836d2a1c7add6fe93d097c54e6cfd47c47dea3cc168734d1",
+  "blockNumber": 27,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 26,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "justifications": [
+    "450e9b081cf46998afbe9dd1e6103f59b5c3b8bac30a2107143539b7ef6ca0c8",
+    "eeb00da5dfd8291ce17c426ac4d27d86bc3bd4bde6af38e382955c2e33e37496"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "304402201fedf60c2e94287f1a4491137ffe457331ca1c674203c2d2f3f0434013d99be3022062e7660a8186a1b27a8206f6d2028aa198e7cc7b641b241d09a6bab2481220ae",
+  "blockSize": "522",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b902"
+  ],
+  "timestamp": 1791013204859
+}
+-----------------------------------------------------
+
+
+------------- block 27 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "0d2c9e3492183e48d0f1a69ebdd8ce0cb0f731f76c594f30ac5b438526156da7",
+  "blockNumber": 27,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 27,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "dc9bfd45a6e113d9bb1911e835a8e7eeadb9c8847ab4c349246f817aa8124cc2",
+  "justifications": [
+    "450e9b081cf46998afbe9dd1e6103f59b5c3b8bac30a2107143539b7ef6ca0c8",
+    "eeb00da5dfd8291ce17c426ac4d27d86bc3bd4bde6af38e382955c2e33e37496"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3045022100cfe8f47d4c6202be2757933640890237228abc99de53f7783e1a99cd7fc96640022022de3e404c27e6630e862fd15d48c7a20aac3690137e13ba6576c5c8fbf4e1dd",
+  "blockSize": "2997",
+  "deployCount": 1,
+  "rejectedDeploys": [
+    "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b902"
+  ],
+  "timestamp": 1791013203913
+}
+-----------------------------------------------------
+
+
+------------- block 26 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "eeb00da5dfd8291ce17c426ac4d27d86bc3bd4bde6af38e382955c2e33e37496",
+  "blockNumber": 26,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 25,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "7014abb6f8f1fbb5b79bc65372866f77039af68ef7ad512d95dd4d86f14f850a",
+  "justifications": [
+    "4cd19cec91ce3df78cf74e407bdad90bb806696dc9da4aa25d3818ea4eed3c87",
+    "efed06ac4d33926cab1ceeef538d1c21a5d80c2d8cabbb06ed8f2ff377e2ff0d"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 100
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "304402202848444a5a3c4c051b5c0d137236d4d7d59ea7e4452ffe2c1e8fc892091c9c9402202c0a8497cb9d390b98d213626b468d19e885f5d2f43e5b1dccf086d76c8a3cd2",
+  "blockSize": "562",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee1202",
+    "ebbdfa183d86c76ef24cfd9fad0f82bb988d9f084a198a7950cc068916a731eb02"
+  ],
+  "timestamp": 1791013203158
+}
+-----------------------------------------------------
+
+
+------------- block 26 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "450e9b081cf46998afbe9dd1e6103f59b5c3b8bac30a2107143539b7ef6ca0c8",
+  "blockNumber": 26,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 26,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "7014abb6f8f1fbb5b79bc65372866f77039af68ef7ad512d95dd4d86f14f850a",
+  "justifications": [
+    "4cd19cec91ce3df78cf74e407bdad90bb806696dc9da4aa25d3818ea4eed3c87",
+    "efed06ac4d33926cab1ceeef538d1c21a5d80c2d8cabbb06ed8f2ff377e2ff0d"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 100
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3045022100a6e05ff07f0dc80d328e0a3c9964377fc46d19d8d95413ec1a9ceeafcf26f230022011faf28894687b16fc739e7104657eae09801915eb7027cd0c3570cbcf479b81",
+  "blockSize": "563",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee1202",
+    "ebbdfa183d86c76ef24cfd9fad0f82bb988d9f084a198a7950cc068916a731eb02"
+  ],
+  "timestamp": 1791013202354
+}
+-----------------------------------------------------
+
+
+------------- block 25 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "efed06ac4d33926cab1ceeef538d1c21a5d80c2d8cabbb06ed8f2ff377e2ff0d",
+  "blockNumber": 25,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 24,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "justifications": [
+    "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b9",
+    "cd62c5c20fe3605d45bbbe02930bd5324ea466428a9ef217e45a3f71283da985"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3044022071b32fb48ef0925833fa08724383147295af6ef29bc65fb2de3785294560518c0220631f677bafce722aba57c44f30cacff6b131aacabb468672c4f22ef5837db720",
+  "blockSize": "522",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee1202"
+  ],
+  "timestamp": 1791013201622
+}
+-----------------------------------------------------
+
+
+------------- block 25 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "4cd19cec91ce3df78cf74e407bdad90bb806696dc9da4aa25d3818ea4eed3c87",
+  "blockNumber": 25,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 25,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "justifications": [
+    "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b9",
+    "cd62c5c20fe3605d45bbbe02930bd5324ea466428a9ef217e45a3f71283da985"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3044022031fa41e44bb38a5b1cd3716df72b97139ed8151ca7cc8c32d3c1d4fd52dcf7de0220665f7ac93652a9fc5d1bedfb3dbfc4f0c06d45d1104bd36033fd14b85974004e",
+  "blockSize": "522",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee1202"
+  ],
+  "timestamp": 1791013201058
 }
 -----------------------------------------------------
 
@@ -42,15 +403,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "435a280e9d0308aadc373f6fccc66fcd0e37df3a2aaccfbfa3e6d1d2b7167213",
+  "blockHash": "cd62c5c20fe3605d45bbbe02930bd5324ea466428a9ef217e45a3f71283da985",
   "blockNumber": 24,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 24,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "73abd60c1a233f939e2c23d92cbb4264b740f17c8118d8431cccb8441c20ab86",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "7ea6341ad41f96c929dcb342492bf05029839f174ec88ec7eb56f53857c00bb4",
   "justifications": [
-    "3f7335f808fb2ae1226ba9978d2a774b9e6754ca2077dd348e772c92c21aaf79",
-    "fd3b0426e67689ccd36f6adb0fd6d2df0f951713388a42249ab7270adca8c77c"
+    "51888e67957de6390b0bfd984e1d1f62f106292f244e79fb71ea1bb57c1c7d35",
+    "faa9e9545556230b738b4c6de20510cd48dafb57785a62de38c36fd2900ba376"
   ],
   "bonds": [
     {
@@ -63,16 +424,51 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402201bc5672d33ad3ab6b485f54b9732de16491c15b86aa8eae66e5d048fcbc2bf92022078b1ac5b008c11975507575815c62d3b7f4bd4d2d933793b48ea5859656b1deb",
-  "blockSize": "897",
-  "deployCount": 1,
+  "sig": "3045022100ee5aeaea6426d3e9a834061af676815d02dedb26dc4edaedb7115ac9f269b2040220398a2f54580ce261c23ce7e1a992fe7888de0338c17fe09741d749a6f18d5232",
+  "blockSize": "563",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "02651eca1fa9b05c328715d40d89bdec73e8b3872be50c1dce9b25c6b1eda70a02",
-    "02afd80900596e9d3693b1865d28fce6385d6c64a40e50feebe4e45e9a535fed02",
-    "3045022100bce47807b275b5ad37db1a7dacf660a77f1bf6d610378dd41bd93c93f5afcb6602202018b447d6e5ae261b89809ba111c5eeb832958e16d4accbf6b716a4eee719df",
-    "3045022100e632b4fdb798a625431864a1ef8fa972972245b573a89e2c2ab62fd30ba5ff0c02201a5c06a1865b82060ed2c07dec6d83b9978729805cb352801bfce2856901080c"
+    "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e02",
+    "f747d2f7ceace9a0a6f06cedefbf78af31afbdc3cb66b540702b4f5d04aebc5c02"
   ],
-  "timestamp": 1790976692369
+  "timestamp": 1791013199603
+}
+-----------------------------------------------------
+
+
+------------- block 24 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "b689442063d95f7c878a195b5bad6583db7c39960bce51bb7ea6b2cbd63582b9",
+  "blockNumber": 24,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 23,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "7ea6341ad41f96c929dcb342492bf05029839f174ec88ec7eb56f53857c00bb4",
+  "justifications": [
+    "51888e67957de6390b0bfd984e1d1f62f106292f244e79fb71ea1bb57c1c7d35",
+    "faa9e9545556230b738b4c6de20510cd48dafb57785a62de38c36fd2900ba376"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 100
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "30450221009747d1fbd84fc3f4ab0c30db5ec26192c3ea64595434c569533127f3c57fd711022032e75ce85e59d82a8228c013c91a9fb1ff444cb42b3cd00287b83176d1457064",
+  "blockSize": "563",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e02",
+    "f747d2f7ceace9a0a6f06cedefbf78af31afbdc3cb66b540702b4f5d04aebc5c02"
+  ],
+  "timestamp": 1791013200391
 }
 -----------------------------------------------------
 
@@ -81,20 +477,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "fd3b0426e67689ccd36f6adb0fd6d2df0f951713388a42249ab7270adca8c77c",
+  "blockHash": "faa9e9545556230b738b4c6de20510cd48dafb57785a62de38c36fd2900ba376",
   "blockNumber": 23,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 22,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "0eb49234643c0fa4ff8986baa10ef27e29e67867b50cad43b8f023fc0936e05a",
-    "bb7ad7523fc6c10a671edb637c6335fb1b461e55006d25eeff23f4befce0ec21"
+    "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee12",
+    "ebbdfa183d86c76ef24cfd9fad0f82bb988d9f084a198a7950cc068916a731eb"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -102,16 +498,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100a30e8f2d71b5018eabd8b901108c9579e1e49ce18548ff255855ad25bd6a92c302200af3077e3174dfc386947933694b158c7bec4860252fee179cd0ff4750514504",
-  "blockSize": "896",
-  "deployCount": 1,
+  "sig": "304402204f8bf2fa8aa0ba842064af74fab447d4d145061241bc5d0ba60bd8218d5448dd022078ece06ef577d82af91a6a7403da592bd8b9cc7f271d5aca85cf1a3aec5d0643",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "304402204a328977971234e1d684bec84997d56d426753ea01bc23930e74160daf1f9f7a02204aa4f80eb97bcd88afafb4902fb55abb2d7bf135ba1b607988ad76da6fb4c58b",
-    "3044022059d4c303809df23ebba8dfec02cadf6314b1eb9f0f9f9528db9ccd71451e0f4d022046df833442cc50d9205cee9fff134c1c5e7d35bdcacda3814bc31a09dd123b9c",
-    "3bd49142f2273ad3930bdf33351e058d11b974aa6a5315decf542e05754c207c02",
-    "5f0ec3c4bb7a8e49483f8ba5561aa22f9fff5d421a2666eaac3063c36efa772c02"
+    "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e02"
   ],
-  "timestamp": 1790976691726
+  "timestamp": 1791013199053
 }
 -----------------------------------------------------
 
@@ -120,20 +513,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "3f7335f808fb2ae1226ba9978d2a774b9e6754ca2077dd348e772c92c21aaf79",
+  "blockHash": "51888e67957de6390b0bfd984e1d1f62f106292f244e79fb71ea1bb57c1c7d35",
   "blockNumber": 23,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 23,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "0eb49234643c0fa4ff8986baa10ef27e29e67867b50cad43b8f023fc0936e05a",
-    "bb7ad7523fc6c10a671edb637c6335fb1b461e55006d25eeff23f4befce0ec21"
+    "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee12",
+    "ebbdfa183d86c76ef24cfd9fad0f82bb988d9f084a198a7950cc068916a731eb"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -141,16 +534,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220177436692c7847674b8b1027f7f695e977ba921828b63b62fc93a8aa988d88a902207826c31961bd76ec4e76201089a705dd144587d3c9b846e9fd0efaa36bb69e4b",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "3044022058e71df793b2b3fcd930e587e65158234934d8e45794f4da7040b912cf16c94102201ce6ce1003dbfa715967332c7ebf8145fc173636ad97c6bbd15fef2471e4b92f",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "304402204a328977971234e1d684bec84997d56d426753ea01bc23930e74160daf1f9f7a02204aa4f80eb97bcd88afafb4902fb55abb2d7bf135ba1b607988ad76da6fb4c58b",
-    "3044022059d4c303809df23ebba8dfec02cadf6314b1eb9f0f9f9528db9ccd71451e0f4d022046df833442cc50d9205cee9fff134c1c5e7d35bdcacda3814bc31a09dd123b9c",
-    "3bd49142f2273ad3930bdf33351e058d11b974aa6a5315decf542e05754c207c02",
-    "5f0ec3c4bb7a8e49483f8ba5561aa22f9fff5d421a2666eaac3063c36efa772c02"
+    "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e02"
   ],
-  "timestamp": 1790976691496
+  "timestamp": 1791013198577
 }
 -----------------------------------------------------
 
@@ -159,54 +549,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "bb7ad7523fc6c10a671edb637c6335fb1b461e55006d25eeff23f4befce0ec21",
-  "blockNumber": 22,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 21,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "aec5515fb413710e8fa3ab462147feb7c2a3702d8b75bd37301fa527679f9187",
-  "justifications": [
-    "02afd80900596e9d3693b1865d28fce6385d6c64a40e50feebe4e45e9a535fed",
-    "3d51df8d9e4906d290b3057b03322fdfb1712c964b4e0c5045271d04b31f63ec"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "3045022100ba0f625e5ad35a356a223da6c771c9b59cff3eebe7dacc1e155183ebd4e4161b02204cc05959f6446eeee042dc42dbea73d8d6505e7ea177e2d6766403e49086fccd",
-  "blockSize": "897",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "2570036f21807322e82af80c910f464fcbe40385e8274d298248700f007a33b702",
-    "3045022100c80dc9c2f490142b74dedca131dff970ab3115bbc9afb14930c906ebb07a840b022065b5a7f9ac74cda20786ff383d6b46c825a918874746545901f702e5de9e046b",
-    "3045022100f5b0ce940110985f003f3a3a2f50d205650cbc6d240876627bce79b7748d384802207a415f5d8ccf0e5cb0493ddbfc44fab754a8e8c4103492143803efb866be560f",
-    "abf62b87e83add136a58359ad80f5c5d5147b540a4f22237adf3af0a3c0841c202"
-  ],
-  "timestamp": 1790976690830
-}
------------------------------------------------------
-
-
-------------- block 22 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "0eb49234643c0fa4ff8986baa10ef27e29e67867b50cad43b8f023fc0936e05a",
+  "blockHash": "ebbdfa183d86c76ef24cfd9fad0f82bb988d9f084a198a7950cc068916a731eb",
   "blockNumber": 22,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 22,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "aec5515fb413710e8fa3ab462147feb7c2a3702d8b75bd37301fa527679f9187",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "9bf9129da8b16e6f4f4465dedba5d7a8b63c75cda6d191efe6268c71e9ac4f9c",
   "justifications": [
-    "02afd80900596e9d3693b1865d28fce6385d6c64a40e50feebe4e45e9a535fed",
-    "3d51df8d9e4906d290b3057b03322fdfb1712c964b4e0c5045271d04b31f63ec"
+    "6491f2ce85a78893de6e8f4105564dc8d086cd2e117a3473e926001c8836a1a0",
+    "f0183849a05232bb30bb3367af4e6b5478ca56c82c00dd37e4097842e20f7868"
   ],
   "bonds": [
     {
@@ -219,16 +570,49 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022068d5d35d19b5993a2eeea70bc1861f551497d03e91be8c73baaa73d485c0f97b0220174687e4ae596b220e2a40fb80e0d161ddb073c190b01e73134d6d992342f85d",
-  "blockSize": "897",
-  "deployCount": 1,
+  "sig": "304402201ce0601943e35bddb5ff54124f72350eadfd82be3c7bbf5064043945c42a66a6022051d011e7cdbf94561e6711ff08c7a31a590542b8d06c173a0195042206df960b",
+  "blockSize": "527",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "2570036f21807322e82af80c910f464fcbe40385e8274d298248700f007a33b702",
-    "3045022100c80dc9c2f490142b74dedca131dff970ab3115bbc9afb14930c906ebb07a840b022065b5a7f9ac74cda20786ff383d6b46c825a918874746545901f702e5de9e046b",
-    "3045022100f5b0ce940110985f003f3a3a2f50d205650cbc6d240876627bce79b7748d384802207a415f5d8ccf0e5cb0493ddbfc44fab754a8e8c4103492143803efb866be560f",
-    "abf62b87e83add136a58359ad80f5c5d5147b540a4f22237adf3af0a3c0841c202"
+    "3ff67245637604012d4bc943e2dbc3017c4687296f172c1d50f4f69dcee6cf6602"
   ],
-  "timestamp": 1790976691058
+  "timestamp": 1791013197592
+}
+-----------------------------------------------------
+
+
+------------- block 22 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "782297f53f4467d642591e289c0428210c4d80afe3aad15725a8ac0d173bee12",
+  "blockNumber": 22,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 21,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "9bf9129da8b16e6f4f4465dedba5d7a8b63c75cda6d191efe6268c71e9ac4f9c",
+  "justifications": [
+    "6491f2ce85a78893de6e8f4105564dc8d086cd2e117a3473e926001c8836a1a0",
+    "f0183849a05232bb30bb3367af4e6b5478ca56c82c00dd37e4097842e20f7868"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 100
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "304402202c1d43d0e39ef1bc8b6b2836d830b252ea6bcf258d49431955c26fd4251d784902206874dd2663589fc2581a2cb18668016419cb4542b9b2b15805d8994ed5c57756",
+  "blockSize": "527",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "3ff67245637604012d4bc943e2dbc3017c4687296f172c1d50f4f69dcee6cf6602"
+  ],
+  "timestamp": 1791013198093
 }
 -----------------------------------------------------
 
@@ -237,20 +621,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "3d51df8d9e4906d290b3057b03322fdfb1712c964b4e0c5045271d04b31f63ec",
+  "blockHash": "f0183849a05232bb30bb3367af4e6b5478ca56c82c00dd37e4097842e20f7868",
   "blockNumber": 21,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 21,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "02651eca1fa9b05c328715d40d89bdec73e8b3872be50c1dce9b25c6b1eda70a",
-    "5f0ec3c4bb7a8e49483f8ba5561aa22f9fff5d421a2666eaac3063c36efa772c"
+    "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e",
+    "f747d2f7ceace9a0a6f06cedefbf78af31afbdc3cb66b540702b4f5d04aebc5c"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -258,16 +642,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402204a50d5cbfe4ec1b3ac491c0fcf5090b37e7e26875738197c71f225ec0bba8c02022073299581bacb0b67cb3c1c4ca9559f1e84f5abacc16dcf2b87114e67c41578d2",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "30440220322ca932510ecb30eb7b43b9567f224e8de9ebe2908f9614511583155812e126022077f325e0cf53a01b8522478f8acabddc19142ebb3f36fe498e913c59fd34e576",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "3044022028b9fb84ea6c9bb04a7c352fe2a21bcc772c8f999f1dca9eeb063a386b31fa9202200b60028d8caded93e04145c903da8f0e3c61ae88372694febf65665206c906ce",
-    "30440220597b5ca3a89a1d3b3ed775e0906aa28a605f12c1bbe805b5febf8314fd52644f02205c938d027c92dcc1e2ef6127df0657ed0fffef6a16b2b0f01869c9bd2aaf68eb",
-    "8e27e97302ff645426f2631b69934ec8ebf9156be77bc66f7f5c31e7bfe903f702",
-    "bc4af0713c14914e03cf067f265bdad5ebf8996490782f9a857fab5c122a63ce02"
+    "6a9c45c50133d4643e617cbde141805fe59d8b8f42d305db07375cdaa8da2d6f02"
   ],
-  "timestamp": 1790976690237
+  "timestamp": 1791013196660
 }
 -----------------------------------------------------
 
@@ -276,20 +657,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "02afd80900596e9d3693b1865d28fce6385d6c64a40e50feebe4e45e9a535fed",
+  "blockHash": "6491f2ce85a78893de6e8f4105564dc8d086cd2e117a3473e926001c8836a1a0",
   "blockNumber": 21,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 20,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "02651eca1fa9b05c328715d40d89bdec73e8b3872be50c1dce9b25c6b1eda70a",
-    "5f0ec3c4bb7a8e49483f8ba5561aa22f9fff5d421a2666eaac3063c36efa772c"
+    "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e",
+    "f747d2f7ceace9a0a6f06cedefbf78af31afbdc3cb66b540702b4f5d04aebc5c"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -297,16 +678,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402204cf6626de62df678b94f80af337d0c0290758bfd6462c207b2dba8e77a1a3b56022044e9bf976073384451d6aaf5489179ffdeeac50eb00533057b1ae42f82c95554",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "3044022072750c8cbd3a3154c1f0d433263c2e049221c0bf7adb22115e77d25afc492999022062dcb48483a47a4b7853a8fc76ff2143782268f371b339815c50e1946443261e",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "3044022028b9fb84ea6c9bb04a7c352fe2a21bcc772c8f999f1dca9eeb063a386b31fa9202200b60028d8caded93e04145c903da8f0e3c61ae88372694febf65665206c906ce",
-    "30440220597b5ca3a89a1d3b3ed775e0906aa28a605f12c1bbe805b5febf8314fd52644f02205c938d027c92dcc1e2ef6127df0657ed0fffef6a16b2b0f01869c9bd2aaf68eb",
-    "8e27e97302ff645426f2631b69934ec8ebf9156be77bc66f7f5c31e7bfe903f702",
-    "bc4af0713c14914e03cf067f265bdad5ebf8996490782f9a857fab5c122a63ce02"
+    "6a9c45c50133d4643e617cbde141805fe59d8b8f42d305db07375cdaa8da2d6f02"
   ],
-  "timestamp": 1790976690423
+  "timestamp": 1791013197159
 }
 -----------------------------------------------------
 
@@ -315,54 +693,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "5f0ec3c4bb7a8e49483f8ba5561aa22f9fff5d421a2666eaac3063c36efa772c",
-  "blockNumber": 20,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 19,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "352da0851d2f717091bae5382537e2f55074226958cdb58ae02c321f085f5f84",
-  "justifications": [
-    "3bd49142f2273ad3930bdf33351e058d11b974aa6a5315decf542e05754c207c",
-    "abf62b87e83add136a58359ad80f5c5d5147b540a4f22237adf3af0a3c0841c2"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "304402202322aaa03dc984cb798eb9e476a0d8f2c73d545d7904be60bc65d01c11b76c250220381f14b65751aa754768954dca8fd7904e0b9f56ca51b99c61d88ddc7dca7f21",
-  "blockSize": "894",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "04b97b1caf638e8cc58684f088d619a73c1305c9ae0d88e11616917e3fb2123302",
-    "30440220372114b8249f4e315567152086abe7ee8a7423ad106a696ca374959e920e42aa022074cb9c0c78fce8e12f2c444a6865ed3f3b1971593f6f63caf7d2d660219e3bd5",
-    "3044022060bd13ecdcee9a4d50531da9d9c864de28627971541ac954ebe2b42dc9a1f2c802203f725cb8b6a435b6efb684ec10995d16aae3fa2f73a1bd408288f5340d79f2da",
-    "c6cdc4135fcca5c23fef4f5aad002e485aac7d0a1539e7bf48221c2441d0b44802"
-  ],
-  "timestamp": 1790976689556
-}
------------------------------------------------------
-
-
-------------- block 20 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "02651eca1fa9b05c328715d40d89bdec73e8b3872be50c1dce9b25c6b1eda70a",
+  "blockHash": "f747d2f7ceace9a0a6f06cedefbf78af31afbdc3cb66b540702b4f5d04aebc5c",
   "blockNumber": 20,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 20,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "352da0851d2f717091bae5382537e2f55074226958cdb58ae02c321f085f5f84",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "1b8bd13b0b91703cd7349e65dd45741051baec18a40d20b9206a81e1d0fd64db",
   "justifications": [
-    "3bd49142f2273ad3930bdf33351e058d11b974aa6a5315decf542e05754c207c",
-    "abf62b87e83add136a58359ad80f5c5d5147b540a4f22237adf3af0a3c0841c2"
+    "5964c9cd5746bbc52e2dd5dfdc870f8c4c60f3ed26bea73b9f2a53d2ac37d85d",
+    "8953db32588f2bb7da9620eeeb7146b869cd57b83d4658f54c7b1518463eec39"
   ],
   "bonds": [
     {
@@ -375,33 +714,30 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022008efaf1a40063a0fece46f404a5626a780a80de0644adf409d7f76f0dbaf5d7e02203b753dc6fa0772fffe7ead3c551c0cfb2ab7f85ad616e7a42c8edb134980b7f1",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "3044022079d3fbab9f87320e9d558afbf531e66e40b0cc796b65b0c9786a58cd4ffb983202205d0be78c8339b5f9653af808a32be28fffa5191cdfcb8226212ba373e86b6bdd",
+  "blockSize": "527",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "04b97b1caf638e8cc58684f088d619a73c1305c9ae0d88e11616917e3fb2123302",
-    "30440220372114b8249f4e315567152086abe7ee8a7423ad106a696ca374959e920e42aa022074cb9c0c78fce8e12f2c444a6865ed3f3b1971593f6f63caf7d2d660219e3bd5",
-    "3044022060bd13ecdcee9a4d50531da9d9c864de28627971541ac954ebe2b42dc9a1f2c802203f725cb8b6a435b6efb684ec10995d16aae3fa2f73a1bd408288f5340d79f2da",
-    "c6cdc4135fcca5c23fef4f5aad002e485aac7d0a1539e7bf48221c2441d0b44802"
+    "0ea5a0c9dc0456b9e18c92962d5b71293f663547862543248843cb1a8b594d2402"
   ],
-  "timestamp": 1790976689700
+  "timestamp": 1791013195562
 }
 -----------------------------------------------------
 
 
-------------- block 19 ---------------
+------------- block 20 ---------------
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "abf62b87e83add136a58359ad80f5c5d5147b540a4f22237adf3af0a3c0841c2",
-  "blockNumber": 19,
+  "blockHash": "2ba5a48dcea587c2a1ccec503106556ead2588c06814ea778b82f7612a52456e",
+  "blockNumber": 20,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 18,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "seqNum": 19,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "1b8bd13b0b91703cd7349e65dd45741051baec18a40d20b9206a81e1d0fd64db",
   "justifications": [
-    "2570036f21807322e82af80c910f464fcbe40385e8274d298248700f007a33b7",
-    "8e27e97302ff645426f2631b69934ec8ebf9156be77bc66f7f5c31e7bfe903f7"
+    "5964c9cd5746bbc52e2dd5dfdc870f8c4c60f3ed26bea73b9f2a53d2ac37d85d",
+    "8953db32588f2bb7da9620eeeb7146b869cd57b83d4658f54c7b1518463eec39"
   ],
   "bonds": [
     {
@@ -414,16 +750,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100c2b6ee25203752ba8f18e61c80c25830543637d8bc1272586779a689395b1c2302203f8e6dc69fdc141d94e5efb1ab2bfaa1e3cc81afde5e3dbcf92dd62d4110300f",
-  "blockSize": "897",
-  "deployCount": 1,
+  "sig": "3045022100def806b8edbf732f859a9d4fa0ca55e21b06ea05e266495c8d2bf2290449a91702203551d6cf952ac810ee35a7b4fe29a0b3873090b1e43b755f84b5e5d64923bce9",
+  "blockSize": "528",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "304402203df32ef69ac89978f745e6d69e53f0831f930fd7ece6d010cb4cc6ce205ca9420220244c383bd4c18293a7ba8f8a69c33c861c451f61878dd27afc7aaeab5e87a3be",
-    "3045022100887f50bdf50356fb577e7eb492600991fc68875dc273fc158e2aedcb7e26e49b02204833d06245df0ab92b2c7c4e0a636d34f4bde06ed03f2690964d32f4000e4a19",
-    "81d5832ed435b822f89050946c1e371b4d1972420895fc35058ecd7eeb3a2f9d02",
-    "b3067cf6021c3c1850d832191c4c0d5d472c9cb34722dc6c3039f4ff2e55c21902"
+    "0ea5a0c9dc0456b9e18c92962d5b71293f663547862543248843cb1a8b594d2402"
   ],
-  "timestamp": 1790976688978
+  "timestamp": 1791013196142
 }
 -----------------------------------------------------
 
@@ -432,20 +765,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "3bd49142f2273ad3930bdf33351e058d11b974aa6a5315decf542e05754c207c",
+  "blockHash": "8953db32588f2bb7da9620eeeb7146b869cd57b83d4658f54c7b1518463eec39",
   "blockNumber": 19,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 19,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "2570036f21807322e82af80c910f464fcbe40385e8274d298248700f007a33b7",
-    "8e27e97302ff645426f2631b69934ec8ebf9156be77bc66f7f5c31e7bfe903f7"
+    "3ff67245637604012d4bc943e2dbc3017c4687296f172c1d50f4f69dcee6cf66",
+    "6a9c45c50133d4643e617cbde141805fe59d8b8f42d305db07375cdaa8da2d6f"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -453,16 +786,49 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220489d6aff0322b1bc4b819ceeca8168cb6e12d1c70bc6648f06033c795c05a0f8022077d28fbc4a7b24397cd5bfcad4b042186d262dfa8d65d308f89c7194020fdf01",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "30440220341a1b30809540bf220cb11e8d09a78f3dc5f5c827d5c71283566e678554e8e102206010fcf82f83dae7427584dbe4d107665d0ecd4a3f235618772ecf200e49886d",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "304402203df32ef69ac89978f745e6d69e53f0831f930fd7ece6d010cb4cc6ce205ca9420220244c383bd4c18293a7ba8f8a69c33c861c451f61878dd27afc7aaeab5e87a3be",
-    "3045022100887f50bdf50356fb577e7eb492600991fc68875dc273fc158e2aedcb7e26e49b02204833d06245df0ab92b2c7c4e0a636d34f4bde06ed03f2690964d32f4000e4a19",
-    "81d5832ed435b822f89050946c1e371b4d1972420895fc35058ecd7eeb3a2f9d02",
-    "b3067cf6021c3c1850d832191c4c0d5d472c9cb34722dc6c3039f4ff2e55c21902"
+    "714f32a5c19d7ca4bbc8216cdcf6551c55a8d50e3bd08d8d6ebd6d737410f88902"
   ],
-  "timestamp": 1790976688796
+  "timestamp": 1791013194671
+}
+-----------------------------------------------------
+
+
+------------- block 19 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "5964c9cd5746bbc52e2dd5dfdc870f8c4c60f3ed26bea73b9f2a53d2ac37d85d",
+  "blockNumber": 19,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 18,
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "justifications": [
+    "3ff67245637604012d4bc943e2dbc3017c4687296f172c1d50f4f69dcee6cf66",
+    "6a9c45c50133d4643e617cbde141805fe59d8b8f42d305db07375cdaa8da2d6f"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3045022100f872fcf7b6622065734e83b992e1773e5a5fe8f3ef3aa33bb7adc5b81174acf70220583309b6c2658ce81e86ca19323d289ec041305f22b546827b5c9ec4d8d3931c",
+  "blockSize": "523",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "714f32a5c19d7ca4bbc8216cdcf6551c55a8d50e3bd08d8d6ebd6d737410f88902"
+  ],
+  "timestamp": 1791013195137
 }
 -----------------------------------------------------
 
@@ -471,15 +837,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "8e27e97302ff645426f2631b69934ec8ebf9156be77bc66f7f5c31e7bfe903f7",
+  "blockHash": "6a9c45c50133d4643e617cbde141805fe59d8b8f42d305db07375cdaa8da2d6f",
   "blockNumber": 18,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 17,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "522f4d2f3fbbc56bdf9518b09d9caf2e9afe4ada4811ca1bad63de4368d13a09",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "f5bebe9207705d30c3e792f2cd94ca41fd24136ce86e23e6e65afb56cf42b092",
   "justifications": [
-    "bc4af0713c14914e03cf067f265bdad5ebf8996490782f9a857fab5c122a63ce",
-    "c6cdc4135fcca5c23fef4f5aad002e485aac7d0a1539e7bf48221c2441d0b448"
+    "146722b82da2d83bb7ae6cb08312538540e1ab3875bddae0b1195756ec49987d",
+    "b461282dc309060683b03d6b999c369dbe04e274d0b4387ed318a09136923b5c"
   ],
   "bonds": [
     {
@@ -492,16 +858,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402207f825f8c156b29a94a6996d0532631743bcb9cda6dc781a6f4384f4cb27c43ac02202b9e10654fa40a4d1f9d56e5905f16d557b70ffc1457e1e9050aa03c27c197e0",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "3044022044993c55736bbe5739c397c5d10154c3a25d8c4aab5148e87128d04870a83661022024ba34236e635f9a4cfd2f36d2d2f76076480fd76be7a596ce79771106cfa1c2",
+  "blockSize": "527",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "266980f62aec36cf96c89d2d4702d6a4d96e8faec58c6d5cd797ec79038387d902",
-    "304402206b75f97c9be576293571f1edad16328d7e925f9031481511ef192a6a1d721b4a0220551e115138e9e01da76e6cd640968ed7f3b9e5a5c59b5f3058f33463265d6fca",
-    "3045022100dc940bf8b70008325290b38fd0aec322b1a349fa642775f68e2725187c43c8aa02207f5d1eee300f26f6029e0b2807d565e7da77ab64410b8d50eba4f7bd07fa44ef",
-    "8795476c6304556f6af9be4708be7e3f77ae3b778182e91b2ad026f85d08ed9902"
+    "242fcdcd337f7c9a9baf9619768ef83a4460fcdd72825d3dc61413f5d443c57a02"
   ],
-  "timestamp": 1790976688099
+  "timestamp": 1791013194162
 }
 -----------------------------------------------------
 
@@ -510,15 +873,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "2570036f21807322e82af80c910f464fcbe40385e8274d298248700f007a33b7",
+  "blockHash": "3ff67245637604012d4bc943e2dbc3017c4687296f172c1d50f4f69dcee6cf66",
   "blockNumber": 18,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 18,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "522f4d2f3fbbc56bdf9518b09d9caf2e9afe4ada4811ca1bad63de4368d13a09",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "f5bebe9207705d30c3e792f2cd94ca41fd24136ce86e23e6e65afb56cf42b092",
   "justifications": [
-    "bc4af0713c14914e03cf067f265bdad5ebf8996490782f9a857fab5c122a63ce",
-    "c6cdc4135fcca5c23fef4f5aad002e485aac7d0a1539e7bf48221c2441d0b448"
+    "146722b82da2d83bb7ae6cb08312538540e1ab3875bddae0b1195756ec49987d",
+    "b461282dc309060683b03d6b999c369dbe04e274d0b4387ed318a09136923b5c"
   ],
   "bonds": [
     {
@@ -531,16 +894,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402207a531d2fe5786e47629bf1ddfe73bf376597b41065fd599ae7014cf92f49879b02203f3a290bcaf85f822f93e832b10af9eac864fe5c9c670cea9368a71cd0c0a4ad",
-  "blockSize": "896",
-  "deployCount": 1,
+  "sig": "304502210086b835160f8d7f2208c467f057b6dd577ff25ee9b14c0465ed151da13d0a9d49022042697b68491791d79d74ff0db9b1ef0b31467a5afcf89ebccf104c906d2b89b6",
+  "blockSize": "528",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "266980f62aec36cf96c89d2d4702d6a4d96e8faec58c6d5cd797ec79038387d902",
-    "304402206b75f97c9be576293571f1edad16328d7e925f9031481511ef192a6a1d721b4a0220551e115138e9e01da76e6cd640968ed7f3b9e5a5c59b5f3058f33463265d6fca",
-    "3045022100dc940bf8b70008325290b38fd0aec322b1a349fa642775f68e2725187c43c8aa02207f5d1eee300f26f6029e0b2807d565e7da77ab64410b8d50eba4f7bd07fa44ef",
-    "8795476c6304556f6af9be4708be7e3f77ae3b778182e91b2ad026f85d08ed9902"
+    "242fcdcd337f7c9a9baf9619768ef83a4460fcdd72825d3dc61413f5d443c57a02"
   ],
-  "timestamp": 1790976688305
+  "timestamp": 1791013193481
 }
 -----------------------------------------------------
 
@@ -549,20 +909,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "c6cdc4135fcca5c23fef4f5aad002e485aac7d0a1539e7bf48221c2441d0b448",
+  "blockHash": "b461282dc309060683b03d6b999c369dbe04e274d0b4387ed318a09136923b5c",
   "blockNumber": 17,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 16,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "04b97b1caf638e8cc58684f088d619a73c1305c9ae0d88e11616917e3fb21233",
-    "b3067cf6021c3c1850d832191c4c0d5d472c9cb34722dc6c3039f4ff2e55c219"
+    "0ea5a0c9dc0456b9e18c92962d5b71293f663547862543248843cb1a8b594d24",
+    "714f32a5c19d7ca4bbc8216cdcf6551c55a8d50e3bd08d8d6ebd6d737410f889"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -570,17 +930,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220680e36815401304f927d56cb9bef59bae719e45f810ec874fdb7439edb2af3580220719a674004cb3e63cd30c07889fae083b16f2d79f3e37381b9a2a74bd9da0316",
-  "blockSize": "929",
-  "deployCount": 1,
+  "sig": "3045022100aa9531abe89bb791b7bd69d28e1dd155459ffe7a72efbb41fd9c9f8a74473d91022008550755711287bf0a2007b2b63e319930dd0b02cec582d539fff9234782b003",
+  "blockSize": "523",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca02",
-    "3044022022f6ac773ff25591c37778bed9c4f164f563a9ced05a7fff76993171b63e2ff902206bffacbe345c801a8b1f5924df29a59a2b04bd9f99ffb1395e958b979bd93136",
-    "304402207efa8ff23e8b6b1ebe621f29f2a6d8ca23f994bf4826e00f6cb702108941c16e02207454717042a3c3b21eb0626dcb00412aef9aca265ef6507169252399049185a0",
-    "934bd6a0b0037bdaa8a61a923e7c0fdd50f1d60d9d422474239065c60399438c02",
-    "a22b9fa3515103f2459afeb8297916badab73154d537f02a52596c478d00a0ac02"
+    "89feab5725d8e76be28ae479788856d977409de91fe30b63ce6f7c59fe0501b802"
   ],
-  "timestamp": 1790976687590
+  "timestamp": 1791013192993
 }
 -----------------------------------------------------
 
@@ -589,20 +945,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "bc4af0713c14914e03cf067f265bdad5ebf8996490782f9a857fab5c122a63ce",
+  "blockHash": "146722b82da2d83bb7ae6cb08312538540e1ab3875bddae0b1195756ec49987d",
   "blockNumber": 17,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 17,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "04b97b1caf638e8cc58684f088d619a73c1305c9ae0d88e11616917e3fb21233",
-    "b3067cf6021c3c1850d832191c4c0d5d472c9cb34722dc6c3039f4ff2e55c219"
+    "0ea5a0c9dc0456b9e18c92962d5b71293f663547862543248843cb1a8b594d24",
+    "714f32a5c19d7ca4bbc8216cdcf6551c55a8d50e3bd08d8d6ebd6d737410f889"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -610,17 +966,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022001ff6dc867892cb0424c88b3eca3b59be265f9fb5007dd42638ac9be0cf7145f022062d5943444b4c39557ed8e38a68c508639ddecd13d443e39fc7ec27af7494b57",
-  "blockSize": "929",
-  "deployCount": 1,
+  "sig": "30450221009b68dec98a86bcc9ddeeba8ed1e7a917554d31fc5e3cef51bdd81268fed1635102201b449be89f72f5f9f653c1338f8974c322ed22ae8504fd1836afdfe280d2a599",
+  "blockSize": "523",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca02",
-    "3044022022f6ac773ff25591c37778bed9c4f164f563a9ced05a7fff76993171b63e2ff902206bffacbe345c801a8b1f5924df29a59a2b04bd9f99ffb1395e958b979bd93136",
-    "304402207efa8ff23e8b6b1ebe621f29f2a6d8ca23f994bf4826e00f6cb702108941c16e02207454717042a3c3b21eb0626dcb00412aef9aca265ef6507169252399049185a0",
-    "934bd6a0b0037bdaa8a61a923e7c0fdd50f1d60d9d422474239065c60399438c02",
-    "a22b9fa3515103f2459afeb8297916badab73154d537f02a52596c478d00a0ac02"
+    "89feab5725d8e76be28ae479788856d977409de91fe30b63ce6f7c59fe0501b802"
   ],
-  "timestamp": 1790976687272
+  "timestamp": 1791013192551
 }
 -----------------------------------------------------
 
@@ -629,15 +981,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "b3067cf6021c3c1850d832191c4c0d5d472c9cb34722dc6c3039f4ff2e55c219",
+  "blockHash": "714f32a5c19d7ca4bbc8216cdcf6551c55a8d50e3bd08d8d6ebd6d737410f889",
   "blockNumber": 16,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 15,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "3a16bf5bb62f214073228fe375a7d2578feb8b7faffe7be99341c0190df5fe5f",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "485aad1c785a84cabe1174ca2a64f9a214cefb9295fd61d3fd537ece652da5bd",
   "justifications": [
-    "81d5832ed435b822f89050946c1e371b4d1972420895fc35058ecd7eeb3a2f9d",
-    "8795476c6304556f6af9be4708be7e3f77ae3b778182e91b2ad026f85d08ed99"
+    "0afdeafcd32a568cb44122be300c6e3fc78e1cb56a6b6e28f8a39d4a1e86a53b",
+    "d7ea116b58853d51aa37cb5fb8541d642d2d780e3941c121dd3db9406601c4c7"
   ],
   "bonds": [
     {
@@ -650,17 +1002,15 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304502210090ba835492873bc055645c74e82f38f922bd16960ffe8552fe2524af09fe7b3102206b4b8344e11a9f5fb59f695a937ff90486209e3b25e37a2f6c947e52cb94bea8",
-  "blockSize": "967",
-  "deployCount": 1,
+  "sig": "304402200d0801eda9dfa6800a873c1f89b4e3daed0f72c8d7d71a51898810c5471ac27e022066918410ed32839475b96c7dfd958fa3d86338465288520a87958b1c4c79e052",
+  "blockSize": "634",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca02",
-    "304402200e6567b3dbee3ef0df56461d28dcb23530e282d92eb38e3d60a9e5f9e494471702205dac877726dfb84213d12ccd576c3ad07f0c3d38d0fa6328ea020bc0ced4b04d",
-    "30440220171dd495c1f0362048b437ebbf3aeb41c888242d4957832e6605c991c06f46ec0220737b1bc57ea64139ef9800b57ee7515b50d0ee85030c8cd33adc1301685b33d9",
-    "304402205af1c6cb701419c78e60e91267cefbc0d958fd0634d9d06c2cabf65a4a964bd602201b0466587c35ce31c4ad8f6beae07ee5cddd39c08f9545e50068a8f000f89b4e",
-    "e258baef13646782c56ce9846c2e5c011d1757cff1845d108288a9845ed205d602"
+    "3044022003d04c80f48be025ede98d5b5ab55367219bd84e8acb2140068c0f000cd53422022019456825193bc3e94fd90a0657313534dd7cda215589a8d8bbeda329244a1e52",
+    "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a02",
+    "a26deb8a77a0f8f938647555bebd06572afb8d12692d6fad7f8aa3e5815eb33d02"
   ],
-  "timestamp": 1790976686637
+  "timestamp": 1791013192157
 }
 -----------------------------------------------------
 
@@ -669,15 +1019,15 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "04b97b1caf638e8cc58684f088d619a73c1305c9ae0d88e11616917e3fb21233",
+  "blockHash": "0ea5a0c9dc0456b9e18c92962d5b71293f663547862543248843cb1a8b594d24",
   "blockNumber": 16,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 16,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "3a16bf5bb62f214073228fe375a7d2578feb8b7faffe7be99341c0190df5fe5f",
+  "preStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
+  "postStateHash": "485aad1c785a84cabe1174ca2a64f9a214cefb9295fd61d3fd537ece652da5bd",
   "justifications": [
-    "81d5832ed435b822f89050946c1e371b4d1972420895fc35058ecd7eeb3a2f9d",
-    "8795476c6304556f6af9be4708be7e3f77ae3b778182e91b2ad026f85d08ed99"
+    "0afdeafcd32a568cb44122be300c6e3fc78e1cb56a6b6e28f8a39d4a1e86a53b",
+    "d7ea116b58853d51aa37cb5fb8541d642d2d780e3941c121dd3db9406601c4c7"
   ],
   "bonds": [
     {
@@ -690,17 +1040,15 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100b3c8414f5bcc676a38d6da352c2896aebf368b4ac60990a7cb9f21f1fa6873e70220556e3eebb38367877bb0c2547058b34dccb049b555628fd32db7623466d3661e",
-  "blockSize": "967",
-  "deployCount": 1,
+  "sig": "3045022100f4c7c86c3aa74ae0beee153b823da232225c12064632481099208b9b216c3193022047dd14c2747fe3aa833c244087584d26caf530dabea0f28688903abf85023e19",
+  "blockSize": "635",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca02",
-    "304402200e6567b3dbee3ef0df56461d28dcb23530e282d92eb38e3d60a9e5f9e494471702205dac877726dfb84213d12ccd576c3ad07f0c3d38d0fa6328ea020bc0ced4b04d",
-    "30440220171dd495c1f0362048b437ebbf3aeb41c888242d4957832e6605c991c06f46ec0220737b1bc57ea64139ef9800b57ee7515b50d0ee85030c8cd33adc1301685b33d9",
-    "304402205af1c6cb701419c78e60e91267cefbc0d958fd0634d9d06c2cabf65a4a964bd602201b0466587c35ce31c4ad8f6beae07ee5cddd39c08f9545e50068a8f000f89b4e",
-    "e258baef13646782c56ce9846c2e5c011d1757cff1845d108288a9845ed205d602"
+    "3044022003d04c80f48be025ede98d5b5ab55367219bd84e8acb2140068c0f000cd53422022019456825193bc3e94fd90a0657313534dd7cda215589a8d8bbeda329244a1e52",
+    "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a02",
+    "a26deb8a77a0f8f938647555bebd06572afb8d12692d6fad7f8aa3e5815eb33d02"
   ],
-  "timestamp": 1790976686800
+  "timestamp": 1791013191770
 }
 -----------------------------------------------------
 
@@ -709,20 +1057,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "8795476c6304556f6af9be4708be7e3f77ae3b778182e91b2ad026f85d08ed99",
+  "blockHash": "d7ea116b58853d51aa37cb5fb8541d642d2d780e3941c121dd3db9406601c4c7",
   "blockNumber": 15,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 14,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
   "justifications": [
-    "266980f62aec36cf96c89d2d4702d6a4d96e8faec58c6d5cd797ec79038387d9",
-    "a22b9fa3515103f2459afeb8297916badab73154d537f02a52596c478d00a0ac"
+    "242fcdcd337f7c9a9baf9619768ef83a4460fcdd72825d3dc61413f5d443c57a",
+    "89feab5725d8e76be28ae479788856d977409de91fe30b63ce6f7c59fe0501b8"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -730,16 +1078,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100e473ae3dcf31ac0c936133d88758788a7ef5e4f71ad42ca8f70347e3cc2a2ce802206e43f551aeb4b7d8d7e1d325b3722750a5fa8c694351d5b2fa3986d1e1cd5155",
-  "blockSize": "895",
-  "deployCount": 1,
+  "sig": "3045022100989e24ecda9fac5c2fb26ed685b3e48ce1430440375d48f356f3b5d615d92296022013310103b0f564aa47281714900d0358976ebb026e2b35bdc03ec051e3a74348",
+  "blockSize": "523",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "0606d0d7db1ca194bb2bc255eb91ec44d11e9b028369241db471adf38e05233202",
-    "304402200e6567b3dbee3ef0df56461d28dcb23530e282d92eb38e3d60a9e5f9e494471702205dac877726dfb84213d12ccd576c3ad07f0c3d38d0fa6328ea020bc0ced4b04d",
-    "3044022036f78786d7c49462d83472955bd80067c99a9543e9c2b11f218a4cfe737b4cce0220119adf04107acb957009c576f91178ddc513edeb11391a9eb2744b641c2591cb",
-    "901b7bc9b9a1fe4bb1719c44493432f62281f09c0bf535c71f1bc7acbfb1162a02"
+    "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a02"
   ],
-  "timestamp": 1790976686203
+  "timestamp": 1791013191449
 }
 -----------------------------------------------------
 
@@ -748,20 +1093,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "81d5832ed435b822f89050946c1e371b4d1972420895fc35058ecd7eeb3a2f9d",
+  "blockHash": "0afdeafcd32a568cb44122be300c6e3fc78e1cb56a6b6e28f8a39d4a1e86a53b",
   "blockNumber": 15,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 15,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "cc0f9925a7bec983a008cec0bde7c07388862509fc35828ba44eb4a5a1072469",
   "justifications": [
-    "266980f62aec36cf96c89d2d4702d6a4d96e8faec58c6d5cd797ec79038387d9",
-    "a22b9fa3515103f2459afeb8297916badab73154d537f02a52596c478d00a0ac"
+    "242fcdcd337f7c9a9baf9619768ef83a4460fcdd72825d3dc61413f5d443c57a",
+    "89feab5725d8e76be28ae479788856d977409de91fe30b63ce6f7c59fe0501b8"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -769,16 +1114,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022053670c7f3a114015fb42d62c2aa967c17f5f3e08b5de0a6f62fff8f0fbbcd6c002204e8eaa3cfad435d359b150623555d519d89c6748f28fc81d9afbc6c046597db6",
-  "blockSize": "895",
+  "sig": "3045022100b7e1d97f714e5994559d829d703c52407bcf4973931ac18ac21d4b01494b2ff00220272f1a8af4be0b8faf247e804cd6b3c3bf84979586e04ec814b3252f37359bd0",
+  "blockSize": "3983",
   "deployCount": 1,
   "rejectedDeploys": [
-    "0606d0d7db1ca194bb2bc255eb91ec44d11e9b028369241db471adf38e05233202",
-    "304402200e6567b3dbee3ef0df56461d28dcb23530e282d92eb38e3d60a9e5f9e494471702205dac877726dfb84213d12ccd576c3ad07f0c3d38d0fa6328ea020bc0ced4b04d",
-    "3044022036f78786d7c49462d83472955bd80067c99a9543e9c2b11f218a4cfe737b4cce0220119adf04107acb957009c576f91178ddc513edeb11391a9eb2744b641c2591cb",
-    "901b7bc9b9a1fe4bb1719c44493432f62281f09c0bf535c71f1bc7acbfb1162a02"
+    "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a02"
   ],
-  "timestamp": 1790976686066
+  "timestamp": 1791013191027
 }
 -----------------------------------------------------
 
@@ -787,20 +1129,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "a22b9fa3515103f2459afeb8297916badab73154d537f02a52596c478d00a0ac",
+  "blockHash": "89feab5725d8e76be28ae479788856d977409de91fe30b63ce6f7c59fe0501b8",
   "blockNumber": 14,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 13,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "e351c61db40b0361757ef312ad2065a6041f4de200311fc8a30ce621157750c9",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c904ee86f3af70934d23ce80d9102a8ac2e3a138b741f7a52de3dd67d3912800",
   "justifications": [
-    "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca",
-    "934bd6a0b0037bdaa8a61a923e7c0fdd50f1d60d9d422474239065c60399438c"
+    "68367cf58c191b94891cf4a92516435d20fabe409a1e452451f264eec984548a",
+    "711ef582c0aa3752e1d9c562ba55476caf9fb4436a175d36433710d9491883fd"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -808,17 +1150,14 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220317f76fb850b5b10207c515007838143a574bc9cba531d728376a9c83dedd5da0220708c70a29dd623a2673015e7f6d8b8f360fd2508a0d1f54a8d2cbc9771d2baa9",
-  "blockSize": "968",
-  "deployCount": 1,
+  "sig": "3045022100b5c2416168b8b7c9b9a1913c7e82c178db06b7e75777aa2766009a7930555de302205503a5ae44188b633f32a46f09262804a647ab46868988fc4d202ca5a299f247",
+  "blockSize": "601",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "0687f1a08f9a6318ed542962753096a1f9ad80692e9b10ceec6b09408f58d20602",
-    "3044022077f830bdd4e97dbdaaca53495c9a55e18637f83085681c4df2e9ca894cbad71202203c67b34e89772a25cd01056fa0029816296161833229a1d5bb368b3d32df6198",
-    "30450221008b0c5357845dc23bb609bfc45f9dabb013d574a84e266393f52698b01a54a6a902207689e9d307dd32697d2730a78ed1fa073c5af7e6a284afef7b1de817aa3bd263",
-    "3045022100ddeca41470cadfea3ea3605dbb5a1763baea04c168d040c216d042ebd2864ca0022060f5e421cec3ac80e9e0fc500963aba4d831b949d87b88147c731ae45b99ae97",
-    "5bd58f5621ddabc4fa12c6386851983b7344c2640ad61013d53de2935bf523fe02"
+    "010dde5f14378ea86db4d357f1397004603bc662997a209ff5f06893ad6dd77c02",
+    "304402202f86cb61c625e4214500fad72dc7fa14372baf8c68680a68e8001590519a18a1022014e5f5e05027e553478aaa2feed5ac0d981a9b66887dd8cd87663a093a80ab26"
   ],
-  "timestamp": 1790976685249
+  "timestamp": 1791013190371
 }
 -----------------------------------------------------
 
@@ -827,20 +1166,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "266980f62aec36cf96c89d2d4702d6a4d96e8faec58c6d5cd797ec79038387d9",
+  "blockHash": "242fcdcd337f7c9a9baf9619768ef83a4460fcdd72825d3dc61413f5d443c57a",
   "blockNumber": 14,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 14,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "e351c61db40b0361757ef312ad2065a6041f4de200311fc8a30ce621157750c9",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c904ee86f3af70934d23ce80d9102a8ac2e3a138b741f7a52de3dd67d3912800",
   "justifications": [
-    "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca",
-    "934bd6a0b0037bdaa8a61a923e7c0fdd50f1d60d9d422474239065c60399438c"
+    "68367cf58c191b94891cf4a92516435d20fabe409a1e452451f264eec984548a",
+    "711ef582c0aa3752e1d9c562ba55476caf9fb4436a175d36433710d9491883fd"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -848,17 +1187,14 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100d265504531416351d6e464fbe69c83f51724ac5a21217d77026d556e92e9b3bf02202e5ed1c76b26d3042560588756cb80aaa7153b339e9f5c76d2b478bd275a9aee",
-  "blockSize": "970",
-  "deployCount": 1,
+  "sig": "3044022031b1225538f4547a4b0918b847726aab757caa97afd46f6575bb97ebe12c0b7b02205cc1940dd69f3358e93ff34eeed0fb681560931154f64b729926e06739afbc60",
+  "blockSize": "600",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "0687f1a08f9a6318ed542962753096a1f9ad80692e9b10ceec6b09408f58d20602",
-    "3044022077f830bdd4e97dbdaaca53495c9a55e18637f83085681c4df2e9ca894cbad71202203c67b34e89772a25cd01056fa0029816296161833229a1d5bb368b3d32df6198",
-    "30450221008b0c5357845dc23bb609bfc45f9dabb013d574a84e266393f52698b01a54a6a902207689e9d307dd32697d2730a78ed1fa073c5af7e6a284afef7b1de817aa3bd263",
-    "3045022100ddeca41470cadfea3ea3605dbb5a1763baea04c168d040c216d042ebd2864ca0022060f5e421cec3ac80e9e0fc500963aba4d831b949d87b88147c731ae45b99ae97",
-    "5bd58f5621ddabc4fa12c6386851983b7344c2640ad61013d53de2935bf523fe02"
+    "010dde5f14378ea86db4d357f1397004603bc662997a209ff5f06893ad6dd77c02",
+    "304402202f86cb61c625e4214500fad72dc7fa14372baf8c68680a68e8001590519a18a1022014e5f5e05027e553478aaa2feed5ac0d981a9b66887dd8cd87663a093a80ab26"
   ],
-  "timestamp": 1790976685509
+  "timestamp": 1791013189652
 }
 -----------------------------------------------------
 
@@ -867,20 +1203,56 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "934bd6a0b0037bdaa8a61a923e7c0fdd50f1d60d9d422474239065c60399438c",
+  "blockHash": "711ef582c0aa3752e1d9c562ba55476caf9fb4436a175d36433710d9491883fd",
+  "blockNumber": 13,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 12,
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "justifications": [
+    "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a",
+    "a26deb8a77a0f8f938647555bebd06572afb8d12692d6fad7f8aa3e5815eb33d"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "304502210095790879082c7a1758e7197ebfa032647159692f6eee47a7560569d3fa84d37802206bec74749491878e3ac54eac0d0c7717e30d92c040a6a731cb36d67ae4aa60ad",
+  "blockSize": "523",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "db475842ec3f4f5674c597fbd2d299dfe38cb8c30b7a1ec0fdff8cdf4d01e0db02"
+  ],
+  "timestamp": 1791013189089
+}
+-----------------------------------------------------
+
+
+------------- block 13 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "68367cf58c191b94891cf4a92516435d20fabe409a1e452451f264eec984548a",
   "blockNumber": 13,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 13,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
   "justifications": [
-    "901b7bc9b9a1fe4bb1719c44493432f62281f09c0bf535c71f1bc7acbfb1162a",
-    "e258baef13646782c56ce9846c2e5c011d1757cff1845d108288a9845ed205d6"
+    "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a",
+    "a26deb8a77a0f8f938647555bebd06572afb8d12692d6fad7f8aa3e5815eb33d"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -888,57 +1260,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100899c86b180e0fd230dc5e25f189a814f8cbc605ee66b95f336282c4e0d0403ec0220761096db09d4c45e83c50fa0a8f08350fdc642724dd6c5cdfbcd65280a06b47a",
-  "blockSize": "968",
-  "deployCount": 1,
+  "sig": "3044022024fbcff28d5d28abccad1c4e17ddad1e5a76e66cde6315481825a49be40f7dfb02201bf97db8967085e49e752ec212f1da53be2261d27b34e4e2f3c6e97aac60f0a5",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "3044022015b1dfe1a8904a796ae8794838cef61f5c6bed4ed20dac9a949d2d52fc08f2db0220683e8dd13453c344894b8c524e40d74e96275b1d36cf5b2d3e97b6d70fb82619",
-    "3044022072b59951cefec97d11f80210ce96bf503aed55f90a9a2b21aa1d3add6df6f13202204a4fc9f960cd9595ff3ad7b1161193fc059d495a335021b52708ba1bfd6467df",
-    "3045022100ddeca41470cadfea3ea3605dbb5a1763baea04c168d040c216d042ebd2864ca0022060f5e421cec3ac80e9e0fc500963aba4d831b949d87b88147c731ae45b99ae97",
-    "425387daeb388e34391873d3dde682c23bded6907e1b97d2998e80f5fc44a1d502",
-    "f8b82e455db5a533c098ed0b463d11e92192dd25f41e2adb776c1ce19b2ef95c02"
+    "db475842ec3f4f5674c597fbd2d299dfe38cb8c30b7a1ec0fdff8cdf4d01e0db02"
   ],
-  "timestamp": 1790976684458
-}
------------------------------------------------------
-
-
-------------- block 13 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "24eb496517d46f9f87d7e8676093996b961f62450dabe7dd73970c53bf1c91ca",
-  "blockNumber": 13,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 12,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
-  "justifications": [
-    "901b7bc9b9a1fe4bb1719c44493432f62281f09c0bf535c71f1bc7acbfb1162a",
-    "e258baef13646782c56ce9846c2e5c011d1757cff1845d108288a9845ed205d6"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "304502210080f94a8398a34c250636797e2f756865156a1fb6b6eb95e3be0d3e7bb2690dc3022049a1eacf469087d131460659a2cdeb6749fb520aa22254f22367731411d4d764",
-  "blockSize": "968",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "3044022015b1dfe1a8904a796ae8794838cef61f5c6bed4ed20dac9a949d2d52fc08f2db0220683e8dd13453c344894b8c524e40d74e96275b1d36cf5b2d3e97b6d70fb82619",
-    "3044022072b59951cefec97d11f80210ce96bf503aed55f90a9a2b21aa1d3add6df6f13202204a4fc9f960cd9595ff3ad7b1161193fc059d495a335021b52708ba1bfd6467df",
-    "3045022100ddeca41470cadfea3ea3605dbb5a1763baea04c168d040c216d042ebd2864ca0022060f5e421cec3ac80e9e0fc500963aba4d831b949d87b88147c731ae45b99ae97",
-    "425387daeb388e34391873d3dde682c23bded6907e1b97d2998e80f5fc44a1d502",
-    "f8b82e455db5a533c098ed0b463d11e92192dd25f41e2adb776c1ce19b2ef95c02"
-  ],
-  "timestamp": 1790976684693
+  "timestamp": 1791013188564
 }
 -----------------------------------------------------
 
@@ -947,20 +1275,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "e258baef13646782c56ce9846c2e5c011d1757cff1845d108288a9845ed205d6",
+  "blockHash": "a26deb8a77a0f8f938647555bebd06572afb8d12692d6fad7f8aa3e5815eb33d",
   "blockNumber": 12,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 12,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "bd3c4b01d5a978823c753eeef2437a15d18fc6cdb7b0789462ad3bc99760f18c",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "fcc5e737f9d071251c63dfb6eca4fa72bdb523599cdaa8a8c7199fe78418c184",
   "justifications": [
-    "0606d0d7db1ca194bb2bc255eb91ec44d11e9b028369241db471adf38e052332",
-    "0687f1a08f9a6318ed542962753096a1f9ad80692e9b10ceec6b09408f58d206"
+    "2ebd05785b68d32b79c70f4eb4ee18b9fa0b2975fba378e3376a905cc294cfb5",
+    "513556ce9a3610fe6e0b3514e3006d7759bfaa3ec1446d1d5b05dae98e835718"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -968,17 +1296,14 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100f9b6451ea5ce9f477c89863d3d054749727f3246bc353fe929a37e610237dd6c02203f013a0415d49eb9a422231afee64d7fe0f634dc5000717aca6fb3f15f861b07",
-  "blockSize": "968",
+  "sig": "304402200edffd023da519718b767ad07a567d5c7c8f69091da771829f301ab3d46dcc9002203a66c25bdd374994fbebbf3ecfcf09541077c90a2146664469dd79b4e5e1d0aa",
+  "blockSize": "3031",
   "deployCount": 1,
   "rejectedDeploys": [
-    "30440220270a843f20d7dc5a922c083bda426276c7a17c766f3a57c1322b5cea3f4856af022035506ae56186f236e36ffcfb6ea6ecc2e70ba02e2f4779d53f9ec018b1d7a16f",
-    "3044022072b59951cefec97d11f80210ce96bf503aed55f90a9a2b21aa1d3add6df6f13202204a4fc9f960cd9595ff3ad7b1161193fc059d495a335021b52708ba1bfd6467df",
-    "3045022100be040648f41db145a1519ad20c0eeb93cef93e2097ba83809d4d04f750e1dca002204c892434b9775add837b4158b53c9668185fd4d514d5450fd9a9d25e10770fa0",
-    "b68035529c4bb03d77f4c98f766b1f3f1e788cc4014ba926986de2778d21915802",
-    "f21db34e2f09540927b7f8768e7569f534a19c52a7b0ead610a61e3fa461699302"
+    "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b549302",
+    "db32b01c1453d7bff91f409aa5fcd9d80f8ba2423372c4299971782617d0f9b602"
   ],
-  "timestamp": 1790976684083
+  "timestamp": 1791013187085
 }
 -----------------------------------------------------
 
@@ -987,20 +1312,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "901b7bc9b9a1fe4bb1719c44493432f62281f09c0bf535c71f1bc7acbfb1162a",
+  "blockHash": "703d20f0cf8ae23d38f5bbd1678fd85e4054ae3b7f012b38a6d4463acbf0667a",
   "blockNumber": 12,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 11,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "bd3c4b01d5a978823c753eeef2437a15d18fc6cdb7b0789462ad3bc99760f18c",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "e610789f8b33ac2c08773d9cdabe2834d0592f91cce4c623faf0c4e9453f3472",
   "justifications": [
-    "0606d0d7db1ca194bb2bc255eb91ec44d11e9b028369241db471adf38e052332",
-    "0687f1a08f9a6318ed542962753096a1f9ad80692e9b10ceec6b09408f58d206"
+    "2ebd05785b68d32b79c70f4eb4ee18b9fa0b2975fba378e3376a905cc294cfb5",
+    "513556ce9a3610fe6e0b3514e3006d7759bfaa3ec1446d1d5b05dae98e835718"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1008,17 +1333,14 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304502210090d2f2c97aea54c0bb61526fe4fda974683c39fca7dd27e731f7fb2bbe07c8fe02207dd10b3ce2bda20c097d79eac97ce03b56f0d57c2930d0897e8c099bef68fe9e",
-  "blockSize": "968",
-  "deployCount": 1,
+  "sig": "30440220747e43ceec5268b3180c9d2d0af1e752fa13a34351afda328cea0317e28247c702203f2f9183a399092063d8b2c0d6aca40ce90357a79db84a114b8a7747a2537f1c",
+  "blockSize": "563",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "30440220270a843f20d7dc5a922c083bda426276c7a17c766f3a57c1322b5cea3f4856af022035506ae56186f236e36ffcfb6ea6ecc2e70ba02e2f4779d53f9ec018b1d7a16f",
-    "3044022072b59951cefec97d11f80210ce96bf503aed55f90a9a2b21aa1d3add6df6f13202204a4fc9f960cd9595ff3ad7b1161193fc059d495a335021b52708ba1bfd6467df",
-    "3045022100be040648f41db145a1519ad20c0eeb93cef93e2097ba83809d4d04f750e1dca002204c892434b9775add837b4158b53c9668185fd4d514d5450fd9a9d25e10770fa0",
-    "b68035529c4bb03d77f4c98f766b1f3f1e788cc4014ba926986de2778d21915802",
-    "f21db34e2f09540927b7f8768e7569f534a19c52a7b0ead610a61e3fa461699302"
+    "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b549302",
+    "db32b01c1453d7bff91f409aa5fcd9d80f8ba2423372c4299971782617d0f9b602"
   ],
-  "timestamp": 1790976683862
+  "timestamp": 1791013187927
 }
 -----------------------------------------------------
 
@@ -1027,59 +1349,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "0687f1a08f9a6318ed542962753096a1f9ad80692e9b10ceec6b09408f58d206",
-  "blockNumber": 11,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 10,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
-  "justifications": [
-    "425387daeb388e34391873d3dde682c23bded6907e1b97d2998e80f5fc44a1d5",
-    "5bd58f5621ddabc4fa12c6386851983b7344c2640ad61013d53de2935bf523fe"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "3045022100b98dd673aa454734c4544d15113fd9cb4463db02c857281f46788692509bccd402207a602481f284f1bcc837d939ff2100a6f91e70c836fd9216da249342c878e622",
-  "blockSize": "898",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "22b87c1672d5cd92112a54f80c7530607511f215fba6029b767030b182e1b84402",
-    "3045022100be040648f41db145a1519ad20c0eeb93cef93e2097ba83809d4d04f750e1dca002204c892434b9775add837b4158b53c9668185fd4d514d5450fd9a9d25e10770fa0",
-    "3045022100ecdd72842fbfdf805b3774796de2ccdd0c3c5c63bc420fd92576c3404ac2c39b022002394851c4c0b8ebea9900e5ea145e23af82f0ad4bf6819fd14e9c892143a580",
-    "3e6adbaa8baf94010b04d39c52ecc7532ac61da19fcb374b331d1c1d7f186cb302"
-  ],
-  "timestamp": 1790976683560
-}
------------------------------------------------------
-
-
-------------- block 11 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "0606d0d7db1ca194bb2bc255eb91ec44d11e9b028369241db471adf38e052332",
+  "blockHash": "513556ce9a3610fe6e0b3514e3006d7759bfaa3ec1446d1d5b05dae98e835718",
   "blockNumber": 11,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 11,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
   "justifications": [
-    "425387daeb388e34391873d3dde682c23bded6907e1b97d2998e80f5fc44a1d5",
-    "5bd58f5621ddabc4fa12c6386851983b7344c2640ad61013d53de2935bf523fe"
+    "010dde5f14378ea86db4d357f1397004603bc662997a209ff5f06893ad6dd77c",
+    "db475842ec3f4f5674c597fbd2d299dfe38cb8c30b7a1ec0fdff8cdf4d01e0db"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1087,16 +1370,49 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220049a5e93d2ad9d32c29febede4038c6e7ef63599469169820478196d71d8076e02204c3546a2d623bc73113d13787bafb111983657113867acf8527689da1d1df5ef",
-  "blockSize": "896",
-  "deployCount": 1,
+  "sig": "3044022060f800d796c24ccd66fd2e5fbab821ce2539d75fe76143ce9f61972a91eade2f02205e91213c7ad6449006be1cdbe39fd8970e26337c5ad2614dee1973316c36e4a7",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "22b87c1672d5cd92112a54f80c7530607511f215fba6029b767030b182e1b84402",
-    "3045022100be040648f41db145a1519ad20c0eeb93cef93e2097ba83809d4d04f750e1dca002204c892434b9775add837b4158b53c9668185fd4d514d5450fd9a9d25e10770fa0",
-    "3045022100ecdd72842fbfdf805b3774796de2ccdd0c3c5c63bc420fd92576c3404ac2c39b022002394851c4c0b8ebea9900e5ea145e23af82f0ad4bf6819fd14e9c892143a580",
-    "3e6adbaa8baf94010b04d39c52ecc7532ac61da19fcb374b331d1c1d7f186cb302"
+    "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b549302"
   ],
-  "timestamp": 1790976683354
+  "timestamp": 1791013185819
+}
+-----------------------------------------------------
+
+
+------------- block 11 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "2ebd05785b68d32b79c70f4eb4ee18b9fa0b2975fba378e3376a905cc294cfb5",
+  "blockNumber": 11,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 10,
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "justifications": [
+    "010dde5f14378ea86db4d357f1397004603bc662997a209ff5f06893ad6dd77c",
+    "db475842ec3f4f5674c597fbd2d299dfe38cb8c30b7a1ec0fdff8cdf4d01e0db"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3044022026e555ac38bbc92f6da516444d378d30d1f70d1b64ff3e7015ed778aab8b6dad02206e415535da8a11fec61d39fb2a4f5560672f4d2f5aff29563231aeaa9a09e1e1",
+  "blockSize": "522",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b549302"
+  ],
+  "timestamp": 1791013186497
 }
 -----------------------------------------------------
 
@@ -1105,20 +1421,56 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "5bd58f5621ddabc4fa12c6386851983b7344c2640ad61013d53de2935bf523fe",
+  "blockHash": "db475842ec3f4f5674c597fbd2d299dfe38cb8c30b7a1ec0fdff8cdf4d01e0db",
+  "blockNumber": 10,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 9,
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "fd0bad4d0d685f8ab5838f1925fef0aab568d3170796c29de836752871d1a51c",
+  "justifications": [
+    "98e234a77640ed197308c8a3ebc0904ca2d86a00c08d2cbfc7e0b55f7eea925c",
+    "bccdae41a201c00ab28e720f44c3bee3c61c4f65a8be93c70117b54f2078000a"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "3044022029ab6ca9c8a0f91fc91d54aad304fd42006706d0bf8303fd16cc4ecd570664c502203815a77ccdfec1452cd3c8e1909e64b9a5c97b14ee0c81dc9d6c7a20e79b1398",
+  "blockSize": "528",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "27de378baf2300f73bd87ad5dd62509b0fc9a0531e68b95c43e61cd43ec8fa2b02"
+  ],
+  "timestamp": 1791013185039
+}
+-----------------------------------------------------
+
+
+------------- block 10 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "010dde5f14378ea86db4d357f1397004603bc662997a209ff5f06893ad6dd77c",
   "blockNumber": 10,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 10,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "e3c345fd8524b5656567d128f525d0271d4679d917f37b9d17bd1774d46cab7e",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "dff5f78897ddb9ab8fbe8763b58c87921a3957d04c5367cf9118dacea460272b",
   "justifications": [
-    "f21db34e2f09540927b7f8768e7569f534a19c52a7b0ead610a61e3fa4616993",
-    "f8b82e455db5a533c098ed0b463d11e92192dd25f41e2adb776c1ce19b2ef95c"
+    "98e234a77640ed197308c8a3ebc0904ca2d86a00c08d2cbfc7e0b55f7eea925c",
+    "bccdae41a201c00ab28e720f44c3bee3c61c4f65a8be93c70117b54f2078000a"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1126,57 +1478,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30450221008b1187e64de3f7f199b2ffebcdc9a7ce4f97f267c0ba710b418d50d46f688cae0220095bc886e071ff5d30f63d98765969feefc7387d8569a28fde33183423a35e42",
-  "blockSize": "968",
+  "sig": "3045022100f13e00f30c56e1c9ed510f70856cde5aa083e8db22d9fbd0a357350ba20323a3022020d1ce6e0a7a83818b656a6155b96061c8eaf4ee303db12c38ca6123a622bb4d",
+  "blockSize": "2997",
   "deployCount": 1,
   "rejectedDeploys": [
-    "30440220443948c806e81564960f742b859e900a538f64d645ffd9368f0966247640d159022001d02e4662febaace50d8a8800d304fd5ae5d9b766faf83f2e5c67dda7d2ad04",
-    "3044022070fb11665d36bc786d7c9ad6afa9336eb7872026b578e6f505be1071121fd623022000a3a01009a943f5edd89e8370fdc4ee82fb794f84a32daa48572a52acfbb663",
-    "3045022100f8c5a056b3053280dbf9054c4f9f5277939946fc87d58911653caa08d9ac3aa2022033c37be243d48a42a00e186ca9d37205c097b32d7f120ef55df87106583e8a88",
-    "9613b697fd877e88337e36dcacf245ad136e0034729c109f4b6460912b5226c002",
-    "e78b52b89c9180047da7ebedadae4a2aa284446130083091e6405423c6596d8402"
+    "27de378baf2300f73bd87ad5dd62509b0fc9a0531e68b95c43e61cd43ec8fa2b02"
   ],
-  "timestamp": 1790976682943
-}
------------------------------------------------------
-
-
-------------- block 10 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "425387daeb388e34391873d3dde682c23bded6907e1b97d2998e80f5fc44a1d5",
-  "blockNumber": 10,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 9,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "e3c345fd8524b5656567d128f525d0271d4679d917f37b9d17bd1774d46cab7e",
-  "justifications": [
-    "f21db34e2f09540927b7f8768e7569f534a19c52a7b0ead610a61e3fa4616993",
-    "f8b82e455db5a533c098ed0b463d11e92192dd25f41e2adb776c1ce19b2ef95c"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "304402207a5f131cb76b533f5431460b75643ddda9f5831255ca7576ceeab91626af00c702200a4bc35f2735d83e6c5acaf657768e9272c58562a824bdaf9930342a262e7325",
-  "blockSize": "968",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "30440220443948c806e81564960f742b859e900a538f64d645ffd9368f0966247640d159022001d02e4662febaace50d8a8800d304fd5ae5d9b766faf83f2e5c67dda7d2ad04",
-    "3044022070fb11665d36bc786d7c9ad6afa9336eb7872026b578e6f505be1071121fd623022000a3a01009a943f5edd89e8370fdc4ee82fb794f84a32daa48572a52acfbb663",
-    "3045022100f8c5a056b3053280dbf9054c4f9f5277939946fc87d58911653caa08d9ac3aa2022033c37be243d48a42a00e186ca9d37205c097b32d7f120ef55df87106583e8a88",
-    "9613b697fd877e88337e36dcacf245ad136e0034729c109f4b6460912b5226c002",
-    "e78b52b89c9180047da7ebedadae4a2aa284446130083091e6405423c6596d8402"
-  ],
-  "timestamp": 1790976682707
+  "timestamp": 1791013184263
 }
 -----------------------------------------------------
 
@@ -1185,20 +1493,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "f8b82e455db5a533c098ed0b463d11e92192dd25f41e2adb776c1ce19b2ef95c",
+  "blockHash": "bccdae41a201c00ab28e720f44c3bee3c61c4f65a8be93c70117b54f2078000a",
   "blockNumber": 9,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 9,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
   "justifications": [
-    "3e6adbaa8baf94010b04d39c52ecc7532ac61da19fcb374b331d1c1d7f186cb3",
-    "b68035529c4bb03d77f4c98f766b1f3f1e788cc4014ba926986de2778d219158"
+    "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b5493",
+    "db32b01c1453d7bff91f409aa5fcd9d80f8ba2423372c4299971782617d0f9b6"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1206,17 +1514,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220714adcb92008b789c55c0fbe047fc4f0ef9692532784dd0bf833acd99a2ea9120220422af2803a7263f0ec8806c6b300a334feb4a4363703959460adb247dd9fcc24",
-  "blockSize": "966",
-  "deployCount": 1,
+  "sig": "3045022100968c9b2d9560a1e8524f0c1c8d63c9c03e338feac2e19472f7c8fecf942088b0022004b5fb7502bd346f27b8e0a861dd7ceed36cce24a1dc1be6668ff5e2117b4a2f",
+  "blockSize": "523",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "304402205628172e2a8cc042f6efa4caf0877d5bde2f6650999066d729640d1ac9bd4e0a0220636921be80d465c36b0070cffa9b652203286978123da45b57b570d522723607",
-    "3044022070fb11665d36bc786d7c9ad6afa9336eb7872026b578e6f505be1071121fd623022000a3a01009a943f5edd89e8370fdc4ee82fb794f84a32daa48572a52acfbb663",
-    "304402207f40b35a2812a33ca4568db581cecc397b08c69acc034ce5fd18dee897a07b9e02202a37dd5c85d2ace7f11fa1c0df4eab3e77665ae180478526bf6c1fabffb6d08a",
-    "60a9e8a337665bd60793034e3c469964e156b7f60463cb403ab55156e47f88b702",
-    "6b5a5911bbed6ad9b579b84f12f5a00af3d96dfe53a5bb2066b7a609f0dfa82602"
+    "389badab5b79e007faf9f2c7ce6680dfe3cd6e4a472778aeca52cfda518aa12702"
   ],
-  "timestamp": 1790976682045
+  "timestamp": 1791013183152
 }
 -----------------------------------------------------
 
@@ -1225,20 +1529,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "f21db34e2f09540927b7f8768e7569f534a19c52a7b0ead610a61e3fa4616993",
+  "blockHash": "98e234a77640ed197308c8a3ebc0904ca2d86a00c08d2cbfc7e0b55f7eea925c",
   "blockNumber": 9,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 8,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
   "justifications": [
-    "3e6adbaa8baf94010b04d39c52ecc7532ac61da19fcb374b331d1c1d7f186cb3",
-    "b68035529c4bb03d77f4c98f766b1f3f1e788cc4014ba926986de2778d219158"
+    "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b5493",
+    "db32b01c1453d7bff91f409aa5fcd9d80f8ba2423372c4299971782617d0f9b6"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1246,17 +1550,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022019f0136e648ed846d32314d0da0a235d88a0857cc30bce0760a84e8514084a6002201ad8044659cbd38b2f7387bce6d85b56a817508fea8eff6f4ba1553e634a1797",
-  "blockSize": "966",
-  "deployCount": 1,
+  "sig": "3045022100ed9614b4283cd01a4afc96ffb960b4caeaae95729e7cf5e611e631b3e55ce2cb02202cc23b80072a9d049bc592b5a3bd99ea1f5d57154a6825345098fb51b1315759",
+  "blockSize": "523",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "304402205628172e2a8cc042f6efa4caf0877d5bde2f6650999066d729640d1ac9bd4e0a0220636921be80d465c36b0070cffa9b652203286978123da45b57b570d522723607",
-    "3044022070fb11665d36bc786d7c9ad6afa9336eb7872026b578e6f505be1071121fd623022000a3a01009a943f5edd89e8370fdc4ee82fb794f84a32daa48572a52acfbb663",
-    "304402207f40b35a2812a33ca4568db581cecc397b08c69acc034ce5fd18dee897a07b9e02202a37dd5c85d2ace7f11fa1c0df4eab3e77665ae180478526bf6c1fabffb6d08a",
-    "60a9e8a337665bd60793034e3c469964e156b7f60463cb403ab55156e47f88b702",
-    "6b5a5911bbed6ad9b579b84f12f5a00af3d96dfe53a5bb2066b7a609f0dfa82602"
+    "389badab5b79e007faf9f2c7ce6680dfe3cd6e4a472778aeca52cfda518aa12702"
   ],
-  "timestamp": 1790976682333
+  "timestamp": 1791013183657
 }
 -----------------------------------------------------
 
@@ -1265,20 +1565,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "b68035529c4bb03d77f4c98f766b1f3f1e788cc4014ba926986de2778d219158",
+  "blockHash": "db32b01c1453d7bff91f409aa5fcd9d80f8ba2423372c4299971782617d0f9b6",
   "blockNumber": 8,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 8,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b12136794517fffbe368c21ffd53d7e221fedc1b7b129e61d643c8fa6d946c78",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "f4d413a2fa9a8f9c7d598555bbca3b30736d471680faf1d9aa36674027d93327",
   "justifications": [
-    "22b87c1672d5cd92112a54f80c7530607511f215fba6029b767030b182e1b844",
-    "9613b697fd877e88337e36dcacf245ad136e0034729c109f4b6460912b5226c0"
+    "dc6ca61a15ca2f6fc2a0018f36344641468137ef0642dfdb7a3a29c3eac61359",
+    "fe3590363c706a4f396951407d9a8185524c591b3655b614b5515849485a81df"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1286,17 +1586,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100e78ddfec082bca27402172777d7e330f7f658bd9ee7341f671a8de9eda83ecbc0220620b2cedcf60b6678064335aef41ebf70ef776df226a81cc1fbe493bba1e68a0",
-  "blockSize": "968",
-  "deployCount": 1,
+  "sig": "3044022003ba26a2bc6c802dce9ccca55ff6642c5f9522a9901d8f6694fa64db5db9392b022070c7410d2e55c25c94b4f96eddb6db132e17da35c4272feb3e17b77a47164b15",
+  "blockSize": "528",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "30440220045f005702c905684fa8ba427b82b6f26ede0781f68357e73dad1584f5577afd02205de08e3f6c72fb7168e1e8cbdc23cc407c1e157957d5dbfc7fe0f8bf4f08fccf",
-    "304402207f40b35a2812a33ca4568db581cecc397b08c69acc034ce5fd18dee897a07b9e02202a37dd5c85d2ace7f11fa1c0df4eab3e77665ae180478526bf6c1fabffb6d08a",
-    "3045022100895e14d49f9be3560ec1fe1f374e477b8cb2b67edc1a7547f48338d4ee7589db02206a3537ecdff8139f71704f99ebc902f099f7e4a0bac8ed0a270491af810bacd8",
-    "454a48eeb4082a62638e4ec75276a376bde4e8110258368c161d366d4ca58a1c02",
-    "c3582a206d8b80dddd52b312e10cb33dd4600a4e9678ec9495147cbe429dddb802"
+    "47f59002756c8853140dc3e1ab31336e6d13cbfdc24281da015c00861ade71ca02"
   ],
-  "timestamp": 1790976681559
+  "timestamp": 1791013181933
 }
 -----------------------------------------------------
 
@@ -1305,20 +1601,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "3e6adbaa8baf94010b04d39c52ecc7532ac61da19fcb374b331d1c1d7f186cb3",
+  "blockHash": "10fbd552f295af7eba12a9d5b90e34b32a7f7c4c7bc855f36573711d457b5493",
   "blockNumber": 8,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 7,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b12136794517fffbe368c21ffd53d7e221fedc1b7b129e61d643c8fa6d946c78",
+  "preStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
+  "postStateHash": "f4d413a2fa9a8f9c7d598555bbca3b30736d471680faf1d9aa36674027d93327",
   "justifications": [
-    "22b87c1672d5cd92112a54f80c7530607511f215fba6029b767030b182e1b844",
-    "9613b697fd877e88337e36dcacf245ad136e0034729c109f4b6460912b5226c0"
+    "dc6ca61a15ca2f6fc2a0018f36344641468137ef0642dfdb7a3a29c3eac61359",
+    "fe3590363c706a4f396951407d9a8185524c591b3655b614b5515849485a81df"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1326,17 +1622,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304502210092b0da531452fe36626ceb23f587c8b8eb163e9a2ca4012be047bbf33101e5d3022059a687bfeefe41a3281e44ab0eb97162289ad62eba9beb333b722bcfabbb3805",
-  "blockSize": "969",
-  "deployCount": 1,
+  "sig": "304402201028a6158adc3644177b4925e3029b640e9262071068bcc0d3d842b864b9038102200ced169bc2c1bda95eb0f1e77627486fa5d307f0648d7b5236fab843e6c48ebb",
+  "blockSize": "528",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "30440220045f005702c905684fa8ba427b82b6f26ede0781f68357e73dad1584f5577afd02205de08e3f6c72fb7168e1e8cbdc23cc407c1e157957d5dbfc7fe0f8bf4f08fccf",
-    "304402207f40b35a2812a33ca4568db581cecc397b08c69acc034ce5fd18dee897a07b9e02202a37dd5c85d2ace7f11fa1c0df4eab3e77665ae180478526bf6c1fabffb6d08a",
-    "3045022100895e14d49f9be3560ec1fe1f374e477b8cb2b67edc1a7547f48338d4ee7589db02206a3537ecdff8139f71704f99ebc902f099f7e4a0bac8ed0a270491af810bacd8",
-    "454a48eeb4082a62638e4ec75276a376bde4e8110258368c161d366d4ca58a1c02",
-    "c3582a206d8b80dddd52b312e10cb33dd4600a4e9678ec9495147cbe429dddb802"
+    "47f59002756c8853140dc3e1ab31336e6d13cbfdc24281da015c00861ade71ca02"
   ],
-  "timestamp": 1790976681391
+  "timestamp": 1791013182541
 }
 -----------------------------------------------------
 
@@ -1345,20 +1637,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "9613b697fd877e88337e36dcacf245ad136e0034729c109f4b6460912b5226c0",
+  "blockHash": "fe3590363c706a4f396951407d9a8185524c591b3655b614b5515849485a81df",
   "blockNumber": 7,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 6,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "26aa5664efcff9a260a14d6cf51420c9fcab32b780f0c0b434e2eb168c9aafa8",
+  "postStateHash": "26aa5664efcff9a260a14d6cf51420c9fcab32b780f0c0b434e2eb168c9aafa8",
   "justifications": [
-    "6b5a5911bbed6ad9b579b84f12f5a00af3d96dfe53a5bb2066b7a609f0dfa826",
-    "e78b52b89c9180047da7ebedadae4a2aa284446130083091e6405423c6596d84"
+    "27de378baf2300f73bd87ad5dd62509b0fc9a0531e68b95c43e61cd43ec8fa2b",
+    "389badab5b79e007faf9f2c7ce6680dfe3cd6e4a472778aeca52cfda518aa127"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1366,17 +1658,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402201a96c4b54e0dfb6dd7e0ebd3f615add8ed8d117754760c1e92ad757c384d6c2902206939351b535a587b020502c278e1fcef8bd53f4ef9ee7a2bc2e86bc1a4870b9d",
-  "blockSize": "966",
-  "deployCount": 1,
+  "sig": "30440220061c85cdbb3798304976d7792b97bf02728adb3030f245464265f41bf2b363ee02202000a720ef48a0623b7ba9796790c906449879b5053b9abe097cd937636d80fd",
+  "blockSize": "522",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "30440220045f005702c905684fa8ba427b82b6f26ede0781f68357e73dad1584f5577afd02205de08e3f6c72fb7168e1e8cbdc23cc407c1e157957d5dbfc7fe0f8bf4f08fccf",
-    "304402204c09220437059f77d525f222748fb67271e3f102a9c48e55e3f591eecea542a902200efb3f3a1ca36e17e2fb262cfa0179b6177f17c5e8a4d390b665991939689870",
-    "304402207682527977283d0475b2d0671e938afb1856ade792b7ffc2271aff588b27b0d2022009dea3fe92dc50f1777ac7b25d3b12d44d617dbabe334e33ffa6b67a27bea633",
-    "3094ffee96aa5ddcfbd45176a24b8f8404bbdcb0f9966ed8d922eda054475caf02",
-    "8837970f8eb61fddace6b87867726e76fa85bd4c5d1bd5baff40a6182bf1cb3202"
+    "c6e040d94cb95a4b48fde4ba72a6391500c3c12db46be36e4c6dc7d0fe7b4d7a02"
   ],
-  "timestamp": 1790976680988
+  "timestamp": 1791013181395
 }
 -----------------------------------------------------
 
@@ -1385,20 +1673,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "22b87c1672d5cd92112a54f80c7530607511f215fba6029b767030b182e1b844",
+  "blockHash": "dc6ca61a15ca2f6fc2a0018f36344641468137ef0642dfdb7a3a29c3eac61359",
   "blockNumber": 7,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 7,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "26aa5664efcff9a260a14d6cf51420c9fcab32b780f0c0b434e2eb168c9aafa8",
+  "postStateHash": "c190593b69b7120e4b3398efb733089723834916e487a6a5166e0cf734567fa7",
   "justifications": [
-    "6b5a5911bbed6ad9b579b84f12f5a00af3d96dfe53a5bb2066b7a609f0dfa826",
-    "e78b52b89c9180047da7ebedadae4a2aa284446130083091e6405423c6596d84"
+    "27de378baf2300f73bd87ad5dd62509b0fc9a0531e68b95c43e61cd43ec8fa2b",
+    "389badab5b79e007faf9f2c7ce6680dfe3cd6e4a472778aeca52cfda518aa127"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1406,17 +1694,13 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100ae3c59cb1c7ab491f59d66ee5a05e3924c9c039e1265dd78db41188870850e420220586c2d2a916896e00042dfbe19eb79ef7ad94e778b580705fcef317cc0135087",
-  "blockSize": "968",
+  "sig": "304402201b1e92c83efe9155b4c6f69875e7250cf5abf45620229ac86b55372fd5645582022047148f34d949b2ec6367420215ab4eacf68e7301c470b7197936fe8f88260b39",
+  "blockSize": "2996",
   "deployCount": 1,
   "rejectedDeploys": [
-    "30440220045f005702c905684fa8ba427b82b6f26ede0781f68357e73dad1584f5577afd02205de08e3f6c72fb7168e1e8cbdc23cc407c1e157957d5dbfc7fe0f8bf4f08fccf",
-    "304402204c09220437059f77d525f222748fb67271e3f102a9c48e55e3f591eecea542a902200efb3f3a1ca36e17e2fb262cfa0179b6177f17c5e8a4d390b665991939689870",
-    "304402207682527977283d0475b2d0671e938afb1856ade792b7ffc2271aff588b27b0d2022009dea3fe92dc50f1777ac7b25d3b12d44d617dbabe334e33ffa6b67a27bea633",
-    "3094ffee96aa5ddcfbd45176a24b8f8404bbdcb0f9966ed8d922eda054475caf02",
-    "8837970f8eb61fddace6b87867726e76fa85bd4c5d1bd5baff40a6182bf1cb3202"
+    "c6e040d94cb95a4b48fde4ba72a6391500c3c12db46be36e4c6dc7d0fe7b4d7a02"
   ],
-  "timestamp": 1790976680839
+  "timestamp": 1791013180663
 }
 -----------------------------------------------------
 
@@ -1425,20 +1709,58 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "e78b52b89c9180047da7ebedadae4a2aa284446130083091e6405423c6596d84",
+  "blockHash": "389badab5b79e007faf9f2c7ce6680dfe3cd6e4a472778aeca52cfda518aa127",
+  "blockNumber": 6,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 5,
+  "preStateHash": "26aa5664efcff9a260a14d6cf51420c9fcab32b780f0c0b434e2eb168c9aafa8",
+  "postStateHash": "44eb297a009a90d369a5f6800e36685b0277a0a388a87740d16e630c4e2e52ad",
+  "justifications": [
+    "10711df3d397c8350394a7beb891f1beac9208b1ab54a11659f5c5edd2a3f20f",
+    "3f59ae559506b98de519159f3334c859f9e4ac63fef2ef54318289cdfa7d7957"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "30440220164686532fb57027f41057c4a66ea90277cb6e0d91bc351c88ce46be91aaadf1022044f254018372089f41aca48768ba7706e1013460a68ed5871dbdbab70800da24",
+  "blockSize": "635",
+  "deployCount": 0,
+  "rejectedDeploys": [
+    "1635ad0168b4ab9082f7388990f923956cefc7267fb6016e9c15f1832f4ad1db02",
+    "30440220236841395d4853bac222ff59e80628077c7b8269c7ccfcab6850a3963c5c262902202596eae02f2ba1fbf96d9093edea2720a78f6ef97177b546c54f2e9f1048cf41",
+    "4e4a54978424a0cd4e9413dda9f4fb39620ead0c3a49ac50dcc14d3db07b780002"
+  ],
+  "timestamp": 1791013179910
+}
+-----------------------------------------------------
+
+
+------------- block 6 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "27de378baf2300f73bd87ad5dd62509b0fc9a0531e68b95c43e61cd43ec8fa2b",
   "blockNumber": 6,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 6,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "4a575456e68ed8acb57aa94e85fc9edd236286913122dfacc6e4a30bebdce9c1",
+  "preStateHash": "d46550a93fca30dd435bb879ea1bb1beea8a4993f0b2c138414c74a0c9da5561",
+  "postStateHash": "d64126c0ada67a8ad30f2138288e5ac9fab6a6fd9c07583ccd3842c8b6249bae",
   "justifications": [
-    "454a48eeb4082a62638e4ec75276a376bde4e8110258368c161d366d4ca58a1c",
-    "60a9e8a337665bd60793034e3c469964e156b7f60463cb403ab55156e47f88b7"
+    "10711df3d397c8350394a7beb891f1beac9208b1ab54a11659f5c5edd2a3f20f",
+    "3f59ae559506b98de519159f3334c859f9e4ac63fef2ef54318289cdfa7d7957"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1446,57 +1768,15 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402205d635c4503173ef430054396e209b12febb5169ad68cf0e8b946b4e5bd475cae0220561832d98ee022e8adc2dee61098a928307985ce8eba527dafb3bdd5a49d2891",
-  "blockSize": "968",
-  "deployCount": 1,
+  "sig": "304402202b5b4d7f1d409cfb11fb93fe38706fcf2effa13de50eedb1f0e94e5ce71ee9b902200f844868c8e8099565883ec0e43bf566883962f6730e12e50a38b1c564d9d9cd",
+  "blockSize": "635",
+  "deployCount": 0,
   "rejectedDeploys": [
-    "30440220311f27ab92365362e0b92d5f6336b2f8c2856a4050b3b0e2650f1c358873d48602207608c950ce0d188ad4a69591bcbfacb655d57ea24358c54f4e3b38614890507a",
-    "304402207682527977283d0475b2d0671e938afb1856ade792b7ffc2271aff588b27b0d2022009dea3fe92dc50f1777ac7b25d3b12d44d617dbabe334e33ffa6b67a27bea633",
-    "3045022100bbe424d67621237f5bc788624b816a1e73395ec8fab25eef12aec108b9d2739a0220342a1f4a877b77cb068c7588d04bb9145b44e37b9f91065b6bf228cf090aba45",
-    "5688c283c9d64459fe197e0e9ae476ae37f51499bdc7646c5c7e65f919bec8a902",
-    "a1724a55a44888172bb25926684940c14462bc115442d56083552d366b01eee502"
+    "1635ad0168b4ab9082f7388990f923956cefc7267fb6016e9c15f1832f4ad1db02",
+    "30440220236841395d4853bac222ff59e80628077c7b8269c7ccfcab6850a3963c5c262902202596eae02f2ba1fbf96d9093edea2720a78f6ef97177b546c54f2e9f1048cf41",
+    "4e4a54978424a0cd4e9413dda9f4fb39620ead0c3a49ac50dcc14d3db07b780002"
   ],
-  "timestamp": 1790976680364
-}
------------------------------------------------------
-
-
-------------- block 6 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "6b5a5911bbed6ad9b579b84f12f5a00af3d96dfe53a5bb2066b7a609f0dfa826",
-  "blockNumber": 6,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 5,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "4a575456e68ed8acb57aa94e85fc9edd236286913122dfacc6e4a30bebdce9c1",
-  "justifications": [
-    "454a48eeb4082a62638e4ec75276a376bde4e8110258368c161d366d4ca58a1c",
-    "60a9e8a337665bd60793034e3c469964e156b7f60463cb403ab55156e47f88b7"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "3045022100e616191c86748acd0271c678e11445df2873476d0aa64e93dacaadfff0fbaf31022015801421c2991da49357ea96c3aba5aac30a61ef63620e4274860b592569905f",
-  "blockSize": "968",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "30440220311f27ab92365362e0b92d5f6336b2f8c2856a4050b3b0e2650f1c358873d48602207608c950ce0d188ad4a69591bcbfacb655d57ea24358c54f4e3b38614890507a",
-    "304402207682527977283d0475b2d0671e938afb1856ade792b7ffc2271aff588b27b0d2022009dea3fe92dc50f1777ac7b25d3b12d44d617dbabe334e33ffa6b67a27bea633",
-    "3045022100bbe424d67621237f5bc788624b816a1e73395ec8fab25eef12aec108b9d2739a0220342a1f4a877b77cb068c7588d04bb9145b44e37b9f91065b6bf228cf090aba45",
-    "5688c283c9d64459fe197e0e9ae476ae37f51499bdc7646c5c7e65f919bec8a902",
-    "a1724a55a44888172bb25926684940c14462bc115442d56083552d366b01eee502"
-  ],
-  "timestamp": 1790976680251
+  "timestamp": 1791013179192
 }
 -----------------------------------------------------
 
@@ -1505,20 +1785,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "60a9e8a337665bd60793034e3c469964e156b7f60463cb403ab55156e47f88b7",
+  "blockHash": "3f59ae559506b98de519159f3334c859f9e4ac63fef2ef54318289cdfa7d7957",
   "blockNumber": 5,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 5,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cdb183425aa687f399ac8a925516989f013002efc4eb7ef652b93473ec00c250",
+  "postStateHash": "26aa5664efcff9a260a14d6cf51420c9fcab32b780f0c0b434e2eb168c9aafa8",
   "justifications": [
-    "3094ffee96aa5ddcfbd45176a24b8f8404bbdcb0f9966ed8d922eda054475caf",
-    "c3582a206d8b80dddd52b312e10cb33dd4600a4e9678ec9495147cbe429dddb8"
+    "47f59002756c8853140dc3e1ab31336e6d13cbfdc24281da015c00861ade71ca",
+    "c6e040d94cb95a4b48fde4ba72a6391500c3c12db46be36e4c6dc7d0fe7b4d7a"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1526,16 +1806,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022009a11446d299deaff4c11354afa5ceb9cd4c4167b7bc9fe6dcc28c6913927d6502202fc3578ee2636154a66d4ed77437e9dfba45fa7eeaa535e0876e072eca5857dd",
-  "blockSize": "895",
+  "sig": "3045022100b7fe14ffe29f9fc1c4d8d8613ce31cdfbd9e840585a3f6597269ee3a4d575faf0220214ba4b1e8b3d1ef15c40fa8eb0ba650e0264e1416c12c78cc4baa650ea75e27",
+  "blockSize": "2807",
   "deployCount": 1,
-  "rejectedDeploys": [
-    "223da43fda2f15cab4f1ae41c79f4678712148c956e98571546485c8eeff015c02",
-    "30440220741408b8e9e0e6b663b1debfb7b1d798b3cd6662b2d9a60623a65eb4145d3abd022075507145621164c33a83f596934b642c169280120c2349f7d948d16da41b9aab",
-    "3045022100bbe424d67621237f5bc788624b816a1e73395ec8fab25eef12aec108b9d2739a0220342a1f4a877b77cb068c7588d04bb9145b44e37b9f91065b6bf228cf090aba45",
-    "3e80c7cc962dcb5c772c7ca5e321c46886900b95faf4f34f3907e268e209fda202"
-  ],
-  "timestamp": 1790976679361
+  "rejectedDeploys": [],
+  "timestamp": 1791013177754
 }
 -----------------------------------------------------
 
@@ -1544,20 +1819,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "454a48eeb4082a62638e4ec75276a376bde4e8110258368c161d366d4ca58a1c",
+  "blockHash": "10711df3d397c8350394a7beb891f1beac9208b1ab54a11659f5c5edd2a3f20f",
   "blockNumber": 5,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 4,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "preStateHash": "cdb183425aa687f399ac8a925516989f013002efc4eb7ef652b93473ec00c250",
+  "postStateHash": "cdb183425aa687f399ac8a925516989f013002efc4eb7ef652b93473ec00c250",
   "justifications": [
-    "3094ffee96aa5ddcfbd45176a24b8f8404bbdcb0f9966ed8d922eda054475caf",
-    "c3582a206d8b80dddd52b312e10cb33dd4600a4e9678ec9495147cbe429dddb8"
+    "47f59002756c8853140dc3e1ab31336e6d13cbfdc24281da015c00861ade71ca",
+    "c6e040d94cb95a4b48fde4ba72a6391500c3c12db46be36e4c6dc7d0fe7b4d7a"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1565,16 +1840,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "30440220712c75908a9309c8fed4077398559f0fb695f4a010d287cd4e58f67d2eab67cd022066a6da4be2037024d5c19ba2e6a2ec921cc65413d626af5441a67fa58806c7a0",
-  "blockSize": "895",
-  "deployCount": 1,
-  "rejectedDeploys": [
-    "223da43fda2f15cab4f1ae41c79f4678712148c956e98571546485c8eeff015c02",
-    "30440220741408b8e9e0e6b663b1debfb7b1d798b3cd6662b2d9a60623a65eb4145d3abd022075507145621164c33a83f596934b642c169280120c2349f7d948d16da41b9aab",
-    "3045022100bbe424d67621237f5bc788624b816a1e73395ec8fab25eef12aec108b9d2739a0220342a1f4a877b77cb068c7588d04bb9145b44e37b9f91065b6bf228cf090aba45",
-    "3e80c7cc962dcb5c772c7ca5e321c46886900b95faf4f34f3907e268e209fda202"
-  ],
-  "timestamp": 1790976679533
+  "sig": "3044022070a48ea6c70fe8f6b4460610ea02d1727424c0f12753a40cb53fe8210d087bbe02204820c904722e8e475d95799c61e3342e9b559bc21f5f601030175294c154afb9",
+  "blockSize": "487",
+  "deployCount": 0,
+  "rejectedDeploys": [],
+  "timestamp": 1791013178606
 }
 -----------------------------------------------------
 
@@ -1583,20 +1853,54 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "c3582a206d8b80dddd52b312e10cb33dd4600a4e9678ec9495147cbe429dddb8",
+  "blockHash": "c6e040d94cb95a4b48fde4ba72a6391500c3c12db46be36e4c6dc7d0fe7b4d7a",
+  "blockNumber": 4,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 3,
+  "preStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
+  "postStateHash": "84c4052c164e1d1c9c40fab0490bbf850f46440772c482424ecc8a42fefb9600",
+  "justifications": [
+    "244357d337761394b32c596175cbf1e4eafd7e702f9e4d404621660354e92e2c",
+    "d1f7e1a76b61ea4b003c6d99b45380c3955a543b7c3f7ef322a41471ce486d0c"
+  ],
+  "bonds": [
+    {
+      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+      "stake": 140
+    },
+    {
+      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+      "stake": 100
+    }
+  ],
+  "sigAlgorithm": "secp256k1",
+  "sig": "304402202cbcc2fc5be9531294cc28224a53f2efffe0f9ccaa368a9c3a4083e491179f86022021447fc7ad90f5d6055b6603ed95e8b40fe8b9ab02886cdb04f6be19d4589975",
+  "blockSize": "493",
+  "deployCount": 0,
+  "rejectedDeploys": [],
+  "timestamp": 1791013177047
+}
+-----------------------------------------------------
+
+
+------------- block 4 ---------------
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "47f59002756c8853140dc3e1ab31336e6d13cbfdc24281da015c00861ade71ca",
   "blockNumber": 4,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 4,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "c83da03f8f72118073ed7cd0b99b817c1f8c57b582697cab31a9ab3e8a30bdff",
+  "preStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
+  "postStateHash": "84c4052c164e1d1c9c40fab0490bbf850f46440772c482424ecc8a42fefb9600",
   "justifications": [
-    "5688c283c9d64459fe197e0e9ae476ae37f51499bdc7646c5c7e65f919bec8a9",
-    "8837970f8eb61fddace6b87867726e76fa85bd4c5d1bd5baff40a6182bf1cb32"
+    "244357d337761394b32c596175cbf1e4eafd7e702f9e4d404621660354e92e2c",
+    "d1f7e1a76b61ea4b003c6d99b45380c3955a543b7c3f7ef322a41471ce486d0c"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1604,45 +1908,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100db8ca38f8a513386fe0a75efbb8355b4f43dbfa28ad0456b1fd19fbd50d311f5022074555f6e97f1668bd32d4806b505bf8b16f4321fbd778ca5eb05152983949224",
-  "blockSize": "682",
-  "deployCount": 1,
+  "sig": "3045022100ba52be55e4429d607de3cafd73b98a155cacc0c34227a74256dadd16e0db753402206f144a78ed05b65cb539f64677eb2334f39924b46c510fe91587c7781ede931f",
+  "blockSize": "494",
+  "deployCount": 0,
   "rejectedDeploys": [],
-  "timestamp": 1790976678564
-}
------------------------------------------------------
-
-
-------------- block 4 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "3094ffee96aa5ddcfbd45176a24b8f8404bbdcb0f9966ed8d922eda054475caf",
-  "blockNumber": 4,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 3,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "c83da03f8f72118073ed7cd0b99b817c1f8c57b582697cab31a9ab3e8a30bdff",
-  "justifications": [
-    "5688c283c9d64459fe197e0e9ae476ae37f51499bdc7646c5c7e65f919bec8a9",
-    "8837970f8eb61fddace6b87867726e76fa85bd4c5d1bd5baff40a6182bf1cb32"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "30440220312d1b82833f02701f1c376c38bf75c3617343d9ad7f4a6fd13cdb6ed8d888c602206d522861f333cecd6997e913d8e3caa78302dd3ca263c076c9e52576bb6232c8",
-  "blockSize": "680",
-  "deployCount": 1,
-  "rejectedDeploys": [],
-  "timestamp": 1790976678464
+  "timestamp": 1791013175356
 }
 -----------------------------------------------------
 
@@ -1651,20 +1921,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "8837970f8eb61fddace6b87867726e76fa85bd4c5d1bd5baff40a6182bf1cb32",
+  "blockHash": "d1f7e1a76b61ea4b003c6d99b45380c3955a543b7c3f7ef322a41471ce486d0c",
   "blockNumber": 3,
-  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-  "seqNum": 3,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
+  "seqNum": 2,
+  "preStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
+  "postStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
   "justifications": [
-    "3e80c7cc962dcb5c772c7ca5e321c46886900b95faf4f34f3907e268e209fda2",
-    "a1724a55a44888172bb25926684940c14462bc115442d56083552d366b01eee5"
+    "1635ad0168b4ab9082f7388990f923956cefc7267fb6016e9c15f1832f4ad1db",
+    "4e4a54978424a0cd4e9413dda9f4fb39620ead0c3a49ac50dcc14d3db07b7800"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1672,11 +1942,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402207374c6a9272384b9fcea6e609c22f48973a34d95c2905a92868c008f09b6cccb02203d129afbd1ceb70bb1bdf4ab99cb2e6f9c409d0a6bdabc01a27eee25baabd182",
-  "blockSize": "680",
-  "deployCount": 1,
+  "sig": "3045022100bf44ea86feb78398d990d28459786c6dd9dac63e3a00a3f7d927ee511ed610f002201c598a44ff7eca5a03d612b4a145f97fe0fd598d26811d67d4903276c6a6ecbe",
+  "blockSize": "488",
+  "deployCount": 0,
   "rejectedDeploys": [],
-  "timestamp": 1790976676900
+  "timestamp": 1791013173995
 }
 -----------------------------------------------------
 
@@ -1685,20 +1955,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "5688c283c9d64459fe197e0e9ae476ae37f51499bdc7646c5c7e65f919bec8a9",
+  "blockHash": "244357d337761394b32c596175cbf1e4eafd7e702f9e4d404621660354e92e2c",
   "blockNumber": 3,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 2,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "b733a9c7fbea1d6a7542a23acd4748c5cdc5730097452a77d9f944cb92c020c1",
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 3,
+  "preStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
+  "postStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
   "justifications": [
-    "3e80c7cc962dcb5c772c7ca5e321c46886900b95faf4f34f3907e268e209fda2",
-    "a1724a55a44888172bb25926684940c14462bc115442d56083552d366b01eee5"
+    "1635ad0168b4ab9082f7388990f923956cefc7267fb6016e9c15f1832f4ad1db",
+    "4e4a54978424a0cd4e9413dda9f4fb39620ead0c3a49ac50dcc14d3db07b7800"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1706,11 +1976,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3045022100bdda191cff4a3995f612ea9f3047cbebfca38a7fce436fc698ece1684eb9232802207b287a9baf8d9e22f55ca2d6fb0acfab55c98461ad772633270a45f7ac3748cb",
-  "blockSize": "681",
-  "deployCount": 1,
+  "sig": "304402206eb2e1f6d09722974e7105158729c3e6b3f9f33e66274250149aa4acbcdd4c5602206078b31326bcc3f26297c4bd02d42350de0173a670fcbabef362c0748a030958",
+  "blockSize": "487",
+  "deployCount": 0,
   "rejectedDeploys": [],
-  "timestamp": 1790976677127
+  "timestamp": 1791013173721
 }
 -----------------------------------------------------
 
@@ -1719,20 +1989,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "a1724a55a44888172bb25926684940c14462bc115442d56083552d366b01eee5",
+  "blockHash": "4e4a54978424a0cd4e9413dda9f4fb39620ead0c3a49ac50dcc14d3db07b7800",
   "blockNumber": 2,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 2,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "deb97f31ac77a4d66bebaf3da36d1e62314bac79feb0c00ad10625b403ed5767",
+  "preStateHash": "1432adc4b9454cc1be04c7ffd13b8836b0947afd320d68e80890c6dfca711598",
+  "postStateHash": "6e3f39cd35268239d3781647525437f595596d30fd2b995520a6d42dd24bfa28",
   "justifications": [
-    "223da43fda2f15cab4f1ae41c79f4678712148c956e98571546485c8eeff015c",
-    "28400d60a4a18add547c223030c2ad0d79f0530c67234374242efad45f71d998"
+    "d0612b77c09a0699c826c3cd2d95a1917ef2e9785729ec32880cbc986de07730",
+    "f08b26291267e2a98fd896fe0d31c610f76c64556f6557e70936cacbcc2c64b1"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1740,11 +2010,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402201db4c87a15428f24f94ed646dd4e4a6b40b51aa5a7de2ed16c07e76816fac2d4022050f200bdd880bf5616acbd9cebacd32ed154e4efe9819a723180e78887fca63e",
-  "blockSize": "680",
+  "sig": "3045022100f6d6ef83f628488ccaf2e00a1dc0679cf94c1fb00510bd7f16441d42a4e044d902207a502621348c26443c7e23e57ae0a2aed9b1d6ce9781fe788430ea5309b2412b",
+  "blockSize": "2724",
   "deployCount": 1,
   "rejectedDeploys": [],
-  "timestamp": 1790976676637
+  "timestamp": 1791013172990
 }
 -----------------------------------------------------
 
@@ -1753,20 +2023,20 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "3e80c7cc962dcb5c772c7ca5e321c46886900b95faf4f34f3907e268e209fda2",
+  "blockHash": "1635ad0168b4ab9082f7388990f923956cefc7267fb6016e9c15f1832f4ad1db",
   "blockNumber": 2,
   "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 1,
-  "preStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "postStateHash": "deb97f31ac77a4d66bebaf3da36d1e62314bac79feb0c00ad10625b403ed5767",
+  "preStateHash": "1432adc4b9454cc1be04c7ffd13b8836b0947afd320d68e80890c6dfca711598",
+  "postStateHash": "cdb183425aa687f399ac8a925516989f013002efc4eb7ef652b93473ec00c250",
   "justifications": [
-    "223da43fda2f15cab4f1ae41c79f4678712148c956e98571546485c8eeff015c",
-    "28400d60a4a18add547c223030c2ad0d79f0530c67234374242efad45f71d998"
+    "d0612b77c09a0699c826c3cd2d95a1917ef2e9785729ec32880cbc986de07730",
+    "f08b26291267e2a98fd896fe0d31c610f76c64556f6557e70936cacbcc2c64b1"
   ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
+      "stake": 140
     },
     {
       "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
@@ -1774,11 +2044,11 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304402206a4f9535263b8e57b852b3c4ce4017ee85a14c7e723bb786027fbab02f7fe58a022016150c2ba566d30114c25a0f9ae228ccc40d0c8602a2d7f12e57a7144b84a26f",
-  "blockSize": "681",
-  "deployCount": 1,
+  "sig": "3045022100b51186dc86cc5ea9aab388662087f93c46b4e7575381edbea4663d265325e992022070e4692214720c23f2ae8706e9e6e249041f7049f3e0bcd5da3844e6903373a4",
+  "blockSize": "494",
+  "deployCount": 0,
   "rejectedDeploys": [],
-  "timestamp": 1790976676474
+  "timestamp": 1791013173378
 }
 -----------------------------------------------------
 
@@ -1787,47 +2057,14 @@
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "28400d60a4a18add547c223030c2ad0d79f0530c67234374242efad45f71d998",
-  "blockNumber": 1,
-  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-  "seqNum": 0,
-  "preStateHash": "d515d9d361d1a80efce052b5f9aaacf75c54a563e1d9afdcc7c1c7bcc7e4ef9a",
-  "postStateHash": "9f52f05d165511352cf2fae8305b16dc9b1250d997ee4f082aee40a7b1709ac2",
-  "justifications": [
-    "9fb0d5fa2573ec2bc65687870188380c1fb1cdee473ea094919e6ff67c41c351"
-  ],
-  "bonds": [
-    {
-      "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
-      "stake": 100
-    },
-    {
-      "validator": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
-      "stake": 100
-    }
-  ],
-  "sigAlgorithm": "secp256k1",
-  "sig": "3044022053868415b255e919915c089171143ce8939bc875e85d277d1818759c22a0d9d2022031ca554bf83a2c778df229ca426c2fb1d5315e37131dc42fe12f4cb85635c710",
-  "blockSize": "642",
-  "deployCount": 1,
-  "rejectedDeploys": [],
-  "timestamp": 1790976676301
-}
------------------------------------------------------
-
-
-------------- block 1 ---------------
-{
-  "version": 1,
-  "shardId": "/root",
-  "blockHash": "223da43fda2f15cab4f1ae41c79f4678712148c956e98571546485c8eeff015c",
+  "blockHash": "f08b26291267e2a98fd896fe0d31c610f76c64556f6557e70936cacbcc2c64b1",
   "blockNumber": 1,
   "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
   "seqNum": 1,
-  "preStateHash": "d515d9d361d1a80efce052b5f9aaacf75c54a563e1d9afdcc7c1c7bcc7e4ef9a",
-  "postStateHash": "eddacd3dc275f35784be39b589fe00b5aca3a8eebd0f50ec4fefaa7d9b0a02f1",
+  "preStateHash": "5ce57317b46f16e891b0d1a4a0062508be8c690c0546534cbc7a80fcca9aba95",
+  "postStateHash": "1432adc4b9454cc1be04c7ffd13b8836b0947afd320d68e80890c6dfca711598",
   "justifications": [
-    "9fb0d5fa2573ec2bc65687870188380c1fb1cdee473ea094919e6ff67c41c351"
+    "56bc42fc96e69d0c2fc03a8c01ceb9de11e7830609ab83653823e3fe397d2698"
   ],
   "bonds": [
     {
@@ -1840,26 +2077,28 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "304502210094968162a7a33e085685e459d174d5f87d9f673c3b24228421968d52c77fbb0e0220589bd92f67997def43a6aa0c85b739ac236150db6bb43fae3168c668216ade09",
-  "blockSize": "2823",
+  "sig": "304502210081b6da43f08a04961c43d3469b67d4f602c5650028cbf8bab4a2345d8c0b8586022046f2f960ca02a80ddd4c9e3c1fd6cbffa16a14c3924e0f932ec4f9839d5e8125",
+  "blockSize": "2824",
   "deployCount": 1,
   "rejectedDeploys": [],
-  "timestamp": 1790976672667
+  "timestamp": 1791013169249
 }
 -----------------------------------------------------
 
 
-------------- block 0 ---------------
+------------- block 1 ---------------
 {
   "version": 1,
   "shardId": "/root",
-  "blockHash": "9fb0d5fa2573ec2bc65687870188380c1fb1cdee473ea094919e6ff67c41c351",
-  "blockNumber": 0,
-  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "blockHash": "d0612b77c09a0699c826c3cd2d95a1917ef2e9785729ec32880cbc986de07730",
+  "blockNumber": 1,
+  "sender": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
   "seqNum": 0,
-  "preStateHash": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
-  "postStateHash": "d515d9d361d1a80efce052b5f9aaacf75c54a563e1d9afdcc7c1c7bcc7e4ef9a",
-  "justifications": [],
+  "preStateHash": "5ce57317b46f16e891b0d1a4a0062508be8c690c0546534cbc7a80fcca9aba95",
+  "postStateHash": "5ce57317b46f16e891b0d1a4a0062508be8c690c0546534cbc7a80fcca9aba95",
+  "justifications": [
+    "56bc42fc96e69d0c2fc03a8c01ceb9de11e7830609ab83653823e3fe397d2698"
+  ],
   "bonds": [
     {
       "validator": "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc",
@@ -1871,14 +2110,14 @@
     }
   ],
   "sigAlgorithm": "secp256k1",
-  "sig": "3044022061410e2ff1e4f17cb083b3c5185cad5a51450760389a0c23561bcbc71c1b53dd0220336eb57007a2ce99c37c0301b9c316af705592e63ce5c5384feb5f2b37bc45d9",
-  "blockSize": "230157",
-  "deployCount": 15,
+  "sig": "3045022100a5cd6574c4bff0a5730e2c1fca43de2ede15b15feade6a1004438289103f52cd0220257507424d6db0a23d83d81e76776eb5dd11ac24d8c72207ae34f893cde134ef",
+  "blockSize": "451",
+  "deployCount": 0,
   "rejectedDeploys": [],
-  "timestamp": 0
+  "timestamp": 1791013172722
 }
 -----------------------------------------------------
 
 
-count: 49
+count: 59
 

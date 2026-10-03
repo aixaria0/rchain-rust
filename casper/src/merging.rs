@@ -14,6 +14,7 @@ use rchain_block_storage::dag::finalizer::Message;
 use rchain_block_storage::dag::finalizer::NoAdvance;
 use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_crypto::public_key::PublicKey;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
@@ -24,15 +25,19 @@ use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation}
 use rchain_models::sorted::SortedProc;
 use rchain_models::validator::Validator;
 use rchain_rholang::merging::{calculate_number_channel_merge, read_mergeable_values};
+use rchain_rholang::native_state::{
+    pos_vault_key, pos_vault_put_action, vault_key, vault_put_action, NativeSystemState,
+};
 use rchain_rholang::storage::RhoHistoryRepository;
 use rchain_rholang::system_processes::BlockData;
+use rchain_rholang::util::rev_address::RevAddress;
 use rchain_rspace::history::history_repository::HistoryRepository;
 use rchain_rspace::hot_store_trie_action::HotStoreTrieAction;
 use rchain_rspace::merger::event_log_index::{EventLogIndex, NumberChannelsDiff};
 use rchain_rspace::merger::event_log_merging_logic::{are_conflicting, depends};
 use rchain_rspace::merger::state_change::StateChange;
 use rchain_rspace::merger::state_change_merger::compute_trie_actions;
-use rchain_rspace::native_store::NativeStoreAction;
+use rchain_rspace::native_store::{InMemNativeStore, NativeStoreAction};
 use rchain_rspace::trace::event::{Event as REvent, Produce};
 use rchain_sdk::dag::merging::{
     compute_dependency_map, compute_greedy_non_intersecting_branches,
@@ -194,6 +199,29 @@ pub struct DeployIdWithCost {
     pub cost: i64,
 }
 
+/// **One deploy's cost-accounting effect on the vaults, as deltas** (AUDIT C207).
+///
+/// Cost accounting writes `pos:vault` from **every** user deploy, so a block's native sidecar used to
+/// carry that write and therefore overlapped every concurrent sibling on one slot — and the merge
+/// resolves an overlap by rejecting a whole block, which silently took the deploy's *own* writes (a
+/// delegation, a bond, a trust) with it. These three numbers are what the merge re-applies instead,
+/// per accepted deploy, so the shared slot stops being carried by anyone.
+///
+/// All three are pure functions of the deploy and its recorded cost, computed where the chain index
+/// is built (`BlockIndex::apply`), which is what makes carrying them cheaper than carrying values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CostMoves {
+    /// The deployer's REV address — charged, and refunded.
+    pub deployer: String,
+    /// Debited from the deployer's vault and credited to the staking vault.
+    pub charge: i64,
+    /// Credited back to the deployer — the phlo it did not burn.
+    pub refund: i64,
+    /// The phlo it burned. The producer's share is a fraction of this, taken at merge time from the
+    /// chain's `executor_share`.
+    pub burned: i64,
+}
+
 /// The index of a single deploy (port of `DeployIndex`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeployIndex {
@@ -277,6 +305,15 @@ pub struct DeployChainIndex {
     pub post_state_hash: Blake2b256Hash,
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
+    /// **The cost-accounting moves this chain's deploys made** (AUDIT C207), by deploy id — what the
+    /// merge re-applies per accepted chain. Deliberately **outside the chain's identity**: the
+    /// `PartialEq`/`Hash` impls below are over `deploys_with_cost` only (the Scala override), so this
+    /// field cannot move a chain's equality, its hash, or the rejection-option computation.
+    pub cost_moves: BTreeMap<Vec<u8>, CostMoves>,
+    /// The address the producer's share of this chain's deploys is paid to — the **host block's own
+    /// signed sender**, which is what `pay_executor` reads on both play and replay. Outside the
+    /// chain's identity, for the same reason as `cost_moves`.
+    pub executor: String,
 }
 
 // Equality/hash are over `deploysWithCost` only (the Scala override), to speed up rejection-option
@@ -360,6 +397,8 @@ impl DeployChainIndex {
     pub async fn apply<C, P, A, K>(
         host_block: Blake2b256Hash,
         deploys: &BTreeSet<DeployIndex>,
+        cost_moves: BTreeMap<Vec<u8>, CostMoves>,
+        executor: String,
         pre_state_hash: Blake2b256Hash,
         post_state_hash: Blake2b256Hash,
         history_repository: &HistoryRepository<C, P, A, K>,
@@ -397,6 +436,8 @@ impl DeployChainIndex {
             post_state_hash,
             event_log_index,
             state_changes,
+            cost_moves,
+            executor,
         })
     }
 }
@@ -503,6 +544,7 @@ impl BlockIndex {
         history_repository: &HistoryRepository<C, P, A, K>,
         mergeable_chan_data: &[NumberChannelsDiff],
         native_changes: Vec<NativeStoreAction>,
+        executor: String,
     ) -> Result<BlockIndex, String>
     where
         C: Serialize<C> + Send + Sync + 'static,
@@ -540,6 +582,42 @@ impl BlockIndex {
                 cost: i64::try_from(d.cost.cost).map_err(|e| e.to_string())?,
                 event_log_index,
             });
+        }
+
+        // **The cost-accounting moves, per deploy** (AUDIT C207). Three pure functions of the deploy
+        // and the cost the block recorded for it — which is exactly why a merge can re-apply them
+        // instead of a block's native sidecar carrying the values, and why only these numbers travel
+        // on the chain.
+        //
+        // **A failed deploy is not skipped, and must not be.** `is_failed` does not say "the charge
+        // never happened": a deploy that ran out of phlo *was* charged, refunded nothing and burned
+        // it all, and its moves have to be composed like any other's — dropping them would destroy
+        // the REV it burned. The case where the charge really did not happen — `pre_charge` found the
+        // vault short — is the one that needs no special case: that deploy is recorded with
+        // `cost: 0`, so its refund is the whole charge and all three moves below are exactly zero.
+        let mut cost_moves: BTreeMap<Vec<u8>, CostMoves> = BTreeMap::new();
+        for d in usr_processed_deploys {
+            let Some(charge) = d.deploy.data.total_phlo_charge() else {
+                continue;
+            };
+            // The vault the charge comes from and the refund goes to is the deployer's own address —
+            // the same derivation `pre_charge` and `refund` use, so the merge and the block agree
+            // about which leaf moves without either carrying the address.
+            let Some(deployer) =
+                RevAddress::from_public_key(&PublicKey::new(d.deploy.deployer.clone()))
+                    .map(|a| a.to_base58())
+            else {
+                continue;
+            };
+            cost_moves.insert(
+                d.deploy.sig.clone(),
+                CostMoves {
+                    deployer,
+                    charge: i64::from(charge),
+                    refund: i64::from(d.refund_amount()),
+                    burned: i64::from(d.burned_amount()),
+                },
+            );
         }
 
         // System deploy indices (only `Succeeded` blocks contribute).
@@ -588,10 +666,22 @@ impl BlockIndex {
         let host_block = Blake2b256Hash::from_bytes(*block_hash.as_bytes());
         let mut chains = Vec::new();
         for chain in &deploy_chains {
+            // Each chain carries the moves of **its own** deploys, so a rejected chain's cost
+            // accounting is dropped with it rather than applied by another chain's acceptance.
+            let chain_moves: BTreeMap<Vec<u8>, CostMoves> = chain
+                .iter()
+                .filter_map(|d| {
+                    cost_moves
+                        .get(&d.deploy_id)
+                        .map(|m| (d.deploy_id.clone(), m.clone()))
+                })
+                .collect();
             chains.push(Arc::new(
                 DeployChainIndex::apply(
                     host_block,
                     chain,
+                    chain_moves,
+                    executor.clone(),
                     pre_state_hash,
                     post_state_hash,
                     history_repository,
@@ -778,6 +868,18 @@ impl BlockIndex {
             Err(err) => return Err(err),
         };
 
+        // The producer's share is paid to the **block's own signed sender** — `pay_executor` reads it
+        // off the runtime's block data on both paths, so the index carries the same address rather
+        // than letting a merge re-derive it from anything else.
+        let executor =
+            RevAddress::from_public_key(&PublicKey::new(block.sender.as_bytes().to_vec()))
+                .map(|a| a.to_base58())
+                .ok_or_else(|| {
+                    format!(
+                        "block {} has no derivable REV address for its sender",
+                        block.block_hash.to_hex()
+                    )
+                })?;
         let index = BlockIndex::apply(
             block.block_hash,
             &block.state.deploys,
@@ -787,6 +889,7 @@ impl BlockIndex {
             runtime.get_history_repo(),
             &mergeable_chs,
             native_changes,
+            executor,
         )
         .await?;
 
@@ -920,12 +1023,173 @@ async fn regenerate_sidecars(
     }
     // `replay_compute_state_with` already persisted both sidecars; read the native changes back for
     // the index the caller is building.
-    let native_changes = forked.last_native_changes();
+    // The sidecar's half — the block's own writes; cost accounting is re-derived by the merge (AUDIT
+    // C207), so a regenerated sidecar must omit it exactly as a played one does, or the two would
+    // disagree about what a block's effects are.
+    let native_changes = forked.last_own_native_changes();
     INDEX_REPLAY_MILLIS.fetch_add(
         replay_started.elapsed().as_millis() as u64,
         std::sync::atomic::Ordering::Relaxed,
     );
     Ok((channels, native_changes))
+}
+
+/// **The cost-accounting moves of the accepted deploys, composed into absolute vault writes** (AUDIT
+/// C207).
+///
+/// `pre_charge`, `refund` and `pay_executor` are pure balance movements — a debit from one vault, a
+/// credit to another, summing to zero per deploy — so unlike a block's other native writes they
+/// *compose*: two accepted deploys' charges add, where two blocks' absolute snapshots of one slot
+/// could only be resolved by rejecting one of them. That is what lets the merge apply them after the
+/// fact rather than a block's sidecar carrying `pos:vault` — which is what made every user-deploy
+/// block overlap every concurrent sibling on that one slot, and, by the whole-block rejection rule,
+/// silently discard the deploy's own native writes with it.
+///
+/// **Where a chain wrote one of these slots itself** — a `bond` debits the deployer's own vault, a
+/// boundary credits `pos:vault` — the fold already holds that chain's absolute value, and that value
+/// was computed *after* the chain's own cost accounting. Its own moves are therefore already inside
+/// it, and so are the moves of every block it had seen; only the moves of blocks the fold's winner
+/// did **not** see are added here. That is exactly the composition a sequential execution reaches,
+/// and it is why the winner is needed and not only the winning value: a deeper block's snapshot
+/// contains its ancestors' charges, a concurrent one's does not.
+///
+/// `changes` is the fold's absolute writes and is **edited in place**: a slot this composes onto is
+/// replaced by the composed value, so the batch still holds one action per slot, which
+/// `RadixHistory::process` requires.
+async fn compose_cost_accounting(
+    history_repository: &RhoHistoryRepository,
+    base_state: Blake2b256Hash,
+    accepted: &BTreeSet<Arc<DeployChainIndex>>,
+    seen: impl Fn(&Blake2b256Hash, &Blake2b256Hash) -> bool,
+    winners: &BTreeMap<(u8, Blake2b256Hash), Blake2b256Hash>,
+    changes: &mut BTreeMap<(u8, Blake2b256Hash), NativeStoreAction>,
+) -> Result<(), String> {
+    let reader = history_repository.get_native_reader(base_state).await;
+    let store: Arc<InMemNativeStore> = Arc::new(InMemNativeStore::new(reader));
+    // The producer's share travels in consensus state (`PosParams`), so the merge reads it where
+    // `pay_executor` reads it rather than carrying a copy on the chain.
+    let share = i64::from(
+        NativeSystemState::new(Arc::clone(&store))
+            .params()
+            .await?
+            .executor_share,
+    );
+
+    // The moves are accumulated per slot first, because the *skip* decision is per (chain, slot):
+    // two chains can contribute to one slot with only one of them seen by the fold's winner.
+    let mut deltas: BTreeMap<(u8, Blake2b256Hash), (Option<String>, i64)> = BTreeMap::new();
+    for chain in accepted {
+        let host = chain.host_block;
+        for moves in chain.cost_moves.values() {
+            // `pay_executor`'s own arithmetic, kept identical to it: the product of two `i64`s does
+            // not fit an `i64`, and a wrapped product would pay a different amount than the share
+            // names, silently, on a consensus path.
+            let payment = i128::from(moves.burned) * i128::from(share) / 10000;
+            let Some(payment) = i64::try_from(payment).ok() else {
+                return Err(format!("executor payment {} overflows i64", moves.burned));
+            };
+            let entries = [
+                // The deployer pays the charge and is refunded what it did not burn.
+                (
+                    (
+                        rchain_rspace::native_store::PREFIX_VAULT,
+                        vault_key(&moves.deployer),
+                    ),
+                    Some(moves.deployer.clone()),
+                    -moves.charge + moves.refund,
+                ),
+                // The staking vault keeps what was burned, minus the producer's share of it.
+                (
+                    (rchain_rspace::native_store::PREFIX_POS, pos_vault_key()),
+                    None,
+                    moves.charge - moves.refund - payment,
+                ),
+                // The block's own signed sender is paid for producing it.
+                (
+                    (
+                        rchain_rspace::native_store::PREFIX_VAULT,
+                        vault_key(&chain.executor),
+                    ),
+                    Some(chain.executor.clone()),
+                    payment,
+                ),
+            ];
+            for (slot, address, delta) in entries {
+                if delta == 0 {
+                    continue;
+                }
+                if let Some(winner) = winners.get(&slot) {
+                    if *winner == host || seen(winner, &host) {
+                        continue;
+                    }
+                }
+                let entry = deltas.entry(slot).or_insert_with(|| (address, 0));
+                entry.1 = entry
+                    .1
+                    .checked_add(delta)
+                    .ok_or_else(|| format!("cost-accounting delta overflow on {slot:?}"))?;
+            }
+        }
+    }
+
+    for (slot, (address, delta)) in deltas {
+        // What this slot's value is composed onto: the fold's absolute write when the batch already
+        // holds one, otherwise the balance the base state holds.
+        let current = match changes.get(&slot) {
+            Some(NativeStoreAction::Put { value, .. }) => decode_balance(value)?,
+            Some(NativeStoreAction::Delete { .. }) => 0,
+            None => match &address {
+                Some(a) => match store
+                    .get(rchain_rspace::native_store::PREFIX_VAULT, &vault_key(a))
+                    .await?
+                {
+                    Some(bytes) => decode_balance(&bytes)?,
+                    None => 0,
+                },
+                None => match store
+                    .get(rchain_rspace::native_store::PREFIX_POS, &pos_vault_key())
+                    .await?
+                {
+                    Some(bytes) => decode_balance(&bytes)?,
+                    None => 0,
+                },
+            },
+        };
+        // **`pre_charge`'s guard, applied to the state the merge is building.** A deploy's charge
+        // was affordable where that deploy ran, but a *concurrent* deploy by the same payer is
+        // invisible to it, and two of them can together exceed the vault. A balance cannot go
+        // negative, so the merge refuses rather than inventing one: this is the fail-closed branch,
+        // and it is reachable only when two accepted blocks each spent the same payer's REV without
+        // seeing each other.
+        let composed = current
+            .checked_add(delta)
+            .ok_or_else(|| format!("cost-accounting composition overflow on {slot:?}"))?;
+        if composed < 0 {
+            return Err(format!(
+                "cost accounting would take a vault to {composed}: the accepted deploys spend more \
+                 than the merged state holds, and no sequential execution reaches this"
+            ));
+        }
+        let value = NonNegI64::try_from(composed)
+            .map_err(|e| format!("cost-accounting result is not a balance: {e}"))?;
+        let action = match &address {
+            Some(a) => vault_put_action(a, value),
+            None => pos_vault_put_action(value),
+        };
+        changes.insert(slot, action);
+    }
+    Ok(())
+}
+
+/// A native balance leaf's payload as the `i64` it was written from (`write_balance`'s format).
+fn decode_balance(bytes: &[u8]) -> Result<i64, String> {
+    let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+        format!(
+            "native balance leaf is {} bytes, expected the 8 of an i64",
+            bytes.len()
+        )
+    })?;
+    Ok(i64::from_le_bytes(arr))
 }
 
 /// The finalization decisions the final scope's blocks carry, by block. A block belongs to exactly
@@ -1080,11 +1344,18 @@ impl NativeRelations<'_> {
     /// descendant's value replaces its ancestor's. Two accepted writers of a key that are not so
     /// ordered would mean resolution kept a conflict, and that is refused rather than decided by
     /// iteration order.
+    ///
+    /// **The writer is returned with its action** (AUDIT C207), because the merge's cost-accounting
+    /// pass needs to know *which* block's absolute value landed on a slot: a value computed after
+    /// that block's own cost accounting already contains it, and the moves of every block that block
+    /// had seen are in it too. The map's key is the slot; the tuple is `(host, action)` and the host
+    /// is the **last writer in ancestry order**, i.e. the deepest one — the value that survives.
+    #[allow(clippy::type_complexity)]
     fn fold(
         &self,
         accepted: &BTreeSet<Blake2b256Hash>,
         native_by_block: &BTreeMap<Blake2b256Hash, &[NativeStoreAction]>,
-    ) -> Result<Vec<NativeStoreAction>, String> {
+    ) -> Result<BTreeMap<(u8, Blake2b256Hash), (Blake2b256Hash, NativeStoreAction)>, String> {
         // A block has seen strictly more in-scope blocks than any ancestor of it, so this order
         // puts every ancestor before its descendants; the hash only makes the order total.
         let mut writers: Vec<&Blake2b256Hash> = accepted
@@ -1118,7 +1389,7 @@ impl NativeRelations<'_> {
                 by_key.insert(key, (*host, action.clone()));
             }
         }
-        Ok(by_key.into_values().map(|(_, action)| action).collect())
+        Ok(by_key)
     }
 }
 
@@ -1391,7 +1662,29 @@ impl MergeScope {
         // other's (see `NativeRelations`).
         let accepted_hosts: BTreeSet<Blake2b256Hash> =
             to_merge.iter().map(|c| c.host_block).collect();
-        let native_changes = native.fold(&accepted_hosts, &native_by_block)?;
+        let folded = native.fold(&accepted_hosts, &native_by_block)?;
+        let winners: BTreeMap<(u8, Blake2b256Hash), Blake2b256Hash> = folded
+            .iter()
+            .map(|(slot, (host, _))| (*slot, *host))
+            .collect();
+        let mut native_changes: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = folded
+            .into_values()
+            .map(|(_, action)| (action.slot(), action))
+            .collect();
+        // **And cost accounting, which no longer travels in a block's sidecar.** Applied per
+        // accepted chain rather than per block, which is the granularity the tuple space already
+        // merges its effects at — and the reason a user deploy's own native writes no longer die
+        // with a whole-block rejection (AUDIT C207).
+        compose_cost_accounting(
+            history_repository,
+            base_state,
+            &to_merge,
+            |a, b| native.sees(a, b),
+            &winners,
+            &mut native_changes,
+        )
+        .await?;
+        let native_changes: Vec<NativeStoreAction> = native_changes.into_values().collect();
 
         let new_state = MergeScope::compute_merged_state(
             &to_merge,
@@ -1549,6 +1842,8 @@ mod tests {
             post_state_hash: Blake2b256Hash::from_bytes([0u8; 32]),
             event_log_index: EventLogIndex::empty(),
             state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
         }
     }
 
@@ -2012,6 +2307,8 @@ mod merge_relation_tests {
                         .expect("a test chain's accumulation cannot overflow")
                 }),
             state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
         }
     }
 
@@ -2110,6 +2407,8 @@ mod merge_relation_tests {
                 ..Default::default()
             },
             state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
         };
         let first = destroys(10, 1, produced.clone());
         let second = destroys(11, 2, produced.clone());
@@ -2161,6 +2460,8 @@ mod merge_relation_tests {
                 ..Default::default()
             },
             state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
         };
         // The target consumed the same produce.
         let target = DeployChainIndex {
@@ -2173,6 +2474,8 @@ mod merge_relation_tests {
                 ..Default::default()
             },
             state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
         };
 
         assert!(DeployChainIndex::depends(&target, &source));
@@ -2263,6 +2566,8 @@ mod native_merge_tests {
                 post_state_hash: base_state,
                 event_log_index: EventLogIndex::empty(),
                 state_changes: StateChange::empty(),
+                cost_moves: BTreeMap::new(),
+                executor: String::new(),
             })],
             native_changes: vec![NativeStoreAction::Put {
                 prefix: PREFIX_POS,
@@ -2351,6 +2656,8 @@ mod native_merge_tests {
                 post_state_hash: base_state,
                 event_log_index: EventLogIndex::empty(),
                 state_changes: StateChange::empty(),
+                cost_moves: BTreeMap::new(),
+                executor: String::new(),
             })],
             native_changes: vec![NativeStoreAction::Put {
                 prefix: PREFIX_POS,
@@ -2437,7 +2744,7 @@ mod boundary_merge_tests {
     use rchain_rholang::native_state::{NativeSystemState, PosGenesis, PosParams};
     use rchain_rholang::util::rev_address::RevAddress;
     use rchain_rspace::factory::create_history_repository;
-    use rchain_rspace::native_store::InMemNativeStore;
+    use rchain_rspace::native_store::{InMemNativeStore, PREFIX_POS};
     use rchain_shared::store_manager::InMemoryStoreManager;
 
     const EPOCH: i64 = 10;
@@ -2511,19 +2818,34 @@ mod boundary_merge_tests {
         Deploy(u8),
     }
 
-    /// Play block `number` on `pre_state`: its body, then `close_block`. Returns the block's native
-    /// writes.
+    /// What playing a block left behind, split the way the block path splits it (AUDIT C207): the
+    /// writes the block's **own** terms and its boundary made, and the cost-accounting moves the
+    /// merge re-derives from the accepted deploys rather than the sidecar carrying them.
+    #[derive(Clone)]
+    struct Played {
+        own: Vec<NativeStoreAction>,
+        moves: BTreeMap<Vec<u8>, CostMoves>,
+        /// The block's **complete** native effect — `own` plus the cost-accounting writes — which is
+        /// what the block's own post-state holds. Only `own` travels in the sidecar; a test that
+        /// needs to stand up a descendant's pre-state needs both.
+        full: Vec<NativeStoreAction>,
+    }
+
+    /// Play block `number` on `pre_state`: its body, then `close_block`. Returns the block's own
+    /// native writes and its cost-accounting moves, split as `RSpace::create_checkpoint` splits them
+    /// (`begin_cost_accounting` around the system deploys is the whole of the difference).
     async fn play(
         repo: &RhoHistoryRepository,
         pre_state: Blake2b256Hash,
         number: i64,
         fringe: u8,
         body: Body,
-    ) -> Vec<NativeStoreAction> {
+    ) -> Played {
         let store = Arc::new(InMemNativeStore::new(
             repo.get_native_reader(pre_state).await,
         ));
         let native = NativeSystemState::new(store.clone());
+        let mut moves: BTreeMap<Vec<u8>, CostMoves> = BTreeMap::new();
         match body {
             Body::Nothing => {}
             Body::Withdraw => native
@@ -2531,18 +2853,37 @@ mod boundary_merge_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            Body::Deploy(byte) => native
-                .pre_charge(&payer(byte).0, nn(500))
-                .await
-                .unwrap()
-                .unwrap(),
+            Body::Deploy(byte) => {
+                // The window `play_deploy_with_cost_accounting_once` opens around `pre_charge`,
+                // `refund` and `pay_executor`. Here only the charge runs, so the deploy is charged
+                // its whole 500 and refunded nothing — which is what the moves below say.
+                store.begin_cost_accounting();
+                native
+                    .pre_charge(&payer(byte).0, nn(500))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                store.end_cost_accounting();
+                moves.insert(
+                    vec![number as u8],
+                    CostMoves {
+                        deployer: payer(byte).1,
+                        charge: 500,
+                        refund: 0,
+                        burned: 500,
+                    },
+                );
+            }
         }
         native
             .close_block(number, Blake2b256Hash::create(&[fringe]), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
-        store.drain_changes()
+        let (own, cost) = store.drain_changes_split();
+        let mut full = own.clone();
+        full.extend(cost);
+        Played { own, moves, full }
     }
 
     fn block_hash(n: u8) -> BlockHash {
@@ -2550,7 +2891,7 @@ mod boundary_merge_tests {
     }
 
     /// A block index with one (close-block) chain, as every block has.
-    fn index(n: u8, pre_state: Blake2b256Hash, native: Vec<NativeStoreAction>) -> BlockIndex {
+    fn index(n: u8, pre_state: Blake2b256Hash, played: Played) -> BlockIndex {
         BlockIndex {
             block_hash: block_hash(n),
             deploy_chains: vec![Arc::new(DeployChainIndex {
@@ -2563,8 +2904,10 @@ mod boundary_merge_tests {
                 post_state_hash: pre_state,
                 event_log_index: EventLogIndex::empty(),
                 state_changes: StateChange::empty(),
+                cost_moves: played.moves,
+                executor: payer(1).1,
             })],
-            native_changes: native,
+            native_changes: played.own,
         }
     }
 
@@ -2645,8 +2988,8 @@ mod boundary_merge_tests {
             &a
         };
         assert_eq!(
-            read_back(&repo, merged, kept).await,
-            values(kept),
+            read_back(&repo, merged, &kept.own).await,
+            values(&kept.own),
             "the merged state is the surviving sibling's boundary, whole"
         );
     }
@@ -2731,10 +3074,18 @@ mod boundary_merge_tests {
         siblings_resolve_to_one(Body::Deploy(9), 1, Body::Nothing, 1).await;
     }
 
+    /// **The invariant that made `_do_not_destroy_rev` the name of this test, and still does.**
+    ///
     /// Two concurrent blocks off a boundary, each charging a different deployer the same 500 of
-    /// phlo: both write the staking vault's balance as `base + 500`. Keeping one value for both
-    /// blocks - which is what de-duplicating equal writes does - credits the vault once for two
-    /// debits and destroys 500 REV. The merge must keep REV conserved.
+    /// phlo: both left `pos:vault` at `base + 500`. Keeping **one** value for both — which is what
+    /// de-duplicating equal writes does — credits the vault once for two debits and destroys 500
+    /// REV. When that was the only recourse the merge had, the test pinned the resolution that
+    /// avoided it (reject one block, and with it both debits and both credits).
+    ///
+    /// **Since AUDIT C207 the merge does better than choosing:** each charge is a *move* the merge
+    /// re-applies per accepted deploy, so the two compose. The test's claim is unchanged — REV is
+    /// conserved — and it now has a sharper half: the merge keeps **both** blocks and the vault
+    /// holds **both** charges, which a "keep one" rule fails on the same assertion REV does.
     #[tokio::test]
     async fn equal_concurrent_vault_writes_do_not_destroy_rev() {
         let (repo, base) = genesis().await;
@@ -2748,26 +3099,50 @@ mod boundary_merge_tests {
         )
         .await
         .expect("the merge");
-        assert_eq!(rejected.len(), 1, "the two charges conflict");
+        assert!(
+            rejected.is_empty(),
+            "the two charges are moves, not competing snapshots, so neither block is rejected"
+        );
 
-        let total = |state: Blake2b256Hash| {
+        let read = |state: Blake2b256Hash| {
             let repo = repo.clone();
             async move {
                 let native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
                     repo.get_native_reader(state).await,
                 )));
-                let mut sum = i64::from(native.pos_vault_balance().await.unwrap());
+                let mut vaults = Vec::new();
                 for byte in [8, 9] {
-                    sum += native
-                        .vault_balance(&payer(byte).1)
-                        .await
-                        .unwrap()
-                        .map_or(0, i64::from);
+                    vaults.push(
+                        native
+                            .vault_balance(&payer(byte).1)
+                            .await
+                            .unwrap()
+                            .map_or(0, i64::from),
+                    );
                 }
-                sum
+                (i64::from(native.pos_vault_balance().await.unwrap()), vaults)
             }
         };
-        assert_eq!(total(merged).await, total(base).await, "REV is conserved");
+        let (merged_vault, merged_payers) = read(merged).await;
+        let (base_vault, base_payers) = read(base).await;
+
+        assert_eq!(
+            merged_vault,
+            base_vault + 1000,
+            "the staking vault holds **both** charges: paying it once for two debits is the REV this \
+             test exists to keep"
+        );
+        let paid = |base: i64| base - 500;
+        assert_eq!(
+            merged_payers,
+            base_payers.iter().map(|b| paid(*b)).collect::<Vec<_>>(),
+            "and each payer is out exactly its own charge — not one payer twice"
+        );
+        assert_eq!(
+            merged_vault + merged_payers.iter().sum::<i64>(),
+            base_vault + base_payers.iter().sum::<i64>(),
+            "REV is conserved"
+        );
     }
 
     /// A block with a user deploy has at least two chains (the deploy's and the close-block's), and
@@ -2839,7 +3214,7 @@ mod boundary_merge_tests {
             .reset(base)
             .await
             .unwrap()
-            .do_checkpoint_with_native(&[], &x)
+            .do_checkpoint_with_native(&[], &x.full)
             .await
             .unwrap()
             .root();
@@ -2866,6 +3241,125 @@ mod boundary_merge_tests {
             i64::from(base_native.pos_vault_balance().await.unwrap()) + 1000,
             "both charges reach the staking vault"
         );
+    }
+    /// **C207's falsifier, inverted by the fix: a cost-accounted block keeps its *own* native writes
+    /// through a merge with a concurrent sibling.**
+    ///
+    /// The defect this replaces was in process the whole time and looked like nothing: `pre_charge`,
+    /// `refund` and `pay_executor` run for **every user deploy** and all three write `pos:vault`, so
+    /// on a network with concurrent proposers **every** user-deploy block overlapped every sibling on
+    /// that one slot. Two concurrent absolute snapshots of one slot cannot be composed, so the merge
+    /// rejected one block **whole** — and the deploy's *own* writes (a delegation, a bond, a `trust`)
+    /// died with it. The live ablation is in `spec/audit/evidence/c207-merge-loses-native-writes.md`:
+    /// two validators with autopropose lose the write, one validator, or two without autopropose,
+    /// keep it.
+    ///
+    /// **A system deploy never had the symptom**, and that asymmetry is why nothing looked wrong: a
+    /// boundary writes no `pos:vault`, and two sibling boundaries compute identical values from one
+    /// pre-state, so rejecting one leaves the other's equal write in place while the epoch machinery
+    /// keeps working.
+    ///
+    /// The fixture is the network's shape rather than a hand-written overlap: two blocks at one
+    /// height, **each carrying a user deploy** (so each charges a payer and the staking vault), and
+    /// one of them additionally making a native write of its own — the stand-in for `pos:delegations`.
+    /// The unique write is put on the *first* block and then on the *second*, because the merge's
+    /// surviving host is decided by the DAG and the hash rather than by the values.
+    ///
+    /// Both halves are asserted, because either alone is satisfiable by a bad fix: the merge keeps
+    /// **both** blocks (so the write survives) *and* the merged vault is the **sum** of the two
+    /// charges (so nothing was minted or destroyed by composing them). The control is the same block
+    /// merged alone, which shows the write survives on its own too — so a failure is the concurrency,
+    /// not the merge's application.
+    #[tokio::test]
+    async fn a_cost_accounted_block_keeps_its_own_native_writes_through_the_merge() {
+        let (repo, base) = genesis().await;
+        // Stands in for `pos:delegations`: a leaf written by one block's own terms and no other's.
+        let unique = Blake2b256Hash::from_bytes([10; 32]);
+        let with_unique_write = |played: &mut Played| {
+            played.own.push(NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: unique,
+                value: vec![40],
+            });
+        };
+
+        // --- the control: the writing block merged alone keeps its write ---
+        let mut alone = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
+        with_unique_write(&mut alone);
+        let (merged_alone, rejected_alone) =
+            merge(&repo, base, vec![index(0xa0, base, alone)], BTreeMap::new())
+                .await
+                .expect("a single block merges");
+        assert!(
+            rejected_alone.is_empty(),
+            "nothing to conflict with, so nothing is rejected"
+        );
+        assert_eq!(
+            repo.get_native_reader(merged_alone)
+                .await
+                .get_native(PREFIX_POS, unique)
+                .await
+                .expect("a readable native leaf"),
+            Some(vec![40]),
+            "**control**: merged alone, the unique write survives — so a loss in the concurrent case \
+             is the concurrency and not the merge's application"
+        );
+
+        // --- C207: the same block, concurrent with another cost-accounted block ---
+        //
+        // Both orderings, because which host the DAG keeps is hash-determined rather than
+        // value-determined (`two_branch_blocks_writing_one_native_slot_do_not_panic_the_merge`
+        // asserts exactly that). Running one ordering would let the test pass by luck of which host
+        // won.
+        let base_vault = {
+            let native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
+                repo.get_native_reader(base).await,
+            )));
+            i64::from(native.pos_vault_balance().await.unwrap())
+        };
+        for unique_on in [0xa0u8, 0xb0u8] {
+            let mut first = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
+            let mut second = play(&repo, base, EPOCH - 3, 1, Body::Deploy(9)).await;
+            if unique_on == 0xa0 {
+                with_unique_write(&mut first);
+            } else {
+                with_unique_write(&mut second);
+            }
+            let (merged, rejected) = merge(
+                &repo,
+                base,
+                vec![index(0xa0, base, first), index(0xb0, base, second)],
+                BTreeMap::new(),
+            )
+            .await
+            .expect("two concurrent cost-accounted blocks merge");
+
+            assert!(
+                rejected.is_empty(),
+                "each block's cost accounting is now a set of moves the merge re-applies, so two \
+                 concurrent charges are not competing snapshots of one slot and neither block loses \
+                 its own writes with a whole-block rejection"
+            );
+            let reader = repo.get_native_reader(merged).await;
+            assert_eq!(
+                reader
+                    .get_native(PREFIX_POS, unique)
+                    .await
+                    .expect("a readable native leaf"),
+                Some(vec![40]),
+                "**C207, fixed**: the block carrying the unique write is kept, and so is the write"
+            );
+            let native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
+                repo.get_native_reader(merged).await,
+            )));
+            assert_eq!(
+                i64::from(native.pos_vault_balance().await.unwrap()),
+                base_vault + 1000,
+                "and the vault holds the **sum** of the two charges: keeping both blocks must not \
+                 become paying the vault once for two debits, which is the REV this whole path is \
+                 answerable for"
+            );
+        }
     }
 }
 

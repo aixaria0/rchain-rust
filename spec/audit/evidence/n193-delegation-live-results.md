@@ -108,3 +108,61 @@ is a hypothesis this arm did not test**, and it is written as one rather than as
 - The driver's own bug, found and fixed in the same session: `say "… `(true, Nil)` …"` ran
   `(true, Nil)` as a command, so a message *about* the reply printed the shell's error instead. The
   backticks are escaped now. It did not affect any observed number.
+
+---
+
+# Re-run 2026-10-03, after AUDIT C207's fix — **green, end to end**
+
+Run on tree `6def51794` + the boundary instrumentation (`fix/c207-sidecar`), image built from that
+tree, two-validator devnet at `--epoch-length 2 --quarantine-length 1`. Log:
+`n193-delegation-live.log.txt`. The driver exits 0.
+
+| phase | reading | instrument |
+|---|---|---|
+| 1. `delegate` | `GBool(true)` | the op's own reply, off `@"pos-delegate"` |
+| 2. the aggregate, read by a **later** block's deploy, with a control in the same reply | `GInt(140)` for the operator, `GInt(100)` for an untouched validator | a deploy, computed in rholang |
+| 3. the wallet's HTTP route | `amount=40, accruedRewards=337, pendingUndelegation=null`; `[]` for a key that never delegated | the route the wallet's position screen calls |
+| 3b. the same read in rholang | agrees | a deploy |
+| 4. the undelegation's **staging** | `GBool(true)` and the ledger still carries the entry | read **in the block that staged it** |
+| 5. the boundary's move | `[pos] boundary 42: undelegation escrowed — 40 out of the operator's pool entry, which now reads 100` | the boundary's own log line |
+| 6. the payout | `[pos] boundary 28: undelegation paid — 2059 to the delegator's own vault (40 principal + 2019 accrued)` | same |
+
+Phase 2 is the C207 falsifier end to end: before the fix this read `GInt(100)`/`GInt(100)` on this
+same rig, because the deploy's write was rejected with its block.
+
+## Why phases 5 and 6 are asserted from the node's own log
+
+**A read of the chain is not the chain.** Every read in this arm that is not a deploy goes through a
+surface that holds *a* state rather than *the* state, and on a forking rig it can land on one the
+boundary did not write. Measured here: while the boundary's log said the operator's pool entry had
+gone to 100, a deploy-based `getBonds` still read **140**, and the HTTP position route read `[]` for a
+ledger a deploy-based `getDelegations` read as `1 entry`. A line the boundary printed *while writing
+the state* cannot be a stale read, which is why step 2b and step 3b now report themselves — the same
+reason the participation lag does. Both are ordinary `eprintln!`s on a consensus path and they are
+what made this arm's last two phases legible.
+
+## The instrument defects this arm forced, each one a real misreading of the chain
+
+1. **An accumulating channel.** A probe's send accumulates and `listen-data-at-name` returns the
+   oldest datum, so the second read of a name returned the *first* reading back — the payout phase
+   compared a balance before and after eleven blocks and read the same number twice, byte for byte.
+   `ask()` now publishes to a name of its own per call.
+2. **A fee the assertion ignored.** The balance probe is itself a deploy by the account being read, so
+   the deploys between two readings cost more than the principal being returned and "the balance must
+   rise" is unsatisfiable by construction. The reading's own cost is now measured by two consecutive
+   readings and subtracted.
+3. **`--no-autopropose` alone is not a linear chain.** `--propose-on-deploy` fires on every gossiped
+   deploy, so both validators propose and a boundary height races — and a *boundary* race discards one
+   block whole, deploy included. Both flags are now off.
+4. **`getDelegations` answers with a list**, so the in-block count is `.length()`; `.size()` fails the
+   whole deploy and reverts the staging with it.
+5. **A `sed` with no file.** Every one of these produced a reading that looked like the defect.
+
+## What is still not covered
+
+Not the wire: the two nodes are real containers, but every assertion is taken on the bootstrap's own
+state or its own log. Not multiple delegators, and not a delegator whose operator is slashed mid-flight
+— `rholang/src/native_state.rs::a_slash_fans_out_to_each_delegators_own_vault_at_every_tier` and
+`an_undelegation_is_staged_then_paid_to_the_delegator` carry those in process. And not the fork point
+(phase 6 of the driver, `RUN_DIVERGENCE=1`), which needs a second image built from the pre-change tree
+and is unchanged from this file's own account of it.

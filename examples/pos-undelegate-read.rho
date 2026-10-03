@@ -1,0 +1,30 @@
+// **Stage an undelegation and read the ledger back in the same block.** Publishes
+// `(the op's reply, the number of ledger entries the delegator still has)`.
+//
+// Why one deploy and not two: a `close_block` runs *after* a block's deploys, so a staged
+// undelegation in a block that happens to be a boundary is claimed by the same block and the staged
+// state is never observable from outside. Reading it in the *same* deploy is the only way to see the
+// staging deterministically — and it is what makes the assertion a falsifier rather than a race: an
+// `undelegate` that removed the ledger entry immediately would publish `0` here.
+//
+// The two ops take different arguments and that is deliberate rather than an oversight: `undelegate`
+// authorises with the **unforgeable** `*deployerId` (it spends the caller's vault), while
+// `getDelegations` takes the **public key** as a `ByteArray` (anyone may ask about any delegator).
+//
+// **The operator key below is a placeholder**; `spec/audit/evidence/n193-delegation-live-run.sh`
+// substitutes the run's own key out of the genesis bonds file, and the delegator key is the caller's
+// own — so the script substitutes both.
+//
+//   tools/devnet.sh deploy pos-undelegate-read.rho && tools/devnet.sh query pos-undelegate-read
+new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret1, ret2 in {
+  pos!("undelegate", *deployerId, "<OPERATOR_PUBKEY_HEX>".hexToBytes(), *ret1) |
+  for (@reply <- ret1) {
+    pos!("getDelegations", "<DELEGATOR_PUBKEY_HEX>".hexToBytes(), *ret2) |
+    for (@entries <- ret2) {
+      // `getDelegations` answers with a **list** (the HTTP route's JSON array is the same shape), so
+      // this is `length()` and not `size()` — measured, not guessed: `size` is a method on maps and
+      // sets only, and asking a list for it fails the whole deploy and reverts its state changes.
+      @"pos-undelegate-read"!((reply, entries.length()))
+    }
+  }
+}

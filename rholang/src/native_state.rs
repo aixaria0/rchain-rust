@@ -46,8 +46,8 @@ use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
-    InMemNativeStore, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
-    PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
+    InMemNativeStore, NativeStoreAction, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN,
+    PREFIX_VAULT, PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
 };
 
 use crate::util::rev_address::RevAddress;
@@ -140,7 +140,7 @@ fn registry_key(uri: &str) -> Blake2b256Hash {
 }
 
 /// Leaf key for a vault balance (the REV address base58 string, hashed).
-fn vault_key(address: &str) -> Blake2b256Hash {
+pub fn vault_key(address: &str) -> Blake2b256Hash {
     Blake2b256Hash::create(address.as_bytes())
 }
 
@@ -1593,15 +1593,32 @@ impl NativeSystemState {
         // paid it by now. The principal leaves the **operator's aggregate** pool entry — not a ledger
         // of its own — and is escrowed under the delegator's name with the request's deadline, so from
         // here it is a claim against the vault with an owner who is not the operator.
+        // **The move reports itself**, for the reason the participation lag does: what a boundary does
+        // with a staged undelegation is consensus state, and when it does nothing there is no other
+        // way to tell "no request was staged" from "one was staged and dropped here". One line, and
+        // only when there is a request to report.
+        if !pending_delegations.is_empty() {
+            eprintln!(
+                "[pos] boundary {block_number}: {} staged undelegation(s) to move out of the pool",
+                pending_delegations.len()
+            );
+        }
         for (key, deadline) in std::mem::take(&mut pending_delegations) {
             let Some(amount) = delegations.remove(&key) else {
                 // The delegation is gone — the operator was slashed, which clears its whole ledger
                 // (law 57's `a_slash_clears_the_delegations`) — so there is nothing to escrow. Dropping
                 // the request is the same payable outcome as the zero-value claim step 2's comment
                 // describes, without the tombstone.
+                eprintln!(
+                    "[pos] boundary {block_number}: a staged undelegation has no ledger entry — dropped"
+                );
                 continue;
             };
             let Some(aggregate) = pool.get(&key.operator).copied() else {
+                eprintln!(
+                    "[pos] boundary {block_number}: a staged undelegation's operator is not in the pool \
+                     — dropped, and the ledger entry went with it"
+                );
                 continue;
             };
             let Some(remaining) = i64::from(aggregate).checked_sub(i64::from(amount)) else {
@@ -1623,6 +1640,12 @@ impl NativeSystemState {
                 pool.insert(key.operator, remaining);
             }
             delegation_claims.insert(key, DelegationClaim { amount, deadline });
+            eprintln!(
+                "[pos] boundary {block_number}: undelegation escrowed — {} out of the operator's pool \
+                 entry, which now reads {}",
+                i64::from(amount),
+                i64::from(remaining)
+            );
         }
 
         // 3. Pay the claims whose quarantine has elapsed.
@@ -1675,6 +1698,17 @@ impl NativeSystemState {
             self.set_vault_balance(
                 &address,
                 balance_plus(balance, i64::from(payable), "delegation refund")?,
+            );
+            // The other half of the pair with the escrow line above: a claim that is paid is a
+            // consensus state change like any other, and the only way to observe it from outside is
+            // to be told — a balance read is a deploy by the account being read, so it carries its own
+            // cost and cannot resolve a return of this size on a live chain.
+            eprintln!(
+                "[pos] boundary {block_number}: undelegation paid — {} to the delegator's own vault \
+                 ({} principal + {} accrued)",
+                i64::from(payable),
+                i64::from(claim.amount),
+                i64::from(accrued)
             );
         }
 
@@ -6494,5 +6528,41 @@ mod delegation_tests {
             .unwrap()
             .unwrap();
         assert!(native.withdraw(&operator, 2).await.unwrap().is_ok());
+    }
+}
+
+// ==================================================================================================
+// Cost accounting as checkpoint actions (AUDIT C207)
+//
+// Cost accounting writes `pos:vault` from **every** user deploy, so a block's native sidecar used to
+// carry that write — which made every user-deploy block overlap every concurrent sibling on one slot,
+// and the merge resolves an overlap by rejecting a whole block, silently taking the deploy's own
+// writes (a delegation, a bond, a trust) with it. The merge now re-applies cost accounting per
+// accepted deploy instead, and these two functions are the seam: they are the only place that knows
+// the staking vault's key, a deployer vault's key and the little-endian encoding, so `casper` can
+// build the actions without re-implementing any of it.
+//
+// Appended at the tail, per this file's own rule: its earlier line numbers are cited by Lean
+// declarations and spec rows.
+// --------------------------------------------------------------------------------------------------
+
+/// The checkpoint action that **sets a user vault's balance**.
+///
+/// The caller passes the value the leaf will hold — it read the base itself, because only the caller
+/// knows which state the move is being applied to.
+pub fn vault_put_action(address: &str, value: NonNegI64) -> NativeStoreAction {
+    NativeStoreAction::Put {
+        prefix: PREFIX_VAULT,
+        key: vault_key(address),
+        value: i64::from(value).to_le_bytes().to_vec(),
+    }
+}
+
+/// The checkpoint action that **sets the staking vault's balance**.
+pub fn pos_vault_put_action(value: NonNegI64) -> NativeStoreAction {
+    NativeStoreAction::Put {
+        prefix: PREFIX_POS,
+        key: pos_vault_key(),
+        value: i64::from(value).to_le_bytes().to_vec(),
     }
 }
