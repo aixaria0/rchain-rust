@@ -408,6 +408,13 @@ impl RhoRuntime {
         self.space.last_native_changes()
     }
 
+    /// The same drain **minus cost accounting's writes** — what the block's *sidecar* carries, since
+    /// the merge re-derives those from the accepted deploys (AUDIT C207). The checkpoint still folds
+    /// the whole set; this is only what travels.
+    pub fn last_own_native_changes(&self) -> Vec<NativeStoreAction> {
+        self.space.last_own_native_changes()
+    }
+
     pub fn cost(&self) -> &CostAccounting {
         self.cost.as_ref()
     }
@@ -666,6 +673,12 @@ impl ReplayRhoRuntime {
     /// The native mutations folded into the most recent replay checkpoint (one per replayed block).
     pub fn last_native_changes(&self) -> Vec<NativeStoreAction> {
         self.space.last_native_changes()
+    }
+
+    /// The same drain **minus cost accounting's writes** — what the block's *sidecar* carries, since
+    /// the merge re-derives those from the accepted deploys (AUDIT C207).
+    pub fn last_own_native_changes(&self) -> Vec<NativeStoreAction> {
+        self.space.last_own_native_changes()
     }
 
     pub fn cost(&self) -> &CostAccounting {

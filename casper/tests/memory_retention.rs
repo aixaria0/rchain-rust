@@ -134,6 +134,8 @@ fn build_scope_set(seed: u64) -> Vec<Arc<DeployChainIndex>> {
                 post_state_hash: Blake2b256Hash::from_bytes([1u8; 32]),
                 event_log_index: index,
                 state_changes: StateChange::empty(),
+                cost_moves: std::collections::BTreeMap::new(),
+                executor: String::new(),
             })
         })
         .collect()

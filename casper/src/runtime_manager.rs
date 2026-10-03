@@ -629,7 +629,13 @@ impl RuntimeManager {
             &PublicKey::new(deploy.deployer.clone()),
             rand.split_byte(0),
         );
+        // **Everything inside this window is cost accounting's** (AUDIT C207): its writes are the
+        // ones the merge re-derives from the accepted deploys rather than carrying in the block's
+        // sidecar. Nothing else can run here — these are system deploys evaluated on this call's own
+        // stack — so the attribution is exact rather than heuristic.
+        runtime.native_store().begin_cost_accounting();
         let (pre_result, pre_eval) = Self::eval_system_deploy_with(runtime, &pre_charge).await?;
+        runtime.native_store().end_cost_accounting();
         let pre_checkpoint = runtime.create_soft_checkpoint().await;
         collector = collector.add(
             &pre_checkpoint
@@ -668,6 +674,7 @@ impl RuntimeManager {
             processed.refund_amount(),
             rand.split_byte(2),
         );
+        runtime.native_store().begin_cost_accounting();
         let _ = Self::eval_system_deploy_with(runtime, &refund).await?;
 
         // **And the block's producer is paid for the work** (B2, #150). Last, because the amount is a
@@ -682,6 +689,9 @@ impl RuntimeManager {
             rand.split_byte(3),
         );
         let _ = Self::eval_system_deploy_with(runtime, &pay_executor).await?;
+        // The cost-accounting window closes with the last of the three, before the block's own
+        // bookkeeping resumes.
+        runtime.native_store().end_cost_accounting();
 
         processed.deploy_log = collector.event_log.clone();
         Ok(UserDeployRuntimeResult {
@@ -1115,8 +1125,12 @@ impl RuntimeManager {
         runtime.set_block_data(block_data.clone());
         let (mut state_hash, processed_deploys) =
             Self::play_deploys_with_cost_accounting_with(runtime, start_hash, terms, rand).await?;
-        // The user deploys' native mutations, drained into the checkpoint that call just made.
-        let mut native_changes = runtime.last_native_changes();
+        // The user deploys' native mutations, drained into the checkpoint that call just made — and
+        // **the sidecar's half only**: cost accounting's writes are re-derived by the merge from the
+        // accepted deploys (AUDIT C207), so carrying them here would make every user-deploy block
+        // overlap every concurrent sibling on `pos:vault` and lose its own writes to a whole-block
+        // rejection. The checkpoint has already folded both halves.
+        let mut native_changes = runtime.last_own_native_changes();
         let mut processed_system_deploys = Vec::new();
         for sd in system_deploys {
             let (new_hash, processed) =
@@ -1125,7 +1139,8 @@ impl RuntimeManager {
             // Each block-level system deploy resets and checkpoints its own state, so its native
             // mutations (activation, rewards, withdrawal processing, slashing) are read here and
             // accumulated — one `last_native_changes` per checkpoint, and reset does not clear it.
-            native_changes.extend(runtime.last_native_changes());
+            // A block-level system deploy is not cost accounting, so the own-set is the right read.
+            native_changes.extend(runtime.last_own_native_changes());
             processed_system_deploys.push(processed);
         }
         Ok((
@@ -1305,7 +1320,9 @@ impl RuntimeManager {
         // The replayed block's native mutations, from the single checkpoint `replay_deploys` made at
         // the end of the run. Recorded here so the validator that replayed the block does not have to
         // replay it again to index it, and so the merge can re-apply them (issue #74).
-        let native_changes = replay_runtime.last_native_changes();
+        // **The sidecar's half**, as on the play path: cost accounting is re-derived by the merge
+        // (AUDIT C207), so only the block's own writes travel. The checkpoint has folded both.
+        let native_changes = replay_runtime.last_own_native_changes();
         self.save_native_changes(state_hash, &creator, seq_num, &native_changes)
             .await
             .map_err(ReplayFailure::internal_error)?;

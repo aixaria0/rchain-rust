@@ -46,8 +46,8 @@ use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
-    InMemNativeStore, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
-    PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
+    InMemNativeStore, NativeStoreAction, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN,
+    PREFIX_VAULT, PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
 };
 
 use crate::util::rev_address::RevAddress;
@@ -140,7 +140,7 @@ fn registry_key(uri: &str) -> Blake2b256Hash {
 }
 
 /// Leaf key for a vault balance (the REV address base58 string, hashed).
-fn vault_key(address: &str) -> Blake2b256Hash {
+pub fn vault_key(address: &str) -> Blake2b256Hash {
     Blake2b256Hash::create(address.as_bytes())
 }
 
@@ -6494,5 +6494,41 @@ mod delegation_tests {
             .unwrap()
             .unwrap();
         assert!(native.withdraw(&operator, 2).await.unwrap().is_ok());
+    }
+}
+
+// ==================================================================================================
+// Cost accounting as checkpoint actions (AUDIT C207)
+//
+// Cost accounting writes `pos:vault` from **every** user deploy, so a block's native sidecar used to
+// carry that write — which made every user-deploy block overlap every concurrent sibling on one slot,
+// and the merge resolves an overlap by rejecting a whole block, silently taking the deploy's own
+// writes (a delegation, a bond, a trust) with it. The merge now re-applies cost accounting per
+// accepted deploy instead, and these two functions are the seam: they are the only place that knows
+// the staking vault's key, a deployer vault's key and the little-endian encoding, so `casper` can
+// build the actions without re-implementing any of it.
+//
+// Appended at the tail, per this file's own rule: its earlier line numbers are cited by Lean
+// declarations and spec rows.
+// --------------------------------------------------------------------------------------------------
+
+/// The checkpoint action that **sets a user vault's balance**.
+///
+/// The caller passes the value the leaf will hold — it read the base itself, because only the caller
+/// knows which state the move is being applied to.
+pub fn vault_put_action(address: &str, value: NonNegI64) -> NativeStoreAction {
+    NativeStoreAction::Put {
+        prefix: PREFIX_VAULT,
+        key: vault_key(address),
+        value: i64::from(value).to_le_bytes().to_vec(),
+    }
+}
+
+/// The checkpoint action that **sets the staking vault's balance**.
+pub fn pos_vault_put_action(value: NonNegI64) -> NativeStoreAction {
+    NativeStoreAction::Put {
+        prefix: PREFIX_POS,
+        key: pos_vault_key(),
+        value: i64::from(value).to_le_bytes().to_vec(),
     }
 }
