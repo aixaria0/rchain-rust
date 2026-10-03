@@ -18,7 +18,6 @@ use rchain_crypto::signatures::secp256k1::Secp256k1;
 use rchain_crypto::signatures::signed::Signed;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, DeployData, SignedDeployData};
 use rchain_models::validator::Validator;
@@ -990,17 +989,32 @@ where
     // own. See #70.
     //
     // What the guard needs is (a) whether an unfinalized state transition exists to attest to — the scan
-    // above, over what this node has seen — and (b) how much stake is moving on the fringe we are building
-    // on. (b) is the senders of the *parents'* latest messages, excluding ourselves: our own message is the
-    // attestation we are about to add, and it is counted on the other side of the comparison.
+    // above, over what this node has seen — and (b) how much stake is moving. (b) is the senders of the
+    // latest messages this node has seen, excluding ourselves: our own message is the attestation we are
+    // about to add, and it is counted on the other side of the comparison.
+    //
+    // **Every input is read from the same view, the node's seen view, and not from the parents** (C209,
+    // second half). The parents are the round snapshot, and before the first round closes that snapshot
+    // is the genesis alone — a message from the genesis signer, at the tip. Read from it, the signer has
+    // "just spoken" and nobody else is moving, so its cadence is never due and its quorum never reachable,
+    // and it never speaks again: measured live on #219 with every deploy sent to another validator (the
+    // signer's block count stayed at 1). The parents decide what the block is built on; they do not
+    // decide whether this node should speak.
+    //
     // The guard's inputs are named functions rather than inline sums, so that its behaviour is
     // falsifiable without a DAG: `moving_attestation_stake` (who counts as moving),
     // `attestation_suppressed` (the decision) and `cadence_due` (the pace bound). `tip` is the newest
     // height this node can see, which is the datum the recency checks need.
-    let tip = pre_state
-        .justifications
-        .iter()
-        .map(|m| m.block_num)
+    let seen_heights: BTreeMap<Validator, BlockHeight> = liveness::latest_heights(
+        dag_repr
+            .dag_message_state
+            .latest_msgs
+            .values()
+            .map(|m| (m.sender.clone(), m.height)),
+    );
+    let tip = seen_heights
+        .values()
+        .copied()
         .max()
         .unwrap_or_else(BlockHeight::zero);
     // (a), as the two inputs the decision takes — see `attestation_inputs` for why the second is now
@@ -1011,12 +1025,7 @@ where
     // whole bonded map below, so a minority cannot attest its way to a supermajority.
     let live_bonds = liveness::live_weight_set(
         &pre_state_bonds,
-        &liveness::latest_heights(
-            pre_state
-                .justifications
-                .iter()
-                .map(|m| (m.sender.clone(), m.block_num)),
-        ),
+        &seen_heights,
         tip,
         liveness::LIVENESS_WINDOW,
     );
@@ -1037,7 +1046,7 @@ where
         nothing_to_finalize,
         new_state_transition,
         quorum_reachable,
-        cadence_due(&pre_state.justifications, &creators_validator, tip),
+        cadence_due(&seen_heights, &creators_validator, tip),
         // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting
         // to remote blocks, and a caller's explicit propose is not a reaction.
         source == ProposeSource::Automatic,
@@ -1599,11 +1608,16 @@ fn moving_attestation_stake(live_bonds: &BTreeMap<Validator, NonNegI64>, own: &V
         .sum()
 }
 
-/// Whether this node has been quiet long enough to speak again, read from its own latest message in
-/// `justifications` — so the pace bound needs no new state, no counter, and no persistence.
-fn cadence_due(justifications: &[BlockMetadata], own: &Validator, tip: BlockHeight) -> bool {
-    match justifications.iter().find(|m| &m.sender == own) {
-        Some(mine) => liveness::heights_behind(tip, mine.block_num) > liveness::LIVENESS_WINDOW,
+/// Whether this node has been quiet long enough to speak again, read from the height of its own latest
+/// message among the senders' `latest` heights — so the pace bound needs no new state, no counter, and no
+/// persistence.
+fn cadence_due(
+    latest: &BTreeMap<Validator, BlockHeight>,
+    own: &Validator,
+    tip: BlockHeight,
+) -> bool {
+    match latest.get(own) {
+        Some(mine) => liveness::heights_behind(tip, *mine) > liveness::LIVENESS_WINDOW,
         // Nothing from us in the DAG yet: there is no quiet to have broken.
         None => true,
     }
@@ -1916,21 +1930,24 @@ mod attestation_suppression_tests {
         let (a, b) = (validator(1), validator(2));
         let tip = BlockHeight::try_from(20).unwrap();
 
-        assert!(cadence_due(&[], &a, tip), "nothing from us: speak");
+        let at = |v: &Validator, h: i64| {
+            BTreeMap::from([(v.clone(), BlockHeight::try_from(h).unwrap())])
+        };
+
         assert!(
-            !cadence_due(&[latest(a.clone(), 19)], &a, tip),
+            cadence_due(&BTreeMap::new(), &a, tip),
+            "nothing from us: speak"
+        );
+        assert!(
+            !cadence_due(&at(&a, 19), &a, tip),
             "we spoke one height ago"
         );
         assert!(
-            cadence_due(
-                &[latest(a.clone(), 20 - liveness::LIVENESS_WINDOW - 1)],
-                &a,
-                tip
-            ),
+            cadence_due(&at(&a, 20 - liveness::LIVENESS_WINDOW - 1), &a, tip),
             "quiet past the window"
         );
         // Someone else's message is not ours, and must not reset our cadence.
-        assert!(cadence_due(&[latest(b, 20)], &a, tip));
+        assert!(cadence_due(&at(&b, 20), &a, tip));
     }
 }
 
@@ -2425,7 +2442,11 @@ mod quiet_chain_tests {
     enum View {
         /// The guard reads the round snapshot (the parents) — the rule on dev.
         Round,
-        /// The guard reads everything the node has seen (`latest_msgs`).
+        /// What is left to finalise is read from `latest_msgs`, and who is moving from the parents: the
+        /// first cut of C209, which a live run refuted (a deploy sent to a validator that did not sign the
+        /// genesis is never finalised).
+        SeenWork,
+        /// Every guard input is read from everything the node has seen (`latest_msgs`).
         Seen,
     }
 
@@ -2554,12 +2575,21 @@ mod quiet_chain_tests {
                 let tip = parents.iter().map(|m| m.height).max().unwrap();
                 let fringe = message_map::latest_fringe(&st.msg_map, &parents);
                 let latest: BTreeSet<Message<u64, u8>> = st.latest_msgs.values().cloned().collect();
-                let viewed = match cfg.view {
+                let work_view = match cfg.view {
                     View::Round => &parents,
+                    View::SeenWork | View::Seen => &latest,
+                };
+                let viewed = match cfg.view {
+                    View::Round | View::SeenWork => &parents,
                     View::Seen => &latest,
                 };
-                let conflict: BTreeSet<u64> =
-                    seen(viewed).difference(&seen(&fringe)).copied().collect();
+                // The movement inputs are read from one view, and recency is measured from its tip.
+                let seen_tip = viewed.iter().map(|m| m.height).max().unwrap();
+                let work_tip = work_view.iter().map(|m| m.height).max().unwrap();
+                let conflict: BTreeSet<u64> = seen(work_view)
+                    .difference(&seen(&fringe))
+                    .copied()
+                    .collect();
                 let nothing_to_finalize = conflict.iter().all(|h| !with_deploy.contains(h));
                 let oldest_pending = conflict
                     .iter()
@@ -2567,19 +2597,19 @@ mod quiet_chain_tests {
                     .map(|h| st.msg_map[h].height)
                     .min();
                 if let Some(o) = oldest_pending {
-                    max_age = max_age.max(liveness::heights_behind(tip, o));
+                    max_age = max_age.max(liveness::heights_behind(work_tip, o));
                 }
                 let (nothing_to_finalize, new_state_transition) = match cfg.view {
                     View::Round => (
                         nothing_to_finalize,
                         parents.iter().any(|p| with_deploy.contains(&p.id)),
                     ),
-                    View::Seen => attestation_inputs(oldest_pending, tip),
+                    View::SeenWork | View::Seen => attestation_inputs(oldest_pending, work_tip),
                 };
                 let live = liveness::live_weight_set(
                     &bonds,
-                    &liveness::latest_heights(parents.iter().map(|m| (m.sender, m.height))),
-                    tip,
+                    &liveness::latest_heights(viewed.iter().map(|m| (m.sender, m.height))),
+                    seen_tip,
                     liveness::LIVENESS_WINDOW,
                 );
                 let total: i128 = bonds.values().map(|s| i128::from(i64::from(*s))).sum();
@@ -2590,9 +2620,9 @@ mod quiet_chain_tests {
                     .map(|(_, s)| i128::from(i64::from(*s)))
                     .sum();
                 let quorum_reachable = 3 * (moving + own) > 2 * total;
-                let cadence_due = match parents.iter().find(|m| m.sender == me) {
+                let cadence_due = match viewed.iter().find(|m| m.sender == me) {
                     Some(mine) => {
-                        liveness::heights_behind(tip, mine.height) > liveness::LIVENESS_WINDOW
+                        liveness::heights_behind(seen_tip, mine.height) > liveness::LIVENESS_WINDOW
                     }
                     None => true,
                 };
@@ -2684,6 +2714,16 @@ mod quiet_chain_tests {
                 "three, every deploy to one",
                 vec![100, 100, 50],
                 vec![Deploy(0), Deploy(0), Deploy(0)],
+            ),
+            (
+                "three, every deploy to a validator that did not sign the genesis",
+                vec![100, 100, 50],
+                vec![Deploy(1), Deploy(1), Deploy(1)],
+            ),
+            (
+                "three, every deploy to the 50",
+                vec![100, 100, 50],
+                vec![Deploy(2), Deploy(2)],
             ),
             (
                 "three, deploys in rotation",
@@ -2793,6 +2833,22 @@ mod quiet_chain_tests {
         assert_eq!(o.finalized, 0, "{o:?}");
     }
 
+    /// **The second control: reading only the work from the seen view is not enough.** The genesis is a
+    /// message from its signer, so read from the round's parents the signer has "just spoken" at the tip
+    /// and nobody else is moving: its cadence is never due and its quorum never reachable, and it never
+    /// speaks again. A deploy sent to any other validator is then never finalised — measured live on #219
+    /// (the signer's block count stayed at 1 while the others made 5 and 1) and here.
+    #[test]
+    fn reading_only_the_work_from_the_seen_view_strands_the_genesis_signer() {
+        use Step::*;
+        let script = [Deploy(1), Deploy(1), Deploy(1)];
+        let o = run(&cfg(&[100, 100, 50], 0, View::SeenWork), &script);
+        assert!(!o.hit_cap, "{o:?}");
+        assert_eq!(o.finalized, 0, "{o:?}");
+        let o = run(&cfg(&[100, 100, 50], 0, View::Seen), &script);
+        assert_eq!(o.finalized, o.deploys, "{o:?}");
+    }
+
     /// **Without a supermajority nothing can finalise, and the net must not spin trying.** A validator
     /// holding 100 of 250 is killed, or one of two: production stays bounded.
     #[test]
@@ -2847,7 +2903,7 @@ mod quiet_chain_tests {
     fn table() {
         for (name, stakes, script) in live_quorum_scenarios() {
             for genesis_sender in [255u8, 0] {
-                for view in [View::Round, View::Seen] {
+                for view in [View::Round, View::SeenWork, View::Seen] {
                     let o = run(&cfg(&stakes, genesis_sender, view), &script);
                     eprintln!("{name:<36} genesis by {genesis_sender:<3} {view:?}: {o:?}");
                 }

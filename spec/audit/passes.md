@@ -7170,10 +7170,22 @@ would produce a block. On the old inputs with a bonded genesis signer, three dep
 100/100/50 finalise none (`on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised`).
 On the new ones (`attestation_inputs`: both read from `latest_msgs`, the fringe still the parents'),
 `every_deploy_finalises_and_then_the_chain_is_quiet` holds for 2, 3, 5 and 8 validators, deploys to one
-or several, the 50 killed, killed and returned, a 100 of four killed, a joiner that speaks and one that
+or several, to the genesis signer or to another validator, the 50 killed, killed and returned, a 100 of four killed, a joiner that speaks and one that
 never does, with genesis signed by a bonded and an unbonded key: every deploy finalises, within 10·N
 blocks each (measured: 4 to 8 rounds), and the net then stops. With the quorum lost (a 100 of 100/100/50,
 or one of two) nothing finalises, as it must not, and production stays bounded (`a_lost_quorum_does_not_storm`).
+
+**The second half, found by a live run.** The first cut read only the *work* from the seen view and
+left who is moving, the tip and the cadence on the parents. Run live on #219 (Patrick Mockridge, two runs,
+`spec/audit/evidence/n213-*` on #221), deploys to the genesis signer and in rotation finalised 24/24 and
+23/23, and deploys to validator-1 finalised none: the signer made no block after genesis. The genesis is a
+message *from the signer*, and before the first round closes the round snapshot is the genesis alone, so
+read from the parents the signer had "just spoken" at the tip and nobody else was moving — cadence never
+due, quorum never reachable, silent for good. The in-process network had sent its deploys to the signer,
+so it never asked; it does now, and reproduces the live result exactly
+(`reading_only_the_work_from_the_seen_view_strands_the_genesis_signer`, red on the first cut, green on
+this one). Every guard input is now read from `latest_msgs`; the parents decide only what the block is
+built on.
 
 **The storm bound.** Read from the seen view, the licence holds for as long as a deploy is unfinalised,
 so a finality stall from any other cause would bring C171 back. `ATTESTATION_HORIZON` (three liveness
@@ -7185,5 +7197,5 @@ validator killed and the partition waiting for it to age out.
 does not finalise. It is node-local — block validity is unchanged, so it needs no new genesis and old and
 new nodes interoperate. Not modelled: delivery delay and reordering. A deploy refused by the round gate
 while the net is quiet waits for the next attempt to take the stall escape (`ROUND_STALL_ESCAPE`); in
-process that is the next deploy, and with a supermajority live none was ever left waiting. Nothing here
-has been run on a live net.
+process that is the next deploy, and with a supermajority live none was ever left waiting. This revision
+has not been run on a live net.
