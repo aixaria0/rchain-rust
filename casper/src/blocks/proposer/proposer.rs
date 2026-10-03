@@ -1042,15 +1042,37 @@ where
     let quorum_reachable =
         attestation_reaches_supermajority(attestation_stake, own_stake, pre_state_bonds_stake);
 
+    let cadence = cadence_due(&seen_heights, &creators_validator, tip);
+    // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting to remote
+    // blocks, and a caller's explicit propose is not a reaction.
+    let paced = source == ProposeSource::Automatic;
     let suppress_attestation = attestation_suppressed(
         nothing_to_finalize,
         new_state_transition,
         quorum_reachable,
-        cadence_due(&seen_heights, &creators_validator, tip),
-        // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting
-        // to remote blocks, and a caller's explicit propose is not a reaction.
-        source == ProposeSource::Automatic,
+        cadence,
+        paced,
     );
+    // **Why this node did or did not attest, in its own log** (#213's diagnostic). Without it a validator
+    // that stays silent looks exactly like one with nothing to do: the R3 arm on #219 showed the genesis
+    // signer making no block after genesis, and no run could say which input held it.
+    let decision = describe_attestation_decision(&AttestationDecision {
+        nothing_to_finalize,
+        new_state_transition,
+        quorum_reachable,
+        cadence_due: cadence,
+        paced,
+        round_senders: pre_state.justifications.iter().map(|m| &m.sender).collect(),
+        blocked_attempts: blocked_since_advance.load(std::sync::atomic::Ordering::Relaxed),
+        escape,
+        suppressed: suppress_attestation,
+    });
+    if attestation_line_due(&decision, i64::from(tip)) {
+        log.info(
+            LogSource::new("casper.blocks.Proposer"),
+            &format!("attestation at tip {}: {decision}", i64::from(tip)),
+        );
+    }
 
     // User deploys: filter future / expired / replayed, then cap at what the block can seed — the pool
     // may hold far more than one block can carry, and the leftover stays pooled (AUDIT C123).
@@ -1656,6 +1678,85 @@ fn attestation_inputs(oldest_unfinalized: Option<BlockHeight>, tip: BlockHeight)
     }
 }
 
+/// The guard's inputs and its decision, for the diagnostic line.
+struct AttestationDecision<'a> {
+    nothing_to_finalize: bool,
+    new_state_transition: bool,
+    quorum_reachable: bool,
+    cadence_due: bool,
+    paced: bool,
+    /// The senders of the round snapshot this block is built on.
+    round_senders: BTreeSet<&'a Validator>,
+    /// Proposals declined since this node last advanced past the round (the escape's attempt counter).
+    blocked_attempts: i64,
+    escape: bool,
+    suppressed: bool,
+}
+
+/// The decision as one line. **The tip is not in it**, so that a line that only moved height compares
+/// equal and the rate limit holds; the caller prefixes it.
+fn describe_attestation_decision(d: &AttestationDecision<'_>) -> String {
+    let senders: Vec<String> = d
+        .round_senders
+        .iter()
+        .map(|v| {
+            v.as_bytes()[..4]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+        .collect();
+    format!(
+        "{} — nothing_to_finalize={} new_state_transition={} quorum_reachable={} cadence_due={} \
+         paced={} round=[{}] blocked_attempts={} escape={}",
+        if d.suppressed { "withheld" } else { "licensed" },
+        d.nothing_to_finalize,
+        d.new_state_transition,
+        d.quorum_reachable,
+        d.cadence_due,
+        d.paced,
+        senders.join(" "),
+        d.blocked_attempts,
+        d.escape,
+    )
+}
+
+/// The last attestation line logged, and the tip it was logged at: a line is due when it **changes**, or
+/// every `ATTESTATION_LOG_INTERVAL` heights while it does not — the rate limit the finality stall line uses
+/// (`interpreter_util.rs`), for the same reason: the change is the event, and a steady state is not.
+static LAST_ATTESTATION_LINE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static LAST_ATTESTATION_TIP: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(i64::MIN);
+const ATTESTATION_LOG_INTERVAL: i64 = 100;
+
+fn attestation_line_due(line: &str, tip: i64) -> bool {
+    line_due(&LAST_ATTESTATION_LINE, &LAST_ATTESTATION_TIP, line, tip)
+}
+
+/// The rate limit itself, over state the caller owns — so a test can hold its own and not race the
+/// node's statics, which every `create_block` in the test binary writes.
+fn line_due(
+    last_line: &std::sync::Mutex<Option<String>>,
+    last_tip: &std::sync::atomic::AtomicI64,
+    line: &str,
+    tip: i64,
+) -> bool {
+    let changed = {
+        let mut last = last_line.lock().unwrap_or_else(|p| p.into_inner());
+        let changed = last.as_deref() != Some(line);
+        if changed {
+            *last = Some(line.to_string());
+        }
+        changed
+    };
+    let due =
+        changed || tip.saturating_sub(last_tip.load(Ordering::Relaxed)) >= ATTESTATION_LOG_INTERVAL;
+    if due {
+        last_tip.store(tip, Ordering::Relaxed);
+    }
+    due
+}
+
 /// Whether this node withholds its attestation for the block it is building.
 ///
 /// A pair of bounds, and the order matters:
@@ -1753,7 +1854,7 @@ mod attestation_guard_tests {
 mod attestation_suppression_tests {
     use super::{
         attestation_reaches_supermajority, attestation_suppressed, cadence_due,
-        moving_attestation_stake,
+        describe_attestation_decision, line_due, moving_attestation_stake, AttestationDecision,
     };
     use rchain_block_storage::dag::liveness;
     use rchain_models::block_hash::BlockHash;
@@ -1921,6 +2022,63 @@ mod attestation_suppression_tests {
     #[test]
     fn an_idle_chain_suppresses_whatever_else_is_true() {
         assert!(attestation_suppressed(true, true, true, true, true));
+    }
+
+    /// **The diagnostic names every input, and fires on a change rather than on a height.** The tip is
+    /// kept out of the rendered line, so a validator that stays withheld for the same reason logs once and
+    /// then once per interval, not once per block.
+    #[test]
+    fn the_attestation_line_names_every_input_and_fires_on_a_change() {
+        let (a, b) = (validator(1), validator(2));
+        let decision = |suppressed: bool| {
+            describe_attestation_decision(&AttestationDecision {
+                nothing_to_finalize: false,
+                new_state_transition: true,
+                quorum_reachable: false,
+                cadence_due: false,
+                paced: true,
+                round_senders: BTreeSet::from([&a, &b]),
+                blocked_attempts: 2,
+                escape: false,
+                suppressed,
+            })
+        };
+        let withheld = decision(true);
+        for field in [
+            "withheld",
+            "nothing_to_finalize=false",
+            "new_state_transition=true",
+            "quorum_reachable=false",
+            "cadence_due=false",
+            "paced=true",
+            "round=[01010101 02020202]",
+            "blocked_attempts=2",
+            "escape=false",
+        ] {
+            assert!(withheld.contains(field), "{field} missing from: {withheld}");
+        }
+
+        let (line, tip) = (
+            std::sync::Mutex::new(None),
+            std::sync::atomic::AtomicI64::new(i64::MIN),
+        );
+        let attestation_line_due = |l: &str, t: i64| line_due(&line, &tip, l, t);
+        assert!(
+            attestation_line_due(&withheld, 1_000),
+            "the first line is logged"
+        );
+        assert!(
+            !attestation_line_due(&withheld, 1_001),
+            "the same line one height later is not"
+        );
+        assert!(
+            attestation_line_due(&decision(false), 1_002),
+            "a changed decision is logged at once"
+        );
+        assert!(
+            attestation_line_due(&decision(false), 1_102),
+            "an unchanged line is logged again after the interval"
+        );
     }
 
     /// The pace bound is read from the DAG, so it needs no new state: our own latest message's height

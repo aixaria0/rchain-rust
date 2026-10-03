@@ -797,9 +797,11 @@ fn a_round_snapshot_of_the_latest_messages_is_what_the_gate_needs() {
 /// **Measured on the node**: after the kill the height is flat for the whole remaining window, and the
 /// node logs no equivocation and no error — it is not failing, it is waiting for a round that cannot close.
 ///
-/// This test is that scenario, in-process, and it is **red today**: the tip goes 1 -> 2 over thirty-seven
-/// further rounds of attempts and then nothing is admitted again. It is `#[ignore]`d rather than deleted so
-/// that the guard's redesign is aimed by it — a fix is done when this test runs green without the ignore.
+/// This test is that scenario, in-process. It was red before the round gate had an escape (the tip went
+/// 1 -> 2 over thirty-seven further rounds of attempts and then nothing was admitted again), and it is
+/// **green and runs unignored** since the escape landed. Its `propose` closure mirrors the escape's
+/// **attempt** bound only; #215's wall-clock bound (`ROUND_STALL_ESCAPE`) is pinned separately, by
+/// `the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound` in `proposer.rs`.
 #[test]
 fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
     use rchain_block_storage::dag::message_state::DagMessageState;
