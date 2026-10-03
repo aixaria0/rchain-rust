@@ -1,0 +1,45 @@
+# n214 readings from target/n214/f9d36b9c4-20261003T152528Z
+
+## n214-a
+  # validators=3 nodes=bootstrap:40403,v1:41403,v2:42403
+  # cap=memory.max=8589934592 memory.swap.max=8589934592 (bytes)
+  # env=none
+  # container_cmd=[run --host devnet-bootstrap --api-host 0.0.0.0 --data-dir /var/lib/rnode --protocol-port 40400 --discovery-port 40404 --api-port-grpc-external 40401 --api-port-grpc-internal 40402 --api-port-http 40403 --api-port-admin-http 40405 --propose-on-deploy --api-enable-devnet-cors --api-enable-devnet-admin-public --dev-mode --deployer-private-key a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76 --epoch-length 10 -s --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt --validator-private-key a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76]
+  # blocks_read=/api/blocks/<depth>, depth=min(50, height) — the node's own max-blocks-limit; a failed read is recorded, never counted as zero blocks
+  # tree=f9d36b9c4d89ab51cec154db283405456d4da04f
+  # image=sha256:eb2c23083491c7ef914dcd630e4fe4af5fd0e9ac0b0bae0070f38a884679408c 2026-10-03T16:31:00.889048654+01:00
+  # container=2c01769306925419bcae0c8d5a09aff69cb6486331fdf06337a2f452ae5e3083
+  # binary_sha256=9659a2bce6863317e366cdc14d443be62ea136aac1c07214ced02c7a6e8f960d
+
+## n214-b
+  # validators=3 nodes=bootstrap:40403,v1:41403,v2:42403
+  # cap=memory.max=8589934592 memory.swap.max=8589934592 (bytes)
+  # env=none
+  # container_cmd=[run --host devnet-bootstrap --api-host 0.0.0.0 --data-dir /var/lib/rnode --protocol-port 40400 --discovery-port 40404 --api-port-grpc-external 40401 --api-port-grpc-internal 40402 --api-port-http 40403 --api-port-admin-http 40405 --propose-on-deploy --api-enable-devnet-cors --api-enable-devnet-admin-public --dev-mode --deployer-private-key a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76 --epoch-length 10 -s --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt --validator-private-key a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76]
+  # blocks_read=/api/blocks/<depth>, depth=min(50, height) — the node's own max-blocks-limit; a failed read is recorded, never counted as zero blocks
+  # tree=f9d36b9c4d89ab51cec154db283405456d4da04f
+  # image=sha256:eb2c23083491c7ef914dcd630e4fe4af5fd0e9ac0b0bae0070f38a884679408c 2026-10-03T16:31:00.889048654+01:00
+  # container=be11ba8bede4f52e66803edcbacf2405265681633253e0b4c4287cf734bdfbc0
+  # binary_sha256=9659a2bce6863317e366cdc14d443be62ea136aac1c07214ced02c7a6e8f960d
+
+### A — n214-a
+  blocks_deploy1: 6
+  blocks_deploy2: 1
+  nodes_sampled: ['bootstrap', 'v1', 'v2']
+  deploy1_block: 1
+  deploy1_ttf_s: None
+  deploy2_block: 3
+  deploy2_ttf_s: None
+  every_node_alive_at_end: True
+  verdict: fail
+
+### B — n214-b
+  stopped_node: v2
+  survivors: ['bootstrap', 'v1']
+  fin_at_kill: None
+  fin_in_kill_window: None
+  fin_in_recovery: None
+  survivors_alive_through_kill: True
+  advanced_past_kill: False
+  recovered: False
+  verdict: fail

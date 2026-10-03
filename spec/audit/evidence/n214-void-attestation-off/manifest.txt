@@ -1,0 +1,6 @@
+# tree=f9d36b9c4 head=f9d36b9c4d89ab51cec154db283405456d4da04f
+# rust_diff_vs_HEAD=empty
+# image=sha256:eb2c23083491c7ef914dcd630e4fe4af5fd0e9ac0b0bae0070f38a884679408c 2026-10-03T16:31:00.889048654+01:00
+# nodes=3 stakes=100,100,50 argv='--no-autopropose --propose-on-deploy --epoch-length 10' (--autopropose omitted)
+# windows: settle=60s finality=90s kill=120s recover=90s cap=8g
+# started 2026-10-03T15:31:02Z
