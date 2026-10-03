@@ -16,3 +16,6 @@ docs/
 *.md
 .vscode/
 .idea/
+
+# Local tool scratch (agent worktrees, transcripts) — can be tens of GB, and not part of the build
+.claude/
