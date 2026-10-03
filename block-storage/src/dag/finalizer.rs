@@ -219,7 +219,7 @@ where
         let must_be_seen: BTreeSet<S> = partition_bonds.keys().cloned().collect();
         let mut full_partition_stake: i128 = 0;
         for (sender, seen_by) in next_fringe_support_map {
-            let all_bonded = !seen_by.is_empty() && seen_by.values().all(|v| v == &must_be_seen);
+            let all_bonded = sees_the_whole_partition(seen_by, &must_be_seen);
             // Only bonded senders contribute stake. A non-bonded justification sender must not
             // index the bonds map (it would panic) — skip it instead.
             if all_bonded {
@@ -252,7 +252,7 @@ where
         let mut full_partition_stake: i128 = 0;
         let mut full_partitions: usize = 0;
         for (sender, seen_by) in next_fringe_support_map {
-            let all_bonded = !seen_by.is_empty() && seen_by.values().all(|v| v == &must_be_seen);
+            let all_bonded = sees_the_whole_partition(seen_by, &must_be_seen);
             if all_bonded {
                 full_partitions += 1;
                 if let Some(stake) = quorum_bonds.get(sender) {
@@ -375,6 +375,24 @@ where
         };
         (parent_fringe, new_fringe_opt, reason)
     }
+}
+
+/// Whether every next-layer message in `seen_by` was seen by the **whole partition** — the
+/// full-partition filter `calculate_fringe` and `calculate_fringe_numbers` share.
+///
+/// **Containment, not equality.** `calculate_next_fringe_support_map` resolves seers through the full
+/// message map, so a bonded validator outside the live partition that built on a candidate lands in its
+/// seer set. Equality then dropped a candidate the whole partition had seen, and the survivors of a kill
+/// were credited 0 of their stake (#213's `0 of 250`). With one map for both questions — the gate before
+/// 2026-09-29, and the Scala's `forall(_ == bondedSenders)` — a seer outside the partition could only be a
+/// sender with no bond, so the two readings almost always agreed; the live partition is what made them
+/// differ routinely. A seer set that misses a partition member is still refused (law 52b), and the
+/// quorum is still the whole bonded map, so a minority still cannot finalise.
+fn sees_the_whole_partition<S: Ord>(
+    seen_by: &BTreeMap<S, BTreeSet<S>>,
+    must_be_seen: &BTreeSet<S>,
+) -> bool {
+    !seen_by.is_empty() && seen_by.values().all(|v| must_be_seen.is_subset(v))
 }
 
 #[cfg(test)]
@@ -599,6 +617,127 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(ids, [10, 11, 12].into_iter().collect());
+    }
+
+    /// **A seer outside the live partition does not void a candidate the whole partition has seen**
+    /// (#213, the `0 of 250` stall).
+    ///
+    /// Bonds 100/100/50, and sender 2 has stopped: the partition is the live pair {0, 1}, the quorum the
+    /// whole bonded map. Sender 2's last message `c2` saw layer 1 and is justified by the survivors, so
+    /// `calculate_next_fringe_support_map` records 2 as a seer of `a1` and `b1` beside 0 and 1 — it
+    /// resolves parents through the full message map, not the partition. The gate used to demand that
+    /// the seer set *equal* the partition, so the extra seer dropped both candidates and the survivors'
+    /// 200 of 250 was credited as 0. The partition is what must have seen a candidate; a validator
+    /// outside it having seen it too takes nothing away.
+    ///
+    /// The control is the same chain without `c2`, which finalises under either reading — so the
+    /// difference is the extra seer and nothing else.
+    #[test]
+    fn a_seer_outside_the_live_partition_does_not_void_a_candidate() {
+        let genesis = msg(99, 99, 0, &[], &[99]);
+        let a1 = msg(10, 0, 1, &[99], &[99, 10]);
+        let b1 = msg(11, 1, 1, &[99], &[99, 11]);
+        let c1 = msg(12, 2, 1, &[99], &[99, 12]);
+        let partition: BTreeMap<i32, NonNegI64> = [(0, 100), (1, 100)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
+        let quorum: BTreeMap<i32, NonNegI64> = [(0, 100), (1, 100), (2, 50)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
+        let fringe_of = |messages: Vec<Message<i32, i32>>, tips: [i32; 2]| {
+            let map: BTreeMap<i32, Message<i32, i32>> =
+                messages.into_iter().map(|m| (m.id, m)).collect();
+            let justifications: BTreeSet<Message<i32, i32>> =
+                tips.iter().map(|id| map[id].clone()).collect();
+            let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
+            let (_parent, new_fringe, why) =
+                finalizer.calculate_finalization_detailed(&justifications, &partition, &quorum);
+            (
+                new_fringe.map(|f| f.into_iter().map(|m| m.id).collect::<BTreeSet<i32>>()),
+                why,
+            )
+        };
+
+        // Control: sender 2 is never built on after layer 1, so every seer is in the partition.
+        let control = vec![
+            genesis.clone(),
+            a1.clone(),
+            b1.clone(),
+            c1.clone(),
+            msg(20, 0, 2, &[10, 11, 12], &[99, 10, 11, 12, 20]),
+            msg(21, 1, 2, &[10, 11, 12], &[99, 10, 11, 12, 21]),
+            msg(30, 0, 3, &[20, 21], &[99, 10, 11, 12, 20, 21, 30]),
+            msg(31, 1, 3, &[20, 21], &[99, 10, 11, 12, 20, 21, 31]),
+        ];
+        let (fringe, why) = fringe_of(control, [30, 31]);
+        assert_eq!(fringe, Some([10, 11].into_iter().collect()), "{why:?}");
+
+        // The question: sender 2 spoke once more (`c2`, which saw layer 1) and then stopped, and the
+        // survivors justify that last message.
+        let with_c2 = vec![
+            genesis,
+            a1,
+            b1,
+            c1,
+            msg(22, 2, 2, &[10, 11, 12], &[99, 10, 11, 12, 22]),
+            msg(20, 0, 2, &[10, 11, 22], &[99, 10, 11, 12, 22, 20]),
+            msg(21, 1, 2, &[10, 11, 22], &[99, 10, 11, 12, 22, 21]),
+            msg(30, 0, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 30]),
+            msg(31, 1, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 31]),
+        ];
+        let (fringe, why) = fringe_of(with_c2, [30, 31]);
+        assert_eq!(
+            fringe,
+            Some([10, 11].into_iter().collect()),
+            "the survivors hold 200 of 250 and both saw layer 1; the gate said {why:?}"
+        );
+    }
+
+    /// **The seer test is containment, and it still refuses a seer set that misses a partition member**
+    /// — law 52b's clause, at the level of the support map. Containment is what lets a seer outside the
+    /// partition through (the test above); it must not also let through a candidate some partition
+    /// member never saw.
+    #[test]
+    fn the_seer_test_is_containment_of_the_partition() {
+        let map: BTreeMap<i32, Message<i32, i32>> = BTreeMap::new();
+        let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
+        let partition: BTreeMap<i32, NonNegI64> = [(0, 100), (1, 100)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
+        let quorum: BTreeMap<i32, NonNegI64> = [(0, 100), (1, 100), (2, 50)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
+        let support = |seers: &[i32]| -> BTreeMap<i32, BTreeMap<i32, BTreeSet<i32>>> {
+            let seers: BTreeSet<i32> = seers.iter().copied().collect();
+            [0, 1]
+                .into_iter()
+                .map(|candidate| {
+                    let seen_by = [(0, seers.clone()), (1, seers.clone())]
+                        .into_iter()
+                        .collect();
+                    (candidate, seen_by)
+                })
+                .collect()
+        };
+        // Exactly the partition, and the partition plus a non-live bonded seer: both 200 of 250.
+        assert!(finalizer.calculate_fringe(&support(&[0, 1]), &partition, &quorum));
+        assert!(finalizer.calculate_fringe(&support(&[0, 1, 2]), &partition, &quorum));
+        assert_eq!(
+            finalizer.calculate_fringe_numbers(&support(&[0, 1, 2]), &partition, &quorum),
+            (200, 250, 2, 2)
+        );
+        // A partition member missing from the seers: refused, with or without the extra seer.
+        assert!(!finalizer.calculate_fringe(&support(&[0]), &partition, &quorum));
+        assert!(!finalizer.calculate_fringe(&support(&[0, 2]), &partition, &quorum));
+        // And the quorum is still the whole bonded map: one survivor's 100 of 250 is not enough even
+        // when it is the whole partition.
+        let alone: BTreeMap<i32, NonNegI64> = [(0, NonNegI64::try_from(100).unwrap())].into();
+        let one = [(0, [(0, [0, 2].into_iter().collect())].into_iter().collect())].into();
+        assert!(!finalizer.calculate_fringe(&one, &alone, &quorum));
     }
 
     #[test]

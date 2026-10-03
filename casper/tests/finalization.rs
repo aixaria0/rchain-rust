@@ -488,7 +488,7 @@ fn the_devnet_stake_split_finalises_with_one_validator_stopped() {
 /// ```
 ///
 /// **`supporting: 0` was not a stake shortfall.** `calculate_fringe` sums the stake of the candidates whose
-/// `seen_by` values all equal the live partition, and no candidate qualified, so the numerator was zero
+/// `seen_by` values all contain the live partition (all *equalled* it, before C208), and no candidate qualified, so the numerator was zero
 /// before the quorum was ever consulted. `calculate_next_fringe_support_map` builds each candidate's
 /// `seen_by` from `mv.parents ∖ next_layer` — the justifications *beyond* the candidate next layer — so a
 /// block whose justifications **are** every sender's newest message credits nobody with having seen

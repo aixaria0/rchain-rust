@@ -2842,18 +2842,22 @@ def laws : List Law := [
   { number := 52, clause := "b", layer := "Casper",
     rustWitness := [
       "casper/tests/finalization.rs:a_silent_bonded_validator_does_not_cap_the_fringe",
-      "block-storage/src/dag/liveness.rs:the_window_is_heights_behind_the_tip"],
+      "block-storage/src/dag/liveness.rs:the_window_is_heights_behind_the_tip",
+      "block-storage/src/dag/finalizer.rs:a_seer_outside_the_live_partition_does_not_void_a_candidate"],
     statement := "**The requirement must be one a reachable state can satisfy.** With the whole bonded set \
       as the *partition*, a validator that produces no message makes the full-partition filter \
-      unsatisfiable — not slow, **empty**: `allBonded` demands that every seer's seen set equal the \
+      unsatisfiable — not slow, **empty**: `allBonded` demands that every seer's seen set contain the \
       bonded set, and no seer can have seen a validator that never spoke. That is C174's measured shape, \
       where the survivors at 80 % of the stake could not lift the gate at all, and it is Law 51's `Void` \
       with its proof obligation discharged here: the emptiness is *derived from the predicate* rather \
-      than observed on a fixture",
+      than observed on a fixture. **The filter is containment, not equality** (#213): a seer outside the \
+      live partition — a stopped validator that last spoke after the candidate — does not void a \
+      candidate the whole partition has seen (`Rchain.a_seer_outside_the_partition_does_not_void_a_candidate`)",
     status := .provedModel,
     declarations := [`Rchain.allBonded_false_of_a_silent_seer,
       `Rchain.allBonded_false_of_seers_omitting,
-      `Rchain.fullPartitionStake_eq_zero_of_a_silent_bonded],
+      `Rchain.fullPartitionStake_eq_zero_of_a_silent_bonded,
+      `Rchain.a_seer_outside_the_partition_does_not_void_a_candidate],
     axioms := [],
     rust := ["block-storage/src/dag/liveness.rs", "block-storage/src/dag/finalizer.rs",
       "casper/tests/finalization.rs"],
@@ -2861,7 +2865,7 @@ def laws : List Law := [
       `Rchain.the_whole_bonded_partition_is_unsatisfiable],
     falsifiable := some "the general theorem is an induction over the support map whose step is \
       `Rchain.allBonded_false_of_a_silent_seer` — a seer whose seen set omits a bonded validator cannot \
-      equal the bonded set — so a filter that kept such a candidate would falsify it. Its fixture instance \
+      contain the bonded set — so a filter that kept such a candidate would falsify it. Its fixture instance \
       is **two-sided**: `Rchain.the_whole_bonded_partition_is_unsatisfiable` has the gate refusing three \
       speaking validators' candidates at 300 of 400 *and* advancing the identical fixture once the fourth \
       speaks, so the first half is a finding rather than a definition. Delete the hypothesis that a \
