@@ -72,6 +72,10 @@
 - [Examples](qucalc/examples.md)
 - [Upstream references](qucalc/references.md)
 
+# Part VII — Testnet acceptance
+
+- [Testnet acceptance specification](spec/testnet-acceptance.md)
+
 ---
 
 - [Navigation for AI agents](ai-entrypoint.md)
