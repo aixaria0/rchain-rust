@@ -30,7 +30,7 @@ denominator is what keeps safety.
 ## Clause b — the requirement must be one a state can satisfy
 
 With the whole bonded set as the *partition*, a validator that produces no message makes the filter
-unsatisfiable — not slow, **empty**: `allBonded` requires every seer's seen set to equal the bonded set,
+unsatisfiable — not slow, **empty**: `allBonded` requires every seer's seen set to contain the bonded set,
 and no seer can have seen a validator that never spoke. That is C174's measured shape (the survivors at
 80 % could not lift the gate at all), and it is the `Void` shape of Law 51 with its proof obligation
 discharged here (`silent_validator_blocks_the_partition`).
@@ -120,7 +120,7 @@ The general statement first, then its instance on the same fixture. The general 
 measured at 80 %: *not* "the gate is slow", but "no state satisfies it". -/
 
 /-- **One seer that omits a bonded validator makes `allBonded` false** — the predicate demands that a
-    seer's seen set *equal* the bonded set, and a set omitting a member cannot. -/
+    seer's seen set *contain* the bonded set, and a set omitting a member cannot. -/
 theorem allBonded_false_of_a_silent_seer (bonded : List Sender)
     (seenBy : List (Sender × List Sender)) (v : Sender) (hv : v ∈ bonded)
     (q : Sender × List Sender) (hq : q ∈ seenBy) (hmiss : v ∉ q.2) :
@@ -128,8 +128,9 @@ theorem allBonded_false_of_a_silent_seer (bonded : List Sender)
   cases h : allBonded bonded seenBy with
   | false => rfl
   | true =>
-    have hconj : ¬ seenBy = [] ∧ ∀ x ∈ seenBy, x.2 = bonded := by simpa [allBonded] using h
-    exact absurd ((hconj.2 q hq) ▸ hv) hmiss
+    have hconj : ¬ seenBy = [] ∧ ∀ x ∈ seenBy, ∀ b ∈ bonded, b ∈ x.2 := by
+      simpa [allBonded] using h
+    exact absurd (hconj.2 q hq v hv) hmiss
 
 /-- **…and if every seer of a candidate omits it, no candidate is a full partition** — the empty seer
     list included, which `allBonded` refuses for its own reason. -/

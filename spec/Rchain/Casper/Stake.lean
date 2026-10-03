@@ -64,10 +64,16 @@ theorem stakeOf_eq_none (bonds : Bonds) (s : Sender) (h : s ∉ bondedSenders bo
     stakeOf bonds s = none := by
   simp [stakeOf, find?_eq_none_of_not_mem bonds s h]
 
-/-- Every seer saw the whole bonded set — the port's
-    `!seen_by.is_empty() && seen_by.values().all(|v| v == &bonded_senders)` (`finalizer.rs:222`). -/
+/-- Every seer set contains the whole partition — the port's `sees_the_whole_partition`,
+    `!seen_by.is_empty() && seen_by.values().all(|v| must_be_seen.is_subset(v))` (`finalizer.rs`).
+
+    **Containment, not equality** (#213). The port resolves seers through the full message map, so a
+    bonded validator outside the live partition can be a seer; equality then refused a candidate the
+    whole partition had seen. With one map for both questions a seer outside the partition could only be a
+    sender with no bond, so the two readings almost always agree — `a_seer_outside_the_partition_does_not_void_a_candidate` below is the case
+    where they do not. -/
 def allBonded (bonded : List Sender) (seenBy : List (Sender × List Sender)) : Bool :=
-  !seenBy.isEmpty && seenBy.all (fun p => p.2 == bonded)
+  !seenBy.isEmpty && seenBy.all (fun p => bonded.all (fun b => p.2.contains b))
 
 /-- The senders whose full-partition support is recorded — the accumulation the port runs before the
     stake lookup (`finalizer.rs:221-230`). -/
@@ -108,6 +114,19 @@ def calculateFringeOneMap (supp : SupportMap) (bonds : Bonds) : Bool :=
     the boundary theorems below carry over unchanged. -/
 theorem calculateFringeOneMap_eq_calculateFringe_self (supp : SupportMap) (bonds : Bonds) :
     calculateFringeOneMap supp bonds = calculateFringe supp bonds bonds := rfl
+
+/-- **A seer outside the partition does not void a candidate** (#213, the `0 of 250` stall). Bonds
+    100/100/50 with the third validator stopped: the partition is the live pair, the quorum the whole
+    map. Both survivors' candidates were seen by the pair *and* by the stopped validator, which last
+    spoke after them. Containment credits the pair's 200 of 250; equality credited 0. The second half is
+    the clause equality kept and containment keeps too: a seer set missing a partition member refuses,
+    extra seer or not. -/
+theorem a_seer_outside_the_partition_does_not_void_a_candidate :
+    calculateFringe [(0, [(0, [0, 1, 2]), (1, [0, 1, 2])]), (1, [(0, [0, 1, 2]), (1, [0, 1, 2])])]
+        [(0, 100), (1, 100)] [(0, 100), (1, 100), (2, 50)] = true ∧
+    calculateFringe [(0, [(0, [0, 2]), (1, [0, 2])]), (1, [(0, [0, 2]), (1, [0, 2])])]
+        [(0, 100), (1, 100)] [(0, 100), (1, 100), (2, 50)] = false := by
+  refine ⟨?_, ?_⟩ <;> decide
 
 /-! ### The boundary, which is where this law's content is
 

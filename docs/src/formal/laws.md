@@ -326,8 +326,9 @@ here.
 
 **Clause b — the requirement must be one a reachable state can satisfy.** With the whole bonded set as
 the *partition*, a validator that produces no message makes the full-partition filter unsatisfiable — not
-slow, **empty** — because `allBonded` demands that every seer's seen set equal the bonded set and no seer
-can have seen a validator that never spoke. That is the `Void` shape of Law 51 with its proof obligation
+slow, **empty** — because `allBonded` demands that every seer's seen set contain the bonded set and no seer
+can have seen a validator that never spoke. (Containment rather than equality since #213: a seer *outside* the
+live partition does not void a candidate the partition has seen — AUDIT C208.) That is the `Void` shape of Law 51 with its proof obligation
 discharged: the emptiness is derived from the predicate rather than observed on a fixture, and the
 fixture instance is two-sided as well (three speaking validators refused at 300 of 400; the identical
 fixture advancing once the fourth speaks). The hypotheses are named in the instance module
