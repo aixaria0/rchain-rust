@@ -2005,6 +2005,17 @@ kill experiment has no finality to remove. Criterion 2 fails **upstream of the w
 reproduce #213's specific shape (survivors minting one block each and then stopping); it finds a state
 that is worse to reason about and simpler to state: **nothing finalises at all.**
 
+> **A re-run on `ee1e204b3` (2026-10-04) shows arm B cannot discriminate at all — there is a second
+> reason, and it survives every fix.** That arm deploys once *before* the kill and nothing inside its own
+> window, and on a `--no-autopropose --propose-on-deploy` net an idle chain produces no block, so finality
+> has nothing to advance onto whatever the code does. Re-run today, the chain sat at **height 6 /
+> finality 2** from the kill through the whole 120 s window and the 90 s recovery, while the *same* rig's
+> arm A reached **15/11**. So a `fail` here is **never criterion-2 evidence on its own**: it fires on a
+> healthy chain for the same reason it fires on a stalled one. Nothing in §3.2 rested on it — those ✅s
+> come from `n213-run.sh`, which deploys *inside* the kill window, and the ⬜ from the live net — but the
+> distinction was not written down until the re-run forced it. See
+> `spec/audit/evidence/n214-results.md`, "Re-run, 2026-10-04".
+
 **The contradiction, closed.** #214 records criterion 1 *passing* at N=3 on `0c6c65979` — "finality reached
 3" — while on `f9d36b9c4`, with the configuration the issue names, nothing finalised in either arm. **It is
 settled: `0c6c65979` was right and `f9d36b9c4` was pre-fix.** The N=3 pass reproduces once the attestation

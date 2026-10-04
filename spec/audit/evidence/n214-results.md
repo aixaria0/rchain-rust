@@ -87,3 +87,48 @@ So the first attempt is a **second, agreeing attempt**, not a void one. Its arte
   `--propose-on-deploy` and no `--autopropose` the only blocks built are deploy-triggered, but a system
   deploy in the same window would satisfy the same test. Stated in the summariser, not hidden here.
 - Nothing here measures safety (TE-2).
+
+---
+
+# Re-run, 2026-10-04 (tree `ee1e204b3`) — arm A passes; **arm B is not a criterion-2 reading**
+
+Artefacts `n214-blocks/ee1e204b3-20261004T151201Z/`, image `f18c0071…`. The image was rebuilt from the
+tree by this run: the Dockerfile copies the sources with `target/` in `.dockerignore`, so a source change
+busts the layer cache, and the digest differs from the earlier run's. This ran **after** C209/C210 and
+C211–C214.
+
+| arm | reading |
+|---|---|
+| **A — criterion 1, two marks** | **pass.** deploy #1's block finalises at block 1, 5 s; deploy #2's at block 6, 4 s; heights reach 15 with finality 11 |
+| **B — kill/restart** | `fail` — **and the failure is the arm's, not the chain's** |
+
+## Arm B cannot discriminate, and its own series says why
+
+The arm deploys once at `t0+60 s`, kills validator-2 at `t0+90 s`, restarts it at `t0+210 s`, and ends at
+`t0+300 s`. **It sends nothing inside its own window.** On a `--no-autopropose --propose-on-deploy` net
+nothing is produced without a deploy, so once the pre-kill deploy's blocks are in, the chain is idle — and
+idle means *finality cannot advance*, whatever the code does. The arm's own witness (finality "strictly
+greater" after the kill) therefore fails on a **healthy** chain for exactly the reason it would fail on a
+**stalled** one. It cannot tell them apart, and a reading that cannot distinguish the defect from the
+healthy case is not evidence about either.
+
+The series shows it in one line: at the kill the chain is at **height 6, finality 2**, and the pair does
+not move again all arm — `6/2` at the kill, `6/2` through the 120 s window, `6/2` through the 90 s
+recovery. Arm A, with the same rig and a second deploy, reaches `15/11`. There was simply no new block for
+finality to advance onto.
+
+**So this `fail` is not a criterion-2 reading — and neither was §3.4's.** That section reported the
+re-probe as failing **both** criteria. Arm A's failure there was the real reading (nothing finalised at
+all on the pre-fix tree); arm B's carried the same non-discrimination it carries here, and §3.4 now says
+so. Nothing in the page's criterion-2 status rested on arm B either way: the ✅s come from `n213-run.sh`
+(which *does* deploy inside the kill window) and the ⬜ from the live net.
+
+**The fix, owed.** Put a driver inside the window — one deploy at `kill + 30 s`, one after the restart —
+so the arm measures whether the survivors *can* produce and finalise while a validator is down, and
+whether the returner takes part. That is a change to a **pre-registered** arm, so it needs its own
+pre-registration rather than an edit to `n214-preregistration.md`.
+
+## What arm A adds
+
+A fresh confirmation of criterion 1's two marks on a tree carrying every fix since: the deploy's block
+finalises in seconds, twice, with `--autopropose` absent. It is the reading §3.1 records, one tree later.
