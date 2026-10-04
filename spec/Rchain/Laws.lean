@@ -3244,8 +3244,55 @@ def laws : List Law := [
       withdrawal path already carries. Nor does the model claim anything about the port's **dormancy at \
       the store**: that the four leaves are left absent rather than written empty is a property of \
       `native_state.rs`'s write path (`set_*` is an unconditional `put`, so the delegation setters clear \
-      instead), pinned by `the_delegation_leaves_are_absent_until_the_first_delegation`" }
+      instead), pinned by `the_delegation_leaves_are_absent_until_the_first_delegation`" },
+  { number := 58, layer := "Casper",
+    statement := "**The gate publishes on a fully-participating set — the forward dual Law 14 lacks.** \
+      Law 14's gate is a biconditional over a **free** `supp : SupportMap`: it says the fringe advances \
+      *given* a support map that is a strict supermajority of the bonded total, and never says one \
+      **obtains**. The live stall of 2026-10-03 (C209) was exactly that gap — a fully-live \
+      three-validator net produced blocks and finalised nothing — and the model could say nothing about \
+      it, because `Participation` and `StalenessBound` were declared and used in no theorem. \
+      `participation_all_current` supplies the missing step (a participation-closed view *is* the whole \
+      bonded set, hence a full partition), `gate_publishes_of_a_full_partition` and \
+      `nextFringe_publishes_of_a_full_partition` carry it through the gate to the fringe, and \
+      `the_licence_ends_at_the_horizon` bounds the attestation licence so a finality stall cannot become \
+      the C171 storm. **What is hypothesis, not theorem:** \"a fully-live set reaches a full partition \
+      within N rounds\" quantifies over a schedule and this model has none — the tree's own \
+      `reduce_not_deterministic` proves the flat calculus fixes no schedule, and Law 51's `Fair` is named \
+      and undefined — so it stays a named hypothesis, as do `Delivery` and the guard's reader being \
+      `ReadsTheView` (the model can refute the *old* reader, not prove the new one). **The \
+      `3 × LIVENESS_WINDOW` factor is measured, not proved** (`quiet_chain_tests`: a healthy round \
+      finalises a deploy within 3 heights, a killed-validator round within 7).",
+    status := .provedModel,
+    declarations := [`Rchain.currentOf, `Rchain.stalenessBound_iff, `Rchain.participation_all_current,
+      `Rchain.seersOf, `Rchain.suppOfView, `Rchain.allBonded_seersOf, `Rchain.bondedSupport_suppOfView,
+      `Rchain.filterMap_stakeOf_eq_totalStake, `Rchain.fullPartitionStake_suppOfView,
+      `Rchain.gate_publishes_of_a_full_partition, `Rchain.nextFringe_publishes_of_a_full_partition,
+      `Rchain.inHorizon, `Rchain.the_licence_ends_at_the_horizon],
+    axioms := [],
+    rust := ["casper/src/blocks/proposer/proposer.rs", "block-storage/src/dag/liveness.rs",
+      "block-storage/src/dag/finalizer.rs"],
+    rustWitness := [
+      "casper/src/blocks/proposer/proposer.rs:the_licence_ends_at_the_horizon_and_the_work_does_not",
+      "casper/src/blocks/proposer/proposer.rs:every_deploy_finalises_and_then_the_chain_is_quiet",
+      "casper/src/blocks/proposer/proposer.rs:on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised",
+      "casper/src/blocks/proposer/proposer.rs:reading_only_the_work_from_the_seen_view_strands_the_genesis_signer"],
+    falsifiable := some "the two round-snapshot *controls* in `quiet_chain_tests` are the falsifier: \
+      reverting the guard to the round's parents makes \
+      `on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised` pass and this law's \
+      premise false, and `reading_only_the_work_from_the_seen_view_strands_the_genesis_signer` refutes \
+      the first cut — so \"every input from the seen view\" carries the forward implication rather than \
+      decorating it. The horizon boundary is two-sided (`the_licence_ends_at_the_horizon`, pinned in \
+      Rust by the test of the same name).",
+    witness := [`Rchain.gate_publishes_of_a_full_partition, `Rchain.participation_all_current,
+      `Rchain.the_licence_ends_at_the_horizon],
+    note := "tied over the model, not by a corpus: the model's `Nat`/`Option` algebra is coarser than the \
+      node's `BlockHeight`/`BTreeMap`, so a `liveness` corpus layer is a follow-up rather than a \
+      formality. Until it lands, `rustWitness` names the Rust tests the claim rests on. `Participation` \
+      and `Delivery` — declared in `Rchain/Casper/Liveness.lean` and used by nothing before this row — \
+      are consumed here; `StalenessBound` is reached through `stalenessBound_iff`." },
 ]
+
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
 def numbers : List Nat := laws.map (·.number)

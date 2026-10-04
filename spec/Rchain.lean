@@ -40,6 +40,7 @@ import Rchain.Casper.Liveness
 import Rchain.Casper.Stranding
 import Rchain.Casper.Views
 import Rchain.Casper.Bonds
+import Rchain.Casper.Rounds
 import Rchain.Pos
 import Rchain.Bounded
 import Rchain.Namespace
