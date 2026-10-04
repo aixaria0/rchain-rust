@@ -4,6 +4,11 @@
 //! resolve to `ProposerResult::Empty` and set the `trigger` flag, so a propose that arrives while
 //! one is running is re-enqueued once the running one finishes (the Scala's trigger re-enqueue).
 //!
+//! **A "not due" outcome is retried by the node itself** ([`NOT_DUE_RETRY`]). The round gate's wall-clock
+//! escape is only evaluated when something asks this node to propose, and with `--no-autopropose` nothing
+//! does until the next deploy or remote block arrives — so a deploy refused by the gate on a quiet net sat
+//! in the pool until someone else spoke (#213, #219).
+//!
 //! **Every propose outcome is logged here, where it is produced.** Most propose requests discard
 //! their result — the `proposeOnDeploy` path (`let _ = trigger(true).await`) and both autopropose
 //! taps (`try_send` with the reply receiver dropped) — so a proposer that fails on every attempt
@@ -13,6 +18,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot, Semaphore};
@@ -58,6 +64,27 @@ fn log_propose_result(log: &Arc<dyn Log>, result: &(ProposeResult, Option<BlockM
     }
 }
 
+/// How long after a "not due" outcome the node asks itself to propose again.
+///
+/// `NotEnoughNewBlocks` is what the proposer returns when the round gate refuses (this validator already
+/// spoke this round) and when its own block lost a stale-snapshot race (§48). Both say "the next attempt
+/// re-derives and succeeds", and the gate's stall escape fires on the first attempt made at least
+/// `ROUND_STALL_ESCAPE` after the refusal began. The retry is therefore set just past that bound, so one
+/// retry is enough to take the escape when the round is genuinely stuck, and a round that closed in the
+/// meantime simply proposes normally.
+///
+/// It cannot become a storm: at most one retry is pending at a time, and the retry is an `Automatic`
+/// propose, so with an empty pool it goes through the attestation guard like any tap and is withheld when
+/// there is nothing to finalise or no quorum to reach.
+pub const NOT_DUE_RETRY: Duration = Duration::from_millis(
+    rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as u64 + 1_000,
+);
+
+/// Whether a propose outcome is "not due yet", which the node retries on its own.
+fn not_due(result: &(ProposeResult, Option<BlockMessage>)) -> bool {
+    result.1.is_none() && result.0.propose_status == ProposeStatus::NotEnoughNewBlocks
+}
+
 /// Create the proposer stream (port of `ProposerInstance.create`).
 pub fn create(
     propose_requests_rx: mpsc::Receiver<(ProposeSource, oneshot::Sender<ProposerResult>)>,
@@ -66,15 +93,35 @@ pub fn create(
     state: Arc<tokio::sync::Mutex<ProposerState>>,
     log: Arc<dyn Log>,
 ) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
+    create_with_retry(
+        propose_requests_rx,
+        propose_requests_tx,
+        proposer,
+        state,
+        log,
+        NOT_DUE_RETRY,
+    )
+}
+
+fn create_with_retry(
+    propose_requests_rx: mpsc::Receiver<(ProposeSource, oneshot::Sender<ProposerResult>)>,
+    propose_requests_tx: mpsc::Sender<(ProposeSource, oneshot::Sender<ProposerResult>)>,
+    proposer: Proposer,
+    state: Arc<tokio::sync::Mutex<ProposerState>>,
+    log: Arc<dyn Log>,
+    not_due_retry: Duration,
+) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
     let input = ReceiverStream::new(propose_requests_rx);
     let lock = Arc::new(Semaphore::new(1));
     let trigger = Arc::new(AtomicBool::new(false));
+    let retry_pending = Arc::new(AtomicBool::new(false));
     let proposer = Arc::new(proposer);
 
     input
         .map(move |(source, propose_id_def)| {
             let lock = lock.clone();
             let trigger = trigger.clone();
+            let retry_pending = retry_pending.clone();
             let state = state.clone();
             let tx = propose_requests_tx.clone();
             let proposer = proposer.clone();
@@ -124,9 +171,155 @@ pub fn create(
                     // Keep the receiver alive until the re-queued propose completes it.
                     std::mem::forget(d_rx);
                 }
+
+                // A "not due" outcome on a quiet net has nobody left to ask again — see `NOT_DUE_RETRY`.
+                if not_due(&r) && !retry_pending.swap(true, Ordering::SeqCst) {
+                    let tx = tx.clone();
+                    let retry_pending = retry_pending.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(not_due_retry).await;
+                        retry_pending.store(false, Ordering::SeqCst);
+                        let (d_tx, d_rx) = oneshot::channel();
+                        let _ = tx.send((ProposeSource::Automatic, d_tx)).await;
+                        std::mem::forget(d_rx);
+                    });
+                }
                 Some(r)
             }
         })
         .buffer_unordered(100)
         .filter_map(|r| async move { r })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    use rchain_block_storage::block_store::BlockStore;
+    use rchain_casper::blocks::proposer::propose_result::BlockCreatorResult;
+    use rchain_casper::multi_parent_casper::ValidateError;
+    use rchain_casper::validator_identity::ValidatorIdentity;
+    use rchain_models::validator::Validator;
+
+    type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+    fn block_store() -> BlockStore {
+        use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+        use rchain_shared::store::InMemoryKeyValueStore;
+        use rchain_shared::typed_store::KeyValueTypedStoreCodec;
+        Arc::new(KeyValueTypedStoreCodec::new(
+            Arc::new(tokio::sync::Mutex::new(Box::new(
+                InMemoryKeyValueStore::default(),
+            ))),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ))
+    }
+
+    /// A proposer whose block creator always answers `outcome`, counting how often it is asked.
+    fn proposer(outcome: BlockCreatorResult, calls: Arc<AtomicUsize>) -> Proposer {
+        let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
+            Arc::new(|_v| Box::pin(async { 0i64 }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
+        let create_block: Arc<
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
+        > = Arc::new(move |_v, _source| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let outcome = outcome.clone();
+            Box::pin(async move { Ok(outcome) })
+        });
+        let validate: Arc<
+            dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
+        > = Arc::new(|_b| Box::pin(async { Ok(()) }));
+        let effect: Arc<dyn Fn(&BlockMessage) -> BoxFuture<()> + Send + Sync> =
+            Arc::new(|_b| Box::pin(async {}));
+        Proposer::new(
+            get_seq,
+            check_active,
+            create_block,
+            validate,
+            effect,
+            ValidatorIdentity::from_hex(
+                "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530",
+            )
+            .unwrap(),
+            Arc::new(rchain_shared::log::NopLog),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            false,
+            block_store(),
+        )
+    }
+
+    /// Send one request, drive the stream for `window`, and report how often the creator was asked.
+    async fn asks_after_one_request(
+        outcome: BlockCreatorResult,
+        retry: Duration,
+        window: Duration,
+    ) -> usize {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel(16);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer(outcome, calls.clone()),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            Arc::new(rchain_shared::log::NopLog),
+            retry,
+        );
+        let (otx, _orx) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, otx)).await.unwrap();
+        let mut stream = Box::pin(stream);
+        let _ =
+            tokio::time::timeout(window, async { while stream.next().await.is_some() {} }).await;
+        calls.load(Ordering::SeqCst)
+    }
+
+    /// **The falsifier for the quiet-net strand.** A propose the round gate refuses is asked again by the
+    /// node itself, with no deploy, remote block or timer to prompt it — the gate's stall escape is only
+    /// evaluated on an attempt, and on a `--no-autopropose` net nothing else makes one.
+    #[tokio::test]
+    async fn a_refused_propose_is_retried_with_nobody_asking() {
+        let retry = Duration::from_millis(40);
+        let asks = asks_after_one_request(
+            BlockCreatorResult::AlreadyProposedThisRound,
+            retry,
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(asks >= 2, "the refusal was never retried: {asks} ask(s)");
+        // One pending retry at a time: ~300/40 ≈ 7 at most, never a burst.
+        assert!(
+            asks <= 9,
+            "the retry stormed: {asks} asks in 300 ms at a 40 ms retry"
+        );
+    }
+
+    /// Only "not due" is retried. A proposer with nothing to do stays quiet.
+    #[tokio::test]
+    async fn nothing_to_do_is_not_retried() {
+        let asks = asks_after_one_request(
+            BlockCreatorResult::NoNewDeploys,
+            Duration::from_millis(40),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(asks, 1);
+    }
+
+    /// The retry is set just past the gate's stall bound, so the first retry takes the escape.
+    #[test]
+    fn the_retry_lands_past_the_stall_escape() {
+        assert!(NOT_DUE_RETRY > rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE);
+    }
 }

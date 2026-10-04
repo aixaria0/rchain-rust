@@ -55,10 +55,11 @@ wait_until() { local d=$(( $1 - $(date +%s) )); (( d > 0 )) && sleep "$d" || tru
 bring_up() {
   local dir="$1"
   tools/devnet.sh down >/dev/null 2>&1
-  # `--attest-on-new-blocks` is REQUIRED: the tap is gated on `conf.attest_on_new_blocks &&
-  # !conf.no_attest_on_new_blocks` and the positive flag defaults false, so without it the node never
-  # attests, the fringe never advances and nothing finalises at any N. The option doc says "attestation
-  # is on by default"; the code disagrees. #213's and #214's configurations both carry the flag.
+  # `--attest-on-new-blocks` is passed explicitly, but it is already the effective default: the clap flag
+  # only ever *adds* `attest-on-new-blocks = true` (`config_mapper.rs`'s `flag`), and the HOCON default is
+  # `true` (`defaults.conf:16`, asserted by `configuration.rs`'s defaults test). An earlier version of this
+  # comment said the flag defaulted false and the node never attested without it; that read the clap
+  # field's default and not the merged configuration. #213's and #214's configurations both carry it.
   DEVNET_NODE_MEMORY="$CAP" DEVNET_EXTRA_FLAGS="--attest-on-new-blocks" \
     timeout 900 tools/devnet.sh up --validators 3 --fresh \
     --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy 2>&1 | tail -1

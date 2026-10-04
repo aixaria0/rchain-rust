@@ -7196,6 +7196,27 @@ validator killed and the partition waiting for it to age out.
 **What it rules out, and what it does not.** It rules out the guard as the reason a deploy to one node
 does not finalise. It is node-local — block validity is unchanged, so it needs no new genesis and old and
 new nodes interoperate. Not modelled: delivery delay and reordering. A deploy refused by the round gate
-while the net is quiet waits for the next attempt to take the stall escape (`ROUND_STALL_ESCAPE`); in
-process that is the next deploy, and with a supermajority live none was ever left waiting. This revision
-has not been run on a live net.
+while the net is quiet waited for the next attempt to take the stall escape (`ROUND_STALL_ESCAPE`); §64
+makes the node supply that attempt itself. Run live on `881066f`: R1–R3 and #213's kill/restart arm all
+finalise and go quiet (`evidence/n213-results.md`, *Rerun*).
+
+## 64. A deploy the round gate refused on a quiet net waited for someone else to speak (C210, #213)
+
+**Mechanism.** The round gate's escape has two triggers — `LIVENESS_WINDOW` attempts and the wall-clock
+`ROUND_STALL_ESCAPE` — and both are evaluated only when something asks the node to propose. With
+`--no-autopropose` the askers are a deploy and a remote block. A deploy that arrives while this validator
+has already spoken this round is refused (`NotEnoughNewBlocks`), sits in the pool, and stays there until
+the next deploy or remote block: on a quiet net, indefinitely. The §48 stale-snapshot collision returns the
+same status with the same "the next tick re-derives" assumption and had the same hole.
+
+**Fix.** `node/src/instances/proposer_instance.rs`: a `NotEnoughNewBlocks` outcome arms one
+`Automatic` retry after `NOT_DUE_RETRY` (`ROUND_STALL_ESCAPE` + 1 s), so the first retry is past the stall
+bound and takes the escape if the round is still stuck. At most one retry is pending; an empty pool sends
+the retry through the attestation guard, which withholds it when there is nothing to finalise or no
+quorum, so it cannot become the C171 storm. Node-local; no validity rule changes.
+
+**Evidence.** `a_refused_propose_is_retried_with_nobody_asking` (a refusal is asked again with no external
+request, and never more than once per retry interval), `nothing_to_do_is_not_retried`,
+`the_retry_lands_past_the_stall_escape`. **Not run live**: the live arms never left a deploy waiting, so a
+rerun would not discriminate; the in-process falsifier is the witness.
+

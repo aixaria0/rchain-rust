@@ -669,7 +669,7 @@ async fn select_deploys(
 /// own clock cannot serve: both are frozen by the state they are meant to bound. A healthy round closes in a
 /// few seconds on the live net (three validators, one deploy, two blocks each, then quiet), so 15 s is well
 /// above the healthy case and far below "for ever".
-const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
+pub const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Wall-clock milliseconds, or 0 if the system clock is before the epoch.
 fn now_ms() -> i64 {

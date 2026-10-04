@@ -40,7 +40,7 @@ mkdir -p "$OUT"
 {
   echo "# tree=$TREE head=$HEAD_FULL origin/dev=$ORIGIN_DEV"
   echo "# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy"
-  echo "#      DEVNET_EXTRA_FLAGS=--attest-on-new-blocks   (required; the flag defaults false)"
+  echo "#      DEVNET_EXTRA_FLAGS=--attest-on-new-blocks   (explicit; already the default — defaults.conf:16)"
   echo "# windows: settle=${SETTLE_S}s kill=${KILL_WAIT_S}s restart=${RESTART_WAIT_S}s budget=${RUN_BUDGET_S}s"
   echo "# image=$(docker inspect rnode:local --format '{{.Id}} {{.Created}}' 2>/dev/null || echo none)"
   echo "# started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
