@@ -7223,3 +7223,86 @@ discriminate the fix; rerun on `9a75d45` they show it costs nothing — R1–R3 
 (`evidence/n220-join-results.md`), no escapes anywhere. The kill/restart arm's pass on that tree was
 proxy-keyed; its witness was first shown on `07af032ad` (PR #222).
 
+
+## 65. A rejoining validator stalls: a refused block is never re-attempted (C211, #223)
+
+**Found where the checklist said it would be found.** Jim ran #214's acceptance checklist on the **live
+testnet** at tree `49337ee92` — the tree this register's C209/C210 rows were verified on — with a fresh
+genesis, three bonds 100/100/50 and no autopropose:
+
+| case | on the testnet |
+|---|---|
+| A1.1, six deploys to **one** validator | pass — finality tracked the tip at a lag of 4 (1, 5, 10, 14, 20, 24) with **zero round-gate escapes** |
+| A2.1, the survivors finalise past the kill | pass — finality 25 → 27 → 40, both survivors in lockstep |
+| A2.3, a deploy accepted while the validator is absent | pass — included and finalised |
+| **A2.2, the killed validator restarts and rejoins** | **fail** — the rejoiner is capped at the height it died at |
+
+**The failure.** Node C was stopped and restarted. It meshed (`peers: 2`) and began retrieving blocks
+normally — 246 retrieval lines — and then stopped advancing: `h=35` while the survivors reached `h=48`,
+stuck for ~14 minutes. Exactly two errors, and no more:
+
+```
+ERROR [casper.blocks.BlockProcessor] Block b31b0600… processing error: block summary failed: missing justification 4e0fb9c6…
+ERROR [casper.blocks.BlockProcessor] Block ae2224d0… processing error: block summary failed: missing justification b31b0600…
+```
+
+Two blocks are refused because a justification is absent from the store, and the second is refused because
+the block that *would* have carried it was itself refused. **The chain is unaffected** — A and B keep
+finalising — so this is a rejoin **liveness** failure, not a safety one.
+
+**Mechanism, as a hypothesis.** The retrieval and processing paths race: a block can be delivered before
+the justification it names is in the store, and `block summary failed` is terminal for that block rather
+than deferred. Nothing re-attempts it when the justification subsequently arrives, so one out-of-order
+delivery caps the rejoiner permanently. Related to the C173/C190 family (*a block can be in the DAG index
+and not in the store*) but this is the **wrong-order** case on a **rejoining** validator, and which of the
+two is the cause here is not established.
+
+**What it falsifies, and it is this register's own recent work.** `A2.2` of
+`docs/src/spec/testnet-acceptance.md` read ✅ on the strength of **`n213-run.sh` case (b)** — a *rig* run
+(`stop`, `start`, a deploy finalises). The row's claim is about a validator that restarts and rejoins on a
+**live net**, and there it does not. **A rig pass is not what the row claims** — the distinction this page
+has applied to every other source of evidence and had not applied to its own. The page now carries `A2.2`
+as ⬜ citing this row.
+
+**What would settle it.** The same sequence with block-retrieval logging at the two refusals, to see
+whether `4e0fb9c6…` arrived before or after `b31b0600…` was processed — which distinguishes "the fetch was
+late" from "the store lost it". Then either defer the summary check until the justifications are present
+(re-process on arrival), or fetch a block's justifications before requiring them.
+
+## 66. C211's cause, and the three defects behind it (C211–C215, #223)
+
+**Run.** `evidence/n223-rejoin-run.sh`: three validators at 100/100/50, no autopropose; stop the 50 for six
+deploys (the survivors reach 34), restart it, then send it a deploy. On `dev` the returner stayed at 14
+with two `block summary failed: missing justification` refusals — #223 reproduced exactly. Each fix below
+was found by the run after the previous one.
+
+- **C211 — the receiver released a block before its parents were validated** (§65's row; its hypothesis was
+  close, but nothing was fetched late: both parents were in the store). A block's dependency set
+  held only the parents missing from the *store*; a block whose parents were stored but not yet in the DAG
+  (every block a returning node receives in a burst) waited on nothing, was released when its first
+  parent finished, failed on the second, and stayed `PendingValidation`, where a re-delivery is refused.
+  The set is now the parents not yet in the DAG, read under the receiver's lock
+  (`end_stored_awaiting`). After: the returner caught up 14 → 34 in fifteen seconds.
+- **C213 — a catching-up node answered every block it replayed.** The attest tap fired on each replayed
+  block, so the returner proposed twenty blocks in two seconds, one per height it had missed, two of them
+  epoch boundaries carrying a second `CloseBlock`. The tap now ignores a block older than
+  `ROUND_STALL_ESCAPE` by its own timestamp (`attest_is_live`).
+- **C212 — late work below the fringe ended the licence.** Those catch-up boundary blocks were
+  deploy-bearing work twenty heights below the tip, so every survivor read the horizon as passed and
+  withheld the attestation that alone could finalise them. The work's age is now counted from the fringe
+  when the work lies below it (`work_age_floor`).
+- **C214 — the guard counted work as finalised against a fringe no block carried.** `pre_state.fringe` is
+  the fringe the block being built *would* publish; the guard then withheld that block, so the last
+  deploy was never published as finalised (deploy at 34, chain quiet at 37, fringe at 32). The guard now
+  reads the parents' fringe, which costs one round per deploy and publishes the covering fringe.
+- **C215 (todo) — nodes disagreed about a merged pre-state.** With C212 and not C213, the survivors built
+  on the returner's catch-up chain, and validator-1's blocks 41–43 and the bootstrap's 43–44 were refused
+  by their peers as `InvalidPreStateHash` — the same justifications, two merged states. C213 removes the
+  trigger here; the divergence itself is not explained.
+
+**After all four** ([`n223-rejoin-results.md`](evidence/n223-rejoin-results.md), `n223-rejoin-blocks/`): the returner reaches the tip, a deploy sent to it is in a
+finalised block, and no node refuses another's block.
+
+The kill, rotation and join arms rerun on the same image all finalise every deploy; the join rig's quiet
+read reported 40 → 45 because it opened four seconds before the last in-flight block, after which no node
+proposed for 86 s (the results file has the timestamps).

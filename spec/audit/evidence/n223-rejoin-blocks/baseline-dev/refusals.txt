@@ -1,0 +1,2 @@
+2026-10-04T10:51:19.039Z ERROR [casper.blocks.BlockProcessor] Block acf44a4ea3ed7613c292a2beaba1b7bab9da2cc4534a4f1ed5239266a779031c processing error: block summary failed: missing justification 116f778b87904d2d23b242e16fc9bab3bc2a60f150a0831970e6eb50cd71445a
+2026-10-04T10:51:19.120Z ERROR [casper.blocks.BlockProcessor] Block fb717fe85f5980ab8aed283cf176aa17ce9c5c3d511615ba88474efcc9c306cc processing error: block summary failed: missing justification acf44a4ea3ed7613c292a2beaba1b7bab9da2cc4534a4f1ed5239266a779031c

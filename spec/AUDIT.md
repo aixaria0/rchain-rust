@@ -102,20 +102,19 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 245** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 1 · DONE 248** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  39 of 245 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  44 of 250 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 245 are settled: **181 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C215` | **two nodes merged the same justifications to different pre-states.** In the rejoin run with C212 and without C213, the survivors built on the returner's catch-up chain and validator-1's blocks 41–43 and the bootstrap's 43–44 were refused by their peers as `InvalidPreStateHash`. C213 removes the trigger in this scenario; the divergence itself is unexplained, and merge determinism is law 17a. | reproduce in process: the same parent set merged on two nodes whose DAGs reached it in different orders, comparing the merged pre-state; then fix the order dependence. Closes when two nodes that reach the same justifications by different delivery orders compute the same pre-state in a test. | §66 |
 
 ### T1 coverage — closed
 
@@ -124,12 +123,13 @@ verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason cl
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
-### In progress — none
+### IN PROGRESS (1)
 
-Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
-that it is empty is the fact, and it is said rather than shown as a table with no rows.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C211` | **a rejoining validator stalls: block processing refuses a block whose justification it has not fetched, and never retries.** Found by running the #214 acceptance checklist **on the testnet** (tree `49337ee92`): the restarted node meshes and retrieves blocks (246 retrieval lines) but is capped at the height it died at — `h=35` while the survivors reached `h=48` — with exactly two `block summary failed: missing justification` errors and no recovery. The chain is unaffected: a rejoin **liveness** failure, not a safety one. The mechanism is a hypothesis and is labelled as one: the retrieval and processing paths race, a block can be delivered before the justification it names is in the store, `block summary failed` is terminal for that block rather than deferred, and nothing re-attempts it when the missing justification arrives. This **falsifies `A2.2`** of `docs/src/spec/testnet-acceptance.md`, whose pass came from a rig run — the row claims a validator that restarts and rejoins, and on a live net it does not. **Cause found and fixed (§66)**: nothing was fetched late — the block receiver's dependency set held only the parents missing from the *store*, so a block whose parents were stored but not yet validated was released when its first parent finished, failed on the second, and stayed `PendingValidation`, where a re-delivery is refused. The set is now every parent not yet in the DAG, read under the receiver's lock (`end_stored_awaiting`). On a three-node docker net (`n223-rejoin-run.sh`) the unfixed tree reproduces #223 (returner at 14, survivors at 34, two refusals); with this fix and C212–C214, twice: the returner reaches the tip (55) in about 20 s and a deploy sent to it is in a finalised block. | the row's own close condition: the same kill-and-restart on the **testnet**, the restarted node reaching the tip and a deploy submitted afterwards finalising. The rig passes; the testnet run is owed. | §65 |
 
-### DONE (245)
+### DONE (248)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -292,6 +292,9 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C208` | **the fringe gate dropped a candidate the whole live partition had seen, because a seer outside the partition was also recorded.** `calculate_next_fringe_support_map` resolves seers through the full message map (`block-storage/src/dag/finalizer.rs`), so a bonded validator that has left the live set but last spoke after a candidate is one of its seers; the gate then demanded the seer set *equal* the partition, and dropped it. On a 100/100/50 fixture with the 50 stopped, the survivors' 200 of 250 was credited **0 of 250 (0 full partitions among 2 candidates)**, the signature that is 53 % of the 2026-09-30 campaign's pre-kill refusals (`n127-liveness-results.md`) and the second line on #213. This is mechanism (b) of the two that file names; mechanism (a) - a forking DAG in which no candidate is seen by every live validator - produces the same signature and is not addressed. The two readings almost always agreed while the partition was the whole bonded map (a seer outside it could only be a sender with no bond); the live partition of C174 is what made them differ routinely. **Fixed 2026-10-03**: the filter is containment (`sees_the_whole_partition`, `must_be_seen ⊆ seers`); a seer set missing a partition member is still refused (law 52b) and the quorum is still the whole bonded map. Hard-fork class (#51 category A), as C174 was: which fringe is agreed changes. The live re-run (#213's kill case on `--no-autopropose`) is not part of this row and has not been run. | sees_the_whole_partition/a_seer_outside_the_live_partition_does_not_void_a_candidate/the_seer_test_is_containment_of_the_partition/a_seer_outside_the_partition_does_not_void_a_candidate | §62 |
 | `C209` | **with no autopropose, a deploy sent to one validator was never finalised, because the attestation guard read what is left to finalise from the round's parents.** The parents are the round snapshot (`parents_for_new_block`), so a deploy-bearing block another validator made this round is in `latest_msgs` and in no parent: every other validator computed `nothing_to_finalize` and stayed silent, the round never closed, and the fringe stopped short of the deploy. Where it did not, the licence `new_state_transition` ("a parent carries deploys") lapsed one round after the deploy, every validator was paced to a cadence that is never due on a chain that is not moving, and the fringe stopped one layer short instead. The live signature is #214's: finality `none` in 693 samples with deploys to one node, and running once deploys were sent in rotation. Every guard input is now read from what the node has seen — the work (`attestation_inputs`, the licence bounded by `ATTESTATION_HORIZON` so a finality stall cannot become the C171 storm) **and** who is moving, the tip and the cadence. The first cut read only the work from the seen view, and a live run on #219 refuted it: with every deploy sent to a validator that did not sign the genesis, the signer read its genesis as "just spoke" and nobody else as moving, and never spoke again. In process, across 2 to 8 validators, deploys to the signer or to anyone else, a kill, a return, a joiner that speaks and one that never does: every deploy finalises within 10·N blocks each and the net goes quiet; the controls — the old rule, and the first cut with deploys to a non-signer — finalise none of three. The first cut was run live (#219: 24/24 and 23/23 finalised to the signer and in rotation, none to validator-1); this one has since been, on `881066f` and `9a75d45`, and re-verified independently on `07af032ad`. | every_deploy_finalises_and_then_the_chain_is_quiet/on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised/a_lost_quorum_does_not_storm/the_licence_ends_at_the_horizon_and_the_work_does_not/reading_only_the_work_from_the_seen_view_strands_the_genesis_signer | §63 |
 | `C210` | **with no autopropose, a deploy the round gate refused on a quiet net waited for someone else to speak.** The gate's escape — `LIVENESS_WINDOW` attempts or the wall-clock `ROUND_STALL_ESCAPE` — is evaluated only on an attempt, and with `--no-autopropose` attempts come only from a deploy or a remote block, so a deploy arriving after this validator had spoken this round was refused (`NotEnoughNewBlocks`) and stayed in the pool until the next one. The §48 stale-snapshot collision returned the same status on the same assumption. A not-due outcome now arms one `Automatic` retry at `NOT_DUE_RETRY`, just past the stall bound, at most one pending; an empty pool still goes through the attestation guard, so it cannot storm. Node-local. | a_refused_propose_is_retried_with_nobody_asking/nothing_to_do_is_not_retried/the_retry_lands_past_the_stall_escape | §64 |
+| `C212` | **late work below the fringe ended the attestation licence.** A returning node's catch-up blocks at epoch boundaries carry `CloseBlock` and so count as work; arriving twenty heights below the tip, they made `oldest_unfinalized` read as past `ATTESTATION_HORIZON`, every survivor computed `new_state_transition = false` and withheld the attestation that alone could finalise them, and the returner's next deploy was never finalised. The work's age is now counted from the parents' fringe when the work lies below it (`work_age_floor`). | late_work_below_the_fringe_is_counted_from_the_fringe/work_age_floor | §66 |
+| `C213` | **a catching-up node answered every block it replayed.** The attest tap fired on each block a returning validator validated during catch-up, so it proposed about twenty blocks in two seconds — one per missed height, two of them epoch boundaries carrying a second `CloseBlock`. The tap now ignores a block older than `ROUND_STALL_ESCAPE` by its own timestamp (`attest_is_live`, `ATTEST_MAX_BLOCK_AGE_MS`). | a_block_older_than_the_round_is_not_answered/attest_is_live/ATTEST_MAX_BLOCK_AGE_MS | §66 |
+| `C214` | **the attestation guard counted work as finalised against a fringe no block carried.** `fringe_seen` read `pre_state.fringe` — the fringe the block being built *would* publish — and the guard then withheld that very block, so the last deploy's finality was never published (deploy at 34, chain quiet at 37, published fringe at 32). The guard now reads the parents' published fringe (`prev_fringe`), which costs one round per deploy. Live: rejoin, kill, rotation and join arms all finalise every deploy on the fixed image (`n223-rejoin-results.md`). | fringe_seen/prev_fringe/n223-rejoin-results | §66 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

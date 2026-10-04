@@ -39,8 +39,8 @@ issues — and so had **no owner, no measurement and no falsifier**.
 
 | Criterion | Verdict | Basis |
 |---|---|---|
-| 1 — bounded production | ✅ **pass** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual — the *last* of several consecutive deploys may be included and not finalised — is recorded in §3.1 and on #213 |
-| 2 — join and leave | ✅ **pass** (leave untested) | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); and a new validator **bonds onto a running net** and produces (`n220-join-results.md`). The leave path (A2.5) is untested |
+| 1 — bounded production | ✅ **on A1.1, ❌ on A1.5** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual — the *last* of several consecutive deploys may be included and not finalised — is recorded in §3.1 and on #213 |
+| 2 — join and leave | **3 of 5 pass; A2.2 fails on a live net** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); and a new validator **bonds onto a running net** and produces (`n220-join-results.md`). The leave path (A2.5) is untested |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
 ## 0.3 Method
@@ -1824,8 +1824,9 @@ a row the net has not earned.
 
 ## 3.1 Criterion 1 — Anyone can propose, and production is bounded
 
-> **§3.1 — 2 ✅ · 0 ❌ · 2 ⬜.** The criterion now **passes** on the fixed tree — re-verified independently
-> by this pass, not taken from the fixer's report.
+> **§3.1 — 2 ✅ · 1 ❌ · 2 ⬜.** A1.1 passes; **A1.5 fails** — a deploy landing in the final heights of a
+> quiet net is included and never finalised, so "every deploy finalises" is a stronger claim than A1.1
+> makes and the net does not meet it. A1.2/A1.3 (N=5, N=8) are unrun.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1833,6 +1834,7 @@ a row the net has not earned.
 | A1.2 | N=5, all live, satisfies A1.1 | as A1.1 | as A1.1, N=5 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | as A1.1, N=8 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-…/R1/blocks.tsv` | `07af032ad` | the block-hash union, not `latestBlockNumber` | the union counts 28 blocks from one sender where the height reaches 28 for all three — the two are not the same quantity | ✅ **pass** | CH-ACC-02 |
+| A1.5 | **every** consecutive deploy on a quiet net is finalised — not only the first | a deploy that is included while its block never finalises | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T074618Z/` | `07af032ad` | the block carrying each of the six deploys, found in the union, against the finality reached | R1 finalises all six (its last at height 24, finality 24); **R2 and R3 leave their sixth included at height 24 with finality 23, and never finalise it** | ❌ **fail** (2 of 3 arms) | — |
 
 A1.1 **passes**, and the pass is a re-run by this pass rather than the fixer's word: six deploys to **one**
 validator — the counter-example this page published — now finalise on all three trigger patterns
@@ -1840,27 +1842,36 @@ validator — the counter-example this page published — now finalise on all th
 Before the fix the same rig gave `0 of 250 (0 full partition(s) among 3 candidate(s))`; see §3.4 for the
 before/after pair and §3.5 for the cause.
 
-> **A residual the re-run found, stated rather than smoothed over.** The rig sends **six** deploys and
-> counts per-deploy: R1 finalises all six (its last lands at height 24, finality 24), but **R2 and R3
+> **A1.5 is that residual, promoted to a row** rather than left as a note — it is criterion 1's own
+> wording, so it stays in scope. The rig sends **six** deploys and counts per-deploy: R1 finalises all six (its last lands at height 24, finality 24), but **R2 and R3
 > leave their sixth at height 24 with finality 23** — included, and one height short. That is not a
 > timing artefact: on a quiet `--no-autopropose` net production stops within a few heights of the last
 > deploy and finality lags ~4, so a deploy landing in the final few heights is **included and never
-> finalised**. A1.1 asks about *one* deploy and passes; "every deploy finalises" is a **stronger** claim
-> than the row makes, and it held in 1 of 3 arms. It belongs on #213 rather than as a green row here, and
-> it is raised there.
+> finalised**. **A1.1 asks about *one* deploy and passes; A1.5 asks about all of them and fails.** It is
+> raised on #213 as well, because whether it is in scope there is that issue's call.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
-> **§3.2 — 4 ✅ · 0 ❌ · 1 ⬜.** The criterion **passes** on the fixed tree, re-verified by this pass on a
-> live net with the witness the issue names. The one ⬜ is the leave path (A2.5), which no run has covered.
+> **§3.2 — 3 ✅ · 0 ❌ · 2 ⬜.** A2.1, A2.3 and A2.4 pass. **A2.2 is ⬜** — it passed on a *rig* and fails on
+> the **live net** ([#223](https://github.com/rchain-community/rchain-rust/issues/223)); see the note below.
+> **A2.5 is ⬜ partially established**: the leave takes effect live (`n220-leave-results.md`) but the
+> payout is unobserved and the withdrawal never appeared in the read path's own record.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
 | A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | the deploy's own block found by the union, plus `last-finalized-block` and `is-finalized` | **the block carrying a deploy submitted after the kill finalises** — block 14 at a tip of 13, finality 14 | ✅ **pass** | — |
-| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | a deploy after the restart finalises (block 18, finality 19), `start` being the only action taken | ✅ **pass** | — |
+| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `—` — **no live-net run satisfies this**; the rig run that did is in `n213-blocks/07af032ad-…/` and is not what the row claims | — | as A2.1 | a deploy after the restart finalises, `start` being the only action | ⬜ **untested on a live net — [#223](https://github.com/rchain-community/rchain-rust/issues/223)** | — |
 | A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | the deploy sent while `validator-2` was stopped is **included and its block finalises** (block 14) | ✅ **pass** | — |
 | A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator is admitted, funded with `trust`, then `bond`s against the live net | `spec/audit/evidence/n220-join-results.md` | `9a75d45` (author's run; **read, not re-run** by this pass) | `rho:pos` bond state + the newcomer's producer key + the deploy's `is-finalized` | the bond lands in a boundary block, the newcomer produces, and its deploy's block finalises | ✅ **pass** (healthy joiner — see the caveat below) | CH-ACC-06 |
-| A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | as A2.4, `withdraw` | `—` | `—` | the vault/pot state at the payout block | the payout transfers | ⬜ untested | CH-U6-09 |
+| A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | 3 validators 100/100/50, `--epoch-length 10 --quarantine-length 20` | `spec/audit/evidence/n220-leave-results.md` | `a34b79d45` | the active set (`/api/v1/pos` `activeValidators`) and the withdrawal's own record | the withdraw is processed and the validator **leaves the active set (3 → 2)**; **the payout is not observed** | ⬜ **partially established** | CH-U6-09 |
+
+**A2.5 has now been run, and it is a partial.** `n220-leave-run.sh` (tree `a34b79d45`) shows the leave
+working — the `withdraw` is processed, the epoch boundary deactivates the validator (`activeValidators`
+3 → 2), and the net stays healthy — but **the payout is not observed**, because the read path's
+`pendingWithdrawals` entry was absent in all 49 samples and its `deadline` / `blocksRemaining` were never
+populated. So **CH-U6-09 stays open**: the quarantine arithmetic it questions is *unread*, not confirmed
+and not refuted. Three instrument defects in that rig are recorded there, all mine, each of them a
+failure of the *instrument* rather than the chain — which is the pattern this page keeps re-learning.
 
 **A2.4 has now been run, and it passes** — the first live exercise of the C207 path (`bond`/`withdraw`/
 `trust`/`delegate` were no-ops on any network that merges until 2026-10-03). `n220-join-run.sh` admits a
@@ -1869,6 +1880,17 @@ block, the newcomer produces 14 of 84 blocks, and its own deploy's block finalis
 it does *not* cover**: a **silent** joiner — a bonded validator that never speaks — which is the wedge
 #213 is actually about. The rig proves a healthy joiner works; it does not prove a silent one cannot
 wedge the chain, and the page should not be read as saying otherwise.
+
+> **A2.2 is ⬜, not ✅ — the page's own lesson turned on itself.** Its earlier ✅ came from a **rig** run
+> (`n213-run.sh` case (b): `stop`, `start`, a deploy finalises). Jim then ran the checklist on the **live
+> testnet** at tree `49337ee92` and the rejoiner does not rejoin: the restarted node meshes and retrieves
+> blocks (246 retrieval lines) but is capped at the height it died at — `h=35` while the survivors reached
+> `h=48` — with exactly two `block summary failed: missing justification` errors and no recovery.
+> **A rig pass is not what the row claims**, which is the distinction this page has applied to everyone
+> else's evidence and had not applied to its own. See
+> [#223](https://github.com/rchain-community/rchain-rust/issues/223); the chain-level consequences are
+> nil — a rejoin **liveness** failure, not a safety one. **A2.4's ✅ is a rig result too** and the live run
+> did not reach it; that is recorded as provenance, not as a doubt, because nothing has falsified it.
 
 **What moved after this page was written, in order.** `#215` (2026-10-03 14:14) gave the round gate a
 wall-clock escape — *"needs a clock, not just a supply of attempts"* — but that was on a tree this page's

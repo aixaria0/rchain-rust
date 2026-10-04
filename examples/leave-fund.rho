@@ -1,0 +1,24 @@
+// Fund validator 2's vault so it can pay the phlo for its own `withdraw` deploy.
+//
+// The first half of the live leave arm (`spec/audit/evidence/n220-leave-run.sh`). **Genesis funds only
+// the deployer**: `tools/devnet.sh`'s `genesis_files` writes `wallets.txt` with `DEPLOYER_REV_ADDR`
+// alone, so validators 1 and 2 are bonded with an **empty vault** and their first deploy fails before it
+// runs — `preCharge: insufficient funds (0 < 1000000)`, which is what the leave rig's first attempt hit.
+// The join rig has the same shape and solves it the same way (`join-admit.rho` funds key 3), because key
+// 3 is not in the genesis at all.
+//
+// Unlike `join-admit.rho` this does **not** call `pos!trust`: validator 2 is bonded at genesis and is
+// already trusted by construction, and `withdraw` is the staker's own operation on its own
+// `rho:rchain:deployerId`.
+//
+//   tools/devnet.sh deploy leave-fund.rho && tools/devnet.sh query leave-fund
+new revAddr(`rho:rev:address`), vault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`),
+    addrCh, sent in {
+  revAddr!("fromPublicKey", "04d8b6c325ae12e89823866b2a292a62d7acee520954761890a1621fef79dca1c8e8df79dd8519480e5c015ae6cf3ba7de8669e260561616a36eb9c308b5983ab0".hexToBytes(), *addrCh) |
+  for (@addr <- addrCh) {
+    vault!("transfer", *deployerId, addr, 100000000, *sent) |
+    for (@s <- sent) {
+      @"leave-fund"!(s)
+    }
+  }
+}

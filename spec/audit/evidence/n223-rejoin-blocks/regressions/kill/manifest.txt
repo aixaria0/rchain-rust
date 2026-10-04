@@ -1,0 +1,6 @@
+# tree=f1ca009 head=f1ca009d08c58ce451f4823c70254c6d2e9e6ce7 origin/dev=f1ca009
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy
+#      DEVNET_EXTRA_FLAGS=--attest-on-new-blocks   (explicit; already the default — defaults.conf:16)
+# windows: settle=60s finality=120s absent=45s restart=120s budget=900s
+# image=sha256:eb79cdfba48b7f6172c6b06f2dc4d6db4cf1906ffef6f3b94e7311626735e989 2026-10-04T11:33:53.696858107Z
+# started 2026-10-04T11:49:53Z
