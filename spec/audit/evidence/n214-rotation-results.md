@@ -96,6 +96,23 @@ reading used: *a deploy's block is the first block first seen at or after the de
 **A1.5 still fails — in one arm of three, where the cited run had two (R2 and R3).** C214 moved it and did
 not close it: the residual is the last deploy's block riding a chain whose finality has plateaued.
 
+## The two accounts, reconciled — this is a second sample, not a dispute
+
+jimscarver's regression run of the **same rig on the same configuration** (`n223-rejoin-blocks/regressions/
+rotation/`, tree `f1ca009`, 11:36) records **all six finalising in all three arms**. Applying the identical
+rule to his committed artefacts reproduces his figures exactly:
+
+| run | R1 | R2 | R3 |
+|---|---|---|---|
+| `f1ca009` (jimscarver) | 45 ≤ **51** | 29 ≤ **31** | 25 ≤ **25** |
+| `513e2192b` (this run) | 31 ≤ **32** | 29 ≤ **31** | **19 > 17** ✗ |
+
+**Nothing in his run is in dispute and nothing in this one contradicts it**: the runs agree where they
+overlap (R1 and R2 finalise all six in both), and they differ in **one arm of one run**. Three samples of
+this rig now exist — `07af032ad` with 2 of 3 arms short, `f1ca009` with 0 of 3, `513e2192b` with 1 of 3 —
+and what they say together is that **the quiet chain's tail is not reliably finalised**, which is why
+A1.5 stays ❌ and is not retired by the green run, and why the red one does not establish a rate.
+
 **R3's plateau is not a truncated read.** Its finality reads `17` with the chain at height `22` for the
 last forty-odd samples, and the sampler's window runs past the arm's `end` mark by a margin — nothing was
 still climbing when the window closed. The gate's own reason lines name partitions of `100 of 250` and
