@@ -86,3 +86,36 @@ The evidence supports either; what it does not support is calling the falsifier 
 One host, three validators, mesh complete, no delivery delay injected. Two runs per arm. No bond was
 attempted and no fresh-store join. Nothing here measures safety (TE-2). The R3 failure is reproducible
 but its mechanism is unlocated, and that is stated as a gap rather than filled with a guess.
+
+## Rerun on `881066f` (C209 complete), 2026-10-03/04 — all arms pass
+
+The R3 mechanism above was located with the diagnostic line `attestation at tip N: withheld|licensed — …`
+and fixed in #219's second commit: the genesis signer read its own genesis as "just spoke" and nobody else
+as moving, because the tip, the live set and the cadence still came from the round's parents. Every guard
+input now comes from `latest_msgs`. Same rig, same flags, binary built natively from `881066f` (Docker Hub
+refused this container), one run per arm.
+
+| arm | deploys to | **`881066f`** | artefacts |
+|---|---|---|---|
+| R1 | the bootstrap | h 28, finalised 24, quiet for the 90 s read window | `n213-blocks/881066f-20261003T220046Z-rotation/R1/` |
+| R2 | rotating | h 27, finalised 23, quiet | `…/R2/` |
+| R3 | validator-1 | **h 27, finalised 23, quiet** (was `none`) | `…/R3/` |
+| Arm 2 (a) | kill validator-2, deploy | finality 1 → 2 past the kill | `n213-blocks/881066f-20261004T000955Z/` |
+| Arm 2 (b) | restart it, deploy | finality 2 → 5, all three nodes at h 9 / finalised 5 | same |
+| Arm 2 (d) | bounded | within the 900 s budget, no escape lines | same |
+
+In R3 the bootstrap's first decision is `licensed … quorum_reachable=true … round=[04f700a4]` — the round
+is its genesis alone, the exact state in which the first cut read `quorum_reachable=false`.
+
+**A correction to the pre-registration**, which is frozen and so is corrected here: `--attest-on-new-blocks`
+is not required. The clap flag only ever *adds* `true` (`config_mapper.rs`'s `flag`), and the merged
+default is `true` (`node/src/configuration/defaults.conf:16`). The rig passes it anyway, which is harmless.
+
+**Again on `9a75d45`** (C210 added: a not-due propose is retried by the node itself), to check the retry
+changes nothing on these arms: R1/R2/R3 finalised 24/23/23 with no escapes
+(`n213-blocks/9a75d45-20261004T002358Z-rotation/`), and Arm 2 passed (a) 1 → 2, (b) 2 → 5, (d)
+(`n213-blocks/9a75d45-20261004T003742Z/`). A validator bonding onto the running net is
+[`n220-join-results.md`](n220-join-results.md): all four conditions pass.
+
+**Still not run:** delivery delay, a long absence (Arm 2's restart came 18 s after the kill), and a bonded
+validator that never speaks.

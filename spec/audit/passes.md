@@ -7148,3 +7148,76 @@ as the `decide`d pair.
 Mechanism (a) — a forking DAG in which no candidate is seen by every live validator — produces the same
 `0 of 250` line and is untouched, and #213's `100 of 250` with all three validators live is not this
 mechanism (with nobody stopped, every seer is in the partition). Nothing here has been run on a live net.
+
+## 63. A deploy sent to one validator was never finalised, because the guard read the round's parents (C209, #214)
+
+**The mechanism.** With no autopropose, the only proposal attempts are the deploy itself and the
+attestation tap. The attestation guard decided whether anything was left to finalise from
+`seen(parents) − seen(fringe)`, and the parents are the round snapshot: a deploy-bearing block another
+validator made this round is in `latest_msgs` and in no parent until the round closes. So every other
+validator computed `nothing_to_finalize`, stayed silent, and the round — which closes only when every
+bonded sender has spoken — never closed. Where the scan did see the deploy, its licence
+(`new_state_transition`, "a parent carries deploys") lapsed one round later, every validator was paced
+to a cadence that is never due on a chain that is not moving, and the fringe stopped one layer short of
+the deploy. A block needs every bonded sender to speak for several rounds after it; the old inputs
+licensed one.
+
+**The evidence.** The live reports on #214 are this signature: deploys to one node left finality at
+`none` (six deploys on a fully live three-validator chain; 693 samples on `f9d36b9c4`), and sending
+them to the validators in rotation started it. In process, `quiet_chain_tests` runs the proposer's own
+round gate, escape, pre-state fringe, guard and epoch trigger over one `DagMessageState` until no attempt
+would produce a block. On the old inputs with a bonded genesis signer, three deploys to one of
+100/100/50 finalise none (`on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised`).
+On the new ones (`attestation_inputs`: both read from `latest_msgs`, the fringe still the parents'),
+`every_deploy_finalises_and_then_the_chain_is_quiet` holds for 2, 3, 5 and 8 validators, deploys to one
+or several, to the genesis signer or to another validator, the 50 killed, killed and returned, a 100 of four killed, a joiner that speaks and one that
+never does, with genesis signed by a bonded and an unbonded key: every deploy finalises, within 10·N
+blocks each (measured: 4 to 8 rounds), and the net then stops. With the quorum lost (a 100 of 100/100/50,
+or one of two) nothing finalises, as it must not, and production stays bounded (`a_lost_quorum_does_not_storm`).
+
+**The second half, found by a live run.** The first cut read only the *work* from the seen view and
+left who is moving, the tip and the cadence on the parents. Run live on #219 (Patrick Mockridge, two runs,
+`spec/audit/evidence/n213-*` on #221), deploys to the genesis signer and in rotation finalised 24/24 and
+23/23, and deploys to validator-1 finalised none: the signer made no block after genesis. The genesis is a
+message *from the signer*, and before the first round closes the round snapshot is the genesis alone, so
+read from the parents the signer had "just spoken" at the tip and nobody else was moving — cadence never
+due, quorum never reachable, silent for good. The in-process network had sent its deploys to the signer,
+so it never asked; it does now, and reproduces the live result exactly
+(`reading_only_the_work_from_the_seen_view_strands_the_genesis_signer`, red on the first cut, green on
+this one). Every guard input is now read from `latest_msgs`; the parents decide only what the block is
+built on.
+
+**The storm bound.** Read from the seen view, the licence holds for as long as a deploy is unfinalised,
+so a finality stall from any other cause would bring C171 back. `ATTESTATION_HORIZON` (three liveness
+windows) ends the licence that many heights after the oldest unfinalised deploy-bearing block, after
+which the guard falls back to the cadence. The worst age measured in process is 7 heights, with a
+validator killed and the partition waiting for it to age out.
+
+**What it rules out, and what it does not.** It rules out the guard as the reason a deploy to one node
+does not finalise. It is node-local — block validity is unchanged, so it needs no new genesis and old and
+new nodes interoperate. Not modelled: delivery delay and reordering. A deploy refused by the round gate
+while the net is quiet waited for the next attempt to take the stall escape (`ROUND_STALL_ESCAPE`); §64
+makes the node supply that attempt itself. Run live on `881066f`: R1–R3 and #213's kill/restart arm all
+finalise and go quiet (`evidence/n213-results.md`, *Rerun*).
+
+## 64. A deploy the round gate refused on a quiet net waited for someone else to speak (C210, #213)
+
+**Mechanism.** The round gate's escape has two triggers — `LIVENESS_WINDOW` attempts and the wall-clock
+`ROUND_STALL_ESCAPE` — and both are evaluated only when something asks the node to propose. With
+`--no-autopropose` the askers are a deploy and a remote block. A deploy that arrives while this validator
+has already spoken this round is refused (`NotEnoughNewBlocks`), sits in the pool, and stays there until
+the next deploy or remote block: on a quiet net, indefinitely. The §48 stale-snapshot collision returns the
+same status with the same "the next tick re-derives" assumption and had the same hole.
+
+**Fix.** `node/src/instances/proposer_instance.rs`: a `NotEnoughNewBlocks` outcome arms one
+`Automatic` retry after `NOT_DUE_RETRY` (`ROUND_STALL_ESCAPE` + 1 s), so the first retry is past the stall
+bound and takes the escape if the round is still stuck. At most one retry is pending; an empty pool sends
+the retry through the attestation guard, which withholds it when there is nothing to finalise or no
+quorum, so it cannot become the C171 storm. Node-local; no validity rule changes.
+
+**Evidence.** `a_refused_propose_is_retried_with_nobody_asking` (a refusal is asked again with no external
+request, and never more than once per retry interval), `nothing_to_do_is_not_retried`,
+`the_retry_lands_past_the_stall_escape`. The live arms never left a deploy waiting, so they cannot
+discriminate the fix; rerun on `9a75d45` they show it costs nothing — R1–R3 24/23/23, #213's kill/restart
+arm passing, a validator joining live (`evidence/n220-join-results.md`), no escapes anywhere.
+

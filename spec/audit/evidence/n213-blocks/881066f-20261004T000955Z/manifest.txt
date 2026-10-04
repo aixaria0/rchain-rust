@@ -1,0 +1,6 @@
+# tree=881066f head=881066fd31d891a01e1dd51fecf8b7f525c72cd9 origin/dev=5017363
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy
+#      DEVNET_EXTRA_FLAGS=--attest-on-new-blocks   (required; the flag defaults false)
+# windows: settle=60s kill=120s restart=120s budget=900s
+# image=sha256:32f7c047e73e7b5c4a7c9b140adbd5d196e1d8eaee3c6793e109713b9312a0ea 2026-10-03T22:00:37.140474517Z
+# started 2026-10-04T00:09:55Z

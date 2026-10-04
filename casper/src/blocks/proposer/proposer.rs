@@ -18,7 +18,6 @@ use rchain_crypto::signatures::secp256k1::Secp256k1;
 use rchain_crypto::signatures::signed::Signed;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, DeployData, SignedDeployData};
 use rchain_models::validator::Validator;
@@ -670,7 +669,7 @@ async fn select_deploys(
 /// own clock cannot serve: both are frozen by the state they are meant to bound. A healthy round closes in a
 /// few seconds on the live net (three validators, one deploy, two blocks each, then quiet), so 15 s is well
 /// above the healthy case and far below "for ever".
-const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
+pub const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Wall-clock milliseconds, or 0 if the system clock is before the epoch.
 fn now_ms() -> i64 {
@@ -939,18 +938,41 @@ where
             .map(|m| m.seen.iter().copied().collect())
             .unwrap_or_default()
     };
-    let parent_seen: BTreeSet<BlockHash> = parent_hashes.iter().flat_map(|h| seen(h)).collect();
+    // **What is left to finalise is read from everything this node has seen, not from the round's
+    // parents** (AUDIT C209). The parents are the round snapshot, so a deploy-bearing block another
+    // validator made this round is in `latest_msgs` and not in any parent: read from the parents, every
+    // other validator saw "nothing to finalise" and stayed silent, the round never closed, and the deploy
+    // was never finalised. That is the live report on #214: deploys sent to one node never finalise, and
+    // sending them in rotation does. The fringe stays the parents' — it is the fringe this block extends,
+    // so a deploy counts as finalised here exactly when the block being built would carry it.
     let fringe_seen: BTreeSet<BlockHash> = pre_state.fringe.iter().flat_map(|h| seen(h)).collect();
-    let conflict_set: Vec<BlockHash> = parent_seen.difference(&fringe_seen).copied().collect();
+    let mut conflict_set: Vec<(BlockHeight, BlockHash)> = dag_repr
+        .dag_message_state
+        .latest_msgs
+        .values()
+        .flat_map(|m| m.seen.iter().copied())
+        .collect::<BTreeSet<BlockHash>>()
+        .difference(&fringe_seen)
+        .filter_map(|h| {
+            dag_repr
+                .dag_message_state
+                .msg_map
+                .get(h)
+                .map(|m| (m.height, *h))
+        })
+        .collect();
+    // Oldest first, so the scan stops at the oldest deploy-bearing block, which is the one whose age
+    // decides the attestation horizon below.
+    conflict_set.sort();
 
     let has_deploys =
         |b: &BlockMessage| !b.state.system_deploys.is_empty() || !b.state.deploys.is_empty();
 
-    let mut nothing_to_finalize = true;
-    for h in &conflict_set {
+    let mut oldest_unfinalized: Option<BlockHeight> = None;
+    for (height, h) in &conflict_set {
         if let Some(b) = get_block(block_store, h).await? {
             if has_deploys(&b) {
-                nothing_to_finalize = false;
+                oldest_unfinalized = Some(*height);
                 break;
             }
         }
@@ -966,41 +988,44 @@ where
     // thing that ever got past this guard — which is why `--autopropose` could not produce a block on its
     // own. See #70.
     //
-    // What the guard needs is (a) whether an unfinalized state transition exists to attest to, and (b) how
-    // much stake is moving on the fringe we are building on. (b) is the senders of the *parents'* latest
-    // messages, excluding ourselves: our own message is the attestation we are about to add, and it is
-    // counted on the other side of the comparison.
-    let parents: Vec<BlockMessage> = {
-        let mut v = Vec::new();
-        for h in &parent_hashes {
-            if let Some(b) = get_block(block_store, h).await? {
-                v.push(b);
-            }
-        }
-        v
-    };
+    // What the guard needs is (a) whether an unfinalized state transition exists to attest to — the scan
+    // above, over what this node has seen — and (b) how much stake is moving. (b) is the senders of the
+    // latest messages this node has seen, excluding ourselves: our own message is the attestation we are
+    // about to add, and it is counted on the other side of the comparison.
+    //
+    // **Every input is read from the same view, the node's seen view, and not from the parents** (C209,
+    // second half). The parents are the round snapshot, and before the first round closes that snapshot
+    // is the genesis alone — a message from the genesis signer, at the tip. Read from it, the signer has
+    // "just spoken" and nobody else is moving, so its cadence is never due and its quorum never reachable,
+    // and it never speaks again: measured live on #219 with every deploy sent to another validator (the
+    // signer's block count stayed at 1). The parents decide what the block is built on; they do not
+    // decide whether this node should speak.
+    //
     // The guard's inputs are named functions rather than inline sums, so that its behaviour is
     // falsifiable without a DAG: `moving_attestation_stake` (who counts as moving),
     // `attestation_suppressed` (the decision) and `cadence_due` (the pace bound). `tip` is the newest
     // height this node can see, which is the datum the recency checks need.
-    let tip = pre_state
-        .justifications
-        .iter()
-        .map(|m| m.block_num)
+    let seen_heights: BTreeMap<Validator, BlockHeight> = liveness::latest_heights(
+        dag_repr
+            .dag_message_state
+            .latest_msgs
+            .values()
+            .map(|m| (m.sender.clone(), m.height)),
+    );
+    let tip = seen_heights
+        .values()
+        .copied()
         .max()
         .unwrap_or_else(BlockHeight::zero);
-    let new_state_transition = parents.iter().any(|b| has_deploys(b));
+    // (a), as the two inputs the decision takes — see `attestation_inputs` for why the second is now
+    // bounded by age rather than read from the parents.
+    let (nothing_to_finalize, new_state_transition) = attestation_inputs(oldest_unfinalized, tip);
     // The live weight set: the one liveness rule, shared with the finalizer through `liveness` (#70
     // increment 2). It decides who counts as *moving*; the quorum itself stays measured against the
     // whole bonded map below, so a minority cannot attest its way to a supermajority.
     let live_bonds = liveness::live_weight_set(
         &pre_state_bonds,
-        &liveness::latest_heights(
-            pre_state
-                .justifications
-                .iter()
-                .map(|m| (m.sender.clone(), m.block_num)),
-        ),
+        &seen_heights,
         tip,
         liveness::LIVENESS_WINDOW,
     );
@@ -1017,15 +1042,37 @@ where
     let quorum_reachable =
         attestation_reaches_supermajority(attestation_stake, own_stake, pre_state_bonds_stake);
 
+    let cadence = cadence_due(&seen_heights, &creators_validator, tip);
+    // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting to remote
+    // blocks, and a caller's explicit propose is not a reaction.
+    let paced = source == ProposeSource::Automatic;
     let suppress_attestation = attestation_suppressed(
         nothing_to_finalize,
         new_state_transition,
         quorum_reachable,
-        cadence_due(&pre_state.justifications, &creators_validator, tip),
-        // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting
-        // to remote blocks, and a caller's explicit propose is not a reaction.
-        source == ProposeSource::Automatic,
+        cadence,
+        paced,
     );
+    // **Why this node did or did not attest, in its own log** (#213's diagnostic). Without it a validator
+    // that stays silent looks exactly like one with nothing to do: the R3 arm on #219 showed the genesis
+    // signer making no block after genesis, and no run could say which input held it.
+    let decision = describe_attestation_decision(&AttestationDecision {
+        nothing_to_finalize,
+        new_state_transition,
+        quorum_reachable,
+        cadence_due: cadence,
+        paced,
+        round_senders: pre_state.justifications.iter().map(|m| &m.sender).collect(),
+        blocked_attempts: blocked_since_advance.load(std::sync::atomic::Ordering::Relaxed),
+        escape,
+        suppressed: suppress_attestation,
+    });
+    if attestation_line_due(&decision, i64::from(tip)) {
+        log.info(
+            LogSource::new("casper.blocks.Proposer"),
+            &format!("attestation at tip {}: {decision}", i64::from(tip)),
+        );
+    }
 
     // User deploys: filter future / expired / replayed, then cap at what the block can seed — the pool
     // may hold far more than one block can carry, and the leftover stays pooled (AUDIT C123).
@@ -1583,14 +1630,131 @@ fn moving_attestation_stake(live_bonds: &BTreeMap<Validator, NonNegI64>, own: &V
         .sum()
 }
 
-/// Whether this node has been quiet long enough to speak again, read from its own latest message in
-/// `justifications` — so the pace bound needs no new state, no counter, and no persistence.
-fn cadence_due(justifications: &[BlockMetadata], own: &Validator, tip: BlockHeight) -> bool {
-    match justifications.iter().find(|m| &m.sender == own) {
-        Some(mine) => liveness::heights_behind(tip, mine.block_num) > liveness::LIVENESS_WINDOW,
+/// Whether this node has been quiet long enough to speak again, read from the height of its own latest
+/// message among the senders' `latest` heights — so the pace bound needs no new state, no counter, and no
+/// persistence.
+fn cadence_due(
+    latest: &BTreeMap<Validator, BlockHeight>,
+    own: &Validator,
+    tip: BlockHeight,
+) -> bool {
+    match latest.get(own) {
+        Some(mine) => liveness::heights_behind(tip, *mine) > liveness::LIVENESS_WINDOW,
         // Nothing from us in the DAG yet: there is no quiet to have broken.
         None => true,
     }
+}
+
+/// **How long a deploy-bearing block may go unfinalised and still license a prompt attestation**, in
+/// heights. Measured in the in-process network (`quiet_chain_tests`): a healthy round finalises a deploy
+/// within 3 heights of it, and with one validator killed within 7, because the dead one has to age out of
+/// the partition (`LIVENESS_WINDOW`) first. Three windows leaves room above both.
+///
+/// It is the storm bound, and it is what lets the licence below be read from what the node has seen
+/// without bringing C171 back: if finality stops advancing for any other reason, prompt attestation stops
+/// this many heights after the deploy, instead of every validator attesting at every height for ever.
+const ATTESTATION_HORIZON: i64 = 3 * liveness::LIVENESS_WINDOW;
+
+/// The guard's two inputs, from the **oldest deploy-bearing block this node has seen that the fringe it is
+/// building on does not yet cover** (`None`: there is none).
+///
+/// - `nothing_to_finalize`: there is no such block.
+/// - `new_state_transition`: there is one, and it is within [`ATTESTATION_HORIZON`] of the tip.
+///
+/// **The licence used to be "a parent carries deploys", and that is AUDIT C209.** With no autopropose the
+/// only proposal attempts are the deploy itself and the attestation tap, and each round's parents are the
+/// snapshot taken when the previous round closed. One round after a deploy no parent carries it any more,
+/// so every validator was paced to its cadence, the cadence is never due on a chain that is not moving,
+/// and the fringe stopped one layer short of the deploy: measured live (#214, criterion 1: 693 samples,
+/// finality `none` throughout) and in-process. A deploy-bearing block needs every bonded sender to speak
+/// for a few rounds after it, not one, and this is what licenses that.
+fn attestation_inputs(oldest_unfinalized: Option<BlockHeight>, tip: BlockHeight) -> (bool, bool) {
+    match oldest_unfinalized {
+        None => (true, false),
+        Some(h) => (
+            false,
+            liveness::heights_behind(tip, h) <= ATTESTATION_HORIZON,
+        ),
+    }
+}
+
+/// The guard's inputs and its decision, for the diagnostic line.
+struct AttestationDecision<'a> {
+    nothing_to_finalize: bool,
+    new_state_transition: bool,
+    quorum_reachable: bool,
+    cadence_due: bool,
+    paced: bool,
+    /// The senders of the round snapshot this block is built on.
+    round_senders: BTreeSet<&'a Validator>,
+    /// Proposals declined since this node last advanced past the round (the escape's attempt counter).
+    blocked_attempts: i64,
+    escape: bool,
+    suppressed: bool,
+}
+
+/// The decision as one line. **The tip is not in it**, so that a line that only moved height compares
+/// equal and the rate limit holds; the caller prefixes it.
+fn describe_attestation_decision(d: &AttestationDecision<'_>) -> String {
+    let senders: Vec<String> = d
+        .round_senders
+        .iter()
+        .map(|v| {
+            v.as_bytes()[..4]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+        .collect();
+    format!(
+        "{} — nothing_to_finalize={} new_state_transition={} quorum_reachable={} cadence_due={} \
+         paced={} round=[{}] blocked_attempts={} escape={}",
+        if d.suppressed { "withheld" } else { "licensed" },
+        d.nothing_to_finalize,
+        d.new_state_transition,
+        d.quorum_reachable,
+        d.cadence_due,
+        d.paced,
+        senders.join(" "),
+        d.blocked_attempts,
+        d.escape,
+    )
+}
+
+/// The last attestation line logged, and the tip it was logged at: a line is due when it **changes**, or
+/// every `ATTESTATION_LOG_INTERVAL` heights while it does not — the rate limit the finality stall line uses
+/// (`interpreter_util.rs`), for the same reason: the change is the event, and a steady state is not.
+static LAST_ATTESTATION_LINE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static LAST_ATTESTATION_TIP: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(i64::MIN);
+const ATTESTATION_LOG_INTERVAL: i64 = 100;
+
+fn attestation_line_due(line: &str, tip: i64) -> bool {
+    line_due(&LAST_ATTESTATION_LINE, &LAST_ATTESTATION_TIP, line, tip)
+}
+
+/// The rate limit itself, over state the caller owns — so a test can hold its own and not race the
+/// node's statics, which every `create_block` in the test binary writes.
+fn line_due(
+    last_line: &std::sync::Mutex<Option<String>>,
+    last_tip: &std::sync::atomic::AtomicI64,
+    line: &str,
+    tip: i64,
+) -> bool {
+    let changed = {
+        let mut last = last_line.lock().unwrap_or_else(|p| p.into_inner());
+        let changed = last.as_deref() != Some(line);
+        if changed {
+            *last = Some(line.to_string());
+        }
+        changed
+    };
+    let due =
+        changed || tip.saturating_sub(last_tip.load(Ordering::Relaxed)) >= ATTESTATION_LOG_INTERVAL;
+    if due {
+        last_tip.store(tip, Ordering::Relaxed);
+    }
+    due
 }
 
 /// Whether this node withholds its attestation for the block it is building.
@@ -1690,7 +1854,7 @@ mod attestation_guard_tests {
 mod attestation_suppression_tests {
     use super::{
         attestation_reaches_supermajority, attestation_suppressed, cadence_due,
-        moving_attestation_stake,
+        describe_attestation_decision, line_due, moving_attestation_stake, AttestationDecision,
     };
     use rchain_block_storage::dag::liveness;
     use rchain_models::block_hash::BlockHash;
@@ -1860,6 +2024,63 @@ mod attestation_suppression_tests {
         assert!(attestation_suppressed(true, true, true, true, true));
     }
 
+    /// **The diagnostic names every input, and fires on a change rather than on a height.** The tip is
+    /// kept out of the rendered line, so a validator that stays withheld for the same reason logs once and
+    /// then once per interval, not once per block.
+    #[test]
+    fn the_attestation_line_names_every_input_and_fires_on_a_change() {
+        let (a, b) = (validator(1), validator(2));
+        let decision = |suppressed: bool| {
+            describe_attestation_decision(&AttestationDecision {
+                nothing_to_finalize: false,
+                new_state_transition: true,
+                quorum_reachable: false,
+                cadence_due: false,
+                paced: true,
+                round_senders: BTreeSet::from([&a, &b]),
+                blocked_attempts: 2,
+                escape: false,
+                suppressed,
+            })
+        };
+        let withheld = decision(true);
+        for field in [
+            "withheld",
+            "nothing_to_finalize=false",
+            "new_state_transition=true",
+            "quorum_reachable=false",
+            "cadence_due=false",
+            "paced=true",
+            "round=[01010101 02020202]",
+            "blocked_attempts=2",
+            "escape=false",
+        ] {
+            assert!(withheld.contains(field), "{field} missing from: {withheld}");
+        }
+
+        let (line, tip) = (
+            std::sync::Mutex::new(None),
+            std::sync::atomic::AtomicI64::new(i64::MIN),
+        );
+        let attestation_line_due = |l: &str, t: i64| line_due(&line, &tip, l, t);
+        assert!(
+            attestation_line_due(&withheld, 1_000),
+            "the first line is logged"
+        );
+        assert!(
+            !attestation_line_due(&withheld, 1_001),
+            "the same line one height later is not"
+        );
+        assert!(
+            attestation_line_due(&decision(false), 1_002),
+            "a changed decision is logged at once"
+        );
+        assert!(
+            attestation_line_due(&decision(false), 1_102),
+            "an unchanged line is logged again after the interval"
+        );
+    }
+
     /// The pace bound is read from the DAG, so it needs no new state: our own latest message's height
     /// against the tip. Nothing from us at all counts as due — there is no quiet to have broken.
     #[test]
@@ -1867,21 +2088,24 @@ mod attestation_suppression_tests {
         let (a, b) = (validator(1), validator(2));
         let tip = BlockHeight::try_from(20).unwrap();
 
-        assert!(cadence_due(&[], &a, tip), "nothing from us: speak");
+        let at = |v: &Validator, h: i64| {
+            BTreeMap::from([(v.clone(), BlockHeight::try_from(h).unwrap())])
+        };
+
         assert!(
-            !cadence_due(&[latest(a.clone(), 19)], &a, tip),
+            cadence_due(&BTreeMap::new(), &a, tip),
+            "nothing from us: speak"
+        );
+        assert!(
+            !cadence_due(&at(&a, 19), &a, tip),
             "we spoke one height ago"
         );
         assert!(
-            cadence_due(
-                &[latest(a.clone(), 20 - liveness::LIVENESS_WINDOW - 1)],
-                &a,
-                tip
-            ),
+            cadence_due(&at(&a, 20 - liveness::LIVENESS_WINDOW - 1), &a, tip),
             "quiet past the window"
         );
         // Someone else's message is not ours, and must not reset our cadence.
-        assert!(cadence_due(&[latest(b, 20)], &a, tip));
+        assert!(cadence_due(&at(&b, 20), &a, tip));
     }
 }
 
@@ -2351,5 +2575,497 @@ mod active_validator_tests {
             !is_active_validator(&dag, &stranger).await.unwrap(),
             "and a validator in no block's set is still not active"
         );
+    }
+}
+
+/// **An in-process network of validators with no autopropose**, running the proposer's own decisions —
+/// the round gate and its escape, the pre-state fringe, the attestation guard, the epoch trigger — over
+/// one shared `DagMessageState`. Every block reaches every live validator at once; each arrival is one
+/// attestation-tap attempt (one per sender per height, as `attest_warranted` allows); a deploy is one
+/// attempt on the validator it was sent to and stays pooled until a block of that validator's carries it.
+/// The network runs until no attempt anywhere would produce a block, which is what "quiet" means here.
+///
+/// What it does not model: delivery delay and reordering, and the store reads `create_block` makes.
+#[cfg(test)]
+mod quiet_chain_tests {
+    use super::{attestation_inputs, attestation_suppressed, ATTESTATION_HORIZON};
+    use rchain_block_storage::dag::finalizer::Message;
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_map;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum View {
+        /// The guard reads the round snapshot (the parents) — the rule on dev.
+        Round,
+        /// What is left to finalise is read from `latest_msgs`, and who is moving from the parents: the
+        /// first cut of C209, which a live run refuted (a deploy sent to a validator that did not sign the
+        /// genesis is never finalised).
+        SeenWork,
+        /// Every guard input is read from everything the node has seen (`latest_msgs`).
+        Seen,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Deploy(usize),
+        Kill(usize),
+        Revive(usize),
+        /// Bond a validator into every later block's bond map (it has not spoken yet).
+        Bond(usize, i64),
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Ev {
+        /// `--propose-on-deploy`: the deploy's own attempt.
+        Deploy,
+        /// The attest-on-new-blocks tap.
+        Tap,
+    }
+
+    struct Cfg {
+        stakes: Vec<i64>,
+        genesis_sender: u8,
+        view: View,
+        epoch: i64,
+        cap: usize,
+    }
+
+    #[derive(Debug)]
+    #[allow(dead_code)] // `tip` and `escapes` are read through `Debug`, in the failure messages.
+    struct Outcome {
+        blocks: usize,
+        deploys: usize,
+        finalized: usize,
+        stranded: usize,
+        tip: i64,
+        hit_cap: bool,
+        escapes: usize,
+        /// The oldest an unfinalised deploy-bearing block got, in heights behind the tip.
+        max_age: i64,
+    }
+
+    fn seen(ms: &BTreeSet<Message<u64, u8>>) -> BTreeSet<u64> {
+        ms.iter().flat_map(|m| m.seen.iter().copied()).collect()
+    }
+
+    fn run(cfg: &Cfg, script: &[Step]) -> Outcome {
+        let mut bonds: BTreeMap<u8, NonNegI64> = cfg
+            .stakes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i as u8, NonNegI64::try_from(*s).unwrap()))
+            .collect();
+        let n_max = 16usize;
+        let mut st: DagMessageState<u64, u8> = DagMessageState::empty();
+        let genesis = st.create_message(
+            0,
+            BlockHeight::zero(),
+            cfg.genesis_sender,
+            SeqNum::zero(),
+            bonds.clone(),
+            &BTreeSet::new(),
+        );
+        st.insert_msg_mut(&genesis);
+        let mut next_id = 1u64;
+        // Genesis carries the genesis deploys, so it is deploy-bearing to the guard, as on a node.
+        let mut with_deploy: BTreeSet<u64> = BTreeSet::from([0]);
+        let mut deploy_blocks: Vec<u64> = Vec::new();
+        let mut answered: BTreeMap<(usize, u8), i64> = BTreeMap::new();
+        let mut pool = vec![0usize; n_max];
+        let mut dead: BTreeSet<usize> = BTreeSet::new();
+        let mut waited = vec![0i64; n_max];
+        let mut blocked_since: Vec<Option<usize>> = vec![None; n_max];
+        let (mut blocks, mut escapes, mut deploys, mut hit_cap) = (0usize, 0usize, 0usize, false);
+        let mut max_age = 0i64;
+
+        for (step, s) in script.iter().enumerate() {
+            let mut queue: VecDeque<(usize, Ev)> = VecDeque::new();
+            match *s {
+                Step::Deploy(v) => {
+                    deploys += 1;
+                    pool[v] += 1;
+                    queue.push_back((v, Ev::Deploy));
+                }
+                Step::Kill(v) => {
+                    dead.insert(v);
+                }
+                Step::Revive(v) => {
+                    dead.remove(&v);
+                    answered.retain(|(u, _), _| *u != v);
+                    waited[v] = 0;
+                    blocked_since[v] = None;
+                }
+                Step::Bond(v, stake) => {
+                    bonds.insert(v as u8, NonNegI64::try_from(stake).unwrap());
+                }
+            }
+            while let Some((v, ev)) = queue.pop_front() {
+                if blocks >= cfg.cap {
+                    hit_cap = true;
+                    break;
+                }
+                if dead.contains(&v) {
+                    continue;
+                }
+                let me = v as u8;
+                let escape = if st.has_advanced_past_the_round(&me) {
+                    waited[v] += 1;
+                    // The stall bound: a step is a later moment in wall-clock time than the one before.
+                    let since = *blocked_since[v].get_or_insert(step);
+                    if !(waited[v] > liveness::LIVENESS_WINDOW || since < step) {
+                        continue;
+                    }
+                    escapes += 1;
+                    true
+                } else {
+                    waited[v] = 0;
+                    blocked_since[v] = None;
+                    false
+                };
+                let parents = if escape {
+                    st.parents_for_new_block_escaping(&me)
+                } else {
+                    st.parents_for_new_block()
+                };
+                let tip = parents.iter().map(|m| m.height).max().unwrap();
+                let fringe = message_map::latest_fringe(&st.msg_map, &parents);
+                let latest: BTreeSet<Message<u64, u8>> = st.latest_msgs.values().cloned().collect();
+                let work_view = match cfg.view {
+                    View::Round => &parents,
+                    View::SeenWork | View::Seen => &latest,
+                };
+                let viewed = match cfg.view {
+                    View::Round | View::SeenWork => &parents,
+                    View::Seen => &latest,
+                };
+                // The movement inputs are read from one view, and recency is measured from its tip.
+                let seen_tip = viewed.iter().map(|m| m.height).max().unwrap();
+                let work_tip = work_view.iter().map(|m| m.height).max().unwrap();
+                let conflict: BTreeSet<u64> = seen(work_view)
+                    .difference(&seen(&fringe))
+                    .copied()
+                    .collect();
+                let nothing_to_finalize = conflict.iter().all(|h| !with_deploy.contains(h));
+                let oldest_pending = conflict
+                    .iter()
+                    .filter(|h| with_deploy.contains(h))
+                    .map(|h| st.msg_map[h].height)
+                    .min();
+                if let Some(o) = oldest_pending {
+                    max_age = max_age.max(liveness::heights_behind(work_tip, o));
+                }
+                let (nothing_to_finalize, new_state_transition) = match cfg.view {
+                    View::Round => (
+                        nothing_to_finalize,
+                        parents.iter().any(|p| with_deploy.contains(&p.id)),
+                    ),
+                    View::SeenWork | View::Seen => attestation_inputs(oldest_pending, work_tip),
+                };
+                let live = liveness::live_weight_set(
+                    &bonds,
+                    &liveness::latest_heights(viewed.iter().map(|m| (m.sender, m.height))),
+                    seen_tip,
+                    liveness::LIVENESS_WINDOW,
+                );
+                let total: i128 = bonds.values().map(|s| i128::from(i64::from(*s))).sum();
+                let own: i128 = bonds.get(&me).map_or(0, |s| i128::from(i64::from(*s)));
+                let moving: i128 = live
+                    .iter()
+                    .filter(|(s, _)| **s != me)
+                    .map(|(_, s)| i128::from(i64::from(*s)))
+                    .sum();
+                let quorum_reachable = 3 * (moving + own) > 2 * total;
+                let cadence_due = match viewed.iter().find(|m| m.sender == me) {
+                    Some(mine) => {
+                        liveness::heights_behind(seen_tip, mine.height) > liveness::LIVENESS_WINDOW
+                    }
+                    None => true,
+                };
+                let next = i64::from(tip) + 1;
+                let change_epoch = cfg.epoch > 0 && next % cfg.epoch == 0;
+                let has_deploy = pool[v] > 0;
+                let suppressed = attestation_suppressed(
+                    nothing_to_finalize,
+                    new_state_transition,
+                    quorum_reachable,
+                    cadence_due,
+                    ev != Ev::Deploy,
+                );
+                if !has_deploy && !change_epoch && suppressed {
+                    continue;
+                }
+                let seq = parents
+                    .iter()
+                    .find(|m| m.sender == me)
+                    .map(|m| m.sender_seq + NonNegI64::one())
+                    .unwrap_or_else(SeqNum::zero);
+                let id = next_id;
+                next_id += 1;
+                let msg =
+                    st.create_message(id, tip + NonNegI64::one(), me, seq, bonds.clone(), &parents);
+                st.insert_msg_mut(&msg);
+                blocks += 1;
+                if has_deploy || change_epoch {
+                    with_deploy.insert(id);
+                }
+                if has_deploy {
+                    deploy_blocks.extend(std::iter::repeat_n(id, pool[v]));
+                    pool[v] = 0;
+                }
+                let height = i64::from(msg.height);
+                for u in 0..n_max {
+                    if u == v || !bonds.contains_key(&(u as u8)) {
+                        continue;
+                    }
+                    let last = answered.get(&(u, me)).copied();
+                    if last.map_or(true, |l| height > l) {
+                        answered.insert((u, me), height);
+                        queue.push_back((u, Ev::Tap));
+                    }
+                }
+            }
+            if hit_cap {
+                break;
+            }
+        }
+        let latest: BTreeSet<_> = st.latest_msgs.values().cloned().collect();
+        let fin_seen = seen(&message_map::latest_fringe(&st.msg_map, &latest));
+        Outcome {
+            blocks,
+            deploys,
+            finalized: deploy_blocks
+                .iter()
+                .filter(|d| fin_seen.contains(d))
+                .count(),
+            stranded: pool.iter().sum(),
+            tip: latest.iter().map(|m| i64::from(m.height)).max().unwrap(),
+            hit_cap,
+            escapes,
+            max_age,
+        }
+    }
+
+    fn cfg(stakes: &[i64], genesis_sender: u8, view: View) -> Cfg {
+        Cfg {
+            stakes: stakes.to_vec(),
+            genesis_sender,
+            view,
+            epoch: 10,
+            cap: 3000,
+        }
+    }
+
+    /// The scenarios a no-autopropose net with a changing validator set has to survive, each with a
+    /// supermajority still live: one validator, then several, then validators lost, returning, and joining.
+    fn live_quorum_scenarios() -> Vec<(&'static str, Vec<i64>, Vec<Step>)> {
+        use Step::*;
+        vec![
+            (
+                "two validators, one deploy",
+                vec![100, 100],
+                vec![Deploy(0)],
+            ),
+            (
+                "three, every deploy to one",
+                vec![100, 100, 50],
+                vec![Deploy(0), Deploy(0), Deploy(0)],
+            ),
+            (
+                "three, every deploy to a validator that did not sign the genesis",
+                vec![100, 100, 50],
+                vec![Deploy(1), Deploy(1), Deploy(1)],
+            ),
+            (
+                "three, every deploy to the 50",
+                vec![100, 100, 50],
+                vec![Deploy(2), Deploy(2)],
+            ),
+            (
+                "three, deploys in rotation",
+                vec![100, 100, 50],
+                vec![Deploy(0), Deploy(1), Deploy(2)],
+            ),
+            (
+                "five, every deploy to one",
+                vec![100; 5],
+                vec![Deploy(0), Deploy(0), Deploy(0)],
+            ),
+            (
+                "eight, scattered",
+                vec![100; 8],
+                vec![Deploy(0), Deploy(3), Deploy(7), Deploy(0)],
+            ),
+            (
+                "three, the 50 killed",
+                vec![100, 100, 50],
+                vec![Deploy(0), Kill(2), Deploy(0), Deploy(1), Deploy(0)],
+            ),
+            (
+                "three, the 50 killed and back",
+                vec![100, 100, 50],
+                vec![
+                    Deploy(0),
+                    Kill(2),
+                    Deploy(0),
+                    Deploy(1),
+                    Revive(2),
+                    Deploy(0),
+                    Deploy(2),
+                ],
+            ),
+            (
+                "four, one killed",
+                vec![100; 4],
+                vec![Deploy(0), Kill(3), Deploy(0), Deploy(1), Deploy(2)],
+            ),
+            (
+                "three, a fourth bonds and speaks",
+                vec![100, 100, 50],
+                vec![Deploy(0), Bond(3, 50), Deploy(0), Deploy(3), Deploy(1)],
+            ),
+            (
+                "two, a third bonds and never speaks",
+                vec![100, 100],
+                vec![Deploy(0), Bond(2, 10), Deploy(0), Deploy(1), Deploy(0)],
+            ),
+        ]
+    }
+
+    fn bonded_count(stakes: &[i64], script: &[Step]) -> usize {
+        stakes.len()
+            + script
+                .iter()
+                .filter(|s| matches!(s, Step::Bond(..)))
+                .count()
+    }
+
+    /// **C209: with a supermajority live, every deploy finalises, at a bounded cost, and the net then
+    /// stops.** Whichever validator the deploy is sent to, whoever is killed, returns or joins, and
+    /// whichever sender signed the genesis.
+    ///
+    /// "Stops" is the run itself returning: the network is simulated until no attempt anywhere would
+    /// produce a block, and the cap is far above the bound, so reaching it is a storm.
+    #[test]
+    fn every_deploy_finalises_and_then_the_chain_is_quiet() {
+        for (name, stakes, script) in live_quorum_scenarios() {
+            for genesis_sender in [255u8, 0] {
+                let o = run(&cfg(&stakes, genesis_sender, View::Seen), &script);
+                let bound = 10 * bonded_count(&stakes, &script) * o.deploys;
+                assert!(
+                    !o.hit_cap,
+                    "{name} (genesis by {genesis_sender}): never went quiet — {o:?}"
+                );
+                assert_eq!(o.stranded, 0, "{name}: a deploy was left in a pool — {o:?}");
+                assert_eq!(
+                    o.finalized, o.deploys,
+                    "{name} (genesis by {genesis_sender}): {o:?}"
+                );
+                assert!(
+                    o.blocks <= bound,
+                    "{name}: {} blocks, over {bound} — {o:?}",
+                    o.blocks
+                );
+                assert!(
+                    o.max_age <= ATTESTATION_HORIZON,
+                    "{name}: a deploy went {} heights unfinalised, past the horizon — {o:?}",
+                    o.max_age
+                );
+            }
+        }
+    }
+
+    /// **The control: on the rule this replaces, a deploy sent to one validator is never finalised.**
+    /// The genesis is signed by a bonded validator, as on the live net. If this starts passing, the
+    /// in-process network no longer reproduces the defect and the test above proves nothing.
+    #[test]
+    fn on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised() {
+        use Step::*;
+        let o = run(
+            &cfg(&[100, 100, 50], 0, View::Round),
+            &[Deploy(0), Deploy(0), Deploy(0)],
+        );
+        assert!(!o.hit_cap, "{o:?}");
+        assert_eq!(o.finalized, 0, "{o:?}");
+    }
+
+    /// **The second control: reading only the work from the seen view is not enough.** The genesis is a
+    /// message from its signer, so read from the round's parents the signer has "just spoken" at the tip
+    /// and nobody else is moving: its cadence is never due and its quorum never reachable, and it never
+    /// speaks again. A deploy sent to any other validator is then never finalised — measured live on #219
+    /// (the signer's block count stayed at 1 while the others made 5 and 1) and here.
+    #[test]
+    fn reading_only_the_work_from_the_seen_view_strands_the_genesis_signer() {
+        use Step::*;
+        let script = [Deploy(1), Deploy(1), Deploy(1)];
+        let o = run(&cfg(&[100, 100, 50], 0, View::SeenWork), &script);
+        assert!(!o.hit_cap, "{o:?}");
+        assert_eq!(o.finalized, 0, "{o:?}");
+        let o = run(&cfg(&[100, 100, 50], 0, View::Seen), &script);
+        assert_eq!(o.finalized, o.deploys, "{o:?}");
+    }
+
+    /// **Without a supermajority nothing can finalise, and the net must not spin trying.** A validator
+    /// holding 100 of 250 is killed, or one of two: production stays bounded.
+    #[test]
+    fn a_lost_quorum_does_not_storm() {
+        use Step::*;
+        for (stakes, script) in [
+            (
+                vec![100, 100, 50],
+                vec![Deploy(0), Kill(0), Deploy(1), Deploy(2), Deploy(1)],
+            ),
+            (
+                vec![100, 100],
+                vec![Deploy(0), Kill(1), Deploy(0), Deploy(0)],
+            ),
+        ] {
+            for genesis_sender in [255u8, 0] {
+                let o = run(&cfg(&stakes, genesis_sender, View::Seen), &script);
+                assert!(!o.hit_cap, "{o:?}");
+                assert!(o.blocks <= 10 * stakes.len() * o.deploys, "{o:?}");
+            }
+        }
+    }
+
+    /// **The horizon is where the licence ends, and only the licence.** A deploy-bearing block that is
+    /// still unfinalised past it is still something to finalise, so the guard falls back to the cadence
+    /// rather than to silence.
+    #[test]
+    fn the_licence_ends_at_the_horizon_and_the_work_does_not() {
+        let tip = BlockHeight::try_from(100).unwrap();
+        let at = |behind: i64| Some(BlockHeight::try_from(100 - behind).unwrap());
+        assert_eq!(
+            attestation_inputs(None, tip),
+            (true, false),
+            "nothing seen is unfinalised"
+        );
+        assert_eq!(attestation_inputs(at(0), tip), (false, true));
+        assert_eq!(
+            attestation_inputs(at(ATTESTATION_HORIZON), tip),
+            (false, true)
+        );
+        assert_eq!(
+            attestation_inputs(at(ATTESTATION_HORIZON + 1), tip),
+            (false, false),
+            "past the horizon the deploy no longer licenses a prompt attestation"
+        );
+    }
+
+    /// The table behind the bounds above. `cargo test -p rchain-casper --lib quiet_chain_tests::table --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn table() {
+        for (name, stakes, script) in live_quorum_scenarios() {
+            for genesis_sender in [255u8, 0] {
+                for view in [View::Round, View::SeenWork, View::Seen] {
+                    let o = run(&cfg(&stakes, genesis_sender, view), &script);
+                    eprintln!("{name:<36} genesis by {genesis_sender:<3} {view:?}: {o:?}");
+                }
+            }
+        }
     }
 }

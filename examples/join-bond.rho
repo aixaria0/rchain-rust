@@ -1,0 +1,11 @@
+// Bond the deployer's own key with stake 50 — the second half of the live join arm.
+//
+// `bond` takes the caller's own `rho:rchain:deployerId`, so this must be signed by the key being bonded
+// (devnet key 3 in `spec/audit/evidence/n220-join-run.sh`), after `join-admit.rho` has funded and
+// trusted it. The reply is `(true, Nil)` or `(false, reason)`.
+new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("bond", *deployerId, 50, *ret) |
+  for (@r <- ret) {
+    @"join-bond"!(r)
+  }
+}

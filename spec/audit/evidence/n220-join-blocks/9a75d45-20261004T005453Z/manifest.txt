@@ -1,0 +1,4 @@
+# tree=9a75d45 head=9a75d45e9b915db3c75094c516f2485783f32451
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy; newcomer key 3 bonds 50
+# image=sha256:b66b358ef480432044992d6f534d0d7505dd82cbb6c5c564371144bca33385d0 2026-10-04T00:23:37.530408113Z
+# started 2026-10-04T00:54:53Z
