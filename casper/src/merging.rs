@@ -3408,4 +3408,113 @@ mod index_stats_tests {
         assert_eq!(after.calls, before);
         assert!(after.summary().contains("blocks indexed"));
     }
+
+    /// **C215's first candidate mechanism, refuted — and the fence that keeps it refuted.**
+    ///
+    /// `MergeScope::from_dag` derives `final_scope` from `message_map::between(final_fringe,
+    /// prune_fringe)`, and `prune_fringe` is read out of **this node's** `child_map`: it takes the
+    /// *children* of the final fringe — every message that justifies a just-finalised block — and keeps
+    /// the one carrying the lowest fringe. Those children are neither the validated block's
+    /// justifications nor its ancestors; they are whatever this node happens to hold. That made "a node
+    /// holding one more unfinalised child derives a different scope" the obvious reading of C215, whose
+    /// two survivors differed by the returner's catch-up chain.
+    ///
+    /// **It is not the mechanism, and this test says so with the difference present.** Node A holds only
+    /// C1 below F; node B holds C1 and C2. Their prune fringes **do** differ — asserted first, because a
+    /// probe whose inputs are equal tests nothing — and their merge scopes are nevertheless equal:
+    /// `from_fringes` bounds the walk by the merge fringe, so a lower prune bound changes nothing here.
+    ///
+    /// So the scope is a function of `(merge_fringe, final_fringe, the validated block's ancestry)`, and
+    /// the node's incidental children do not enter. C215 stays open, with one route closed.
+    #[test]
+    fn the_merge_scope_does_not_depend_on_which_children_this_node_holds() {
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::sync::Arc;
+
+        use rchain_block_storage::dag::finalizer::Message;
+        use rchain_models::block_hash::BlockHash;
+        use rchain_models::validator::Validator;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        use crate::merging::MergeScope;
+
+        let v = |n: u8| Validator::new([n; 65]);
+        let h = |n: u8| BlockHash::new([n; 32]);
+        let msg = |id: BlockHash,
+                   sender: Validator,
+                   height: i64,
+                   seq: i64,
+                   parents: Vec<BlockHash>,
+                   fringe: Vec<BlockHash>| Message {
+            id,
+            height: BlockHeight::try_from(height).unwrap(),
+            sender,
+            sender_seq: SeqNum::try_from(seq).unwrap(),
+            bonds_map: BTreeMap::new(),
+            parents: parents.into_iter().collect(),
+            fringe: fringe.into_iter().collect(),
+            seen: Arc::new(BTreeSet::new()),
+        };
+
+        // G is the genesis-ish base; F is a block both nodes have just finalised; C1 and C2 are two
+        // blocks that justify F — the unfinalised tip. C1 carries F in its fringe; C2 is further back.
+        let g = msg(h(1), v(1), 0, 0, vec![], vec![h(1)]);
+        let f = msg(h(2), v(1), 3, 1, vec![h(1)], vec![h(1)]);
+        let c1 = msg(h(3), v(1), 4, 2, vec![h(2)], vec![h(2)]);
+        let c2 = msg(h(4), v(2), 4, 0, vec![h(2)], vec![h(1)]);
+
+        let dag_data: BTreeMap<BlockHash, Message<BlockHash, Validator>> = [
+            (g.id, g.clone()),
+            (f.id, f.clone()),
+            (c1.id, c1.clone()),
+            (c2.id, c2.clone()),
+        ]
+        .into_iter()
+        .collect();
+
+        // Node A has only C1 as a child of F; node B has also received C2.
+        let child_map_a: BTreeMap<BlockHash, BTreeSet<BlockHash>> = BTreeMap::from([
+            (h(1), BTreeSet::from([h(2)])),
+            (h(2), BTreeSet::from([h(3)])),
+        ]);
+        let child_map_b: BTreeMap<BlockHash, BTreeSet<BlockHash>> = BTreeMap::from([
+            (h(1), BTreeSet::from([h(2)])),
+            (h(2), BTreeSet::from([h(3), h(4)])),
+        ]);
+
+        let merge_fringe = BTreeSet::from([c1.id]);
+        let final_fringe = BTreeSet::from([f.id]);
+
+        // **The probe must be able to fail.** If both nodes derive the same prune fringe the test says
+        // nothing about the read, so the two fringes are asserted apart first — a check that the
+        // construction really does differ in the thing under test.
+        let prune_a = rchain_block_storage::dag::message_map::prune_fringe(
+            &dag_data,
+            &final_fringe,
+            &child_map_a,
+        );
+        let prune_b = rchain_block_storage::dag::message_map::prune_fringe(
+            &dag_data,
+            &final_fringe,
+            &child_map_b,
+        );
+        assert_ne!(
+            prune_a, prune_b,
+            "the probe is degenerate: both nodes derive the same prune fringe {prune_a:?}, so it \
+             cannot test whether the read matters"
+        );
+
+        let (scope_a, _) =
+            MergeScope::from_dag(&merge_fringe, &final_fringe, &child_map_a, &dag_data).unwrap();
+        let (scope_b, _) =
+            MergeScope::from_dag(&merge_fringe, &final_fringe, &child_map_b, &dag_data).unwrap();
+
+        assert_eq!(
+            scope_a, scope_b,
+            "law 17a: the same justifications must give the same merge scope. Node A holds only C1 \
+             below F; node B also holds C2. A's scope is {:?}; B's is {:?} — the difference is \
+             `prune_fringe`'s read of this node's `child_map` (AUDIT C215).",
+            scope_a, scope_b
+        );
+    }
 }
