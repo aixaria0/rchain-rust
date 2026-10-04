@@ -1,0 +1,5 @@
+# tree=3a3536c3f head=3a3536c3ff60ab978e64366c5c44f1814524df4a
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy
+# key 3 is admitted and bonded; its container is NEVER created (the silent joiner)
+# image=sha256:363c0588b299da9c909a745435a4d55f4ab011c5ba30ceb661f0a0627ef2b0f5 2026-10-04T08:48:21.143450271+01:00
+# started 2026-10-04T13:07:15Z

@@ -1867,19 +1867,26 @@ before/after pair and §3.5 for the cause.
 
 **A2.5 has now been run, and it is a partial.** `n220-leave-run.sh` (tree `a34b79d45`) shows the leave
 working — the `withdraw` is processed, the epoch boundary deactivates the validator (`activeValidators`
-3 → 2), and the net stays healthy — but **the payout is not observed**, because the read path's
-`pendingWithdrawals` entry was absent in all 49 samples and its `deadline` / `blocksRemaining` were never
-populated. So **CH-U6-09 stays open**: the quarantine arithmetic it questions is *unread*, not confirmed
-and not refuted. Three instrument defects in that rig are recorded there, all mine, each of them a
+3 → 2), and the net stays healthy — but **the payout is not observed**. The reason is now understood and is *not* a read-path gap:
+`pos:pending_withdrawers` holds a request only **until the next epoch boundary**, where `close_block`
+moves it into `pos:withdrawers` (`rholang/src/native_state.rs:95-98`), and `/api/v1/pos` reads only the
+former. With `--epoch-length 10` and the withdraw staged at height 9 that window is **one block**, and the
+rig's 15-second sleep missed it. The payout is observable by the **vault balance**, which the rig did not
+read. So **CH-U6-09 stays open** — the quarantine arithmetic is *unread*, not confirmed and not refuted —
+and the next step is a known one rather than a suspected defect. Three instrument defects in that rig are recorded there, all mine, each of them a
 failure of the *instrument* rather than the chain — which is the pattern this page keeps re-learning.
 
 **A2.4 has now been run, and it passes** — the first live exercise of the C207 path (`bond`/`withdraw`/
 `trust`/`delegate` were no-ops on any network that merges until 2026-10-03). `n220-join-run.sh` admits a
 fourth key onto a running `--no-autopropose` net, funds it, bonds it: the bond lands in the boundary
-block, the newcomer produces 14 of 84 blocks, and its own deploy's block finalises. **The caveat is what
-it does *not* cover**: a **silent** joiner — a bonded validator that never speaks — which is the wedge
-#213 is actually about. The rig proves a healthy joiner works; it does not prove a silent one cannot
-wedge the chain, and the page should not be read as saying otherwise.
+block, the newcomer produces 14 of 84 blocks, and its own deploy's block finalises. **The caveat it first carried — a silent joiner — has since been run.**
+`n220-silent-join-run.sh` bonds key 3 through `join-admit`/`join-bond` **without ever creating its
+container** (both deploys reach the bootstrap; deploys are not gossiped), so a validator sits in the bond
+pool that speaks to nobody. The three live validators hold 250 of the pool's 300 and **finalise past the
+bond (7 → 10)**, quiet afterwards — the silent one is retired from the live partition by `LIVENESS_WINDOW`,
+which is what Law 52b's clauses are about. **A silent bonded validator is not by itself a wedge.** It is a
+*rig* result — one host, complete mesh, one silent validator of four — so it does not speak to a live net,
+which is #223's question and is measured there. See `n220-silent-join-results.md`.
 
 > **A2.2 is ⬜, not ✅ — the page's own lesson turned on itself.** Its earlier ✅ came from a **rig** run
 > (`n213-run.sh` case (b): `stop`, `start`, a deploy finalises). Jim then ran the checklist on the **live
