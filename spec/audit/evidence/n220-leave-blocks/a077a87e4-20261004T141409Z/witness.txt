@@ -1,0 +1,15 @@
+  deadline= blocks_remaining= active=3 pending=0
+  fund: ok 5
+  withdraw deploy: ok 9
+  probe 'leave-balance': deploy=3044022055d5267fe87f826ff16b2b2a8c2dd8b654d17357f2fdabfeafec26df8a4105ea0220383d350c03484211dbf0b3b52038a26378df4dfc24e1e309272cf75da8908355 status=ok 13
+  balance after the withdraw deploy, before the payout: 99998098 (block 13)
+  L1 PASS: the withdrawal staged — deadline=30 blocks_remaining=20
+    (CH-U6-09: the read path's own deadline and blocks_remaining ARE the recorded arithmetic; the worksheet's "waits quarantine_length more blocks past its deadline" is not what the API says.)
+  drove to height 34; deadline=30, past-deadline=1
+  L2 PASS: the leaving validator is out of the active set (3 -> 2)
+  L3 PASS: no pending withdrawal remains once its deadline passed
+  after: deadline= blocks_remaining= active=2 pending=0
+  probe 'leave-balance-after': deploy=3045022100df384490f7bd2f294bad7d6190245c9bb2336e7a4bfc7a246b296521b287fa7702205fcbebe06d2a512e405108ef08d55bf60cc6fa38654d9ceae91191a304e5dc58 status=ok 34
+  balance after the deadline: 99998964 (block 34)
+  L4 PASS: the stake was paid out — vault 99998098 -> 99998964 (+866, blocks 13 -> 34)
+  height 38 -> 38 over 60s

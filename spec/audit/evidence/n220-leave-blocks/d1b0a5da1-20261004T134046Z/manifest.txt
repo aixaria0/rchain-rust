@@ -1,0 +1,5 @@
+# tree=d1b0a5da1 head=d1b0a5da1da49544f8ab3a10393491037d89009c
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --quarantine-length 20 --no-autopropose --propose-on-deploy
+# validator-2 (50 stake) is the one that leaves
+# image=sha256:363c0588b299da9c909a745435a4d55f4ab011c5ba30ceb661f0a0627ef2b0f5 2026-10-04T08:48:21.143450271+01:00
+# started 2026-10-04T13:40:46Z

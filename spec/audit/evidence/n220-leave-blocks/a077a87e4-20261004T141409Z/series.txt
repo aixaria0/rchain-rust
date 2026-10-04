@@ -1,0 +1,6 @@
+14:14:39 h=5 fin=1 pos=[deadline= blocks_remaining= active=3 pending=0]
+14:15:16 h=24 fin=20 pos=[deadline= blocks_remaining= active=2 pending=0]
+14:15:28 h=27 fin=23 pos=[deadline= blocks_remaining= active=2 pending=0]
+14:15:41 h=27 fin=23 pos=[deadline= blocks_remaining= active=2 pending=0]
+14:15:53 h=34 fin=30 pos=[deadline= blocks_remaining= active=2 pending=0]
+14:16:56 h=38 fin=34 pos=[deadline= blocks_remaining= active=2 pending=0]
