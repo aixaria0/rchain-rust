@@ -7197,8 +7197,9 @@ validator killed and the partition waiting for it to age out.
 does not finalise. It is node-local — block validity is unchanged, so it needs no new genesis and old and
 new nodes interoperate. Not modelled: delivery delay and reordering. A deploy refused by the round gate
 while the net is quiet waited for the next attempt to take the stall escape (`ROUND_STALL_ESCAPE`); §64
-makes the node supply that attempt itself. Run live on `881066f`: R1–R3 and #213's kill/restart arm all
-finalise and go quiet (`evidence/n213-results.md`, *Rerun*).
+makes the node supply that attempt itself. Run live on `881066f`: R1–R3 finalise and go quiet (`evidence/n213-results.md`, *Rerun*). The kill/restart
+arm was reported passing on that tree under an instrument that keyed on a proxy — the post-kill deploy's
+own block never finalised — so the witness the issue names was first established on `07af032ad` (PR #222).
 
 ## 64. A deploy the round gate refused on a quiet net waited for someone else to speak (C210, #213)
 
@@ -7218,6 +7219,7 @@ quorum, so it cannot become the C171 storm. Node-local; no validity rule changes
 **Evidence.** `a_refused_propose_is_retried_with_nobody_asking` (a refusal is asked again with no external
 request, and never more than once per retry interval), `nothing_to_do_is_not_retried`,
 `the_retry_lands_past_the_stall_escape`. The live arms never left a deploy waiting, so they cannot
-discriminate the fix; rerun on `9a75d45` they show it costs nothing — R1–R3 24/23/23, #213's kill/restart
-arm passing, a validator joining live (`evidence/n220-join-results.md`), no escapes anywhere.
+discriminate the fix; rerun on `9a75d45` they show it costs nothing — R1–R3 24/23/23, a validator joining live
+(`evidence/n220-join-results.md`), no escapes anywhere. The kill/restart arm's pass on that tree was
+proxy-keyed; its witness was first shown on `07af032ad` (PR #222).
 

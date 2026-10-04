@@ -32,8 +32,8 @@ tools/devnet.sh up --validators 3 --stakes 100,100,50 --fresh \
 >
 > **What that means for the first attempt.** It is **not** void. It is a second, agreeing attempt: both
 > runs gave identical results *because* the flag was in effect in both. Its artefacts are kept under
-> `n214-void-attestation-off/`, a name that misstates what they are, and the reader should treat that
-> directory as a repeat rather than a failure. The frozen text is left above the correction because this
+> `n214-repeat-attestation-on/` (renamed from `n214-void-attestation-off/`), a name that misstated what
+> they are, and the reader should treat that directory as a repeat rather than a failure. The frozen text is left above the correction because this
 > tree's rule is that a superseded claim stands beside it.
 
 The node still gates the attestation tap on `conf.attest_on_new_blocks &&`

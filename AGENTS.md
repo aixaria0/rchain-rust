@@ -131,10 +131,13 @@ deliberate act rather than the default next step.
 **What remains is operational, and it is one sentence:** `docs/src/node/testnet.md` says *"this net takes one
 validator on purpose, and adding a second is unsafe today"*. The target is to lift that — **a net of ≥2
 validators that finalises.** The four defects named here as the obstruction (C171, C192, C190+C193, C173)
-are all now `done`; the live obstruction is **#213** (a validator that speaks and then stops wedges the
-chain) and the two criteria still awaiting a measurement, owned by **#214**. `#215` landed a fix for the
-wedge's proximate cause on 2026-10-03, and **#213 is still open** — reopened on a finality stall reported
-to be independent of that cause — so neither sentence should be read as settled. The falsifiers that
+are all `done`; so are the two that followed — **C209** (the attestation guard read the round's snapshot,
+which is the genesis alone before the first round closes, so a validator that had just spoken saw nobody
+moving and never spoke again) and **C210** (a refused propose on a quiet net now arms one retry). **Both
+acceptance criteria pass on a live net**, whose falsifiers are the
+[testnet acceptance specification](docs/src/spec/testnet-acceptance.md) §3.1 and §3.2. What remains on the
+public gate is a **re-verification on the two-host net**, not a defect; #213 and #214 stay open pending
+their authors' close. The falsifiers that
 decide the question are the [testnet acceptance specification](docs/src/spec/testnet-acceptance.md).
 
 **Four rules, because the register and the tracker had grown into two records of one thing.**
