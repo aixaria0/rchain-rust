@@ -1,0 +1,24 @@
+// Admit devnet key 3 to a running chain: fund its vault and trust it, from the funded genesis deployer.
+//
+// The first half of the live join arm (`spec/audit/evidence/n220-join-run.sh`). Key 3 is
+// `tools/devnet.sh`'s fourth validator key, which a 3-validator genesis does not bond, so
+// `tools/devnet.sh reset 3` starts it as a synced, unbonded node. The genesis deployer is validator 0,
+// which is trusted by construction and holds REV. The second half, `join-bond.rho`, is signed by key 3.
+//
+// **The amount pays for key 3's own deploy, not only its stake.** A deploy is precharged
+// `phlo-limit × phlo-price` from its signer's vault before it runs, and the rig's deploys carry a limit of
+// 1,000,000: the first version transferred 1,000 and the bond deploy failed with `preCharge: insufficient
+// funds (1000 < 1000000)` before `bond` was ever called.
+//
+//   tools/devnet.sh deploy join-admit.rho && tools/devnet.sh query join-admit
+new revAddr(`rho:rev:address`), vault(`rho:rchain:revVault`), pos(`rho:rchain:pos`),
+    deployerId(`rho:rchain:deployerId`), addrCh, sent, trusted in {
+  revAddr!("fromPublicKey", "04ea3ce04abbe780205eb5f94a82889600630ca73bd31e7a336efb6700e24c515b900dea427d3e0c0fc74a8a6d5e173331433f00df2de4b7f953c2922297c2c08e".hexToBytes(), *addrCh) |
+  for (@addr <- addrCh) {
+    vault!("transfer", *deployerId, addr, 100000000, *sent) |
+    pos!("trust", *deployerId, "04ea3ce04abbe780205eb5f94a82889600630ca73bd31e7a336efb6700e24c515b900dea427d3e0c0fc74a8a6d5e173331433f00df2de4b7f953c2922297c2c08e".hexToBytes(), *trusted) |
+    for (@s <- sent; @t <- trusted) {
+      @"join-admit"!((s, t))
+    }
+  }
+}

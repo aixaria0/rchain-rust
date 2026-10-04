@@ -1,0 +1,10 @@
+arm	n213
+t0	1791074272
+baseline_deploy	1791074332
+baseline_finalised	1
+kill	1791074336
+post_kill_finalised	2
+restart	1791074354
+post_restart_finalised	5
+end	1791074374
+budget_s	900

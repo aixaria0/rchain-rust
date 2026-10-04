@@ -7217,6 +7217,7 @@ quorum, so it cannot become the C171 storm. Node-local; no validity rule changes
 
 **Evidence.** `a_refused_propose_is_retried_with_nobody_asking` (a refusal is asked again with no external
 request, and never more than once per retry interval), `nothing_to_do_is_not_retried`,
-`the_retry_lands_past_the_stall_escape`. **Not run live**: the live arms never left a deploy waiting, so a
-rerun would not discriminate; the in-process falsifier is the witness.
+`the_retry_lands_past_the_stall_escape`. The live arms never left a deploy waiting, so they cannot
+discriminate the fix; rerun on `9a75d45` they show it costs nothing — R1–R3 24/23/23, #213's kill/restart
+arm passing, a validator joining live (`evidence/n220-join-results.md`), no escapes anywhere.
 

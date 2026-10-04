@@ -111,5 +111,11 @@ is its genesis alone, the exact state in which the first cut read `quorum_reacha
 is not required. The clap flag only ever *adds* `true` (`config_mapper.rs`'s `flag`), and the merged
 default is `true` (`node/src/configuration/defaults.conf:16`). The rig passes it anyway, which is harmless.
 
-**Still not run:** a bond onto the running net, a fresh-store join, delivery delay. Arm 2's restart came
-18 s after the kill, so it does not measure a long absence.
+**Again on `9a75d45`** (C210 added: a not-due propose is retried by the node itself), to check the retry
+changes nothing on these arms: R1/R2/R3 finalised 24/23/23 with no escapes
+(`n213-blocks/9a75d45-20261004T002358Z-rotation/`), and Arm 2 passed (a) 1 → 2, (b) 2 → 5, (d)
+(`n213-blocks/9a75d45-20261004T003742Z/`). A validator bonding onto the running net is
+[`n220-join-results.md`](n220-join-results.md): all four conditions pass.
+
+**Still not run:** delivery delay, a long absence (Arm 2's restart came 18 s after the kill), and a bonded
+validator that never speaks.
