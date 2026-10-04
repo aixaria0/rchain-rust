@@ -7253,9 +7253,16 @@ finalising — so this is a rejoin **liveness** failure, not a safety one.
 **Mechanism, as a hypothesis.** The retrieval and processing paths race: a block can be delivered before
 the justification it names is in the store, and `block summary failed` is terminal for that block rather
 than deferred. Nothing re-attempts it when the justification subsequently arrives, so one out-of-order
-delivery caps the rejoiner permanently. Related to the C173/C190 family (*a block can be in the DAG index
-and not in the store*) but this is the **wrong-order** case on a **rejoining** validator, and which of the
-two is the cause here is not established.
+delivery caps the rejoiner permanently. **Corrected 2026-10-04: this paragraph first called it a distinct case, and that was wrong.** C172 is the
+**direct ancestor** and the shape is the same sentence — *a block that satisfies `has_all_deps`, is queued
+for validation, then fails with `missing justification` and is dropped with nothing to re-queue it*
+(`block_metadata_store.rs:40-56` says so in its own doc comment). What is new is the **trigger**: C172's
+own fix (`BlockMetadataStore::add` writes the store before the index) is already in, so in-process the
+index is a subset of the store and `has_all_deps == true` should imply `lookup` succeeds. The live refusal
+is therefore either a **residual** index/store disagreement on some path, or a block **delivered outside
+the `has_all_deps` gate** — and the discriminator named above is what decides between them. Whether the
+*occurrence* is rejoin-specific is likewise unestablished: what is rejoin-specific is the **consequence**
+(a node behind the tip that never catches up), not the mechanism.
 
 **What it falsifies, and it is this register's own recent work.** `A2.2` of
 `docs/src/spec/testnet-acceptance.md` read ✅ on the strength of **`n213-run.sh` case (b)** — a *rig* run

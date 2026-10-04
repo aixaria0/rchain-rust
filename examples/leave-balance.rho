@@ -1,0 +1,27 @@
+// Read validator 2's REV balance, and publish it as a number — the payout probe for the leave arm.
+//
+// `examples/pos-balance.rho` does this for a delegator; this is the same read for the validator that
+// **withdraws** in `spec/audit/evidence/n220-leave-run.sh`. The address is derived inside rholang from
+// the public key, so the probe cannot be asking about a different account than the one the run measures.
+//
+// **Why the balance and not `/api/v1/pos`.** The leave rig's first version watched `pendingWithdrawals`,
+// which was empty in all 49 samples — and that is *expected*: `pos:pending_withdrawers` holds a request
+// only until the next epoch boundary, where `close_block` moves it into `pos:withdrawers` and takes the
+// validator out of the pool (`rholang/src/native_state.rs:95-98`). With `--epoch-length 10` that window
+// is one block. The **payout** is a change in the vault, so the vault is what to read.
+//
+// **What it does not isolate**: both reads are deploys and a deploy costs its signer phlo, so the delta is
+// the payout *minus* those fees — evidence that the payout arrived, not a measurement of its size. The
+// signer is the genesis deployer, not the withdrawing validator, so the fees do not come out of the
+// balance being read.
+//
+//   tools/devnet.sh deploy leave-balance.rho && tools/devnet.sh query leave-balance
+new revAddr(`rho:rev:address`), vault(`rho:rchain:revVault`), ret1, ret2 in {
+  revAddr!("fromPublicKey", "04d8b6c325ae12e89823866b2a292a62d7acee520954761890a1621fef79dca1c8e8df79dd8519480e5c015ae6cf3ba7de8669e260561616a36eb9c308b5983ab0".hexToBytes(), *ret1) |
+  for (@addr <- ret1) {
+    vault!("getBalance", addr, *ret2) |
+    for (@bal <- ret2) {
+      @"leave-balance"!(bal)
+    }
+  }
+}

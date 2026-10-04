@@ -1,0 +1,6 @@
+  admit: ok 5
+  bond:  ok 9
+  S1 PASS: the bond landed — a block's bonds name the silent validator from block 10
+  finality at the bond: 7
+  S2 PASS: the three live validators finalise past the bond — 7 -> 10
+  quiet read: height 27 -> 27 over 60s
