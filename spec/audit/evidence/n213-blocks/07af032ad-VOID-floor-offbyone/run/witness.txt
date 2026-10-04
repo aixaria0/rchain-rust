@@ -1,0 +1,10 @@
+  [baseline] deploy sent at T+71s (tip before=1)
+  [baseline] INSTRUMENT ERROR — /api/blocks was refused, so this is not a verdict on the chain
+0 - instrument-error
+  [absent-deploy (cases a and c)] deploy sent at T+272s (tip before=14)
+  [absent-deploy (cases a and c)] INSTRUMENT ERROR — /api/blocks was refused, so this is not a verdict on the chain
+0 - instrument-error
+  [post-restart] deploy sent at T+415s (tip before=18)
+  [post-restart] INSTRUMENT ERROR — /api/blocks was refused, so this is not a verdict on the chain
+0 - instrument-error
+  CASE (d) PASS: within the 900s budget

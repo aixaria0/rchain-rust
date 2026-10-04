@@ -1,0 +1,13 @@
+  [baseline] deploy sent at T+60s (tip before=0)
+  [baseline] block 1 (fb5060a5ac1c…) carries it — included: yes
+  [baseline] PASS: block 1 finalised (finality 1; is-finalized=false)
+1 fb5060a5ac1caa49dfdbb26851397744b5ab6ad32c10f4cc9462ea8d1506282e ok
+  [absent-deploy (cases a and c)] deploy sent at T+109s (tip before=13)
+  [absent-deploy (cases a and c)] block 14 (7d7324d9d260…) carries it — included: yes
+  [absent-deploy (cases a and c)] PASS: block 14 finalised (finality 14; is-finalized=false)
+14 7d7324d9d260b4a83dbba69fb803bf656488dddbb98f608ba6e27f4175462e7b ok
+  [post-restart] deploy sent at T+136s (tip before=17)
+  [post-restart] block 18 (9d14cc0333d8…) carries it — included: yes
+  [post-restart] PASS: block 18 finalised (finality 19; is-finalized=true)
+18 9d14cc0333d84ead50ecb2e81330d6617b4cfded765f196b29069b20b5c6524a ok
+  CASE (d) PASS: within the 900s budget

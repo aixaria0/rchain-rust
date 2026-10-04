@@ -119,3 +119,83 @@ changes nothing on these arms: R1/R2/R3 finalised 24/23/23 with no escapes
 
 **Still not run:** delivery delay, a long absence (Arm 2's restart came 18 s after the kill), and a bonded
 validator that never speaks.
+
+---
+
+# Re-verification, 2026-10-04, on merged `dev` (`07af032ad`)
+
+The findings above are the fixer's, read from their artefacts. This pass re-ran the two arms that decide
+what can be claimed. Tree `07af032ad`, image `363c0588…`, and the report below is generated from the
+transcripts, not from a commit message.
+
+## Arm 1 — the counter-example this page published now passes
+
+Six deploys to **one** validator, all three trigger patterns, zero escapes:
+
+| arm | deploys to | before (`3708eab7b`) | **after (`07af032ad`)** |
+|---|---|---|---|
+| R1 | the bootstrap | none | **finalised 24** |
+| R2 | rotating | 23 | **finalised 23** |
+| **R3** | **validator-1** | **none, twice** | **finalised 23** |
+
+Artefacts: `n213-blocks/07af032ad-20261004T074618Z/`. **R3 was the published counter-example and the fix
+closes it.** The mechanism the fixer gives for the first cut's failure — reading the round's snapshot,
+which before the first round closes is the genesis alone — is consistent with everything measured here.
+
+**A residual, found per-deploy and not visible in the arm's last number.** Reading each deploy's own block
+against the finality reached:
+
+| arm | user-deploy heights | last finality | verdict |
+|---|---|---|---|
+| R1 | 1, 5, 9, 14, 18, 24 | 24 | all six finalised |
+| R2 | 1, 5, 8, 14, 18, 24 | 23 | **the sixth is included and not finalised** |
+| R3 | 1, 4, 7, 14, 17, 24 | 23 | **the sixth is included and not finalised** |
+
+On a quiet `--no-autopropose` net production stops within a few heights of the last deploy and finality
+lags ~4, so a deploy landing in the final few heights is included and never finalised. The issue's
+criterion-1 witness is about *one* deploy and holds; "every deploy finalises" is stronger than the row
+claims and held in one of three arms.
+
+## Arm 2 — the three cases, with the witness this time
+
+**The instrument was wrong twice before it was right, and both defects are recorded because the earlier
+"PASS" depended on them.**
+
+1. **v1 keyed case (a) to the wrong observation.** It waited for finality to pass the *pre-kill baseline*,
+   not for the deploy's block. In the run it was used on, the post-kill deploy sat at height ≥ 6 and
+   finality never passed 5 — so it printed `PASS` with nothing of the deploy finalised. Re-keyed to the
+   deploy's own block.
+2. **v2's block finder was broken.** `GET /api/blocks/{depth}` was asked for a fixed 50, and — the same
+   trap `n149-sample.py` documents — a refusal was read as "no block". Then the floor was taken from
+   `latestBlockNumber`, which is `max_height + 1`, so a deploy at genesis was searched for with `n > 1`
+   and its own block at height 1 was excluded. Both are fixed, and a refused read is now reported as an
+   **instrument error** rather than as a verdict on the chain.
+
+Two void runs are kept under names that say why: `07af032ad-VOID-instrument-depth/` and
+`07af032ad-VOID-floor-offbyone/`.
+
+**The corrected run** (`07af032ad-20261004T083816Z/run/witness.txt`): every deploy's own block was found,
+and every one finalised.
+
+```
+[baseline]      block  1 (fb5060a5ac1c…) carries it — included: yes → PASS: finalised (finality 1)
+[absent-deploy] block 14 (7d7324d9d260…) carries it — included: yes → PASS: finalised (finality 14)
+[post-restart]  block 18 (9d14cc0333d8…) carries it — included: yes → PASS: finalised (finality 19)
+CASE (d) PASS: within the 900s budget
+```
+
+The absent-deploy is sent with `validator-2` stopped and lands at height 14 above a tip of 13: **a deploy
+accepted while a validator is absent, included *and* finalised** — which is conditions (a) and (c), and it
+is the observation the earlier recorded PASS did not have.
+
+**One discrepancy, recorded and not smoothed.** `GET /api/is-finalized/{hash}` agreed for the
+post-restart block (`true`) and disagreed for the other two (`false`), where `last-finalized-block` had
+reached or equalled their height. That is consistent with a height-level witness being weaker than a
+block-level one — several blocks share a height, and the fringe may confirm a *layer* one step after the
+number moves. The issue names the height-level witness, so the conditions are met as written; the block-level
+check is the stronger one and is not consistently satisfied. It is a question, not a refutation.
+
+## Limits of this re-verification
+
+One tree, one host, one attempt per arm; N=3 only. The restart came 18 s after the kill, so "a long
+absence" is still unrun. The silent joiner is still unrun. Nothing here measures safety (TE-2).

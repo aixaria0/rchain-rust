@@ -1,0 +1,15 @@
+round gate escaped after 3 attempt(s) and 16000 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 4 attempt(s) and 33594 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 5 attempt(s) and 35224 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 6 attempt(s) and 53763 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 7 attempt(s) and 55606 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 8 attempt(s) and 55964 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 2 attempt(s) and 16002 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 3 attempt(s) and 32341 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 4 attempt(s) and 48956 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 5 attempt(s) and 65014 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 6 attempt(s) and 84966 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 7 attempt(s) and 85359 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 8 attempt(s) and 85601 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 3 attempt(s) and 16001 ms blocked — the round is not closing (AUDIT #213).
+round gate escaped after 4 attempt(s) and 29089 ms blocked — the round is not closing (AUDIT #213).

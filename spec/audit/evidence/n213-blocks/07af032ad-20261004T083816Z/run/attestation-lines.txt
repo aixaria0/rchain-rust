@@ -1,0 +1,30 @@
+attestation at tip 0: withheld — nothing_to_finalize=false new_state_transition=true quorum_reachable=false cadence_due=false paced=false round=[04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 4: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=3 escape=true
+attestation at tip 5: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=4 escape=true
+attestation at tip 6: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=5 escape=true
+attestation at tip 7: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=6 escape=true
+attestation at tip 8: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=7 escape=true
+attestation at tip 9: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 10: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 13: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 13: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=false round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 14: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 17: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 17: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=false round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 18: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=true paced=true round=[04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 5: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=3 escape=true
+attestation at tip 5: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=4 escape=true
+attestation at tip 6: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=5 escape=true
+attestation at tip 7: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=6 escape=true
+attestation at tip 8: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=7 escape=true
+attestation at tip 9: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 10: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 13: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 14: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=false cadence_due=true paced=true round=[04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 6: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 10: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=true paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false

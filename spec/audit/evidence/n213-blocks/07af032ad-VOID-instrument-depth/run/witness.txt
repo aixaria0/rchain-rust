@@ -1,0 +1,10 @@
+  [baseline] deploy sent at T+60s (tip before=1)
+  [baseline] NO DEPLOY-BEARING BLOCK appeared — included: no
+0 - notincluded
+  [absent-deploy (cases a and c)] deploy sent at T+227s (tip before=5)
+  [absent-deploy (cases a and c)] NO DEPLOY-BEARING BLOCK appeared — included: no
+0 - notincluded
+  [post-restart] deploy sent at T+370s (tip before=15)
+  [post-restart] NO DEPLOY-BEARING BLOCK appeared — included: no
+0 - notincluded
+  CASE (d) PASS: within the 900s budget

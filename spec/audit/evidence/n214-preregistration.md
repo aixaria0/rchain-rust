@@ -23,15 +23,23 @@ tools/devnet.sh up --validators 3 --stakes 100,100,50 --fresh \
     --no-autopropose --propose-on-deploy --epoch-length 10
 ```
 
-**`--attest-on-new-blocks` is required, and its absence is a rig defect, not a reading.** The node gates
-the attestation tap on `conf.attest_on_new_blocks && !conf.no_attest_on_new_blocks`
-(`node/src/runtime/node_runtime.rs`), and `attest_on_new_blocks` is a clap `bool` whose default is
-**false** — so a node started without the positive flag never attests, the fringe never advances, and
-**nothing finalises at any validator count**. The option's own doc comment says *"Attestation is on by
-default"*, which describes the intent and not the code. A first attempt at this run omitted the flag and
-produced exactly that: blocks, no finality, both arms. It is recorded as **void** — its artefacts are kept
-so the failure is inspectable, and its lesson is the one this audit keeps relearning: *a probe's failure
-is not the defect.* #213's and #214's configurations both carry the flag.
+> **Corrected 2026-10-04 — this claim was wrong, and the correction is a peer's.** This section originally
+> read *"`--attest-on-new-blocks` is required, and its absence is a rig defect"*, on the reading that the
+> positive flag is a clap `bool` defaulting **false**. It is not: the merged default is **true**
+> (`node/src/configuration/defaults.conf:16`), and the CLI flag only ever *adds* `true`. Passing it is
+> **optional**, and its absence cannot stop a node attesting. The option's doc comment — *"Attestation is
+> on by default"* — was right all along. The correction is the author of #219's (`d960a0f18`).
+>
+> **What that means for the first attempt.** It is **not** void. It is a second, agreeing attempt: both
+> runs gave identical results *because* the flag was in effect in both. Its artefacts are kept under
+> `n214-void-attestation-off/`, a name that misstates what they are, and the reader should treat that
+> directory as a repeat rather than a failure. The frozen text is left above the correction because this
+> tree's rule is that a superseded claim stands beside it.
+
+The node still gates the attestation tap on `conf.attest_on_new_blocks &&`
+`!conf.no_attest_on_new_blocks` (`node/src/runtime/node_runtime.rs`); what the gate's *effective* default
+is depends on the config file, not on the flag's absence. #213's and #214's configurations both carry the
+flag, as do this rig's — explicitly, so the argv is self-describing.
 
 Node argv is recorded, not paraphrased: there is **no `--no-autopropose` flag on the node** — the flag
 above is `devnet.sh`'s, and it *omits* `--autopropose`. `--stakes 100,100,50` gives the three validators

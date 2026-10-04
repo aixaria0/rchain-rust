@@ -1,9 +1,11 @@
 # Testnet acceptance specification
 
-> **Status — 2026-10-03, tree `1e5a64ed4`.** The green light is **not granted**. Criterion 2 is **red**
-> (#213, reproduced that morning). Criterion 1's only positive result cites a tree that **is not in this
-> repository**. Criterion 3 is a census that **cannot pass by construction**. This page is the owner the
-> three criteria did not have.
+> **Status — 2026-10-04.** The green light is **not granted**. Criterion 1 and criterion 2 are under
+> re-verification against the fixes that landed on 2026-10-04 (**C209** — the attestation guard reads
+> every input from the seen view — and **C210**, a refused propose arming one retry); §3.1 and §3.2 carry
+> the readings, and §3.4/§3.5 the cause and its history. Criterion 3 is a census that **cannot pass by
+> construction** and is unchanged from the day this page was written. This page is the owner the three
+> criteria did not have.
 
 > **What this page is, in one sentence.** A HAZOP worksheet and a bow-tie analysis of the node, and the
 > acceptance checklist that falls out of them, written so that nothing can be marked green without a
@@ -37,8 +39,8 @@ issues — and so had **no owner, no measurement and no falsifier**.
 
 | Criterion | Verdict | Basis |
 |---|---|---|
-| 1 — bounded production | ❌ **fail** | re-probed on `f9d36b9c4` (§3.4): two deploys, production **bounded** (6 blocks, then 1), every validator live — and **nothing finalises**, in either arm. The witness the criterion names is the deploy finalising, and it does not. #214's N=3 pass *"finality reached 3"* on `0c6c65979` does **not** reproduce, and that contradiction is open |
-| 2 — join and leave | ❌ **fail** | [#213](https://github.com/rchain-community/rchain-rust/issues/213): three validators at 100/100/50, one killed, the 80 % survivors mint one block each and then wedge permanently; the killed validator's return, and a survivor restart, both fail to recover. The re-probe (§3.4) finds the failure **upstream** of that: on `f9d36b9c4` nothing finalises with all three live, so the kill arm has no finality to remove. Sub-case (c) — a new validator bonds onto a running net — has **never been run**, and is blocked on (a) |
+| 1 — bounded production | ✅ **pass** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual — the *last* of several consecutive deploys may be included and not finalised — is recorded in §3.1 and on #213 |
+| 2 — join and leave | ✅ **pass** (leave untested) | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); and a new validator **bonds onto a running net** and produces (`n220-join-results.md`). The leave path (A2.5) is untested |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
 ## 0.3 Method
@@ -258,7 +260,7 @@ whole map by the two-map signature of `calculate_fringe`, so no reversed path ex
 | ⚠ **H-U2-01** | the cadence gate `cadence_due` (attest-without-a-deploy only while our own message is past the window) and the tap's per-sender key (`casper/src/blocks/proposer/proposer.rs:cadence_due`; `node/src/runtime/node_runtime.rs:attest_warranted`) | `spec/audit/evidence/n149-results.md` (control arm, 857 blocks / 300 s, 856 carrying a deploy) | `[barrier-is-the-threat]` — the per-sender bound is the same rule that seals the round (C192) | <!-- contested -->
 | ⚠ **H-U2-02** | none: the `answered` map that bounds a burst is also what loses the attestation; only the warn log is left (`node/src/runtime/node_runtime.rs:attest_on_new_blocks`) | `unmeasured` — no committed run exercises the tap's queue-full drop | `[barrier-is-the-threat]` | <!-- contested -->
 | ⚠ **H-U2-03** | the bounded escape, `parents_for_new_block_escaping` taken after `LIVENESS_WINDOW` declined attempts (`block-storage/src/dag/message_state.rs:parents_for_new_block_escaping`; `casper/src/blocks/proposer/proposer.rs:propose`) | `#213`; `spec/audit/evidence/n148-results.md` (finality frozen at the kill, 3/3); `casper/tests/finalization.rs:the_round_closes_when_a_validator_goes_quiet_inside_the_window` | `[self-referential]` — the escape's clock and the round's clock are the same frozen tip | <!-- contested -->
-| H-U2-04 | the same window retirement, `tip - round_height > LIVENESS_WINDOW`, closes the boundary once the joiner is retired (`block-storage/src/dag/message_state.rs:advance_round`) | `unmeasured` — no committed run bonds a validator onto a running net (#214 criterion 2(c) is blocked on 2(a)) | `[self-referential]` |
+| H-U2-04 | the same window retirement, `tip - round_height > LIVENESS_WINDOW`, closes the boundary once the joiner is retired (`block-storage/src/dag/message_state.rs:advance_round`) | `spec/audit/evidence/n220-join-results.md` — a validator is bonded onto a running net and the boundary closes; the *silent*-joiner arm remains unmeasured | `[self-referential]` |
 
 ### Provenance
 
@@ -773,7 +775,9 @@ barrier whose only support is a "symbol read" is marked `unmeasured` unless a ru
 - **The chain cannot self-heal**: the escape, the window retirement, the expiry and the fringe all measure
   against the same frozen tip, and there is no inactivity leak (deliberate, Law 44 —
   `spec/audit/evidence/n148-results.md`, `block-storage/src/dag/liveness.rs:LIVENESS_WINDOW`).
-- **A new validator cannot join** (criterion 2(c)'s prerequisite) and a killed validator cannot rejoin.
+- **A new validator joining, and a killed validator rejoining** — the first has now run and passes
+  (`spec/audit/evidence/n220-join-results.md`); the second is §3.2's reading. Both were `fail`/`unmeasured`
+  when this first pass was written.
 - **The halt is invisible on the CLI/gRPC and `/status` surfaces**; a restart clears the alarm without the
   cause, so the root cause and the observation are both lost (`spec/AUDIT.md` C195; `docs/src/node/testnet.md:153`).
 
@@ -1234,7 +1238,7 @@ verdict cover it.
 ### TE-3 — An outsider validator cannot safely join or leave
 
 
-**Scope note.** TE-3 is the charter's membership/liveness top event, and it is the one #214 criterion 2 measures: (a) kill one of three **FAILS** (`#213`), (b) the killed validator rejoins **FAILS**, (c) a new validator bonds onto a running net **never run**. Threats are grouped join-path / leave-path / network-cannot-accept / observation. Where a threat lands on TE-1 or TE-2 as well, that is named in the consequence — a wedged chain cannot accept a member, and a join that replays to a divergent state is TE-2's input.
+**Scope note.** TE-3 is the charter's membership/liveness top event, and it is the one #214 criterion 2 measures. **As first measured** (before the 2026-10-04 fixes) all three failed or were unrun: (a) kill one of three `FAILS` (`#213`), (b) the killed validator rejoins `FAILS`, (c) a new validator bonds onto a running net `never run`. **The current readings are in §3.2** — this worksheet is the first pass, and it is contested throughout; where a verdict below has moved, §3.2 and §3.4 own it. Threats are grouped join-path / leave-path / network-cannot-accept / observation. Where a threat lands on TE-1 or TE-2 as well, that is named in the consequence — a wedged chain cannot accept a member, and a join that replays to a divergent state is TE-2's input.
 
 ---
 
@@ -1285,7 +1289,7 @@ verdict cover it.
 - [vs T10] `shared/src/rate_limiter.rs:RateLimiter` bounds total request rate (fixed 1 s window) — Evidence: committed unit test `admits_exactly_max_per_window_then_refuses`. Independence `[barrier-is-the-threat]`.
 - [vs T9] `comm/src/transport/grpc_transport_receiver.rs:accept_tls`'s `MAX_CONCURRENT_HANDSHAKES` (128) semaphore + `HANDSHAKE_TIMEOUT` (10 s) frees stalled slots — Evidence: symbol read; a per-source admission or slot-fairness rule is `unmeasured`. Independence `[barrier-is-the-threat]`.
 - [vs T8] The exporter/importer moves the trie between nodes (`node/src/runtime/node_runtime.rs:create_rspace_importer`; `rspace/src/history/export.rs:sequentialExport`) — it shifts the sync cost but does not avoid the start-up DAG rebuild — Evidence: `docs/src/node/validator-requirements.md:ram-again-start-up-replay-is-the-floor`. Independence `[one-surface]`.
-- [vs T16] The same window retirement `tip − round_height > LIVENESS_WINDOW` closes the boundary once the joiner is retired: `block-storage/src/dag/message_state.rs:advance_round` — Evidence: `unmeasured` (#214 criterion 2(c) blocked on 2(a)). Independence `[self-referential]`.
+- [vs T16] The same window retirement `tip − round_height > LIVENESS_WINDOW` closes the boundary once the joiner is retired: `block-storage/src/dag/message_state.rs:advance_round` — Evidence: `spec/audit/evidence/n220-join-results.md` (a validator is bonded onto a running net), with the **silent** joiner still unmeasured. Independence `[self-referential]`.
 - [vs T17] **None**: a permanent >1/3 loss is a deliberate stop; the partition shrinks but the denominator cannot (no inactivity leak) — Evidence: `spec/audit/evidence/n148-results.md` (killing a validator freezes finality, 3/3). Independence `[unhoused]`.
 - [vs T15] The pinned arithmetic test `node/src/web/pos_read.rs:a_pending_withdrawal_counts_down_to_the_deadline_the_store_holds` — Evidence: test present (not run); C206 `done`. Independence `independent`.
 - [vs T20] **None** on the node itself; the operator's external snapshot carries `api_reachable` but ignores the halt fields — Evidence: `docs/src/node/running-a-public-testnet.md` §5-§6. Independence `[self-referential]`.
@@ -1798,12 +1802,16 @@ The cross-node sweep returned **65** distinct pairs. Each names both members and
 A barrier that appears in this list is not a barrier the acceptance case may lean on. The `Independence`
 column of the §1 worksheets carries the same labels, and §4 records the challenges that reclassified them.
 
-**One of these classes has since been measured, not argued.** The `[self-referential]` pattern — *a rule
-whose reference point is frozen by the failure it guards* — was confirmed on 2026-10-03 as the actual cause
-of the N ≥ 3 finality stall: the attestation guard's pace bound (`cadence_due`) is read against a tip that
-suppression itself freezes, so it can never clear (§3.5). This is the first entry in the list to move from
-a structural observation to a diagnosed defect, and it is the reason a barrier assessment belongs in an
-acceptance case rather than in a footnote.
+**One of these classes has since been measured, diagnosed, and fixed.** The `[self-referential]` pattern —
+*a rule whose reference point is frozen by the failure it guards* — was confirmed as the cause of the N ≥ 3
+finality stall, and the instance was then located **more precisely than this page first stated**: it was
+not (only) that the pace bound read a tip the suppression froze, but that the guard read *every* input from
+the **round's snapshot** — which is the genesis alone before the first round closes — so a validator that
+had "just spoken" saw nobody else moving, its cadence was never due, and it never spoke again (§3.5).
+**The class stands; the named instance is corrected.** C209 reads every input from the seen view instead,
+and the stall clears. This remains the reason a barrier assessment belongs in an acceptance case, and it is
+also the reason the *first* diagnosis was not enough: the class being right did not make the instance
+right.
 
 ---
 
@@ -1816,50 +1824,62 @@ a row the net has not earned.
 
 ## 3.1 Criterion 1 — Anyone can propose, and production is bounded
 
-> **§3.1 — 0 ✅ · 1 ❌ · 3 ⬜.** The criterion **fails** on the current tip — see §3.4.
+> **§3.1 — 2 ✅ · 0 ❌ · 2 ⬜.** The criterion now **passes** on the fixed tree — re-verified independently
+> by this pass, not taken from the fixer's report.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
-| A1.1 | In a 3-validator all-live net, one deploy mints a **bounded** number of blocks **and its block finalises** | production continues without bound, or the height merely stops without the deploy finalising | node argv `--propose-on-deploy --attest-on-new-blocks` with `--autopropose` **absent** (there is no `--no-autopropose` flag — see CH-ACC-04); 3 bonded validators 100/100/50; `--epoch-length 10` | `spec/audit/evidence/n214-results.md` + `n214-blocks/f9d36b9c4-…/` | `f9d36b9c4` | `n149-sample.py` sampling `/api/last-finalized-block`, plus the block-hash union | `last-finalized-block` ≥ the deploy block's height | ❌ **fail** | CH-ACC-01, CH-ACC-02 |
+| A1.1 | In a 3-validator all-live net, one deploy mints a **bounded** number of blocks **and its block finalises** | production continues without bound, or the height merely stops without the deploy finalising | node argv `--propose-on-deploy --attest-on-new-blocks` with `--autopropose` **absent** (there is no `--no-autopropose` flag — see CH-ACC-04); 3 bonded validators 100/100/50; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T074618Z/` (this pass) + `n220-join-results.md` | `07af032ad` | `n149-sample.py` sampling `/api/last-finalized-block`, plus the block-hash union | `last-finalized-block` ≥ the deploy block's height | ✅ **pass** | CH-ACC-01, CH-ACC-02 |
 | A1.2 | N=5, all live, satisfies A1.1 | as A1.1 | as A1.1, N=5 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | as A1.1, N=8 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
-| A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `—` | `—` | a block-hash union (the `n149-blocks/` shape), not `latestBlockNumber` | the block count equals the height delta, or the row is `fail` against the instrument | ⬜ untested | CH-ACC-02 |
+| A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-…/R1/blocks.tsv` | `07af032ad` | the block-hash union, not `latestBlockNumber` | the union counts 28 blocks from one sender where the height reaches 28 for all three — the two are not the same quantity | ✅ **pass** | CH-ACC-02 |
 
-A1.1 **fails**, with a committed artefact behind it (§3.4). Production is bounded and the deploy does not
-finalise — the half the criterion says decides it. Note what this verdict does *not* rest on: the
-instrument's height/blocks confusion (CH-ACC-02) would make the *count* wrong, not make finality vanish;
-and the tree question (CH-ACC-03) is withdrawn (see §0.9). The row is ❌ because a deploy that is
-proposed and never finalised is the defect, and that is what the transcript shows.
+A1.1 **passes**, and the pass is a re-run by this pass rather than the fixer's word: six deploys to **one**
+validator — the counter-example this page published — now finalise on all three trigger patterns
+(R1 24, R2 23, R3 23; `R3` was `none`, reproducibly, before the fix), with **zero** round-gate escapes.
+Before the fix the same rig gave `0 of 250 (0 full partition(s) among 3 candidate(s))`; see §3.4 for the
+before/after pair and §3.5 for the cause.
+
+> **A residual the re-run found, stated rather than smoothed over.** The rig sends **six** deploys and
+> counts per-deploy: R1 finalises all six (its last lands at height 24, finality 24), but **R2 and R3
+> leave their sixth at height 24 with finality 23** — included, and one height short. That is not a
+> timing artefact: on a quiet `--no-autopropose` net production stops within a few heights of the last
+> deploy and finality lags ~4, so a deploy landing in the final few heights is **included and never
+> finalised**. A1.1 asks about *one* deploy and passes; "every deploy finalises" is a **stronger** claim
+> than the row makes, and it held in 1 of 3 arms. It belongs on #213 rather than as a green row here, and
+> it is raised there.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
-> **§3.2 — 0 ✅ · 3 ❌ · 2 ⬜.** The criterion **fails** — and the re-probe (§3.4) says it fails
-> *upstream* of the wedge: on the current tip the net finalises nothing even with all three validators
-> live, so "do the survivors finalise past the kill" has no answer to give. See §0.9 and the note below.
+> **§3.2 — 4 ✅ · 0 ❌ · 1 ⬜.** The criterion **passes** on the fixed tree, re-verified by this pass on a
+> live net with the witness the issue names. The one ⬜ is the leave path (A2.5), which no run has covered.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
-| A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--dev-mode --epoch-length 10` | `spec/audit/evidence/n214-results.md` (arm B) | `f9d36b9c4` | the sampler's `finalized` column + the node's own logs | survivors' `last-finalized-block` advances past the kill height | ❌ **fail** — and the pre-condition is false: nothing was finalising before the kill either (§3.4) | — |
-| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `—` (same run) | as A2.1 | as A2.1 | finality resumes within `LIVENESS_WINDOW` heights of the restart | ❌ **fail** | — |
-| A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `—` | as A2.1 | as A2.1 | that deploy's block finalises | ❌ **fail** (three further deploys accepted, none proposed) | — |
-| A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator issues `trust` then `bond` against the live net | `—` | `—` | `rho:pos` bond state + the block producer of the new validator | the bond pool grows by one and the new validator's block appears | ⬜ **never run** | CH-ACC-06 |
+| A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | the deploy's own block found by the union, plus `last-finalized-block` and `is-finalized` | **the block carrying a deploy submitted after the kill finalises** — block 14 at a tip of 13, finality 14 | ✅ **pass** | — |
+| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | a deploy after the restart finalises (block 18, finality 19), `start` being the only action taken | ✅ **pass** | — |
+| A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | the deploy sent while `validator-2` was stopped is **included and its block finalises** (block 14) | ✅ **pass** | — |
+| A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator is admitted, funded with `trust`, then `bond`s against the live net | `spec/audit/evidence/n220-join-results.md` | `9a75d45` (author's run; **read, not re-run** by this pass) | `rho:pos` bond state + the newcomer's producer key + the deploy's `is-finalized` | the bond lands in a boundary block, the newcomer produces, and its deploy's block finalises | ✅ **pass** (healthy joiner — see the caveat below) | CH-ACC-06 |
 | A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | as A2.4, `withdraw` | `—` | `—` | the vault/pot state at the payout block | the payout transfers | ⬜ untested | CH-U6-09 |
 
-A2.4 has never been run, and cannot be run while A2.1 fails: **a bond takes effect on a merge, and the
-wedged chain merges nothing.** The C207 fix (`bond`/`withdraw`/`trust`/`delegate` were no-ops on any
-network that merges) landed 2026-10-03 and has therefore **never been exercised live**.
+**A2.4 has now been run, and it passes** — the first live exercise of the C207 path (`bond`/`withdraw`/
+`trust`/`delegate` were no-ops on any network that merges until 2026-10-03). `n220-join-run.sh` admits a
+fourth key onto a running `--no-autopropose` net, funds it, bonds it: the bond lands in the boundary
+block, the newcomer produces 14 of 84 blocks, and its own deploy's block finalises. **The caveat is what
+it does *not* cover**: a **silent** joiner — a bonded validator that never speaks — which is the wedge
+#213 is actually about. The rig proves a healthy joiner works; it does not prove a silent one cannot
+wedge the chain, and the page should not be read as saying otherwise.
 
-**What moved after this audit ran.** `#215` — *"the round gate's escape needs a clock, not just a supply
-of attempts"* — merged to `dev` at **2026-10-03 14:14**, before this audit began but **not in the tree it
-ran on**. It adds a wall-clock trigger (`ROUND_STALL_ESCAPE = 15 s`) beside the attempt-counting one,
-because the existing bound counts *attempts* and attempts are only supplied by something that asks the
-node to propose. `#213` is **OPEN** — it was closed and then **reopened** — and a controlled A/B on the
-issue reports that *"the escape is exonerated, and finality's stall is independent of it"*. So the wedge's
-proximate cause has a landed fix; a finality stall that is independent of it does not, and it bears on
-criterion 1 as well. **The re-probe (§3.4) has since run on the tip and found the stall upstream of the
-wedge**: nothing finalises with all three validators live, so the kill arm could not discriminate. The
-rows above are ❌ on both trees — on `0c6c65979` as #213 measured it, and on `f9d36b9c4` as §3.4 records
-it — for different reasons, and §3.4 states which.
+**What moved after this page was written, in order.** `#215` (2026-10-03 14:14) gave the round gate a
+wall-clock escape — *"needs a clock, not just a supply of attempts"* — but that was on a tree this page's
+first audit did not have. Then **C209** (2026-10-04, `f13e045c4`) moved the attestation guard's *every*
+input onto `latest_msgs`, bounded by `ATTESTATION_HORIZON`, after a live run refuted its first cut — the
+run being the counter-example §3.4 published. Then **C210** (`d960a0f18`) armed one `Automatic` retry just
+past the stall bound so a refused propose on a quiet net is not left waiting. **#219 merged at
+`07af032ad`**, and this pass re-ran the arms rather than reading them: the three deploy patterns and the
+three kill/restart cases now pass, with the witnesses in §3.1 and §3.2. The rows above changed from ❌ to
+✅ on that evidence — and one **residual** (§3.1) says "every deploy finalises" is stronger than any row
+here claims.
 
 ## 3.3 Criterion 3 — Every attack vector is handled
 
@@ -1911,27 +1931,47 @@ kill experiment has no finality to remove. Criterion 2 fails **upstream of the w
 reproduce #213's specific shape (survivors minting one block each and then stopping); it finds a state
 that is worse to reason about and simpler to state: **nothing finalises at all.**
 
-**The open contradiction.** #214 records criterion 1 *passing* at N=3 on `0c6c65979` — "finality reached
-3". On `f9d36b9c4`, with the configuration the issue names, nothing finalises in either arm. Either the
-configurations differ in a way not yet identified, or the behaviour changed between the two trees. **This
-is unresolved and it is the most load-bearing question this run produces**: it decides whether criterion 1
-failed for the last two days or regressed in them, and it should be settled before either reading is
-relied on. It also corroborates, on a third tree, the `n149` result (*finality never advances at N ≥ 3*)
-and the controlled A/B on #213 (*"finality's stall is independent of the escape"*).
+**The contradiction, closed.** #214 records criterion 1 *passing* at N=3 on `0c6c65979` — "finality reached
+3" — while on `f9d36b9c4`, with the configuration the issue names, nothing finalised in either arm. **It is
+settled: `0c6c65979` was right and `f9d36b9c4` was pre-fix.** The N=3 pass reproduces once the attestation
+guard reads the seen view (C209) — re-verified by this pass on `07af032ad`, where six deploys to a single
+validator finalise (24/23/23) against `none`, reproducibly, before. So criterion 1 did not regress between
+the two trees; it was failing in the window this page measured, for the mechanism in §3.5. The `n149`
+result (*finality never advances at N ≥ 3*) and the A/B on #213 (*"the stall is independent of the
+escape"*) were both measurements of the same pre-fix behaviour — which is why the escape, correctly
+fixed in #215, did not move them.
 
-**One node-flag trap, recorded because it cost a run.** The first attempt omitted
-`--attest-on-new-blocks`. The node gates its attestation tap on `attest_on_new_blocks &&`
-`!no_attest_on_new_blocks`, and the positive flag is a clap `bool` that defaults **false** — so a node
-started without it never attests and nothing finalises at any validator count. The option's own doc
-string says *"Attestation is on by default"*, which is not what the code does. That first attempt is kept
-as **void** in `spec/audit/evidence/n214-void-attestation-off/`, because a run that failed for a rig
-reason is worth more recorded than deleted — and it is why the flag is pinned in the pre-registration
-rather than left to a default.
+**A claim of mine that was wrong, kept because it cost a run.** The first attempt at this rig omitted
+`--attest-on-new-blocks`, and this page attributed the result to that omission on the reading that the
+positive flag is a clap `bool` defaulting **false**. It is not. The merged default is **true**
+(`node/src/configuration/defaults.conf:16`) and the CLI flag only ever *adds* `true`, so **passing it is
+optional and its absence cannot stop a node attesting**. That is why the two runs gave identical
+results: the first was never void, it is a second agreeing attempt — kept in
+`spec/audit/evidence/n214-void-attestation-off/` under a name that misstates what it is. The correction is
+#219's author's (`d960a0f18`), and it is the second time in this pass that a negative reading was mine and
+not the code's (see §0.9).
 
-**Limits.** One attempt per arm, one tree, one host, N=3 only. No bond was attempted, so A2.4 stays ⬜;
-A1.2 and A1.3 stay ⬜. A single attempt is not a rate.
+**Limits.** One tree, one host, N=3 only — where a reading is single-attempt, the row says so. A1.2 (N=5)
+and A1.3 (N=8) are untested. A single attempt is not a rate.
 
-## 3.5 The cause of the stall, 2026-10-03
+## 3.5 The cause of the stall, and its correction
+
+> **Corrected 2026-10-04.** The diagnosis below named the right **component** and the wrong **instance**.
+> The landed remedy is not the one this page proposed, and the locating evidence came from a live run: —
+> *"deploys sent to a validator that did not sign the genesis never finalised. Before the first round
+> closes the round snapshot is the genesis alone, a message from its signer at the tip, so read from the
+> parents the signer had just spoken and nobody else was moving: its cadence was never due, its quorum
+> never reachable, and it never spoke again"* (#219, `f13e045c4`).
+>
+> **The cause, corrected:** the guard read **every** input from the **round's snapshot** — which before the
+> first round closes is the genesis alone — rather than from what the node has seen. The fix reads
+> `latest_msgs` for all of them, bounded by `ATTESTATION_HORIZON = 3 × LIVENESS_WINDOW` so the C171 storm
+> cannot return (**C209**), and arms one `Automatic` retry just past the stall bound when a propose is
+> refused (**C210**). **Verified independently by this pass** — not taken from the fixer's report: see
+> §3.1's rows and `spec/audit/evidence/n213-blocks/07af032ad-…/`.
+
+**The first diagnosis, kept because it is half the story and because this page's own rule is that a
+superseded claim stands beside its correction.**
 
 **The finality gate is not what refuses. The attestation guard is**, and it holds a fixpoint.
 
@@ -1971,10 +2011,12 @@ and the timer is off. So a rule consulted only inside `create_block` cannot fire
 message names this trap half a layer down ("the bound was never reached, because it counts *attempts*, and
 attempts are only supplied by something that asks this node to propose") without applying it to the fix.
 
-**Consequence for the checklist.** §3.1's ❌ stands and is now *explained* rather than merely observed: the
-deploy does not finalise because the round it needs never closes. A1.1 remains ❌ on this tree — a
-diagnosis is not a fix — and the row's evidence is the re-probe plus this cause. Whether the landed fix
-closes it is the next measurement, and the falsifier is named in issue #213.
+**Consequence for the checklist.** §3.1's rows now **pass**, on a re-run this pass performed rather than on
+the fixer's report, and the row that was ❌ is ✅ for a reason that survived the correction: the deploy
+finalises because the round it needs now closes. The falsifier #213 named is met on the deploy arms — with
+one **residual** recorded in §3.1 (the *last* of several consecutive deploys is included and may not
+finalise, because production stops before finality catches up) which is a stronger claim than the row makes
+and belongs on the issue rather than hidden here.
 
 ---
 
@@ -2033,8 +2075,10 @@ acceptance rows in §3.
 > merge of PR #212, dated 2026-10-03 11:11 — and was on `origin/dev` when this audit began. An earlier
 > edition of this page carried the challenge as `upheld` and used it in §0.2 and §3.1; the withdrawal is
 > recorded in §0.9 rather than edited away, per this register's own rule.
-> **If upheld.** *(Superseded — the challenge is withdrawn.)* The row's other two refusals stand on their
-> own: no committed run artefact exists, and the instrument reads a height, not a block count.
+> **If upheld.** *(Superseded — the challenge is withdrawn.)* The row's other two refusals stood on their
+> own at the time: no committed run artefact existed, and the instrument reads a height, not a block count.
+> Both have since been answered — run artefacts exist (`n213-blocks/`, `n220-join-blocks/`), and the
+> block-hash union is what the rows now cite.
 
 > **CH-ACC-04 — the configuration names a flag the node does not have.** · class **configuration** ·
 > contests every `Configuration` cell in §3.1.
@@ -2066,7 +2110,11 @@ acceptance rows in §3.
 > the one C207 made functional on 2026-10-03 for the first time in the node's history — has **never been
 > exercised on a live net**, and criterion 2(a) blocks the run that would. The criterion cannot be
 > measured from where it stands.
-> **Resolution — `upheld`.** A2.4 is ⬜ and its prerequisite is criterion 2(a).
+> **Resolution — `superseded`, 2026-10-04.** The challenge was correct when it was raised and the
+> prerequisite has since been met: 2(a) passes (§3.2) and the join has now been run
+> (`n220-join-results.md`) — a validator is bonded onto a running net, produces, and its deploy finalises.
+> The challenge is kept rather than deleted, because the shape it names has **not** gone away: a
+> **silent** joiner is still unrun, and that is the case this challenge's reasoning actually points at.
 
 ## 4.2 Node-level challenges
 
