@@ -34,8 +34,8 @@ pub struct WebApiImpl {
     /// The dev deployer key (dev-mode only); `None` disables the faucet.
     deployer_key: Option<PrivateKey>,
     shard_id: String,
-    /// Per-address faucet drip count (R17): bounds how much REV any single address can pull.
-    drip_counts: Arc<Mutex<HashMap<String, u32>>>,
+    /// Faucet accounting is one lock so concurrent requests cannot pass separate address/total checks.
+    faucet_ledger: Arc<Mutex<FaucetLedger>>,
 }
 
 impl WebApiImpl {
@@ -50,9 +50,15 @@ impl WebApiImpl {
             transaction_api,
             deployer_key,
             shard_id,
-            drip_counts: Arc::new(Mutex::new(HashMap::new())),
+            faucet_ledger: Arc::new(Mutex::new(FaucetLedger::default())),
         }
     }
+}
+
+#[derive(Default)]
+struct FaucetLedger {
+    counts: HashMap<String, u32>,
+    spent: i64,
 }
 
 fn invalid_deploy_id() -> BlockApiException {
@@ -61,7 +67,9 @@ fn invalid_deploy_id() -> BlockApiException {
 
 /// Maximum faucet drips any single address may receive (0.3 REV each). Bounds the dev-wallet drain
 /// a single caller can cause before other developers are starved.
-const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 10;
+const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 1;
+/// Public-testnet faucet allocation: 10,000 REV. A drip is charged only after the deploy is accepted.
+const FAUCET_TOTAL_BUDGET: i64 = 10_000 * 100_000_000;
 
 #[cfg(test)]
 mod tests {
@@ -90,6 +98,8 @@ mod tests {
         /// What `deploy` was asked to pool, shared by handle so a test can read it after the stub
         /// has been boxed behind `Arc<dyn BlockApi>`.
         deployed: Arc<StdMutex<Vec<SignedDeployData>>>,
+        /// Optional deploy refusal injected by tests; shared so a test can clear it and retry.
+        deploy_error: Arc<StdMutex<Option<String>>>,
     }
 
     impl Default for StubBlockApi {
@@ -107,6 +117,7 @@ mod tests {
                     status: "pending".to_string(),
                 }),
                 deployed: Arc::new(StdMutex::new(Vec::new())),
+                deploy_error: Arc::new(StdMutex::new(None)),
             }
         }
     }
@@ -154,6 +165,9 @@ mod tests {
         }
 
         async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
+            if let Some(error) = self.deploy_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             self.deployed.lock().unwrap().push(deploy.clone());
             Ok(base16::encode(&deploy.sig))
         }
@@ -409,7 +423,7 @@ mod tests {
             .expect("somebody else is a target");
     }
 
-    /// The faucet's per-address budget (R17) is enforced: ten drips for one address, the eleventh
+    /// The faucet's per-address budget (R17) is enforced: one drip for one address, the second
     /// refused by name — the fix for a single caller draining the dev wallet.
     #[tokio::test]
     async fn the_faucet_enforces_its_per_address_budget() {
@@ -442,7 +456,7 @@ mod tests {
     /// **before charging the drip**, which is a change (AUDIT R33).
     ///
     /// This test used to pin the opposite as deliberate: the budget was taken before the key was
-    /// checked, so a dev node started without `--deployer-private-key` burned ten drips per address
+    /// checked, so a dev node started without `--deployer-private-key` burned its per-address allowance
     /// serving nothing. That is the same defect as R33 one step over — a no-op that spends the budget
     /// — and R33's fix needs the key *earlier* than the charge, so both went at once.
     #[tokio::test]
@@ -467,8 +481,50 @@ mod tests {
         }
         assert!(
             web.faucet(&address).await.is_err(),
-            "the budget is spent — ten, not nine"
+            "the per-address budget is spent"
         );
+    }
+
+    /// A refused deploy consumes neither the address allowance nor the total faucet budget.
+    #[tokio::test]
+    async fn a_failed_submit_does_not_consume_faucet_budget() {
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
+        let stub = StubBlockApi::default();
+        let deploy_error = stub.deploy_error.clone();
+        *deploy_error.lock().unwrap() = Some("pool refused".to_string());
+        let web = api(stub, Some(sk));
+
+        let before = web.capabilities().await.expect("capabilities");
+        assert_eq!(before.faucet_remaining, FAUCET_TOTAL_BUDGET);
+        assert!(
+            web.faucet(&address).await.is_err(),
+            "the injected refusal reaches the caller"
+        );
+        let after_refusal = web.capabilities().await.expect("capabilities");
+        assert_eq!(after_refusal.faucet_remaining, FAUCET_TOTAL_BUDGET);
+
+        *deploy_error.lock().unwrap() = None;
+        web.faucet(&address)
+            .await
+            .expect("the same address still owns its one successful drip");
+        let after_success = web.capabilities().await.expect("capabilities");
+        assert_eq!(
+            after_success.faucet_remaining,
+            FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
+        );
+    }
+
+    /// The advertised capability carries the remaining total budget and closes when it is dry.
+    #[tokio::test]
+    async fn a_dry_faucet_is_not_advertised() {
+        let (sk, _) = key_and_address();
+        let web = api(StubBlockApi::default(), Some(sk));
+        web.faucet_ledger.lock().unwrap().spent = FAUCET_TOTAL_BUDGET;
+
+        let caps = web.capabilities().await.expect("capabilities");
+        assert_eq!(caps.faucet_remaining, 0);
+        assert!(!caps.faucet, "a client must not offer a dry faucet");
     }
 
     /// A successful drip signs a transfer and hands it to the block API. The deploy the API
@@ -560,9 +616,12 @@ impl WebApi for WebApiImpl {
 
     async fn capabilities(&self) -> Result<NodeCapabilities, BlockApiException> {
         let caps = self.block_api.capabilities().await;
-        // The faucet is gated on both dev mode and a configured deployer key.
-        let faucet = caps.dev_mode && self.deployer_key.is_some();
-        Ok(to_node_capabilities(&caps, faucet))
+        let ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let remaining = FAUCET_TOTAL_BUDGET.saturating_sub(ledger.spent);
+        // A dry faucet is not advertised: r-wallet can stop offering it without probing a write.
+        let faucet =
+            caps.dev_mode && self.deployer_key.is_some() && remaining >= faucet::FAUCET_AMOUNT;
+        Ok(to_node_capabilities(&caps, faucet, remaining))
     }
 
     async fn deploy_status(&self, deploy_id: &str) -> Result<DeployExecStatus, BlockApiException> {
@@ -598,17 +657,22 @@ impl WebApi for WebApiImpl {
                  two accounts the node already holds, and would still spend the budget"
             )));
         }
-        // Per-address drip budget (R17): bound how much REV one address can pull, so a single caller
-        // cannot monopolize the rate limit and drain the genesis dev wallet.
+        // Reserve atomically before the async submit so concurrent requests cannot both pass the
+        // same-address or total-budget gate. A failed submit rolls the reservation back below.
         {
-            let mut counts = self.drip_counts.lock().unwrap_or_else(|p| p.into_inner());
-            let count = counts.entry(address.to_string()).or_insert(0);
-            if *count >= FAUCET_MAX_DRIPS_PER_ADDRESS {
+            let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+            if ledger.counts.get(address).copied().unwrap_or(0) >= FAUCET_MAX_DRIPS_PER_ADDRESS {
                 return Err(BlockApiException(format!(
                     "faucet: address {address} has reached its drip budget ({FAUCET_MAX_DRIPS_PER_ADDRESS})"
                 )));
             }
-            *count += 1;
+            if FAUCET_TOTAL_BUDGET.saturating_sub(ledger.spent) < faucet::FAUCET_AMOUNT {
+                return Err(BlockApiException(
+                    "faucet: total budget exhausted".to_string(),
+                ));
+            }
+            *ledger.counts.entry(address.to_string()).or_insert(0) += 1;
+            ledger.spent = ledger.spent.saturating_add(faucet::FAUCET_AMOUNT);
         }
         // Valid-from-now: a deploy with `valid_after_block_number = -1` is treated as expired once
         // the node is past `DEPLOY_LIFESPAN` (50) blocks, so anchor it to the current height.
@@ -617,10 +681,17 @@ impl WebApi for WebApiImpl {
             faucet::sign_faucet_deploy(sk, address, faucet::FAUCET_AMOUNT, &self.shard_id, vabn)
                 .map_err(BlockApiException)?;
         // `deploy` validates, pools, and (with propose-on-deploy) proposes the transfer.
-        self.block_api
-            .deploy(&signed)
-            .await
-            .map_err(BlockApiException)?;
+        if let Err(err) = self.block_api.deploy(&signed).await {
+            let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(count) = ledger.counts.get_mut(address) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    ledger.counts.remove(address);
+                }
+            }
+            ledger.spent = ledger.spent.saturating_sub(faucet::FAUCET_AMOUNT);
+            return Err(BlockApiException(err));
+        }
         Ok(FaucetResponse {
             deploy_id: base16::encode(&signed.sig),
             amount: faucet::FAUCET_AMOUNT,

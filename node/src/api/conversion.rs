@@ -53,7 +53,11 @@ pub fn to_api_status(status: &Status, caps: &Capabilities, health: &ProposerHeal
 }
 
 /// Map a casper `Capabilities` + the faucet availability flag to the app-facing `NodeCapabilities`.
-pub fn to_node_capabilities(caps: &Capabilities, faucet: bool) -> NodeCapabilities {
+pub fn to_node_capabilities(
+    caps: &Capabilities,
+    faucet: bool,
+    faucet_remaining: i64,
+) -> NodeCapabilities {
     NodeCapabilities {
         autopropose: caps.autopropose,
         propose_on_deploy: caps.propose_on_deploy,
@@ -61,6 +65,7 @@ pub fn to_node_capabilities(caps: &Capabilities, faucet: bool) -> NodeCapabiliti
         admin_http: caps.admin_http,
         dev_mode: caps.dev_mode,
         faucet,
+        faucet_remaining,
     }
 }
 

@@ -274,6 +274,7 @@ fn dto_by_name(name: &str) -> Value {
             admin_http: false,
             dev_mode: false,
             faucet: false,
+            faucet_remaining: 0,
         }),
         "LightBlockInfo" => to_json(&light_block()),
         "DeployInfo" => to_json(&DeployInfo {

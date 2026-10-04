@@ -104,14 +104,14 @@ POST https://<node>/api/faucet   {"address": "<your REV address>"}
 
 That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
 needs to fund a fresh address. It is a **dev-mode** endpoint: the node must have been started with
-`--dev-mode --deployer-private-key`, and it signs the transfer from that deployer's wallet. Without the
-key a node answers `400 "faucet requires --dev-mode --deployer-private-key"`, and reports `faucet: false`
-in its capability list.
+`--dev-mode --deployer-private-key`, and it signs the transfer from that deployer's wallet. When the faucet is disabled (including when the key is absent), the route is not mounted and answers
+`404`; the capability list reports `faucet: false`. When enabled, `faucetRemaining` reports the remaining
+allocation in drops so clients can stop offering a dry faucet.
 
 | node | faucet |
 |---|---|
 | `playground.rhobot.net` (and `rnodeapi.rhobot.net`) | ✅ **works** — dev-mode plus a deployer key |
-| `testnet.rhobot.net` | ❌ **by design** — that key is also the dummy-deploy injector, and this net's idle chain is load-bearing for its sizing ([K7](#known-issues)). See the room faucet below |
+| `testnet.rhobot.net` | ❌ **currently off** — the deployed service is not wired to a faucet deployer key. Enable it only with the dedicated funded testnet key and the bounded faucet policy below. |
 
 **In a room: `/facil faucet`.**
 
@@ -121,8 +121,9 @@ A quantum-os facilitator started with `--key <funded deploy key>` answers
 /facil faucet <your REV address>     # or just /facil faucet, once it has remembered your address
 ```
 
-and signs a fixed **10 REV** transfer to it. It remembers the address per peer, has no rate limit — a
-faucet on a test system is meant to be asked repeatedly — and refuses to move anything if it was started
+and signs a fixed **10 REV** transfer to it. This facilitator surface is separate from the node HTTP
+faucet; do not describe the node faucet as unlimited: its public HTTP surface has a fixed-window rate
+limiter and its own address/total budgets. The facilitator refuses to move anything if it was started
 without a key. Plain English works too: `/facil ask give me some test rev` routes to the same function,
 never to an LLM decision to move funds.
 
