@@ -40,7 +40,7 @@ issues — and so had **no owner, no measurement and no falsifier**.
 | Criterion | Verdict | Basis |
 |---|---|---|
 | 1 — bounded production | ✅ **pass** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual — the *last* of several consecutive deploys may be included and not finalised — is recorded in §3.1 and on #213 |
-| 2 — join and leave | ✅ **pass** (leave untested) | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); and a new validator **bonds onto a running net** and produces (`n220-join-results.md`). The leave path (A2.5) is untested |
+| 2 — join and leave | **3 of 5 pass; A2.2 fails on a live net** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); and a new validator **bonds onto a running net** and produces (`n220-join-results.md`). The leave path (A2.5) is untested |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
 ## 0.3 Method
@@ -1851,13 +1851,14 @@ before/after pair and §3.5 for the cause.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
-> **§3.2 — 4 ✅ · 0 ❌ · 1 ⬜.** The criterion **passes** on the fixed tree, re-verified by this pass on a
-> live net with the witness the issue names. The one ⬜ is the leave path (A2.5), which no run has covered.
+> **§3.2 — 3 ✅ · 0 ❌ · 2 ⬜.** A2.1, A2.3 and A2.4 pass. **A2.2 is ⬜**: it passed on a *rig* and fails on
+> the **live net** ([#223](https://github.com/rchain-community/rchain-rust/issues/223)) — see the note below.
+> A2.5 (the leave path) is unrun.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
 | A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | the deploy's own block found by the union, plus `last-finalized-block` and `is-finalized` | **the block carrying a deploy submitted after the kill finalises** — block 14 at a tip of 13, finality 14 | ✅ **pass** | — |
-| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | a deploy after the restart finalises (block 18, finality 19), `start` being the only action taken | ✅ **pass** | — |
+| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `—` — **no live-net run satisfies this**; the rig run that did is in `n213-blocks/07af032ad-…/` and is not what the row claims | — | as A2.1 | a deploy after the restart finalises, `start` being the only action | ⬜ **untested on a live net — [#223](https://github.com/rchain-community/rchain-rust/issues/223)** | — |
 | A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | the deploy sent while `validator-2` was stopped is **included and its block finalises** (block 14) | ✅ **pass** | — |
 | A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator is admitted, funded with `trust`, then `bond`s against the live net | `spec/audit/evidence/n220-join-results.md` | `9a75d45` (author's run; **read, not re-run** by this pass) | `rho:pos` bond state + the newcomer's producer key + the deploy's `is-finalized` | the bond lands in a boundary block, the newcomer produces, and its deploy's block finalises | ✅ **pass** (healthy joiner — see the caveat below) | CH-ACC-06 |
 | A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | as A2.4, `withdraw` | `—` | `—` | the vault/pot state at the payout block | the payout transfers | ⬜ untested | CH-U6-09 |
@@ -1869,6 +1870,17 @@ block, the newcomer produces 14 of 84 blocks, and its own deploy's block finalis
 it does *not* cover**: a **silent** joiner — a bonded validator that never speaks — which is the wedge
 #213 is actually about. The rig proves a healthy joiner works; it does not prove a silent one cannot
 wedge the chain, and the page should not be read as saying otherwise.
+
+> **A2.2 is ⬜, not ✅ — the page's own lesson turned on itself.** Its earlier ✅ came from a **rig** run
+> (`n213-run.sh` case (b): `stop`, `start`, a deploy finalises). Jim then ran the checklist on the **live
+> testnet** at tree `49337ee92` and the rejoiner does not rejoin: the restarted node meshes and retrieves
+> blocks (246 retrieval lines) but is capped at the height it died at — `h=35` while the survivors reached
+> `h=48` — with exactly two `block summary failed: missing justification` errors and no recovery.
+> **A rig pass is not what the row claims**, which is the distinction this page has applied to everyone
+> else's evidence and had not applied to its own. See
+> [#223](https://github.com/rchain-community/rchain-rust/issues/223); the chain-level consequences are
+> nil — a rejoin **liveness** failure, not a safety one. **A2.4's ✅ is a rig result too** and the live run
+> did not reach it; that is recorded as provenance, not as a doubt, because nothing has falsified it.
 
 **What moved after this page was written, in order.** `#215` (2026-10-03 14:14) gave the round gate a
 wall-clock escape — *"needs a clock, not just a supply of attempts"* — but that was on a tree this page's
