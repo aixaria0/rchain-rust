@@ -258,6 +258,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       closed)   test_name="lean_closed_corpus";    crate="rchain-rholang" ;;
       stake)    test_name="lean_stake_corpus";     crate="rchain-node" ;;
       block)    test_name="lean_block_corpus";     crate="rchain-node" ;;
+      liveness) test_name="lean_liveness_corpus";  crate="rchain-node" ;;
       protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;
       envelope) test_name="lean_envelope_corpus";  crate="rchain-node" ;;
       lex)      test_name="lean_lex_corpus";       crate="rchain-node" ;;

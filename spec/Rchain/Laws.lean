@@ -3263,12 +3263,14 @@ def laws : List Law := [
       `ReadsTheView` (the model can refute the *old* reader, not prove the new one). **The \
       `3 × LIVENESS_WINDOW` factor is measured, not proved** (`quiet_chain_tests`: a healthy round \
       finalises a deploy within 3 heights, a killed-validator round within 7).",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "liveness",
     declarations := [`Rchain.currentOf, `Rchain.stalenessBound_iff, `Rchain.participation_all_current,
       `Rchain.seersOf, `Rchain.suppOfView, `Rchain.allBonded_seersOf, `Rchain.bondedSupport_suppOfView,
       `Rchain.filterMap_stakeOf_eq_totalStake, `Rchain.fullPartitionStake_suppOfView,
       `Rchain.gate_publishes_of_a_full_partition, `Rchain.nextFringe_publishes_of_a_full_partition,
-      `Rchain.inHorizon, `Rchain.the_licence_ends_at_the_horizon],
+      `Rchain.inHorizon, `Rchain.the_licence_ends_at_the_horizon,
+      `Rchain.latestOf, `Rchain.liveOf, `Rchain.currentOf_iff, `Rchain.window_iff_heights_behind],
     axioms := [],
     rust := ["casper/src/blocks/proposer/proposer.rs", "block-storage/src/dag/liveness.rs",
       "block-storage/src/dag/finalizer.rs"],
@@ -3286,11 +3288,19 @@ def laws : List Law := [
       Rust by the test of the same name).",
     witness := [`Rchain.gate_publishes_of_a_full_partition, `Rchain.participation_all_current,
       `Rchain.the_licence_ends_at_the_horizon],
-    note := "tied over the model, not by a corpus: the model's `Nat`/`Option` algebra is coarser than the \
-      node's `BlockHeight`/`BTreeMap`, so a `liveness` corpus layer is a follow-up rather than a \
-      formality. Until it lands, `rustWitness` names the Rust tests the claim rests on. `Participation` \
-      and `Delivery` — declared in `Rchain/Casper/Liveness.lean` and used by nothing before this row — \
-      are consumed here; `StalenessBound` is reached through `stalenessBound_iff`." },
+    note := "**The follow-up this row used to name has landed.** The row was `proved-model` over an \
+      algebra the note called coarser than the node's — the model's `Nat`/`Option` against the port's \
+      `BlockHeight`/`BTreeMap` — and the `liveness` corpus is the tie: eleven cases, each a tip, a window, \
+      a bonds map and a latest-message map, whose verdict is the live weight set the filter returns. \
+      `liveOf` is the model's; `block-storage/src/dag/liveness.rs:live_weight_set` is the node's; \
+      `currentOf_iff` and `window_iff_heights_behind` are what make those one test rather than two \
+      spellings that happen to agree on the cases somebody thought of. The cases carry the boundary \
+      (`h + w = tip` is live, one past it is not) and the shape C174 is about — a bonded sender with **no \
+      message at all**, which the node's `is_some_and` drops and a default height would have kept. \
+      `Participation` and `Delivery` — declared in `Rchain/Casper/Liveness.lean` and used by nothing \
+      before this row — are consumed here; `StalenessBound` is reached through `stalenessBound_iff`. \
+      **What the tie does not reach:** the `3 × LIVENESS_WINDOW` factor, which is measured rather than \
+      proved." },
 ]
 
 

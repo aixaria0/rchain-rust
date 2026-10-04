@@ -10,6 +10,7 @@ import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Parse
 import Rchain.Casper.Validate
+import Rchain.Casper.Rounds
 
 /-!
 # The conformance corpus, generated from the specification
@@ -1388,6 +1389,102 @@ def blockLine (c : BlockCase) : String :=
     (if c.numberValid then "true" else "false") ++ "\t" ++
     (if c.seqNumValid then "true" else "false")
 
+/-! ## The `liveness` layer — law 58's window, read off the node
+
+**What it ties.** Law 58's clause b turns on one predicate: a sender is *current* iff its latest message
+is within the window of the tip. The model spells it `h + w ≥ tip` (`Rounds.lean`'s `currentOf`, which
+`Rounds.lean`'s `window_iff_heights_behind` proves is the same test); the node spells it
+`heights_behind(tip, h) ≤ window` (`block-storage/src/dag/liveness.rs:69`, `:93`). Each row is a tip, a
+window, a bonds map and a latest-message map, and the verdict is the **live weight set** — the bonded
+senders the filter keeps, with their stakes.
+
+**The case the layer exists for is the absent one.** A bonded sender with **no message at all** is not
+current: the node's lookup is an `is_some_and` and the model's is a `none => false`. That is C174's
+requirement — without it a silent bonded validator makes the partition unsatisfiable and finality stops
+whatever share the survivors hold (#70, measured 2026-09-29 at `100/100/50`). A row with a bonded sender
+missing from `latest` is the check on it.
+
+**Ordering is part of the encoding.** Both sides filter the bonds *in place* — the node over its
+`BTreeMap`'s ascending keys, the model over its list — so the cases list bonds in ascending sender order
+and the rendered set needs no sort. A case out of order would fail on a difference that is not the rule's.
+-/
+
+/-- A `liveness` case. -/
+structure LivenessCase where
+  /-- The tip the window is measured from. -/
+  tip : Nat
+  /-- `LIVENESS_WINDOW` as this case runs it. -/
+  window : Nat
+  /-- The bonds map, **ascending by sender** — the port's `BTreeMap` iteration order. -/
+  bonds : List (Sender × Nat)
+  /-- Each sender's latest height, ascending. **A bonded sender absent here has no message at all.** -/
+  latest : List (Sender × Nat)
+  /-- The live weight set the case expects, ascending. -/
+  live : List (Sender × Nat)
+
+/-- The live weight set the model computes for a case. -/
+def livenessOf (c : LivenessCase) : List (Sender × Nat) := liveOf c.bonds c.latest c.tip c.window
+
+/-- The layer's checker: the model's live set is the case's. -/
+def livenessHolds (c : LivenessCase) : Bool := decide (livenessOf c = c.live)
+
+/-- The cases. `100/100/50` is the rig's own bond shape — a tie to a shape nobody runs is a tie to
+    nothing — and the quarantine/window arithmetic is small enough to check by hand. -/
+def livenessCases : List LivenessCase :=
+  [ -- every bonded sender current: the live set is the whole map
+    ⟨10, 5, [(0, 100), (1, 100), (2, 50)], [(0, 10), (1, 9), (2, 8)], [(0, 100), (1, 100), (2, 50)]⟩
+  , -- exactly at the window: `h + w = tip`, so the sender is live …
+    ⟨10, 5, [(0, 100), (1, 100)], [(0, 5), (1, 6)], [(0, 100), (1, 100)]⟩
+  , -- … and one past it is not: the same case, from the other side of the boundary
+    ⟨10, 5, [(0, 100), (1, 100)], [(0, 4), (1, 10)], [(1, 100)]⟩
+  , -- the case C174 is about: a bonded sender with NO message at all is dropped
+    ⟨10, 5, [(0, 100), (1, 100), (2, 50)], [(0, 10), (1, 9)], [(0, 100), (1, 100)]⟩
+  , -- nobody has spoken: the live set is empty while the quorum denominator is untouched
+    ⟨10, 5, [(0, 100), (1, 100)], [], []⟩
+  , -- a `latest` entry for a sender that is not bonded contributes nothing
+    ⟨10, 5, [(0, 100)], [(0, 10), (7, 10)], [(0, 100)]⟩
+  , -- window 0: only a message at the tip itself is live
+    ⟨10, 0, [(0, 100), (1, 100)], [(0, 10), (1, 9)], [(0, 100)]⟩
+  , -- a zero-stake bonded sender is live and contributes 0 — `NonNegI64` allows it
+    ⟨5, 5, [(0, 0), (1, 7)], [(0, 5), (1, 5)], [(0, 0), (1, 7)]⟩
+  , -- tip 0: the genesis boundary, where `h + w ≥ 0` holds for every present message
+    ⟨0, 5, [(0, 3)], [(0, 0)], [(0, 3)]⟩
+  , -- one of three silent and the other two current: 200 of the pool's 250
+    ⟨100, 5, [(0, 100), (1, 100), (2, 50)], [(0, 100), (1, 96)], [(0, 100), (1, 100)]⟩
+  , -- a message *ahead* of the tip is current, not stale — the sign `heights_behind`'s doc names
+    ⟨10, 5, [(0, 100)], [(0, 12)], [(0, 100)]⟩
+  ]
+
+/-- **Every case holds of the model**: the live set `liveOf` computes is the set the case declares. The
+    emitted corpus carries the declared verdict, so this theorem is what makes the file the model's
+    belief rather than a list somebody typed. -/
+theorem livenessCases_decide : livenessCases.all livenessHolds = true := by decide
+
+/-- The layer carries exactly `livenessCaseCount` cases. -/
+def livenessCaseCount : Nat := 11
+
+theorem livenessCases_length : livenessCases.length = livenessCaseCount := by decide
+
+/-- **The layer is not degenerate**: at least one case drops a bonded sender and at least one keeps every
+    one of them. A layer that only ever returned the whole map would pass while the predicate did
+    nothing. -/
+theorem livenessCases_both_ways :
+    livenessCases.any (fun c => decide (livenessOf c ≠ c.bonds)) = true ∧
+    livenessCases.any (fun c => decide (livenessOf c = c.bonds)) = true := by decide
+
+/-- **And the silent case is among them**: a case has fewer latest messages than bonds, which is the shape
+    C174 requires to be dropped and #70 measured the absence of. -/
+theorem livenessCases_drops_the_silent :
+    livenessCases.any (fun c => decide (c.latest.length < c.bonds.length)) = true := by decide
+
+/-- One `liveness` corpus line: layer, tip, window, bonds, latest, and the live set. -/
+def livenessLine (c : LivenessCase) : String :=
+  String.intercalate "\t"
+    ["liveness", toString c.tip, toString c.window,
+     String.intercalate "," (c.bonds.map fun p => s!"{p.1}:{p.2}"),
+     String.intercalate "," (c.latest.map fun p => s!"{p.1}:{p.2}"),
+     String.intercalate "," (c.live.map fun p => s!"{p.1}:{p.2}")]
+
 end Corpus
 end Rchain
 
@@ -1543,7 +1640,7 @@ def main (args : List String) : IO UInt32 := do
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
-      || a == "stake" || a == "block")).getD "flags"
+      || a == "stake" || a == "block" || a == "liveness")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1571,6 +1668,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.stakeCases.map Corpus.stakeLine, Corpus.stakeCaseCount)
     else if want == "block" then
       (Corpus.blockCases.map Corpus.blockLine, Corpus.blockCaseCount)
+    else if want == "liveness" then
+      (Corpus.livenessCases.map Corpus.livenessLine, Corpus.livenessCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
