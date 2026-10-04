@@ -58,3 +58,21 @@ One tree, one host, one attempt; the withdrawal is a **validator's**, not a dele
 path's `pendingWithdrawals` behaviour for that case is exactly what is in question. The epoch boundary is
 10 blocks and the quarantine 20, both shrunk from production values, so nothing here speaks to the
 timings a real net would see.
+
+## The next step, made concrete
+
+`examples/leave-balance.rho` is committed: the same read as `pos-balance.rho`, for **validator 2** — the
+key that leaves — with its address derived inside rholang from the public key, so the probe cannot be
+asking about a different account than the run measures.
+
+What the rig still needs is two reads and the pattern to take them: `devnet.sh query <name>` is
+`listen-data-at-name`, which **subscribes** to a name rather than reading a value that is already there,
+so the listener has to be running *before* `leave-balance.rho` is deployed. Concretely: start the listener
+in the background, deploy the probe, collect one line; do that once before the `withdraw` and once after
+the quarantine deadline. **The witness is the second read being higher than the first** — the payout
+arrived — and the honest caveat is `pos-balance.rho`'s: both reads are deploys, so the delta is the payout
+*minus* their fees, which is evidence the payout landed rather than a measurement of its size.
+
+That is a small rig change with a known shape. It was not made in this pass: this rig had already taken
+four iterations, every one of them an instrument fault of mine rather than the chain's, and a fifth at the
+end of a long session is where a mistake would cost more than the reading is worth.
