@@ -102,20 +102,19 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 245** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 0 · DONE 245** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  39 of 245 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  40 of 246 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 245 are settled: **181 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C211` | **a rejoining validator stalls: block processing refuses a block whose justification it has not fetched, and never retries.** Found by running the #214 acceptance checklist **on the testnet** (tree `49337ee92`): the restarted node meshes and retrieves blocks (246 retrieval lines) but is capped at the height it died at — `h=35` while the survivors reached `h=48` — with exactly two `block summary failed: missing justification` errors and no recovery. The chain is unaffected: a rejoin **liveness** failure, not a safety one. The mechanism is a hypothesis and is labelled as one: the retrieval and processing paths race, a block can be delivered before the justification it names is in the store, `block summary failed` is terminal for that block rather than deferred, and nothing re-attempts it when the missing justification arrives. This **falsifies `A2.2`** of `docs/src/spec/testnet-acceptance.md`, whose pass came from a rig run — the row claims a validator that restarts and rejoins, and on a live net it does not. | the settling run — the same sequence with block-retrieval logging at the two refusals, to distinguish "the fetch was late" from "the store lost it"; then either defer the summary check until the justifications are present (re-process on arrival) or fetch a block's justifications before requiring them. Closes when A2.2 passes on a **live net**: kill one of three by stopping it, restart it, and the node reaches the tip and takes part, with a deploy submitted afterwards finalising. | §65 |
 
 ### T1 coverage — closed
 

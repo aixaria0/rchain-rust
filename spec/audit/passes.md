@@ -7223,3 +7223,48 @@ discriminate the fix; rerun on `9a75d45` they show it costs nothing — R1–R3 
 (`evidence/n220-join-results.md`), no escapes anywhere. The kill/restart arm's pass on that tree was
 proxy-keyed; its witness was first shown on `07af032ad` (PR #222).
 
+
+## 65. A rejoining validator stalls: a refused block is never re-attempted (C211, #223)
+
+**Found where the checklist said it would be found.** Jim ran #214's acceptance checklist on the **live
+testnet** at tree `49337ee92` — the tree this register's C209/C210 rows were verified on — with a fresh
+genesis, three bonds 100/100/50 and no autopropose:
+
+| case | on the testnet |
+|---|---|
+| A1.1, six deploys to **one** validator | pass — finality tracked the tip at a lag of 4 (1, 5, 10, 14, 20, 24) with **zero round-gate escapes** |
+| A2.1, the survivors finalise past the kill | pass — finality 25 → 27 → 40, both survivors in lockstep |
+| A2.3, a deploy accepted while the validator is absent | pass — included and finalised |
+| **A2.2, the killed validator restarts and rejoins** | **fail** — the rejoiner is capped at the height it died at |
+
+**The failure.** Node C was stopped and restarted. It meshed (`peers: 2`) and began retrieving blocks
+normally — 246 retrieval lines — and then stopped advancing: `h=35` while the survivors reached `h=48`,
+stuck for ~14 minutes. Exactly two errors, and no more:
+
+```
+ERROR [casper.blocks.BlockProcessor] Block b31b0600… processing error: block summary failed: missing justification 4e0fb9c6…
+ERROR [casper.blocks.BlockProcessor] Block ae2224d0… processing error: block summary failed: missing justification b31b0600…
+```
+
+Two blocks are refused because a justification is absent from the store, and the second is refused because
+the block that *would* have carried it was itself refused. **The chain is unaffected** — A and B keep
+finalising — so this is a rejoin **liveness** failure, not a safety one.
+
+**Mechanism, as a hypothesis.** The retrieval and processing paths race: a block can be delivered before
+the justification it names is in the store, and `block summary failed` is terminal for that block rather
+than deferred. Nothing re-attempts it when the justification subsequently arrives, so one out-of-order
+delivery caps the rejoiner permanently. Related to the C173/C190 family (*a block can be in the DAG index
+and not in the store*) but this is the **wrong-order** case on a **rejoining** validator, and which of the
+two is the cause here is not established.
+
+**What it falsifies, and it is this register's own recent work.** `A2.2` of
+`docs/src/spec/testnet-acceptance.md` read ✅ on the strength of **`n213-run.sh` case (b)** — a *rig* run
+(`stop`, `start`, a deploy finalises). The row's claim is about a validator that restarts and rejoins on a
+**live net**, and there it does not. **A rig pass is not what the row claims** — the distinction this page
+has applied to every other source of evidence and had not applied to its own. The page now carries `A2.2`
+as ⬜ citing this row.
+
+**What would settle it.** The same sequence with block-retrieval logging at the two refusals, to see
+whether `4e0fb9c6…` arrived before or after `b31b0600…` was processed — which distinguishes "the fetch was
+late" from "the store lost it". Then either defer the summary check until the justifications are present
+(re-process on arrival), or fetch a block's justifications before requiring them.
