@@ -1,0 +1,12 @@
+  deadline= blocks_remaining= active=3 pending=0
+  balance before the withdraw: 0
+  fund: ok 7
+  withdraw deploy: ok 14
+  L1 PASS: the withdrawal staged — deadline=40 blocks_remaining=22
+    (CH-U6-09: the read path's own deadline and blocks_remaining ARE the recorded arithmetic; the worksheet's "waits quarantine_length more blocks past its deadline" is not what the API says.)
+  L2 PASS: the leaving validator is out of the active set (3 -> 2)
+  L3 PASS: no pending withdrawal remains once its deadline passed
+  after: deadline= blocks_remaining= active=2 pending=0
+  balance after the deadline: 0
+  L4 FAIL: no payout observed — balance 0 -> 0
+  height 27 -> 34 over 60s

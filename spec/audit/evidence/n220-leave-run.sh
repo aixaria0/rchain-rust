@@ -87,6 +87,44 @@ pending() { pos_read | sed -n 's/^deadline=\([0-9]\+\) blocks_remaining=\([0-9]\
 # The active-validator count — the leave's own observable, and the one that does not depend on the
 # quarantine still being in flight: a validator that has left the active set is out of the draw.
 active() { pos_read | sed -n 's/.*active=\([0-9]\+\).*/\1/p'; }
+# **The leave's own observable: the vault**, not the withdrawal's bookkeeping. Addresses are derived
+# inside rholang from the public key, so the probe cannot be asking about a different account than the
+# run measures.
+#
+# **`listen-data-at-name` returns what is already at the name, and waits only if there is nothing.**
+# This is *not* what the first version of this comment said (it said "subscribes"), and the difference is
+# the whole reason the 2026-10-04 run read `0 -> 0` for an account funded 100,000,000: one fixed channel
+# meant the second read was handed the **first** read's datum, whose own `block_number` (5) put it before
+# both the fund (7) and the withdraw (14). So the channel is a **parameter** — a distinct channel per read
+# is not a stylistic choice, it is what makes the read a read. Sets `BAL` and `BAL_BLK`.
+#
+# **Deploy first, then read — and record the deploy's status.** The read returns data *already at the
+# name*, so there is nothing to race: the deploy is submitted, its status is waited for, and the read is
+# then a one-shot that returns the datum immediately. The first version of this function started the
+# listener and deployed *into* it, and that ordering has a blind spot the 14:09 run fell into: when the
+# read came back `unreadable` there was **no deploy status on record**, so a deploy that never landed and
+# a chain that never produced a block were indistinguishable. A probe that cannot say which of its two
+# halves failed is not an instrument.
+balance() {  # <channel> <contract>
+  local ch="$1" file="$2" tmp="$OUT/balance-$1.txt"
+  local id st
+  id=$(deploy_as devnet-bootstrap "$GENESIS_PRIV" "$file")
+  st=pending
+  for _ in $(seq 25); do
+    st=$(deploy_status "$id"); [[ "$st" == ok* ]] && break
+    sleep 3
+  done
+  echo "  probe '$ch': deploy=${id:-none} status=$st" >> "$OUT/witness.txt"
+  timeout 60 docker exec devnet-bootstrap rnode --grpc-host localhost \
+    listen-data-at-name -t pub -c "\"$ch\"" > "$tmp" 2>/dev/null
+  # The last `GInt` in the response, and the block it was produced in — read off the datum rather than
+  # from a position in the text, so a reader can check *when* the value it is comparing came from.
+  BAL=$(grep -o 'GInt([0-9]\+)' "$tmp" 2>/dev/null | tail -1 | grep -o '[0-9]\+')
+  BAL_BLK=$(grep -o 'block_number: [0-9]\+' "$tmp" 2>/dev/null | tail -1 | grep -o '[0-9]\+')
+  [[ -z "$BAL" ]] && BAL=unreadable
+  [[ -z "$BAL_BLK" ]] && BAL_BLK=?
+}
+
 sample() { echo "$(date -u +%H:%M:%S) h=$(height 40403) fin=$(finalised) pos=[$(pos_read)]" | tee -a "$OUT/series.txt"; }
 deploy_as() {
   timeout 45 docker exec "$1" rnode --grpc-host localhost deploy --phlo-limit 1000000 --phlo-price 1 \
@@ -122,16 +160,29 @@ echo "== fund validator-2 (genesis funds only the deployer), then withdraw signe
 f=$(deploy_as devnet-bootstrap "$GENESIS_PRIV" leave-fund.rho)
 sleep 15; echo "  fund: $(deploy_status "$f")" | tee -a "$OUT/witness.txt"
 w=$(deploy_as devnet-bootstrap "$K2_PRIV" pos-withdraw.rho)
-sleep 15; st=$(deploy_status "$w"); echo "  withdraw deploy: $st" | tee -a "$OUT/witness.txt"
+# **Poll for the staging at once, and do not sleep first.** `pending_withdrawers` holds the request only
+# to the next epoch boundary — one block's width at `--epoch-length 10` — so the 15 s sleep the earlier
+# versions took before their first look is longer than the window they were looking for. The first
+# re-run caught it by luck; the second missed it and reported the L1 NOTE instead.
+staged=""; t_end=$(( $(date +%s) + 60 ))
+while (( $(date +%s) < t_end )); do
+  staged=$(pending); [[ -n "$staged" ]] && break
+  sleep 1
+done
+sleep 5; st=$(deploy_status "$w"); echo "  withdraw deploy: $st" | tee -a "$OUT/witness.txt"
+# **The baseline, and the control, in one read.** It is taken *after* the withdraw deploy, so the
+# withdraw's own phlo is already out of the balance and the payout is the only credit still to come — the
+# old rig read *before* the fund, so `before -> after` would have moved by the whole 100,000,000 and a
+# `>` comparison could not have told the fund from the payout. It also has to read close to the funded
+# figure: a small number here means the **instrument** failed, not that the chain withheld a payment.
+balance leave-balance leave-balance.rho
+b_pre=$BAL; blk_pre=$BAL_BLK
+echo "  balance after the withdraw deploy, before the payout: $b_pre (block $blk_pre)" | tee -a "$OUT/witness.txt"
 docker exec devnet-bootstrap rnode --grpc-host localhost eval /contracts/pos-withdraw.rho >/dev/null 2>&1 || true
 docker logs devnet-bootstrap 2>&1 | grep -E '^\[pos\] ' > "$OUT/pos-lines.txt" || true
 
-# L1 — staged, with a deadline. The arithmetic is read off the API, which settles CH-U6-09.
-staged=""; t_end=$(( $(date +%s) + 90 ))
-while (( $(date +%s) < t_end )); do
-  staged=$(pending); [[ -n "$staged" ]] && break
-  sleep 3
-done
+# L1 — staged, with a deadline. The arithmetic is read off the API, which settles CH-U6-09. The reading
+# was taken above, at the deploy; this block only reports it.
 if [[ -n "$staged" ]]; then
   echo "  L1 PASS: the withdrawal staged — deadline=${staged%% *} blocks_remaining=${staged##* }" | tee -a "$OUT/witness.txt"
   echo "    (CH-U6-09: the read path's own deadline and blocks_remaining ARE the recorded arithmetic; the" \
@@ -141,17 +192,27 @@ else
   echo "  L1 NOTE: no pending entry at first sight (already cleared, or never staged) — pos=[$(pos_read)]" | tee -a "$OUT/witness.txt"
 fi
 
-# L2/L3 — the active set shrank (the leave), and the pending entry cleared (the payout's precondition).
+# L2/L3 — the active set shrank (the leave), the pending entry cleared, and the head is past the
+# deadline (the payout's precondition, which is NOT the same thing).
 echo "== driving past the deadline"
-targets=(devnet-bootstrap devnet-validator-1 devnet-validator-2); i=0; left=""; cleared=""
+deadline=${staged%% *}; [[ "$deadline" =~ ^[0-9]+$ ]] || deadline=""
+targets=(devnet-bootstrap devnet-validator-1 devnet-validator-2); i=0; left=""; cleared=""; passed=""
 t_end=$(( $(date +%s) + LEAVE_BUDGET_S ))
 while (( $(date +%s) < t_end )); do
   [[ "$(active)" == "2" ]] && left=1
   [[ -n "$staged" && -z "$(pending)" ]] && cleared=1
-  [[ -n "$left" && -n "$cleared" ]] && break
+  local_h=$(height 40403)
+  [[ -n "$deadline" && -n "$local_h" ]] && (( local_h > deadline )) && passed=1
+  # **The loop must run past the DEADLINE, not merely past the staging.** `pending` clears at the epoch
+  # boundary — `close_block` moves the request into `withdrawers`, ~10 blocks after the stage and ~20
+  # before the payout — so a loop keyed on "the pending entry cleared" stops two epochs early and reads
+  # the vault before anything has been credited to it. That is the fourth way this rig had been wrong
+  # about its own timing.
+  [[ -n "$left" && -n "$passed" ]] && break
   deploy_as "${targets[i % 3]}" "$GENESIS_PRIV" hello.rho >/dev/null; i=$((i + 1))
   sleep "$DEPLOY_EVERY_S"; sample
 done
+[[ -n "$left" || "$(active)" == "2" ]] && echo "  drove to height $(height 40403); deadline=${deadline:-unknown}, past-deadline=${passed:-no}" >> "$OUT/witness.txt"
 [[ -n "$left" || "$(active)" == "2" ]] && echo "  L2 PASS: the leaving validator is out of the active set (3 -> 2)" | tee -a "$OUT/witness.txt" \
   || echo "  L2 FAIL: the active set is still $(active) — the leave did not take effect" | tee -a "$OUT/witness.txt"
 if [[ -n "$cleared" || -z "$(pending)" ]]; then
@@ -160,6 +221,26 @@ else
   echo "  L3 FAIL: the pending withdrawal never cleared within ${LEAVE_BUDGET_S}s" | tee -a "$OUT/witness.txt"
 fi
 after=$(pos_read); echo "  after: $after" >> "$OUT/witness.txt"
+balance leave-balance-after leave-balance-after.rho
+b_post=$BAL; blk_post=$BAL_BLK
+echo "  balance after the deadline: $b_post (block $blk_post)" >> "$OUT/witness.txt"
+# **The witness A2.5 names.** `close_block`'s step 3 pays `bond + committed_reward` into
+# `vault_address(validator)` and removes the escrow entry, and validator 2 makes no deploy of its own
+# after the withdraw — so between the two reads the only thing that can move its vault is the payout.
+# Both reads are signed by the genesis deployer, whose phlo is charged to its own vault, so the delta is
+# the payout and not a fee (`leave-balance.rho`'s caveat was about the reader's own fees; here they are
+# somebody else's).
+if [[ "$b_pre" =~ ^[0-9]+$ && "$b_post" =~ ^[0-9]+$ ]]; then
+  if (( b_post > b_pre )); then
+    echo "  L4 PASS: the stake was paid out — vault $b_pre -> $b_post (+$(( b_post - b_pre )), blocks $blk_pre -> $blk_post)" | tee -a "$OUT/witness.txt"
+  elif (( b_pre < 1000 )); then
+    echo "  L4 INSTRUMENT ERROR: the baseline read $b_pre from an account funded 100,000,000 — the probe is what failed, not the payout (after=$b_post)" | tee -a "$OUT/witness.txt"
+  else
+    echo "  L4 FAIL: no payout observed — vault $b_pre -> $b_post (blocks $blk_pre -> $blk_post)" | tee -a "$OUT/witness.txt"
+  fi
+else
+  echo "  L4 INSTRUMENT ERROR: the vault could not be read (before=$b_pre after=$b_post) — not a verdict" | tee -a "$OUT/witness.txt"
+fi
 echo "== quiet read (${READ_S}s)"; h0=$(height 40403); sleep "$READ_S"; h1=$(height 40403); sample
 echo "  height $h0 -> $h1 over ${READ_S}s" | tee -a "$OUT/witness.txt"
 

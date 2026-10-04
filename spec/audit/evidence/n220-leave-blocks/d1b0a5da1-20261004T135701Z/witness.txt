@@ -1,0 +1,11 @@
+  deadline= blocks_remaining= active=3 pending=0
+  fund: ok 5
+  withdraw deploy: ok 9
+  balance after the withdraw deploy, before the payout: 99998098 (block 17)
+  L1 NOTE: no pending entry at first sight (already cleared, or never staged) — pos=[deadline= blocks_remaining= active=2 pending=0]
+  L2 PASS: the leaving validator is out of the active set (3 -> 2)
+  L3 PASS: no pending withdrawal remains once its deadline passed
+  after: deadline= blocks_remaining= active=2 pending=0
+  balance after the deadline: unreadable (block ?)
+  L4 INSTRUMENT ERROR: the vault could not be read (before=99998098 after=unreadable) — not a verdict
+  height 160 -> 164 over 60s

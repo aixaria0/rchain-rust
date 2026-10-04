@@ -1,0 +1,26 @@
+// Read validator 2's REV balance **after** its quarantine payout — the same read as
+// `examples/leave-balance.rho`, on a **different channel**.
+//
+// **Why a second file for one different string.** `listen-data-at-name` returns whatever is already at
+// the name, and only waits if there is nothing there. It is *not* a subscribe-to-changes read, which is
+// what the leave rig's first attempt assumed. So a name reused across two reads hands the second read the
+// **first read's datum** — the 2026-10-04 run reported `0 -> 0` for an account that had been funded
+// 100,000,000, and the stale datum is identifiable in the probe's own output: its `block_number` was 5,
+// three blocks before the fund and nine before the withdraw. A distinct channel per read is what makes
+// the read a read.
+//
+// The before-half of the pair is `leave-balance.rho`; the rig takes it after the `withdraw` deploy, so
+// the difference between the two reads is the payout and nothing else: validator 2 makes no deploy of
+// its own after the withdraw, the payout is the only credit its vault can receive, and both reads are
+// signed by the **genesis** deployer, whose phlo never touches the balance being read.
+//
+//   tools/devnet.sh deploy leave-balance-after.rho && tools/devnet.sh query leave-balance-after
+new revAddr(`rho:rev:address`), vault(`rho:rchain:revVault`), ret1, ret2 in {
+  revAddr!("fromPublicKey", "04d8b6c325ae12e89823866b2a292a62d7acee520954761890a1621fef79dca1c8e8df79dd8519480e5c015ae6cf3ba7de8669e260561616a36eb9c308b5983ab0".hexToBytes(), *ret1) |
+  for (@addr <- ret1) {
+    vault!("getBalance", addr, *ret2) |
+    for (@bal <- ret2) {
+      @"leave-balance-after"!(bal)
+    }
+  }
+}
