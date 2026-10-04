@@ -40,7 +40,7 @@ issues — and so had **no owner, no measurement and no falsifier**.
 | Criterion | Verdict | Basis |
 |---|---|---|
 | 1 — bounded production | ✅ **on A1.1, ❌ on A1.5** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual survives, and it is **intermittent across the three runs of its rig** — arms leaving their sixth deploy short: **2 of 3** on `07af032ad`, **0 of 3** on jimscarver's `f1ca009`, **1 of 3** on this pass's `513e2192b`. Recorded in §3.1 and on #213 |
-| 2 — join and leave | **4 of 5 pass; A2.2 fails on a live net** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 is the one failure**, and it is a live-net one: a rig pass is not what that row claims |
+| 2 — join and leave | **5 of 5 pass; A2.2 on the live testnet** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 passes on the live testnet** at `777953de6`: after a plain `start` the rejoiner is level with the tip within 15 s, proposes when deployed to, and its blocks finalise ([#223](https://github.com/rchain-community/rchain-rust/issues/223)) |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
 > **Handover, 2026-10-04.** The maintainer has taken the decision: **the testnet goes up as it stands**, and
@@ -1917,15 +1917,15 @@ before/after pair and §3.5 for the cause.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
-> **§3.2 — 4 ✅ · 0 ❌ · 1 ⬜.** A2.1, A2.3, A2.4 and now **A2.5** pass. **A2.2 is the one ⬜** — it passed
-> on a *rig* and fails on the **live net**
+> **§3.2 — 5 ✅ · 0 ❌ · 0 ⬜.** A2.1, A2.3, A2.4 and A2.5 pass, and **A2.2 passes on the live testnet**:
+> the rejoin failure found at `49337ee92` was fixed in `7d5c22a9c` and re-run on the testnet at `777953de6`
 > ([#223](https://github.com/rchain-community/rchain-rust/issues/223)); see the note below. A2.5's ✅ is a
 > **rig** result too, and the page keeps that distinction rather than blurring it: see its note.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
 | A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50, and **the 50-stake validator is the one killed** — killing a 100-stake validator leaves 150 of 250 = 60 %, which is not `> ⅔`, so finality stopping there is the quorum and not a defect; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | the deploy's own block found by the union, plus `last-finalized-block` and `is-finalized` | **the block carrying a deploy submitted after the kill finalises** — block 14 at a tip of 13, finality 14 | ✅ **pass** | — |
-| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `—` — **no live-net run satisfies this**; the rig run that did is in `n213-blocks/07af032ad-…/` and is not what the row claims | — | as A2.1 | a deploy after the restart finalises, `start` being the only action | ⬜ **untested on a live net — [#223](https://github.com/rchain-community/rchain-rust/issues/223)** | — |
+| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | live testnet, 2026-10-04 — transcript in [#223](https://github.com/rchain-community/rchain-rust/issues/223#issuecomment-5980123339) | `777953de6` (fix `7d5c22a9c`) | `last-finalized-block` per node, the rejoiner's own `proposed and added block` lines, and its `missing justification` count | killed at h=45 (f=41); survivors reached **h=79, f=75**; after a plain `start` the rejoiner was **level with the tip within 15 s**, then **proposed blocks #92–#94** when deployed to, with finality trailing at 4 and **zero `missing justification`** errors | ✅ **pass on a live net** | C211 |
 | A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | the deploy sent while `validator-2` was stopped is **included and its block finalises** (block 14) | ✅ **pass** | — |
 | A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator is admitted, funded with `trust`, then `bond`s against the live net | `spec/audit/evidence/n220-join-results.md` | `9a75d45` (author's run; **read, not re-run** by this pass) | `rho:pos` bond state + the newcomer's producer key + the deploy's `is-finalized` | the bond lands in a boundary block, the newcomer produces, and its deploy's block finalises | ✅ **pass** (healthy joiner — see the caveat below) | CH-ACC-06 |
 | A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | 3 validators 100/100/50, `--epoch-length 10 --quarantine-length 20` | `spec/audit/evidence/n220-leave-results.md` | `a077a87e4` | the active set (`/api/v1/pos` `activeValidators`) **and the withdrawing validator's vault**, each read with the block its datum was produced in, and each probe recording its own deploy's status | the withdrawal stages (`deadline=30 blocks_remaining=20`), the boundary deactivates it (**active 3 → 2**), the entry clears, and **the payout lands: vault `99998098` → `99998964`, +866, blocks 13 → 34** | ✅ **pass** (a rig run — see the note) | CH-U6-09 |
@@ -1967,7 +1967,7 @@ which is what Law 52b's clauses are about. **A silent bonded validator is not by
 *rig* result — one host, complete mesh, one silent validator of four — so it does not speak to a live net,
 which is #223's question and is measured there. See `n220-silent-join-results.md`.
 
-> **A2.2 is ⬜, not ✅ — the page's own lesson turned on itself.** Its earlier ✅ came from a **rig** run
+> **A2.2 was ⬜, not ✅ — the page's own lesson turned on itself.** Its earlier ✅ came from a **rig** run
 > (`n213-run.sh` case (b): `stop`, `start`, a deploy finalises). Jim then ran the checklist on the **live
 > testnet** at tree `49337ee92` and the rejoiner does not rejoin: the restarted node meshes and retrieves
 > blocks (246 retrieval lines) but is capped at the height it died at — `h=35` while the survivors reached
@@ -1977,6 +1977,21 @@ which is #223's question and is measured there. See `n220-silent-join-results.md
 > [#223](https://github.com/rchain-community/rchain-rust/issues/223); the chain-level consequences are
 > nil — a rejoin **liveness** failure, not a safety one. **A2.4's ✅ is a rig result too** and the live run
 > did not reach it; that is recorded as provenance, not as a doubt, because nothing has falsified it.
+>
+> **It has since been fixed and re-run on the same live testnet**, which is why the row is ✅ and the ⬜
+> above is history rather than status. On the testnet at `777953de6` (three validators 100/100/50,
+> `--no-autopropose`) the 50 was killed at h=45, the survivors went on to h=79 and f=75, and after a plain
+> `start` the returner was **level with the tip within 15 s**, where the unfixed build had stayed 13 blocks
+> behind indefinitely; it then **proposed blocks #92–#94** when deploys were addressed to it, finality
+> trailing at 4, with **zero `missing justification`** errors
+> ([transcript](https://github.com/rchain-community/rchain-rust/issues/223#issuecomment-5980123339)). The
+> testnet was then rebuilt as four equal validators of 250, and stopping **A** (the genesis master) there
+> left the other three finalising (f 65 → 90 while the height ran 69 → 94); A rejoined to the tip in under
+> 20 s (`docs/src/node/testnet.md`). The distinction this note draws still holds: the ✅ is a live-net ✅,
+> and the rig's ✅ was never the evidence for it.
+>
+> **This ✅ was first recorded in `4c51d2c` and lost in a later merge of `dev` (`4f2d996`)**, which is why
+> the page read ⬜ after the live run had passed.
 
 **What moved after this page was written, in order.** `#215` (2026-10-03 14:14) gave the round gate a
 wall-clock escape — *"needs a clock, not just a supply of attempts"* — but that was on a tree this page's
