@@ -1,0 +1,9 @@
+arm	n213
+t0	1791128200
+baseline_block	1
+kill	1791128263
+absent_deploy_block	6
+restart	1791128315
+post_restart_block	25
+end	1791128339
+budget_s	900

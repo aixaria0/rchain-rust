@@ -71,3 +71,38 @@ clock. The attestation guard still has none.
 One attempt per arm, one tree, one host, N=3. R2 finalises to height 3 and is read over a 90 s window —
 enough to show the gate advancing, not enough to characterise its steady state. A1.2 (N=5) and A1.3 (N=8)
 are untouched. Nothing here measures safety (TE-2).
+
+---
+
+# Re-run, 2026-10-04 (tree `513e2192b`, Rust identical to `dev`) — A1.5's residual survives, narrower
+
+Artefacts `n214-rotation-blocks/513e2192b-20261004T154216Z/`, image `f18c0071…`. Six deploys twelve
+seconds apart per arm, `--no-autopropose --propose-on-deploy`, `--epoch-length 10`.
+
+**This is A1.5's instrument, and its row cited the wrong rig for it.** A1.5 cites
+`n213-blocks/07af032ad-…`, which carries `R1|R2|R3` — the six-deploy shape the **old** `n213-run.sh` had.
+The current `n213-run.sh` is the kill/restart rig (cases a/c/d), so the cite names a file that no longer
+has a rig producing its shape, and `n214-rotation-run.sh` is where that shape lives now. The per-deploy
+reading below is recomputed from `blocks.tsv` + `series.tsv` + `marks.tsv` with the rule the earlier
+reading used: *a deploy's block is the first block first seen at or after the deploy instant with
+`deploy_count ≥ 1`*.
+
+| arm | last deploy's block | finality reached | verdict |
+|---|---|---|---|
+| **R1** (all to bootstrap) | 31 | **32** | all six finalised |
+| **R2** (rotating) | 29 | **31** | all six finalised |
+| **R3** (all to validator-1) | 19 | **17** | **the sixth is included and never finalised** |
+
+**A1.5 still fails — in one arm of three, where the cited run had two (R2 and R3).** C214 moved it and did
+not close it: the residual is the last deploy's block riding a chain whose finality has plateaued.
+
+**R3's plateau is not a truncated read.** Its finality reads `17` with the chain at height `22` for the
+last forty-odd samples, and the sampler's window runs past the arm's `end` mark by a margin — nothing was
+still climbing when the window closed. The gate's own reason lines name partitions of `100 of 250` and
+`50 of 250`: **the round did not close**, which is the shape the A1.5 row describes.
+
+## Limits
+
+One attempt per arm, one tree, one host, N=3 — the same limits the earlier sections carry. A single arm
+differing between two runs is one sample, not a rate: what the two runs together say is that the residual
+is real and its *frequency* moved from two arms to one.

@@ -199,3 +199,31 @@ check is the stronger one and is not consistently satisfied. It is a question, n
 
 One tree, one host, one attempt per arm; N=3 only. The restart came 18 s after the kill, so "a long
 absence" is still unrun. The silent joiner is still unrun. Nothing here measures safety (TE-2).
+
+---
+
+# Re-run, 2026-10-04 (tree `a76648ca1`) — the kill/restart cases pass on the current tree
+
+Artefacts `n213-blocks/a76648ca1-20261004T153629Z/`, image `f18c0071…`, node binary recorded in the
+manifest. **The rig as it stands measures cases (a)/(c)/(d) — the kill/restart shapes — and not the
+six-deploy arms the sections above describe**; that shape moved to `n214-rotation-run.sh`. Recorded
+because a results file that describes a rig it no longer matches is the drift this audit keeps finding.
+
+| case | reading |
+|---|---|
+| (a) the survivors finalise past the kill | the deploy accepted **while `v2` was stopped** is included in block 6 and **finalised** (finality 11) |
+| (b) the restart needs no operator action beyond `start` | the post-restart deploy is included in block 25 and **finalised** (finality 26, `is-finalized=true`) |
+| (d) the whole sequence inside the budget | PASS, well inside the 900 s budget |
+
+That is A2.1 and A2.3 re-confirmed on a tree carrying every fix since — the same two readings the page
+records from `07af032ad`, one tree later.
+
+## One instrument inconsistency, recorded rather than smoothed over
+
+The **baseline** deploy's line prints `PASS: block 1 finalised (finality 1; is-finalized=false)` — a
+`PASS` beside a second witness that disagrees with it. The verdict rests on
+`await_finality_at_least(block_number)` (finality ≥ the deploy's block number), and `is-finalized` is
+printed as extra colour; on the two cases that matter — blocks 6 and 25 — the two agree
+(`is-finalized=true`), so nothing in the table above rests on the disagreement. But a line that prints
+two witnesses where one is false and calls it a pass is the shape this audit has been bitten by before,
+and it is named here rather than left for the next reader to notice.
