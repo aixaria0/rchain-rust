@@ -1,0 +1,11 @@
+10:49:55 h=5/5/5 fin=1 baseline
+10:49:56 h=5/5/ fin=1 stopped devnet-validator-2
+10:50:08 h=6/6/ fin=2 absent deploy 1
+10:50:20 h=14/14/ fin=9 absent deploy 2
+10:50:32 h=18/18/ fin=14 absent deploy 3
+10:50:44 h=24/24/ fin=20 absent deploy 4
+10:50:56 h=28/28/ fin=24 absent deploy 5
+10:51:09 h=34/34/ fin=30 absent deploy 6
+10:51:09 h=34/34/ fin=30 restarted devnet-validator-2 (survivors at 34)
+10:54:10 h=34/34/14 fin=30 catch-up
+10:56:11 h=34/34/15 fin=30 after the returner's deploy

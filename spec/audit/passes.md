@@ -7268,3 +7268,41 @@ as ⬜ citing this row.
 whether `4e0fb9c6…` arrived before or after `b31b0600…` was processed — which distinguishes "the fetch was
 late" from "the store lost it". Then either defer the summary check until the justifications are present
 (re-process on arrival), or fetch a block's justifications before requiring them.
+
+## 66. C211's cause, and the three defects behind it (C211–C215, #223)
+
+**Run.** `evidence/n223-rejoin-run.sh`: three validators at 100/100/50, no autopropose; stop the 50 for six
+deploys (the survivors reach 34), restart it, then send it a deploy. On `dev` the returner stayed at 14
+with two `block summary failed: missing justification` refusals — #223 reproduced exactly. Each fix below
+was found by the run after the previous one.
+
+- **C211 — the receiver released a block before its parents were validated** (§65's row; its hypothesis was
+  close, but nothing was fetched late: both parents were in the store). A block's dependency set
+  held only the parents missing from the *store*; a block whose parents were stored but not yet in the DAG
+  (every block a returning node receives in a burst) waited on nothing, was released when its first
+  parent finished, failed on the second, and stayed `PendingValidation`, where a re-delivery is refused.
+  The set is now the parents not yet in the DAG, read under the receiver's lock
+  (`end_stored_awaiting`). After: the returner caught up 14 → 34 in fifteen seconds.
+- **C213 — a catching-up node answered every block it replayed.** The attest tap fired on each replayed
+  block, so the returner proposed twenty blocks in two seconds, one per height it had missed, two of them
+  epoch boundaries carrying a second `CloseBlock`. The tap now ignores a block older than
+  `ROUND_STALL_ESCAPE` by its own timestamp (`attest_is_live`).
+- **C212 — late work below the fringe ended the licence.** Those catch-up boundary blocks were
+  deploy-bearing work twenty heights below the tip, so every survivor read the horizon as passed and
+  withheld the attestation that alone could finalise them. The work's age is now counted from the fringe
+  when the work lies below it (`work_age_floor`).
+- **C214 — the guard counted work as finalised against a fringe no block carried.** `pre_state.fringe` is
+  the fringe the block being built *would* publish; the guard then withheld that block, so the last
+  deploy was never published as finalised (deploy at 34, chain quiet at 37, fringe at 32). The guard now
+  reads the parents' fringe, which costs one round per deploy and publishes the covering fringe.
+- **C215 (todo) — nodes disagreed about a merged pre-state.** With C212 and not C213, the survivors built
+  on the returner's catch-up chain, and validator-1's blocks 41–43 and the bootstrap's 43–44 were refused
+  by their peers as `InvalidPreStateHash` — the same justifications, two merged states. C213 removes the
+  trigger here; the divergence itself is not explained.
+
+**After all four** ([`n223-rejoin-results.md`](evidence/n223-rejoin-results.md), `n223-rejoin-blocks/`): the returner reaches the tip, a deploy sent to it is in a
+finalised block, and no node refuses another's block.
+
+The kill, rotation and join arms rerun on the same image all finalise every deploy; the join rig's quiet
+read reported 40 → 45 because it opened four seconds before the last in-flight block, after which no node
+proposed for 86 s (the results file has the timestamps).

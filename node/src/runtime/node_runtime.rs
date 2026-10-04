@@ -1666,6 +1666,14 @@ async fn setup_shard_runtime(
             Some(Arc::new(move |block: &BlockMessage| {
                 let height = i64::from(block.block_number);
                 let sender = block.sender.as_bytes().to_vec();
+                // History being replayed is not a round to answer (#223) — see `ATTEST_MAX_BLOCK_AGE_MS`.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                if !attest_is_live(block.timestamp, now) {
+                    return;
+                }
                 {
                     let mut answered = answered.lock().unwrap_or_else(|p| p.into_inner());
                     let last_for_sender = answered.get(&sender).copied();
@@ -2836,6 +2844,26 @@ fn tap_validated_blocks(
 /// `docs/src/node/running-a-public-testnet.md`, "Attesting on every remote block is a block storm".
 ///
 /// [#70]: https://github.com/rchain-community/rchain-rust/issues/70
+/// **The oldest a remote block may be and still prompt an attestation**, by its own timestamp.
+///
+/// An attestation answers a live round: a peer's block that the network is waiting on this node to see.
+/// A block older than this is history this node is replaying — a validator that was down and is catching
+/// up validates every block it missed, and the tap answered each one (#223). Live, a validator killed for
+/// thirty heights came back and proposed twenty blocks in two seconds, one at every height it had missed,
+/// two of them at epoch boundaries carrying a second `CloseBlock` for an epoch already closed; the
+/// survivors then disagreed about the merged pre-state of the blocks built on them. On a live net a block
+/// reaches its peers in well under a second, and the round gate's own stall bound is
+/// `ROUND_STALL_ESCAPE`, so a block older than that is not part of any round still open. Only the tap is
+/// gated: a deploy and the not-due retry still propose, so a catching-up node that is handed work does it.
+const ATTEST_MAX_BLOCK_AGE_MS: i64 =
+    rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as i64;
+
+/// Whether a remote block with timestamp `block_ms` is still a live round at `now_ms`. A block stamped in
+/// the future (the proposer's clock ahead of ours) is live: skew must not silence a validator.
+fn attest_is_live(block_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(block_ms) <= ATTEST_MAX_BLOCK_AGE_MS
+}
+
 fn attest_warranted(
     me: &[u8],
     sender: &[u8],
@@ -3089,7 +3117,26 @@ mod proposer_health_metric_tests {
 
 #[cfg(test)]
 mod attest_warranted_tests {
-    use super::attest_warranted;
+    use super::{attest_is_live, attest_warranted, ATTEST_MAX_BLOCK_AGE_MS};
+
+    /// **A replayed block is not answered (#223)**: one older than the round's stall bound is history a
+    /// returning validator is catching up on, and answering it put a block at every height it had missed.
+    #[test]
+    fn a_block_older_than_the_round_is_not_answered() {
+        let now = 1_000_000_000;
+        assert!(attest_is_live(now, now));
+        assert!(attest_is_live(now - ATTEST_MAX_BLOCK_AGE_MS, now));
+        assert!(!attest_is_live(now - ATTEST_MAX_BLOCK_AGE_MS - 1, now));
+        assert!(
+            !attest_is_live(now - 60_000, now),
+            "a minute-old block is history"
+        );
+        assert!(
+            attest_is_live(now + 5_000, now),
+            "a peer's clock ahead of ours must not silence us"
+        );
+    }
+
     use std::collections::BTreeMap;
 
     #[test]
