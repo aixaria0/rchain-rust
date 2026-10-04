@@ -29,11 +29,11 @@ hosts, the genesis, the wallets, and the incident record.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard `/root`, genesis `9f09e7a0…81dc` |
-| Validators | genesis signed for **one** — A (`0410b8c5…`, stake **1000**). B (`04675f16…`) runs as a plain **observer**: it carried a 100 bond on the 2026-09-27 chain and withdrew from it, and the 2026-09-29 rebuild gave it no bond at all, so the pool and the active set are A alone. **No validator is to be added — see below.** |
+| Chain | `testnet` network id, shard `/root`, genesis `4a8ebcc8…3663` (rebuilt 2026-10-04) |
+| Validators | genesis signed for **one** — A (`0410b8c5…`, stake **1000**). B (`04675f16…`) runs as a plain **observer**: it carried a 100 bond on the 2026-09-27 chain and withdrew from it, and the 2026-09-29 rebuild gave it no bond at all, so the pool and the active set are A alone. **B is currently stopped**; only A runs. **No validator is to be added — see below.** |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `f36312a55`, static musl, `sha256:3cd2b4152f5a…`, on both hosts |
+| Binary | rchain-rust `dev` @ `777953de6`, static musl, `sha256:7dfe79dcdd20…`, on both hosts — this build carries the #223 rejoin fix (`7d5c22a9c`) |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
