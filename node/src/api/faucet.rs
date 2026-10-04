@@ -14,9 +14,9 @@ use rchain_crypto::signatures::signed::Signed;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
 use rchain_rholang::util::rev_address::RevAddress;
 
-/// One faucet drip, in the smallest REV unit ("drops"). `10 REV = 1_000_000_000` drops
+/// One faucet drip, in the smallest REV unit ("drops"). `0.3 REV = 30_000_000` drops
 /// (1 REV = 10^8 drops).
-pub const FAUCET_AMOUNT: i64 = 1_000_000_000;
+pub const FAUCET_AMOUNT: i64 = 30_000_000;
 
 /// Phlo budget for a faucet transfer deploy (matches the devnet `deploy` helper).
 const FAUCET_PHLO_LIMIT: i64 = 1_000_000;

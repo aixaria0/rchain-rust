@@ -59,10 +59,9 @@ fn invalid_deploy_id() -> BlockApiException {
     BlockApiException("Deploy id is not valid base16 format.".to_string())
 }
 
-/// Maximum faucet drips any single address may receive (10 REV each) — **one**, so an address is funded
-/// once per process. Bounds the dev-wallet drain
+/// Maximum faucet drips any single address may receive (0.3 REV each). Bounds the dev-wallet drain
 /// a single caller can cause before other developers are starved.
-const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 1;
+const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 10;
 
 #[cfg(test)]
 mod tests {
