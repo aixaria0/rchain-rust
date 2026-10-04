@@ -29,11 +29,11 @@ hosts, the genesis, the wallets, and the incident record.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard `/root`, genesis `9f09e7a0…81dc` |
-| Validators | genesis signed for **one** — A (`0410b8c5…`, stake **1000**). B (`04675f16…`) runs as a plain **observer**: it carried a 100 bond on the 2026-09-27 chain and withdrew from it, and the 2026-09-29 rebuild gave it no bond at all, so the pool and the active set are A alone. **No validator is to be added — see below.** |
+| Chain | `testnet` network id, shard `/root`, genesis `713c0ebb…ea91` (four equal validators, rebuilt 2026-10-04) |
+| Validators | **four, at equal stake — 250 each, pool 1000** (A `0410b8c5…`, B `04d7707c…`, C `04dce59b…`, D `041ed2a2…`). Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `f36312a55`, static musl, `sha256:3cd2b4152f5a…`, on both hosts |
+| Binary | rchain-rust `dev` @ `777953de6`, static musl, `sha256:7dfe79dcdd20…`, on both hosts — this build carries the #223 rejoin fix (`7d5c22a9c`) |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
@@ -42,9 +42,15 @@ so it can be recomputed from the release; the bare ones are block hashes and add
 prints them. (Before the September 2026 audit the binary's digest was written unlabelled, which made it
 indistinguishable from a commit and unverifiable either way.)
 
-A's stake is 1000 against B's 100 on purpose: with no `--autopropose`, A is the only proposer, so A
-must hold **more than ⅔ of the whole bond pool** (including any stake sitting in withdrawal
-quarantine) or no block is ever finalised. That is what keeps A able to finalise after observers bond.
+A's stake is 1000 against B's 100 on purpose: the quorum is measured against the **whole bond pool**
+(including any stake sitting in withdrawal quarantine), so A must hold **more than ⅔ of it** to be able
+to close the fringe on its own. That is what keeps A able to finalise after observers bond.
+
+**There is no single-proposer mode, and this page no longer claims one.** With
+`--propose-on-deploy --attest-on-new-blocks` on each node, any bonded validator that receives a deploy
+proposes, and a deploy addressed to **any one** of them finalises. That this net *looks* single-proposer
+is the public endpoint's routing, and it has a cost if A dies — see
+[Routing, and what it costs if A dies](#routing-and-what-it-costs-if-a-dies).
 
 ## Connect
 
@@ -199,24 +205,40 @@ The deploy-anchor fix (K1) reached `dev` as
 ## Topology
 
 ```
-testnet.rhobot.net ──► node A 164.90.140.144 (10.108.0.3)   genesis master, stake 1000
+testnet.rhobot.net ──► node A 164.90.140.144 (10.108.0.3)   genesis master, stake 250  (ports 40400-40405)
                         └─ nginx + Let's Encrypt (cert to 2026-12-20), /health from a timer
                         └─ rnode: -s --dev-mode --propose-on-deploy --attest-on-new-blocks
-                       node B 104.131.176.164 (10.108.0.4)   joining node; bonded at genesis, withdrawn
-                        └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks
-                           --bootstrap A  (no -s)             at the first boundary (2026-09-27)
+                       node D 164.90.140.144 (10.108.0.3)   validator, stake 250      (ports 41400-41405)
+                        └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks --bootstrap A
+                       node B 104.131.176.164 (10.108.0.4)  validator, stake 250      (ports 40400-40405)
+                        └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks --bootstrap A
+                       node C 104.131.176.164 (10.108.0.4)  validator, stake 250      (ports 41400-41405)
+                        └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks --bootstrap A
 ```
 
-Both live in the `default-nyc3` VPC, the same one as rhobot-2, so they can also talk over
-private addresses (`10.108.0.0/20`).
+Both hosts live in the `default-nyc3` VPC, the same one as rhobot-2, so they can also talk over private
+addresses (`10.108.0.0/20`). B and C share a host and are told apart by their port families.
 
-**Why 1000/100, and why no `--autopropose`.** Both were learned by breaking it:
+**Why four equal stakes, a cap of 250, and no `--autopropose`.** The split and the cap were both
+learned by breaking it; the host lesson is the third item.
 
-1. **Finality needs >⅔ of the whole pool, and A is the only proposer.** At 300/100 the chain
-   finalised fine — right up until an observer bonded 100, which took A to 60% and stopped finality
-   dead. `withdraw` is not an immediate escape either: the stake is escrowed until the quarantine
-   deadline, so it goes on diluting the pool. 1000 tolerates about four joiners at stake 100.
-2. **The previous chain outgrew the host.** It ran `--autopropose` plus an injected dummy deploy,
+1. **Finality needs >⅔ of the whole pool, and the shape is chosen for what it can lose.** The quorum
+   denominator is the **whole bonded pool**, with no inactivity leak and no eviction, so an absent
+   validator's stake goes on counting. At **four equal stakes of 250**, each validator is 25 % and the
+   remaining three are 75 %, so **any single validator can stop and the chain keeps finalising**. That is
+   the property no three-validator split can have: three stakes each below ⅓ cannot sum to the whole, and
+   three equal stakes fail *exactly* on the boundary, since ⅔ is not `> ⅔`. Measured on this net
+   2026-10-04 by stopping **A** — the genesis master and the node the public endpoint routes to — and then
+   addressing deploys to D, B and C: finality ran **65 → 90** while the height ran **69 → 94**, all three
+   survivors in lockstep, and A rejoined to the tip in **under 20 s** when started again.
+2. **`--bond-maximum 250` keeps that property as the pool grows.** It is a **genesis parameter**, so the
+   chain refuses a joining bond above it; the active set is bounded at 4. A fifth validator at the cap
+   takes the pool to 1250 with everyone at 20 %, which still tolerates any single loss. An earlier shape on
+   this net (a single 800 core plus two 100 joiners) tolerated the loss of both joiners but made the core's
+   own loss **fatal**; four equal stakes remove that asymmetry, because no single key is worth more than a
+   quarter. This is why the *key material* matters more than any one host: any validator can be rebuilt
+   from its key and a data directory, and none of them is irreplaceable on its own.
+3. **The previous chain outgrew the host.** It ran `--autopropose` plus an injected dummy deploy,
    about one block every 2.5 s. Start-up replay costs roughly **0.25 MB and ~0.2 s per existing block**
    before the API opens at all, so by ~1140 blocks every restart needed ~285 MB plus minutes of silence,
    on a 957 MB host that was also running nginx and do-agent: the kernel OOM-killed rnode, the next start
@@ -225,12 +247,58 @@ private addresses (`10.108.0.0/20`).
    only when deploys do, keeping restart cost proportional to real usage. Generalised sizing guidance is in
    [Running a validator: hardware requirements](validator-requirements.md).
 
+## Routing, and what it costs if A dies
+
+**Every bonded validator proposes; what looks like one proposer is routing.** Every node runs
+`--propose-on-deploy --attest-on-new-blocks`, so any validator that receives a deploy proposes — and
+since [#219](https://github.com/rchain-community/rchain-rust/pull/219) (C209, 2026-10-04) a deploy
+addressed to **any one** of them finalises: the acceptance run sent every deploy to a single validator,
+one arm per validator, and all three finalised. The public hostname proxies to node A's `40403`, so an
+HTTP-only client reaches A. The three **gRPC deploy ports are open, and each one is a valid way in**:
+
+| validator | stake | deploy endpoint |
+|---|---|---|
+| A | 250 | `164.90.140.144:40401` |
+| D | 250 | `164.90.140.144:41401` |
+| B | 250 | `104.131.176.164:40401` |
+| C | 250 | `104.131.176.164:41401` |
+
+A client that addresses B or C directly gets that validator's proposal, and its block finalises the same
+way. Spreading deploys across the three is a supported configuration, not a workaround.
+
+**If A stops, the endpoint stops — the chain does not.** A is a quarter of the pool like the other
+three, so its absence costs the chain nothing in finality: measured by stopping A and addressing deploys to
+D, B and C, which kept finalising (f 65 → 90). What A's absence *does* cost is the public hostname, which
+proxies to A, so an HTTP-only client cannot submit until A is back. That is precisely why the table above
+lists all four deploy endpoints: admission should not depend on one node's availability, and finality no
+longer does.
+
+The routing point stands on its own merits: publish every validator's deploy port (the table above) or
+round-robin the endpoint across them, keeping `--propose-on-deploy` on each. Then a client's *admission*
+does not depend on one node's availability, whatever the pool's arithmetic does about finality.
+
+## Recovery
+
+What the shape tolerates, and what the operator does about it. The first row is **measured on this net**;
+the others are arithmetic on the same numbers, and are labelled as such.
+
+| what failed | what happens | action |
+|---|---|---|
+| **any one** validator | **nothing** — the survivors hold 750 of 1000 = 75 % and keep finalising. Measured by stopping A: deploys went to the other three and finality advanced, then A rejoined to the tip in under 20 s | `systemctl start rnode` (or `rnode-d`, `rnode-c`) on the host that holds it. A returning validator is level with the tip in seconds; that rejoin path was broken until [#223](https://github.com/rchain-community/rchain-rust/issues/223) |
+| **two** validators (50 %) | *arithmetic, not yet run:* 500 of 1000 is not `> ⅔`, so the fringe cannot advance however many blocks are produced | **one** of the two coming back restores 75 % and the chain finalises again. Nothing is lost while they are away: the state is on disk, and the pool still counts their stake |
+| **all four** | production stops; every node's state sits unchanged on disk | stop and start all four: each replays its own store and the chain resumes with no loss (this exact restart was measured on the previous shape on 2026-10-04: h 59 → 78, finality 53 → 72 after all nodes were restarted) |
+| a validator's **key or host** permanently | as above, while its stake still sits in the pool | restore that validator's `validator.key` and data directory, or its host from the provider's backup. Because no stake exceeds a quarter, **no single loss is fatal** — but two simultaneous permanent losses are, since 50 % can never reach a quorum |
+
+What this shape gives up is nothing structural: with no stake above a quarter, the tolerance is
+symmetric — which is the property a validator set needs before the *join and leave* questions in
+[#214](https://github.com/rchain-community/rchain-rust/issues/214) can be answered on it at all.
+
 ## Genesis
 
 Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 
 ```
-/var/lib/rnode/genesis/bonds.txt    2 lines: <65-byte pubkey> <stake>  (A 1000, B 100)
+/var/lib/rnode/genesis/bonds.txt    4 lines: <65-byte pubkey> <stake>  (four validators at 250 each)
 /var/lib/rnode/genesis/wallets.txt  4 funded REV addresses (the dev keys)
 /etc/rnode/validator.key            that node's validator key (0600 rnode:rnode)
 /etc/rnode/deployer.env             DEPLOYER_PRIVATE_KEY=… (kept on disk, now unused: no injector)
@@ -418,8 +486,9 @@ live-testnet run found a third: a node that attributes one failure to a **bonded
 estranged from its chain permanently — the height maximum skips failed justifications and
 `neglected_invalid_block` refuses any block justifying a failed bonded sender
 ([#105](https://github.com/rchain-community/rchain-rust/issues/105), AUDIT C173, open). So the order is
-C173's decision, then this measurement again, and until then add nothing to a live net: use it as a
-single-proposer chain and read or deploy against A.
+C173's decision, then this measurement again, and until then add nothing to a live net: read or deploy
+against A, which is where the public endpoint routes — the node configuration is not single-proposer
+([Routing](#routing-and-what-it-costs-if-a-dies)).
 
 **A second, independent way for a live net to lose a validator:**
 [#105](https://github.com/rchain-community/rchain-rust/issues/105). On 2026-09-29 the two-bond shape was
@@ -683,10 +752,16 @@ running binary:
 | `rnode deploy` with no `--valid-after-block-number` | ✅ `processedWithSuccess` |
 
 **A caution learned the hard way.** Bonding a key that has no running node still counts against
-finality: when the newcomer bonded 100, A's share fell from 75% to 60% of the pool, and with no
-`--autopropose` A is the only proposer, so blocks kept arriving but nothing was finalised any more
-(`Finalized fringe is not available`). `withdraw` is not an instant escape either — the stake stays in
-the pool until the quarantine deadline. Hence A's 1000.
+finality: when the newcomer bonded 100, A's share fell from 75% to 60% of the pool. The quorum is
+measured against the **whole pool** and there is no inactivity leak, so that 40% is subtracted from
+what can be finalised even though nothing is producing with it — blocks kept arriving and nothing
+finalised (`Finalized fringe is not available`). A single validator at 60% cannot close the fringe, and
+it would not help for it to propose harder: 60% is 60%. `withdraw` is not an instant escape either — the
+stake stays in the pool until the quarantine deadline — hence A's 1000.
+
+**The operational rule that follows:** every bonded key needs a **running node with
+`--propose-on-deploy`**. A bonded key with no node does not merely fail to contribute; it dilutes the
+pool against everyone who is contributing, because the denominator it sits in is the whole pool.
 
 ## Known issues
 
