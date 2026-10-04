@@ -195,4 +195,40 @@ theorem the_licence_ends_at_the_horizon (h horizon : Nat) :
   · unfold inHorizon; exact decide_eq_true (by omega)
   · unfold inHorizon; exact decide_eq_false (by omega)
 
+/-! ## The live weight set — what the `liveness` corpus layer ties
+
+The window above is the model's half of one predicate; this is the predicate *applied*. The register's
+`liveness` layer (`Rchain/Corpus.lean`) carries tips, windows, bonds and latest-message maps, and the
+verdict is the set the filter returns — computed here and in
+`block_storage::dag::liveness::live_weight_set`, one implementation each, on the same numbers. -/
+
+/-- A `(sender, height)` list read as a map. **A sender that is absent has no message at all**, which is
+    not a height: it is the distinction the port's `is_some_and` exists to keep
+    (`block-storage/src/dag/liveness.rs:104`), and a default height would make silence read as liveness —
+    the case #70 measured and C174 named. -/
+def latestOf (latest : List (Sender × Nat)) (s : Sender) : Option Nat :=
+  (latest.find? (fun p => p.1 == s)).map (·.2)
+
+/-- **The live weight set**: the bonded senders whose latest message is within `w` of the tip, with their
+    stakes, in the order the bonds are given. The predicate is `currentOf`, so a silent bonded sender is
+    not in it — which is why a fully-participating view is the *whole* bonded set
+    (`participation_all_current`) rather than a set silence can never satisfy. -/
+def liveOf (bonds : Bonds) (latest : List (Sender × Nat)) (tip w : Nat) : List (Sender × Nat) :=
+  bonds.filter (fun p => currentOf (latestOf latest) tip w p.1)
+
+/-- The `Bool` the guard reads and the `StalenessBound` `Prop` are one test. -/
+theorem currentOf_iff (latest : Sender → Option Nat) (tip w : Nat) (s : Sender) :
+    currentOf latest tip w s = true ↔ ∃ h, latest s = some h ∧ h + w ≥ tip := by
+  unfold currentOf
+  cases hx : latest s with
+  | none => simp [hx]
+  | some h => simp [hx]
+
+/-- **The model's window and the port's are the same inequality.** `StalenessBound` is `h + w ≥ tip`;
+    `heights_behind(tip, h) ≤ window` is `tip - h ≤ w`. Over `Nat`, with the message at or below the tip,
+    those are one test — which is what makes the layer a *tie* rather than two opinions that happen to
+    agree on the cases somebody thought of. -/
+theorem window_iff_heights_behind (tip h w : Nat) (hh : h ≤ tip) : tip - h ≤ w ↔ h + w ≥ tip := by
+  omega
+
 end Rchain
