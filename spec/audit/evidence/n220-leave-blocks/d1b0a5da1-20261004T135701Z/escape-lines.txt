@@ -1,0 +1,1 @@
+devnet-validator-1 round gate escaped after 2 attempt(s) and 16002 ms blocked — the round is not closing (AUDIT #213).

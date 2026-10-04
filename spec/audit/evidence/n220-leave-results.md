@@ -1,78 +1,87 @@
-# n220-leave — A2.5, a validator leaves: **partially established**
+# n220-leave — A2.5, a validator leaves: **established on the rig**
 
-Rig: `n220-leave-run.sh`. Artefacts: `n220-leave-blocks/a34b79d45-20261004T112055Z/`.
-Tree `a34b79d45`, image `363c0588…`. Rig: three validators at 100/100/50, `--epoch-length 10`,
-`--no-autopropose --propose-on-deploy`, and **`--quarantine-length 20`** — a node flag `tools/devnet.sh`
-does not expose, so it goes through `DEVNET_EXTRA_FLAGS`; the default is 50000 blocks, far beyond any
-bounded run.
+Rig: `n220-leave-run.sh`. **Tree `a077a87e4`**, image `363c0588…`, artefacts
+`n220-leave-blocks/a077a87e4-20261004T141409Z/`. Three validators at 100/100/50,
+`--epoch-length 10 --quarantine-length 20 --no-autopropose --propose-on-deploy`. `--quarantine-length` is
+a node flag `tools/devnet.sh` does not expose, so it goes through `DEVNET_EXTRA_FLAGS`; the default is
+50,000 blocks, far beyond any bounded run.
 
-## What it establishes
+## The reading
 
-| | observation |
+| | |
 |---|---|
-| the withdraw **is processed** | the deploy returns `ok`, block 9 |
-| the validator **leaves the active set** | `activeValidators` 3 → **2**, and stays 2 for the rest of the run |
-| the chain stays healthy afterwards | height 164 → 164 over a 60 s quiet read, finality tracking |
+| **L1 — the withdrawal stages** | ✅ **`deadline=30 blocks_remaining=20`** |
+| **L2 — the boundary deactivates it** | ✅ active set 3 → 2 |
+| **L3 — the entry clears** | ✅ no pending withdrawal remains |
+| **L4 — the payout lands** | ✅ **vault `99998098` → `99998964`, +866, blocks 13 → 34** |
 
-So the *leave itself* works: a staker's `withdraw` is accepted, a boundary deactivates it, and the net
-does not wedge. That is more than nothing — it is the first live look at the path.
+**Why the delta is the payout and nothing else.** Between the two reads validator 2 makes no deploy of its
+own — every deploy in the window is signed by the **genesis** key, whose phlo is charged to its own vault —
+so the only thing that can credit the account being read is `close_block`'s step 3: `payable = claim.bond +
+committed_reward` paid into `vault_address(validator)`, with the escrow entry removed
+(`rholang/src/native_state.rs:close_block`). **+866 = the 50-unit bond + 816 of committed reward.**
 
-## What it does **not** establish, and why this is a ⬜ rather than a ✅
+Both reads are recorded with **the block their datum was produced in**, and both probes record **their own
+deploy's status** — `ok 13` and `ok 34`. So the comparison is between two readings the rig can *place in
+the chain*, not between two numbers it happens to hold. The baseline is block 13, the post-read is block
+34, and the deadline is 30: the payout block lies strictly between them.
 
-**The payout is not observed, and neither is the quarantine arithmetic.** A2.5's witness is *the payout
-transfers*, and the rig's observable for it was `/api/v1/pos`'s `pendingWithdrawals` entry — which was
-**absent in all 49 samples**, before and after. Two readings, and this run cannot choose between them:
+## CH-U6-09 is settled, and by the API's own numbers
 
-- the withdrawal took effect and its pending entry was **never exposed** by the read path — which would be
-  a read-path gap worth its own finding; or
-- the entry appeared and cleared **between two samples**, which a 12-second cadence makes unlikely but not
-  impossible.
+The challenge recorded that the worksheet's H-U6-05 **inverts** the quarantine arithmetic — *"the refund
+then waits `quarantine_length` more blocks past its deadline"*. The read path answers with its own fields:
+**`deadline=30`, `blocks_remaining=20`**, at a staging height of ~10 with `quarantine_length = 20` and
+`epoch_length = 10`. That is `quarantine_length + divisor·(1 + block_number/divisor)` = `20 + 10·(1+1)` —
+the recorded form, with the quarantine **inside** the deadline, and **not** the worksheet's. The
+challenge asked for the arithmetic to be *read*, and it has been. **It resolves against the worksheet.**
 
-What makes the first reading live rather than dismissed: the deactivation is *immediate* at the boundary
-while the quarantine is 20 blocks, so an entry should have been visible for roughly two samples had the
-read path carried it. It did not.
+## How it got here — three attempts, seven instrument faults, every one of them mine
 
-**CH-U6-09 is therefore not settled.** That challenge records that the worksheet's H-U6-05 inverts the
-quarantine arithmetic ("the refund waits `quarantine_length` more blocks past its deadline"), and the
-settling observable was the API's own `deadline` / `blocksRemaining`. Neither field was ever populated for
-this withdrawal, so the arithmetic is **unread**, not confirmed and not refuted. It stays open.
+This rig took four runs. **No failure was ever the chain's.** That is the pattern the whole acceptance
+pass keeps re-learning, and it is worth listing in full, because each fault is a way a probe can lie:
 
-## Three instrument defects, all mine, all recorded
-
-This rig took three runs, and **each failure was the instrument rather than the chain** — the pattern this
-whole pass keeps re-learning:
-
-1. **The withdraw deploy could not pay its phlo.** `preCharge: insufficient funds (0 < 1000000)` —
+**First pass — `a34b79d45`, artefacts `n220-leave-blocks/a34b79d45-20261004T112055Z/`.**
+1. **The withdraw deploy could not pay its phlo** — `preCharge: insufficient funds (0 < 1000000)`:
    `tools/devnet.sh`'s genesis funds **only the deployer**, so validators 1 and 2 have empty vaults. Fixed
-   the way the join rig fixes the same problem: fund first (`examples/leave-fund.rho`).
+   the way the join rig fixes the same thing: fund first (`examples/leave-fund.rho`).
 2. **`L1` passed on emptiness.** The detector used `[0-9]*`, which matches *zero* digits, so `deadline=`
    with nothing after it "matched" and the rig printed `L1 PASS` with two empty fields while no withdrawal
    existed. **A witness that passes on emptiness is not a witness.**
-3. **The read path's field is `pendingWithdrawals`** — plural, camelCase, an array — and the rig read
-   `pending_withdrawal`. A reader that cannot see the thing it tests is worse than no test, and this one
-   reported a *failure* on a withdrawal that had in fact taken effect.
+3. **The read path's field is `pendingWithdrawals`** — plural, camelCase, an **array** — and the rig read
+   `pending_withdrawal`. It reported a *failure* on a withdrawal that had in fact taken effect.
 
-## Limits
+**Second attempt — `d1b0a5da1-20261004T134046Z`.** `L1`/`L2`/`L3` passed and **`L4` read `0` before and
+after** on an account funded 100,000,000. Two faults, both proved rather than suspected:
+4. **The channel was reused, so the second read was the first read's datum.** `listen-data-at-name`
+   returns **what is already at the name** and waits only if there is nothing — it is not a
+   subscribe-to-changes read, which is what the rig (and its own comment) assumed. The stale datum is
+   identifiable in the probe's capture: `block_number: 5`, three blocks *before* the fund (7) and nine
+   before the withdraw (14). A distinct channel per read is not a stylistic choice.
+5. **The baseline was taken before the fund.** `b_pre` was read at a time when validator 2 was legitimately
+   unfunded, so `after > before` would have moved by the whole 100,000,000 and could not have told the
+   **fund** from the **payout**. The baseline now runs *after* the withdraw deploy, and doubles as the
+   probe's control: it must read close to the funded figure, and `99998098` does.
 
-One tree, one host, one attempt; the withdrawal is a **validator's**, not a delegator's, and the read
-path's `pendingWithdrawals` behaviour for that case is exactly what is in question. The epoch boundary is
-10 blocks and the quarantine 20, both shrunk from production values, so nothing here speaks to the
-timings a real net would see.
+**Third attempt — `d1b0a5da1-20261004T135701Z`.** The post-read came back `unreadable`.
+6. **The probe discarded its own deploy's status**, so a deploy that never landed and a chain that never
+   produced a block were indistinguishable — and the run could not say which. `balance()` now deploys
+   **first**, waits for `deploy_status` to read `ok`, and only then reads (which returns immediately,
+   because the data is already at the name). That also removes the listener/deploy race entirely.
+7. **The drive loop stopped at "the pending entry cleared" instead of "the head is past the deadline".**
+   `pending_withdrawers` clears at the epoch boundary — `close_block` moves the request into
+   `withdrawers`, ~10 blocks after the staging and ~20 before the payout — so a loop keyed on it stops
+   **two epochs early** and reads the vault before anything has been credited. The loop now drives until
+   `height > deadline`, and the witness records it: `drove to height 34; deadline=30, past-deadline=1`.
 
-## The next step, made concrete
+## Limits — what this is not
 
-`examples/leave-balance.rho` is committed: the same read as `pos-balance.rho`, for **validator 2** — the
-key that leaves — with its address derived inside rholang from the public key, so the probe cannot be
-asking about a different account than the run measures.
+One tree, one host, one complete mesh, one silent window; the withdrawal is a **validator's**, not a
+delegator's. The epoch boundary is 10 blocks and the quarantine 20, both shrunk from production values, so
+nothing here speaks to the timings a real net would see. And it is a **rig** result: it says the payout
+path pays on a net where nothing is late. It does not say a validator can leave safely on a **live** net —
+that is the live-arm question, and the page keeps the distinction it applied to its own A2.2.
 
-What the rig still needs is two reads and the pattern to take them: `devnet.sh query <name>` is
-`listen-data-at-name`, which **subscribes** to a name rather than reading a value that is already there,
-so the listener has to be running *before* `leave-balance.rho` is deployed. Concretely: start the listener
-in the background, deploy the probe, collect one line; do that once before the `withdraw` and once after
-the quarantine deadline. **The witness is the second read being higher than the first** — the payout
-arrived — and the honest caveat is `pos-balance.rho`'s: both reads are deploys, so the delta is the payout
-*minus* their fees, which is evidence the payout landed rather than a measurement of its size.
-
-That is a small rig change with a known shape. It was not made in this pass: this rig had already taken
-four iterations, every one of them an instrument fault of mine rather than the chain's, and a fifth at the
-end of a long session is where a mistake would cost more than the reading is worth.
+**Files.** Rig `spec/audit/evidence/n220-leave-run.sh`; probes `examples/leave-fund.rho`,
+`examples/leave-balance.rho`, `examples/leave-balance-after.rho`. The decisive run's node logs are
+committed with it; the two superseded attempts keep their witnesses, series and probe captures, without
+~100 KB of node logs each.
