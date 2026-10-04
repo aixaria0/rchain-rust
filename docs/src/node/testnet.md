@@ -42,9 +42,15 @@ so it can be recomputed from the release; the bare ones are block hashes and add
 prints them. (Before the September 2026 audit the binary's digest was written unlabelled, which made it
 indistinguishable from a commit and unverifiable either way.)
 
-A's stake is 1000 against B's 100 on purpose: with no `--autopropose`, A is the only proposer, so A
-must hold **more than ⅔ of the whole bond pool** (including any stake sitting in withdrawal
-quarantine) or no block is ever finalised. That is what keeps A able to finalise after observers bond.
+A's stake is 1000 against B's 100 on purpose: the quorum is measured against the **whole bond pool**
+(including any stake sitting in withdrawal quarantine), so A must hold **more than ⅔ of it** to be able
+to close the fringe on its own. That is what keeps A able to finalise after observers bond.
+
+**There is no single-proposer mode, and this page no longer claims one.** With
+`--propose-on-deploy --attest-on-new-blocks` on each node, any bonded validator that receives a deploy
+proposes, and a deploy addressed to **any one** of them finalises. That this net *looks* single-proposer
+is the public endpoint's routing, and it has a cost if A dies — see
+[Routing, and what it costs if A dies](#routing-and-what-it-costs-if-a-dies).
 
 ## Connect
 
@@ -212,7 +218,7 @@ private addresses (`10.108.0.0/20`).
 
 **Why 1000/100, and why no `--autopropose`.** Both were learned by breaking it:
 
-1. **Finality needs >⅔ of the whole pool, and A is the only proposer.** At 300/100 the chain
+1. **Finality needs >⅔ of the whole pool.** At 300/100 the chain
    finalised fine — right up until an observer bonded 100, which took A to 60% and stopped finality
    dead. `withdraw` is not an immediate escape either: the stake is escrowed until the quarantine
    deadline, so it goes on diluting the pool. 1000 tolerates about four joiners at stake 100.
@@ -224,6 +230,32 @@ private addresses (`10.108.0.0/20`).
    which is *not* the injector). Omitting `--autopropose` and `--deployer-private-key` makes blocks arrive
    only when deploys do, keeping restart cost proportional to real usage. Generalised sizing guidance is in
    [Running a validator: hardware requirements](validator-requirements.md).
+
+## Routing, and what it costs if A dies
+
+**Every bonded validator proposes; the single-proposer appearance is routing.** Every node runs
+`--propose-on-deploy --attest-on-new-blocks`, so any validator that receives a deploy proposes — and
+since [#219](https://github.com/rchain-community/rchain-rust/pull/219) (C209, 2026-10-04) a deploy
+addressed to **any one** of them finalises: the acceptance run sent every deploy to a single validator,
+one arm per validator, and all three finalised. What makes this net *look* like it has one proposer is
+the public endpoint. It proxies to node A's `40403`, so an HTTP client can only reach A. The gRPC deploy
+port `40401` is open on **both** hosts, so a client that speaks gRPC directly can already choose.
+
+**Two consequences if A stops, and only the first is a nuisance.**
+
+1. **The HTTP path stops accepting deploys.** Nothing else is published, so a client that knows only the
+   URL can submit nothing at all.
+2. **Finality stops, arithmetically.** The quorum is measured against the **whole bond pool** and there
+   is no inactivity leak, so a stopped validator's stake goes on counting. In a 100/100/50 pool, losing
+   either 100-stake validator leaves **150 of 250 = 60 %**, and 60 % is not `> ⅔`: the fringe cannot
+   advance however many blocks the survivors produce. That is the dilution arithmetic of the section
+   above, reached by *loss* instead of by *bonding* — and it is why the acceptance checklist's A2.1 kills
+   the **50**-stake validator, which leaves 80 % and is a supermajority.
+
+**The fix is operational, not a protocol change:** publish every validator's deploy port, or round-robin
+the endpoint across them, keeping `--propose-on-deploy` on each. Then losing the endpoint's node costs
+only that node's share of production, and the pool's arithmetic is the only thing left that can stop
+finality.
 
 ## Genesis
 
@@ -418,8 +450,9 @@ live-testnet run found a third: a node that attributes one failure to a **bonded
 estranged from its chain permanently — the height maximum skips failed justifications and
 `neglected_invalid_block` refuses any block justifying a failed bonded sender
 ([#105](https://github.com/rchain-community/rchain-rust/issues/105), AUDIT C173, open). So the order is
-C173's decision, then this measurement again, and until then add nothing to a live net: use it as a
-single-proposer chain and read or deploy against A.
+C173's decision, then this measurement again, and until then add nothing to a live net: read or deploy
+against A, which is where the public endpoint routes — the node configuration is not single-proposer
+([Routing](#routing-and-what-it-costs-if-a-dies)).
 
 **A second, independent way for a live net to lose a validator:**
 [#105](https://github.com/rchain-community/rchain-rust/issues/105). On 2026-09-29 the two-bond shape was
@@ -683,10 +716,16 @@ running binary:
 | `rnode deploy` with no `--valid-after-block-number` | ✅ `processedWithSuccess` |
 
 **A caution learned the hard way.** Bonding a key that has no running node still counts against
-finality: when the newcomer bonded 100, A's share fell from 75% to 60% of the pool, and with no
-`--autopropose` A is the only proposer, so blocks kept arriving but nothing was finalised any more
-(`Finalized fringe is not available`). `withdraw` is not an instant escape either — the stake stays in
-the pool until the quarantine deadline. Hence A's 1000.
+finality: when the newcomer bonded 100, A's share fell from 75% to 60% of the pool. The quorum is
+measured against the **whole pool** and there is no inactivity leak, so that 40% is subtracted from
+what can be finalised even though nothing is producing with it — blocks kept arriving and nothing
+finalised (`Finalized fringe is not available`). A single validator at 60% cannot close the fringe, and
+it would not help for it to propose harder: 60% is 60%. `withdraw` is not an instant escape either — the
+stake stays in the pool until the quarantine deadline — hence A's 1000.
+
+**The operational rule that follows:** every bonded key needs a **running node with
+`--propose-on-deploy`**. A bonded key with no node does not merely fail to contribute; it dilutes the
+pool against everyone who is contributing, because the denominator it sits in is the whole pool.
 
 ## Known issues
 
