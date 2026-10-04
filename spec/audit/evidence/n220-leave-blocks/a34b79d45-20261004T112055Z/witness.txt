@@ -1,0 +1,8 @@
+  deadline= blocks_remaining= active=3 pending=0
+  fund: ok 5
+  withdraw deploy: ok 9
+  L1 NOTE: no pending entry at first sight (already cleared, or never staged) — pos=[deadline= blocks_remaining= active=2 pending=0]
+  L2 PASS: the leaving validator is out of the active set (3 -> 2)
+  L3 PASS: no pending withdrawal remains once its deadline passed
+  after: deadline= blocks_remaining= active=2 pending=0
+  height 164 -> 164 over 60s
