@@ -1,0 +1,6 @@
+# tree=f1ca009 head=f1ca009d08c58ce451f4823c70254c6d2e9e6ce7
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy
+#      DEVNET_EXTRA_FLAGS=--attest-on-new-blocks
+# deploys: 6 every 12s; settle=60s read=90s
+# arms: R1 all to bootstrap | R2 rotating 0,1,2 | R3 all to validator-1
+# started 2026-10-04T11:36:09Z

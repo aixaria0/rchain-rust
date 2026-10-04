@@ -943,9 +943,17 @@ where
     // validator made this round is in `latest_msgs` and not in any parent: read from the parents, every
     // other validator saw "nothing to finalise" and stayed silent, the round never closed, and the deploy
     // was never finalised. That is the live report on #214: deploys sent to one node never finalise, and
-    // sending them in rotation does. The fringe stays the parents' — it is the fringe this block extends,
-    // so a deploy counts as finalised here exactly when the block being built would carry it.
-    let fringe_seen: BTreeSet<BlockHash> = pre_state.fringe.iter().flat_map(|h| seen(h)).collect();
+    // sending them in rotation does.
+    //
+    // **The fringe is the one the parents carry, not the one this block would** (#223). `pre_state.fringe`
+    // is the fringe this block *would* publish; counting a deploy as finalised against it withheld exactly
+    // the block that would have published it, so the round came to rest one fringe short and the last
+    // deploy was never finalised: live, a deploy at height 34 with the chain quiet at 37 and the
+    // published fringe at 32, every validator reading `nothing_to_finalize` against a fringe no block
+    // carried. Against the parents' fringe the round that computes the covering fringe still proposes and
+    // publishes it, and the next round reads it and goes quiet — one round more, never unbounded.
+    let fringe_seen: BTreeSet<BlockHash> =
+        pre_state.prev_fringe.iter().flat_map(|h| seen(h)).collect();
     let mut conflict_set: Vec<(BlockHeight, BlockHash)> = dag_repr
         .dag_message_state
         .latest_msgs
@@ -1019,7 +1027,15 @@ where
         .unwrap_or_else(BlockHeight::zero);
     // (a), as the two inputs the decision takes — see `attestation_inputs` for why the second is now
     // bounded by age rather than read from the parents.
-    let (nothing_to_finalize, new_state_transition) = attestation_inputs(oldest_unfinalized, tip);
+    // The fringe this block extends, as a height: the work's age is counted from here when the work lies
+    // below it (#223) — see `work_age_floor`.
+    let fringe_top = pre_state
+        .prev_fringe
+        .iter()
+        .filter_map(|h| dag_repr.dag_message_state.msg_map.get(h).map(|m| m.height))
+        .max();
+    let (nothing_to_finalize, new_state_transition) =
+        attestation_inputs(work_age_floor(oldest_unfinalized, fringe_top), tip);
     // The live weight set: the one liveness rule, shared with the finalizer through `liveness` (#70
     // increment 2). It decides who counts as *moving*; the quorum itself stays measured against the
     // whole bonded map below, so a minority cannot attest its way to a supermajority.
@@ -1676,6 +1692,28 @@ fn attestation_inputs(oldest_unfinalized: Option<BlockHeight>, tip: BlockHeight)
             liveness::heights_behind(tip, h) <= ATTESTATION_HORIZON,
         ),
     }
+}
+
+/// **The height the unfinalised work's age is counted from**: the work's own height, or the fringe's when
+/// the work lies below it.
+///
+/// The horizon bounds a *finality stall* — work that has waited `ATTESTATION_HORIZON` heights without the
+/// fringe reaching it. Work below a fringe that has since moved on has not waited at all: it arrived late.
+/// That is a returning validator (#223): while catching up it proposed on each block it replayed, so its
+/// chain holds blocks at the heights it was absent for, two of them epoch boundaries carrying a
+/// `CloseBlock`. Every survivor read that block, twenty heights below the tip, as twenty-height-old work,
+/// withheld its attestation, and the work could only be finalised by the attestations it withheld:
+/// finality stopped for good, live, with the survivors' fringe three heights behind the tip. Counting from
+/// the fringe licenses them while the fringe keeps up, and a stalled fringe still ends the licence on the
+/// same bound.
+fn work_age_floor(
+    oldest_unfinalized: Option<BlockHeight>,
+    fringe_top: Option<BlockHeight>,
+) -> Option<BlockHeight> {
+    oldest_unfinalized.map(|h| match fringe_top {
+        Some(f) if f > h => f,
+        _ => h,
+    })
 }
 
 /// The guard's inputs and its decision, for the diagnostic line.
@@ -2588,7 +2626,7 @@ mod active_validator_tests {
 /// What it does not model: delivery delay and reordering, and the store reads `create_block` makes.
 #[cfg(test)]
 mod quiet_chain_tests {
-    use super::{attestation_inputs, attestation_suppressed, ATTESTATION_HORIZON};
+    use super::{attestation_inputs, attestation_suppressed, work_age_floor, ATTESTATION_HORIZON};
     use rchain_block_storage::dag::finalizer::Message;
     use rchain_block_storage::dag::liveness;
     use rchain_block_storage::dag::message_map;
@@ -3028,6 +3066,34 @@ mod quiet_chain_tests {
                 assert!(o.blocks <= 10 * stakes.len() * o.deploys, "{o:?}");
             }
         }
+    }
+
+    /// **Late work below a fringe that has moved on keeps its licence; a stalled fringe still ends it**
+    /// (#223). A returning validator's catch-up chain put a `CloseBlock` at height 10 into the survivors'
+    /// view at tip 33 with their fringe at 30: counted from its own height it was 23 heights old, past the
+    /// horizon, and every survivor withheld the attestation that alone could finalise it.
+    #[test]
+    fn late_work_below_the_fringe_is_counted_from_the_fringe() {
+        let h = |n: i64| BlockHeight::try_from(n).unwrap();
+        let tip = h(33);
+        // Live, before: counted from the work, the licence had lapsed.
+        assert_eq!(attestation_inputs(Some(h(10)), tip), (false, false));
+        // Counted from the fringe it lies below, the work is 3 heights old.
+        assert_eq!(work_age_floor(Some(h(10)), Some(h(30))), Some(h(30)));
+        assert_eq!(
+            attestation_inputs(work_age_floor(Some(h(10)), Some(h(30))), tip),
+            (false, true)
+        );
+        // Work above the fringe is unchanged, so a stall still ends the licence on the same bound: the
+        // fringe stuck at 10 with work at 12 and the tip at 12 + horizon + 1.
+        let stalled_tip = h(12 + ATTESTATION_HORIZON + 1);
+        assert_eq!(work_age_floor(Some(h(12)), Some(h(10))), Some(h(12)));
+        assert_eq!(
+            attestation_inputs(work_age_floor(Some(h(12)), Some(h(10))), stalled_tip),
+            (false, false)
+        );
+        // No work is still no work, whatever the fringe.
+        assert_eq!(work_age_floor(None, Some(h(30))), None);
     }
 
     /// **The horizon is where the licence ends, and only the licence.** A deploy-bearing block that is

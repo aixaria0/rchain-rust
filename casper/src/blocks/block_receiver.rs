@@ -37,7 +37,8 @@ pub enum RecvStatus {
 /// blocks, and `finished` when a block is validated and added to the DAG (end of processing).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockReceiverState<MId: Ord + Clone + std::fmt::Debug> {
-    /// Blocks received and stored in BlockStore (not validated) with parent relations.
+    /// Blocks received and stored in BlockStore (not validated), each with the parents it still waits
+    /// for: those not yet validated into the DAG (#223).
     blocks_st: BTreeMap<MId, BTreeSet<MId>>,
     /// Blocks receiving status.
     receive_st: BTreeMap<MId, RecvStatus>,
@@ -87,6 +88,32 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
         id: MId,
         parents: Vec<(MId, bool)>,
     ) -> Result<(Self, BTreeSet<MId>), String> {
+        let not_stored: BTreeSet<MId> = parents
+            .iter()
+            .filter(|(_, not_stored)| *not_stored)
+            .map(|(parent, _)| parent.clone())
+            .collect();
+        self.end_stored_awaiting(id, parents, not_stored)
+    }
+
+    /// [`end_stored`](Self::end_stored), with the block's dependencies given explicitly: `awaiting` is every
+    /// parent that is **not yet validated into the DAG**, which is what the block must wait for.
+    ///
+    /// **Waiting on "not stored" was not enough (#223).** `end_stored` records only the parents missing
+    /// from the block store, so a block whose parents are *stored but not yet validated* — every block a
+    /// rejoining validator receives in a burst — has an empty dependency set. The first of those parents
+    /// to finish then released it, its validation read the second parent from the DAG, found nothing
+    /// (`block summary failed: missing justification`), and the block was dropped in `PendingValidation`,
+    /// where a re-delivery is refused: the node never advanced again. Here the dependency set is the
+    /// parents not yet in the DAG, so a block is released only when the last of them finishes. The caller
+    /// computes `awaiting` while holding the state lock, so no parent can finish between the read and
+    /// this call: a parent's `finished` needs the same lock and runs only after its DAG insert.
+    pub fn end_stored_awaiting(
+        &self,
+        id: MId,
+        parents: Vec<(MId, bool)>,
+        awaiting: BTreeSet<MId>,
+    ) -> Result<(Self, BTreeSet<MId>), String> {
         let cur_state_opt = self.receive_st.get(&id);
         if cur_state_opt != Some(&RecvStatus::BeginStoreBlock) {
             return Err(format!(
@@ -118,7 +145,13 @@ impl<MId: Ord + Clone + std::fmt::Debug> BlockReceiverState<MId> {
                 && parent != &id
         });
         let mut new_blocks_st = self.blocks_st.clone();
-        new_blocks_st.insert(id.clone(), unseen_parents.clone());
+        // A parent the block must wait for: every unseen parent (not stored, so not validated) and every
+        // stored parent that is not yet in the DAG. `parent != id` as above, so a malformed self-reference
+        // cannot make a block wait on itself.
+        let mut deps = awaiting;
+        deps.retain(|parent| parent != &id);
+        deps.extend(unseen_parents.iter().cloned());
+        new_blocks_st.insert(id.clone(), deps);
 
         // Update block status to received and set unseen parents to Requested.
         let mut new_receive_st = self.receive_st.clone();
@@ -435,12 +468,23 @@ async fn incoming_blocks(
             }
         };
 
-        let pending_requests = {
+        // **The parents not yet in the DAG are read under the state lock (#223)**, and they are the block's
+        // dependencies: a parent's `finished` takes the same lock after its DAG insert, so a parent read as
+        // absent here is one whose `finished` has not run yet and will release this block when it does.
+        let (pending_requests, has_all_deps) = {
             let mut guard = state.lock().await;
-            match guard.end_stored(block.block_hash, parents) {
+            let repr = dag.get_representation().await;
+            let awaiting: BTreeSet<BlockHash> = block
+                .justifications
+                .iter()
+                .filter(|h| !repr.contains(h))
+                .copied()
+                .collect();
+            let has_all_deps = awaiting.is_empty();
+            match guard.end_stored_awaiting(block.block_hash, parents, awaiting) {
                 Ok((new_state, unseen)) => {
                     *guard = new_state;
-                    unseen
+                    (unseen, has_all_deps)
                 }
                 Err(e) => {
                     log.error(source, &e);
@@ -450,9 +494,6 @@ async fn incoming_blocks(
         };
 
         block_retriever.ack_received(&block.block_hash).await;
-
-        let repr = dag.get_representation().await;
-        let has_all_deps = block.justifications.iter().all(|h| repr.contains(h));
 
         let mut parents_to_validate = BTreeSet::new();
         for hash in &block.justifications {
@@ -1083,6 +1124,62 @@ mod tests {
         assert!(st3.blocks_st.is_empty());
         assert!(st3.receive_st.is_empty());
         assert!(st3.child_relations.is_empty());
+    }
+
+    /// **The falsifier for #223.** A block whose two parents are stored but not yet validated — what a
+    /// rejoining validator receives in a burst — must not be released when the *first* parent finishes: its
+    /// validation would read the second from the DAG, find nothing, and drop it for good. On the
+    /// not-stored dependency set it was released at once; on the not-validated set it waits for both.
+    #[test]
+    fn a_block_waits_for_every_parent_not_yet_validated() {
+        let st = BlockReceiverState::<MId>::new();
+        let mut st = st;
+        for p in ["P1", "P2"] {
+            let (s, _) = st.begin_stored(p.to_string());
+            let (s, _) = s
+                .end_stored_awaiting(p.to_string(), Vec::new(), BTreeSet::new())
+                .unwrap();
+            st = s;
+        }
+        let (st, _) = st.begin_stored("C".to_string());
+        let both = BTreeSet::from(["P1".to_string(), "P2".to_string()]);
+        let (st, unseen) = st
+            .end_stored_awaiting(
+                "C".to_string(),
+                parents(&[("P1", false), ("P2", false)]),
+                both,
+            )
+            .unwrap();
+        assert!(
+            unseen.is_empty(),
+            "both parents are stored, so nothing is requested"
+        );
+
+        let (st, next) = st.finished("P1".to_string(), BTreeSet::new()).unwrap();
+        assert!(
+            next.is_empty(),
+            "C was released with P2 still unvalidated: {next:?}"
+        );
+        let (_, next) = st.finished("P2".to_string(), BTreeSet::new()).unwrap();
+        assert_eq!(next, BTreeSet::from(["C".to_string()]));
+    }
+
+    /// The control: on the old dependency set (only the parents missing from the store), the same sequence
+    /// releases C when P1 finishes — the order #223's two `missing justification` refusals came from.
+    #[test]
+    fn on_the_not_stored_set_the_first_parent_releases_the_block() {
+        let mut st = BlockReceiverState::<MId>::new();
+        for p in ["P1", "P2"] {
+            let (s, _) = st.begin_stored(p.to_string());
+            let (s, _) = s.end_stored(p.to_string(), Vec::new()).unwrap();
+            st = s;
+        }
+        let (st, _) = st.begin_stored("C".to_string());
+        let (st, _) = st
+            .end_stored("C".to_string(), parents(&[("P1", false), ("P2", false)]))
+            .unwrap();
+        let (_, next) = st.finished("P1".to_string(), BTreeSet::new()).unwrap();
+        assert_eq!(next, BTreeSet::from(["C".to_string()]));
     }
 
     #[test]
