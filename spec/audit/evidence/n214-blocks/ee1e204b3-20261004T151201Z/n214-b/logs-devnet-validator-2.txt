@@ -1,0 +1,3 @@
+2026-10-04T15:20:20.114Z WARN  [casper.interpreter.validate] finality did not advance at tip 0: a layer exists but its supporting stake is not a supermajority — 0 of 250 (0 full partition(s) among 0 candidate(s))
+2026-10-04T15:20:22.174Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 250 (0 full partition(s) among 3 candidate(s))
+2026-10-04T15:20:25.186Z WARN  [casper.interpreter.validate] merge search: 16 merges · widest scope 0 chains / 0 conflict pairs / 0 asymmetric · most states expanded on one merge 0 · width buckets [16, 0, 0, 0, 0] · cost buckets [16, 0, 0, 0, 0]
