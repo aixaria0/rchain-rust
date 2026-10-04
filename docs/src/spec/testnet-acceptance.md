@@ -39,9 +39,20 @@ issues — and so had **no owner, no measurement and no falsifier**.
 
 | Criterion | Verdict | Basis |
 |---|---|---|
-| 1 — bounded production | ✅ **on A1.1, ❌ on A1.5** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual survives, re-measured 2026-10-04 on `513e2192b`: **R1 and R2 finalise all six deploys, R3 leaves its sixth included and never finalised** (block 19, finality 17, plateaued) — one arm of three, where `07af032ad` had two. Recorded in §3.1 and on #213 |
+| 1 — bounded production | ✅ **on A1.1, ❌ on A1.5** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual survives, and it is **intermittent across the three runs of its rig** — arms leaving their sixth deploy short: **2 of 3** on `07af032ad`, **0 of 3** on jimscarver's `f1ca009`, **1 of 3** on this pass's `513e2192b`. Recorded in §3.1 and on #213 |
 | 2 — join and leave | **4 of 5 pass; A2.2 fails on a live net** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 is the one failure**, and it is a live-net one: a rig pass is not what that row claims |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
+
+> **Handover, 2026-10-04.** The maintainer has taken the decision: **the testnet goes up as it stands**, and
+> it becomes the measurement platform. The three issues that owned this work — **#214** (this page),
+> **#213** and **#223** — are **closed**, and everything still open or unmeasured is collected in one
+> place: **[#242](https://github.com/rchain-community/rchain-rust/issues/242), *Testnet residuals***.
+> **This page is unchanged and remains the reference** for the criteria, the worksheet, the bow-ties, the
+> checklist and the register; #242 is the live list of what to measure next.
+>
+> **Closing those issues is not a claim that the residue is fixed.** The verdict table above is the state
+> at handover, and #242 states each item in the same terms this page does: what was measured, on what tree,
+> with what witness — and what is merely owed.
 
 ## 0.3 Method
 
@@ -1865,7 +1876,7 @@ a row the net has not earned.
 | A1.2 | N=5, all live, satisfies A1.1 | as A1.1 | as A1.1, N=5 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | as A1.1, N=8 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-…/R1/blocks.tsv` | `07af032ad` | the block-hash union, not `latestBlockNumber` | the union counts 28 blocks from one sender where the height reaches 28 for all three — the two are not the same quantity | ✅ **pass** | CH-ACC-02 |
-| A1.5 | **every** consecutive deploy on a quiet net is finalised — not only the first | a deploy that is included while its block never finalises | as A1.1 | `spec/audit/evidence/n214-rotation-blocks/513e2192b-20261004T154216Z/` | `513e2192b` (Rust identical to `dev`; **re-run 2026-10-04**) | the block carrying each of the six deploys, found in the union, against the finality reached | R1 finalises all six (its last at block 31, finality 32) and R2 all six (29, finality 31); **R3 leaves its sixth included at block 19 with finality 17 — plateaued, with the chain at height 22 for the rest of the window** | ❌ **fail** (1 of 3 arms — the run it replaces had 2) | — |
+| A1.5 | **every** consecutive deploy on a quiet net is finalised — not only the first | a deploy that is included while its block never finalises | as A1.1 | `spec/audit/evidence/n214-rotation-blocks/513e2192b-20261004T154216Z/` (this pass) **and** `n223-rejoin-blocks/regressions/rotation/` (jimscarver) | `513e2192b` and `f1ca009` — same rig, same configuration, **two independent runs** | the block carrying each of the six deploys, found in the union, against the finality reached | **Three samples, one disagreement:** on `07af032ad` **2 of 3** arms left their sixth short; on **`f1ca009` all six finalise in all three arms** (45≤51, 29≤31, 25≤25 — recomputed here from that run's own artefacts); on `513e2192b` **R3's sixth is included at block 19 with finality 17, plateaued**, the chain at height 22 for the rest of the window. The two accounts agree wherever they overlap (R1 and R2 finalise all six in both) and disagree in **one arm of one run** | ❌ **fail** — the residual is **intermittent** (2/3, 0/3, 1/3 arms), and one green run does not retire it | — |
 
 A1.1 **passes**, and the pass is a re-run by this pass rather than the fixer's word: six deploys to **one**
 validator — the counter-example this page published — now finalise on all three trigger patterns
@@ -1874,22 +1885,35 @@ Before the fix the same rig gave `0 of 250 (0 full partition(s) among 3 candidat
 before/after pair and §3.5 for the cause.
 
 > **A1.5 is that residual, promoted to a row** rather than left as a note — it is criterion 1's own
-> wording, so it stays in scope. The rig sends **six** deploys and counts per-deploy. **Re-measured
-> 2026-10-04 on `513e2192b`**: R1 finalises all six (its last lands at block 31, finality 32) and R2 all
-> six (29, finality 31), and **R3 leaves its sixth at block 19 with finality 17 — the chain plateaus at
-> height 22 for the rest of the window**, so it is included and never finalised. On the earlier tree
-> `07af032ad` **two** arms left their sixth short (R2 and R3); on today's, **one**. So the residual is
-> real and C214 narrowed it without closing it. It is not a timing artefact and not a truncated read: on
-> a quiet `--no-autopropose` net production stops within a few heights of the last deploy, the round does
-> not close, and a deploy landing in the final few heights is **included and never finalised** — R3's own
-> gate lines name partitions of `100 of 250` and `50 of 250`. **A1.1 asks about *one* deploy and passes;
-> A1.5 asks about all of them and fails.** It is raised on #213 as well, because whether it is in scope
-> there is that issue's call.
+> wording, so it stays in scope. The rig sends **six** deploys and counts per-deploy, and **three runs of
+> it now exist, which is what makes the row honest rather than a coin toss:**
+>
+> | run | tree | arms that left their sixth short |
+> |---|---|---|
+> | the pass that raised this row | `07af032ad` | **2 of 3** (R2 and R3) |
+> | **jimscarver's regression run** | `f1ca009` | **0 of 3** — all six finalise in every arm (45≤51, 29≤31, 25≤25) |
+> | this pass's re-run | `513e2192b` | **1 of 3** — R3's sixth is block 19 against finality 17, plateaued |
+>
+> **So the residual is intermittent, and the two accounts do not conflict — they are two samples.** They
+> agree wherever they overlap (R1 and R2 finalise all six in both), and the only disagreement is one arm
+> of one run. His figures were recomputed here from his own committed artefacts with the same rule, and
+> they reproduce exactly; nothing in his run is in dispute. What the three samples together say is that a
+> quiet chain's tail is **not reliably** finalised — which is why A1.5 stays ❌ and is **not** retired by
+> the green run, and equally why the red one does not establish a rate.
+>
+> **The mechanism is the quiet net's, not the deploy's.** Under `--no-autopropose` production stops within
+> a few heights of the last deploy, and a round closes only when the *next* round's messages exist — so
+> the tail of a quiet chain is unfinalisable in principle, and whether a given deploy lands inside it is
+> timing. In the run where it bit, the chain sat at height 22 with finality 17 for the rest of the window
+> and the gate's own lines named partitions of `100 of 250` and `50 of 250`; it was not a truncated read.
+> **A1.1 asks about *one* deploy and passes; A1.5 asks about all of them and does not reliably pass.**
+> Whether that is a defect to fix or a criterion to restate is a maintainer's call, and it is carried in
+> the handover below.
 >
 > **A filing correction this re-run forced.** A1.5 (and A1.1) cited `n213-blocks/07af032ad-…`, which
 > carries `R1|R2|R3` — the six-deploy shape the *old* `n213-run.sh` had. The current `n213-run.sh` is the
 > kill/restart rig, so the cite named a file whose rig no longer produces its shape; the six-deploy rig is
-> `n214-rotation-run.sh`, and A1.5 now cites its artefacts.
+> `n214-rotation-run.sh`, and A1.5 now cites both its runs' artefacts.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
