@@ -7313,3 +7313,25 @@ finalised block, and no node refuses another's block.
 The kill, rotation and join arms rerun on the same image all finalise every deploy; the join rig's quiet
 read reported 40 → 45 because it opened four seconds before the last in-flight block, after which no node
 proposed for 86 s (the results file has the timestamps).
+
+**A second C211 fix landed and was then removed — recorded because it nearly became permanent dead code.**
+PR #231 (`block_processor.rs`) fixed the *symptom* rather than the cause: it held a bounded list of blocks
+refused for `missing justification` and retried them with the next delivered batch, on the reading (this
+pass's own §65 hypothesis) that such a block was *transiently* unresolvable. It merged **eleven minutes
+after** PR #230, which removes the refusal's cause at the receiver. Once that landed, the deferral could
+not fire, and the argument is closed rather than probabilistic:
+
+- the **only** producer into the block processor is `pump_validated_blocks`, fed by the receiver's
+  `out_tx` (`node_runtime.rs:852-863`), and `out_tx` receives a hash **only when that block's dependency
+  set is empty** — `has_all_deps` and `finished`'s release set, both now "every justification is in the
+  DAG", read under the receiver's lock. The receiver's other outlet, `send_to_validate`'s
+  `put_to_incoming_queue`, feeds the **receiver** again (`incoming_blocks_tx`), not the processor;
+- the index those two read only ever grows, and `BlockMetadataStore::add` writes the **store first**
+  (AUDIT C172), so `index contains j ⟹ store contains j`;
+- `validate::block_number`/`sequence_number` read the **store** (`dag.lookup`).
+
+So a released block's every justification is readable and the summary cannot fail this way. Measured as
+well: the two fixed rejoins in `n223-rejoin-blocks/` record **zero** refusals across a full rejoin burst.
+A parked block would not have been inert even so — it rode **every** subsequent batch, so an unresolvable
+one would be replayed up to the cap on every delivery for ever. The deferral and its predicate test are
+gone; `apply` now carries the note that says why nothing should be added back.
