@@ -1852,9 +1852,10 @@ before/after pair and §3.5 for the cause.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
-> **§3.2 — 3 ✅ · 0 ❌ · 2 ⬜.** A2.1, A2.3 and A2.4 pass. **A2.2 is ⬜**: it passed on a *rig* and fails on
-> the **live net** ([#223](https://github.com/rchain-community/rchain-rust/issues/223)) — see the note below.
-> A2.5 (the leave path) is unrun.
+> **§3.2 — 3 ✅ · 0 ❌ · 2 ⬜.** A2.1, A2.3 and A2.4 pass. **A2.2 is ⬜** — it passed on a *rig* and fails on
+> the **live net** ([#223](https://github.com/rchain-community/rchain-rust/issues/223)); see the note below.
+> **A2.5 is ⬜ partially established**: the leave takes effect live (`n220-leave-results.md`) but the
+> payout is unobserved and the withdrawal never appeared in the read path's own record.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1862,7 +1863,15 @@ before/after pair and §3.5 for the cause.
 | A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | `—` — **no live-net run satisfies this**; the rig run that did is in `n213-blocks/07af032ad-…/` and is not what the row claims | — | as A2.1 | a deploy after the restart finalises, `start` being the only action | ⬜ **untested on a live net — [#223](https://github.com/rchain-community/rchain-rust/issues/223)** | — |
 | A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | the deploy sent while `validator-2` was stopped is **included and its block finalises** (block 14) | ✅ **pass** | — |
 | A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator is admitted, funded with `trust`, then `bond`s against the live net | `spec/audit/evidence/n220-join-results.md` | `9a75d45` (author's run; **read, not re-run** by this pass) | `rho:pos` bond state + the newcomer's producer key + the deploy's `is-finalized` | the bond lands in a boundary block, the newcomer produces, and its deploy's block finalises | ✅ **pass** (healthy joiner — see the caveat below) | CH-ACC-06 |
-| A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | as A2.4, `withdraw` | `—` | `—` | the vault/pot state at the payout block | the payout transfers | ⬜ untested | CH-U6-09 |
+| A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | 3 validators 100/100/50, `--epoch-length 10 --quarantine-length 20` | `spec/audit/evidence/n220-leave-results.md` | `a34b79d45` | the active set (`/api/v1/pos` `activeValidators`) and the withdrawal's own record | the withdraw is processed and the validator **leaves the active set (3 → 2)**; **the payout is not observed** | ⬜ **partially established** | CH-U6-09 |
+
+**A2.5 has now been run, and it is a partial.** `n220-leave-run.sh` (tree `a34b79d45`) shows the leave
+working — the `withdraw` is processed, the epoch boundary deactivates the validator (`activeValidators`
+3 → 2), and the net stays healthy — but **the payout is not observed**, because the read path's
+`pendingWithdrawals` entry was absent in all 49 samples and its `deadline` / `blocksRemaining` were never
+populated. So **CH-U6-09 stays open**: the quarantine arithmetic it questions is *unread*, not confirmed
+and not refuted. Three instrument defects in that rig are recorded there, all mine, each of them a
+failure of the *instrument* rather than the chain — which is the pattern this page keeps re-learning.
 
 **A2.4 has now been run, and it passes** — the first live exercise of the C207 path (`bond`/`withdraw`/
 `trust`/`delegate` were no-ops on any network that merges until 2026-10-03). `n220-join-run.sh` admits a
