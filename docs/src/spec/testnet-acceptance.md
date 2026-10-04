@@ -39,7 +39,7 @@ issues — and so had **no owner, no measurement and no falsifier**.
 
 | Criterion | Verdict | Basis |
 |---|---|---|
-| 1 — bounded production | ✅ **pass** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual — the *last* of several consecutive deploys may be included and not finalised — is recorded in §3.1 and on #213 |
+| 1 — bounded production | ✅ **on A1.1, ❌ on A1.5** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. One residual — the *last* of several consecutive deploys may be included and not finalised — is recorded in §3.1 and on #213 |
 | 2 — join and leave | **3 of 5 pass; A2.2 fails on a live net** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); and a new validator **bonds onto a running net** and produces (`n220-join-results.md`). The leave path (A2.5) is untested |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
@@ -1824,8 +1824,9 @@ a row the net has not earned.
 
 ## 3.1 Criterion 1 — Anyone can propose, and production is bounded
 
-> **§3.1 — 2 ✅ · 0 ❌ · 2 ⬜.** The criterion now **passes** on the fixed tree — re-verified independently
-> by this pass, not taken from the fixer's report.
+> **§3.1 — 2 ✅ · 1 ❌ · 2 ⬜.** A1.1 passes; **A1.5 fails** — a deploy landing in the final heights of a
+> quiet net is included and never finalised, so "every deploy finalises" is a stronger claim than A1.1
+> makes and the net does not meet it. A1.2/A1.3 (N=5, N=8) are unrun.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1833,6 +1834,7 @@ a row the net has not earned.
 | A1.2 | N=5, all live, satisfies A1.1 | as A1.1 | as A1.1, N=5 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.3 | N=8, all live, satisfies A1.1 | as A1.1 | as A1.1, N=8 | `—` | `—` | as A1.1 | as A1.1 | ⬜ untested | — |
 | A1.4 | the "bounded number" is a **block** count, not a height delta | a block-hash union over the same window differs from the height delta | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-…/R1/blocks.tsv` | `07af032ad` | the block-hash union, not `latestBlockNumber` | the union counts 28 blocks from one sender where the height reaches 28 for all three — the two are not the same quantity | ✅ **pass** | CH-ACC-02 |
+| A1.5 | **every** consecutive deploy on a quiet net is finalised — not only the first | a deploy that is included while its block never finalises | as A1.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T074618Z/` | `07af032ad` | the block carrying each of the six deploys, found in the union, against the finality reached | R1 finalises all six (its last at height 24, finality 24); **R2 and R3 leave their sixth included at height 24 with finality 23, and never finalise it** | ❌ **fail** (2 of 3 arms) | — |
 
 A1.1 **passes**, and the pass is a re-run by this pass rather than the fixer's word: six deploys to **one**
 validator — the counter-example this page published — now finalise on all three trigger patterns
@@ -1840,14 +1842,13 @@ validator — the counter-example this page published — now finalise on all th
 Before the fix the same rig gave `0 of 250 (0 full partition(s) among 3 candidate(s))`; see §3.4 for the
 before/after pair and §3.5 for the cause.
 
-> **A residual the re-run found, stated rather than smoothed over.** The rig sends **six** deploys and
-> counts per-deploy: R1 finalises all six (its last lands at height 24, finality 24), but **R2 and R3
+> **A1.5 is that residual, promoted to a row** rather than left as a note — it is criterion 1's own
+> wording, so it stays in scope. The rig sends **six** deploys and counts per-deploy: R1 finalises all six (its last lands at height 24, finality 24), but **R2 and R3
 > leave their sixth at height 24 with finality 23** — included, and one height short. That is not a
 > timing artefact: on a quiet `--no-autopropose` net production stops within a few heights of the last
 > deploy and finality lags ~4, so a deploy landing in the final few heights is **included and never
-> finalised**. A1.1 asks about *one* deploy and passes; "every deploy finalises" is a **stronger** claim
-> than the row makes, and it held in 1 of 3 arms. It belongs on #213 rather than as a green row here, and
-> it is raised there.
+> finalised**. **A1.1 asks about *one* deploy and passes; A1.5 asks about all of them and fails.** It is
+> raised on #213 as well, because whether it is in scope there is that issue's call.
 
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
