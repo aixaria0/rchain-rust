@@ -23,29 +23,6 @@ fn max_parallel_block_validation() -> usize {
         .unwrap_or(4)
 }
 
-/// **How many blocks may wait for a justification that has not arrived yet** (AUDIT C211).
-///
-/// A block refused for `missing justification` is *transiently* unresolvable, not invalid: the
-/// justification it names is on its way. Dropping it is permanent for that block, and the receiver
-/// cannot pick it up again — `begin_stored` returns `false` for a hash already in
-/// `EndStoreBlock`/`PendingValidation`, so `send_to_validate`'s re-send skips exactly the block that
-/// needs re-attempting. Observed live (#223): a rejoining validator was capped at the height it died at
-/// with two such refusals and no recovery, the node stalled and the block's hash stayed parked in the
-/// receiver for ever. These wait for the next delivered block instead; the bound keeps a block that is
-/// genuinely unresolvable from being retried unboundedly.
-const MAX_PARKED_BLOCKS: usize = 64;
-
-/// The refusal that is *transient*: the block summary could not read a justification this block names.
-///
-/// The sentence is the one `validate::block_number` / `validate::sequence_number` build and
-/// `multi_parent_casper::validate_checks` wraps as `ValidateError::Internal`. It is matched rather than
-/// parsed for the missing hash on purpose: the hash is not needed to decide *whether* to retry, only
-/// *when*, and the bound supplies that — so nothing here depends on the message's exact spelling
-/// beyond the phrase the two sites share.
-fn is_missing_justification(message: &str) -> bool {
-    message.contains("missing justification ")
-}
-
 /// Validate a block and insert it into the DAG (port of `validateAndAddToDag`).
 pub async fn validate_and_add_to_dag<F, Fut>(
     dag: &dyn BlockDagStorage,
@@ -86,6 +63,29 @@ where
     Ok(status)
 }
 
+// **Why nothing here defers a `missing justification` refusal** (AUDIT C211, #223).
+//
+// This loop used to hold a bounded list of blocks refused for a justification that had not arrived,
+// retrying them with the next delivered batch. It was removed on 2026-10-04, after C211's cause was
+// fixed at its source, because the refusal it protected against **cannot reach this loop at all**:
+//
+// * the **only** producer into this processor is `pump_validated_blocks`, fed by the receiver's
+//   `out_tx` (`node/src/runtime/node_runtime.rs:852-863`), and `out_tx` is sent a hash **only when
+//   that block's dependency set is empty** — `block_receiver.rs`'s `has_all_deps` and `finished`'s
+//   release set, both now computed as "every justification is in the DAG", under the receiver's lock
+//   (`end_stored_awaiting`, #223's fix). The receiver's *other* outlet, `send_to_validate`'s
+//   `put_to_incoming_queue`, goes back into the **receiver** (`incoming_blocks_tx`), not here.
+// * the DAG index those two read only ever grows, and `BlockMetadataStore::add` writes the **store
+//   first** and the index second (`block_metadata_store.rs:57-70`, AUDIT C172), so
+//   `index contains j ⟹ store contains j` for every `j`.
+// * `validate::block_number` / `sequence_number` read the **store** (`dag.lookup`), so a released
+//   block's every justification is readable and the summary cannot fail this way.
+//
+// Measured too: the two `fixed-run1`/`fixed-run2` rejoins in `spec/audit/evidence/n223-rejoin-blocks/`
+// record **zero** refusals across a full rejoin burst. A deferral here would therefore be dead code —
+// and not inert if it ever did fire: a parked block rides **every** subsequent batch, so an
+// unresolvable one would be replayed up to the cap on each delivery, for ever.
+
 /// Process incoming blocks: validate a batch concurrently, insert serially in topological order,
 /// notify the validated queue, and broadcast the block hash (port of `BlockProcessor.apply`).
 pub async fn apply<F, Fut>(
@@ -105,10 +105,6 @@ pub async fn apply<F, Fut>(
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>> + Send + 'static,
 {
     let source = LogSource::new("casper.blocks.BlockProcessor");
-    // Blocks refused for a justification that has not arrived yet, retried alongside the next delivered
-    // block rather than dropped for ever (C211). Bounded, so a genuinely unresolvable block is dropped
-    // by the `MAX_PARKED_BLOCKS` check rather than accumulating.
-    let mut parked: Vec<BlockMessage> = Vec::new();
     while let Some(first) = input_blocks.recv().await {
         // Drain a batch of dependency-free blocks, bounded by the concurrency cap.
         let mut batch = vec![first];
@@ -118,11 +114,6 @@ pub async fn apply<F, Fut>(
                 Err(_) => break,
             }
         }
-        // **The retry rides on delivery.** A parked block is re-validated with the next batch, because
-        // the justification it needs may have arrived with it. This is a bounded, best-effort recovery,
-        // not a complete one: a node that receives nothing further re-attempts nothing, which is why the
-        // self-triggered re-drive is named as the follow-up rather than assumed here.
-        batch.append(&mut parked);
 
         // Validate each block concurrently. Validation is verify-only (replay) and forks its own
         // replay runtime per block, so blocks in the batch are independent.
@@ -175,24 +166,9 @@ pub async fn apply<F, Fut>(
                     continue;
                 }
                 Err(ValidateError::Internal(e)) => {
-                    // **A missing justification is transient, so it is not a drop** (C211). The block
-                    // waits for a justification that is on its way; dropping it is permanent, and the
-                    // receiver cannot pick it up again (`begin_stored`'s dedupe skips a hash it has
-                    // already handed to the validator). Every other `Internal` still drops, because
-                    // those are store/runtime failures this loop has no answer for.
-                    if is_missing_justification(&e) && parked.len() < MAX_PARKED_BLOCKS {
-                        log.warn(
-                            source,
-                            &format!(
-                                "Block {} deferred: a justification it names is not readable yet, so it \
-                                 waits for the next delivered block instead of being dropped \
-                                 (AUDIT C211): {e}",
-                                block.block_hash.to_hex()
-                            ),
-                        );
-                        parked.push(block);
-                        continue;
-                    }
+                    // An `Internal` failure is a store or runtime failure this loop has no answer for,
+                    // so the block is dropped and the error is logged. **A `missing justification`
+                    // cannot arrive here** — see the note on `apply` — so there is nothing to defer.
                     log.error(
                         source,
                         &format!("Block {} processing error: {e}", block.block_hash.to_hex()),
@@ -241,35 +217,6 @@ pub async fn apply<F, Fut>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// **The deferral predicate, on the exact sentences the two sites build.** C211 turns on telling a
-    /// *transient* refusal from a permanent one: `validate::block_number`/`sequence_number` render
-    /// `missing justification <hex>`, `validate_checks` wraps that as `block summary failed: {e}`, and the
-    /// processor parks on the phrase rather than dropping the block for ever. A predicate that matched
-    /// too much would defer store failures; one that matched too little would defer nothing, which is
-    /// the defect. Both directions are pinned here.
-    #[test]
-    fn only_a_missing_justification_is_deferred() {
-        // The wrapped sentence the processor actually sees, both renderers.
-        assert!(is_missing_justification(
-            "block summary failed: missing justification 4e0fb9c6aa"
-        ));
-        assert!(is_missing_justification(
-            "block summary failed: missing justification b31b0600ff"
-        ));
-        // The other `Internal` shapes must keep dropping: they are store/runtime failures this loop
-        // has no answer for, and deferring them would retry a failure that cannot clear.
-        assert!(!is_missing_justification(
-            "block summary failed: store unavailable"
-        ));
-        assert!(!is_missing_justification("bondsCache failed: timeout"));
-        assert!(!is_missing_justification(
-            "validateBlockCheckpoint failed: InvalidStateHash"
-        ));
-        assert!(!is_missing_justification(""));
-        // The phrase alone, with nothing after it, is not the renderer's output.
-        assert!(!is_missing_justification("missing justification"));
-    }
 
     /// The concurrency cap is never zero: a zero would mean no block is ever validated concurrently —
     /// or, if it were used as a batch size, that a batch of blocks is never processed at all. The
