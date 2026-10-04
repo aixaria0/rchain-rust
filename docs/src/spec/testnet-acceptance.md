@@ -43,6 +43,17 @@ issues — and so had **no owner, no measurement and no falsifier**.
 | 2 — join and leave | **4 of 5 pass; A2.2 fails on a live net** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 is the one failure**, and it is a live-net one: a rig pass is not what that row claims |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
+> **Handover, 2026-10-04.** The maintainer has taken the decision: **the testnet goes up as it stands**, and
+> it becomes the measurement platform. The three issues that owned this work — **#214** (this page),
+> **#213** and **#223** — are **closed**, and everything still open or unmeasured is collected in one
+> place: **[#242](https://github.com/rchain-community/rchain-rust/issues/242), *Testnet residuals***.
+> **This page is unchanged and remains the reference** for the criteria, the worksheet, the bow-ties, the
+> checklist and the register; #242 is the live list of what to measure next.
+>
+> **Closing those issues is not a claim that the residue is fixed.** The verdict table above is the state
+> at handover, and #242 states each item in the same terms this page does: what was measured, on what tree,
+> with what witness — and what is merely owed.
+
 ## 0.3 Method
 
 Two standard techniques, composed.
