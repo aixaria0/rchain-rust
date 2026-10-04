@@ -1947,7 +1947,7 @@ positive flag is a clap `bool` defaulting **false**. It is not. The merged defau
 (`node/src/configuration/defaults.conf:16`) and the CLI flag only ever *adds* `true`, so **passing it is
 optional and its absence cannot stop a node attesting**. That is why the two runs gave identical
 results: the first was never void, it is a second agreeing attempt — kept in
-`spec/audit/evidence/n214-void-attestation-off/` under a name that misstates what it is. The correction is
+`spec/audit/evidence/n214-repeat-attestation-on/` — renamed, because the old name misstated what it is. The correction is
 #219's author's (`d960a0f18`), and it is the second time in this pass that a negative reading was mine and
 not the code's (see §0.9).
 
@@ -2246,26 +2246,27 @@ it, and the dominant reason was not that the node is worse than the worksheet sa
 worksheet was built from **evidence superseded by the fixes it describes**: a run produced before the fix
 it was meant to witness, a code path HEAD no longer has, a falsifier inverted after the fact. The same
 staleness is visible one level up, in the repository's own intent file, whose "operational target"
-sentence names four defects that are all now `done` as the things blocking a two-validator net.
+sentence named four defects as the things blocking a two-validator net — all four `done`, and since
+overtaken by C209 and C210.
 
 That is the honest state of the journey this page was asked to map: **the project has moved faster than
-its own account of itself.** Criterion 2 is red on the audited tree and criterion 1 is unproven, but the
-deeper finding is that the ledger of what-is-true lags the tree — exactly the failure the evidence rule
+its own account of itself.** Criterion 2 was red on the audited tree and criterion 1 unproven when this
+page was written — both now pass — but the deeper finding stands: the ledger of what-is-true lags the tree — exactly the failure the evidence rule
 of §0.7 exists to catch. And the audit itself committed it: see §0.9.
 
 **What would close it.** Not more prose. Three things, in order:
 
-1. **A re-probe on the current tip** — **done**, §3.4, committed as `spec/audit/evidence/n214-*`. Criterion
-   1 with two marks and criterion 2's kill/restart. It failed both criteria with a committed artefact, and
-   it raised the question that now matters most: **#214's N=3 pass does not reproduce**, so whether
-   criterion 1 failed continuously or regressed is open.
-2. **The cause** — **found**, §3.5: the attestation guard's pace bound is read against a tip the
-   suppression freezes, so a fully-live chain settles into a fixpoint one round short of what the fringe
-   needs. Three independent confirmations (the gate's own log, a reproduction on HEAD, and a rotation
-   experiment). A fix is not landed; a diagnosis is not a repair, and A1.1 stays ❌ until one is measured.
-3. **A correction pass over §1** that re-derives each contested row against HEAD. The corrections are
-   already written in §4 — every upheld challenge names what to change — so this is mechanical, not
-   analytical.
+1. **A re-probe on the current tip** — **done**, §3.4, committed as `spec/audit/evidence/n214-*`. It failed
+   both criteria on the pre-fix tree, with an artefact, and raised the question that mattered most: whether
+   #214's N=3 pass reproduced. **It does** — re-verified on `07af032ad` (§3.1, §3.2), and §3.4's
+   contradiction is closed.
+2. **The cause** — **found and fixed**, §3.5. The first diagnosis named the right component and the wrong
+   instance; the landed fix is **C209 + C210** (PR #219), verified independently on `07af032ad`, and A1.1
+   is ✅ on that evidence.
+3. **A correction pass over §1** — **its own unit, not residue.** Around 15 of its 51 contested rows
+   (U1–U3: the attestation guard, the round, the tap, the escape and the live set) were adjudicated
+   *before* C209/C210 landed and need re-derivation rather than transcription; the remaining ~36 are
+   mechanical, each §4 challenge naming the cell to change.
 4. **A fetch in the setup**, which is the one thing §0.9 says no amount of care inside the analysis
    substitutes for.
 

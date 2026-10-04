@@ -346,8 +346,11 @@ A join takes about 15 seconds and ~19 MB, measured.
 
 ## Do not onboard a validator yet
 
-**This net takes one validator on purpose, and adding a second is unsafe today.** Three blockers, all
-measured:
+**This net takes one validator on purpose.** Three blockers were measured; the first two are fixed below,
+and the third's mechanism — the unattested storm, and the guard that let a fully-live net stop finalising
+— is fixed by C209/C210. **Lifting this gate is a re-verification on this net, not a code change**, and
+the readiness question is owned by the
+[testnet acceptance specification](../spec/testnet-acceptance.md) §3.2.
 
 1. ~~**Three validators panic at the first epoch boundary.**~~ **Fixed, 2026-09-28.** With bonds
    A 100 / B 100 / C 50 and `--epoch-length 10`, all three nodes used to die in the same second at

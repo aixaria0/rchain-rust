@@ -37,9 +37,12 @@ tools/devnet.sh up --validators 3 --fresh --stakes 100,100,50 --epoch-length 10 
     --no-autopropose --propose-on-deploy
 ```
 
-`--attest-on-new-blocks` is **required** and is not a `devnet.sh` flag: the tap is gated on
-`attest_on_new_blocks && !no_attest_on_new_blocks` and the positive clap flag defaults false, so without it
-no node ever attests and nothing finalises at any N (recorded in `n214-preregistration.md`).
+`--attest-on-new-blocks` **is not required.** *Corrected 2026-10-04: this section originally claimed the
+positive clap flag defaults `false`, so a node without it never attests. It does not — the merged default
+is `true` (`node/src/configuration/defaults.conf:16`) and the CLI flag only ever adds `true`. The
+correction is #219's author's (`d960a0f18`). The flag is passed explicitly here so the argv is
+self-describing, not because it is required; the frozen text stands beside this note, per this tree's
+rule.* It is also not a `devnet.sh` flag, which is why it goes through `DEVNET_EXTRA_FLAGS`.
 
 `--no-autopropose` (i.e. omitting `--autopropose`) is required: with it on and a deployer key, the dev-mode
 dummy deploy is injected into every empty-pool block, `new_state_transition` is pinned true, and the guard

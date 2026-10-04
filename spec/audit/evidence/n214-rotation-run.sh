@@ -5,11 +5,11 @@
 # left finality at `none`, while triggering the validators **in rotation** took it none -> f=1 -> f=9 ->
 # f=12 and running. That observation is the lead this script turns into a measurement.
 #
-# It is a direct test of the suppression mechanism: `attestation_suppressed` is
-# `!(new_state_transition || cadence_due)` under `paced && quorum_reachable`, and `new_state_transition`
-# is true only when an immediate parent carries a deploy. A deploy delivered as an `Explicit` propose
-# bypasses the pace gate, so a validator that is *asked* to propose speaks even while suppressed. If the
-# mechanism is right, R1 (one validator asked) stalls and R2 (all asked, in turn) advances.
+# It was a direct test of the pre-C209 suppression mechanism: `new_state_transition` was true only when
+# an immediate parent carried a deploy, so one round after a deploy every validator was paced to a cadence
+# that never came due on a chain that was not moving. **C209 (2026-10-04) changed the guard to read every
+# input from `latest_msgs`** — what the node has seen — bounded by `ATTESTATION_HORIZON`; this script is
+# kept as it was run, and its three arms are the before/after pair that distinguished the two rules.
 #
 # Usage:  spec/audit/evidence/n214-rotation-run.sh
 set -u

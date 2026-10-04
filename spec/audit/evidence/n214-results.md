@@ -1,7 +1,7 @@
 # n214 — results: criteria 1 and 2 re-probed on the tip
 
 Protocol: [`n214-preregistration.md`](n214-preregistration.md). Run: `n214-sweep-run.sh`.
-Artefacts: `n214-blocks/f9d36b9c4-20261003T154406Z/` (transcripts), `n214-void-attestation-off/`
+Artefacts: `n214-blocks/f9d36b9c4-20261003T154406Z/` (transcripts), `n214-repeat-attestation-on/`
 (the void first attempt, kept — see below).
 
 **Tree `f9d36b9c4`** (`dev`, the merge of PR #217). Image `sha256:eb2c2308…`, node binary
@@ -46,19 +46,19 @@ lose before the kill.** The net was already not finalising with all three valida
 survivors finalise past the kill" has no meaningful answer — the pre-condition of the experiment is
 false. Criterion 2 fails, but it fails upstream of the wedge.
 
-## The first attempt was void, and why — a node flag that is not default-on
+## The first attempt was a repeat, not a void — a correction
 
 The first run of this rig omitted `--attest-on-new-blocks` and produced the same shape (blocks, no
-finality). It is **void**, and kept in `n214-void-attestation-off/` so the failure is inspectable.
+finality). This section originally called it **void** and attributed that to the omission, on the reading
+that the positive clap flag defaults **false**.
 
-The node gates the attestation tap on `conf.attest_on_new_blocks && !conf.no_attest_on_new_blocks`
-(`node/src/runtime/node_runtime.rs`), and `attest_on_new_blocks` is a clap `bool` whose default is
-**false**. A node started without the positive flag never attests; the fringe never advances; nothing
-finalises at any validator count. The option's own doc string says *"Attestation is on by default"* —
-which describes the intent, not the code. That is a live trap for any operator who reads the help.
+**The reading was wrong, and the correction is #219's author's (`d960a0f18`).** The merged default is
+`true` (`node/src/configuration/defaults.conf:16`) and the CLI flag only ever *adds* `true`, so the flag
+was in effect in **both** runs — which is exactly why they gave identical results. The option's own doc
+string, *"Attestation is on by default"*, was right all along.
 
-Recording it matters twice over: it is a finding in its own right, and it is the reason the flag is now
-pinned in the pre-registration rather than left to a default.
+So the first attempt is a **second, agreeing attempt**, not a void one. Its artefacts are kept under
+`n214-repeat-attestation-on/` (renamed from `n214-void-attestation-off/`) so the name says what they are.
 
 ## What this does to the criteria
 
