@@ -14,11 +14,11 @@ implementation rather than to itself.
 | Suite | `github.com/ocapn/ocapn-test-suite` at `31f0b80` |
 | Netlayer | `tcp-testing-only` (the suite's own; no encryption — it is not a deployment transport) |
 
-Three whole-suite runs are kept: `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after `op:listen`
-(`failures=6, errors=8`), and `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`, and 10 s
-instead of 55 s because the GC timeouts are gone). **Read the per-module numbers, not a summary
-line.** The runner reports a `setUp` error against the test it aborted as well as the error itself,
-so its tallies exceed the test count; running each module on its own gives the numbers below.
+Four whole-suite runs are kept: `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after `op:listen`
+(`failures=6, errors=8`), `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`), and `run-4.txt`
+after `op:gc-answers` (`failures=6, errors=4`). **Read the per-module numbers, not a summary line.**
+The runner reports a `setUp` error against the test it aborted as well as the error itself, so its
+tallies exceed the test count; running each module on its own gives the numbers below.
 
 ## Per module
 
@@ -28,15 +28,16 @@ so its tallies exceed the test count; running each module on its own gives the n
 | `op_deliver` | **4 / 4** | ✅ including both promise-pipelining tests and the break-propagation test |
 | `op_start_session` | **3 / 5** | the two failures are the crossed-hellos tests, which need the sturdyref enlivener (below) |
 | `op_listen` | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
-| `op_gc` | **3 / 4** | ✅ `op:gc-exports` with its wire-delta accounting; `test_gc_answer` needs the greeter to hand the peer a resolver, which needs `Act` to allocate an export |
+| `op_gc` | **4 / 4** | ✅ `op:gc-exports` with its wire-delta accounting, and `op:gc-answers` |
 | `third_party_handoffs` | 1 / 7 | the one pass is an *invalid-signature* rejection that passes incidentally: this port answers every handoff with a `break` |
-| **Total** | **15 / 24** | |
+| **Total** | **16 / 24** | |
 
-So the implemented path is **stages 0–2 of the implementation guide, plus `op:gc-exports` from stage
-3**: the handshake (with the two refusals it must make), `op:deliver`, the export table, promise
-pipelining through the answer table, `fulfill`/`break` through `resolve-me-desc`, `op:listen` with
-its promise/resolver pair, and the release accounting. `op:gc-answers` and handoffs (stage 6) are
-what remains, and the suite says exactly that — which is the point of running it.
+So the implemented path is **stages 0–3 of the implementation guide**: the handshake (with the two
+refusals it must make), `op:deliver`, the export table, promise pipelining through the answer table,
+`fulfill`/`break` through `resolve-me-desc`, `op:listen` with its promise/resolver pair, and the GC
+accounting in both directions. Handoffs (stage 6) are what remains, along with the sturdyref
+enlivener that the two crossed-hellos tests need — and the suite says exactly that, which is the
+point of running it.
 
 **Not implemented, and named in the code rather than guessed at:** the suite's *sturdyref
 enlivener* (`gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB`), which must dial a peer back from a sturdyref it is

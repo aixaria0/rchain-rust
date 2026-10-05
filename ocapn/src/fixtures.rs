@@ -13,7 +13,7 @@ use async_trait::async_trait;
 
 use crate::bootstrap::Bootstrap;
 use crate::captp::Desc;
-use crate::conn::{Act, Export, ListenOutcome, Reply};
+use crate::conn::{Act, Export, ListenOutcome, Outgoing, Reply};
 use crate::syrup::Value;
 
 /// The swiss numbers the suite fetches, in its own spelling.
@@ -49,10 +49,27 @@ impl Export for Greeter {
             Ok(other) => other,
             Err(_) => return Err("the greeter expects an object reference".to_string()),
         };
+        // The greeting carries an `answer-position` and hands over a sink, so the peer can resolve
+        // the delivery — which is what the suite's `op:gc-answers` test drives.
         Ok(Act {
-            out: vec![(to, vec![Value::String("Hello".to_string())])],
+            out: vec![Outgoing {
+                to,
+                args: vec![Value::String("Hello".to_string())],
+                answer: true,
+                hand_out: Some(Arc::new(Sink)),
+            }],
             reply: Reply::Nothing,
         })
+    }
+}
+
+/// Accepts a resolution and does nothing with it: where a greeting's fulfilment lands.
+struct Sink;
+
+#[async_trait]
+impl Export for Sink {
+    async fn deliver(&self, _args: &[Value]) -> Result<Act, String> {
+        Ok(Act::nothing())
     }
 }
 
@@ -203,7 +220,7 @@ impl Export for Resolver {
         Ok(Act {
             out: listeners
                 .into_iter()
-                .map(|to| (to, notification.clone()))
+                .map(|to| Outgoing::to(to, notification.clone()))
                 .collect(),
             reply: Reply::Nothing,
         })

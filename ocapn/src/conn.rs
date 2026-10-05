@@ -24,8 +24,8 @@ use async_trait::async_trait;
 use num_bigint::{BigUint, Sign};
 
 use crate::captp::{
-    Deliver, Desc, OpGcExports, OpListen, DELIVER_LABEL, IMPORT_OBJECT_LABEL, IMPORT_PROMISE_LABEL,
-    LISTEN_LABEL,
+    Deliver, Desc, OpGcAnswers, OpGcExports, OpListen, DELIVER_LABEL, IMPORT_OBJECT_LABEL,
+    IMPORT_PROMISE_LABEL, LISTEN_LABEL,
 };
 use crate::locator::PeerLocator;
 use crate::netlayer::NetConn;
@@ -53,12 +53,37 @@ pub enum ListenOutcome {
     Registered,
 }
 
+/// A message an object asks the session to send on its behalf.
+pub struct Outgoing {
+    pub to: Desc,
+    pub args: Vec<Value>,
+    /// Allocate an `answer-position` for this delivery — a promise the peer may pipeline onto — and
+    /// report it collected at once with `op:gc-answers`, because nothing in this crate keeps an
+    /// answer as a recipient.
+    pub answer: bool,
+    /// Export this object and offer it as the delivery's `resolve-me-desc`, so the peer can resolve
+    /// the delivery into something of ours.
+    pub hand_out: Option<Arc<dyn Export>>,
+}
+
+impl Outgoing {
+    /// A plain message to a descriptor the object already holds.
+    pub fn to(to: Desc, args: Vec<Value>) -> Outgoing {
+        Outgoing {
+            to,
+            args,
+            answer: false,
+            hand_out: None,
+        }
+    }
+}
+
 /// The result of a delivery: messages to send first, then what to reply.
 ///
 /// `out` exists for the objects that must *address a peer's object* — the greeter sends `Hello` to
 /// the object it was handed — without giving every object the socket.
 pub struct Act {
-    pub out: Vec<(Desc, Vec<Value>)>,
+    pub out: Vec<Outgoing>,
     pub reply: Reply,
 }
 
@@ -170,6 +195,8 @@ pub struct Session {
     /// Answer positions the peer asked us to keep usable, and the export each resolved to.
     answers: BTreeMap<u64, Option<u64>>,
     next_export: u64,
+    /// The next answer position to allocate for an outgoing delivery.
+    next_answer: u64,
 }
 
 impl Session {
@@ -238,6 +265,7 @@ impl Session {
             exports,
             answers: BTreeMap::new(),
             next_export: 1,
+            next_answer: 0,
         }
     }
 
@@ -333,8 +361,8 @@ impl Session {
             }
         };
 
-        for (to, args) in act.out {
-            self.send_deliver(to, args).await?;
+        for outgoing in act.out {
+            self.send_outgoing(outgoing).await?;
         }
 
         // What we owe the peer, and what a later pipelined delivery to this answer must reach.
@@ -440,6 +468,40 @@ impl Session {
         self.next_export += 1;
         self.exports.insert(pos, object);
         pos
+    }
+
+    /// Send one of an object's outgoing messages, exporting anything it hands over and allocating
+    /// an answer if it asked for one.
+    ///
+    /// An answer is reported collected immediately (`op:gc-answers`): this crate never keeps one as
+    /// a recipient for the peer to pipeline onto, so there is nothing to wait for. An implementation
+    /// that did keep answers would collect them when the last reference went, not here.
+    async fn send_outgoing(&mut self, outgoing: Outgoing) -> Result<(), ConnectionError> {
+        let resolve_me_desc = outgoing
+            .hand_out
+            .map(|object| Desc::ImportObject(self.insert_export(object).into()));
+        let answer_pos = if outgoing.answer {
+            let pos = self.next_answer;
+            self.next_answer += 1;
+            Some(pos)
+        } else {
+            None
+        };
+        let deliver = Deliver {
+            to: outgoing.to,
+            args: outgoing.args,
+            answer_pos: answer_pos.map(BigUint::from),
+            resolve_me_desc,
+        };
+        send(&mut self.conn, &deliver.to_syrup()).await?;
+        if let Some(pos) = answer_pos {
+            let gc = OpGcAnswers {
+                positions: vec![BigUint::from(pos)],
+            }
+            .to_syrup();
+            send(&mut self.conn, &gc).await?;
+        }
+        Ok(())
     }
 
     async fn send_deliver(&mut self, to: Desc, args: Vec<Value>) -> Result<(), ConnectionError> {

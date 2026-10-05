@@ -235,6 +235,21 @@ impl OpGcExports {
     }
 }
 
+/// `op:gc-answers` — "tell the peer which of our answer positions we have released".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpGcAnswers {
+    pub positions: Vec<BigUint>,
+}
+
+impl OpGcAnswers {
+    pub fn to_syrup(&self) -> Value {
+        Value::Record(vec![
+            Value::Symbol(GC_ANSWERS_LABEL.to_string()),
+            Value::List(self.positions.iter().cloned().map(position_value).collect()),
+        ])
+    }
+}
+
 fn position_value(n: BigUint) -> Value {
     Value::Int(BigInt::from(n))
 }
