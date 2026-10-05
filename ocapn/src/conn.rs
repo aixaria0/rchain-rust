@@ -137,11 +137,52 @@ impl Act {
     }
 }
 
+/// Where a chain-backed object lives, for an object that has to name it on chain rather than pass it
+/// as data (C224 item 4): a registry location and the pattern that binds the object inside the value
+/// registered there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Named {
+    pub location: String,
+    /// `None` when the registered value *is* the object.
+    pub pattern: Option<String>,
+}
+
+/// What an object may ask the session about — currently one thing: **which object a descriptor the
+/// peer sent refers to**. A descriptor is a position in *this session's* export table, so only the
+/// session can resolve it, and only the object receiving the delivery knows whether it needs to.
+pub trait ExportView: Send + Sync {
+    /// The object exported at `position`, if the peer addressed one that exists.
+    fn exported(&self, position: &BigUint) -> Option<Arc<dyn Export>>;
+}
+
+impl ExportView for crate::capacity::Bounded<u64, Arc<dyn Export>> {
+    fn exported(&self, position: &BigUint) -> Option<Arc<dyn Export>> {
+        let position = u64::try_from(position.clone()).ok()?;
+        self.get(&position).cloned()
+    }
+}
+
 /// A local object a peer may deliver to.
 #[async_trait]
 pub trait Export: Send + Sync {
     /// Handle one delivery. `Err(reason)` becomes a `break` for a peer that asked for a reply.
     async fn deliver(&self, args: &[Value]) -> Result<Act, String>;
+
+    /// Where this object lives on chain, when it does — the answer that lets a *capability argument*
+    /// be named rather than refused. A provided method, so the objects that are session-local (the
+    /// fixtures, the proxy, the gift store) say nothing and stay unchanged.
+    fn named(&self) -> Option<Named> {
+        None
+    }
+
+    /// Handle one delivery **with a view of the session's exports**.
+    ///
+    /// Provided, and defaulting to [`Export::deliver`], so this changes no existing object: the ones
+    /// that take a capability as an argument override it. The view is how a `desc:export N` the peer
+    /// sent — a position in *our* table — becomes the object it names.
+    async fn deliver_in(&self, _session: &dyn ExportView, args: &[Value]) -> Result<Act, String> {
+        self.deliver(args).await
+    }
 
     /// Register a listener for `op:listen` — a descriptor to deliver `[<fulfill …>]` or
     /// `[<break …>]` to once this promise settles. `None` means this object is not a promise, and
@@ -208,6 +249,10 @@ impl Identity {
             session_pubkey: self.public.clone(),
             acceptable_location: self.location.clone(),
             acceptable_location_sig: sig,
+            // We sign over exactly what we send, so the record we keep is the one we encoded (C224
+            // item 1). A peer that signs the same way is verified against *its* bytes, not a
+            // re-encoding of them.
+            locator_record: self.location.to_syrup(),
         })
     }
 }
@@ -642,7 +687,10 @@ impl Session {
             }
         };
 
-        let act = match target.deliver(&deliver.args).await {
+        // **With the session's exports in view** (C224 item 4): an object that can name a capability
+        // on chain needs to know which object a `desc:export N` the peer sent refers to, and only the
+        // session holds that table. Every other object ignores the view.
+        let act = match target.deliver_in(&self.exports, &deliver.args).await {
             Ok(act) => act,
             Err(reason) => {
                 // The answer this delivery would have filled is now broken, so a later pipelined

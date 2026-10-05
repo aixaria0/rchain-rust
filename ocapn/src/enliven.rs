@@ -180,6 +180,15 @@ impl Enlivener {
                 to: Desc::Export(0u64.into()),
                 args: vec![
                     Value::Symbol("fetch".to_string()),
+                    // **Bytes, and that is a decision with a citation** (C224 item 3). The Locators
+                    // draft calls the swiss number a string and Endo sends one; the *reference suite*
+                    // sends bytes and **asserts we send bytes back** — `third_party_handoffs.py`'s
+                    // `test_provides_valid_handoff_give` compares this very argument against
+                    // `sturdyref.swiss_num`, which the suite builds as `…encode("ascii")`. Following
+                    // the draft here would fail a conformance test, so the port follows the
+                    // implementation, as it does for `op:start-session`'s field count (AUDIT C216).
+                    // Inbound, the bootstrap accepts either, which is what lets us *serve* a peer that
+                    // speaks the draft's spelling (AUDIT C217).
                     Value::Bytes(swiss.to_vec()),
                 ],
                 resolve_me: Some(catcher),

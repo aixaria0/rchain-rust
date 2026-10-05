@@ -1,0 +1,59 @@
+# The suite after wave 2 (issue #255): 24/24, all modules.
+#
+# command: python3 spec/audit/evidence/ocapn-conformance/run-suite.py /tmp/ocapn-test-suite \
+#            'ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045' --all
+# peer:    target/debug/ocapn-tcp-testing 127.0.0.1:22045, built from branch ocapn/residues-w2
+# suite:   github.com/ocapn/ocapn-test-suite at 31f0b80
+#
+# Recorded because this wave touched the session layer again, and one of its changes is a wire-adjacent
+# struct. Three edits, and what each could have disturbed:
+#
+#  * **`StartSession` kept the locator record as it arrived** (C224 item 1), so the location signature
+#    is verified over the bytes the peer signed rather than over a re-encoding of the parsed locator.
+#    The *wire* is unchanged — the reference-vector known-answer test still hashes the same bytes
+#    (`ocapn/tests/reference_vectors.rs`) — and this is the change the handshake modules would have
+#    caught if it were not: `op_start_session` exercises the signature verification from both sides.
+#
+#  * **`Export` gained two provided methods** (`deliver_in`, `named`), so `handle_deliver` calls
+#    `deliver_in` instead of `deliver`. Every existing object is untouched — a provided method with a
+#    default of the old behaviour — which is why the suite's fixtures behaved identically.
+#
+#  * **The term builders take `Arg` instead of `Par`** (C224 item 4), so a capability argument can be a
+#    *bound name* rather than a literal. The suite never reaches the bridge, so this is node-side only;
+#    the observable is `node/tests/ocapn_listener.rs`'s
+#    `a_captp_peer_passes_a_capability_back_as_an_argument` instead.
+#
+# The module counts are unchanged, which is the point of recording this: the new behaviour is exercised
+# by the *tests* named above, not by the suite's silence.
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+OK
+suite /tmp/ocapn-test-suite at 31f0b80, peer ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045
+tests.op_abort: 1/1
+----------------------------------------------------------------------
+Ran 5 tests in 0.125s
+
+OK
+tests.op_start_session: 5/5
+----------------------------------------------------------------------
+Ran 4 tests in 0.223s
+
+OK
+tests.op_deliver: 4/4
+----------------------------------------------------------------------
+Ran 3 tests in 0.200s
+
+OK
+tests.op_listen: 3/3
+----------------------------------------------------------------------
+Ran 4 tests in 0.178s
+
+OK
+tests.op_gc: 4/4
+----------------------------------------------------------------------
+Ran 7 tests in 0.398s
+
+OK
+tests.third_party_handoffs: 7/7

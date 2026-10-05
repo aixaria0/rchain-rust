@@ -466,6 +466,8 @@ pub struct NodeProgram {
     ocapn_listen: Option<String>,
     /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4).
     ocapn_deny_local_dial: bool,
+    /// The name this node advertises in every session (C224 item 2).
+    ocapn_designator: String,
     /// The node's log, for the one surface that had none: the OCapN listener served, refused and
     /// spent in silence, so an operator could not tell "nobody is calling" from "calls are failing"
     /// (HAZOP row E6).
@@ -507,6 +509,7 @@ impl NodeProgram {
             enable_devnet_admin_public,
             ocapn_listen,
             ocapn_deny_local_dial,
+            ocapn_designator,
             log,
             ocapn_chain,
             protocol_server,
@@ -607,6 +610,7 @@ impl NodeProgram {
         let mut ocapn = tokio::spawn(serve_ocapn(
             ocapn_listen,
             ocapn_chain,
+            ocapn_designator,
             ocapn_deny_local_dial,
             log.clone(),
             stop.clone(),
@@ -1260,6 +1264,9 @@ pub async fn setup_node_program(
     // API's `dev_mode` and its own key, asynchronously, which a synchronously-built router cannot
     // consult; the two values are the same pair the faucet handler refuses without.
     let faucet_enabled = conf.dev_mode && faucet_deployer_key.is_some();
+    // **This node's OCapN designator**, derived *here* because this is the last place the deployer key
+    // is in hand — it moves into the API below (C224 item 2).
+    let ocapn_designator = crate::api::ocapn::node_designator(faucet_deployer_key.as_ref(), id);
     // The OCapN bridge (issue #249): a delivery to a chain-backed capability becomes a signed
     // deploy. Built only when there is a listener to serve it and a key to sign with — today the
     // node's own dev deployer key, because binding a CapTP session to a caller's identity is the
@@ -1360,6 +1367,7 @@ pub async fn setup_node_program(
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
         ocapn_listen: conf.api_server.ocapn_listen.clone(),
         ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,
+        ocapn_designator,
         log: log.clone(),
         ocapn_chain,
         protocol_server: Some(build_protocol_server(
