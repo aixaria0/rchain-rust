@@ -493,8 +493,9 @@ async fn two_shard_2pc_replay_rederives_the_post_state_hash() {
             RhoString::apply(destination.clone()),
         ],
         true,
-    );
-    let commit = txn_term("commit", txn_id, &[], true);
+    )
+    .expect("a renderable destination");
+    let commit = txn_term("commit", txn_id, &[], true).expect("no arguments to refuse");
     let deploys = [
         signed_deploy(&prepare, &coordinator_sec, &coordinator_pub),
         signed_deploy(&commit, &coordinator_sec, &coordinator_pub),

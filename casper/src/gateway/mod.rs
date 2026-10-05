@@ -432,7 +432,16 @@ impl GatewayTxn {
             RhoNumber::apply(i64::from(leg.amount)),
             RhoString::apply(leg.to.clone()),
         ];
-        let term = txn_term("prepare", &record.txn_id, &args, true);
+        // The destination is a caller-supplied string and this node's validator key signs the phase
+        // (AUDIT C220), so a value that cannot be written as a literal votes **abort with the reason**
+        // rather than being built into the term as code.
+        let term = match txn_term("prepare", &record.txn_id, &args, true) {
+            Ok(term) => term,
+            Err(reason) => {
+                record.record_vote(leg.shard_id.clone(), Vote::Abort, Some(reason));
+                return Vote::Abort;
+            }
+        };
         let outcome = self.phase_with_term(leg, &term).await;
         let vote = vote_of(&outcome);
         let reason = match (&outcome, vote) {
@@ -446,7 +455,10 @@ impl GatewayTxn {
 
     /// Submit one unbundled phase deploy to a leg's shard and await its reply.
     async fn phase(&self, record: &CoordRecord, leg: &LegRecord, method: &str) -> ShardOutcome {
-        let term = txn_term(method, &record.txn_id, &[], true);
+        let term = match txn_term(method, &record.txn_id, &[], true) {
+            Ok(term) => term,
+            Err(reason) => return ShardOutcome::Error(reason),
+        };
         self.phase_with_term(leg, &term).await
     }
 
