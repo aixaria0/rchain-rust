@@ -1,0 +1,61 @@
+# W3.1–W3.3: the whole suite, 24/24.
+#
+# command: python3 spec/audit/evidence/ocapn-conformance/run-suite.py /tmp/ocapn-test-suite \
+#            'ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045' --all
+# peer:    target/debug/ocapn-tcp-testing 127.0.0.1:22045, built from branch ocapn/stage6
+# suite:   github.com/ocapn/ocapn-test-suite at 31f0b80
+#
+# What changed since run-6 (op_start_session 5/5, third_party_handoffs 1/7 → 7/7):
+#
+#  * `Session::dial` now **writes its own start-session**. It read the peer's and never answered, so
+#    the handoff receiver's dial-back left the suite's `setup_session` waiting for a message that
+#    never came (measured: that leg timed out).
+#  * A session is **booked in the `SessionRegistry` before its start-session is written**
+#    (`owner::accept_and_book`). Answering first is a race the Gifter fixture caught: the peer acts
+#    on our start-session at once, so an enlivener handed a sturdyref to that very peer found no live
+#    session, dialed a second one, and the register resolved the pair as crossed hellos — killing the
+#    connection the peer was using.
+#  * The gift store is keyed by **(gift id, the gifter's session)**, not by gift id alone, and a
+#    re-deposit keeps the replay guard. Keyed by gift id, one test's claim was refused by a previous
+#    test's guard (measured: `test_valid_handoff_wait_deposit_gift`, whose withdraw arrives before its
+#    deposit); resetting the guard on deposit would hand `test_handoff_receive_invalid_handoff_count`
+#    the object twice.
+#
+# Every module is green, and the per-module lines below are the counts the driver read from the
+# result objects (not the printed tallies, which double-count a `setUp` error against the aborted
+# test).
+#
+# Re-run once more after `par_value`'s tuple fix (W3.4 — a tuple crosses as a Syrup *list*, not a
+# record with a boolean label): same counts, module for module. The body below is that last run.
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+OK
+suite /tmp/ocapn-test-suite at 31f0b80, peer ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045
+tests.op_abort: 1/1
+----------------------------------------------------------------------
+Ran 5 tests in 0.119s
+
+OK
+tests.op_start_session: 5/5
+----------------------------------------------------------------------
+Ran 4 tests in 0.225s
+
+OK
+tests.op_deliver: 4/4
+----------------------------------------------------------------------
+Ran 3 tests in 0.204s
+
+OK
+tests.op_listen: 3/3
+----------------------------------------------------------------------
+Ran 4 tests in 0.192s
+
+OK
+tests.op_gc: 4/4
+----------------------------------------------------------------------
+Ran 7 tests in 0.407s
+
+OK
+tests.third_party_handoffs: 7/7

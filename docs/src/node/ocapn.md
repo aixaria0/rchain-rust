@@ -10,12 +10,16 @@
 > named this layer, promise pipelining, and three-party handoff as out of scope there. This page
 > takes that scope up.
 
-**Status.** Stages 0–3 are built — the wire codec and locators, the session identity, the netlayer,
-the CapTP connection with its tables, `op:deliver` with promises, pipelining, `break` and
-`op:listen`, and the GC accounting in both directions. They are checked against the OCapN
-conformance suite: **16 of 24 tests pass**, all in the implemented path. Handoffs, the sturdyref
-enlivener, and the bridge to the chain are **proposed and not yet implemented**; the staging is the
-implementation guide's own six stages, and each is listed with its state.
+**Status.** **Stages 0–6 are built, and the whole OCapN conformance suite passes: 24 of 24.** That is
+the wire codec and locators, the session identity, the netlayer, the CapTP connection with its
+tables, `op:deliver` with promises, pipelining, `break` and `op:listen`, the GC accounting in both
+directions, the **sturdyref enlivener** (which dials a peer back from a sturdyref it is handed — the
+dial-out case, and the missing half of the crossed-hello rule) and **third-party handoffs** in all
+three roles. The **bridge to the chain** is built too: an `op:deliver` to a chain-backed capability
+becomes a signed deploy, and a call that *returns* capabilities hands the peer a descriptor per
+capability. Two foreign implementations have spoken to it: the suite above, and Agoric's own
+`@endo/ocapn`, which dials a **node** and holds an RChain ERTP issuer (see
+[`spec/audit/evidence/endo-spike/`](../../../spec/audit/evidence/endo-spike/README.md)).
 
 ## What OCapN is, in one paragraph
 
@@ -41,19 +45,19 @@ deploy the bridge produces (below).
 | 1 | Import/export tables, `op:deliver`, the bootstrap at position 0, `fetch` | **built** — `ocapn/src/{captp,conn,bootstrap,fixtures}.rs` |
 | 2 | Promises and answers: `fulfill`/`break` via `resolve-me-desc`, pipelining via the answer table, `op:listen` | **built** — `ocapn/src/{conn,captp,fixtures}.rs` |
 | 3 | GC: `op:gc-exports`, `op:gc-answers`, and the wire-delta accounting | **built** — `ocapn/src/{captp,conn}.rs` |
-| 4–5 | Pipelining refinements, `resolve-me-desc` folding, `op:gc-answers` | proposed |
-| 6 | Third-party handoffs (Gifter / Receiver / Exporter) | proposed |
-| — | The bridge: an `op:deliver` to a chain-backed export becomes a signed deploy | proposed |
+| 4–5 | Pipelining refinements, `resolve-me-desc` folding, `op:gc-answers` | **built** — `ocapn/src/{conn,captp}.rs` |
+| 6 | Third-party handoffs (Gifter / Receiver / Exporter), and the sturdyref enlivener that dials out | **built** — `ocapn/src/{owner,enliven,handoff,proxy,bootstrap}.rs` |
+| — | The bridge: an `op:deliver` to a chain-backed export becomes a signed deploy | **built** — `node/src/api/ocapn.rs`, `casper/src/shard_invoke.rs` |
 
 ### Checked against the reference suite
 
 `ocapn-tcp-testing` (`ocapn/src/bin/`) serves the suite's fixture objects, and the suite has been
-run against it: **16 of 24 tests pass**, all of them in the implemented path — `op_abort` 1/1,
-`op_deliver` 4/4 (including both promise-pipelining tests and the break-propagation test),
-`op_listen` 3/3 (the promise/resolver pair, heard before and after the settlement), `op_gc` 4/4
-(the wire-delta accounting and `op:gc-answers`), and `op_start_session` 3/5 (the two failures need
-the sturdyref enlivener, which is not built). Handoffs (1/7, incidentally) are the unimplemented
-stage, and the suite says so. The runs,
+run against it: **24 of 24 tests pass** — `op_abort` 1/1, `op_start_session` 5/5 (including both
+crossed-hello variants), `op_deliver` 4/4 (including both promise-pipelining tests and the
+break-propagation test), `op_listen` 3/3 (the promise/resolver pair, heard before and after the
+settlement), `op_gc` 4/4 (the wire-delta accounting and `op:gc-answers`), and
+`third_party_handoffs` 7/7 (Gifter, Receiver and Exporter, including the replay and
+forged-signature refusals). The runs,
 the suite revision, and the per-module counts are kept in
 [`spec/audit/evidence/ocapn-conformance/`](../../../spec/audit/evidence/ocapn-conformance/README.md)
 so a later run can be compared against them.
@@ -150,21 +154,34 @@ stream harmless — the codec's nesting depth, and a message-size cap — and a 
 message is an error, never a silently dropped message. A production netlayer (Tor, libp2p, IBC)
 implements the same two functions; nothing above the trait changes.
 
-### What this pass deliberately leaves, and why
+### What the first pass left, and how it was closed
 
-Each of these is a *named* boundary rather than an omission, and each is a prerequisite of the next:
+Each of these was a *named* boundary rather than an omission, and each was a prerequisite of the next.
+All three are now built; the shape of each closure is worth keeping, because it is where the design
+record was wrong:
 
 - **The sturdyref enlivener** (`gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB`) — the fixture that dials a peer
-  back from a sturdyref and returns a live reference. It needs **dial-out**: a session the crate
+  back from a sturdyref and returns a live reference. It needed **dial-out**: a session the crate
   drives in the background, and an object that can address it after the delivery that created it has
-  returned. Today an object answers with an [`Act`] and the loop performs it; nothing lets an object
-  send *later*. That is the same gap the two crossed-hellos tests fail on.
-- **Third-party handoffs** (stage 6) — need the same, plus gift signing and the replay counter.
+  returned. Closed by `ocapn/src/owner.rs` — a `SessionHandle` (what a non-owning task may ask) plus
+  a `SessionLoop` (the task that owns the socket and both tables) — and by `proxy.rs`'s `Forward`,
+  which is how an object fetched on one session is handed to a peer on another (a descriptor is
+  per-session, so it cannot be passed through; the forwarding export can).
+- **Third-party handoffs** (stage 6) — the same ownership, plus gift signing and the replay counter.
+  `handoff.rs` has the three records, the `Envelope` whose signature covers the object's **syrup
+  encoding**, and the gift store; `bootstrap.rs` plays the Exporter's `deposit-gift`/`withdraw-gift`
+  and `fixtures.rs`'s greeter plays the Receiver. The store is keyed by **(gift id, the gifter's
+  session)**: keyed by gift id alone, two independent handoffs sharing `b"my-gift"` shared a replay
+  guard, which is a defect the suite caught.
 - **The bridge to the chain** — a sturdyref resolving to a Rholang capability, and a delivery to it
-  becoming a caller-signed deploy. This needs a `Par` ↔ Syrup `Value` translation, which is a
-  *partial* map: CapTP's Symbols have no Rholang counterpart and an unforgeable name is not
-  passable data, so the translation has to refuse rather than guess. It also needs the deploy's
-  reply channel watched, which is `shard_invoke.rs`'s `await_reply`.
+  becoming a caller-signed deploy. The `Par` ↔ Syrup translation is `ocapn/src/par_value.rs` (a
+  *partial* map: a Symbol has no Rholang counterpart inbound, and an unforgeable name is refused
+  outbound rather than copied). Two things the plan did not anticipate: a capability a contract
+  **returns** has no source literal, so the deploy that produces it must register it in the same
+  evaluation (`shard_invoke.rs`'s `invoke_member_term`, via `rho:registry:insertArbitrary` — *not*
+  `insertSigned`, whose URI comes from the deployer key and so cannot be signed by a key with no
+  REV); and a **tuple crosses Syrup as a list**, not as a record, because records are labelled and
+  `(true, 0)` has no legal label.
 
 ## Invariants
 

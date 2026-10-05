@@ -155,7 +155,19 @@ stop.
   consumed exactly once" is a property of the ledger rather than of a vault — the ERTP ledger already
   has it, one native step wide.
 
-## Two follow-ups, recorded rather than hidden
+## The capabilities cross CapTP, demonstrated
+
+The point of ERTP here is that its issuer, brand, purse and payment are **capabilities**, and the
+request that produced both halves of #249 was for a peer to hold one. That now happens: Agoric's own
+`@endo/ocapn` dials a **node**, fetches `rho:rchain:ertp`, calls `makeIssuerKit`, holds the returned
+brand/mint/issuer as live remote objects, makes a purse from the issuer, and reads that purse's
+balance off the chain — `[ true, 0n ]`. Each call becomes a signed deploy; the kit's members and the
+purse cross as **descriptors** (unforgeable names never cross as data). The transcript and the node
+configuration are in [`spec/audit/evidence/endo-spike/`](../../../spec/audit/evidence/endo-spike/README.md).
+See [](ocapn.md) for what the bridge had to be taught: a returned capability has no source literal,
+so the deploy that produces it registers it; and a tuple crosses Syrup as a list.
+
+## One follow-up, and one that was closed
 
 - **[AUDIT C219](../../../spec/AUDIT.md) — a minted channel keeps one continuation**, so
   `install_vault_handle`'s second install replaces the first and a vault handle's `balance` arm has
@@ -163,9 +175,13 @@ stop.
   install the handle as one `arity: 1, remainder: true` continuation dispatching on the method — the
   shape `revVault` and the ERTP ledger already use — which is its own unit because it moves the
   continuation's `body_ref`.
-- **`spec/conformance/protocol.tsv`'s `replyCatalog` does not carry the new urn yet.** It is emitted
-  from `Rchain/Protocol.lean`, so adding `rho:rchain:ertp:ledger` there is a Lean-side change with a
-  corpus re-emit.
+- **`spec/conformance/protocol.tsv`'s `replyCatalog` did not carry the new urn — it does now.** The
+  row needed more than an entry: the model could not express the `arity: 1, remainder: true`
+  dispatch convention, and had no way to assert a *name* slot. `Rchain/Protocol.lean`'s `ReplyRow`
+  gained the dispatch field and `SlotShape.name`, the emitter gained the column, and
+  `rholang/src/system_processes.rs` now checks the row against both `Definition.arity` and
+  `Definition.remainder` — by which the catalog finally describes `revVault`, `pos` and the ERTP
+  ledger as the node installs them.
 
 ## Related
 

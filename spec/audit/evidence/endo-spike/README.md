@@ -64,3 +64,53 @@ node target/endo-spike/spike.mjs 22051 syrup
 `spike.mjs` imports `@endo/init` first — Endo's packages need the SES bootstrap to install the
 `assert` global they rely on. The script is a scratch artefact (`target/` is ignored); the
 transcript above is the record.
+
+## The ERTP round trip, against a **node** (run-2)
+
+**What this is, and what the first spike was not.** `run-1.txt` dialled the standalone
+`ocapn-tcp-testing` **fixture binary** and fetched the *echo* fixture: the handshake, the codec and
+the export/answer tables crossed, but no ERTP object ever did, and no chain was involved. Issue
+#249's clause 4 — "a peer implementation fetches an RChain issuer over OCapN and the round trip is
+demonstrated" — was therefore **not met**, and the record said otherwise until the exploration
+behind this run caught it.
+
+`run-2.txt` meets it. `ertp-round-trip.mjs` dials a **running node** (the same `@endo/ocapn`
+1.1.1) and walks the path the clause names:
+
+```
+FETCHED the ERTP contract: Object [Alleged: Remote Object 1] {}
+KIT: [ Remote Object 2, Remote Object 3, Remote Object 4 ]     # brand, mint, issuer
+PURSE: Object [Alleged: Remote Object 5] {}
+BALANCE: [ true, 0n ]
+```
+
+Each call is a CapTP delivery that becomes a **signed deploy**, lands in a block, and answers from
+the value that deploy put on its reply channel; the kit's three members and the purse are
+unforgeable names that crossed as descriptors, so the peer holds live references to objects on
+chain and never sees a registry URI.
+
+The node is configured by `node.conf` (this directory): `dev-mode`, one bonded validator,
+`propose-on-deploy`, and an OCapN listener. Reproduce with:
+
+```sh
+mkdir -p $DATA/genesis
+printf '<validator pubkey> 100\n'            > $DATA/genesis/bonds.txt
+printf '<deployer REV address>,1000000000000\n' > $DATA/genesis/wallets.txt
+cp spec/audit/evidence/endo-spike/node.conf  $DATA/rnode.conf
+target/debug/rnode run --data-dir $DATA &
+node spec/audit/evidence/endo-spike/ertp-round-trip.mjs 22050
+```
+
+(`bonds.txt` needs the *public* half of `casper.validator-private-key`; `wallets.txt` needs the REV
+address of `dev.deployer-private-key`, which is the key the bridge signs its deploys with — a
+bridged deploy pays phlo out of that account.)
+
+**Three defects this run found**, each invisible to the Python suite and each now a test or a
+comment where it happened:
+
+| found | what it was | fix |
+|---|---|---|
+| `preCharge: insufficient funds (0 < 1000000)` | the bridge registered a returned capability with `insertSigned`, whose URI comes from the *deployer* key — so a fresh key per object meant a deploy with no REV | `rho:registry:insertArbitrary`, which mints a fresh URI with no key, so the node's funded key signs |
+| an empty reply where a purse was expected | the term bound the member with `for (@(_, root) <- cap)`, and a tuple pattern is **exact**: an ERTP kit's reply is `(brand, mint, issuer)`, so the 2-element pattern fell straight through and the deploy answered nothing | the pattern is built from the value's real shape |
+| `Unexpected type "boolean", Syrup record labels must be strings, selectors, or bytestrings` | `par_value` mapped `ETuple` to a Syrup **record**; records are labelled, and `(true, 0)` made the label a boolean | a tuple crosses as a Syrup **list** |
+

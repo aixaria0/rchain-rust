@@ -23,12 +23,16 @@
 pub mod bootstrap;
 pub mod captp;
 pub mod conn;
+pub mod enliven;
 pub mod fixtures;
+pub mod handoff;
 pub mod locator;
 pub mod netlayer;
 pub mod netstring;
+pub mod owner;
 pub mod par_value;
 pub mod peer;
+pub mod proxy;
 pub mod session;
 pub mod session_id;
 pub mod syrup;

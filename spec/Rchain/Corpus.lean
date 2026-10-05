@@ -700,6 +700,7 @@ def protocolLine (r : ReplyRow) : String :=
     ++ toString r.callArity ++ "\t"
     ++ r.kind.tag ++ "\t" ++ (if r.slots.isEmpty then "-" else
       String.intercalate "," (r.slots.map SlotShape.tag))
+    ++ "\t" ++ (if r.remainder then "true" else "false")
 
 /-! ## Law 42 — the JSON layer
 
