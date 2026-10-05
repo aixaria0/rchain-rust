@@ -20,7 +20,9 @@ use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployDa
 use rchain_models::casper::protocol::deploy_service::{BlocksQuery, DataAtNameQuery};
 use rchain_shared::base16;
 
-use common::{deploy_conf, free_ports, temp_dir, test_runtime, VALIDATOR_PRIV_HEX};
+use common::{
+    deploy_conf, free_ports, temp_dir, test_runtime, DEPLOYER_REV_ADDR, VALIDATOR_PRIV_HEX,
+};
 
 /// Poll the node's HTTP `/api/blocks` until the genesis block appears.
 async fn wait_for_genesis(base: &str) {
@@ -260,6 +262,160 @@ fn a_failed_deploy_reports_its_reason_over_http() {
         assert!(
             !error.starts_with("<deploy error message not available"),
             "the placeholder is for a record with no message, and this block has one"
+        );
+
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+async fn finalized_rev_balance(client: &reqwest::Client, base: &str, address: &str) -> Option<i64> {
+    let term = format!(
+        r#"new return, vault(`rho:rchain:revVault`), ret in {{ vault!("getBalance", "{address}", *ret) | for (@b <- ret) {{ return!(b) }} }}"#
+    );
+    let response = client
+        .post(format!("{base}/api/v1/explore-deploy"))
+        .json(&term)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = response.json().await.ok()?;
+    body["expr"][0]["ExprInt"]["data"].as_i64()
+}
+
+/// Faucet acceptance requires a funded signer, ProcessedWithSuccess, finality past the drip block,
+/// and an actual 30,000,000-drop balance delta in finalized state.
+#[test]
+fn faucet_delivery_is_successful_finalized_and_idempotent() {
+    test_runtime().block_on(async {
+        const RECIPIENT: &str = "1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj";
+
+        let dir = temp_dir("faucet-delivery");
+        let ports = free_ports(5);
+        let mut conf = deploy_conf(&dir, &ports);
+        conf.dev_mode = true;
+        conf.dev.deployer_private_key = Some(VALIDATOR_PRIV_HEX.to_string());
+        conf.propose_on_deploy = true;
+        conf.autopropose = true;
+
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        let base = format!("http://127.0.0.1:{}", ports[0]);
+        let client = reqwest::Client::new();
+        wait_for_genesis(&base).await;
+
+        let signer_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let signer_balance = loop {
+            if let Some(balance) = finalized_rev_balance(&client, &base, DEPLOYER_REV_ADDR).await {
+                break balance;
+            }
+            assert!(
+                tokio::time::Instant::now() < signer_deadline,
+                "finalized state never became readable for the faucet signer"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        assert!(
+            signer_balance >= 31_000_000,
+            "faucet signer precondition failed: finalized balance {signer_balance} cannot cover drip + precharge"
+        );
+
+        let before = finalized_rev_balance(&client, &base, RECIPIENT)
+            .await
+            .expect("recipient balance from finalized state");
+        assert!(before < 30_000_000, "recipient must be eligible before the drip");
+
+        let drip = client
+            .post(format!("{base}/api/v1/faucet"))
+            .json(&serde_json::json!({"address": RECIPIENT}))
+            .send()
+            .await
+            .expect("POST faucet");
+        assert_eq!(drip.status(), 200, "faucet submission must be accepted");
+        let drip: serde_json::Value = drip.json().await.expect("faucet response json");
+        let deploy_id = drip["deployId"]
+            .as_str()
+            .expect("faucet response carries deployId")
+            .to_string();
+
+        let status_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let drip_block = loop {
+            let status: serde_json::Value = client
+                .get(format!("{base}/api/v1/deploy-status/{deploy_id}"))
+                .send()
+                .await
+                .expect("GET deploy-status")
+                .json()
+                .await
+                .expect("deploy-status json");
+            if let Some(error) = status.get("ProcessedWithError") {
+                panic!("faucet deploy replayed with error: {error}");
+            }
+            if let Some(block_number) = status
+                .get("ProcessedWithSuccess")
+                .and_then(|s| s.get("block"))
+                .and_then(|b| b.get("blockNumber"))
+                .and_then(|n| n.as_i64())
+            {
+                break block_number;
+            }
+            assert!(
+                tokio::time::Instant::now() < status_deadline,
+                "faucet deploy never reached ProcessedWithSuccess: {status}"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+
+        let finality_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let response = client
+                .get(format!("{base}/api/last-finalized-block"))
+                .send()
+                .await
+                .expect("GET last-finalized-block");
+            if response.status().is_success() {
+                let finalized: serde_json::Value = response
+                    .json()
+                    .await
+                    .expect("last-finalized-block json");
+                if finalized["blockInfo"]["blockNumber"]
+                    .as_i64()
+                    .is_some_and(|n| n >= drip_block)
+                {
+                    break;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < finality_deadline,
+                "faucet block {drip_block} never became finalized"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        let after = finalized_rev_balance(&client, &base, RECIPIENT)
+            .await
+            .expect("recipient balance after finality");
+        assert_eq!(
+            after - before,
+            30_000_000,
+            "faucet acceptance requires an actual finalized balance delta"
+        );
+
+        let retry = client
+            .post(format!("{base}/api/v1/faucet"))
+            .json(&serde_json::json!({"address": RECIPIENT}))
+            .send()
+            .await
+            .expect("POST faucet retry");
+        assert_eq!(retry.status(), 400, "a delivered drip is not granted twice");
+        let reason: serde_json::Value = retry.json().await.expect("retry refusal json");
+        assert!(
+            reason
+                .as_str()
+                .is_some_and(|s| s.contains("already funded in finalized state")),
+            "retry refusal must come from finalized chain eligibility: {reason}"
         );
 
         node.shutdown();

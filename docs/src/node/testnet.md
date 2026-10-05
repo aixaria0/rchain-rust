@@ -104,14 +104,20 @@ POST https://<node>/api/faucet   {"address": "<your REV address>"}
 
 That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
 needs to fund a fresh address. It is a **dev-mode** endpoint: the node must have been started with
-`--dev-mode --deployer-private-key`, and it signs the transfer from that deployer's wallet. When the faucet is disabled (including when the key is absent), the route is not mounted and answers
-`404`; the capability list reports `faucet: false`. When enabled, `faucetRemaining` reports the remaining
-allocation in drops so clients can stop offering a dry faucet.
+`--dev-mode --deployer-private-key`, and it signs from the configured faucet key. When the faucet is
+disabled (including when the key is absent), the route is not mounted and answers `404`; the capability
+list reports `faucet: false`. With the bounded-allocation change in this PR, `faucetRemaining` reports
+remaining allocation in drops so clients can stop offering a dry faucet.
 
 | node | faucet |
 |---|---|
 | `playground.rhobot.net` (and `rnodeapi.rhobot.net`) | ✅ **works** — dev-mode plus a deployer key |
-| `testnet.rhobot.net` | ❌ **currently off** — the deployed service is not wired to a faucet deployer key. Enable it only with the dedicated funded testnet key and the bounded faucet policy below. |
+| `testnet.rhobot.net` | ✅ **on — observed 2026-10-05**. The running binary serves 0.3 REV drips, allows ten drips per address, and uses the existing one-request-per-second limiter. The live signer is a funded key supplied through the service environment, not the `deployer` key named in the genesis-wallet table. This PR changes recipient eligibility after it lands; this row describes the deployed service now. |
+
+For clients, the faucet `deployId` is the deploy signature: `GET /api/v1/deploy-status/<deployId>`
+reports the drip outcome. Treat the balance as authoritative only after the containing block is final:
+wait until `last-finalized-block >= blockNumber`, then read the balance. See #247 for the live signer /
+genesis mismatch.
 
 **In a room: `/facil faucet`.**
 
@@ -349,18 +355,18 @@ validator is active — no top-N truncation to reason about.
 
 ### Genesis wallets
 
-`wallets.txt` funds the standard dev keys from `scripts/localnet/pk.txt` with 1,000,000,000,000 each, so
-tooling already wired to them works unchanged, and so a facilitator can be handed a deploy key that has
-REV to give away:
+The genesis wallet file documents development accounts; it must not be used to infer which key the
+running faucet signs with. On the live testnet observed 2026-10-05, the faucet signer is a different,
+funded key supplied through the service environment (see #247).
 
-| key | REV address |
+| key | REV address / role |
 |---|---|
-| `deployer` (`3554e876…`) | the facilitator faucet's key |
+| `deployer` (`3554e876…`) | documented development key; **not** the live testnet faucet signer |
 | `dave` (`7707a3e0…`) | `1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj` |
 | `alice`, `bob`, `carol` | see `wallet.txt` |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
-here — they get REV from the faucet; this table is the answer to "which address funds them".
+here — they get REV from the faucet.
 
 ## Operating the nodes
 
