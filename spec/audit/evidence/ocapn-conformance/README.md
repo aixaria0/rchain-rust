@@ -14,10 +14,11 @@ implementation rather than to itself.
 | Suite | `github.com/ocapn/ocapn-test-suite` at `31f0b80` |
 | Netlayer | `tcp-testing-only` (the suite's own; no encryption — it is not a deployment transport) |
 
-`run-1.txt` is the raw output of one whole-suite run. **Read the per-module numbers, not that
-run's summary line.** The runner reports `failures=9, errors=8` over 24 tests, but it counts a
-`setUp` error against the test it aborted as well as reporting the error, so its tallies exceed the
-test count; running each module on its own gives the numbers below.
+`run-1.txt` is the raw output of the first whole-suite run (`failures=9, errors=8`);
+`run-2.txt` is the same run after `op:listen` was implemented (`failures=6, errors=8`). **Read the
+per-module numbers, not a summary line.** The runner reports a `setUp` error against the test it
+aborted as well as the error itself, so its tallies exceed the test count; running each module on its
+own gives the numbers below.
 
 ## Per module
 
@@ -26,19 +27,21 @@ test count; running each module on its own gives the numbers below.
 | `op_abort` | **1 / 1** | ✅ |
 | `op_deliver` | **4 / 4** | ✅ including both promise-pipelining tests and the break-propagation test |
 | `op_start_session` | **3 / 5** | the two failures are the crossed-hellos tests, which need the sturdyref enlivener (below) |
+| `op_listen` | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
 | `op_gc` | 0 / 4 | `op:gc-exports` / `op:gc-answers` are not emitted at all |
-| `op_listen` | 0 / 3 | `op:listen` is unimplemented |
 | `third_party_handoffs` | 1 / 7 | the one pass is an *invalid-signature* rejection that passes incidentally: this port answers every handoff with a `break` |
-| **Total** | **9 / 24** | |
+| **Total** | **12 / 24** | |
 
 So the implemented path is **stages 0–2 of the implementation guide**: the handshake (with the two
 refusals it must make), `op:deliver`, the export table, promise pipelining through the answer table,
-and `fulfill`/`break` through `resolve-me-desc`. GC, `op:listen`, and handoffs are the stages not yet
-built, and the suite says exactly that — which is the point of running it.
+`fulfill`/`break` through `resolve-me-desc`, and `op:listen` with its promise/resolver pair. GC
+(stage 3) and handoffs (stage 6) are the stages not yet built, and the suite says exactly that —
+which is the point of running it.
 
 **Not implemented, and named in the code rather than guessed at:** the suite's *sturdyref
 enlivener* (`gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB`), which must dial a peer back from a sturdyref it is
-handed, and the *promise resolver* (`IokCxYmMj04nos2JN1TDoY1bT8dXh6Lr`). A `fetch` of either breaks.
+handed. A `fetch` of it breaks, which is why the two crossed-hellos tests and most of the handoff
+tests fail at `setUp`.
 
 ## How to reproduce
 

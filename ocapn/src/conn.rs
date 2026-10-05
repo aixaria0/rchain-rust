@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::captp::{Deliver, Desc, DELIVER_LABEL};
+use crate::captp::{Deliver, Desc, OpListen, DELIVER_LABEL, LISTEN_LABEL};
 use crate::locator::PeerLocator;
 use crate::netlayer::NetConn;
 use crate::session::{my_location_payload, Abort, SessionError, StartSession, ABORT_LABEL};
@@ -37,6 +37,16 @@ pub enum Reply {
     Value(Value),
     /// A new object, which the session exports and describes to the peer.
     Object(Arc<dyn Export>),
+    /// Several new objects; the reply is a list of their descriptors, in order.
+    Objects(Vec<Arc<dyn Export>>),
+}
+
+/// What a promise does when `op:listen` arrives.
+pub enum ListenOutcome {
+    /// The promise is already settled; tell the listener now, with these delivery args.
+    Settled(Vec<Value>),
+    /// Registered; the promise will deliver when its resolver settles it.
+    Registered,
 }
 
 /// The result of a delivery: messages to send first, then what to reply.
@@ -70,6 +80,13 @@ impl Act {
             reply: Reply::Object(o),
         }
     }
+    /// No outgoing messages; reply with descriptors for several new objects.
+    pub fn objects(os: Vec<Arc<dyn Export>>) -> Act {
+        Act {
+            out: Vec::new(),
+            reply: Reply::Objects(os),
+        }
+    }
 }
 
 /// A local object a peer may deliver to.
@@ -77,6 +94,13 @@ impl Act {
 pub trait Export: Send + Sync {
     /// Handle one delivery. `Err(reason)` becomes a `break` for a peer that asked for a reply.
     async fn deliver(&self, args: &[Value]) -> Result<Act, String>;
+
+    /// Register a listener for `op:listen` — a descriptor to deliver `[<fulfill …>]` or
+    /// `[<break …>]` to once this promise settles. `None` means this object is not a promise, and
+    /// `op:listen` on it is refused rather than silently ignored.
+    fn listen(&self, _listener: Desc) -> Option<ListenOutcome> {
+        None
+    }
 }
 
 /// This peer's session identity: an Ed25519 key and where it accepts connections.
@@ -231,6 +255,7 @@ impl Session {
             };
             match label {
                 DELIVER_LABEL => self.handle_deliver(&message).await?,
+                LISTEN_LABEL => self.handle_listen(&message).await?,
                 ABORT_LABEL => return Ok(()),
                 // GC only ever releases resources; ignoring it is safe, not partial.
                 "op:gc-exports" | "op:gc-answers" => {}
@@ -312,6 +337,14 @@ impl Session {
                 let pos = self.insert_export(o);
                 (Some(Desc::ImportObject(pos.into()).to_syrup()), Some(pos))
             }
+            Reply::Objects(os) => {
+                let mut parts = Vec::with_capacity(os.len());
+                for o in os {
+                    let pos = self.insert_export(o);
+                    parts.push(Desc::ImportObject(pos.into()).to_syrup());
+                }
+                (Some(Value::List(parts)), None)
+            }
         };
         if let Some(n) = &deliver.answer_pos {
             self.answers.insert(position(n)?, answer_target);
@@ -322,6 +355,39 @@ impl Session {
                 vec![Value::Symbol("fulfill".to_string()), value],
             )
             .await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_listen(&mut self, message: &Value) -> Result<(), ConnectionError> {
+        let listen =
+            OpListen::from_syrup(message).map_err(|e| ConnectionError::Protocol(e.to_string()))?;
+        let target = match resolve_to(&self.exports, &self.answers, &listen.to)? {
+            Resolution::Object(o) => o,
+            Resolution::Broken(_) | Resolution::Missing => {
+                let reason = "op:listen names no object".to_string();
+                send_abort(&mut self.conn, &reason).await;
+                return Err(ConnectionError::Protocol(reason));
+            }
+        };
+        let listener = match &listen.resolve_me_desc {
+            Desc::ImportObject(n) | Desc::ImportPromise(n) => Desc::Export(n.clone()),
+            _ => {
+                let reason = "op:listen needs an import descriptor to notify".to_string();
+                send_abort(&mut self.conn, &reason).await;
+                return Err(ConnectionError::Protocol(reason));
+            }
+        };
+        match target.listen(listener.clone()) {
+            // Already settled: the notification is owed now.
+            Some(ListenOutcome::Settled(args)) => self.send_deliver(listener, args).await?,
+            // Registered; the promise will speak up when its resolver settles it.
+            Some(ListenOutcome::Registered) => {}
+            None => {
+                let reason = "op:listen on something that is not a promise".to_string();
+                send_abort(&mut self.conn, &reason).await;
+                return Err(ConnectionError::Protocol(reason));
+            }
         }
         Ok(())
     }

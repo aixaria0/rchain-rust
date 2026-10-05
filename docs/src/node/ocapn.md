@@ -8,10 +8,11 @@
 > takes that scope up.
 
 **Status.** Stages 0–2 are built — the wire codec and locators, the session identity, the netlayer,
-the CapTP connection with its tables, and `op:deliver` with promises, pipelining and `break`. They
-are checked against the OCapN conformance suite: **9 of 24 tests pass**, all in the implemented path.
-GC, `op:listen`, handoffs, and the bridge to the chain are **proposed and not yet implemented**; the
-staging is the implementation guide's own six stages, and each is listed with its state.
+the CapTP connection with its tables, and `op:deliver` with promises, pipelining, `break`, and
+`op:listen`. They are checked against the OCapN conformance suite: **12 of 24 tests pass**, all in
+the implemented path. GC, handoffs, and the bridge to the chain are **proposed and not yet
+implemented**; the staging is the implementation guide's own six stages, and each is listed with its
+state.
 
 ## What OCapN is, in one paragraph
 
@@ -35,21 +36,23 @@ deploy the bridge produces (below).
 | 0b | Session identity: `op:start-session`, Public Identifier, Session ID, crossed hellos | **built** — `ocapn/src/{session,session_id}.rs` |
 | 0c | Netlayer trait, `tcp-testing-only` netlayer, `op:abort` | **built** — `ocapn/src/{netlayer,tcp_testing_only}.rs`, `session.rs` |
 | 1 | Import/export tables, `op:deliver`, the bootstrap at position 0, `fetch` | **built** — `ocapn/src/{captp,conn,bootstrap,fixtures}.rs` |
-| 2 | Promises and answers: `fulfill`/`break` via `resolve-me-desc`, pipelining via the answer table | **built** — `ocapn/src/conn.rs` |
-| 3–5 | GC (`op:gc-exports`/`op:gc-answers`), `op:listen` | proposed |
+| 2 | Promises and answers: `fulfill`/`break` via `resolve-me-desc`, pipelining via the answer table, `op:listen` | **built** — `ocapn/src/{conn,captp,fixtures}.rs` |
+| 3 | GC: `op:gc-exports` / `op:gc-answers` and the wire-delta accounting | proposed |
+| 4–5 | Pipelining refinements, `resolve-me-desc` folding, `op:gc-answers` | proposed |
 | 6 | Third-party handoffs (Gifter / Receiver / Exporter) | proposed |
 | — | The bridge: an `op:deliver` to a chain-backed export becomes a signed deploy | proposed |
 
 ### Checked against the reference suite
 
 `ocapn-tcp-testing` (`ocapn/src/bin/`) serves the suite's fixture objects, and the suite has been
-run against it: **9 of 24 tests pass**, all of them in the implemented path — `op_abort` 1/1,
-`op_deliver` 4/4 (including both promise-pipelining tests and the break-propagation test), and
+run against it: **12 of 24 tests pass**, all of them in the implemented path — `op_abort` 1/1,
+`op_deliver` 4/4 (including both promise-pipelining tests and the break-propagation test),
+`op_listen` 3/3 (the promise/resolver pair, heard before and after the settlement), and
 `op_start_session` 3/5 (the two failures need the sturdyref enlivener, which is not built). GC
-(0/4), `op:listen` (0/3) and handoffs (1/7, incidentally) are the unimplemented stages, and the
-suite says so. The run, its suite revision, and the per-module counts are kept in
+(0/4) and handoffs (1/7, incidentally) are the unimplemented stages, and the suite says so. The runs,
+the suite revision, and the per-module counts are kept in
 [`spec/audit/evidence/ocapn-conformance/`](../../../spec/audit/evidence/ocapn-conformance/README.md)
-so a later run can be compared against it.
+so a later run can be compared against them.
 
 ### Built: the codec and the locators
 

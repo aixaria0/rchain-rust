@@ -157,6 +157,54 @@ impl Deliver {
     }
 }
 
+/// `op:listen`'s record label.
+pub const LISTEN_LABEL: &str = "op:listen";
+
+/// `op:listen` — "request notification on a promise": deliver `[<fulfill …>]` or `[<break …>]` to
+/// `resolve-me-desc` when the promise at `to` settles, with `wants-partial` when it should be told
+/// of partial resolutions too.
+///
+/// The reference's `OpListen` carries **three** arguments — `to`, `resolve_me_desc`,
+/// `wants_partial` — where the CapTP prose lists two. The implementation wins (AUDIT C216).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpListen {
+    pub to: Desc,
+    /// Where the notification goes.
+    pub resolve_me_desc: Desc,
+    pub wants_partial: bool,
+}
+
+impl OpListen {
+    pub fn to_syrup(&self) -> Value {
+        Value::Record(vec![
+            Value::Symbol(LISTEN_LABEL.to_string()),
+            self.to.to_syrup(),
+            self.resolve_me_desc.to_syrup(),
+            Value::Bool(self.wants_partial),
+        ])
+    }
+
+    pub fn from_syrup(v: &Value) -> Result<OpListen, CaptpError> {
+        let Value::Record(fields) = v else {
+            return Err(CaptpError::NotAnOp(LISTEN_LABEL));
+        };
+        let [label, to, resolve_me, wants_partial] = fields.as_slice() else {
+            return Err(CaptpError::NotAnOp(LISTEN_LABEL));
+        };
+        if !matches!(label, Value::Symbol(s) if s == LISTEN_LABEL) {
+            return Err(CaptpError::NotAnOp(LISTEN_LABEL));
+        }
+        let Value::Bool(wants_partial) = wants_partial else {
+            return Err(CaptpError::BadField("wants-partial"));
+        };
+        Ok(OpListen {
+            to: Desc::from_syrup(to)?,
+            resolve_me_desc: Desc::from_syrup(resolve_me)?,
+            wants_partial: *wants_partial,
+        })
+    }
+}
+
 fn optional_position(pos: Option<&BigUint>) -> Value {
     match pos {
         Some(p) => Value::Int(BigInt::from(p.clone())),
