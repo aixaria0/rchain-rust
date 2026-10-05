@@ -206,6 +206,20 @@ fn probes() -> Vec<(&'static str, &'static str)> {
                }"#,
         ),
         (
+            // The ERTP object API (issue #249). `makeIssuerKit` is the cheapest call that proves the
+            // *contract* is answering over the native ledger rather than a stub: it draws a brand and
+            // an authority from the ledger and replies both, so a `lookup!` that resolved to nothing
+            // usable never reaches the tag.
+            "rho:rchain:ertp",
+            r#"new rl(`rho:registry:lookup`), ch, ret in {
+                 rl!(`rho:rchain:ertp`, *ch) |
+                 for (@(_, ERTP) <- ch) {
+                   @ERTP!("makeIssuerKit", *ret) |
+                   for (@_ <- ret) { @"out"!("rho:rchain:ertp") }
+                 }
+               }"#,
+        ),
+        (
             // Not a shorthand but the *contract's own* multi-step path: `unorderedParMap` is the one
             // `ListOps` operation that runs through `collect` (`ListOps.rho:197-215`), whose
             // `if (sc == cc + 1)` follows a send. While any non-first `if` reduced to nothing (AUDIT

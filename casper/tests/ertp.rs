@@ -19,6 +19,8 @@
 
 mod common;
 
+use rchain_casper::genesis::contracts::{ProofOfStake, Registry};
+use rchain_casper::genesis::default_blessed_terms;
 use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_crypto::hash::blake2b256;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
@@ -79,32 +81,34 @@ fn ertp_uri() -> String {
     rchain_rholang::registry::build_uri(&blake2b256::hash(pk.bytes()))
 }
 
-/// A driver: look the contract up under its own `rho:id`, then run `body`. The lookup is the
-/// consumer's own idiom (`rho:registry:lookup` → `for (@(_, C) <- ch) { @C!(…) }`), so a contract
-/// that registered nothing fails here rather than silently.
-fn driver(body: &str) -> SignedDeployData {
+/// A driver: look `target` up, then run `body`. The lookup is the consumer's own idiom
+/// (`rho:registry:lookup` → `for (@(_, C) <- ch) { @C!(…) }`), so a contract that registered nothing
+/// fails here rather than silently.
+///
+/// `target` is either the contract's own `rho:id` — what W2.2 uses, so the gate does not depend on
+/// the blessing — or the shorthand `rho:rchain:ertp`, which is what W2.4 uses. Both are URI
+/// literals to the lookup, which is exactly why one helper serves both and why the two tests differ
+/// only in what they are evidence *about*.
+fn driver(target: &str, body: &str) -> SignedDeployData {
     let term = format!(
         r#"new rl(`rho:registry:lookup`), ch in {{
-             rl!(`{uri}`, *ch) |
+             rl!(`{target}`, *ch) |
              for (@(_, ERTP) <- ch) {{
                {body}
              }}
-           }}"#,
-        uri = ertp_uri(),
+           }}"#
     );
     deploy_signed_by(&term, ERTP_SEED + 1)
 }
 
-/// Play the install deploy followed by each driver through the genesis path, and return the manager
-/// at the post-state so the tags can be read. A deploy that did not succeed is reported by index,
-/// because that is the one failure that makes every assertion below vacuous at once.
-async fn play(bodies: &[&str]) -> RuntimeManager {
+/// Play a list of deploys through the genesis path and return the manager at the post-state, so the
+/// tags can be read. A deploy that did not succeed is reported by index, because that is the one
+/// failure that makes every assertion below vacuous at once.
+async fn play_terms(terms: &[SignedDeployData]) -> RuntimeManager {
     let rm = build_runtime_manager().await;
-    let mut terms = vec![deploy_signed_by(ERTP_RHO, ERTP_SEED)];
-    terms.extend(bodies.iter().map(|b| driver(b)));
     let (_, _, results) = rm
         .compute_genesis(
-            &terms,
+            terms,
             &fixed_rand(),
             BlockData::empty(),
             &PosGenesis::default(),
@@ -120,6 +124,62 @@ async fn play(bodies: &[&str]) -> RuntimeManager {
         );
     }
     rm
+}
+
+/// **W2.2's vehicle**: the contract installed as an ordinary deploy, then each driver reaching it by
+/// its own `rho:id`. Nothing here consults the blessing.
+async fn play(bodies: &[&str]) -> RuntimeManager {
+    let mut terms = vec![deploy_signed_by(ERTP_RHO, ERTP_SEED)];
+    terms.extend(bodies.iter().map(|b| driver(&ertp_uri(), b)));
+    play_terms(&terms).await
+}
+
+/// **W2.4's vehicle**: a real chain's blessed set, then each driver reaching the contract through
+/// the shorthand a consumer hardcodes.
+async fn play_blessed(bodies: &[&str]) -> RuntimeManager {
+    let mut terms = default_blessed_terms(
+        &proof_of_stake(),
+        &Registry {
+            system_contract_pub_key: String::new(),
+        },
+        &[],
+        "root",
+        &ceremony_identity(),
+    )
+    .expect("the blessed term list builds");
+    terms.extend(bodies.iter().map(|b| driver("rho:rchain:ertp", b)));
+    play_terms(&terms).await
+}
+
+/// The PoS parameters a test genesis needs (the same shape `genesis_registry.rs` uses).
+fn proof_of_stake() -> ProofOfStake {
+    ProofOfStake {
+        minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
+        maximum_bond: rchain_shared::refined::NonNegI64::try_from(100).unwrap(),
+        validators: Vec::new(),
+        epoch_length: 1,
+        quarantine_length: 1,
+        number_of_active_validators: 1,
+        executor_share: rchain_shared::refined::NonNegI64::try_from(0).unwrap(),
+        absence_slack: rchain_shared::refined::NonNegI64::try_from(0).unwrap(),
+        participation_grace: rchain_shared::refined::NonNegI64::try_from(0).unwrap(),
+        pos_multi_sig_public_keys: Vec::new(),
+        pos_multi_sig_quorum: 1,
+        pos_vault_pub_key: String::new(),
+    }
+}
+
+/// The genesis ceremony's identity, fixed so a test genesis is deterministic.
+fn ceremony_identity() -> rchain_casper::validator_identity::ValidatorIdentity {
+    let sk = PrivateKey::new(vec![7u8; 32]);
+    let public_key = Secp256k1
+        .to_public(&sk)
+        .expect("a fixed 32-byte scalar is a valid key");
+    rchain_casper::validator_identity::ValidatorIdentity {
+        public_key,
+        private_key: sk,
+        sig_algorithm: "secp256k1".to_string(),
+    }
 }
 
 /// Everything sent to `@"tag"`. An absent tag is a failed assertion, not an error, so every caller
@@ -809,6 +869,94 @@ new kitCh in {
             "an amount is not negative",
             "a negative amount must be refused by `amountMath`, never passed to the ledger, whose \
              own parser fails the deploy instead of answering"
+        );
+    });
+}
+
+/// **W2.4: the same contract, reached the way a consumer reaches it.** On a chain that ran the
+/// genesis ceremony, `lookup!(\`rho:rchain:ertp\`, *ch)` must resolve to the ERTP contract and it
+/// must behave — so this test reruns the load-bearing clause through the *shorthand*.
+///
+/// **Why one script and not all six.** The blessing copies one registry entry onto a name; it cannot
+/// change the value. That the copied value *is* this contract's is pinned mechanically
+/// (`standard_deploys::tests::aliased_contract_uris_are_pinned` asserts the `rho:id` the key
+/// derives), and the contract's semantics are W2.2's, so what remains to prove here is the one thing
+/// neither of those can: that a fresh chain seeds the alias and that the value behind it answers a
+/// real multi-step call. The acceptance clause is the script that exercises the most of the contract
+/// per unit of ceremony.
+///
+/// **Two gates because they fail differently**: W2.2 fails when the contract is wrong, and this one
+/// fails when the *blessing* is wrong — and the blessing's failure mode is the one this repository
+/// keeps meeting: a deploy that reports success, registers nothing, and leaves `lookup!` answering
+/// `Nil` for ever, which is silent.
+#[test]
+fn a_fresh_chain_serves_ertp_through_the_shorthand_and_the_brand_check_still_holds() {
+    with_big_stack(async {
+        let rm = play_blessed(&[r#"
+new kitA, kitB in {
+  @ERTP!("makeIssuerKit", *kitA) |
+  @ERTP!("makeIssuerKit", *kitB) |
+  for (@(brandA, mintA, issuerA) <- kitA & @(brandB, mintB, issuerB) <- kitB) {
+    @"kitA"!((brandA, mintA, issuerA)) |
+    new amCh in {
+      @issuerA!("getAmountMath", *amCh) |
+      for (@(true, am) <- amCh) {
+        new mc in {
+          @am!("make", brandA, 10, *mc) |
+          for (@(true, ten) <- mc) {
+            new mp in {
+              @mintA!("mintPayment", ten, *mp) |
+              for (@(true, paymentA) <- mp) {
+                @"payment"!(paymentA) |
+                new pbc in {
+                  @issuerB!("makeEmptyPurse", *pbc) |
+                  for (@(true, purseB) <- pbc) {
+                    new d1 in {
+                      @purseB!("deposit", paymentA, *d1) |
+                      for (@r1 <- d1) {
+                        @"b-deposit-a"!(r1) |
+                        new pac in {
+                          @issuerA!("makeEmptyPurse", *pac) |
+                          for (@(true, purseA) <- pac) {
+                            new d2 in {
+                              @purseA!("deposit", paymentA, *d2) |
+                              for (@r2 <- d2) { @"a-deposit-a"!(r2) }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"#])
+        .await;
+
+        // The kit arrived whole through the shorthand — a 3-tuple of three distinct names.
+        let (brand_a, mint_a, issuer_a) = kit(&rm, "kitA").await;
+        assert_ne!(brand_a, mint_a);
+        assert_ne!(brand_a, issuer_a);
+        assert!(
+            mint_a != issuer_a,
+            "the blessed contract must be the kit-making contract"
+        );
+        assert_capability(&one(&rm, "payment").await, "the minted payment");
+        assert_eq!(
+            refused(&rm, "b-deposit-a").await,
+            "no such payment",
+            "the structural refusal must hold through the alias tier too"
+        );
+        assert_eq!(
+            answered_number(&rm, "a-deposit-a").await,
+            10,
+            "**and the refused payment must still be live** — the acceptance clause, on a real chain"
         );
     });
 }
