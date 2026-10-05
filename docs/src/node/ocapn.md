@@ -1,5 +1,8 @@
 # OCapN interoperability
 
+> Requested by **Dan Connolly** of Agoric in the Rho Vision Colab Discord; the provenance and the
+> close condition are [issue #249](https://github.com/rchain-community/rchain-rust/issues/249).
+>
 > This page is the decision record for RNode's **OCapN** support — the object-capability network
 > (`https://ocapn.org/`) that Agoric's stack speaks, so a vat on Agoric can hold a live reference
 > to an RChain object and invoke it, and vice versa. It is **Layer 2** of the cross-shard design
@@ -126,6 +129,22 @@ is `<ascii-decimal length>:<payload>` with **no trailing comma**. Two bounds kee
 stream harmless — the codec's nesting depth, and a message-size cap — and a stream that ends inside a
 message is an error, never a silently dropped message. A production netlayer (Tor, libp2p, IBC)
 implements the same two functions; nothing above the trait changes.
+
+### What this pass deliberately leaves, and why
+
+Each of these is a *named* boundary rather than an omission, and each is a prerequisite of the next:
+
+- **The sturdyref enlivener** (`gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB`) — the fixture that dials a peer
+  back from a sturdyref and returns a live reference. It needs **dial-out**: a session the crate
+  drives in the background, and an object that can address it after the delivery that created it has
+  returned. Today an object answers with an [`Act`] and the loop performs it; nothing lets an object
+  send *later*. That is the same gap the two crossed-hellos tests fail on.
+- **Third-party handoffs** (stage 6) — need the same, plus gift signing and the replay counter.
+- **The bridge to the chain** — a sturdyref resolving to a Rholang capability, and a delivery to it
+  becoming a caller-signed deploy. This needs a `Par` ↔ Syrup `Value` translation, which is a
+  *partial* map: CapTP's Symbols have no Rholang counterpart and an unforgeable name is not
+  passable data, so the translation has to refuse rather than guess. It also needs the deploy's
+  reply channel watched, which is `shard_invoke.rs`'s `await_reply`.
 
 ## Invariants
 
