@@ -20,6 +20,7 @@
 //! Nothing here is on-chain by itself: sessions, wire bytes, and answer bookkeeping are node-local
 //! state. What reaches consensus is only the signed deploy the bridge produces.
 
+pub mod captp;
 pub mod locator;
 pub mod netlayer;
 pub mod peer;
