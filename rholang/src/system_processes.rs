@@ -2934,10 +2934,10 @@ mod tests {
         (sp, defs)
     }
 
-    /// The `(urn, callArity)` pairs `spec/conformance/protocol.tsv` declares, read from the emitted
-    /// corpus. The path is relative to this crate, like the one
+    /// The `(urn, callArity, remainder)` triples `spec/conformance/protocol.tsv` declares, read from
+    /// the emitted corpus. The path is relative to this crate, like the one
     /// `rholang/tests/lean_protocol_corpus.rs` reads.
-    fn catalog_arities() -> Vec<(String, i32)> {
+    fn catalog_arities() -> Vec<(String, i32, bool)> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../spec/conformance/protocol.tsv");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -2958,21 +2958,35 @@ mod tests {
                     .expect("callArity")
                     .parse()
                     .unwrap_or_else(|e| panic!("{urn}: callArity: {e}"));
-                (urn, arity)
+                let _kind = c.next().expect("kind");
+                let _slots = c.next().expect("slots");
+                let remainder = match c.next().expect("remainder") {
+                    "true" => true,
+                    "false" => false,
+                    other => panic!("{urn}: remainder is {other:?}"),
+                };
+                (urn, arity, remainder)
             })
             .collect()
     }
 
     /// Which catalog rows disagree with the installed table — the comparison as a *function*, so the
     /// drift it exists to catch can be shown to be caught without breaking the tree.
-    fn arity_mismatches(catalog: &[(String, i32)], defs: &[Definition]) -> Vec<String> {
+    ///
+    /// **Both halves of the `Definition` are compared**, arity *and* `remainder`, because the catalog
+    /// row for a dispatch contract means something an arity alone cannot say: `arity: 1, remainder:
+    /// true` matches a call of any length, so a row that declared a fixed arity would be describing
+    /// the call rather than the installation. (`rho:rchain:ertp:ledger`, `rho:rchain:revVault` and
+    /// `rho:rchain:pos` are all this shape, and the first is in the catalog because it now can be.)
+    fn arity_mismatches(catalog: &[(String, i32, bool)], defs: &[Definition]) -> Vec<String> {
         let mut bad = Vec::new();
-        for (urn, call_arity) in catalog {
+        for (urn, call_arity, remainder) in catalog {
             match defs.iter().find(|d| d.urn == *urn) {
-                Some(d) if d.arity == *call_arity => {}
+                Some(d) if d.arity == *call_arity && d.remainder == *remainder => {}
                 Some(d) => bad.push(format!(
-                    "{urn}: the catalog declares arity {call_arity}, the node installs {}",
-                    d.arity
+                    "{urn}: the catalog declares arity {call_arity} (remainder {remainder}), the \
+                     node installs arity {} (remainder {})",
+                    d.arity, d.remainder
                 )),
                 None => bad.push(format!(
                     "{urn}: in the Lean catalog, but no `Definition` installs it"
@@ -3022,7 +3036,7 @@ mod tests {
         });
         let (_sp, defs) = mock_system_processes(&mock);
 
-        let drifted = vec![("rho:io:stdout".to_string(), 99i32)];
+        let drifted = vec![("rho:io:stdout".to_string(), 99i32, false)];
         let bad = arity_mismatches(&drifted, &defs);
         assert_eq!(bad.len(), 1, "{bad:?}");
         assert!(
@@ -3031,8 +3045,20 @@ mod tests {
             bad[0]
         );
 
+        // **And the dispatch half is compared too**: `rho:rchain:ertp:ledger` is installed
+        // `arity: 1, remainder: true`, so a row that spelled it as a fixed-arity contract is a drift
+        // the arity alone would not show — `1` is right either way.
+        let wrong_dispatch = vec![("rho:rchain:ertp:ledger".to_string(), 1i32, false)];
+        let bad = arity_mismatches(&wrong_dispatch, &defs);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(
+            bad[0].contains("remainder"),
+            "the report names the dispatch difference: {}",
+            bad[0]
+        );
+
         // And a urn the node does not install is reported rather than skipped.
-        let unknown = vec![("rho:not:a:urn".to_string(), 1i32)];
+        let unknown = vec![("rho:not:a:urn".to_string(), 1i32, false)];
         let bad = arity_mismatches(&unknown, &defs);
         assert_eq!(bad.len(), 1, "{bad:?}");
         assert!(bad[0].contains("no `Definition` installs it"), "{}", bad[0]);
