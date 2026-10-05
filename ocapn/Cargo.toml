@@ -18,4 +18,4 @@ rchain-shared = { path = "../shared" }
 # `rchain-comm` made). Minimal features: the netlayer needs `net` + `io-util` + a runtime, the
 # tests need `macros`. Features unify per crate workspace-wide, so the node's `full` set carries.
 async-trait = "0.1"
-tokio = { version = "1", features = ["net", "io-util", "rt", "macros"] }
+tokio = { version = "1", features = ["net", "io-util", "rt", "macros", "sync"] }
