@@ -1,14 +1,20 @@
-//! The node's OCapN listener (issue #249): a foreign peer dials a running node.
+//! The node's OCapN listener and its bridge (issue #249): a foreign peer dials a running node.
 //!
-//! This is the listener's own gate. The bridge that turns a delivery into a signed deploy is the
-//! next unit, so what this proves is deliberately smaller and checkable on its own: a node that is
-//! configured with `api-server.ocapn-listen` answers a CapTP handshake and serves its fixtures.
+//! Two gates, because they fail independently. The first is the listener's own: a node configured
+//! with `api-server.ocapn-listen` answers a CapTP handshake and serves its fixtures. The second is
+//! the bridge: a delivery to a chain-backed capability becomes a signed deploy, and that deploy
+//! lands in a block. What the second does **not** yet prove is the reply *value* — the term runs but
+//! puts nothing on the reply channel, because Layer 1's `invoke_term` and the native `revVault` want
+//! different calling conventions (AUDIT C218). Its assertion pins the deploy's own verdict and says
+//! so.
 
 mod common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use rchain_casper::protocol::client::{GrpcProposeService, ProposeService};
+use rchain_node::api::ocapn::REV_VAULT_BALANCE_SWISS;
 use rchain_ocapn::bootstrap::Bootstrap;
 use rchain_ocapn::captp::{Deliver, Desc};
 use rchain_ocapn::conn::{Identity, Session};
@@ -37,6 +43,32 @@ async fn wait_for_ocapn(port: u16) {
     panic!("the OCapN listener on 127.0.0.1:{port} never came up");
 }
 
+/// Wait until the node is out of read-only mode, i.e. genesis has been created and announced. The
+/// OCapN port binds at "replay complete — starting listeners", which is *before* that, so a propose
+/// driven straight after `wait_for_ocapn` is answered `ReadOnlyMode`. `deploy_block.rs` waits the
+/// same way, over the HTTP API.
+async fn wait_for_genesis(base: &str) {
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(resp) = client.get(format!("{base}/api/blocks")).send().await {
+            if resp.status().is_success() {
+                if let Ok(serde_json::Value::Array(blocks)) = resp.json::<serde_json::Value>().await
+                {
+                    if !blocks.is_empty() {
+                        return;
+                    }
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "genesis never appeared: {base}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 fn locator(port: u16) -> PeerLocator {
     PeerLocator {
         designator: "rnode".to_string(),
@@ -57,15 +89,15 @@ fn a_peer_dials_the_node_and_fetches_a_fixture() {
     conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
 
     common::test_runtime().block_on(async {
-        let node = common::start(&conf, ports[2] as u16, ports[0] as u16).await;
-        wait_for_ocapn(ports[5] as u16).await;
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
 
         // Dial the node the way any OCapN peer would: a fresh session key, our own empty bootstrap.
         let dialer = TcpTestingOnly::bind("127.0.0.1:0")
             .await
             .expect("bind the dialing side");
         let connection = dialer
-            .new_outgoing_connection(&locator(ports[5] as u16))
+            .new_outgoing_connection(&locator(ports[5]))
             .await
             .expect("dial the node");
         let identity = Identity::fresh(locator(0)).expect("a session key");
@@ -111,4 +143,114 @@ fn a_peer_dials_the_node_and_fetches_a_fixture() {
         node.shutdown();
     });
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The bridge: a CapTP delivery to a chain-backed capability becomes a signed deploy that lands in
+/// a block. The reply *value* is not yet delivered — see the module note and AUDIT C218 — so the
+/// assertion is on the deploy's own verdict.
+#[test]
+fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
+    let dir = common::temp_dir("ocapn-bridge");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
+    // The bridge signs with the node's deployer key and needs a block to carry the deploy.
+    conf.dev_mode = true;
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    conf.propose_on_deploy = true;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+        wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
+
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let connection = dialer
+            .new_outgoing_connection(&locator(ports[5]))
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(locator(0)).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the handshake");
+
+        // 1. Fetch the chain-backed capability from the bootstrap.
+        let capability = fetch(&mut client, REV_VAULT_BALANCE_SWISS).await;
+
+        // 2. Deliver to it: one REV address in. Everything after this is the node's own doing — it
+        //    builds the term, signs the deploy, submits it, and waits for the block.
+        let call = Deliver {
+            to: capability,
+            args: vec![Value::String(common::DEPLOYER_REV_ADDR.to_string())],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+        };
+        client
+            .send_message(&call.to_syrup())
+            .await
+            .expect("send the call");
+
+        // The node has to produce a block for the bridged deploy to land and reply. Drive one the
+        // way `deploy_block.rs` does — an explicit propose over the internal gRPC service — rather
+        // than relying on `propose-on-deploy`, which this harness does not exercise.
+        let propose = GrpcProposeService::connect("127.0.0.1", ports[2] as i32, 16 * 1024 * 1024)
+            .await
+            .expect("propose gRPC");
+        propose
+            .propose(false)
+            .await
+            .expect("propose produced a block");
+
+        // 3. **What is proven today: the delivery became a deploy, and the deploy landed in a
+        //    block.** The reply *value* is not yet delivered, and the reason is named — see the
+        //    module note and AUDIT C218 — so this asserts the deploy's own verdict rather than a
+        //    `fulfill` it does not yet produce. When the reply starts working this assertion fails,
+        //    which is the point: it is the signal to replace it with the balance.
+        let reply = client
+            .recv_message()
+            .await
+            .expect("read the reply")
+            .expect("a reply, not a closed connection");
+        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+        let reason = match delivered.args.get(1) {
+            Some(Value::String(reason)) => reason.clone(),
+            other => panic!("expected the bridge's reason, got {other:?}"),
+        };
+        assert!(
+            reason.contains("ProcessedWithSuccess"),
+            "the bridged deploy should have been processed by a block; the bridge said: {reason}"
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fetch an object by swiss number from the peer's bootstrap, returning the descriptor to address
+/// it by.
+async fn fetch(client: &mut Session, swiss: &[u8]) -> Desc {
+    let request = Deliver {
+        to: Desc::Export(0u64.into()),
+        args: vec![Value::Symbol("fetch".into()), Value::Bytes(swiss.to_vec())],
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+    };
+    client
+        .send_message(&request.to_syrup())
+        .await
+        .expect("send the fetch");
+    let reply = client
+        .recv_message()
+        .await
+        .expect("read the fetch reply")
+        .expect("a reply");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    assert_eq!(delivered.args[0], Value::Symbol("fulfill".into()));
+    match Desc::from_syrup(&delivered.args[1]).expect("a descriptor") {
+        Desc::ImportObject(position) => Desc::Export(position),
+        other => panic!("expected a descriptor for the object, got {other:?}"),
+    }
 }
