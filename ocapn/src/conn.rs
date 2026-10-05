@@ -287,13 +287,37 @@ impl Session {
         identity: &Identity,
         bootstrap: Arc<dyn Export>,
     ) -> Result<Session, ConnectionError> {
+        Self::accept_deferred_within(conn, identity, bootstrap, HANDSHAKE_TIMEOUT).await
+    }
+
+    /// [`Session::accept_deferred`] with the bound spelled out.
+    ///
+    /// The seam exists so the bound is **testable without waiting 30 s** — the same reason
+    /// `admin_bind_host` was extracted from its spawn (AUDIT C112): a choice inside an `async` block
+    /// can otherwise only be observed by starting a server and connecting to it, and a security bound
+    /// nobody tests is a bound that gets removed. Production callers use the constant.
+    pub async fn accept_deferred_within(
+        conn: Box<dyn NetConn>,
+        identity: &Identity,
+        bootstrap: Arc<dyn Export>,
+        handshake_timeout: std::time::Duration,
+    ) -> Result<Session, ConnectionError> {
         let mut conn = conn;
-        let peer = match read_start_session(&mut conn).await? {
-            Ok(ss) => ss,
-            Err(reason) => {
+        let peer = match read_start_session(&mut conn, handshake_timeout).await {
+            Ok(Ok(ss)) => ss,
+            Ok(Err(reason)) => {
                 send_abort(&mut conn, &reason).await;
                 return Err(ConnectionError::Handshake(reason));
             }
+            // **A handshake we gave up on is still a handshake we say goodbye to.** The bound
+            // (`HANDSHAKE_TIMEOUT`) exists so a silent connector does not pin the task; telling it why
+            // costs one write on a socket that is still open, and it is the difference between a
+            // refusal and a mystery. A transport failure is the one case with nothing to say.
+            Err(e @ ConnectionError::Handshake(_)) => {
+                send_abort(&mut conn, &e.to_string()).await;
+                return Err(e);
+            }
+            Err(e) => return Err(e),
         };
         if !peer.location_signature_is_valid() {
             let reason = "invalid location signature".to_string();
@@ -359,7 +383,7 @@ impl Session {
         if self.peer.is_some() {
             return Ok(());
         }
-        let peer = match read_start_session(&mut self.conn).await? {
+        let peer = match read_start_session(&mut self.conn, HANDSHAKE_TIMEOUT).await? {
             Ok(ss) => ss,
             Err(reason) => {
                 send_abort(&mut self.conn, &reason).await;
@@ -840,10 +864,31 @@ fn record_label(v: &Value) -> Option<&str> {
     }
 }
 
+/// Read the peer's `op:start-session`, **bounded** — the one await in this crate that a peer can
+/// hold open for nothing.
+///
+/// **Why this await and not the steady-state read.** A peer that connects and sends nothing pins a
+/// task for ever (`Session::accept_deferred` → here, and the node spawns one task per connection);
+/// that is a slow-loris, and it is this await. A steady-state read is deliberately *not* bounded: an
+/// idle session is legitimate, and the conformance suite has three tests that need one leg to stay
+/// silent (including `test_valid_handoff_wait_deposit_gift`, which withdraws and then makes the peer
+/// wait for its deposit). Handshakes are different — no correct peer waits to speak.
+///
+/// **The bound must be shorter than the peer's own.** The reference client reads its handshake with a
+/// 60 s timeout (`utils/captp.py`), so anything at or above that leaves *us* hanging while it gives
+/// up. 30 s is under it with margin and far above any real handshake.
+pub const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn read_start_session(
     conn: &mut Box<dyn NetConn>,
+    handshake_timeout: std::time::Duration,
 ) -> Result<Result<StartSession, String>, ConnectionError> {
-    let Some(bytes) = conn.recv().await? else {
+    let Some(bytes) = tokio::time::timeout(handshake_timeout, conn.recv())
+        .await
+        .map_err(|_| {
+            ConnectionError::Handshake("the peer did not speak first in time".to_string())
+        })??
+    else {
         return Err(ConnectionError::Protocol(
             "connection closed during handshake".into(),
         ));

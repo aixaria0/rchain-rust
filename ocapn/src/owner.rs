@@ -64,13 +64,26 @@ pub struct SessionHandle {
     pub dialed: bool,
 }
 
+/// How long a sender waits for room in a session's hand-off queue before giving up.
+///
+/// **The queue is bounded and the *wait* was not.** Every receive in this crate carries a bound (the
+/// handshake, the enliven fetch, the forward — all 30 s), and the send did not: a peer that kept a
+/// target session's queue full (depth [`HANDOFF_DEPTH`], fed by cross-session forwards) could block a
+/// *different* task's send for ever — and that task is holding *its own* session's loop, which then
+/// cannot drain. Bounding the send turns a permanent wedge into a stalled delivery that reports.
+pub const HANDOFF_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl SessionHandle {
-    /// Send a delivery on this session. `Err` when the session has ended.
+    /// Send a delivery on this session. `Err` when the session has ended, or when its loop did not
+    /// take the delivery within [`HANDOFF_SEND_TIMEOUT`].
     pub async fn deliver(&self, hand_off: HandOff) -> Result<(), ConnectionError> {
-        self.tx
-            .send(hand_off)
-            .await
-            .map_err(|_| ConnectionError::Closed)
+        match tokio::time::timeout(HANDOFF_SEND_TIMEOUT, self.tx.send(hand_off)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(ConnectionError::Closed),
+            Err(_) => Err(ConnectionError::Protocol(
+                "the session's hand-off queue stayed full".to_string(),
+            )),
+        }
     }
 
     /// Ask the loop to abort this session (the crossed-hello rule uses this on the loser).
@@ -308,6 +321,15 @@ impl SessionRegistry {
         Ok(losers)
     }
 
+    /// How many peers the registry is tracking, live or not.
+    ///
+    /// Exposed because the map is the node's memory and the only thing that removes from it is
+    /// [`SessionRegistry::forget`] — so "a peer is forgotten" is a claim about a number, and a claim
+    /// about a number that nothing can read is a claim nothing checks (HAZOP row B3).
+    pub fn tracked_peers(&self) -> usize {
+        self.peers.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
     /// A live session to `peer`, if there is one — **the one the peer dialed, when there is a choice**.
     ///
     /// An enlivener has to reach an object at a peer it may already have a session with, and the
@@ -347,9 +369,25 @@ impl SessionRegistry {
 
     /// Forget a session that has ended, so a later session to the same peer is not compared against
     /// a dead one.
+    ///
+    /// **And remove the peer when nothing is left.** Clearing the slot alone left the *key* — and the
+    /// key is the peer's own `designator`/`transport` string, so a peer that varies its designator
+    /// accumulated one dead entry per connection for the life of the process (measured: 3 000
+    /// sessions, one entry each). The map is the node's memory, and this is the only thing that
+    /// removes from it.
+    ///
+    /// **The match is on the handle's own identifier, not on the tuple's.** The two slots store
+    /// different identifiers — the dialed one is keyed by *our* dialing identifier and the accepted
+    /// one by the *peer's* — so comparing the caller's `own_pi` against the stored key cleared a
+    /// dialed session and never an accepted one. The accepted slot is the common case (every peer
+    /// that connects to us), so in practice **nothing was ever forgotten**: a session's handle stayed
+    /// in the map after its loop ended. Found by
+    /// `a_peer_whose_sessions_have_ended_is_forgotten`, which is why that test asserts the map's size
+    /// and not only `live`.
     pub fn forget(&self, peer: &PeerLocator, own_pi: &Octets32, dialed: bool) {
         let mut peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(entry) = peers.get_mut(&peer_key(peer)) else {
+        let key = peer_key(peer);
+        let Some(entry) = peers.get_mut(&key) else {
             return;
         };
         let slot = if dialed {
@@ -357,8 +395,11 @@ impl SessionRegistry {
         } else {
             &mut entry.accepted
         };
-        if slot.as_ref().is_some_and(|(pi, _)| pi == own_pi) {
+        if slot.as_ref().is_some_and(|(_, h)| h.own_pi == *own_pi) {
             *slot = None;
+        }
+        if entry.dialed.is_none() && entry.accepted.is_none() {
+            peers.remove(&key);
         }
     }
 }

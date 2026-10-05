@@ -17,7 +17,7 @@ use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::Par;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::rholang::RhoType::{RhoByteArray, RhoNumber, RhoString};
-use rchain_rholang::pretty_printer::PrettyPrinter;
+use rchain_rholang::pretty_printer::{check_renderable, PrettyPrinter};
 use rchain_shared::base16;
 
 use crate::protocol::client::DeployService;
@@ -26,14 +26,16 @@ use crate::shard_invoke::{await_reply, signed_invoke, ShardOutcome};
 /// The URN of the per-shard 2PC participant system process.
 pub const TXN_URN: &str = "rho:txn";
 
-/// Render one data argument as a rholang literal. A byte array renders as `"<hex>".hexToBytes()`
-/// (the pretty printer would otherwise emit a bare hex string, which is not a rholang literal).
-fn render_arg(p: &Par) -> String {
-    if let Some(bytes) = RhoByteArray::unapply(p) {
-        format!("\"{}\".hexToBytes()", base16::encode(bytes))
-    } else {
-        PrettyPrinter::new().build_string(p)
-    }
+/// Render one data argument as a rholang literal, **refusing one that has no faithful literal**
+/// (AUDIT C220).
+///
+/// A byte array is no longer special-cased here: the printer emits `"<hex>".hexToBytes()` itself,
+/// because a bare hex token is not a literal. The check is the part that matters — these arguments
+/// are a caller's destination address, and Rholang's grammar has no escape, so a quote in one would
+/// end its literal early and be read as code in a deploy this node signs with its validator key.
+fn render_arg(p: &Par) -> Result<String, String> {
+    check_renderable(p)?;
+    Ok(PrettyPrinter::new().build_string(p))
 }
 
 /// Build the term that runs a `rho:txn` phase on a far shard. `data_args` are the phase's data
@@ -42,12 +44,29 @@ fn render_arg(p: &Par) -> String {
 ///
 /// Public so the block-pipeline replay tests can drive the *production* phase terms through
 /// `compute_state`/`replay_compute_state` rather than re-spelling the template.
-pub fn txn_term(method: &str, txn_id: &[u8], data_args: &[Par], needs_deployer: bool) -> String {
+///
+/// **Fallible because the arguments are a caller's** (AUDIT C220): the destination address on a
+/// `txn` request reaches this as a `String`, and the phase deploy is signed by the coordinator's own
+/// key. An argument that cannot be written as a literal is a phase that cannot be built, not one
+/// that is built with the caller's text as code.
+pub fn txn_term(
+    method: &str,
+    txn_id: &[u8],
+    data_args: &[Par],
+    needs_deployer: bool,
+) -> Result<String, String> {
+    check_renderable(&RhoString::apply(method.to_string()))
+        .map_err(|e| format!("the txn method cannot be rendered: {e}"))?;
     let mut args = vec![
         format!("\"{method}\""),
         format!("\"{}\".hexToBytes()", base16::encode(txn_id)),
     ];
-    args.extend(data_args.iter().map(render_arg));
+    args.extend(
+        data_args
+            .iter()
+            .map(render_arg)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     if needs_deployer {
         args.push("*deployerId".to_string());
     }
@@ -56,11 +75,11 @@ pub fn txn_term(method: &str, txn_id: &[u8], data_args: &[Par], needs_deployer: 
     // resolves to the unforgeable deploy id).
     args.push("*deployId".to_string());
     let call = args.join(", ");
-    if needs_deployer {
+    Ok(if needs_deployer {
         format!("new txn(`{TXN_URN}`), deployerId(`rho:rchain:deployerId`), deployId(`rho:rchain:deployId`) in {{ txn!({call}) }}")
     } else {
         format!("new txn(`{TXN_URN}`), deployId(`rho:rchain:deployId`) in {{ txn!({call}) }}")
-    }
+    })
 }
 
 /// One leg of a 2PC transaction: the target shard, the REV amount to escrow, the commit
@@ -116,7 +135,7 @@ impl TxnCoordinator {
         needs_deployer: bool,
         valid_after_block_number: i64,
     ) -> Result<ShardOutcome, String> {
-        let term = txn_term(method, txn_id, data_args, needs_deployer);
+        let term = txn_term(method, txn_id, data_args, needs_deployer)?;
         let signed = signed_invoke(
             &term,
             &self.key,
@@ -237,7 +256,8 @@ mod tests {
             ("abort", true),
             ("recover", false),
         ] {
-            let term = txn_term(method, &[1u8, 2, 3], &[], needs_deployer);
+            let term = txn_term(method, &[1u8, 2, 3], &[], needs_deployer)
+                .unwrap_or_else(|e| panic!("{method} term must be buildable: {e}"));
             rchain_rholang::normalizer::source_to_adt(&term)
                 .unwrap_or_else(|e| panic!("{method} term must parse: {e}\n{term}"));
         }
@@ -256,7 +276,8 @@ mod tests {
                 RhoString::apply("dest".to_string()),
             ],
             true,
-        );
+        )
+        .expect("a well-formed phase");
         assert!(term.contains("rho:txn"), "{term}");
         assert!(term.contains("\"prepare\""), "{term}");
         assert!(term.contains("rho:rchain:deployerId"), "{term}");
@@ -264,19 +285,39 @@ mod tests {
         assert!(term.contains("rho:rchain:deployId"), "{term}");
     }
 
-    /// A byte array is the one argument the pretty printer would render into something that is not a
-    /// rholang literal (a bare hex string), so it is special-cased.
+    /// **A destination the caller could put a quote in is refused** (AUDIT C220): the address is a
+    /// `String` off the txn request and this node's validator key signs the phase deploy, so printing
+    /// it unescaped would make the caller's text part of the program.
     #[test]
-    fn render_arg_renders_a_byte_array_as_hex_to_bytes() {
-        let rendered = render_arg(&RhoByteArray::apply(vec![0xAB, 0xCD]));
+    fn a_destination_that_cannot_be_written_as_a_literal_is_refused() {
+        let refused = txn_term(
+            "prepare",
+            &[9u8],
+            &[
+                RhoByteArray::apply(vec![4u8; 65]),
+                RhoNumber::apply(100),
+                RhoString::apply("dest\"".to_string()),
+            ],
+            true,
+        );
+        assert!(refused.is_err(), "a quote in the destination must refuse");
+    }
+
+    /// A byte array renders as its source literal — `"<hex>".hexToBytes()` — because a bare hex token
+    /// is not one. The printer owns that rendering now; this pins it end to end through the term.
+    #[test]
+    fn a_byte_array_argument_renders_as_hex_to_bytes() {
+        let rendered = render_arg(&RhoByteArray::apply(vec![0xAB, 0xCD])).expect("a value");
         assert_eq!(rendered, "\"abcd\".hexToBytes()");
     }
 
     #[test]
-    fn render_arg_falls_back_to_the_pretty_printer() {
+    fn render_arg_renders_ordinary_values() {
         // A string stays a string literal; the pretty printer owns the rendering.
-        assert!(render_arg(&RhoString::apply("dest".to_string())).contains("dest"));
-        assert_eq!(render_arg(&RhoNumber::apply(40)), "40");
+        assert!(render_arg(&RhoString::apply("dest".to_string()))
+            .expect("a value")
+            .contains("dest"));
+        assert_eq!(render_arg(&RhoNumber::apply(40)).expect("a value"), "40");
     }
 
     /// The reply mapping is the fix for the Law 27 retry bug: a participant that is already

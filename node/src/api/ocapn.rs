@@ -85,6 +85,14 @@ const CHAIN_REPLY_INTERVAL: Duration = Duration::from_millis(250);
 /// How far back to look for the reply datum, in blocks. Matches the socket-level callers.
 const CHAIN_REPLY_DEPTH: i32 = 50;
 
+/// How many OCapN sessions the node serves at once.
+///
+/// Every session is a task, a socket, and its own export/answer tables, and the tables' size is the
+/// peer's to choose, so the ceiling is what makes the per-session bounds add up to a node bound. 64 is
+/// ~10× the conformance suite's heaviest case (it opens about six, serially) and far below any file
+/// descriptor ceiling; the parameter that matters for an operator is that it is *finite*.
+const MAX_SESSIONS: usize = 64;
+
 /// Serve OCapN on `listen` (`host:port`) until the node is asked to stop.
 ///
 /// `None` means the listener is not configured. The task is spawned either way — one that is simply
@@ -122,6 +130,12 @@ pub async fn serve_ocapn(
     // and withdrawn on another.
     let registry = Arc::new(rchain_ocapn::owner::SessionRegistry::default());
     let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
+    // **The accept loop is bounded, and the permit is taken before the task exists** (HAZOP row B1).
+    // An unbounded accept loop let one peer hold 3 000 idle connections (+41 MB, RSS never returned)
+    // and one task each; the handshake bound now stops a *silent* connection from holding its task,
+    // and this stops there being arbitrarily many. Taken before the spawn, so a refused connection
+    // costs nothing but the socket — which is dropped here.
+    let sessions = Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS));
 
     loop {
         let connection = tokio::select! {
@@ -129,12 +143,21 @@ pub async fn serve_ocapn(
             _ = stop_requested(stop.clone()) => return Ok(()),
             accepted = listener.accept_incoming_connection() => accepted.map_err(|e| e.to_string())?,
         };
+        let Ok(permit) = sessions.clone().try_acquire_owned() else {
+            // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
+            // gets refusals, not a growing backlog, and the operator's own sessions keep working.
+            drop(connection);
+            continue;
+        };
         let location = location.clone();
         let chain = chain.clone();
         let netlayer = listener.clone();
         let registry = registry.clone();
         let handoffs = handoffs.clone();
         tokio::spawn(async move {
+            // Held for the session's life and released when this task ends: the task's own lifetime
+            // *is* the session's, so the permit needs no name beyond this binding.
+            let _permit = permit;
             // A fresh session key per session, as OCapN requires.
             let Ok(identity) = Identity::fresh(location.clone()) else {
                 return;
@@ -305,6 +328,11 @@ impl Export for ChainCapability {
         // cannot pay for itself (`preCharge: insufficient funds`) — measured, first run of this test.
         // `insertArbitrary` mints the URI without a key, so the funded key can sign.
         let registering = self.method.is_none();
+        // A value the peer delivered is checked before it is printed into the term (AUDIT C220):
+        // Rholang's literal grammar has no escapes, so an argument containing a `"` would end the
+        // literal early and be read as a process in a deploy signed by the node's own key. The check
+        // refuses it here, and the peer gets a `break` naming the argument rather than a deploy it
+        // chose the body of.
         let term = if registering {
             invoke_member_term(
                 self.target_uri.as_str(),
@@ -314,7 +342,7 @@ impl Export for ChainCapability {
             )
         } else {
             invoke_term(self.target_uri.as_str(), &method, &pars)
-        };
+        }?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)

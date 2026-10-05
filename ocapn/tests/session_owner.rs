@@ -7,14 +7,18 @@
 //! which is what a sturdyref enlivener does inside a delivery on another session — one task owns
 //! each socket, and the two talk through a handle (`owner::SessionHandle`) instead of a lock.
 //!
-//! Two gates, because they fail independently:
+//! Four gates, because they fail independently:
 //!
 //! 1. a session we dialed can send a delivery **whose answer we await**, and the answer arrives
 //!    through that session's own loop (`op_deliver`'s pipelining, plus the answer we registered as
 //!    the delivery's `resolve-me-desc`);
 //! 2. when the same two peers have dialed each other, **exactly one** of the two sessions is
 //!    aborted, and which one is decided by the identifier rule — asserted from the peer's own socket,
-//!    because the loser's `op:abort` is a message on the wire.
+//!    because the loser's `op:abort` is a message on the wire;
+//! 3. **a peer that never speaks is refused, not held** (HAZOP row B1) — the handshake bound, which
+//!    is what stops one connection pinning a task for ever;
+//! 4. **a peer whose sessions have all ended is forgotten** (row B3) — `forget` must remove the key,
+//!    because the key is the peer's own `designator`, and a map that only grows is the node's memory.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,7 +27,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use rchain_ocapn::bootstrap::Bootstrap;
-use rchain_ocapn::conn::{Act, Export, Identity, Session};
+use rchain_ocapn::conn::{Act, ConnectionError, Export, Identity, Session};
 use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::netlayer::Netlayer;
 use rchain_ocapn::owner::{accept_and_book, HandOff, SessionRegistry};
@@ -217,6 +221,118 @@ async fn a_crossing_aborts_the_leg_the_rule_names() {
 
     drop(accepted);
     drop(dialed_handle);
+}
+
+/// **A peer that connects and says nothing is refused, and refused promptly** (HAZOP row B1).
+///
+/// This is the slow-loris the red team measured: 3 000 idle connections, +41 MB, one pinned task
+/// each, the RSS never returned. The bound is what makes that a closed socket instead — and it is
+/// tested through [`Session::accept_deferred_within`] rather than by waiting the production 30 s,
+/// because a security bound nobody can afford to test is a bound that gets removed.
+///
+/// The refused peer must also be **told**: the accept path writes `op:abort`, so the silent
+/// connector learns why rather than seeing a bare close.
+#[tokio::test]
+async fn a_peer_that_never_speaks_is_refused_within_the_handshake_bound() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let identity = Identity::from_seed([31u8; 32], locator(port)).unwrap();
+
+    // The client connects and sends nothing at all — the attack.
+    let mut silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+        let conn = listener
+            .accept_incoming_connection()
+            .await
+            .expect("accept the silent peer");
+        Session::accept_deferred_within(
+            conn,
+            &identity,
+            Arc::new(Bootstrap::default()),
+            Duration::from_millis(200),
+        )
+        .await
+    })
+    .await
+    .expect("the bound fires well inside the test's own wait");
+
+    // `Session` is not `Debug` (it owns a boxed connection), so the refusal is matched, not
+    // `expect_err`'d.
+    let refused = match outcome {
+        Ok(_) => panic!("a peer that never speaks must be refused, not held"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(refused, ConnectionError::Handshake(_)),
+        "the refusal is a handshake refusal: {refused:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "and it fires on the bound, not on the test's timeout: {:?}",
+        started.elapsed()
+    );
+
+    // The peer is told. Read what it received: an `op:abort`, not a bare close.
+    use tokio::io::AsyncReadExt;
+    let mut got = vec![0u8; 512];
+    let n = tokio::time::timeout(Duration::from_secs(2), silent.read(&mut got))
+        .await
+        .expect("the peer is told why")
+        .expect("read");
+    let text = String::from_utf8_lossy(&got[..n]).to_string();
+    assert!(
+        text.contains("op:abort"),
+        "the silent peer should be refused in words: {text:?}"
+    );
+}
+
+/// **A peer whose sessions have all ended is forgotten** (HAZOP row B3): `forget` must remove the
+/// key, not just clear the slot, because the key is the peer's own `designator` and a peer that
+/// varies it accumulates one dead entry per connection for the process's life.
+#[tokio::test]
+async fn a_peer_whose_sessions_have_ended_is_forgotten() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let registry = Arc::new(SessionRegistry::default());
+
+    // A peer dials us: this is the leg the registry books.
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let peer_identity = Identity::from_seed([41u8; 32], locator(0)).unwrap();
+    let _peer_side = Session::dial_deferred(conn, &peer_identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("we send our start-session and do not wait");
+
+    let accepted_conn = listener.accept_incoming_connection().await.unwrap();
+    let our_identity = Identity::from_seed([42u8; 32], locator(port)).unwrap();
+    let (handle, _loop_, _context, peer) = accept_and_book(
+        accepted_conn,
+        &our_identity,
+        Arc::new(Bootstrap::default()),
+        &registry,
+    )
+    .await
+    .expect("the accepted leg is booked");
+    assert_eq!(registry.tracked_peers(), 1, "the peer is booked");
+
+    // The session ends: forgetting it must take the entry with it.
+    registry.forget(&peer, &handle.own_pi, handle.dialed);
+    assert!(
+        registry.live(&peer).is_none(),
+        "a forgotten session is not live"
+    );
+    assert_eq!(
+        registry.tracked_peers(),
+        0,
+        "and the peer's own map entry goes too — this is the whole of row B3"
+    );
 }
 
 /// Whether the next message the peer reads is an `op:abort` — read with a bound, so a leg that is

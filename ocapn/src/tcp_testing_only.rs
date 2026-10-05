@@ -28,6 +28,15 @@ use crate::netstring;
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const READ_CHUNK: usize = 8 * 1024;
 
+/// How long a dial may take before it is abandoned.
+///
+/// **The peer chooses the address.** A sturdyref's locator and a handoff give's `exporter-location`
+/// both arrive over the wire (`enliven.rs`, `fixtures.rs`), so `TcpStream::connect` here is a
+/// connection attempt to wherever a stranger said — a port probe into the node's network position,
+/// and without a bound one that hangs holds a session's loop open for the kernel's own (~130 s) or
+/// for ever. Bounded, it is still a probe; the bound is what keeps it from also being a stall.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A `tcp-testing-only` endpoint. The same value dials (as a client) and accepts (as a server);
 /// dialling needs no listener, so a purely outgoing peer still binds one on an ephemeral port.
 pub struct TcpTestingOnly {
@@ -74,7 +83,15 @@ impl Netlayer for TcpTestingOnly {
                     "tcp-testing-only `port` is not a number",
                 )
             })?;
-        let stream = TcpStream::connect((host.as_str(), port)).await?;
+        let stream =
+            tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host.as_str(), port)))
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("connecting to {host}:{port} took longer than {CONNECT_TIMEOUT:?}"),
+                    )
+                })??;
         Ok(Box::new(TcpConn {
             stream,
             buf: Vec::new(),

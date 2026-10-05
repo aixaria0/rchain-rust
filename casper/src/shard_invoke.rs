@@ -62,24 +62,34 @@ pub const SHARD_ERROR_TAG: &str = "shard-error";
 ///
 /// A registry miss yields `Nil`; the `for` then does not fire and the deploy produces
 /// nothing on the reply channel, which [`await_reply`] reports as a `shard-error`.
-pub fn invoke_term(target_uri: &str, method: &str, args: &[Par]) -> String {
+pub fn invoke_term(target_uri: &str, method: &str, args: &[Par]) -> Result<String, String> {
     let pp = PrettyPrinter::new();
     let uri_lit = pp.build_string(&RhoString::apply(target_uri.to_string()));
     let method_lit = pp.build_string(&RhoString::apply(method.to_string()));
+
+    // **Every value printed into this term is parsed back as code**, so each is checked first
+    // (AUDIT C220): an argument that cannot be written as a literal would otherwise end the literal
+    // early and be read as a process — in a deploy the *caller's* key signs.
+    for (what, value) in std::iter::once(("method", &RhoString::apply(method.to_string())))
+        .chain(args.iter().map(|a| ("argument", a)))
+    {
+        rchain_rholang::pretty_printer::check_renderable(value)
+            .map_err(|e| format!("the {what} cannot be rendered into a term: {e}"))?;
+    }
 
     let mut payload: Vec<String> = Vec::with_capacity(args.len() + 1);
     payload.push(method_lit);
     payload.extend(args.iter().map(|a| pp.build_string(a)));
     let payload = payload.join(", ");
 
-    format!(
+    Ok(format!(
         "new lookup(`{REGISTRY_LOOKUP}`), deployId(`{REMOTE_REPLY_CHANNEL}`), cap in {{ \
            lookup!({uri_lit}, *cap) | \
            for (@(_, target) <- cap) {{ \
              @target!({payload}, *deployId) \
            }} \
          }}"
-    )
+    ))
 }
 
 /// Build the term that calls a **member of a registered value** and registers what that call returns.
@@ -111,10 +121,19 @@ pub fn invoke_member_term(
     pattern: Option<&str>,
     method: &str,
     args: &[Par],
-) -> String {
+) -> Result<String, String> {
     let pp = PrettyPrinter::new();
     let uri_lit = pp.build_string(&RhoString::apply(target_uri.to_string()));
     let method_lit = pp.build_string(&RhoString::apply(method.to_string()));
+
+    // Same guard as `invoke_term` — and here the values are a *peer's*, delivered over CapTP
+    // (AUDIT C220). The pattern is ours (it is built from the reply's shape), so it is not checked.
+    for (what, value) in std::iter::once(("method", &RhoString::apply(method.to_string())))
+        .chain(args.iter().map(|a| ("argument", a)))
+    {
+        rchain_rholang::pretty_printer::check_renderable(value)
+            .map_err(|e| format!("the {what} cannot be rendered into a term: {e}"))?;
+    }
 
     let mut payload: Vec<String> = Vec::with_capacity(args.len() + 1);
     payload.push(method_lit);
@@ -148,12 +167,12 @@ pub fn invoke_member_term(
         ),
     };
 
-    format!(
+    Ok(format!(
         "new lookup(`{REGISTRY_LOOKUP}`), deployId(`{REMOTE_REPLY_CHANNEL}`), \
              register(`rho:registry:insertArbitrary`), cap, uriOut, replyCh in {{ \
            lookup!({uri_lit}, *cap) | {resolve} \
          }}"
-    )
+    ))
 }
 
 /// Sign the far-shard term with the caller's key (port of `deployFileProgram`'s
@@ -279,6 +298,7 @@ mod tests {
     use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
     use rchain_crypto::signatures::signed::signature_hash;
     use rchain_models::casper::protocol::deploy_service::LightBlockInfo;
+    use rchain_models::rholang::RhoType::RhoByteArray;
     use rchain_shared::serialize::Serialize;
 
     fn light_block() -> LightBlockInfo {
@@ -315,14 +335,15 @@ mod tests {
             "rho:id:theOracle",
             "getPrice",
             &[RhoString::apply("ETH".to_string())],
-        );
+        )
+        .expect("a renderable argument");
         // Must parse + normalize as real rholang (catches syntax drift in the template).
         rchain_rholang::normalizer::source_to_adt(&term).expect("generated invoke term must parse");
     }
 
     #[test]
     fn invoke_term_targets_uri_method_and_deploy_id() {
-        let term = invoke_term("rho:id:locker", "open", &[]);
+        let term = invoke_term("rho:id:locker", "open", &[]).expect("no arguments to refuse");
         assert!(term.contains("rho:registry:lookup"), "{term}");
         assert!(term.contains("rho:id:locker"), "{term}");
         assert!(term.contains("\"open\""), "{term}");
@@ -338,12 +359,74 @@ mod tests {
         assert!(term.contains("*deployId"), "{term}");
     }
 
+    /// **An argument that cannot be written as a literal is refused, not printed** (AUDIT C220).
+    ///
+    /// The bug this pins: `PrettyPrinter` writes a string as `"…"` with no escape, and Rholang's
+    /// lexer reads to the next `"` — so **any** argument containing a double quote ends the literal
+    /// early and whatever follows is read as part of the term this caller then signs. The whole
+    /// trigger is the quote, so a plain sentence is a faithful and minimal vector: what matters is
+    /// that the value is refused *before* it reaches the printer, whatever it contains.
+    #[test]
+    fn an_argument_that_would_close_its_literal_is_refused() {
+        for argument in [
+            "he said \"hello\"", // the minimal trigger: a quote, and nothing else
+            "a\"b",              // and the same with no surrounding text
+            "trailing quote\"",  // and at the end, where the literal would simply not close
+        ] {
+            let refused = invoke_term(
+                "rho:rchain:revVault",
+                "getBalance",
+                &[RhoString::apply(argument.to_string())],
+            );
+            assert!(
+                refused.is_err(),
+                "an argument containing a quote must be refused, not printed into a signed term: \
+                 {refused:?}"
+            );
+            let reason = refused.expect_err("checked");
+            assert!(
+                reason.contains("double quote") && reason.contains("argument"),
+                "the refusal must name the argument and the reason: {reason}"
+            );
+        }
+
+        // The method rides the same printer, so it is checked the same way.
+        assert!(
+            invoke_term("rho:rchain:revVault", "get\"Balance", &[]).is_err(),
+            "a method name is printed into the term too"
+        );
+
+        // A value that *can* be written as a literal is still rendered, unchanged.
+        let ok = invoke_term(
+            "rho:rchain:revVault",
+            "getBalance",
+            &[RhoString::apply(
+                "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYau".to_string(),
+            )],
+        )
+        .expect("an ordinary address renders");
+        assert!(ok.contains("getBalance"), "{ok}");
+    }
+
+    /// The two source-literal shapes the printer must get right for a *parsed* term: a byte array
+    /// (which a bare hex token is not) and a string.
+    #[test]
+    fn a_byte_array_argument_renders_as_its_source_literal() {
+        let term = invoke_term(
+            "rho:rchain:pos",
+            "getDelegations",
+            &[RhoByteArray::apply(vec![0xAB, 0xCD])],
+        )
+        .expect("a byte array is a value");
+        assert!(term.contains("\"abcd\".hexToBytes()"), "{term}");
+    }
+
     #[test]
     fn signed_invoke_is_signed_by_the_caller() {
         let caller = construct_deploy::default_sec();
         let caller_pub = Secp256k1.to_public(&caller).unwrap();
 
-        let term = invoke_term("rho:id:x", "m", &[]);
+        let term = invoke_term("rho:id:x", "m", &[]).expect("no arguments to refuse");
         let deploy = signed_invoke(&term, &caller, 0, 90_000, 1, 0, "root").unwrap();
 
         // The far shard will bind this public key as `deployerId`.
