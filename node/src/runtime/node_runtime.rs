@@ -464,6 +464,8 @@ pub struct NodeProgram {
     enable_devnet_admin_public: bool,
     /// `host:port` to bind the OCapN listener on, or `None` (issue #249).
     ocapn_listen: Option<String>,
+    /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4).
+    ocapn_deny_local_dial: bool,
     /// The node's log, for the one surface that had none: the OCapN listener served, refused and
     /// spent in silence, so an operator could not tell "nobody is calling" from "calls are failing"
     /// (HAZOP row E6).
@@ -504,6 +506,7 @@ impl NodeProgram {
             enable_devnet_cors,
             enable_devnet_admin_public,
             ocapn_listen,
+            ocapn_deny_local_dial,
             log,
             ocapn_chain,
             protocol_server,
@@ -604,6 +607,7 @@ impl NodeProgram {
         let mut ocapn = tokio::spawn(serve_ocapn(
             ocapn_listen,
             ocapn_chain,
+            ocapn_deny_local_dial,
             log.clone(),
             stop.clone(),
         ));
@@ -1355,6 +1359,7 @@ pub async fn setup_node_program(
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
         ocapn_listen: conf.api_server.ocapn_listen.clone(),
+        ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,
         log: log.clone(),
         ocapn_chain,
         protocol_server: Some(build_protocol_server(

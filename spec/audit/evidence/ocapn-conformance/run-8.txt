@@ -1,0 +1,55 @@
+# The suite after the session-layer residue work (issue #254): 24/24, all modules.
+#
+# command: python3 spec/audit/evidence/ocapn-conformance/run-suite.py /tmp/ocapn-test-suite \
+#            'ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045' --all
+# peer:    target/debug/ocapn-tcp-testing 127.0.0.1:22045, built from branch ocapn/residues-w1
+# suite:   github.com/ocapn/ocapn-test-suite at 31f0b80
+#
+# Recorded because this wave touched the **session layer**, which is the only layer the suite can see.
+# Two changes, both in `ocapn/src/conn.rs`:
+#
+#  * **An inbound `op:gc-exports`/`op:gc-answers` is honoured rather than dropped by label.** The two
+#    structs had no `from_syrup` at all, so a peer's explicit release was a no-op and only the table
+#    caps bounded the tables (AUDIT C223, residue 1). The suite only ever asserts the gc messages *we*
+#    send, which is why this could not break it — and why nothing caught the no-op.
+#
+#  * **A re-used `answer_pos` is refused** with `op:abort`, where `Bounded::try_insert` used to replace
+#    the mapping silently (residue 3). The suite's client allocates positions monotonically, so it
+#    never re-uses one.
+#
+# Both are guarded by tests in `ocapn/tests/session_owner.rs`
+# (`a_released_export_no_longer_resolves`, `a_reused_answer_position_is_refused`), which is the point of
+# recording this run: the module counts are unchanged, so the *tests* are what says the new behaviour
+# is exercised rather than merely absent.
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+OK
+suite /tmp/ocapn-test-suite at 31f0b80, peer ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045
+tests.op_abort: 1/1
+----------------------------------------------------------------------
+Ran 5 tests in 0.146s
+
+OK
+tests.op_start_session: 5/5
+----------------------------------------------------------------------
+Ran 4 tests in 0.225s
+
+OK
+tests.op_deliver: 4/4
+----------------------------------------------------------------------
+Ran 3 tests in 0.199s
+
+OK
+tests.op_listen: 3/3
+----------------------------------------------------------------------
+Ran 4 tests in 0.188s
+
+OK
+tests.op_gc: 4/4
+----------------------------------------------------------------------
+Ran 7 tests in 0.430s
+
+OK
+tests.third_party_handoffs: 7/7

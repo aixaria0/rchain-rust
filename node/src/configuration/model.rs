@@ -113,6 +113,9 @@ pub struct ApiServer {
     /// A non-Shared field, like `enable_txn_api` beside it: the Scala `ApiServer` has no OCapN
     /// listener, and this port's is opt-in rather than always-on for the reason above.
     pub ocapn_listen: Option<String>,
+    /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4; off by default
+    /// because the conformance suite and the ERTP transcript both dial loopback).
+    pub ocapn_deny_local_dial: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -233,6 +233,29 @@ impl OpGcExports {
             ),
         ])
     }
+
+    /// Read the peer's release of *our* exports (AUDIT C223).
+    ///
+    /// This side of the shape did not exist: the struct carried only `to_syrup`, so an inbound
+    /// `op:gc-exports` could not be read at all and the session dropped it by label — a peer's
+    /// explicit release was a no-op, and only the table caps bounded the export table. The deltas are
+    /// accepted and not used: they are the peer's own reference accounting, and this side releases a
+    /// position outright rather than counting down.
+    pub fn from_syrup(v: &Value) -> Result<OpGcExports, String> {
+        let Value::Record(fields) = v else {
+            return Err("an op:gc-exports is a record".to_string());
+        };
+        let [label, positions, wire_deltas] = fields.as_slice() else {
+            return Err("an op:gc-exports has two fields".to_string());
+        };
+        if !matches!(label, Value::Symbol(s) if s == GC_EXPORTS_LABEL) {
+            return Err(format!("not a {GC_EXPORTS_LABEL} record: {label:?}"));
+        }
+        Ok(OpGcExports {
+            positions: positions_from_syrup(positions, "positions")?,
+            wire_deltas: positions_from_syrup(wire_deltas, "wire-deltas")?,
+        })
+    }
 }
 
 /// `op:gc-answers` — "tell the peer which of our answer positions we have released".
@@ -248,6 +271,39 @@ impl OpGcAnswers {
             Value::List(self.positions.iter().cloned().map(position_value).collect()),
         ])
     }
+
+    /// Read the peer's release of *our* answer positions (AUDIT C223) — the inbound half that did not
+    /// exist, so that a release the peer asks for is honoured rather than dropped by label.
+    pub fn from_syrup(v: &Value) -> Result<OpGcAnswers, String> {
+        let Value::Record(fields) = v else {
+            return Err("an op:gc-answers is a record".to_string());
+        };
+        let [label, positions] = fields.as_slice() else {
+            return Err("an op:gc-answers has one field".to_string());
+        };
+        if !matches!(label, Value::Symbol(s) if s == GC_ANSWERS_LABEL) {
+            return Err(format!("not a {GC_ANSWERS_LABEL} record: {label:?}"));
+        }
+        Ok(OpGcAnswers {
+            positions: positions_from_syrup(positions, "positions")?,
+        })
+    }
+}
+
+/// A list of non-negative positions, as the gc shapes carry them.
+fn positions_from_syrup(v: &Value, what: &str) -> Result<Vec<BigUint>, String> {
+    let Value::List(items) = v else {
+        return Err(format!("op:gc {what} is not a list"));
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Int(n) if n.sign() != num_bigint::Sign::Minus => Ok(n.magnitude().clone()),
+            other => Err(format!(
+                "op:gc {what} holds something that is not a position: {other:?}"
+            )),
+        })
+        .collect()
 }
 
 fn position_value(n: BigUint) -> Value {

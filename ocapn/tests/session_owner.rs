@@ -443,6 +443,170 @@ async fn the_export_table_refuses_the_delivery_that_would_grow_it_past_its_cap()
     far_end.abort();
 }
 
+/// **A released export is released** (HAZOP row B2, AUDIT C223 residue 1).
+///
+/// `op:gc-exports` used to be dropped by label — the struct had no `from_syrup` at all — so a peer's
+/// explicit release was a no-op and only the table caps bounded the table. Now the release removes the
+/// position, and the proof is that the position stops resolving.
+#[tokio::test]
+async fn a_released_export_no_longer_resolves() {
+    // A far end that hands back an object for `"ask …"`: each reply populates *its* export table.
+    struct HandsBackAnObject;
+
+    #[async_trait]
+    impl Export for HandsBackAnObject {
+        async fn deliver(&self, args: &[Value]) -> Result<Act, String> {
+            match args.first() {
+                Some(Value::String(_)) => Ok(Act::object(Arc::new(Pong))),
+                _ => Ok(Act::value(Value::String("pong".to_string()))),
+            }
+        }
+    }
+
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([61u8; 32], locator(port)).unwrap();
+        let mut session = Session::accept(conn, &identity, Arc::new(HandsBackAnObject))
+            .await
+            .unwrap();
+        let _ = session.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([62u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    // One delivery, one object handed back: the far end's export 1 (0 is its bootstrap).
+    let ask = Deliver {
+        to: Desc::Export(0u64.into()),
+        args: vec![Value::String("ask".to_string())],
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+    };
+    client.send_message(&ask.to_syrup()).await.expect("send");
+    let reply = client.recv_message().await.unwrap().unwrap();
+    let delivered = Deliver::from_syrup(&reply).unwrap();
+    let Value::Record(desc) = &delivered.args[1] else {
+        panic!("expected a descriptor, got {:?}", delivered.args[1]);
+    };
+    let Value::Int(position) = &desc[1] else {
+        panic!("expected a position in {desc:?}");
+    };
+    let position = position.magnitude().clone();
+
+    // The peer releases it. This is the message that used to be dropped.
+    let gc = rchain_ocapn::captp::OpGcExports {
+        positions: vec![position.clone()],
+        wire_deltas: vec![1u64.into()],
+    };
+    client
+        .send_message(&gc.to_syrup())
+        .await
+        .expect("send the release");
+
+    // And the released position no longer resolves: the far end aborts, naming the reason.
+    let after = Deliver {
+        to: Desc::Export(position),
+        args: vec![Value::String("still there?".to_string())],
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+    };
+    client.send_message(&after.to_syrup()).await.expect("send");
+    let reply = client.recv_message().await.unwrap().unwrap();
+    let Value::Record(fields) = &reply else {
+        panic!("expected a record, got {reply:?}");
+    };
+    assert!(
+        matches!(fields.first(), Some(Value::Symbol(label)) if label == "op:abort"),
+        "a released export must not resolve: {reply:?}"
+    );
+    assert!(
+        matches!(fields.get(1), Some(Value::String(reason)) if reason.contains("no such export")),
+        "and the abort must say why: {reply:?}"
+    );
+
+    drop(client);
+    far_end.abort();
+}
+
+/// **A re-used answer position is refused, not re-pointed** (HAZOP row D5, AUDIT C223 residue 3).
+///
+/// An answer position is the sender's own promise slot, and it hands `desc:answer N` to third parties;
+/// silently pointing N at a different delivery breaks a reference the peer may still hold. Before the
+/// fix the second delivery replaced the mapping and nothing said so.
+#[tokio::test]
+async fn a_reused_answer_position_is_refused() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([71u8; 32], locator(port)).unwrap();
+        let mut session = Session::accept(conn, &identity, Arc::new(Pong))
+            .await
+            .unwrap();
+        let _ = session.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([72u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    let with_answer = |text: &str| Deliver {
+        to: Desc::Export(0u64.into()),
+        args: vec![Value::String(text.to_string())],
+        answer_pos: Some(0u64.into()),
+        resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+    };
+
+    // The first delivery claims answer position 0, and is served.
+    client
+        .send_message(&with_answer("first").to_syrup())
+        .await
+        .expect("send");
+    let reply = client.recv_message().await.unwrap().unwrap();
+    let delivered = Deliver::from_syrup(&reply).unwrap();
+    assert_eq!(
+        delivered.args[0],
+        Value::Symbol("fulfill".into()),
+        "the first delivery on a fresh position is served: {delivered:?}"
+    );
+
+    // The second re-uses it. The session must say so and stop.
+    client
+        .send_message(&with_answer("second").to_syrup())
+        .await
+        .expect("send");
+    let reply = client.recv_message().await.unwrap().unwrap();
+    let Value::Record(fields) = &reply else {
+        panic!("expected a record, got {reply:?}");
+    };
+    assert!(
+        matches!(fields.first(), Some(Value::Symbol(label)) if label == "op:abort"),
+        "re-using an answer position must abort the session: {reply:?}"
+    );
+    assert!(
+        matches!(fields.get(1), Some(Value::String(reason)) if reason.contains("already used")),
+        "and the abort must name the position: {reply:?}"
+    );
+
+    drop(client);
+    far_end.abort();
+}
+
 /// Whether the next message the peer reads is an `op:abort` — read with a bound, so a leg that is
 /// simply still open (the survivor) fails the assertion rather than hanging the test.
 async fn is_abort_within(session: &mut Session, within: Duration) -> bool {
