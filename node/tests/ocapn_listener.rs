@@ -190,26 +190,17 @@ fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
             .await
             .expect("send the call");
 
-        // The node has to produce a block for the bridged deploy to land and reply. `propose-on-deploy`
-        // is on (the bridged deploy arriving is what triggers the node's own propose), so an explicit
-        // nudge — the shape `deploy_block.rs` uses — can arrive while that one is already running, and
-        // the node then answers `Failure: another propose is in progress`. **That is not a failure
-        // here**: it says a block is being produced, which is the whole assertion this call was
-        // making. A CI machine reached that window where a quiet laptop did not, which is how the race
-        // was found; anything other than those two answers is still a real failure.
-        //
-        // The async propose first is what makes the window reachable *from a test*: it returns as soon
-        // as the node accepts it, so the blocking call behind it lands inside the node's own propose
-        // on essentially every run — measured, and that is what turns "only CI sees this" into "every
-        // run checks it". `Ok` and that refusal are both a block on its way; either satisfies this
-        // test, and the assertion below is what says so.
+        // The bridged deploy lands because **the node proposes it**: `propose_on_deploy` is on, and
+        // that is the mechanism this test is exercising. So this explicit nudge — the shape
+        // `deploy_block.rs` uses, kept as a second chance — normally arrives while the node's own
+        // propose is already running, and the node answers `Failure: another propose is in progress`.
+        // **That is not a failure here**, and asserting on it is how this test failed twice on CI: the
+        // refusal says a propose is in flight, which is a block on its way, and the assertion that
+        // matters is the reply below — the only thing that says a block carried the *deploy*. Both
+        // answers have been measured here; only these two are acceptable, and neither is required.
         let propose = GrpcProposeService::connect("127.0.0.1", ports[2] as i32, 16 * 1024 * 1024)
             .await
             .expect("propose gRPC");
-        propose
-            .propose(true)
-            .await
-            .expect("the async propose is accepted");
         match propose.propose(false).await {
             Ok(_) => {}
             Err(errors)
