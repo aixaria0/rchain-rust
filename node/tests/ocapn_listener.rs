@@ -336,6 +336,75 @@ fn a_captp_peer_holds_an_ertp_issuer_and_calls_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A capability the peer holds, passed back as an argument** (C224 item 4).
+///
+/// The gap this closes: a peer could *hold* a capability — the kit above proves it — but could not
+/// hand one to a contract, because a capability is a descriptor and `par_value` refuses the label it
+/// carries. So the ERTP arms that take one were unreachable, and `amountMath.make(brand, value)` is
+/// the cheapest of them to demonstrate: the brand is a capability the peer was handed, the value is
+/// data, and the contract answers with the amount it made *from both*.
+///
+/// Before the fix this delivery broke with `a Symbol — Rholang has no symbol for it to land in`,
+/// which named the label rather than the situation.
+#[test]
+fn a_captp_peer_passes_a_capability_back_as_an_argument() {
+    let dir = common::temp_dir("ocapn-ertp-arg");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
+    conf.dev_mode = true;
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    conf.propose_on_deploy = true;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+        wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
+
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let connection = dialer
+            .new_outgoing_connection(&locator(ports[5]))
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(locator(0)).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the handshake");
+
+        // A kit, so the peer holds a brand to pass back.
+        let ertp = fetch(&mut client, ERTP_SWISS).await;
+        let kit = call_many(&mut client, &ertp, "makeIssuerKit", &[]).await;
+        let (brand, issuer) = (kit[0].clone(), kit[2].clone());
+
+        // The issuer makes the amountMath; the amountMath is an object, so one descriptor.
+        let amount_math = call(&mut client, &issuer, "getAmountMath", &[]).await;
+
+        // **The brand crosses as an argument.** `kit[0]` is the peer's handle on the brand, which is
+        // the node's own export — so it is sent back as `<desc:export N>`, and the node resolves it to
+        // the registry location it minted for the kit.
+        // The reply is an amount `(brand, 10)` — **one** capability in it, so one descriptor: the
+        // contract put the brand the peer passed into the value it answered with. A `break` here
+        // would panic inside the helper with the reason, which is what this asserted before the fix.
+        let amount = call(
+            &mut client,
+            &amount_math,
+            "make",
+            &[brand.to_syrup(), Value::Int(10.into())],
+        )
+        .await;
+        assert_ne!(
+            amount, brand,
+            "the amount is a new object holding the brand, not the brand itself"
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Call `method` on `capability` and read the reply, which must be **one** descriptor.
 ///
 /// One object is one descriptor, not a one-element list: `E(obj).makeEmptyPurse()` should hand the

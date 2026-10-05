@@ -88,6 +88,32 @@ impl Desc {
     }
 }
 
+/// Whether a label names a descriptor rather than an operation.
+pub fn is_descriptor_label(label: &str) -> bool {
+    matches!(
+        label,
+        IMPORT_OBJECT_LABEL | IMPORT_PROMISE_LABEL | EXPORT_LABEL | ANSWER_LABEL
+    )
+}
+
+/// A value that is a descriptor, as `(label, position)`.
+///
+/// Public because the bridge has to recognise one *inside a message's arguments* (C224 item 4): a
+/// capability a peer passes is a descriptor, and which descriptor it is decides whether the node can
+/// name the object on chain.
+pub fn descriptor_of(v: &Value) -> Option<(String, BigUint)> {
+    let Value::Record(fields) = v else {
+        return None;
+    };
+    let [Value::Symbol(label), Value::Int(position)] = fields.as_slice() else {
+        return None;
+    };
+    if !is_descriptor_label(label) || position.sign() == Sign::Minus {
+        return None;
+    }
+    Some((label.clone(), position.magnitude().clone()))
+}
+
 /// `op:deliver` — "delivers a message to an object or promise".
 #[derive(Debug, Clone, PartialEq)]
 pub struct Deliver {

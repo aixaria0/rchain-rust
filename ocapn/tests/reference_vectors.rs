@@ -89,6 +89,8 @@ fn start_session_matches_the_reference() {
     let s = StartSession {
         captp_version: "1.0".into(),
         session_pubkey: vec![0u8; 32],
+        // The record the locator encodes to, which is what the signature covers (C224 item 1).
+        locator_record: peer().to_syrup(),
         acceptable_location: peer(),
         acceptable_location_sig: sig,
     };

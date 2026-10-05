@@ -31,12 +31,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use rchain_casper::api::block_api::BlockApi;
+use rchain_casper::shard_invoke::Arg;
 use rchain_casper::shard_invoke::{
     invoke_member_term, invoke_term, reply_outcome, signed_invoke, ShardOutcome,
 };
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
-use rchain_ocapn::conn::{Act, Export, Identity};
+use rchain_ocapn::captp::{
+    EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
+    IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
+};
+use rchain_ocapn::conn::{Act, Export, ExportView, Identity, Named};
 use rchain_ocapn::fixtures;
 use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::netlayer::Netlayer;
@@ -121,6 +126,7 @@ const MAX_SESSIONS: usize = 64;
 pub async fn serve_ocapn(
     listen: Option<String>,
     chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
+    designator: String,
     deny_local_dial: bool,
     log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
@@ -158,7 +164,12 @@ pub async fn serve_ocapn(
         },
     ));
     let location = PeerLocator {
-        designator: "rnode".to_string(),
+        // **The designator is this node's, not a shared constant** (C224 item 2). Peer identity *is*
+        // `(designator, transport)` (`owner::peer_key`), so with every node calling itself `"rnode"`
+        // two nodes were one peer: a sturdyref to one resolved at the other, and the crossed-hello
+        // registry conflated their sessions. Derived from the node's key (or its node id when there is
+        // no key) in `node_designator`, so it is stable across restarts and distinct per node.
+        designator: designator.clone(),
         transport: "tcp-testing-only".to_string(),
         hints: BTreeMap::from([
             ("host".to_string(), local.ip().to_string()),
@@ -256,6 +267,111 @@ pub async fn serve_ocapn(
             registry.forget(&peer_location, &handle.own_pi, handle.dialed);
         });
     }
+}
+
+/// **One argument of a bridged call**: a value, or a capability the node can name on chain
+/// (C224 item 4).
+///
+/// A peer holds one of our capabilities as a descriptor, and the descriptor it sends back for one of
+/// *ours* is `<desc:export N>` — a position in **this session's** export table, which is why only the
+/// session's view can resolve it. The object at N may be a `ChainCapability`, which knows its registry
+/// location; or it may be one of the session's own fixtures (the bootstrap, the greeter, a sink), which
+/// has no chain name at all.
+///
+/// **Every case that cannot be named gets its own reason**, because the one it used to get —
+/// `par_value`'s "a Symbol — Rholang has no symbol for it to land in" — described the *label* rather
+/// than the situation, and a peer reading it would look for a Symbol in the wrong place.
+fn argument(value: &Value, session: Option<&dyn ExportView>) -> Result<Arg, String> {
+    if let Some((label, position)) = rchain_ocapn::captp::descriptor_of(value) {
+        return match label.as_str() {
+            // The peer's own object, addressed by the position *it* exported at. This node cannot
+            // name it on chain: a peer's object has no RChain URI, and proxying it would mean the
+            // chain holding a reference across a session it cannot see.
+            EXPORT_IMPORT_OBJECT_LABEL | EXPORT_IMPORT_PROMISE_LABEL => Err(format!(
+                "argument <{label} {position}> is an object of the peer's (its export {position}); a \
+                 chain contract can be handed only objects this node can name in the chain's \
+                 registry, and a peer's object has no such name"
+            )),
+            EXPORT_LABEL => {
+                let session = session.ok_or_else(|| {
+                    "a capability argument arrived outside a session, so the export it names cannot \
+                     be resolved"
+                        .to_string()
+                })?;
+                let object = session.exported(&position).ok_or_else(|| {
+                    format!("no export at position {position} in this session to pass as an argument")
+                })?;
+                match object.named() {
+                    Some(named) => Ok(Arg::Named {
+                        location: named.location,
+                        pattern: named.pattern,
+                    }),
+                    None => Err(format!(
+                        "the export at position {position} is a session-local object of this node's, \
+                         not a chain object; it has no registry name to give a contract"
+                    )),
+                }
+            }
+            other => Err(format!("argument <{other} {position}> is not a descriptor")),
+        };
+    }
+    // A capability *nested* inside a value — a brand inside an amount, say. Naming it would need the
+    // term to bind it inside the value's own shape, which is the tuple round-trip C224's item 4 does
+    // not yet cover; refused with its own reason rather than folded into the value path.
+    if contains_descriptor(value) {
+        return Err(
+            "a capability nested inside a value cannot be named yet: only a capability passed as its \
+             own argument can be resolved to a chain object (an amount's brand is the known case)"
+                .to_string(),
+        );
+    }
+    par_value::value_to_par(value)
+        .map(Arg::Value)
+        .map_err(|e| e.to_string())
+}
+
+/// Whether a descriptor is nested anywhere inside this value.
+fn contains_descriptor(value: &Value) -> bool {
+    match value {
+        Value::Record(fields) | Value::List(fields) => {
+            rchain_ocapn::captp::descriptor_of(value).is_some()
+                || fields.iter().any(contains_descriptor)
+        }
+        Value::Struct(fields) => fields.values().any(contains_descriptor),
+        _ => false,
+    }
+}
+
+/// **This node's OCapN designator** (C224 item 2): the name it advertises in every session, and half
+/// of the `(designator, transport)` pair that *is* a peer's identity (`owner::peer_key`).
+///
+/// It was the constant `"rnode"` for every node, which made two nodes one peer — a sturdyref to one
+/// resolved at the other, and the crossed-hello registry conflated their sessions. Derived from the
+/// deployer key when there is one (stable across restarts, unlike the ephemeral session key), and from
+/// the node's own identifier when there is not, because a listener without a key still advertises a
+/// location to serve its fixtures from.
+///
+/// Eight bytes of a blake2b256 in hex: long enough that two nodes do not collide, short enough to read
+/// in a log line or a peer locator.
+pub fn node_designator(
+    deployer_key: Option<&rchain_crypto::private_key::PrivateKey>,
+    node_id: &rchain_comm::peer_node::NodeIdentifier,
+) -> String {
+    let material: Vec<u8> = match deployer_key {
+        Some(key) => match rchain_crypto::signatures::signatures_alg::SignaturesAlg::to_public(
+            &rchain_crypto::signatures::secp256k1::Secp256k1,
+            key,
+        ) {
+            Ok(public) => public.bytes().to_vec(),
+            // **Not the key's own bytes.** A designator is advertised to every peer, so hashing the
+            // *secret* here would publish a function of it. A key that cannot be made public is a key
+            // this node cannot name itself by, and the node's identifier is the honest fallback.
+            Err(_) => node_id.key().to_vec(),
+        },
+        None => node_id.key().to_vec(),
+    };
+    let digest = rchain_crypto::hash::blake2b256::hash(&material);
+    format!("rnode-{}", rchain_shared::base16::encode(&digest[..8]))
 }
 
 /// Take one unit of the node's bridged-deploy budget, or refuse with a reason.
@@ -364,6 +480,27 @@ impl ChainCapability {
 #[async_trait]
 impl Export for ChainCapability {
     async fn deliver(&self, args: &[Value]) -> Result<Act, String> {
+        self.call(None, args).await
+    }
+
+    /// The bridge's real entry point: `handle_deliver` calls this, and the view is what lets a
+    /// descriptor the peer sent become a capability the chain can be handed (C224 item 4).
+    async fn deliver_in(&self, session: &dyn ExportView, args: &[Value]) -> Result<Act, String> {
+        self.call(Some(session), args).await
+    }
+
+    /// Where this capability lives on chain — the answer a capability *argument* needs, when the peer
+    /// hands one of the node's own objects back to another.
+    fn named(&self) -> Option<Named> {
+        Some(Named {
+            location: self.target_uri.clone(),
+            pattern: self.pattern.clone(),
+        })
+    }
+}
+
+impl ChainCapability {
+    async fn call(&self, session: Option<&dyn ExportView>, args: &[Value]) -> Result<Act, String> {
         // **The spend bound comes first, before any work.** Every delivery below becomes a signed
         // deploy paid for out of the node's own REV, so a peer that loops is stopped here rather than
         // by its own patience (HAZOP row A3). The peer sees a `break` naming the limit.
@@ -388,9 +525,8 @@ impl Export for ChainCapability {
         };
         let pars = args
             .iter()
-            .map(par_value::value_to_par)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
+            .map(|arg| argument(arg, session))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // A capability whose method rides the message is one that may *return* capabilities, and a
         // returned capability has no rholang source literal — so the deploy registers its reply in
@@ -613,6 +749,34 @@ mod tests {
         );
     }
 
+    /// **Two nodes are not one peer** (C224 item 2). Peer identity *is* `(designator, transport)`, so
+    /// a shared constant designator made every node the same peer: a sturdyref to one resolved at the
+    /// other. The same node keeps one name across restarts (it is derived from key material, not from
+    /// the ephemeral session key), and two keys give two names.
+    #[test]
+    fn a_nodes_designator_comes_from_its_own_key_and_is_stable() {
+        let node_id = rchain_comm::peer_node::NodeIdentifier::new(vec![9u8; 32]);
+        let key_a = rchain_crypto::private_key::PrivateKey::new(vec![1u8; 32]);
+        let key_b = rchain_crypto::private_key::PrivateKey::new(vec![2u8; 32]);
+
+        let a = node_designator(Some(&key_a), &node_id);
+        let b = node_designator(Some(&key_b), &node_id);
+        assert_ne!(a, b, "two nodes must not share a designator");
+        assert_eq!(
+            a,
+            node_designator(Some(&key_a), &node_id),
+            "and it is stable"
+        );
+        assert_ne!(a, "rnode", "the constant is what this replaces");
+        assert!(a.starts_with("rnode-"), "still recognisable in a log: {a}");
+
+        // Without a key the node's own identifier names it — never the secret's bytes, which a peer
+        // would be able to see.
+        let keyless = node_designator(None, &node_id);
+        assert_ne!(keyless, a);
+        assert!(!keyless.contains(&rchain_shared::base16::encode(&[1u8; 32])[..4]));
+    }
+
     /// A logger that remembers what it was told. `StderrLog` is not assertable, which is why a test
     /// logger exists at all — the same reason the operations lens asked for one.
     #[derive(Default)]
@@ -667,6 +831,7 @@ mod tests {
         let serving = tokio::spawn(serve_ocapn(
             Some("127.0.0.1:0".to_string()),
             Vec::new(),
+            "rnode-test".to_string(),
             false,
             log.clone(),
             stop_rx,

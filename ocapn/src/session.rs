@@ -156,6 +156,14 @@ pub fn my_location_payload(location: &PeerLocator) -> Value {
     ])
 }
 
+/// The same payload around a locator **record we did not build** — what a peer actually signed.
+pub fn my_location_payload_of(locator_record: &Value) -> Value {
+    Value::Record(vec![
+        Value::Symbol("my-location".to_string()),
+        locator_record.clone(),
+    ])
+}
+
 /// The abort reason the reference uses when a crossed hello is resolved.
 pub const ABORT_CROSSED_HELLOS: &str = "Crossed hellos mitigated";
 
@@ -168,7 +176,10 @@ impl StartSession {
     /// a peer that does not check the signature fails the handshake suite. A peer that fails to
     /// verify must abort, and the caller owns sending that abort.
     pub fn location_signature_is_valid(&self) -> bool {
-        let payload = my_location_payload(&self.acceptable_location).to_bytes();
+        // **Over the bytes that arrived**, not over a re-encoding of the parsed locator (C224 item 1).
+        // The two differ for a locator whose hints are the Syrup `f`: `PeerLocator` cannot tell it from
+        // `{}`, so re-encoding loses the distinction and a peer that signed what it sent was refused.
+        let payload = my_location_payload_of(&self.locator_record).to_bytes();
         Ed25519::verify_bytes(
             &payload,
             &self.acceptable_location_sig,
@@ -194,7 +205,9 @@ fn named_bytes(v: &Value, name: &str) -> Option<Vec<u8>> {
 }
 
 /// The `op:start-session` message, in the reference implementation's four-field form.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Not `Eq`: `locator_record` holds a Syrup `Value`, which carries `f64` and so is only `PartialEq`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct StartSession {
     /// The version this peer speaks; `"1.0"`.
     pub captp_version: String,
@@ -204,6 +217,14 @@ pub struct StartSession {
     pub acceptable_location: PeerLocator,
     /// The signature over [`my_location_payload`], raw (64 bytes); encoded via [`signature_syrup`].
     pub acceptable_location_sig: Vec<u8>,
+    /// **The locator exactly as it arrived** (C224 item 1), which is what the signature is over.
+    ///
+    /// A `PeerLocator` is a *parsed* view: a locator whose hints came as the Syrup `f` and one whose
+    /// hints came as the empty struct `{}` parse to the same value, and re-encoding either yields
+    /// `{}`. Verifying over the re-encoding therefore refused a spec-permitted spelling — the
+    /// `Locators.md` draft allows `f` — with a message about a bad signature, which described the
+    /// wrong thing. Keeping the received record makes the check exactly what its name says.
+    pub locator_record: Value,
 }
 
 impl StartSession {
@@ -244,6 +265,7 @@ impl StartSession {
             session_pubkey,
             acceptable_location,
             acceptable_location_sig,
+            locator_record: location.clone(),
         })
     }
 }
@@ -332,6 +354,12 @@ mod tests {
         StartSession {
             captp_version: CAPTP_VERSION.to_string(),
             session_pubkey: vec![0u8; 32],
+            locator_record: Value::Record(vec![
+                Value::Symbol("ocapn-peer".into()),
+                Value::Symbol("tcp-testing-only".into()),
+                Value::String("abc".into()),
+                Value::Struct(BTreeMap::new()),
+            ]),
             acceptable_location: PeerLocator {
                 designator: "abc".into(),
                 transport: "tcp-testing-only".into(),
@@ -518,6 +546,52 @@ mod tests {
         )
         .unwrap();
         assert!(round_tripped.location_signature_is_valid());
+    }
+
+    /// **A locator spelled the other legal way verifies** (C224 item 1). `Locators.md` allows the
+    /// hints to be the Syrup `f`; `PeerLocator` cannot tell that from the empty struct, so verifying
+    /// over a *re-encoding* refused a peer that signed exactly what it sent — and told it its
+    /// signature was bad, which named the wrong thing.
+    #[test]
+    fn a_locator_whose_hints_are_the_syrup_false_verifies() {
+        let secret = [21u8; 32];
+        let public = Ed25519::to_public_bytes(&secret).unwrap();
+
+        // The record as such a peer sends it: hints are `f`, not `{}`.
+        let locator_record = Value::Record(vec![
+            Value::Symbol("ocapn-peer".into()),
+            Value::Symbol("tcp-testing-only".into()),
+            Value::String("peer".into()),
+            Value::Bool(false),
+        ]);
+        let payload = my_location_payload_of(&locator_record).to_bytes();
+        let sig = Ed25519::sign_bytes(&payload, &secret).unwrap();
+
+        let session = StartSession {
+            captp_version: CAPTP_VERSION.to_string(),
+            session_pubkey: public,
+            // Parses to the same value the empty struct would — which is the whole problem.
+            acceptable_location: PeerLocator::from_syrup(&locator_record).unwrap(),
+            acceptable_location_sig: sig,
+            locator_record: locator_record.clone(),
+        };
+        assert!(
+            session.location_signature_is_valid(),
+            "a peer that signed the record it sent must verify"
+        );
+
+        // And the old behaviour is what this replaces: the same session, re-encoded, does not match.
+        assert_ne!(
+            session.acceptable_location.to_syrup(),
+            locator_record,
+            "the parse loses the spelling, which is why the received record is kept"
+        );
+        let mut re_encoded = session.clone();
+        re_encoded.locator_record = session.acceptable_location.to_syrup();
+        assert!(
+            !re_encoded.location_signature_is_valid(),
+            "verifying over the re-encoding is exactly the bug"
+        );
     }
 
     #[test]
