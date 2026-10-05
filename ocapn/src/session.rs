@@ -23,6 +23,8 @@ pub const CAPTP_VERSION: &str = "1.0";
 pub const CRYPTO_VERSION: &str = "Ed25519_SHA256";
 /// The record label that multiplexes this operation.
 pub const START_SESSION_LABEL: &str = "op:start-session";
+/// The record label that multiplexes `op:abort`.
+pub const ABORT_LABEL: &str = "op:abort";
 
 /// The `op:start-session` message — "carrying `captp-version`, `crypto-version`, `session-pubkey`,
 /// `acceptable-location`, `acceptable-location-sig`".
@@ -88,10 +90,46 @@ impl StartSession {
     }
 }
 
+/// `op:abort` — "Ends the session, severing the connection and breaking unresolved promises." The
+/// reason text is the peer's to choose; a peer must accept any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Abort {
+    pub reason: String,
+}
+
+impl Abort {
+    pub fn to_syrup(&self) -> Value {
+        Value::Record(vec![
+            Value::Symbol(ABORT_LABEL.to_string()),
+            Value::String(self.reason.clone()),
+        ])
+    }
+
+    pub fn from_syrup(v: &Value) -> Result<Abort, SessionError> {
+        let Value::Record(fields) = v else {
+            return Err(SessionError::NotAnAbort);
+        };
+        let [label, reason] = fields.as_slice() else {
+            return Err(SessionError::NotAnAbort);
+        };
+        match label {
+            Value::Symbol(s) if s == ABORT_LABEL => {}
+            _ => return Err(SessionError::NotAnAbort),
+        }
+        let Value::String(reason) = reason else {
+            return Err(SessionError::BadField("reason"));
+        };
+        Ok(Abort {
+            reason: reason.clone(),
+        })
+    }
+}
+
 /// An `op:start-session` that will not be accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
     NotAStartSession,
+    NotAnAbort,
     /// A field held the wrong Syrup type; names the field.
     BadField(&'static str),
     /// The peer speaks a `captp-version` this implementation does not.
@@ -104,6 +142,7 @@ impl fmt::Display for SessionError {
             SessionError::NotAStartSession => {
                 write!(f, "session: not an `<{START_SESSION_LABEL} …>` record")
             }
+            SessionError::NotAnAbort => write!(f, "session: not an `<{ABORT_LABEL} …>` record"),
             SessionError::BadField(name) => write!(f, "session: field {name:?} has the wrong type"),
             SessionError::UnsupportedVersion(v) => {
                 write!(
@@ -191,6 +230,34 @@ mod tests {
         assert_eq!(
             StartSession::from_syrup(&Value::Record(fields)),
             Err(SessionError::BadField("session-pubkey"))
+        );
+    }
+
+    #[test]
+    fn abort_kat_and_round_trip() {
+        let a = Abort {
+            reason: "bye".into(),
+        };
+        assert_eq!(a.to_syrup().to_bytes(), b"<8'op:abort3\"bye>".to_vec());
+        assert_eq!(Abort::from_syrup(&a.to_syrup()).unwrap(), a);
+    }
+
+    #[test]
+    fn abort_refuses_the_wrong_shape() {
+        assert_eq!(
+            Abort::from_syrup(&Value::List(vec![])),
+            Err(SessionError::NotAnAbort)
+        );
+        assert_eq!(
+            Abort::from_syrup(&Value::Record(vec![Value::Symbol("op:deliver".into())])),
+            Err(SessionError::NotAnAbort)
+        );
+        assert_eq!(
+            Abort::from_syrup(&Value::Record(vec![
+                Value::Symbol(ABORT_LABEL.into()),
+                Value::Bool(true),
+            ])),
+            Err(SessionError::BadField("reason"))
         );
     }
 }

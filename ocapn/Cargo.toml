@@ -14,3 +14,8 @@ num-bigint = "0.5"
 # SHA-256 (KAT-pinned in `rchain-crypto`), and the session's signature scheme will be its Ed25519.
 rchain-crypto = { path = "../crypto" }
 rchain-shared = { path = "../shared" }
+# The netlayer seam is async because CapTP is, and the node's runtime is tokio (the same choice
+# `rchain-comm` made). Minimal features: the netlayer needs `net` + `io-util` + a runtime, the
+# tests need `macros`. Features unify per crate workspace-wide, so the node's `full` set carries.
+async-trait = "0.1"
+tokio = { version = "1", features = ["net", "io-util", "rt", "macros"] }

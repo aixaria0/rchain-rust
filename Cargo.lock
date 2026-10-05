@@ -2803,9 +2803,11 @@ dependencies = [
 name = "rchain-ocapn"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "num-bigint 0.5.1",
  "rchain-crypto",
  "rchain-shared",
+ "tokio",
 ]
 
 [[package]]

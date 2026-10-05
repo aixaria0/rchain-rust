@@ -21,7 +21,9 @@
 //! state. What reaches consensus is only the signed deploy the bridge produces.
 
 pub mod locator;
+pub mod netlayer;
 pub mod peer;
 pub mod session;
 pub mod session_id;
 pub mod syrup;
+pub mod tcp_testing_only;

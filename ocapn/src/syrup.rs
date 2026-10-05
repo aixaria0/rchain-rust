@@ -100,17 +100,30 @@ impl Value {
         out
     }
 
-    /// Decode exactly one canonical value. Any trailing byte is an error, never ignored.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Value, SyrupError> {
+    /// Decode one value and report how many bytes it used, without requiring the whole buffer.
+    ///
+    /// This is what a streaming netlayer needs: it frames CapTP messages by parsing one Syrup value
+    /// at a time off a byte stream. A short read shows up as [`SyrupError::UnexpectedEof`] or
+    /// [`SyrupError::LengthPastEnd`] — the two "need more bytes" answers — and any other error is a
+    /// genuine protocol error, not a partial read.
+    pub fn decode_prefix(bytes: &[u8]) -> Result<(Value, usize), SyrupError> {
         let mut r = Reader {
             bytes,
             pos: 0,
             depth: 0,
         };
         let v = r.value()?;
-        r.skip_ws();
-        if r.pos != bytes.len() {
-            return Err(SyrupError::TrailingBytes(bytes.len() - r.pos));
+        Ok((v, r.pos))
+    }
+
+    /// Decode exactly one canonical value. Any trailing byte is an error, never ignored.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Value, SyrupError> {
+        let (v, mut pos) = Self::decode_prefix(bytes)?;
+        while matches!(bytes.get(pos), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            pos += 1;
+        }
+        if pos != bytes.len() {
+            return Err(SyrupError::TrailingBytes(bytes.len() - pos));
         }
         Ok(v)
     }
@@ -478,6 +491,37 @@ mod tests {
     #[test]
     fn syrup_rejects_trailing_bytes() {
         assert_eq!(Value::from_bytes(b"tt"), Err(SyrupError::TrailingBytes(1)));
+    }
+
+    #[test]
+    fn syrup_decode_prefix_reports_consumed_bytes() {
+        // Two values back to back: each prefix decode consumes exactly its own bytes.
+        let stream = b"1'a<1'b1+>".to_vec();
+        let (first, n) = Value::decode_prefix(&stream).unwrap();
+        assert_eq!(first, Value::Symbol("a".into()));
+        assert_eq!(n, 3); // `1'a`
+        let (second, m) = Value::decode_prefix(&stream[n..]).unwrap();
+        assert_eq!(
+            second,
+            Value::Record(vec![Value::Symbol("b".into()), Value::Int(1.into())])
+        );
+        assert_eq!(n + m, stream.len());
+    }
+
+    #[test]
+    fn syrup_decode_prefix_asks_for_more_on_a_partial_value() {
+        // A truncated record is "need more", not a protocol error — the netlayer relies on that.
+        assert_eq!(
+            Value::decode_prefix(b"<1'a"),
+            Err(SyrupError::UnexpectedEof)
+        );
+        assert_eq!(
+            Value::decode_prefix(b"12'a"),
+            Err(SyrupError::LengthPastEnd {
+                claimed: 12,
+                remaining: 1
+            })
+        );
     }
 
     #[test]
