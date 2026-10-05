@@ -95,6 +95,7 @@ use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
+use crate::api::ocapn::{serve_ocapn, ChainCapability};
 use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
@@ -110,6 +111,7 @@ use crate::web::pos_read::{PosReadApi, ShardPosRead};
 use crate::web::transaction::TransactionAPIImpl;
 use rchain_casper::gateway::ledger::TxnLedger;
 use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
+use rchain_ocapn::conn::Export;
 
 /// Interval between `--autopropose` timer ticks. Together with the dev-mode dummy deploy this makes a
 /// fresh devnet produce blocks on its own (a lone validator has no peer/deploy to kick the
@@ -460,6 +462,10 @@ pub struct NodeProgram {
     enable_txn_api: bool,
     enable_devnet_cors: bool,
     enable_devnet_admin_public: bool,
+    /// `host:port` to bind the OCapN listener on, or `None` (issue #249).
+    ocapn_listen: Option<String>,
+    /// The chain-backed capability the listener publishes, or `None` when there is no key.
+    ocapn_chain: Option<Arc<dyn Export>>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
 }
@@ -492,6 +498,8 @@ impl NodeProgram {
             enable_txn_api,
             enable_devnet_cors,
             enable_devnet_admin_public,
+            ocapn_listen,
+            ocapn_chain,
             protocol_server,
             status_provider,
             gateway,
@@ -585,6 +593,10 @@ impl NodeProgram {
             }
         });
 
+        // The OCapN listener (issue #249). Spawned even when it is not configured — see
+        // `serve_ocapn` — so its select arm and drain slot are unconditional.
+        let mut ocapn = tokio::spawn(serve_ocapn(ocapn_listen, ocapn_chain, stop.clone()));
+
         // **The first moment a node can say the expensive part is over, and the expensive part is
         // replay rather than the bind** (issue #60's observability half). Every costly step — the store
         // rebuilds, the metadata and DAG indices, the block-index replay — completes *before* this
@@ -619,7 +631,7 @@ impl NodeProgram {
         // arm already consumed. `node/tests/shutdown.rs` asserts the serve task must not panic, which
         // is how this surfaced (CI, 2026-09-28); it does not reproduce under a light local load,
         // because there `stop_requested` wins.
-        let mut drained = [false; 4];
+        let mut drained = [false; 5];
         let stopped = if let Some(protocol) = protocol_server {
             let mut protocol = tokio::spawn(async move {
                 protocol
@@ -632,6 +644,7 @@ impl NodeProgram {
                 r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
                 r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
                 r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
+                r = &mut ocapn => { drained[4] = true; Some(listener_stopped("OCapN listener", r, *stopping.borrow())) },
                 r = &mut protocol => Some(listener_stopped("protocol listener", r, *stopping.borrow())),
                 _ = stop_requested(stop) => None,
             }
@@ -641,6 +654,7 @@ impl NodeProgram {
                 r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
                 r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
                 r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
+                r = &mut ocapn => { drained[4] = true; Some(listener_stopped("OCapN listener", r, *stopping.borrow())) },
                 _ = stop_requested(stop) => None,
             }
         };
@@ -666,6 +680,9 @@ impl NodeProgram {
             }
             if !drained[3] {
                 let _ = admin.await;
+            }
+            if !drained[4] {
+                let _ = ocapn.await;
             }
         };
         let _ = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await;
@@ -1228,6 +1245,21 @@ pub async fn setup_node_program(
     // API's `dev_mode` and its own key, asynchronously, which a synchronously-built router cannot
     // consult; the two values are the same pair the faucet handler refuses without.
     let faucet_enabled = conf.dev_mode && faucet_deployer_key.is_some();
+    // The OCapN bridge (issue #249): a delivery to a chain-backed capability becomes a signed
+    // deploy. Built only when there is a listener to serve it and a key to sign with — today the
+    // node's own dev deployer key, because binding a CapTP session to a caller's identity is the
+    // work `docs/src/node/ocapn.md` lists as future.
+    let ocapn_chain: Option<Arc<dyn Export>> = match (
+        conf.api_server.ocapn_listen.as_ref(),
+        faucet_deployer_key.as_ref(),
+    ) {
+        (Some(_), Some(key)) => Some(Arc::new(ChainCapability::rev_vault_balance(
+            routing.clone(),
+            key.clone(),
+            primary_id.to_string(),
+        ))),
+        _ => None,
+    };
     let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
         routing.clone(),
         primary_parts.transaction_api.clone(),
@@ -1287,6 +1319,8 @@ pub async fn setup_node_program(
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
+        ocapn_listen: conf.api_server.ocapn_listen.clone(),
+        ocapn_chain,
         protocol_server: Some(build_protocol_server(
             conf,
             &comm_state,

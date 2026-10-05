@@ -491,6 +491,7 @@ mod tests {
                 max_connection_idle: secs(60 * 60),
                 max_connection_age: secs(60 * 60),
                 max_connection_age_grace: secs(60 * 60),
+                ocapn_listen: None,
             },
             storage: Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
@@ -1070,6 +1071,7 @@ mod tests {
                 max_connection_idle: secs(111111),
                 max_connection_age: secs(111111),
                 max_connection_age_grace: secs(111111),
+                ocapn_listen: None,
             },
             storage: Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),

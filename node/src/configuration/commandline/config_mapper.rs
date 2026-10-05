@@ -339,6 +339,7 @@ pub fn from_options(options: &Options) -> Hocon {
             run.api_grpc_max_recv_message_size,
         );
         opt_str(&mut e, "api-server.host", &run.api_host);
+        opt_str(&mut e, "api-server.ocapn-listen", &run.ocapn_listen);
         opt_i32(&mut e, "api-server.port-http", run.api_port_http);
         opt_i32(
             &mut e,

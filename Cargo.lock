@@ -2783,6 +2783,7 @@ dependencies = [
  "rchain-comm",
  "rchain-crypto",
  "rchain-models",
+ "rchain-ocapn",
  "rchain-rholang",
  "rchain-rspace",
  "rchain-sdk",
@@ -2797,6 +2798,19 @@ dependencies = [
  "tonic",
  "tower",
  "tower-http 0.7.1",
+]
+
+[[package]]
+name = "rchain-ocapn"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "num-bigint 0.5.1",
+ "rand 0.10.3",
+ "rchain-crypto",
+ "rchain-models",
+ "rchain-shared",
+ "tokio",
 ]
 
 [[package]]

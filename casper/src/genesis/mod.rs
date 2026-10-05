@@ -281,6 +281,10 @@ fn blessed_terms_named(
             "multi_sig_rev_vault",
             standard_deploys::StandardDeploys::multi_sig_rev_vault(shard_id)?,
         ),
+        // **The ERTP object API** (issue #249). It sits after the contracts and before the
+        // governance block, and it depends on nothing above it: the issuer ledger is a native
+        // system process, present on every chain regardless of what genesis installs.
+        ("ertp", standard_deploys::StandardDeploys::ertp(shard_id)?),
     ];
     let rgov = rgov::governance_deploys(shard_id, ceremony)?;
     Ok(standard.into_iter().chain(rgov).collect())
@@ -669,6 +673,9 @@ mod tests {
                 // point of asserting the order here rather than discovering it in a fork.
                 "auth_key",
                 "multi_sig_rev_vault",
+                // **A genesis change, deliberately** (issue #249, the ERTP object API): it goes
+                // after the contracts that could depend on it and before the governance block.
+                "ertp",
                 "kudos",
                 "inbox",
                 "directory",

@@ -26,6 +26,7 @@ const MAKE_MINT_RHO: &str = include_str!("resources/MakeMint.rho");
 const AUTH_KEY_RHO: &str = include_str!("resources/AuthKey.rho");
 const REV_VAULT_RHO: &str = include_str!("resources/RevVault.rho");
 const MULTI_SIG_REV_VAULT_RHO: &str = include_str!("resources/MultiSigRevVault.rho");
+const ERTP_RHO: &str = include_str!("resources/ERTP.rho");
 const POS_RHOX: &str = include_str!("resources/Pos.rhox");
 
 // -------------------------------------------------------------------------------------------------
@@ -45,6 +46,16 @@ const MULTI_SIG_REV_VAULT_PK: &str =
 const POS_GENERATOR_PK: &str = "a9585a0687761139ab3587a4938fb5ab9fcba675c79fefba889859674046d4a5";
 const REV_GENERATOR_PK: &str = "a06959868e39bb3a8502846686a23119716ecd001700baf9e2ecfa0dbf1a3247";
 
+/// The ERTP contract's key (issue #249). Unlike the nine above, the key is **our own choice**, so it
+/// is *derived* from a named string rather than pasted from a vendored source's header:
+/// `blake2b256("rnode/genesis/ertp")`, the `rgov::contract_key` idiom. Anyone reading this file can
+/// recompute it and check that nobody picked it adversarially —
+/// `the_ertp_key_is_derived_from_a_named_string` does exactly that recomputation.
+///
+/// Its `rho:id` is `rho:id:75fy4nja3qsq958b5k3rmi3sz1g653fa5c1xfkwdx9awpfwybauo`, the constant a
+/// consumer may hardcode and the key the genesis alias seed copies onto `rho:rchain:ertp`.
+const ERTP_PK: &str = "fe8fa828b930aec3651cacae457b46b248c554e2933fa05ce9763e23c4354066";
+
 const REGISTRY_TIMESTAMP: i64 = 1559156071321;
 const LIST_OPS_TIMESTAMP: i64 = 1559156082324;
 const EITHER_TIMESTAMP: i64 = 1559156217509;
@@ -53,6 +64,9 @@ const MAKE_MINT_TIMESTAMP: i64 = 1559156452968;
 const AUTH_KEY_TIMESTAMP: i64 = 1559156356769;
 const REV_VAULT_TIMESTAMP: i64 = 1559156183943;
 const MULTI_SIG_REV_VAULT_TIMESTAMP: i64 = 1571408470880;
+/// The ERTP contract's deploy timestamp. A constant, for the same reason the vendored set's are:
+/// genesis deploys carry no real time, and a moving value would move the deploy.
+const ERTP_TIMESTAMP: i64 = 1_700_000_001_000;
 const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 // `revGenerator` has no fixed timestamp — it is batched with `1565818101792 + idx`.
 
@@ -185,6 +199,21 @@ pub const GENESIS_ALIASES: &[GenesisAlias] = &[
         consumer:
             "no direct consumer; it is the dependency `MakeMint.rho:27` looks up before it can \
                    install, so it is aliased for makeMint to work at all",
+    },
+    GenesisAlias {
+        // **The shorthand is `rho:rchain:ertp`, and the native ledger keeps the longer
+        // `rho:rchain:ertp:ledger`** so the two cannot collide: the alias tier holds the *object
+        // API* (`makeIssuerKit`), while the native channel is the consensus ledger the API is
+        // written over. A consumer wants the former. Naming the alias after the ledger would make
+        // `lookup!(\`rho:rchain:ertp\`)` return the raw ledger — a change of meaning under an
+        // unchanged name, which is the silent downgrade AUDIT C114 exists to stop.
+        shorthand: "rho:rchain:ertp",
+        source: GenesisAliasSource::Contract {
+            private_key_hex: ERTP_PK,
+        },
+        consumer: "the ERTP object API itself (issue #249, the Agoric request): `lookup!` then \
+                   `@(_, ERTP)` then `ERTP!(\"makeIssuerKit\", *ch)`; without the alias a client \
+                   must hardcode a `rho:id` derived from a key it cannot see",
     },
 ];
 
@@ -445,6 +474,7 @@ impl StandardDeploys {
             to_public(AUTH_KEY_PK)?,
             to_public(REV_VAULT_PK)?,
             to_public(MULTI_SIG_REV_VAULT_PK)?,
+            to_public(ERTP_PK)?,
             to_public(POS_GENERATOR_PK)?,
             to_public(REV_GENERATOR_PK)?,
         ])
@@ -536,6 +566,18 @@ impl StandardDeploys {
         )
     }
 
+    /// The ERTP contract (issue #249): the object API over the native issuer ledger. Its epilogue
+    /// needs no adaptation — unlike `MakeMint`/`AuthKey`/`MultiSigRevVault` it reaches no channel
+    /// this port does not have; it registers its own bundle with the plain `rs!`.
+    pub fn ertp(shard_id: &str) -> Result<SignedDeployData, String> {
+        Self::to_deploy(
+            load_source("ERTP.rho", ERTP_RHO),
+            ERTP_PK,
+            ERTP_TIMESTAMP,
+            shard_id,
+        )
+    }
+
     pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Result<SignedDeployData, String> {
         let minimum_bond = i64::from(pos.minimum_bond).to_string();
         let maximum_bond = i64::from(pos.maximum_bond).to_string();
@@ -595,8 +637,22 @@ mod tests {
     }
 
     #[test]
-    fn system_public_keys_has_ten_entries() {
-        assert_eq!(StandardDeploys::system_public_keys().unwrap().len(), 10);
+    fn system_public_keys_has_eleven_entries() {
+        assert_eq!(StandardDeploys::system_public_keys().unwrap().len(), 11);
+    }
+
+    /// **The ERTP key is derived, not chosen** — recomputed here from its named string, so a
+    /// constant that drifted from the documented derivation (or a derivation that was quietly
+    /// changed to move the `rho:id`) fails rather than ships.
+    #[test]
+    fn the_ertp_key_is_derived_from_a_named_string() {
+        let derived = rchain_shared::base16::encode(&rchain_crypto::hash::blake2b256::hash(
+            b"rnode/genesis/ertp",
+        ));
+        assert_eq!(
+            derived, ERTP_PK,
+            "ERTP_PK must be blake2b256(\"rnode/genesis/ertp\") — the provenance a reader checks"
+        );
     }
 
     /// Each alias entry is seedable: a native channel resolves to a value, a contract alias resolves
@@ -654,6 +710,10 @@ mod tests {
             (
                 "rho:lang:nonNegativeNumber",
                 "rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcyo",
+            ),
+            (
+                "rho:rchain:ertp",
+                "rho:id:75fy4nja3qsq958b5k3rmi3sz1g653fa5c1xfkwdx9awpfwybauo",
             ),
         ];
         for (shorthand, uri) in expected {
@@ -779,7 +839,7 @@ mod builder_tests {
         );
     }
 
-    /// Every parameterless builder (the ten standard contracts) produces a standard deploy.
+    /// Every parameterless builder (the nine standard contracts) produces a standard deploy.
     #[test]
     fn every_standard_contract_builder_produces_a_signed_deploy() {
         let builders: Vec<(&str, SignedDeployData)> = vec![
@@ -818,6 +878,7 @@ mod builder_tests {
                 "multi_sig_rev_vault",
                 StandardDeploys::multi_sig_rev_vault("/root").expect("multi_sig_rev_vault"),
             ),
+            ("ertp", StandardDeploys::ertp("/root").expect("ertp")),
         ];
         // Each builder signs with a *different* key, so a copy-paste that reused one key would show
         // up as a repeated deployer.
@@ -830,7 +891,7 @@ mod builder_tests {
             );
             deployers.push(deploy.deployer.clone());
         }
-        assert_eq!(builders.len(), 8);
+        assert_eq!(builders.len(), 9);
     }
 
     /// The two parameterised generators: `pos_generator` substitutes the PoS parameters into the
