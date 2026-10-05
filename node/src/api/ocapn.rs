@@ -63,6 +63,7 @@ pub fn ertp_capability(
     block_api: Arc<dyn BlockApi>,
     key: PrivateKey,
     shard_id: String,
+    limiter: Arc<rchain_shared::rate_limiter::RateLimiter>,
 ) -> ChainCapability {
     ChainCapability {
         block_api,
@@ -71,10 +72,25 @@ pub fn ertp_capability(
         target_uri: "rho:rchain:ertp".to_string(),
         pattern: None,
         method: None,
+        limiter,
         reply_timeout: CHAIN_REPLY_TIMEOUT,
         reply_interval: CHAIN_REPLY_INTERVAL,
     }
 }
+
+/// How many bridged deploys the node will submit per second, **across every capability and session**.
+///
+/// Each one is a signed deploy paid for out of the node's own REV, so the quantity being bounded is
+/// the node's spend, and the honest calibration is the chain's own cadence rather than a round number:
+/// a bridged call cannot be included faster than a block, so a rate near the block interval is the
+/// most that can *matter*, and a small burst above it keeps an interactive peer (a wallet making a few
+/// calls) unaffected while a loop is throttled to a known ceiling (HAZOP row A3).
+///
+/// **Not a per-peer bound.** `Export::deliver` is handed the arguments, not the session they arrived
+/// on, so a chain capability cannot tell one peer from another; the fairness refinement — a limiter
+/// keyed by peer, so one peer cannot spend the whole allowance — needs the caller's identity threaded
+/// to the capability, which is the same work as binding a session to a deployer key.
+pub const BRIDGED_DEPLOYMENTS_PER_SEC: u64 = 4;
 
 /// Phlo for a bridged deploy — the same budget the faucet and the 2PC coordinator use.
 const CHAIN_PHLO_LIMIT: i64 = 1_000_000;
@@ -105,6 +121,7 @@ const MAX_SESSIONS: usize = 64;
 pub async fn serve_ocapn(
     listen: Option<String>,
     chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
+    log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let Some(listen) = listen else {
@@ -116,6 +133,18 @@ pub async fn serve_ocapn(
         .map_err(|e| e.to_string())?;
     // `local_addr` belongs to the concrete netlayer, not the trait: take it before the Arc.
     let local = bound.local_addr().map_err(|e| e.to_string())?;
+    // **The line an operator needs first** (HAZOP row E6): this surface spent money and wrote
+    // consensus state with no local trace of its own, so "is it serving?" had no answer short of
+    // reading chain state. `local` rather than the configured string, because `:0` is legal and the
+    // chosen port is the only useful thing to print.
+    let source = rchain_shared::log::LogSource::new("coop.rchain.node.api.ocapn");
+    log.info(
+        source,
+        &format!(
+            "OCapN listener serving on {local} ({} chain-backed capability/ies)",
+            chain.len()
+        ),
+    );
     let listener: Arc<dyn Netlayer> = Arc::new(bound);
     let location = PeerLocator {
         designator: "rnode".to_string(),
@@ -146,6 +175,12 @@ pub async fn serve_ocapn(
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
             // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
             // gets refusals, not a growing backlog, and the operator's own sessions keep working.
+            // Said out loud, at `warn`: a node whose sessions are all held is either under attack or
+            // has a stuck peer, and the operator cannot tell either from silence.
+            log.warn(
+                source,
+                &format!("at the session ceiling ({MAX_SESSIONS}); refusing a new connection"),
+            );
             drop(connection);
             continue;
         };
@@ -154,6 +189,7 @@ pub async fn serve_ocapn(
         let netlayer = listener.clone();
         let registry = registry.clone();
         let handoffs = handoffs.clone();
+        let log = log.clone();
         tokio::spawn(async move {
             // Held for the session's life and released when this task ends: the task's own lifetime
             // *is* the session's, so the permit needs no name beyond this binding.
@@ -193,9 +229,13 @@ pub async fn serve_ocapn(
                 .await
                 {
                     Ok(parts) => parts,
-                    Err(_) => {
-                        // A refused handshake, and a session that lost its crossing, have both
-                        // already been answered with `op:abort` where one was owed.
+                    Err(reason) => {
+                        // A refused handshake, and a session that lost its crossing, have both already
+                        // been answered with `op:abort` where one was owed. Logged at **debug**, not
+                        // warn: a crossing is a legitimate outcome of the protocol, and a peer-driven
+                        // stream of them would make a warning meaningless (the log-flood the
+                        // operations lens warned about).
+                        log.debug(source, &format!("session not served: {reason}"));
                         return;
                     }
                 };
@@ -205,6 +245,21 @@ pub async fn serve_ocapn(
             registry.forget(&peer_location, &handle.own_pi, handle.dialed);
         });
     }
+}
+
+/// Take one unit of the node's bridged-deploy budget, or refuse with a reason.
+///
+/// Extracted from `ChainCapability::deliver` so it is testable without a `BlockApi`: the check runs
+/// *before* the capability touches the chain, which means the whole observable is "the limiter was
+/// consulted and the refusal names the bound" — and a bound that cannot be tested is one that gets
+/// removed. The same reason `admin_bind_host` was lifted out of its spawn (AUDIT C112).
+fn check_deploy_budget(limiter: &rchain_shared::rate_limiter::RateLimiter) -> Result<(), String> {
+    if limiter.allow() {
+        return Ok(());
+    }
+    Err(format!(
+        "the chain bridge will not submit more than {BRIDGED_DEPLOYMENTS_PER_SEC} deploys per second"
+    ))
 }
 
 /// A chain-backed capability: a delivery to it becomes a caller-signed deploy, and the CapTP
@@ -235,6 +290,9 @@ pub struct ChainCapability {
     /// means the method is the first `Symbol` of each delivery — which is what an ERTP object, an
     /// object with several arms, requires.
     method: Option<String>,
+    /// **The node's whole OCapN surface shares one**, so the bound is on the node's spend rather than
+    /// on one capability — see [`BRIDGED_DEPLOYMENTS_PER_SEC`] (HAZOP row A3).
+    limiter: Arc<rchain_shared::rate_limiter::RateLimiter>,
     reply_timeout: Duration,
     reply_interval: Duration,
 }
@@ -245,6 +303,7 @@ impl ChainCapability {
         block_api: Arc<dyn BlockApi>,
         key: PrivateKey,
         shard_id: String,
+        limiter: Arc<rchain_shared::rate_limiter::RateLimiter>,
     ) -> ChainCapability {
         ChainCapability {
             block_api,
@@ -253,6 +312,7 @@ impl ChainCapability {
             target_uri: "rho:rchain:revVault".to_string(),
             pattern: None,
             method: Some("getBalance".to_string()),
+            limiter,
             reply_timeout: CHAIN_REPLY_TIMEOUT,
             reply_interval: CHAIN_REPLY_INTERVAL,
         }
@@ -293,6 +353,10 @@ impl ChainCapability {
 #[async_trait]
 impl Export for ChainCapability {
     async fn deliver(&self, args: &[Value]) -> Result<Act, String> {
+        // **The spend bound comes first, before any work.** Every delivery below becomes a signed
+        // deploy paid for out of the node's own REV, so a peer that loops is stopped here rather than
+        // by its own patience (HAZOP row A3). The peer sees a `break` naming the limit.
+        check_deploy_budget(&self.limiter)?;
         // The arguments crossed CapTP as Syrup; Rholang is what the chain runs. A value with no
         // `Par` shape (a Symbol, a float) is refused here rather than guessed at.
         // **The method is the first `Symbol` of the delivery**, which is Endo's calling convention
@@ -403,6 +467,9 @@ impl Export for ChainCapability {
                     target_uri: uri.clone(),
                     pattern: Some(pattern),
                     method: None,
+                    // The child shares the node's limiter: a returned capability is the same node's
+                    // spend, not a new budget.
+                    limiter: self.limiter.clone(),
                     reply_timeout: self.reply_timeout,
                     reply_interval: self.reply_interval,
                 }) as Arc<dyn Export>
@@ -502,5 +569,117 @@ fn capability_patterns_at(par: &rchain_models::ast::Par, at: &str, out: &mut Vec
                 capability_patterns_at(element, &format!("({})", fields.join(", ")), out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The spend bound:** the node will not submit more than [`BRIDGED_DEPLOYMENTS_PER_SEC`]
+    /// bridged deploys per second, and the refusal names the number.
+    ///
+    /// This is the observable for HAZOP row A3's DoS half. The row's *other* half — that every
+    /// registering call also writes a permanent registry entry — is not boundable here and is
+    /// registered as C221.
+    #[test]
+    fn the_bridged_deploy_budget_admits_its_number_and_then_refuses() {
+        let limiter = rchain_shared::rate_limiter::RateLimiter::new(BRIDGED_DEPLOYMENTS_PER_SEC);
+        for i in 0..BRIDGED_DEPLOYMENTS_PER_SEC {
+            assert!(
+                check_deploy_budget(&limiter).is_ok(),
+                "deploy {i} is inside the budget"
+            );
+        }
+        let refused = check_deploy_budget(&limiter).expect_err("the budget is spent");
+        assert!(
+            refused.contains(&BRIDGED_DEPLOYMENTS_PER_SEC.to_string()),
+            "the refusal names the limit so a peer can read it: {refused}"
+        );
+        assert!(
+            refused.contains("deploys per second"),
+            "and what it is limiting: {refused}"
+        );
+    }
+
+    /// A logger that remembers what it was told. `StderrLog` is not assertable, which is why a test
+    /// logger exists at all — the same reason the operations lens asked for one.
+    #[derive(Default)]
+    struct RecordingLog(std::sync::Mutex<Vec<String>>);
+
+    impl rchain_shared::log::Log for RecordingLog {
+        fn is_trace_enabled(&self, _source: rchain_shared::log::LogSource) -> bool {
+            true
+        }
+        fn trace(&self, _s: rchain_shared::log::LogSource, m: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(m.to_string());
+        }
+        fn debug(&self, _s: rchain_shared::log::LogSource, m: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(m.to_string());
+        }
+        fn info(&self, _s: rchain_shared::log::LogSource, m: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(m.to_string());
+        }
+        fn warn(&self, _s: rchain_shared::log::LogSource, m: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(m.to_string());
+        }
+        fn error(&self, _s: rchain_shared::log::LogSource, m: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(m.to_string());
+        }
+    }
+
+    /// **The operator is told the listener is serving** (HAZOP row E6): this surface spends the
+    /// node's REV and writes consensus state, and until this line existed "is it up?" had no answer
+    /// short of reading chain state.
+    ///
+    /// The port is `:0`, which is the case that makes the log line worth having at all: the operator
+    /// asked for any free port, so the *chosen* one is the only useful thing to print.
+    #[tokio::test]
+    async fn the_listener_reports_that_it_is_serving_and_on_which_port() {
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let serving = tokio::spawn(serve_ocapn(
+            Some("127.0.0.1:0".to_string()),
+            Vec::new(),
+            log.clone(),
+            stop_rx,
+        ));
+
+        // Wait for the line rather than for a sleep: the bind is what produces it.
+        let mut said = Vec::new();
+        for _ in 0..200 {
+            said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if !said.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
+
+        let line = said.join(" | ");
+        assert!(
+            line.contains("OCapN listener serving on 127.0.0.1:"),
+            "the operator must learn the listener is up, and on which port: {line}"
+        );
+        assert!(
+            !line.contains("127.0.0.1:0"),
+            "the *chosen* port, not the configured one: {line}"
+        );
     }
 }
