@@ -102,19 +102,20 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 1 · IN PROGRESS 0 · DONE 251** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 2 · IN PROGRESS 0 · DONE 251** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  46 of 252 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  47 of 253 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
 close it.
 
-### TODO — findings (1)
+### TODO — findings (2)
 
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C215` | **two nodes merged the same justifications to different pre-states.** In the rejoin run with C212 and without C213, the survivors built on the returner's catch-up chain and validator-1's blocks 41–43 and the bootstrap's 43–44 were refused by their peers as `InvalidPreStateHash`. C213 removes the trigger in this scenario; the divergence itself is unexplained, and merge determinism is law 17a. **Narrowed 2026-10-04.** The row rests on an observation with **no committed artefact** — `spec/audit/evidence/n223-rejoin-blocks/` holds the baseline and the two fixed runs, and the C212-without-C213 intermediate run that produced this was not kept — and its configuration no longer exists on `dev` (C213 is in), so it **cannot be re-produced from the tree**. One candidate mechanism is **ruled out by test**: a node holding an extra unfinalised child of a just-finalised block derives a **different prune fringe** and nevertheless the **same merge scope** (`casper/src/merging.rs:the_merge_scope_does_not_depend_on_which_children_this_node_holds`, which asserts the fringe difference first so the probe cannot be degenerate), because `from_fringes` bounds the walk by the merge fringe rather than by the prune bound. What that leaves is the scope's dependence on the validated block's **ancestry** — the one input that test held fixed — and the row's own falsifier below needs a sharper statement before it can bite. | reproduce in process: the same parent set merged on two nodes whose DAGs reached it in different orders, comparing the merged pre-state; then fix the order dependence. Closes when two nodes that reach the same justifications by different delivery orders compute the same pre-state in a test. **Note the shape any candidate must have.** The derived maps (`child_map`, `msg_map`, the height map) are `BTreeMap`/`BTreeSet` over the same *set*, so **delivery order alone is not a difference between two nodes** — only different *content* is. `latest_msgs` is the one map whose insert is order-sensitive, and only on a tie (`insert_msg_mut` compares `sender_seq` with `>`, so the first of two equal-sequence messages wins), which changes what a node *proposes* rather than how it validates a block it is handed. | §66 |
+| `C218` | **Layer 1's term builder and the native system processes disagree on how a call is shaped, so no native process has a working reply.** `shard_invoke::invoke_term` renders `@target!(method, arg…, \`rho:rchain:deployId\`)` — arguments spread positionally with the reply channel appended last, which is the shape a Rholang `contract target(@method, @a, ret)` expects and the shape the registry capabilities Layer 1 addresses have. A **native** system process takes `(method, [args…])` instead: `rchain-rholang`'s `revVault` destructures its continuation as `[op, rest_par]` and reads `rest_par` as the argument *list*, so it wants the reply channel **inside** that list. A call built by `invoke_term` therefore cannot address it at all — the native refuses with `revVault expects a method and arguments`, the deploy still reports `ProcessedWithSuccess`, and the reply channel stays empty. Found by the OCapN bridge, whose first chain-backed capability targets `rho:rchain:revVault.getBalance`: the delivery produced a deploy in block 1 and no value. **The reason nothing had noticed is that `invoke_term` has no production caller** — `casper/src/txn_coordinator.rs` uses its own `txn_term` — so its reply contract, `docs/src/node/shard-invoke.md`'s \"the value committed there *is* the reply\", was only ever exercised by its parse test. Which side moves is a design question for the bridge's next unit; the finding is that the two conventions cannot both be right. | make one convention true for both: either a native process accepts spread arguments, or the bridge builds a native-shaped term — and whichever it is, a test that a chain-backed delivery's reply value reaches the wire. | §69 |
 
 ### T1 coverage — closed
 
