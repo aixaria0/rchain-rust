@@ -2783,6 +2783,7 @@ dependencies = [
  "rchain-comm",
  "rchain-crypto",
  "rchain-models",
+ "rchain-ocapn",
  "rchain-rholang",
  "rchain-rspace",
  "rchain-sdk",

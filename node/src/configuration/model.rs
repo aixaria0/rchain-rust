@@ -106,6 +106,13 @@ pub struct ApiServer {
     pub max_connection_idle: Duration,
     pub max_connection_age: Duration,
     pub max_connection_age_grace: Duration,
+    /// Bind an **OCapN** listener on this `host:port` (issue #249), or `None` for no listener —
+    /// the default, because the only netlayer implemented is the OCapN project's
+    /// `tcp-testing-only`, which is explicitly unencrypted and unauthenticated.
+    ///
+    /// A non-Shared field, like `enable_txn_api` beside it: the Scala `ApiServer` has no OCapN
+    /// listener, and this port's is opt-in rather than always-on for the reason above.
+    pub ocapn_listen: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

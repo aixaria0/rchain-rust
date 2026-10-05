@@ -156,6 +156,15 @@ impl Identity {
         &self.public
     }
 
+    /// A fresh session key for `location`. OCapN generates a key per session and never reuses one,
+    /// so a listener calls this for every accepted connection.
+    pub fn fresh(location: PeerLocator) -> Result<Identity, ConnectionError> {
+        use rand::Rng;
+        let mut seed = [0u8; 32];
+        rand::rng().fill_bytes(&mut seed);
+        Identity::from_seed(seed, location)
+    }
+
     pub fn location(&self) -> &PeerLocator {
         &self.location
     }

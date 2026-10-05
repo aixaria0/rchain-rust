@@ -95,6 +95,7 @@ use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
+use crate::api::ocapn::serve_ocapn;
 use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
@@ -460,6 +461,8 @@ pub struct NodeProgram {
     enable_txn_api: bool,
     enable_devnet_cors: bool,
     enable_devnet_admin_public: bool,
+    /// `host:port` to bind the OCapN listener on, or `None` (issue #249).
+    ocapn_listen: Option<String>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
 }
@@ -492,6 +495,7 @@ impl NodeProgram {
             enable_txn_api,
             enable_devnet_cors,
             enable_devnet_admin_public,
+            ocapn_listen,
             protocol_server,
             status_provider,
             gateway,
@@ -585,6 +589,10 @@ impl NodeProgram {
             }
         });
 
+        // The OCapN listener (issue #249). Spawned even when it is not configured — see
+        // `serve_ocapn` — so its select arm and drain slot are unconditional.
+        let mut ocapn = tokio::spawn(serve_ocapn(ocapn_listen, stop.clone()));
+
         // **The first moment a node can say the expensive part is over, and the expensive part is
         // replay rather than the bind** (issue #60's observability half). Every costly step — the store
         // rebuilds, the metadata and DAG indices, the block-index replay — completes *before* this
@@ -619,7 +627,7 @@ impl NodeProgram {
         // arm already consumed. `node/tests/shutdown.rs` asserts the serve task must not panic, which
         // is how this surfaced (CI, 2026-09-28); it does not reproduce under a light local load,
         // because there `stop_requested` wins.
-        let mut drained = [false; 4];
+        let mut drained = [false; 5];
         let stopped = if let Some(protocol) = protocol_server {
             let mut protocol = tokio::spawn(async move {
                 protocol
@@ -632,6 +640,7 @@ impl NodeProgram {
                 r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
                 r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
                 r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
+                r = &mut ocapn => { drained[4] = true; Some(listener_stopped("OCapN listener", r, *stopping.borrow())) },
                 r = &mut protocol => Some(listener_stopped("protocol listener", r, *stopping.borrow())),
                 _ = stop_requested(stop) => None,
             }
@@ -641,6 +650,7 @@ impl NodeProgram {
                 r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
                 r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
                 r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
+                r = &mut ocapn => { drained[4] = true; Some(listener_stopped("OCapN listener", r, *stopping.borrow())) },
                 _ = stop_requested(stop) => None,
             }
         };
@@ -666,6 +676,9 @@ impl NodeProgram {
             }
             if !drained[3] {
                 let _ = admin.await;
+            }
+            if !drained[4] {
+                let _ = ocapn.await;
             }
         };
         let _ = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await;
@@ -1287,6 +1300,7 @@ pub async fn setup_node_program(
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
+        ocapn_listen: conf.api_server.ocapn_listen.clone(),
         protocol_server: Some(build_protocol_server(
             conf,
             &comm_state,

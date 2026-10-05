@@ -24,6 +24,7 @@ rchain-casper = { path = "../casper" }
 rchain-comm = { path = "../comm" }
 rchain-crypto = { path = "../crypto" }
 rchain-models = { path = "../models" }
+rchain-ocapn = { path = "../ocapn" }
 rchain-rholang = { path = "../rholang" }
 rchain-rspace = { path = "../rspace" }
 rchain-sdk = { path = "../sdk" }

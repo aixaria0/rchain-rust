@@ -384,6 +384,12 @@ pub struct Run {
     #[arg(long = "api-host")]
     pub api_host: Option<String>,
 
+    /// Bind an OCapN listener on `host:port` (e.g. `127.0.0.1:22045`); off when unset. The only
+    /// netlayer implemented is the OCapN project's `tcp-testing-only` — plain TCP, no encryption and
+    /// no authentication (issue #249).
+    #[arg(long = "ocapn-listen")]
+    pub ocapn_listen: Option<String>,
+
     /// Port for external gRPC API.
     #[arg(short = 'e', long = "api-port-grpc-external")]
     pub api_port_grpc_external: Option<i32>,
