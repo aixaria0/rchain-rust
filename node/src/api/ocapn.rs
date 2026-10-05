@@ -121,6 +121,7 @@ const MAX_SESSIONS: usize = 64;
 pub async fn serve_ocapn(
     listen: Option<String>,
     chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
+    deny_local_dial: bool,
     log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -145,7 +146,17 @@ pub async fn serve_ocapn(
             chain.len()
         ),
     );
-    let listener: Arc<dyn Netlayer> = Arc::new(bound);
+    // **The dial policy wraps the transport**, so every dial this surface makes — the enlivener's and
+    // the greeter's, both to peer-named addresses — is measured before a connection exists (HAZOP row
+    // B4). The policy is configuration, not a property of the test netlayer: the fixture peer wraps
+    // nothing, because the conformance suite must be able to dial whatever it names.
+    let listener: Arc<dyn Netlayer> = Arc::new(rchain_ocapn::dial_policy::PolicyNetlayer::new(
+        bound,
+        rchain_ocapn::dial_policy::DialPolicy {
+            deny_local: deny_local_dial,
+            allow: Vec::new(),
+        },
+    ));
     let location = PeerLocator {
         designator: "rnode".to_string(),
         transport: "tcp-testing-only".to_string(),
@@ -656,6 +667,7 @@ mod tests {
         let serving = tokio::spawn(serve_ocapn(
             Some("127.0.0.1:0".to_string()),
             Vec::new(),
+            false,
             log.clone(),
             stop_rx,
         ));

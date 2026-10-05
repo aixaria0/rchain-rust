@@ -500,8 +500,29 @@ impl Session {
                     .map_err(|e| ConnectionError::Protocol(e.to_string()))?;
                 self.adopt_peer(start)?;
             }
-            // GC only ever releases resources; ignoring it is safe, not partial.
-            "op:gc-exports" | "op:gc-answers" => {}
+            // **An inbound release is honoured, not ignored** (AUDIT C223). The comment that used to
+            // stand here — "GC only ever releases resources; ignoring it is safe, not partial" — was
+            // right that ignoring is *safe*, and wrong that it is *not partial*: the peer's explicit
+            // release is the only thing that could shrink these tables, so dropping it meant the caps
+            // were the whole story and a peer asking for its position back was told nothing.
+            //
+            // The positions are the peer's view of *our* tables: `op:gc-exports` names our exports,
+            // `op:gc-answers` our answer positions. Position 0 is the bootstrap, by definition, and is
+            // never released — a peer that tried would be releasing the object it is talking to.
+            crate::captp::GC_EXPORTS_LABEL => {
+                let gc = crate::captp::OpGcExports::from_syrup(&message)
+                    .map_err(ConnectionError::Protocol)?;
+                for position in &gc.positions {
+                    release_position(self, position, Release::Export);
+                }
+            }
+            crate::captp::GC_ANSWERS_LABEL => {
+                let gc = crate::captp::OpGcAnswers::from_syrup(&message)
+                    .map_err(ConnectionError::Protocol)?;
+                for position in &gc.positions {
+                    release_position(self, position, Release::Answer);
+                }
+            }
             other => {
                 // Anything else we do not implement; say so rather than silently stall.
                 let reason = format!("unsupported operation {other:?}");
@@ -673,10 +694,21 @@ impl Session {
             }
         };
         if let Some(n) = &deliver.answer_pos {
-            // A full answer table is not an error: the peer chose the position, and one it cannot have
-            // is one a later delivery cannot pipeline onto — which the existing
-            // `Resolution::Missing` path already reports as "no such export or answer".
-            let _ = self.answers.try_insert(position(n)?, answer_target);
+            let pos = position(n)?;
+            // **A position the peer already used is refused, not re-pointed** (AUDIT C223). An answer
+            // position is the sender's own promise slot: the peer hands out `desc:answer N` to third
+            // parties, so silently re-pointing N at a different delivery breaks a reference the peer
+            // (or someone it told) may still hold. Before this check, `try_insert` replaced the
+            // mapping and nothing said so.
+            if self.answers.contains_key(&pos) {
+                let reason = format!("answer position {pos} was already used on this session");
+                send_abort(&mut self.conn, &reason).await;
+                return Err(ConnectionError::Protocol(reason));
+            }
+            // A *full* table is not an error: the peer chose the position, and one it cannot have is
+            // one a later delivery cannot pipeline onto — which the existing `Resolution::Missing`
+            // path already reports as "no such export or answer".
+            let _ = self.answers.try_insert(pos, answer_target);
         }
         if let Some(value) = reply {
             self.fulfil(
@@ -864,6 +896,39 @@ enum Resolution {
     Broken(String),
     /// No such export or answer.
     Missing,
+}
+
+/// Which table an inbound release names.
+#[derive(Clone, Copy)]
+enum Release {
+    Export,
+    Answer,
+}
+
+/// Honour one position from an inbound `op:gc-*` (AUDIT C223).
+///
+/// **Position 0 is never released.** It is the bootstrap on every session, by definition, and the
+/// only object whose absence would leave the peer holding a reference to the thing it is talking to.
+/// A peer that names it is asking for something the protocol cannot give, and the release is dropped
+/// rather than obeyed — the one case where refusing to act is the safe reading.
+///
+/// A position that is not there is not an error: a peer may release something twice (a re-delivery it
+/// already accounted for), and a `BTreeMap::remove` of an absent key is exactly that no-op.
+fn release_position(session: &mut Session, position: &num_bigint::BigUint, which: Release) {
+    let Ok(pos) = u64::try_from(position.clone()) else {
+        return;
+    };
+    if pos == crate::captp::BOOTSTRAP_POSITION {
+        return;
+    }
+    match which {
+        Release::Export => {
+            session.exports.remove(&pos);
+        }
+        Release::Answer => {
+            session.answers.remove(&pos);
+        }
+    }
 }
 
 /// Break one delivery — `[<break> <reason>]` to the peer's resolver, when it left one.

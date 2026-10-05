@@ -24,6 +24,7 @@ pub mod bootstrap;
 pub mod capacity;
 pub mod captp;
 pub mod conn;
+pub mod dial_policy;
 pub mod enliven;
 pub mod fixtures;
 pub mod handoff;
