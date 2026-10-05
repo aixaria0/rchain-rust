@@ -49,13 +49,18 @@ tests fail at `setUp`.
 ```sh
 cargo build -p rchain-ocapn --bin ocapn-tcp-testing
 ./target/debug/ocapn-tcp-testing 127.0.0.1:22045 &   # a fresh session key per session
-python3 <suite>/test_runner.py \
-    'ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045' -v
+python3 spec/audit/evidence/ocapn-conformance/run-suite.py /path/to/ocapn-test-suite \
+    'ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045' --all
 ```
 
-`test_runner.py` imports the Tor netlayer at load time, so it wants `python-stem` even for a TCP
-run; driving `CapTPTestRunner` directly avoids that. The suite needs Python 3.10+ and
-`cryptography`. Add `--test-module tests.op_deliver` (or any module) to run one at a time.
+**The driver is in this directory (`run-suite.py`), and that is deliberate**: the suite's own
+`test_runner.py` imports the Tor netlayer at load, so a `tcp-testing-only` run needs one that does
+not, and a gate nobody can re-run is not a gate. It runs **one module per invocation** — a module
+that fails in `setUp` would otherwise make every later module's numbers a statement about the first —
+and reports counts from the result object rather than the printed tally, which double-counts a
+`setUp` error against the aborted test. `--module tests.op_deliver` runs a single module; `-v` keeps
+the per-test lines for the record. `run-5.txt` is the driver's baseline run. The suite needs Python
+3.10+ and `cryptography`.
 
 ## Why this file exists
 
