@@ -11,10 +11,11 @@ use std::sync::Arc;
 
 use rand::Rng;
 
-use rchain_ocapn::conn::{Identity, Session};
+use rchain_ocapn::conn::Identity;
 use rchain_ocapn::fixtures;
 use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::netlayer::Netlayer;
+use rchain_ocapn::owner::{session_slot, SessionRegistry};
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
 
 #[tokio::main]
@@ -22,9 +23,17 @@ async fn main() -> std::io::Result<()> {
     let addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:22045".to_string());
-    let listener = TcpTestingOnly::bind(&addr).await?;
-    let local = listener.local_addr()?;
+    let bound = TcpTestingOnly::bind(&addr).await?;
+    // `local_addr` belongs to the concrete netlayer, not to the trait: take it before the Arc.
+    let local = bound.local_addr()?;
+    let listener: Arc<dyn Netlayer> = Arc::new(bound);
     let host = local.ip().to_string();
+    // One registry for the process: the crossed-hello rule compares the sessions *this peer* has
+    // with another, so it cannot be per-session state.
+    let registry = Arc::new(SessionRegistry::default());
+    // The exporter half of third-party handoffs, shared across sessions on purpose: a gift is
+    // deposited on the gifter's connection and withdrawn on the receiver's.
+    let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
 
     eprintln!("ocapn-tcp-testing listening on {local}");
     eprintln!(
@@ -42,26 +51,61 @@ async fn main() -> std::io::Result<()> {
                 ("port".to_string(), local.port().to_string()),
             ]),
         };
+        let netlayer = listener.clone();
+        let registry = registry.clone();
+        let handoffs = handoffs.clone();
+        let location = location.clone();
         tokio::spawn(async move {
             // A fresh session key per session; OCapN never reuses one.
             let mut seed = [0u8; 32];
             rand::rng().fill_bytes(&mut seed);
-            let identity = match Identity::from_seed(seed, location) {
+            let identity = match Identity::from_seed(seed, location.clone()) {
                 Ok(identity) => identity,
                 Err(e) => {
                     eprintln!("session key: {e}");
                     return;
                 }
             };
-            let bootstrap = Arc::new(fixtures::conformance_bootstrap());
-            match Session::accept(conn, &identity, bootstrap).await {
-                Ok(mut session) => {
-                    if let Err(e) = session.run().await {
-                        eprintln!("session ended: {e}");
+            // The per-session objects that dial (the greeter and the enlivener) are built before the
+            // session exists, because `accept` needs the bootstrap — so they find their session
+            // through this slot, which is filled in below.
+            let slot = session_slot();
+            let mut bootstrap = fixtures::conformance_bootstrap_with(
+                handoffs.clone(),
+                slot.clone(),
+                registry.clone(),
+            );
+            fixtures::publish_dialing_fixtures(
+                &mut bootstrap,
+                netlayer,
+                location,
+                registry.clone(),
+                slot.clone(),
+            );
+            // **Book, then answer**: `accept_and_book` reads the peer's start-session, registers the
+            // session (deciding any crossing) and only then writes ours. Answering first is a race
+            // the handoff fixture caught — the peer speaks as soon as it reads our start-session, and
+            // a receiver handed a sturdyref to this very peer would not find the session to reuse.
+            let (handle, loop_, context, peer_location) =
+                match rchain_ocapn::owner::accept_and_book(
+                    conn,
+                    &identity,
+                    Arc::new(bootstrap),
+                    &registry,
+                )
+                .await
+                {
+                    Ok(parts) => parts,
+                    Err(reason) => {
+                        eprintln!("session not served: {reason}");
+                        return;
                     }
-                }
-                Err(e) => eprintln!("handshake refused: {e}"),
+                };
+            *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+            if let Err(e) = loop_.run().await {
+                eprintln!("session ended: {e}");
             }
+            registry.forget(&peer_location, &handle.own_pi, handle.dialed);
         });
     }
 }

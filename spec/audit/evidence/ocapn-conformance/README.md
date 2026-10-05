@@ -14,35 +14,43 @@ implementation rather than to itself.
 | Suite | `github.com/ocapn/ocapn-test-suite` at `31f0b80` |
 | Netlayer | `tcp-testing-only` (the suite's own; no encryption — it is not a deployment transport) |
 
-Four whole-suite runs are kept: `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after `op:listen`
+Six whole-suite runs are kept. `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after `op:listen`
 (`failures=6, errors=8`), `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`), and `run-4.txt`
-after `op:gc-answers` (`failures=6, errors=4`). **Read the per-module numbers, not a summary line.**
-The runner reports a `setUp` error against the test it aborted as well as the error itself, so its
-tallies exceed the test count; running each module on its own gives the numbers below.
+after `op:gc-answers` (`failures=6, errors=4`) are the stage-0–3 pass; `run-5.txt` is the driver's
+baseline; `run-6.txt` is stage 6's first half (the owned dialed session and the sturdyref enlivener:
+`op_start_session` 3/5 → **5/5**); and **`run-7.txt` is the finished suite, 24/24**. **Read the
+per-module numbers, not a summary line.** The runner reports a `setUp` error against the test it
+aborted as well as the error itself, so its tallies exceed the test count; running each module on its
+own gives the numbers below.
 
 ## Per module
 
-| Module | Passed | Note |
-|---|---|---|
-| `op_abort` | **1 / 1** | ✅ |
-| `op_deliver` | **4 / 4** | ✅ including both promise-pipelining tests and the break-propagation test |
-| `op_start_session` | **3 / 5** | the two failures are the crossed-hellos tests, which need the sturdyref enlivener (below) |
-| `op_listen` | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
-| `op_gc` | **4 / 4** | ✅ `op:gc-exports` with its wire-delta accounting, and `op:gc-answers` |
-| `third_party_handoffs` | 1 / 7 | the one pass is an *invalid-signature* rejection that passes incidentally: this port answers every handoff with a `break` |
-| **Total** | **16 / 24** | |
+The numbers below are `run-1.txt` … `run-7.txt` read down the columns, not a claim about the port in
+the abstract:
 
-So the implemented path is **stages 0–3 of the implementation guide**: the handshake (with the two
-refusals it must make), `op:deliver`, the export table, promise pipelining through the answer table,
-`fulfill`/`break` through `resolve-me-desc`, `op:listen` with its promise/resolver pair, and the GC
-accounting in both directions. Handoffs (stage 6) are what remains, along with the sturdyref
-enlivener that the two crossed-hellos tests need — and the suite says exactly that, which is the
-point of running it.
+| Module | run-1 (stages 0–3) | run-4 | run-6 (stage 6, half) | **run-7 (finished)** | Note |
+|---|---|---|---|---|---|
+| `op_abort` | 1 / 1 | 1 / 1 | 1 / 1 | **1 / 1** | ✅ |
+| `op_deliver` | 4 / 4 | 4 / 4 | 4 / 4 | **4 / 4** | ✅ including both promise-pipelining tests and the break-propagation test |
+| `op_start_session` | 3 / 5 | 3 / 5 | **5 / 5** | **5 / 5** | ✅ the crossed-hellos tests need the sturdyref enlivener, which run-6 has |
+| `op_listen` | 3 / 3 | 3 / 3 | 3 / 3 | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
+| `op_gc` | 4 / 4 | 4 / 4 | 4 / 4 | **4 / 4** | ✅ `op:gc-exports` with its wire-delta accounting, and `op:gc-answers` |
+| `third_party_handoffs` | 1 / 7 | 1 / 7 | 1 / 7 | **7 / 7** | ✅ all three roles — Receiver, Exporter and Gifter |
+| **Total** | **16 / 24** | **16 / 24** | **18 / 24** | **24 / 24** | |
 
-**Not implemented, and named in the code rather than guessed at:** the suite's *sturdyref
-enlivener* (`gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB`), which must dial a peer back from a sturdyref it is
-handed. A `fetch` of it breaks, which is why the two crossed-hellos tests and most of the handoff
-tests fail at `setUp`.
+So **every stage of the implementation guide now passes**: the handshake (with the two refusals it
+must make and the crossed-hello rule, asserted from both sides), `op:deliver`, the export table,
+promise pipelining through the answer table, `fulfill`/`break` through `resolve-me-desc`, `op:listen`
+with its promise/resolver pair, the GC accounting in both directions, the *sturdyref enlivener*, and
+third-party handoffs with their signature and replay checks.
+
+**What run-6 → run-7 took**, because it is the part a later reader will otherwise re-derive:
+`Session::dial` never wrote its own start-session (it read the peer's and stopped), a session was
+booked in the registry *after* it answered the peer (so a delivery on the first round trip could
+reach an object that could not find its own session), and the gift store was keyed by gift id alone
+(two independent handoffs in one process sharing `b"my-gift"` shared a replay guard). The three are
+written up at the head of `run-7.txt`, and the last one is why `handoff::Handoffs` is keyed by
+`(gift id, the gifter's session)`.
 
 ## How to reproduce
 

@@ -1,0 +1,211 @@
+# W3.1/W3.2: the owned dialed session and the sturdyref enlivener.
+#
+# command: python3 run-suite.py /tmp/ocapn-test-suite \
+#            'ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045' --all -v
+# peer:    target/debug/ocapn-tcp-testing 127.0.0.1:22045, built from branch ocapn/stage6
+#
+# op_start_session goes 3/5 -> 5/5: the enlivener dials the peer a sturdyref names (which nothing in
+# production did before — `Session::dial` was called only from tests), and the crossed-hello rule
+# decides the two sessions. The remaining module is the handoff set, which is W3.3.
+
+test_abort_before_setup (tests.op_abort.OpAbortTest.test_abort_before_setup)
+Aborting a session before a session has been fully setup ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+OK
+suite /tmp/ocapn-test-suite at 31f0b80, peer ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22045
+tests.op_abort: 1/1
+test_captp_remote_version (tests.op_start_session.OpStartSessionTest.test_captp_remote_version)
+Remote CapTP session sends a valid `op:start-session` ... ok
+test_crossed_hellos_mitigation_aborts_inbound (tests.op_start_session.OpStartSessionTest.test_crossed_hellos_mitigation_aborts_inbound)
+Crossed Hellos Problem is detected: inbound connection aborts ... ok
+test_crossed_hellos_mitigation_outbound_aborts (tests.op_start_session.OpStartSessionTest.test_crossed_hellos_mitigation_outbound_aborts)
+Crossed Hellos Problem is detected: outbound connection aborts ... ok
+test_start_session_with_invalid_signature (tests.op_start_session.OpStartSessionTest.test_start_session_with_invalid_signature)
+Remote CapTP session aborts upon invalid location signature ... ok
+test_start_session_with_invalid_version (tests.op_start_session.OpStartSessionTest.test_start_session_with_invalid_version)
+Remote CapTP session aborts upon invalid version ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.114s
+
+OK
+tests.op_start_session: 5/5
+test_deliver_promise_pipeline (tests.op_deliver.OpDeliverTest.test_deliver_promise_pipeline)
+Can promise pipeline on multiple messages ... ok
+test_deliver_with_resolver (tests.op_deliver.OpDeliverTest.test_deliver_with_resolver)
+Deliver occurs with a response to the resolve me descriptor ... ok
+test_promise_pipeline_with_break (tests.op_deliver.OpDeliverTest.test_promise_pipeline_with_break)
+Pomise pipelining handles a broken promise when pipelining ... ok
+test_send_deliver_no_answer_or_response (tests.op_deliver.OpDeliverTest.test_send_deliver_no_answer_or_response)
+Send a message to an actor without a reply ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.221s
+
+OK
+tests.op_deliver: 4/4
+test_op_listen_already_has_answer (tests.op_listen.OpListenTest.test_op_listen_already_has_answer)
+Notified when listening on a resolved promise ... ok
+test_op_listen_to_promise_and_break (tests.op_listen.OpListenTest.test_op_listen_to_promise_and_break)
+Notified when a promise is broken ... ok
+test_op_listen_to_promise_and_fulfill (tests.op_listen.OpListenTest.test_op_listen_to_promise_and_fulfill)
+Notified when a promise is fulfilled ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.202s
+
+OK
+tests.op_listen: 3/3
+test_gc_answer (tests.op_gc.OpGcAnswersTest.test_gc_answer) ... ok
+test_gc_export_emitted_single_object (tests.op_gc.OpGcExportsTest.test_gc_export_emitted_single_object)
+op:gc-export is emitted for an object ... ok
+test_gc_export_with_multiple_refrences (tests.op_gc.OpGcExportsTest.test_gc_export_with_multiple_refrences)
+op:gc-export has correct wire-delta for multiple references in the same message ... ok
+test_gc_export_with_multiple_refrences_in_different_messages (tests.op_gc.OpGcExportsTest.test_gc_export_with_multiple_refrences_in_different_messages)
+op:gc-export has correct wire-delta for multiple references in different messages ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.170s
+
+OK
+tests.op_gc: 4/4
+test_handoff_receive_invalid_handoff_count (tests.third_party_handoffs.HandoffRemoteAsExporter.test_handoff_receive_invalid_handoff_count)
+Reject handoff-receive with invalid (already used) handoff count ... FAIL
+test_handoff_receive_invalid_signature (tests.third_party_handoffs.HandoffRemoteAsExporter.test_handoff_receive_invalid_signature)
+Reject handoff-receive with invalid signature ... ok
+test_valid_handoff (tests.third_party_handoffs.HandoffRemoteAsExporter.test_valid_handoff)
+Valid handoff receive, gift already deposited ... FAIL
+test_valid_handoff_wait_deposit_gift (tests.third_party_handoffs.HandoffRemoteAsExporter.test_valid_handoff_wait_deposit_gift)
+Valid handoff receive, sending deposite gift later ... FAIL
+test_provides_valid_handoff_give (tests.third_party_handoffs.HandoffRemoteAsGifter.test_provides_valid_handoff_give)
+Gifter correclty performs handoff and sends valid handoff-give ... ERROR
+test_valid_handoff_with_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_with_prior_connection)
+Valid handoff-give, with prior connection ... ERROR
+test_valid_handoff_with_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_with_prior_connection)
+Valid handoff-give, with prior connection ... ERROR
+test_valid_handoff_without_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_without_prior_connection)
+Valid handoff give without prior connection ... ERROR
+test_valid_handoff_without_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_without_prior_connection)
+Valid handoff give without prior connection ... ERROR
+
+======================================================================
+ERROR: test_provides_valid_handoff_give (tests.third_party_handoffs.HandoffRemoteAsGifter.test_provides_valid_handoff_give)
+Gifter correclty performs handoff and sends valid handoff-give
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 403, in test_provides_valid_handoff_give
+    fetch_object_msg = self.e2g_session.expect_message_to(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/utils/captp.py", line 205, in expect_message_to
+    message = self.expect_message_type(captp_types.OpDeliver, timeout=timeout)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/utils/captp.py", line 191, in expect_message_type
+    message = self.receive_message(timeout=timeout)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/utils/captp.py", line 92, in receive_message
+    msg = self.connection.receive_message(timeout=timeout)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/netlayers/base.py", line 93, in receive_message
+    next_message = Netstring.read(socketio)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/utils/netstrings.py", line 30, in read
+    next_char = sock.read(1)
+                ^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/netlayers/base.py", line 44, in read
+    data = self._socket.recv(size - amount_read_ahead)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: timed out
+
+======================================================================
+ERROR: test_valid_handoff_with_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_with_prior_connection)
+Valid handoff-give, with prior connection
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 135, in test_valid_handoff_with_prior_connection
+    self.e2r_session = self.other_netlayer.accept()
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/netlayers/testing_only_tcp.py", line 78, in accept
+    sock, addr = self.server_sock.accept()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/patrick/miniforge3/lib/python3.12/socket.py", line 295, in accept
+    fd, addr = self._accept()
+               ^^^^^^^^^^^^^^
+TimeoutError: timed out
+
+======================================================================
+ERROR: test_valid_handoff_with_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_with_prior_connection)
+Valid handoff-give, with prior connection
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 66, in tearDown
+    if self.e2r_session is not None:
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'HandoffRemoteAsReciever' object has no attribute 'e2r_session'. Did you mean: 'g2r_session'?
+
+======================================================================
+ERROR: test_valid_handoff_without_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_without_prior_connection)
+Valid handoff give without prior connection
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 98, in test_valid_handoff_without_prior_connection
+    self.e2r_session = self.other_netlayer.accept()
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ocapn-test-suite/netlayers/testing_only_tcp.py", line 78, in accept
+    sock, addr = self.server_sock.accept()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/patrick/miniforge3/lib/python3.12/socket.py", line 295, in accept
+    fd, addr = self._accept()
+               ^^^^^^^^^^^^^^
+TimeoutError: timed out
+
+======================================================================
+ERROR: test_valid_handoff_without_prior_connection (tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_without_prior_connection)
+Valid handoff give without prior connection
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 66, in tearDown
+    if self.e2r_session is not None:
+       ^^^^^^^^^^^^^^^^
+AttributeError: 'HandoffRemoteAsReciever' object has no attribute 'e2r_session'. Did you mean: 'g2r_session'?
+
+======================================================================
+FAIL: test_handoff_receive_invalid_handoff_count (tests.third_party_handoffs.HandoffRemoteAsExporter.test_handoff_receive_invalid_handoff_count)
+Reject handoff-receive with invalid (already used) handoff count
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 314, in test_handoff_receive_invalid_handoff_count
+    self.assertEqual(resolved_handoff.args[0], Symbol("fulfill"))
+AssertionError: Symbol(break) != Symbol(fulfill)
+
+======================================================================
+FAIL: test_valid_handoff (tests.third_party_handoffs.HandoffRemoteAsExporter.test_valid_handoff)
+Valid handoff receive, gift already deposited
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 240, in test_valid_handoff
+    self.assertEqual(resolved_handoff.args[0], Symbol("fulfill"))
+AssertionError: Symbol(break) != Symbol(fulfill)
+
+======================================================================
+FAIL: test_valid_handoff_wait_deposit_gift (tests.third_party_handoffs.HandoffRemoteAsExporter.test_valid_handoff_wait_deposit_gift)
+Valid handoff receive, sending deposite gift later
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/ocapn-test-suite/tests/third_party_handoffs.py", line 269, in test_valid_handoff_wait_deposit_gift
+    self.assertEqual(initial_response.args[0], Symbol("fulfill"))
+AssertionError: Symbol(break) != Symbol(fulfill)
+
+----------------------------------------------------------------------
+Ran 7 tests in 70.290s
+
+FAILED (failures=3, errors=5)
+tests.third_party_handoffs: 1/7
+    FAILED tests.third_party_handoffs.HandoffRemoteAsExporter.test_handoff_receive_invalid_handoff_count
+    FAILED tests.third_party_handoffs.HandoffRemoteAsExporter.test_valid_handoff
+    FAILED tests.third_party_handoffs.HandoffRemoteAsExporter.test_valid_handoff_wait_deposit_gift
+    FAILED tests.third_party_handoffs.HandoffRemoteAsGifter.test_provides_valid_handoff_give
+    FAILED tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_with_prior_connection
+    FAILED tests.third_party_handoffs.HandoffRemoteAsReciever.test_valid_handoff_without_prior_connection
