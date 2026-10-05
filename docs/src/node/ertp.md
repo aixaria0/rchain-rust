@@ -5,10 +5,12 @@
 > [](ocapn.md); the two are one design, because ERTP's issuer/brand/purse/payment are exactly the
 > capabilities that have to cross CapTP.
 
-**Status.** The **native issuer ledger** is built (`PREFIX_ERTP = 0x0A`,
-`rholang/src/native_state.rs`). The Rholang API over it, the genesis blessing, and REV as an ERTP
-brand are **not** — this page records the design they will be built against, and says plainly which
-parts are settled and which are still open.
+**Status: built.** The **native issuer ledger** (`PREFIX_ERTP = 0x0A`,
+`rholang/src/native_state.rs`), the **object API** over it (`casper/src/genesis/resources/ERTP.rho`,
+reached as `rho:rchain:ertp` after the genesis blessing) and **REV as a standard brand with no mint**
+are all in the tree, with the close condition's clauses asserted end to end
+(`casper/tests/ertp.rs`). This page is the design they were built against; the sections that were
+open when it was written now record the decisions and, where something was refused, the reason.
 
 ## What ERTP is, and what RChain had
 
@@ -36,10 +38,17 @@ it. That follows [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md)'s precedent
 PoS and the REV vault, and it is where the *spend rule* belongs: a payment consumed exactly once is
 an invariant of consensus, not of an interpreter's evaluation order.
 
-The ledger holds two kinds of leaf, told apart by their key:
+The ledger holds two kinds of leaf, told apart by their **key** and, since the totals over the prefix
+are *enumerations* rather than running sums, by a tag byte in the **value** as well:
 
-- a **brand** leaf: `brand → the bytes of the name that may mint it`;
-- a **holding** leaf: `(brand, holder) → amount + live`.
+- a **brand** leaf (`0x01`): `blake2b256(brand) → the bytes of the name that may mint it`;
+- a **holding** leaf (`0x02`): `blake2b256(len(brand) ‖ brand ‖ holder) → u32_le(brand.len()) ‖ brand ‖
+  i64_le(amount) ‖ live`.
+
+**The brand is in the value as well as the key**, which is not redundant: the key is a hash, so a
+REV total over `PREFIX_ERTP` could not be taken at all without it — and that total is
+`REV_SUPPLY_IS_CONSERVED`'s subject. A leaf read under a key whose brand it does not name is refused
+rather than read as data.
 
 ### The authority model, which is the part to get right
 
@@ -63,22 +72,100 @@ So the identities cannot come from Rholang. **The native side mints them**, exac
 for its per-call handles (`install_vault_handle`), and keys the ledger by the hash of the minted
 name — a hash, never the name, so the ledger's key leaks nothing.
 
-## What is still open
+## The API, and the reply shapes
 
-- **Whether a purse is a native object or a contract over a native name.** The vault's handle is a
-  native continuation installed on a minted name; a purse *could* be the same. The alternative is to
-  hand the minted name to a Rholang `purse` contract that wraps it, keeping the object model in
-  Rholang. The close condition asks for `makeIssuerKit` returning `(brand, mint, issuer)` and purses
-  with `deposit`/`withdraw`/`getCurrentAmount` — an API shape, which either route can present. **Not
-  decided here**; the difference is where the object's *behaviour* lives, not where its balance does.
-- **amountMath.** Whether it is a contract per brand, or an operation the issuer exposes. It has to
-  exist as *something*, because `amount` is a pair and comparing or adding amounts is how a caller
-  reasons about holdings without asking the issuer every time.
-- **REV as a brand with no mint arm.** REV's supply is fixed at genesis and its vault stays where it
-  is (`PREFIX_VAULT`); the ERTP layer presents REV as a brand whose issuer cannot mint. Whether that
-  issuer is a native process or a wrapper contract over `rho:rchain:revVault` is open, and the
-  constraint is that `revVault` and `makeMint` stay byte-for-byte — their reply shapes are pinned by
-  wallet and rgov vectors and `spec/GENESIS.md`.
+`makeIssuerKit` replies a **3-tuple** `(brand, mint, issuer)` (Agoric's shape). Everything else
+replies `(true, value)` / `(false, reason)`, so a caller has one shape to match — except
+`getRevIssuer`, whose reply is a **2-tuple** `(brand, issuer)`: the absence of a mint is visible in
+the *shape*, before any check.
+
+| Object | Arms |
+|---|---|
+| issuer | `getBrand`, `getAmountMath`, `makeEmptyPurse`, `getAmountOf` |
+| mint | `mintPayment(amount)` |
+| amountMath | `make(brand, value)`, `add`, `subtract`, `getValue`, `getBrand`, `isEqual`, `isEmpty` |
+| purse | `deposit(payment)`, `withdraw(amount)`, `getCurrentAmount`, `getDepositFacet` |
+| payment | `getAllegedBrand` |
+| REV purse (as well) | `revFund(funder, amount)`, `revRedeem(amount, to)` |
+
+The ledger underneath is `rho:rchain:ertp:ledger`: `makeKit`, `makePurse`, `balance`, `mint`,
+`withdraw`, `deposit`, and the four REV ops below. **A kit's purse has no `revFund` arm at all** —
+the REV-only arms arrive as a capability the REV issuer passes, and a kit's purse is given `Nil`, so
+the absence is structural rather than a brand check that could be got wrong.
+
+## The amount bound is a fidelity cut, and it is stated
+
+**Amounts are `(brand, value)` with an `Int` value, and the ledger holds a `NonNegI64`.** `amountMath`
+therefore *refuses* a value the ledger could not hold rather than letting one exist that cannot be
+deposited: `i64::MAX + 1` promotes to a `BigInt` in Rholang arithmetic, and a `BigInt` is refused —
+never truncated, never wrapped. This is a deliberate cut against ERTP's arbitrary-precision `NAT`. A
+copy of `NonNegativeNumber.rho`'s overflow guard would have been vacuous here (`if (v + x >= v)` never
+fires, because this port's arithmetic never wraps), which is why the *type-exact* pattern is what
+refuses it.
+
+## REV is an ERTP brand, backed by an escrow
+
+REV's supply is fixed at genesis and it lives in vaults (`PREFIX_VAULT`) — so the ERTP layer presents
+REV as a brand whose **issuer has no mint arm**, and a REV amount is a claim on a **reserve** that
+vault REV backs:
+
+- the **brand** is `blake2b256("rchain:rev:brand")`, the **authority** `blake2b256("rchain:rev:authority")`
+  and the **reserve** the REV address of the unforgeable name `blake2b256("rchain:rev:ertp-reserve")` —
+  all derived from named strings, so anyone can recompute them;
+- `revFund(funder, amount)` moves REV **from the caller's own vault** (derived from the presented
+  `deployerId`, never a supplied address) into the reserve and *then* credits the purse;
+- `revRedeem(purse, amount, to)` checks the holding, pays the address out of the reserve and *then*
+  debits;
+- `revWithdraw(purse, amount)` mints a payment out of a purse — without it a REV purse would be a
+  roach motel.
+
+**The authority is a Rust constant that is never replied on any channel**, which is safe for a reason
+that is tested rather than asserted: no Rholang term can construct a `GPrivate`, so the authority can
+never be *presented*. A `GByteArray` of exactly its bytes is not a name, and the four spellings a
+caller might try are each refused. REV's brand registration is idempotent and refuses a *different*
+authority, and no term can choose a brand's bytes (`makeKit` mints them from the send's RNG), so this
+code is the only registrant.
+
+**The reserve cannot be spent by a deploy.** Its address is derived from a name nobody can construct,
+so the vault authority map has no entry for it and never can — `unforgeableAuthKey` requires
+*presenting* the name. A `findOrCreate` handle over it can read and cannot move, which is measured.
+
+`REV_SUPPLY_IS_CONSERVED` is the ledger's instrument over all of it, in the direction each half can be
+stated: the **vault total is invariant** (funded, redeemed and withdrawn REV is *moved*, never
+created — the ERTP layer never makes vault REV), and the **float is backed**: `Σ REV holdings ≤ the
+reserve`. The inequality is the safety direction, and it holds under a partial write because REV
+enters the reserve before a holding is credited and leaves before one is debited; it is *exact* until
+somebody donates to the reserve, and a donation reads as exactly that.
+
+**`revVault` is untouched.** Its reply shapes are pinned by wallet and rgov vectors, `deposit` stays
+refused with its message unchanged, and REV's ERTP path is *new ops*, not a branch inside the old
+ones: one op name answering with a different handler is the silent downgrade **AUDIT C114** exists to
+stop.
+
+## Settled, and one thing not taken
+
+- **A purse is a Rholang contract over a natively-minted name**, and so is a payment. The identity is
+  native (the ledger keys by it), the *behaviour* is Rholang — which is what makes a purse auditable
+  by an ocapp reader and what makes the deposit protocol a single readable place.
+- **`amountMath` is a contract per brand** (`issuer.getAmountMath()`), not an operation on the
+  issuer: a caller gets one object to reason with, and the brand check lives inside it.
+- **The per-purse vault was rejected**: a REV purse *could* have been a vault-ish object of its own,
+  one per purse, and that would have made `deposit` a vault transfer instead of an ERTP credit. It was
+  not taken because it multiplies native state by the number of purses, and because "a payment is
+  consumed exactly once" is a property of the ledger rather than of a vault — the ERTP ledger already
+  has it, one native step wide.
+
+## Two follow-ups, recorded rather than hidden
+
+- **[AUDIT C219](../../../spec/AUDIT.md) — a minted channel keeps one continuation**, so
+  `install_vault_handle`'s second install replaces the first and a vault handle's `balance` arm has
+  never existed. Pre-existing, found here, measured both ways, and *not* worked around: the fix is to
+  install the handle as one `arity: 1, remainder: true` continuation dispatching on the method — the
+  shape `revVault` and the ERTP ledger already use — which is its own unit because it moves the
+  continuation's `body_ref`.
+- **`spec/conformance/protocol.tsv`'s `replyCatalog` does not carry the new urn yet.** It is emitted
+  from `Rchain/Protocol.lean`, so adding `rho:rchain:ertp:ledger` there is a Lean-side change with a
+  corpus re-emit.
 
 ## Related
 
