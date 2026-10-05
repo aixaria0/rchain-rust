@@ -208,14 +208,10 @@ impl Export for Bootstrap {
                             tokio::time::sleep(DEPOSIT_POLL).await;
                         }
                         None => {
-                            eprintln!(
-                                "DBG withdraw: no gift deposited under {} after the wait",
-                                base16::encode(&give.gift_id)
-                            );
                             return Err(format!(
                                 "no gift is deposited under {}",
                                 base16::encode(&give.gift_id)
-                            ));
+                            ))
                         }
                     }
                 }
