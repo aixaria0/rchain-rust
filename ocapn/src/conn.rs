@@ -264,24 +264,32 @@ impl Session {
         let deliver =
             Deliver::from_syrup(message).map_err(|e| ConnectionError::Protocol(e.to_string()))?;
 
-        let target = match &deliver.to {
-            Desc::Export(n) => self.exports.get(&position(n)?).cloned(),
-            Desc::Answer(n) => match self.answers.get(&position(n)?) {
-                Some(Some(pos)) => self.exports.get(pos).cloned(),
-                Some(None) => None,
-                None => None,
-            },
-            _ => None,
-        };
-        let Some(target) = target else {
-            let reason = "no such export or answer".to_string();
-            send_abort(&mut self.conn, &reason).await;
-            return Err(ConnectionError::Protocol(reason));
+        let target = match resolve_to(&self.exports, &self.answers, &deliver.to)? {
+            Resolution::Object(o) => o,
+            Resolution::Broken(reason) => {
+                // A delivery pipelined onto an answer that broke must itself break.
+                self.fulfil(
+                    deliver.resolve_me_desc.as_ref(),
+                    vec![Value::Symbol("break".to_string()), Value::String(reason)],
+                )
+                .await?;
+                return Ok(());
+            }
+            Resolution::Missing => {
+                let reason = "no such export or answer".to_string();
+                send_abort(&mut self.conn, &reason).await;
+                return Err(ConnectionError::Protocol(reason));
+            }
         };
 
         let act = match target.deliver(&deliver.args).await {
             Ok(act) => act,
             Err(reason) => {
+                // The answer this delivery would have filled is now broken, so a later pipelined
+                // delivery onto it breaks too.
+                if let Some(n) = &deliver.answer_pos {
+                    self.answers.insert(position(n)?, None);
+                }
                 // A break is `[<break> <reason>]`, sent to the peer's resolver if it left one.
                 self.fulfil(
                     deliver.resolve_me_desc.as_ref(),
@@ -345,6 +353,37 @@ impl Session {
             resolve_me_desc: None,
         };
         send(&mut self.conn, &deliver.to_syrup()).await
+    }
+}
+
+/// What a `to` descriptor names.
+enum Resolution {
+    Object(Arc<dyn Export>),
+    /// An answer whose delivery broke; a pipelined delivery onto it must break too.
+    Broken(String),
+    /// No such export or answer.
+    Missing,
+}
+
+fn resolve_to(
+    exports: &BTreeMap<u64, Arc<dyn Export>>,
+    answers: &BTreeMap<u64, Option<u64>>,
+    to: &Desc,
+) -> Result<Resolution, ConnectionError> {
+    match to {
+        Desc::Export(n) => Ok(match exports.get(&position(n)?) {
+            Some(o) => Resolution::Object(o.clone()),
+            None => Resolution::Missing,
+        }),
+        Desc::Answer(n) => Ok(match answers.get(&position(n)?) {
+            Some(Some(pos)) => match exports.get(pos) {
+                Some(o) => Resolution::Object(o.clone()),
+                None => Resolution::Missing,
+            },
+            Some(None) => Resolution::Broken("the delivery it pipelined onto broke".to_string()),
+            None => Resolution::Missing,
+        }),
+        _ => Ok(Resolution::Missing),
     }
 }
 

@@ -23,6 +23,7 @@
 pub mod bootstrap;
 pub mod captp;
 pub mod conn;
+pub mod fixtures;
 pub mod locator;
 pub mod netlayer;
 pub mod netstring;

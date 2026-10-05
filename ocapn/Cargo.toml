@@ -18,4 +18,7 @@ rchain-shared = { path = "../shared" }
 # `rchain-comm` made). Minimal features: the netlayer needs `net` + `io-util` + a runtime, the
 # tests need `macros`. Features unify per crate workspace-wide, so the node's `full` set carries.
 async-trait = "0.1"
-tokio = { version = "1", features = ["net", "io-util", "rt", "macros", "sync"] }
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "sync"] }
+# Fresh per-session Ed25519 seeds for the conformance peer. Already in `Cargo.lock`; the workspace
+# draws its OS-seeded randomness through the same `rand::rng()` (see `rchain-crypto`).
+rand = "0.10"
