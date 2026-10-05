@@ -13,11 +13,14 @@
 //! over loopback — so they are permitted by default and can be denied (`deny_local`) by an operator
 //! who is serving a peer that is not on their own host.
 //!
-//! **Not addressed, and named rather than implied:** a *hostname* is checked by name, not by what it
-//! resolves to, so a name that resolves into a denied range gets through (DNS rebinding); and a remote
-//! peer can still aim the node at the node's own loopback services when `deny_local` is off. Both need
-//! the peer's own origin — the socket address of the session it arrived on — which the dial path does
-//! not carry. That is the registered refinement, not something this file pretends to solve.
+//! **A name is resolved before it is judged**, because checking only the spelling is the classic way
+//! to evade a policy like this; a name that does not resolve is refused, since the dial would fail
+//! anyway.
+//!
+//! **Still not addressed, and named rather than implied:** a *remote* peer can aim the node at the
+//! node's own loopback services while `deny_local` is off. Fixing that needs the peer's own origin —
+//! the socket address of the session the dial came from — which the dial path does not carry. That is
+//! the registered refinement (C225), not something this file pretends to solve.
 
 use crate::locator::PeerLocator;
 use crate::netlayer::{NetConn, Netlayer};
@@ -60,10 +63,33 @@ impl DialPolicy {
         if self.allow.iter().any(|a| a == host) {
             return Ok(());
         }
-        let Ok(address) = host.parse::<std::net::IpAddr>() else {
-            // A name: checked by name, not by resolution (see the module note).
-            return Ok(());
+        let address = match host.parse::<std::net::IpAddr>() {
+            Ok(address) => address,
+            // **A name is resolved before it is judged.** Checking only the spelling let a name that
+            // resolves into a denied range through — the classic defence-evasion against exactly this
+            // kind of policy. A name that does not resolve is *refused*: the dial would fail anyway,
+            // and refusing here keeps the decision in one place. Each resolved address is checked, and
+            // any denied one refuses the whole name (a name resolving to both a public and a link-local
+            // address is not a name this peer should be following).
+            Err(_) => {
+                let Ok(addresses) = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0))
+                else {
+                    return Err(format!(
+                        "this peer does not dial {host}: it does not resolve, so the address is the \
+                         peer's and cannot be judged"
+                    ));
+                };
+                for candidate in addresses {
+                    self.permits_address(candidate.ip())?;
+                }
+                return Ok(());
+            }
         };
+        self.permits_address(address)
+    }
+
+    /// The address half of [`DialPolicy::permits`], which a resolved name is checked with too.
+    fn permits_address(&self, address: std::net::IpAddr) -> Result<(), String> {
         let what = match address {
             std::net::IpAddr::V4(v4) => {
                 if v4.is_link_local() {
@@ -196,19 +222,32 @@ mod tests {
         assert!(allowed.permits(&locator("127.0.0.1")).is_ok());
     }
 
-    /// A **name** is checked by name, not by what it resolves to — the gap the module note names
-    /// rather than hides.
+    /// **A name is resolved before it is judged**, and one that does not resolve is refused rather
+    /// than waved through: the dial would fail anyway, and checking only the spelling is the classic
+    /// way to evade a policy like this one.
     #[test]
-    fn a_hostname_is_permitted_and_that_is_a_known_gap() {
+    fn a_name_is_resolved_and_an_unresolvable_one_is_refused() {
+        let policy = DialPolicy::default();
+        // `localhost` is the interesting case: it *resolves*, and what it resolves to is judged. With
+        // local addresses permitted — the demo's default — it passes…
+        assert!(
+            policy.permits(&locator("localhost")).is_ok(),
+            "localhost resolves to loopback, which is permitted by default"
+        );
+        // …and with them denied it does not, which is the whole point of resolving.
         let strict = DialPolicy {
             deny_local: true,
             allow: Vec::new(),
         };
         assert!(
-            strict
-                .permits(&locator("metadata.example.internal"))
-                .is_ok(),
-            "a name is not resolved here, so a name that resolves into a denied range gets through"
+            strict.permits(&locator("localhost")).is_err(),
+            "a name that resolves to a denied address must be refused"
         );
+
+        // A name nothing can resolve is refused rather than handed to the dialer.
+        assert!(policy
+            .permits(&locator("no-such-host.invalid"))
+            .expect_err("unresolvable")
+            .contains("does not resolve"));
     }
 }
