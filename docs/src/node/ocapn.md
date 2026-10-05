@@ -7,9 +7,10 @@
 > named this layer, promise pipelining, and three-party handoff as out of scope there. This page
 > takes that scope up.
 
-**Status.** Only the first slice is built — the wire codec and the locators (below). Everything
-under *The build* other than that slice is **proposed and not yet implemented**; the staging is the
-OCapN implementation guide's own six stages, and each is listed with its state.
+**Status.** Only the first slices are built — the wire codec, the locators, and the session
+identity (below). Everything under *The build* other than those is **proposed and not yet
+implemented**; the staging is the OCapN implementation guide's own six stages, and each is listed
+with its state.
 
 ## What OCapN is, in one paragraph
 
@@ -30,7 +31,8 @@ deploy the bridge produces (below).
 | Stage | Deliverable | State |
 |---|---|---|
 | 0a | Syrup codec + locators | **built** — `ocapn/src/{syrup,locator,peer}.rs` |
-| 0b | Netlayer trait, `tcp-testing-only` netlayer, `op:start-session`, `op:abort` | proposed |
+| 0b | Session identity: `op:start-session`, Public Identifier, Session ID, crossed hellos | **built** — `ocapn/src/{session,session_id}.rs` |
+| 0c | Netlayer trait, `tcp-testing-only` netlayer, `op:abort` | proposed |
 | 1 | Import/export tables, `op:deliver`, bootstrap object at position 0, sturdyref `fetch` | proposed |
 | 2–5 | Promises/answers, `op:listen`, pipelining, GC (`gc-exports`/`gc-answers`) | proposed |
 | 6 | Third-party handoffs (Gifter / Receiver / Exporter) | proposed |
@@ -60,6 +62,24 @@ number.
 `Reference`, and `Error` values have no concrete Syrup form in `Notation.md`, and general Syrup
 permits non-string dictionary keys where an OCapN *Struct* does not. Both are left open until the
 message layer needs them, rather than guessed.
+
+### Built: the session identity
+
+`ocapn/src/session_id.rs` is the spec's six-step derivation and nothing else — the Public
+Identifier is two SHA-256 rounds over the serialized session public key, and the Session ID is
+`SHA256(SHA256("prot0" ‖ sorted(PI_a, PI_b)))`, sorted by octets so two peers agree without
+agreeing on who is "first". The crossed-hello rule aborts the *lower* Public Identifier. The
+constants are pinned by known-answer vectors against an independent computation, because the
+composition (sort order, the `prot0` prefix, the round count) is the part that interoperates with
+nobody while passing every local round-trip.
+
+`ocapn/src/session.rs` carries the `op:start-session` message — `captp-version` (`"1.0"`),
+`crypto-version` (`"Ed25519_SHA256"`), `session-pubkey`, `acceptable-location`, and its signature —
+as a Syrup record, with the field order and the version constants pinned by a known-answer test.
+The spec is internally inconsistent about the receive-side `crypto-version` (its construction
+section says `Ed25519_SHA256`, its receiving section says `Ed25519`); this module sends the
+construction constant and does not yet enforce a receive value, rather than guessing which the
+document means.
 
 ## Invariants
 

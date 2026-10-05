@@ -22,4 +22,6 @@
 
 pub mod locator;
 pub mod peer;
+pub mod session;
+pub mod session_id;
 pub mod syrup;

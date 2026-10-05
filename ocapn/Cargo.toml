@@ -10,3 +10,7 @@ description = "OCapN for RNode: the object-capability network (CapTP over a plug
 # a length or a counter in a CapTP message is not bounded by u64. Already in `Cargo.lock` via
 # `rchain-models`, which uses the same crate for `g_big_int`.
 num-bigint = "0.5"
+# Law 19's axiomatized primitives, reused rather than re-implemented: the session identity is
+# SHA-256 (KAT-pinned in `rchain-crypto`), and the session's signature scheme will be its Ed25519.
+rchain-crypto = { path = "../crypto" }
+rchain-shared = { path = "../shared" }
