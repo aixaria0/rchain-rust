@@ -12,7 +12,7 @@ use rchain_crypto::hash::{blake2b256, keccak256, sha256};
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::ed25519::Ed25519;
 use rchain_crypto::signatures::secp256k1::Secp256k1;
-use rchain_models::ast::Par;
+use rchain_models::ast::{GPrivate, Par};
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_models::rholang::RhoType::{
     RhoBoolean, RhoByteArray, RhoDeployerId, RhoList, RhoMap, RhoName, RhoNil, RhoNumber, RhoSet,
@@ -275,6 +275,50 @@ fn ertp_amount(p: &Par) -> Result<NonNegI64, RholangError> {
 
 fn illegal_arg(msg: &str) -> RholangError {
     RholangError::ReduceError(msg.to_string())
+}
+
+// -------------------------------------------------------------------------------------------------
+// REV's ERTP identity (issue #249)
+// -------------------------------------------------------------------------------------------------
+
+/// The REV brand's bytes — `blake2b256("rchain:rev:brand")`.
+///
+/// Derived from a named string rather than picked, so anyone can recompute it (`rgov::contract_key`
+/// is the same idiom), and **constant for every chain**: a brand that moved would make every REV
+/// amount ever issued a different brand. `rev_brand_and_authority_are_derived_from_named_strings`
+/// pins the value.
+pub fn rev_brand() -> Vec<u8> {
+    blake2b256::hash(b"rchain:rev:brand")
+}
+
+/// The name that may mint REV: `blake2b256("rchain:rev:authority")`.
+///
+/// **A hardcoded authority is safe here for a reason that must be tested rather than asserted**: no
+/// Rholang term can construct a `GPrivate`, so this name can never be *presented* to the ledger by a
+/// deploy — only this code, which mints it with `RhoName::apply_bytes`, holds it. It is never
+/// replied on any channel (`revBrand` replies the brand alone), which is what keeps REV unmintable
+/// from Rholang.
+fn rev_authority() -> Vec<u8> {
+    blake2b256::hash(b"rchain:rev:authority")
+}
+
+/// The address where funded REV sits: the REV address of the unforgeable name
+/// `blake2b256("rchain:rev:ertp-reserve")`.
+///
+/// **Derived from a name rather than a key, and that is what makes it unspendable by a deploy.** A
+/// vault's spend authority for a name-derived address lives in the *authority* map, and the only
+/// writer of that map is `revVault!("unforgeableAuthKey", name, ret)` — which requires *presenting*
+/// the name. Nobody can present this one, because nobody can construct a `GPrivate`. (A
+/// `findOrCreate` handle over the reserve address is therefore a handle with no authority: it can
+/// read, and it cannot move anything. `rev_flow.rs` measures exactly that.)
+///
+/// Only the native REV ops move it: `transfer_vault` is the raw move and consults no authority, so
+/// `revFund` pays in and `revRedeem` pays out.
+pub fn rev_reserve() -> String {
+    RevAddress::from_unforgeable(&GPrivate {
+        id: blake2b256::hash(b"rchain:rev:ertp-reserve"),
+    })
+    .to_base58()
 }
 
 /// Parse a rholang list of integers 0..7 into a twist sequence.
@@ -2492,6 +2536,160 @@ impl SystemProcesses {
                             .map_err(|e| illegal_arg(&e))?
                         {
                             Ok(balance) => ok(RhoNumber::apply(i64::from(balance))),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    // --- REV: a standard brand whose issuer is *here*, not in Rholang ---------
+                    //
+                    // The four arms below are the whole of REV's ERTP identity. They are separate
+                    // ops rather than a branch inside `withdraw`/`mint` on `brand == rev_brand()`
+                    // because **one op name answering with a different handler is the silent
+                    // downgrade AUDIT C114 exists to stop**: the REV authority is a Rust constant
+                    // that must never be presented, so "the same call, but REV" would be a call
+                    // whose authority requirements differ invisibly.
+                    "revBrand" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("ertp revBrand expects a return channel"));
+                        };
+                        // Idempotent, and it **refuses a different authority** for this brand: no
+                        // Rholang term can choose a brand's bytes (`makeKit` mints them from the
+                        // send's RNG), so the only registrant of this brand is this code.
+                        let brand = rev_brand();
+                        if let Err(reason) = native
+                            .ertp_register_brand(&brand, &rev_authority())
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            return Err(illegal_arg(&reason));
+                        }
+                        // The brand, never the authority: a caller who learned the authority could
+                        // mint REV, which is the one thing this brand has no arm for.
+                        let reply = ok(RhoName::apply_bytes(brand));
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "revFund" => {
+                        let [deployer_id, amount, purse, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp revFund expects a deployerId, an amount, a purse and a return channel",
+                            ));
+                        };
+                        let deployer_id = RhoDeployerId::unapply(deployer_id)
+                            .ok_or_else(|| illegal_arg("ertp revFund expects a deployerId"))?;
+                        let from = RevAddress::from_deployer_id(deployer_id)
+                            .ok_or_else(|| illegal_arg("ertp revFund: invalid deployerId"))?
+                            .to_base58();
+                        let amount = ertp_amount(amount)?;
+                        let purse = ertp_name(purse)?;
+                        let brand = rev_brand();
+                        // The brand must be registered before a holding exists under it; a
+                        // registration that *refuses* means some other authority holds this brand,
+                        // which is a state this code cannot have created and must not paper over.
+                        if let Err(reason) = native
+                            .ertp_register_brand(&brand, &rev_authority())
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            return Err(illegal_arg(&reason));
+                        }
+                        // **Refused before anything moves.** A consumed holding cannot be funded
+                        // (`ertp_credit` says why), and finding that out *after* the vault transfer
+                        // would leave the REV in the reserve with nothing to show for it.
+                        if let Some(holding) = native
+                            .ertp_holding(&brand, &purse)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            if !holding.live {
+                                let reply = no("that holding has been consumed");
+                                return cc.produce(&rand, &[reply], ret, path).await;
+                            }
+                        }
+                        // **The REV moves first, and a failed transfer credits nothing.** That
+                        // order is what makes the escrow safe in its safety direction: the reserve
+                        // can only ever hold *more* than the holdings claim, never less.
+                        let reply = match native
+                            .transfer_vault(&from, &rev_reserve(), amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Err(reason) => no(&reason),
+                            Ok(()) => match native
+                                .ertp_credit(&brand, &purse, amount)
+                                .await
+                                .map_err(|e| illegal_arg(&e))?
+                            {
+                                Ok(balance) => ok(RhoNumber::apply(i64::from(balance))),
+                                Err(reason) => no(&reason),
+                            },
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "revRedeem" => {
+                        let [purse, amount, to, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp revRedeem expects a purse, an amount, an address and a return channel",
+                            ));
+                        };
+                        let purse = ertp_name(purse)?;
+                        let amount = ertp_amount(amount)?;
+                        let to = RhoString::unapply(to).ok_or_else(|| {
+                            illegal_arg("ertp revRedeem expects a string address")
+                        })?;
+                        let brand = rev_brand();
+                        // The three conditions `ertp_debit` will re-check, checked **before** the
+                        // reserve pays out: a payout the holdings could not honour would leave the
+                        // reserve short, which is the one direction the escrow must not go.
+                        let reply = match native
+                            .ertp_holding(&brand, &purse)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            None => no("no such holding"),
+                            Some(holding) if !holding.live => no("that holding has been consumed"),
+                            Some(holding) if i64::from(holding.amount) < i64::from(amount) => {
+                                no("insufficient funds")
+                            }
+                            Some(_) => match native
+                                .transfer_vault(&rev_reserve(), to, amount)
+                                .await
+                                .map_err(|e| illegal_arg(&e))?
+                            {
+                                Err(reason) => no(&reason),
+                                // Paying out first, then debiting: the mirrored order of
+                                // `revFund`, and the one that keeps the reserve over-funded if the
+                                // two halves are ever split.
+                                Ok(()) => match native
+                                    .ertp_debit(&brand, &purse, amount)
+                                    .await
+                                    .map_err(|e| illegal_arg(&e))?
+                                {
+                                    Ok(left) => ok(RhoNumber::apply(i64::from(left))),
+                                    Err(reason) => no(&reason),
+                                },
+                            },
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "revWithdraw" => {
+                        let [purse, amount, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp revWithdraw expects a purse, an amount and a return channel",
+                            ));
+                        };
+                        let purse = ertp_name(purse)?;
+                        let amount = ertp_amount(amount)?;
+                        let brand = rev_brand();
+                        let payment = rand.next();
+                        // The authority **is** presented here — by this code, which is the only
+                        // holder of it. Without this arm a REV purse would be a roach motel: fund
+                        // it and never get a payment back out.
+                        let reply = match native
+                            .ertp_withdraw(&brand, &rev_authority(), &purse, &payment, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(payment)),
                             Err(reason) => no(&reason),
                         };
                         cc.produce(&rand, &[reply], ret, path).await

@@ -6758,6 +6758,72 @@ impl NativeSystemState {
         self.set_ertp_holding(brand, payment, Holding { amount, live: true });
         Ok(Ok(()))
     }
+
+    /// Credit a live holding by `amount`, creating it if the issuer has never heard of the holder.
+    ///
+    /// **The counterpart of a movement that happened elsewhere**, and therefore native-only: the one
+    /// caller is the REV funding path, whose REV has already left a vault for the reserve
+    /// (`revFund`, `system_processes.rs`). No Rholang term can reach this, which is what stops
+    /// "credit myself" from being an operation.
+    ///
+    /// A **consumed** holding is refused rather than revived: `live: false` means "this payment has
+    /// been deposited", and resurrecting it would make a payment depositable twice.
+    pub async fn ertp_credit(
+        &self,
+        brand: &[u8],
+        holder: &[u8],
+        amount: NonNegI64,
+    ) -> Result<Result<NonNegI64, String>, String> {
+        let credited = match self.ertp_holding(brand, holder).await? {
+            Some(holding) if !holding.live => {
+                return Ok(Err("that holding has been consumed".to_string()))
+            }
+            Some(holding) => holding.amount,
+            None => NonNegI64::zero(),
+        };
+        let total = balance_plus(credited, i64::from(amount), "ertp credit")?;
+        self.set_ertp_holding(
+            brand,
+            holder,
+            Holding {
+                amount: total,
+                live: true,
+            },
+        );
+        Ok(Ok(total))
+    }
+
+    /// Debit `amount` from a holding, refusing an unknown holder and an insufficient balance.
+    ///
+    /// **Liveness is preserved, not forced** — a debit is not a deposit, so a dead holding stays
+    /// dead. The one caller is the REV redeeming path, after the reserve has paid out
+    /// (`revRedeem`); keeping the refusal conditions here rather than at the call site is what makes
+    /// the two agree about what "insufficient" means.
+    pub async fn ertp_debit(
+        &self,
+        brand: &[u8],
+        holder: &[u8],
+        amount: NonNegI64,
+    ) -> Result<Result<NonNegI64, String>, String> {
+        let Some(holding) = self.ertp_holding(brand, holder).await? else {
+            return Ok(Err("no such holding".to_string()));
+        };
+        let (held, wanted) = (i64::from(holding.amount), i64::from(amount));
+        if held < wanted {
+            return Ok(Err("insufficient funds".to_string()));
+        }
+        let left = NonNegI64::try_from(held - wanted)
+            .map_err(|_| "the debit left a negative balance".to_string())?;
+        self.set_ertp_holding(
+            brand,
+            holder,
+            Holding {
+                amount: left,
+                live: holding.live,
+            },
+        );
+        Ok(Ok(left))
+    }
 }
 
 /// Leaf key for a registered brand.
