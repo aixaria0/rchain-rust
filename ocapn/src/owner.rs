@@ -321,6 +321,15 @@ impl SessionRegistry {
         Ok(losers)
     }
 
+    /// How many peers the registry is tracking, live or not.
+    ///
+    /// Exposed because the map is the node's memory and the only thing that removes from it is
+    /// [`SessionRegistry::forget`] — so "a peer is forgotten" is a claim about a number, and a claim
+    /// about a number that nothing can read is a claim nothing checks (HAZOP row B3).
+    pub fn tracked_peers(&self) -> usize {
+        self.peers.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
     /// A live session to `peer`, if there is one — **the one the peer dialed, when there is a choice**.
     ///
     /// An enlivener has to reach an object at a peer it may already have a session with, and the
@@ -366,6 +375,15 @@ impl SessionRegistry {
     /// accumulated one dead entry per connection for the life of the process (measured: 3 000
     /// sessions, one entry each). The map is the node's memory, and this is the only thing that
     /// removes from it.
+    ///
+    /// **The match is on the handle's own identifier, not on the tuple's.** The two slots store
+    /// different identifiers — the dialed one is keyed by *our* dialing identifier and the accepted
+    /// one by the *peer's* — so comparing the caller's `own_pi` against the stored key cleared a
+    /// dialed session and never an accepted one. The accepted slot is the common case (every peer
+    /// that connects to us), so in practice **nothing was ever forgotten**: a session's handle stayed
+    /// in the map after its loop ended. Found by
+    /// `a_peer_whose_sessions_have_ended_is_forgotten`, which is why that test asserts the map's size
+    /// and not only `live`.
     pub fn forget(&self, peer: &PeerLocator, own_pi: &Octets32, dialed: bool) {
         let mut peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
         let key = peer_key(peer);
@@ -377,7 +395,7 @@ impl SessionRegistry {
         } else {
             &mut entry.accepted
         };
-        if slot.as_ref().is_some_and(|(pi, _)| pi == own_pi) {
+        if slot.as_ref().is_some_and(|(_, h)| h.own_pi == *own_pi) {
             *slot = None;
         }
         if entry.dialed.is_none() && entry.accepted.is_none() {
