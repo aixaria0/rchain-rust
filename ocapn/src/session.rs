@@ -22,6 +22,8 @@
 
 use std::fmt;
 
+use rchain_crypto::signatures::ed25519::Ed25519;
+
 use crate::locator::PeerLocator;
 use crate::syrup::Value;
 
@@ -152,6 +154,27 @@ pub fn my_location_payload(location: &PeerLocator) -> Value {
         Value::Symbol("my-location".to_string()),
         location.to_syrup(),
     ])
+}
+
+/// The abort reason the reference uses when a crossed hello is resolved.
+pub const ABORT_CROSSED_HELLOS: &str = "Crossed hellos mitigated";
+
+impl StartSession {
+    /// Whether `acceptable-location-sig` is the session key's signature over
+    /// [`my_location_payload`].
+    ///
+    /// This is **required**, not optional: the suite's `op_start_session` test sends a signature
+    /// over unrelated bytes (`b"i am invalid"`) and asserts the peer answers with an `op:abort`, so
+    /// a peer that does not check the signature fails the handshake suite. A peer that fails to
+    /// verify must abort, and the caller owns sending that abort.
+    pub fn location_signature_is_valid(&self) -> bool {
+        let payload = my_location_payload(&self.acceptable_location).to_bytes();
+        Ed25519::verify_bytes(
+            &payload,
+            &self.acceptable_location_sig,
+            &self.session_pubkey,
+        )
+    }
 }
 
 fn is_symbol(v: &Value, name: &str) -> bool {
@@ -470,5 +493,46 @@ mod tests {
             ])),
             Err(SessionError::BadField("reason"))
         );
+    }
+
+    /// A real Ed25519 keypair, so the signature path is exercised end to end rather than with
+    /// filler bytes.
+    fn signed_fixture(seed: u8) -> (StartSession, [u8; 32]) {
+        let secret = [seed; 32];
+        let public = Ed25519::to_public_bytes(&secret).unwrap();
+        let mut s = fixture();
+        s.session_pubkey = public;
+        let payload = my_location_payload(&s.acceptable_location).to_bytes();
+        s.acceptable_location_sig = Ed25519::sign_bytes(&payload, &secret).unwrap();
+        (s, secret)
+    }
+
+    #[test]
+    fn location_signature_verifies_under_the_session_key() {
+        let (s, _) = signed_fixture(7);
+        assert!(s.location_signature_is_valid());
+        // And it survives the wire: through Syrup bytes and back it still verifies.
+        let round_tripped = StartSession::from_syrup(
+            &Value::from_bytes(&s.to_syrup().unwrap().to_bytes()).unwrap(),
+        )
+        .unwrap();
+        assert!(round_tripped.location_signature_is_valid());
+    }
+
+    #[test]
+    fn location_signature_rejects_a_signature_over_other_bytes() {
+        // The suite's `op_start_session` invalid-signature case: signed over `b"i am invalid"`.
+        let (mut s, secret) = signed_fixture(9);
+        s.acceptable_location_sig = Ed25519::sign_bytes(b"i am invalid", &secret).unwrap();
+        assert!(!s.location_signature_is_valid());
+    }
+
+    #[test]
+    fn location_signature_rejects_a_signature_from_another_key() {
+        let (mut s, _) = signed_fixture(11);
+        // A different but well-formed signature must not verify under this session key.
+        let payload = my_location_payload(&s.acceptable_location).to_bytes();
+        s.acceptable_location_sig = Ed25519::sign_bytes(&payload, &[12u8; 32]).unwrap();
+        assert!(!s.location_signature_is_valid());
     }
 }
