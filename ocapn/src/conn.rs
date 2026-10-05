@@ -66,6 +66,10 @@ pub enum ListenOutcome {
     Settled(Vec<Value>),
     /// Registered; the promise will deliver when its resolver settles it.
     Registered,
+    /// **Refused, with a reason that is true.** A promise at its listener cap used to have only
+    /// `None` to say with, which `handle_listen` reports as "not a promise" — a false reason for an
+    /// honest refusal (AUDIT C223). The reason travels as the `op:abort` this listener's session gets.
+    Refused(String),
 }
 
 /// A message an object asks the session to send on its behalf.
@@ -228,9 +232,12 @@ pub struct Session {
     peer: Option<StartSession>,
     /// The shared session id, derived from both public identifiers — known once the peer has spoken.
     pub id: Option<Octets32>,
-    exports: BTreeMap<u64, Arc<dyn Export>>,
-    /// Answer positions the peer asked us to keep usable, and the export each resolved to.
-    answers: BTreeMap<u64, Option<u64>>,
+    /// **Bounded** (AUDIT C223): a peer grows this table by fetching and by being handed objects, so
+    /// it is a [`crate::capacity::Bounded`] whose only way in checks the cap.
+    exports: crate::capacity::Bounded<u64, Arc<dyn Export>>,
+    /// Answer positions the peer asked us to keep usable, and the export each resolved to. Keyed by
+    /// the *peer's* number, and bounded for that reason.
+    answers: crate::capacity::Bounded<u64, Option<u64>>,
     next_export: u64,
     /// The next answer position to allocate for an outgoing delivery.
     next_answer: u64,
@@ -423,14 +430,16 @@ impl Session {
         bootstrap: Arc<dyn Export>,
         dialed: bool,
     ) -> Session {
-        let mut exports: BTreeMap<u64, Arc<dyn Export>> = BTreeMap::new();
-        exports.insert(0, bootstrap);
+        let mut exports = crate::capacity::Bounded::new(crate::capacity::MAX_EXPORTS);
+        // Position 0 is the bootstrap, by definition — and it is never refused, because the cap is
+        // far above one entry.
+        let _ = exports.try_insert(0, bootstrap);
         let mut session = Session {
             conn,
             peer: None,
             id: None,
             exports,
-            answers: BTreeMap::new(),
+            answers: crate::capacity::Bounded::new(crate::capacity::MAX_ANSWERS),
             next_export: 1,
             next_answer: 0,
             own_pi: public_identifier_of_key(&public_key_record(identity.public_key())),
@@ -618,7 +627,7 @@ impl Session {
                 // The answer this delivery would have filled is now broken, so a later pipelined
                 // delivery onto it breaks too.
                 if let Some(n) = &deliver.answer_pos {
-                    self.answers.insert(position(n)?, None);
+                    let _ = self.answers.try_insert(position(n)?, None);
                 }
                 // A break is `[<break> <reason>]`, sent to the peer's resolver if it left one.
                 self.fulfil(
@@ -638,21 +647,36 @@ impl Session {
         let (reply, answer_target) = match act.reply {
             Reply::Nothing => (None, None),
             Reply::Value(v) => (Some(v), None),
-            Reply::Object(o) => {
-                let pos = self.insert_export(o);
-                (Some(Desc::ImportObject(pos.into()).to_syrup()), Some(pos))
-            }
+            // **A full export table breaks this delivery rather than dropping the object.** The
+            // alternative — exporting nothing and answering as though it had — would hand the peer a
+            // descriptor for a position that does not exist, which is the C18 class: it fails
+            // silently instead of loudly. The answer is a `break` naming the bound (AUDIT C223).
+            Reply::Object(o) => match self.insert_export(o) {
+                Ok(pos) => (Some(Desc::ImportObject(pos.into()).to_syrup()), Some(pos)),
+                Err(reason) => {
+                    break_delivery(&mut self.conn, &deliver, reason).await?;
+                    return Ok(());
+                }
+            },
             Reply::Objects(os) => {
                 let mut parts = Vec::with_capacity(os.len());
                 for o in os {
-                    let pos = self.insert_export(o);
-                    parts.push(Desc::ImportObject(pos.into()).to_syrup());
+                    match self.insert_export(o) {
+                        Ok(pos) => parts.push(Desc::ImportObject(pos.into()).to_syrup()),
+                        Err(reason) => {
+                            break_delivery(&mut self.conn, &deliver, reason).await?;
+                            return Ok(());
+                        }
+                    }
                 }
                 (Some(Value::List(parts)), None)
             }
         };
         if let Some(n) = &deliver.answer_pos {
-            self.answers.insert(position(n)?, answer_target);
+            // A full answer table is not an error: the peer chose the position, and one it cannot have
+            // is one a later delivery cannot pipeline onto — which the existing
+            // `Resolution::Missing` path already reports as "no such export or answer".
+            let _ = self.answers.try_insert(position(n)?, answer_target);
         }
         if let Some(value) = reply {
             self.fulfil(
@@ -688,6 +712,10 @@ impl Session {
             Some(ListenOutcome::Settled(args)) => self.send_deliver(listener, args).await?,
             // Registered; the promise will speak up when its resolver settles it.
             Some(ListenOutcome::Registered) => {}
+            Some(ListenOutcome::Refused(reason)) => {
+                send_abort(&mut self.conn, &reason).await;
+                return Err(ConnectionError::Protocol(reason));
+            }
             None => {
                 let reason = "op:listen on something that is not a promise".to_string();
                 send_abort(&mut self.conn, &reason).await;
@@ -732,11 +760,17 @@ impl Session {
         Ok(())
     }
 
-    fn insert_export(&mut self, object: Arc<dyn Export>) -> u64 {
+    /// Give an object a position in the export table, or refuse because the table is full.
+    ///
+    /// `Err` rather than a silent wrap: a table at its cap means this session has handed the peer as
+    /// many objects as it may hold, and the honest answer is a `break` naming the bound (AUDIT C223).
+    fn insert_export(&mut self, object: Arc<dyn Export>) -> Result<u64, String> {
         let pos = self.next_export;
+        self.exports
+            .try_insert(pos, object)
+            .map_err(|full| format!("this session's export table is full ({full})"))?;
         self.next_export += 1;
-        self.exports.insert(pos, object);
-        pos
+        Ok(pos)
     }
 
     /// Send one of an object's outgoing messages, exporting anything it hands over and allocating
@@ -746,9 +780,14 @@ impl Session {
     /// a recipient for the peer to pipeline onto, so there is nothing to wait for. An implementation
     /// that did keep answers would collect them when the last reference went, not here.
     async fn send_outgoing(&mut self, outgoing: Outgoing) -> Result<(), ConnectionError> {
-        let resolve_me_desc = outgoing
-            .hand_out
-            .map(|object| Desc::ImportObject(self.insert_export(object).into()));
+        let resolve_me_desc = match outgoing.hand_out {
+            Some(object) => Some(Desc::ImportObject(
+                self.insert_export(object)
+                    .map_err(ConnectionError::Protocol)?
+                    .into(),
+            )),
+            None => None,
+        };
         let answer_pos = if outgoing.answer {
             let pos = self.next_answer;
             self.next_answer += 1;
@@ -827,9 +866,31 @@ enum Resolution {
     Missing,
 }
 
+/// Break one delivery — `[<break> <reason>]` to the peer's resolver, when it left one.
+///
+/// Extracted for the tables-at-capacity refusals (AUDIT C223): a delivery we cannot answer *properly*
+/// is answered *honestly*, and the reason names the bound it hit. The same shape `handle_deliver` uses
+/// when an object refuses.
+async fn break_delivery(
+    conn: &mut Box<dyn NetConn>,
+    deliver: &Deliver,
+    reason: String,
+) -> Result<(), ConnectionError> {
+    if let Some(Desc::ImportObject(p) | Desc::ImportPromise(p)) = &deliver.resolve_me_desc {
+        let break_message = Deliver {
+            to: Desc::Export(p.clone()),
+            args: vec![Value::Symbol("break".to_string()), Value::String(reason)],
+            answer_pos: None,
+            resolve_me_desc: None,
+        };
+        send(conn, &break_message.to_syrup()).await?;
+    }
+    Ok(())
+}
+
 fn resolve_to(
-    exports: &BTreeMap<u64, Arc<dyn Export>>,
-    answers: &BTreeMap<u64, Option<u64>>,
+    exports: &crate::capacity::Bounded<u64, Arc<dyn Export>>,
+    answers: &crate::capacity::Bounded<u64, Option<u64>>,
     to: &Desc,
 ) -> Result<Resolution, ConnectionError> {
     match to {
