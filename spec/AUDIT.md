@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 1 · IN PROGRESS 0 · DONE 250** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 0 · DONE 251** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  45 of 251 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  46 of 252 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
@@ -128,7 +128,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (250)
+### DONE (251)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -296,6 +296,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C213` | **a catching-up node answered every block it replayed.** The attest tap fired on each block a returning validator validated during catch-up, so it proposed about twenty blocks in two seconds — one per missed height, two of them epoch boundaries carrying a second `CloseBlock`. The tap now ignores a block older than `ROUND_STALL_ESCAPE` by its own timestamp (`attest_is_live`, `ATTEST_MAX_BLOCK_AGE_MS`). | a_block_older_than_the_round_is_not_answered/attest_is_live/ATTEST_MAX_BLOCK_AGE_MS | §66 |
 | `C214` | **the attestation guard counted work as finalised against a fringe no block carried.** `fringe_seen` read `pre_state.fringe` — the fringe the block being built *would* publish — and the guard then withheld that very block, so the last deploy's finality was never published (deploy at 34, chain quiet at 37, published fringe at 32). The guard now reads the parents' published fringe (`prev_fringe`), which costs one round per deploy. Live: rejoin, kill, rotation and join arms all finalise every deploy on the fixed image (`n223-rejoin-results.md`). | fringe_seen/prev_fringe/n223-rejoin-results | §66 |
 | `C216` | **the CapTP spec's `op:start-session` disagrees with the reference implementation, and with itself.** The OCapN draft defines the operation with five fields — `captp-version`, `crypto-version`, `session-pubkey`, `acceptable-location`, `acceptable-location-sig` — and contradicts itself on `crypto-version`'s value (`Ed25519_SHA256` when constructing, `Ed25519` when receiving). The OCapN test suite's own `OpStartSession` carries **four** fields — `captp_version`, `session_pubkey`, `location`, `location_sig` — with no `crypto-version` on the wire at all, so a port built from the prose would fail every handshake against every existing implementation (Endo, Goblins, DObjects). Two of the fields are also not raw bytes: `session_pubkey` and the signature are the gcrypt s-expressions `['public-key ['ecc ['curve 'Ed25519] ['flags 'eddsa] ['q …]]]` and `['sig-val ['eddsa ['r …] ['s …]]]`. `ocapn/src/session.rs` follows the implementation, not the prose, and pins both shapes with byte-level known-answer tests; the divergence is recorded in `docs/src/node/ocapn.md`. | start_session_has_the_reference_four_fields/public_key_list_kat/signature_list_kat | §67 |
+| `C217` | **the two reference OCapN implementations disagree on the swiss number's type, so "the reference implementation is the oracle" has no single oracle.** `@endo/ocapn` (Agoric's) sends the swiss number as a Syrup String, which is what `draft-specifications/Locators.md` says it is; the Python `ocapn-test-suite` sends a byte array (`b"IO58l1laTyhcrgDKbEzFOO32MDd6zE5w"`). A peer built to either one alone refuses the other — ours did, which is how this was found, by applying C216's rule (the implementation over the prose) too literally: there are two implementations and they disagree. `Bootstrap::deliver` now accepts a swiss number as bytes or as a string and keys its directory by bytes, so one peer serves both. The same spike settled the netlayer's framing the other way: Endo's default `syrup` framing is `<length>:<payload>`, which is what the Python suite writes and what this port already implemented, so the specification's "raw Syrup, no length prefix" describes a wire no implementation speaks. | bootstrap_deliver_accepts_a_swiss_number_as_bytes_or_as_a_string/bootstrap_refuses_a_swiss_number_of_any_other_type | §68 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
