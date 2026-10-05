@@ -58,6 +58,26 @@ the suite revision, and the per-module counts are kept in
 [`spec/audit/evidence/ocapn-conformance/`](../../../spec/audit/evidence/ocapn-conformance/README.md)
 so a later run can be compared against them.
 
+### Also checked against Agoric's own implementation
+
+The Python suite is the OCapN project's reference; **`@endo/ocapn` is Agoric's**, the stack the
+request came from. It has been run against `ocapn-tcp-testing` too: a peer on Node 22 completed the
+handshake, `fetch`ed a sturdyref, **called the object and got a reply** — a string, a bigint and a
+boolean, correctly typed. The transcript is
+[`spec/audit/evidence/endo-spike/`](../../../spec/audit/evidence/endo-spike/README.md).
+
+That spike also settled the wire's last open question and found a divergence:
+
+- **Framing.** OCapN's TCP-for-testing netlayer is *described* as raw Syrup with no length prefix,
+  and Endo keeps a `framing: 'none'` mode for that described wire while defaulting to `'syrup'`
+  (`<length>:<payload>`). Only `'syrup'` works — against this port **and** against the Python suite,
+  whose netlayer netstrings too. So `'none'` interoperates with nothing, and this port's netstring
+  framing is right.
+- **The swiss number's type.** Endo sends a *string* (as the Locators draft says); the Python suite
+  sends a *byte array*. **The two reference implementations disagree with each other**, so "the
+  reference implementation is the oracle" has no single oracle for this field — `Bootstrap::deliver`
+  accepts both and keys its directory by bytes. Recorded as AUDIT C217.
+
 ### Built: the codec and the locators
 
 `ocapn/src/syrup.rs` implements the concrete Syrup grammar of
