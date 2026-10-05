@@ -465,7 +465,8 @@ pub struct NodeProgram {
     /// `host:port` to bind the OCapN listener on, or `None` (issue #249).
     ocapn_listen: Option<String>,
     /// The chain-backed capability the listener publishes, or `None` when there is no key.
-    ocapn_chain: Option<Arc<dyn Export>>,
+    /// The chain-backed capabilities the OCapN bridge publishes, each under its swiss number.
+    ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
 }
@@ -1249,16 +1250,29 @@ pub async fn setup_node_program(
     // deploy. Built only when there is a listener to serve it and a key to sign with — today the
     // node's own dev deployer key, because binding a CapTP session to a caller's identity is the
     // work `docs/src/node/ocapn.md` lists as future.
-    let ocapn_chain: Option<Arc<dyn Export>> = match (
+    let ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)> = match (
         conf.api_server.ocapn_listen.as_ref(),
         faucet_deployer_key.as_ref(),
     ) {
-        (Some(_), Some(key)) => Some(Arc::new(ChainCapability::rev_vault_balance(
-            routing.clone(),
-            key.clone(),
-            primary_id.to_string(),
-        ))),
-        _ => None,
+        (Some(_), Some(key)) => vec![
+            (
+                crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
+                Arc::new(ChainCapability::rev_vault_balance(
+                    routing.clone(),
+                    key.clone(),
+                    primary_id.to_string(),
+                )) as Arc<dyn Export>,
+            ),
+            (
+                crate::api::ocapn::ERTP_SWISS.to_vec(),
+                Arc::new(crate::api::ocapn::ertp_capability(
+                    routing.clone(),
+                    key.clone(),
+                    primary_id.to_string(),
+                )),
+            ),
+        ],
+        _ => Vec::new(),
     };
     let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
         routing.clone(),

@@ -21,7 +21,7 @@
 //! | `GByteArray` | `Bytes` | |
 //! | `GUri` | `Symbol` | see the asymmetry below |
 //! | `EList` | `List` | a `remainder` pattern is refused |
-//! | `ETuple` | `Record` | distinct from `List`, so a tuple survives a round trip |
+//! | `ETuple` | `List` | **not a `Record`** — see the tuple note below; `Record` is inbound-only |
 //! | `ParMap` (string keys) | `Struct` | a non-string key is refused |
 //! | `GUnforgeable`, `Bundle` | — | **refused: a capability is not data** |
 //! | `ParSet` | — | refused: Syrup has no set, and a list would lose order-insensitivity silently |
@@ -36,6 +36,18 @@
 //! harmless (registry URIs are hashes of public keys, and knowing one grants nothing without a
 //! `lookup!` that the registry answers anyway), but it is a decision about authority and this
 //! module takes the refusing side until something needs otherwise.
+//!
+//! **A tuple crosses as a list, and that is a correction, not a preference.** The first cut mapped
+//! `ETuple` to a Syrup `Record` "so a tuple survives a round trip", which is only *spellable* when
+//! the tuple happens to start with a symbol, string or byte string: Syrup records are **labelled**,
+//! and a label must be one of those three. `(true, 0)` — an ERTP reply, and the shape every
+//! `(ok, value)` answer in this codebase uses — encoded to a record whose label was `true`, which
+//! Endo refused outright (`Unexpected type "boolean", Syrup record labels must be strings, selectors
+//! or bytestrings`) and which the Python suite would have refused too had anything ever sent one. A
+//! Syrup `List` is the ordered, heterogeneous, unlabelled thing a Rholang tuple actually is, so that
+//! is what it becomes; `Record` stays **inbound-only**, where the label is a peer's and the tuple is
+//! the counterpart (a `desc:import-object N` the node hands to a contract). A tuple that crosses and
+//! comes back is a list — the one loss, and it is the loss Syrup forces.
 
 use num_bigint::BigInt;
 use rchain_models::ast::{Expr, Par};
@@ -117,7 +129,10 @@ fn expr_to_value(expr: &Expr) -> Result<Value, BridgeError> {
             }
             Ok(Value::List(each(&list.ps)?))
         }
-        Expr::ETuple(tuple) => Ok(Value::Record(each(&tuple.ps)?)),
+        // A tuple is a list on the wire: Syrup's `Record` is *labelled*, and a Rholang tuple has no
+        // label — see the module note. A record leaves this module only where a caller built one by
+        // hand with a label it chose (`Desc::to_syrup`'s `<desc:import-object N>`).
+        Expr::ETuple(tuple) => Ok(Value::List(each(&tuple.ps)?)),
         Expr::ESet(_) => Err(BridgeError::NoCounterpart(
             "a set (Syrup has no set, and a list would lose order-insensitivity)",
         )),
@@ -225,19 +240,33 @@ mod tests {
     }
 
     #[test]
-    fn collections_round_trip_and_stay_distinct() {
+    fn collections_round_trip_and_a_tuple_crosses_as_a_list() {
         let list = ground(Expr::EList(rchain_models::ast::EList {
             ps: vec![ground(Expr::GInt(1)), ground(Expr::GString("a".into()))],
             ..Default::default()
         }));
+        round_trip(&list);
+        // A tuple is a list on the wire, and comes back as one. The first cut sent it as a `Record`
+        // and asserted the two stayed distinct; that only holds for a tuple whose head is a valid
+        // Syrup *label*, and `(true, 0)` — every `(ok, value)` reply in this codebase — is not one.
         let tuple = ground(Expr::ETuple(rchain_models::ast::ETuple {
-            ps: vec![ground(Expr::GInt(1))],
+            ps: vec![ground(Expr::GBool(true)), ground(Expr::GInt(0))],
             ..Default::default()
         }));
-        round_trip(&list);
-        round_trip(&tuple);
-        // A list and a tuple must not collide on the wire.
-        assert_ne!(par_to_value(&list).unwrap(), par_to_value(&tuple).unwrap());
+        let crossed = par_to_value(&tuple).expect("a tuple crosses");
+        assert_eq!(
+            crossed,
+            Value::List(vec![Value::Bool(true), Value::Int(0.into())])
+        );
+        let back = value_to_par(&crossed).expect("and comes back");
+        assert_eq!(
+            back,
+            ground(Expr::EList(rchain_models::ast::EList {
+                ps: vec![ground(Expr::GBool(true)), ground(Expr::GInt(0))],
+                ..Default::default()
+            })),
+            "a crossed tuple arrives as the list it was sent as"
+        );
     }
 
     #[test]

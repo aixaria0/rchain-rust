@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rchain_casper::protocol::client::{GrpcProposeService, ProposeService};
-use rchain_node::api::ocapn::REV_VAULT_BALANCE_SWISS;
+use rchain_node::api::ocapn::{ERTP_SWISS, REV_VAULT_BALANCE_SWISS};
 use rchain_ocapn::bootstrap::Bootstrap;
 use rchain_ocapn::captp::{Deliver, Desc};
 use rchain_ocapn::conn::{Identity, Session};
@@ -248,6 +248,171 @@ fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
         node.shutdown();
     });
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The ERTP round trip over CapTP** (issue #249, clause 4): a peer holds an RChain *issuer* and
+/// calls it.
+///
+/// What makes this different from the REV balance capability above is the **direction the objects
+/// travel**. A balance is data, and data crosses CapTP as Syrup. An issuer, a purse and a brand are
+/// *capabilities* — unforgeable names and bundles — and `par_value::par_to_value` refuses them by
+/// design, because mapping one to data would copy the authority. So the bridge registers what a call
+/// returns into the chain's registry in the same deploy that produced it, and hands the peer a CapTP
+/// **descriptor** for each capability inside that reply. The peer then calls *those*.
+///
+/// The test walks the path clause 4 names: the contract, a kit, the issuer, a purse, and finally the
+/// balance of that purse — a value that came out of a block, objects deep, from a reference the peer
+/// was handed rather than one it knew the name of.
+#[test]
+fn a_captp_peer_holds_an_ertp_issuer_and_calls_it() {
+    let dir = common::temp_dir("ocapn-ertp");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
+    conf.dev_mode = true;
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    conf.propose_on_deploy = true;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+        wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
+
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let connection = dialer
+            .new_outgoing_connection(&locator(ports[5]))
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(locator(0)).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the handshake");
+
+        // 1. The ERTP contract itself — a capability whose *methods ride the message*, which is what
+        //    makes an object with several arms holdable.
+        let ertp = fetch(&mut client, ERTP_SWISS).await;
+
+        // 2. `makeIssuerKit` → a descriptor for each member of the kit. Three capabilities came back,
+        //    so three descriptors did: the bridge found them by inspecting the reply.
+        let kit = call_many(&mut client, &ertp, "makeIssuerKit", &[]).await;
+        assert_eq!(
+            kit.len(),
+            3,
+            "a kit is a brand, a mint and an issuer — three capabilities, three descriptors: {kit:?}"
+        );
+        let issuer = kit[2].clone();
+
+        // 3. The issuer makes a purse — **one** capability, so the reply is one descriptor rather
+        //    than a list of one.
+        let purse = call(&mut client, &issuer, "makeEmptyPurse", &[]).await;
+
+        // 4. **The purse answers.** `getCurrentAmount` is data, so it comes back as a value — and it
+        //    is the answer of a *live ERTP purse* on chain, reached through a reference this peer was
+        //    handed over CapTP and never knew the name of.
+        let reply = call_value(&mut client, &purse, "getCurrentAmount", &[]).await;
+        // It is a *value* reply, so it arrives in its Syrup form: the Rholang pair `(true, 0)` as a
+        // Syrup **list** — a tuple is a list on the wire, because a Syrup record is labelled and a
+        // tuple has no label (see `ocapn::par_value`; Endo refused the first encoding outright).
+        let Value::List(fields) = &reply else {
+            panic!("a purse answers `(true, amount)`, got {reply:?}");
+        };
+        assert_eq!(fields.len(), 2, "a purse answers a pair: {reply:?}");
+        assert_eq!(
+            fields[0],
+            Value::Bool(true),
+            "a fresh purse must read zero, not refuse: {reply:?}"
+        );
+        assert_eq!(
+            fields[1],
+            Value::Int(0.into()),
+            "a fresh purse is empty: {reply:?}"
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Call `method` on `capability` and read the reply, which must be **one** descriptor.
+///
+/// One object is one descriptor, not a one-element list: `E(obj).makeEmptyPurse()` should hand the
+/// caller a purse, and a caller made to destructure a collection to reach the only thing in it is a
+/// worse peer. So this reads a bare delivery, not the list [`call_many`] reads.
+async fn call(client: &mut Session, capability: &Desc, method: &str, args: &[Value]) -> Desc {
+    let mut call_args = vec![Value::Symbol(method.to_string())];
+    call_args.extend_from_slice(args);
+    let reply = deliver_and_read(client, capability, call_args).await;
+    match &reply {
+        Value::Record(_) => match Desc::from_syrup(&reply).expect("a descriptor") {
+            Desc::ImportObject(position) => Desc::Export(position),
+            other => panic!("`{method}` answered {other:?}, not a descriptor"),
+        },
+        other => panic!("`{method}` answered {other:?}, not one descriptor"),
+    }
+}
+
+/// Call `method` on `capability` and read a reply that must be **several** descriptors.
+async fn call_many(
+    client: &mut Session,
+    capability: &Desc,
+    method: &str,
+    args: &[Value],
+) -> Vec<Desc> {
+    let mut call_args = vec![Value::Symbol(method.to_string())];
+    call_args.extend_from_slice(args);
+    let reply = deliver_and_read(client, capability, call_args).await;
+    match &reply {
+        Value::List(descriptors) => descriptors
+            .iter()
+            .map(|d| match Desc::from_syrup(d).expect("a descriptor") {
+                Desc::ImportObject(position) => Desc::Export(position),
+                other => panic!("expected a descriptor, got {other:?}"),
+            })
+            .collect(),
+        other => panic!("`{method}` answered {other:?}, not descriptors"),
+    }
+}
+
+/// Call `method` on `capability` and read a **value** reply.
+async fn call_value(
+    client: &mut Session,
+    capability: &Desc,
+    method: &str,
+    args: &[Value],
+) -> Value {
+    let mut call_args = vec![Value::Symbol(method.to_string())];
+    call_args.extend_from_slice(args);
+    deliver_and_read(client, capability, call_args).await
+}
+
+/// Deliver `args` to `capability`, and return what the node fulfilled the delivery with.
+async fn deliver_and_read(client: &mut Session, capability: &Desc, args: Vec<Value>) -> Value {
+    let call = Deliver {
+        to: capability.clone(),
+        args,
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+    };
+    client
+        .send_message(&call.to_syrup())
+        .await
+        .expect("send the call");
+    let reply = client
+        .recv_message()
+        .await
+        .expect("read the reply")
+        .expect("a reply, not a closed connection");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    match delivered.args.as_slice() {
+        [Value::Symbol(verb), value] if verb == "fulfill" => value.clone(),
+        [Value::Symbol(verb), reason] if verb == "break" => {
+            panic!("the bridge broke the call: {reason:?}")
+        }
+        other => panic!("expected a fulfilment, got {other:?}"),
+    }
 }
 
 /// Fetch an object by swiss number from the peer's bootstrap, returning the descriptor to address

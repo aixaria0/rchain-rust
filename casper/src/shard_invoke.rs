@@ -82,6 +82,80 @@ pub fn invoke_term(target_uri: &str, method: &str, args: &[Par]) -> String {
     )
 }
 
+/// Build the term that calls a **member of a registered value** and registers what that call returns.
+///
+/// This is the OCapN bridge's second shape, and it exists because of a fact about the calculus: a
+/// capability a contract *returns* — an ERTP purse, an issuer, a brand — is an unforgeable name, and
+/// a `GPrivate` has **no rholang source literal**, so a later deploy cannot address it by writing it
+/// down. The one thing that survives between deploys is chain state, so the answer is to put the
+/// object *into* the registry in the same deploy that produced it: the term calls the method, feeds
+/// the whole reply to `insertArbitrary`, and hands **both** the fresh URI and the value to the
+/// deploy's reply channel — the URI is how a later call reaches a member of it, and the value is how
+/// the caller (the node, which knows the signing key) finds each capability inside it.
+///
+/// **Why `insertArbitrary` and not `insertSigned`.** `insertSigned` derives the URI from the
+/// *deployer's* public key, which would put every returned object at one URI — and worse, it forces
+/// the object to be registered by a deploy signed with that key. A fresh key per object has no REV,
+/// so its deploy cannot pay for itself: measured, `preCharge: insufficient funds (0 < 1000000)`, and
+/// the call breaks. `insertArbitrary` needs no key at all and mints a fresh URI per call, so the
+/// deploy can be signed by the node's own funded key, and each returned object still lands somewhere
+/// of its own.
+///
+/// `pattern` says how to bind the object inside the registered value, and is **written against the
+/// value's actual shape** rather than derived from a position path — see [`crate::api`]'s caller for
+/// why. `None` is the symbolic case: the registered value *is* the object (a chain-registered urn
+/// like `rho:rchain:ertp`, whose entry the registry stores as `(space, value)`). A pattern that does
+/// not fit answers `false` on the reply channel rather than stalling.
+pub fn invoke_member_term(
+    target_uri: &str,
+    pattern: Option<&str>,
+    method: &str,
+    args: &[Par],
+) -> String {
+    let pp = PrettyPrinter::new();
+    let uri_lit = pp.build_string(&RhoString::apply(target_uri.to_string()));
+    let method_lit = pp.build_string(&RhoString::apply(method.to_string()));
+
+    let mut payload: Vec<String> = Vec::with_capacity(args.len() + 1);
+    payload.push(method_lit);
+    payload.extend(args.iter().map(|a| pp.build_string(a)));
+    let payload = payload.join(", ");
+
+    // The reply carries `(uri, value)`: the URI the reply was just registered under, then the value
+    // itself — so a caller that asks for a capability gets the handle to it *and* the shape it sits
+    // in, in one round trip.
+    let call = format!(
+        "@member!({payload}, *replyCh) | \
+         for (@reply <- replyCh) {{ \
+           register!(reply, *uriOut) | \
+           for (@uri <- uriOut) {{ deployId!((uri, reply)) }} \
+         }}"
+    );
+    // **A tuple pattern is exact, not "rest-able".** Rholang patterns have no `…` for tuples: a
+    // `(_, member)` pattern matches a 2-tuple *and nothing else*, so a 3-tuple reply like an ERTP
+    // kit `(brand, mint, issuer)` falls straight through it and the deploy answers nothing at all —
+    // measured, which is why the pattern is built from the value the caller already saw rather than
+    // from a path assumed to have one element per level.
+    let resolve = match pattern {
+        None => format!("for (@(_, member) <- cap) {{ {call} }}"),
+        Some(pattern) => format!(
+            "for (@root <- cap) {{ \
+               match root {{ \
+                 {pattern} => {{ {call} }} \
+                 _ => {{ deployId!(false) }} \
+               }} \
+             }}"
+        ),
+    };
+
+    format!(
+        "new lookup(`{REGISTRY_LOOKUP}`), deployId(`{REMOTE_REPLY_CHANNEL}`), \
+             register(`rho:registry:insertArbitrary`), cap, uriOut, replyCh in {{ \
+           lookup!({uri_lit}, *cap) | {resolve} \
+         }}"
+    )
+}
+
 /// Sign the far-shard term with the caller's key (port of `deployFileProgram`'s
 /// signing), producing the deploy to submit to the target shard's deploy service.
 ///
