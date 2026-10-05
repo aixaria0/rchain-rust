@@ -1,0 +1,262 @@
+//! Bounded tables, and the caps the peer-facing ones use.
+//!
+//! **Why a type and not a check.** Six tables in this crate grow on input a peer chooses: the export
+//! and answer tables, the gift store and its replay guard, a promise's listener list, and the registry
+//! of peers. Every one of them was an ordinary `BTreeMap`/`Vec`, so a peer could grow the node's
+//! memory without bound — measured by the HAZOP's red team, three independent vectors, `gifts` at
+//! 191 B per message (AUDIT C223).
+//!
+//! A check at each insert site would work until someone adds a seventh site and forgets, which is the
+//! shape of every "we already bound that" claim this repository has had to correct. [`Bounded`] has
+//! **no unbounded constructor and no `insert`**: the only way in is [`Bounded::try_insert`], which
+//! answers `Err(Full)` and names the cap. A site that forgets to handle `Full` does not compile.
+//!
+//! **The caps are on the count, so the keys must be bounded separately.** A count of 1024 over a key a
+//! peer may make 4 MiB long is a 4 GiB table — which is why [`MAX_GIFT_ID`], [`MAX_DESIGNATOR`],
+//! [`MAX_TRANSPORT`] and [`MAX_HINTS`] live here beside the counts, and why [`check_peer_sized`] is
+//! the function a caller must run on a peer's own bytes *before* they become a key. Counts are
+//! calibrated from a per-session memory budget, not from a multiple of the conformance suite's usage:
+//! the suite is one cooperative client, and a node's cap has to hold for the largest legitimate holder.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+/// A table that cannot grow past `cap`.
+pub struct Bounded<K: Ord, V> {
+    inner: BTreeMap<K, V>,
+    cap: usize,
+}
+
+/// The table is at its cap. Carries the cap so a refusal can name the number it hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Full {
+    pub cap: usize,
+}
+
+impl std::fmt::Display for Full {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the table is at its cap of {}", self.cap)
+    }
+}
+
+impl<K: Ord, V> Bounded<K, V> {
+    /// The only constructor: a cap is not optional, and there is no `Default`.
+    pub fn new(cap: usize) -> Self {
+        Bounded {
+            inner: BTreeMap::new(),
+            cap,
+        }
+    }
+
+    /// Insert, or refuse. Replacing an existing key is always allowed — it does not grow the table.
+    pub fn try_insert(&mut self, key: K, value: V) -> Result<(), Full> {
+        if !self.inner.contains_key(&key) && self.inner.len() >= self.cap {
+            return Err(Full { cap: self.cap });
+        }
+        self.inner.insert(key, value);
+        Ok(())
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.inner.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.inner.get_mut(key)
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.inner.remove(key)
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.inner.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.inner.iter()
+    }
+}
+
+/// A set that cannot grow past `cap` — the replay guard's shape.
+pub struct BoundedSet<K: Ord> {
+    inner: BTreeSet<K>,
+    cap: usize,
+}
+
+impl<K: Ord> BoundedSet<K> {
+    pub fn new(cap: usize) -> Self {
+        BoundedSet {
+            inner: BTreeSet::new(),
+            cap,
+        }
+    }
+
+    /// Add, or refuse. Returning `Err` for a key already present distinguishes "full" from "already
+    /// there", which the replay guard needs: a *repeat* is an error of a different kind and the
+    /// caller decides it, not this table.
+    pub fn try_add(&mut self, key: K) -> Result<(), Full> {
+        if !self.inner.contains(&key) && self.inner.len() >= self.cap {
+            return Err(Full { cap: self.cap });
+        }
+        self.inner.insert(key);
+        Ok(())
+    }
+
+    pub fn contains(&self, key: &K) -> bool {
+        self.inner.contains(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+// --- the caps -------------------------------------------------------------------------------------
+//
+// One place, each with what it is derived from. The suite's own usage is the *floor* (a cap below it
+// breaks the conformance gate); the ceiling is a session's memory budget.
+
+/// Exports one session may hold. One per fetched or returned capability, and each `ChainCapability` is
+/// a few hundred bytes; 1024 is ~50× the suite's heaviest module and a few hundred KB at worst.
+pub const MAX_EXPORTS: usize = 1024;
+
+/// Answers one session may hold. Keyed by the **peer's** `answer_pos`, so this is the cap that keeps a
+/// peer from naming a fresh position per delivery for ever. The suite's pipelining cases use a handful.
+pub const MAX_ANSWERS: usize = 1024;
+
+/// Gifts the node's store may hold, across all sessions (the store is per peer, not per session).
+/// With a bounded gift id this is a bounded number of bytes; without one it was the 4 GiB table.
+pub const MAX_GIFTS: usize = 256;
+
+/// Handoff counts remembered **per gift**. The guard only needs to refuse a count it has seen; 256 is
+/// far past any legitimate sequence and stops an arbitrary `u64` per withdraw from growing a set.
+pub const MAX_WITHDRAWN_PER_GIFT: usize = 256;
+
+/// Listeners one promise cell may hold. The peer-driven growth is one `op:listen` per entry, and the
+/// cell's own count is bounded by the export table's cap (each resolver delivery mints one cell).
+pub const MAX_LISTENERS: usize = 256;
+
+/// Peers the registry tracks. Keyed by the peer's own designator, so this is the cap that makes the
+/// *keys* finite; `forget` removes emptied entries, so a well-behaved peer is not what fills it.
+pub const MAX_PEERS: usize = 256;
+
+/// Longest gift id accepted, in bytes. A gift id is a peer's own name for a handoff; 64 bytes is past
+/// every real one and far below the 4 MiB message cap that would otherwise be the key's size.
+pub const MAX_GIFT_ID: usize = 64;
+
+/// Longest peer designator accepted, in bytes — it becomes half a registry key.
+pub const MAX_DESIGNATOR: usize = 256;
+
+/// Longest transport name accepted, in bytes — the other half of a registry key.
+pub const MAX_TRANSPORT: usize = 64;
+
+/// Most hints a locator may carry.
+pub const MAX_HINTS: usize = 8;
+
+/// Longest hint value (host, port, …) accepted, in bytes.
+pub const MAX_HINT_VALUE: usize = 256;
+
+/// **The peer-sized-key check.** A locator's fields arrive in the peer's own `op:start-session` and
+/// become a registry key, so they are bounded before they are stored rather than after — the counts
+/// above cannot help against a key that is itself megabytes.
+pub fn check_peer_sized(
+    designator: &str,
+    transport: &str,
+    hints: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if designator.len() > MAX_DESIGNATOR {
+        return Err(format!(
+            "the peer's designator is {} bytes, past the {MAX_DESIGNATOR}-byte bound",
+            designator.len()
+        ));
+    }
+    if transport.len() > MAX_TRANSPORT {
+        return Err(format!(
+            "the peer's transport is {} bytes, past the {MAX_TRANSPORT}-byte bound",
+            transport.len()
+        ));
+    }
+    if hints.len() > MAX_HINTS {
+        return Err(format!(
+            "the peer's locator carries {} hints, past the bound of {MAX_HINTS}",
+            hints.len()
+        ));
+    }
+    for (key, value) in hints {
+        if key.len() > MAX_HINT_VALUE || value.len() > MAX_HINT_VALUE {
+            return Err(format!(
+                "the peer's locator hint {key:?} is past the {MAX_HINT_VALUE}-byte bound"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The cap is the type's whole point**, and there is no way around it: this is the test that
+    /// would fail if someone added an `insert` that skipped the check.
+    #[test]
+    fn a_bounded_table_refuses_the_insert_past_its_cap() {
+        let mut table: Bounded<u64, &str> = Bounded::new(2);
+        assert_eq!(table.try_insert(1, "a"), Ok(()));
+        assert_eq!(table.try_insert(2, "b"), Ok(()));
+        assert_eq!(table.try_insert(3, "c"), Err(Full { cap: 2 }));
+        assert_eq!(table.len(), 2, "the refused insert changed nothing");
+
+        // Replacing an existing key is not growth, so it is never refused.
+        assert_eq!(table.try_insert(1, "A"), Ok(()));
+        assert_eq!(table.get(&1), Some(&"A"));
+
+        // And a removal makes room again — the cap bounds the table, not its history.
+        assert_eq!(table.remove(&1), Some("A"));
+        assert_eq!(table.try_insert(3, "c"), Ok(()));
+    }
+
+    #[test]
+    fn a_bounded_set_refuses_the_add_past_its_cap_and_says_which() {
+        let mut set: BoundedSet<u64> = BoundedSet::new(1);
+        assert_eq!(set.try_add(7), Ok(()));
+        // Adding a key already present is not growth; the caller decides what a repeat means.
+        assert_eq!(set.try_add(7), Ok(()));
+        assert_eq!(set.try_add(8), Err(Full { cap: 1 }));
+        assert!(set.contains(&7) && !set.contains(&8));
+    }
+
+    /// The keys are the other half of the bound: a count cap over a peer-sized key bounds nothing.
+    #[test]
+    fn a_peer_locator_past_the_byte_bounds_is_refused() {
+        let ok = BTreeMap::from([("host".to_string(), "127.0.0.1".to_string())]);
+        assert!(check_peer_sized("peer", "tcp-testing-only", &ok).is_ok());
+
+        assert!(check_peer_sized(&"d".repeat(MAX_DESIGNATOR + 1), "t", &ok).is_err());
+        assert!(check_peer_sized("d", &"t".repeat(MAX_TRANSPORT + 1), &ok).is_err());
+        assert!(check_peer_sized("d", "t", &BTreeMap::new()).is_ok());
+
+        let too_many: BTreeMap<String, String> = (0..=MAX_HINTS)
+            .map(|i| (format!("h{i}"), "v".to_string()))
+            .collect();
+        assert!(check_peer_sized("d", "t", &too_many).is_err());
+
+        let too_long = BTreeMap::from([("host".to_string(), "x".repeat(MAX_HINT_VALUE + 1))]);
+        assert!(check_peer_sized("d", "t", &too_long).is_err());
+    }
+}

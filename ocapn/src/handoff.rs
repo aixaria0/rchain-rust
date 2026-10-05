@@ -226,8 +226,9 @@ struct Gift {
     /// own export, and this is how we address it back.
     to: crate::captp::Desc,
     /// **The replay guard.** A give may be withdrawn once per handoff count, so a peer that replays
-    /// the same receive is refused rather than handed the object twice.
-    withdrawn: std::collections::BTreeSet<u64>,
+    /// the same receive is refused rather than handed the object twice. **Bounded** (AUDIT C223): the
+    /// count is the peer's own `u64`, so an unbounded set let one gesture grow it without limit.
+    withdrawn: crate::capacity::BoundedSet<u64>,
 }
 
 /// The **exporter** half of third-party handoffs, shared across every session this peer serves.
@@ -246,9 +247,19 @@ struct Gift {
 /// its deposit. Adding the gifter's session separates independent handoffs while keeping what the
 /// guard is for — the give names that session too, so a replay of one handoff still hits its own
 /// bucket.
-#[derive(Default)]
 pub struct Handoffs {
-    gifts: std::sync::Mutex<std::collections::BTreeMap<(Vec<u8>, Vec<u8>), Gift>>,
+    /// **Bounded, and notice the key**: `(gift id, gifter session)`, where the gift id is the peer's
+    /// own bytes — so the *key* is what a peer grows, and the count cap only bounds it once
+    /// [`MAX_GIFT_ID`](crate::capacity::MAX_GIFT_ID) bounds each key.
+    gifts: std::sync::Mutex<crate::capacity::Bounded<(Vec<u8>, Vec<u8>), Gift>>,
+}
+
+impl Default for Handoffs {
+    fn default() -> Self {
+        Handoffs {
+            gifts: std::sync::Mutex::new(crate::capacity::Bounded::new(crate::capacity::MAX_GIFTS)),
+        }
+    }
 }
 
 impl Handoffs {
@@ -258,17 +269,41 @@ impl Handoffs {
     /// and then re-claims with a handoff count already used is refused, which is what
     /// `test_handoff_receive_invalid_handoff_count` asserts — and it asserts it *after* re-depositing,
     /// so a deposit that reset the guard would hand the object over a second time.
-    pub fn deposit(&self, gift_id: Vec<u8>, session: Vec<u8>, to: crate::captp::Desc) {
-        let mut gifts = self.gifts.lock().unwrap_or_else(|p| p.into_inner());
-        match gifts.entry((gift_id, session)) {
-            std::collections::btree_map::Entry::Occupied(mut entry) => entry.get_mut().to = to,
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(Gift {
-                    to,
-                    withdrawn: std::collections::BTreeSet::new(),
-                });
-            }
+    ///
+    /// `Err` when the id is too long to be a key or the store is full: both are refusals the caller
+    /// answers with a `break` naming the reason (AUDIT C223).
+    pub fn deposit(
+        &self,
+        gift_id: Vec<u8>,
+        session: Vec<u8>,
+        to: crate::captp::Desc,
+    ) -> Result<(), String> {
+        if gift_id.len() > crate::capacity::MAX_GIFT_ID {
+            return Err(format!(
+                "the gift id is {} bytes, past the {}-byte bound",
+                gift_id.len(),
+                crate::capacity::MAX_GIFT_ID
+            ));
         }
+        let mut gifts = self.gifts.lock().unwrap_or_else(|p| p.into_inner());
+        if gifts.contains_key(&(gift_id.clone(), session.clone())) {
+            // Replacing an existing gift is not growth, and the guard survives it.
+            if let Some(gift) = gifts.get_mut(&(gift_id, session)) {
+                gift.to = to;
+            }
+            return Ok(());
+        }
+        gifts
+            .try_insert(
+                (gift_id, session),
+                Gift {
+                    to,
+                    withdrawn: crate::capacity::BoundedSet::new(
+                        crate::capacity::MAX_WITHDRAWN_PER_GIFT,
+                    ),
+                },
+            )
+            .map_err(|full| format!("the gift store is full ({full})"))
     }
 
     /// Whether a gift from `session` is deposited.
@@ -280,7 +315,8 @@ impl Handoffs {
     }
 
     /// Take a withdrawal: `Ok(Some(object))` when the gift is there and the count is fresh,
-    /// `Ok(None)` when it is not deposited yet, `Err` when the count was already used.
+    /// `Ok(None)` when it is not deposited yet, `Err` when the count was already used or the guard
+    /// can take no more.
     pub fn withdraw(
         &self,
         gift_id: &[u8],
@@ -291,11 +327,16 @@ impl Handoffs {
         let Some(gift) = gifts.get_mut(&(gift_id.to_vec(), session.to_vec())) else {
             return Ok(None);
         };
-        if !gift.withdrawn.insert(count) {
+        // A repeat is the guard's own error; a full guard is a refusal to *start* forgetting counts,
+        // which is strictly safer than admitting an unguarded one (AUDIT C223).
+        if gift.withdrawn.contains(&count) {
             return Err(format!(
                 "handoff count {count} has already been withdrawn for this gift"
             ));
         }
+        gift.withdrawn.try_add(count).map_err(|full| {
+            format!("this gift's replay guard is full, so no further withdrawal can be checked ({full})")
+        })?;
         Ok(Some(gift.to.clone()))
     }
 }

@@ -27,6 +27,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use rchain_ocapn::bootstrap::Bootstrap;
+use rchain_ocapn::captp::{Deliver, Desc};
 use rchain_ocapn::conn::{Act, ConnectionError, Export, Identity, Session};
 use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::netlayer::Netlayer;
@@ -333,6 +334,113 @@ async fn a_peer_whose_sessions_have_ended_is_forgotten() {
         0,
         "and the peer's own map entry goes too — this is the whole of row B3"
     );
+}
+
+/// **A peer cannot grow a session's export table past its cap** (HAZOP row B2, AUDIT C223).
+///
+/// The red team measured three tables a peer grows without limit — the answer table by naming a fresh
+/// `answer_pos`, the gift store by a fresh gift id, and this one by asking for objects. This is the
+/// export table's, because it is the one the *protocol* makes a peer drive: every `fetch` and every
+/// returned capability exports something.
+///
+/// The assertions that matter are the last two: the delivery is refused **with a reason naming the
+/// bound** (not dropped, which would be the C18 class), and **the session is still alive** — a table
+/// at its cap is a bounded table, not a broken one.
+#[tokio::test]
+async fn the_export_table_refuses_the_delivery_that_would_grow_it_past_its_cap() {
+    // A far end that hands back an object for every `"ask …"` — so the peer drives `insert_export`
+    // with a message it chose — and a plain value otherwise, which is how the liveness probe at the
+    // end is told apart from the growth attempts.
+    struct HandsBackAnObject;
+
+    #[async_trait]
+    impl Export for HandsBackAnObject {
+        async fn deliver(&self, args: &[Value]) -> Result<Act, String> {
+            match args.first() {
+                Some(Value::String(s)) if s.starts_with("ask ") => Ok(Act::object(Arc::new(Pong))),
+                _ => Ok(Act::value(Value::String("pong".to_string()))),
+            }
+        }
+    }
+
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([51u8; 32], locator(port)).unwrap();
+        let mut session = Session::accept(conn, &identity, Arc::new(HandsBackAnObject))
+            .await
+            .unwrap();
+        let _ = session.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([52u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    // Each delivery asks for its reply at a fresh import position of ours, so the *far end* exports
+    // one object per message: the table under test is the one this test is the peer of.
+    let cap = rchain_ocapn::capacity::MAX_EXPORTS;
+    let mut refused: Option<Value> = None;
+    for i in 0..(cap + 2) {
+        let ask = Deliver {
+            to: rchain_ocapn::captp::Desc::Export(0u64.into()),
+            args: vec![Value::String(format!("ask {i}"))],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject((i as u64).into())),
+        };
+        client.send_message(&ask.to_syrup()).await.expect("send");
+        let reply = client
+            .recv_message()
+            .await
+            .expect("read")
+            .expect("a reply, not a closed connection");
+        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+        if let Value::Symbol(verb) = &delivered.args[0] {
+            if verb == "break" {
+                refused = Some(delivered.args[1].clone());
+                break;
+            }
+        }
+    }
+
+    let reason = refused.expect("the table's cap must refuse a delivery, not absorb it");
+    let Value::String(reason) = reason else {
+        panic!("a break carries its reason");
+    };
+    assert!(
+        reason.contains("export table is full"),
+        "the refusal names the bound: {reason}"
+    );
+
+    // Bounded, not broken: the session still answers.
+    let after = Deliver {
+        to: rchain_ocapn::captp::Desc::Export(0u64.into()),
+        args: vec![Value::String("still there?".to_string())],
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(9999u64.into())),
+    };
+    client.send_message(&after.to_syrup()).await.expect("send");
+    let reply = client
+        .recv_message()
+        .await
+        .expect("read")
+        .expect("the session is alive after a refused delivery");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    assert_eq!(
+        delivered.args[0],
+        Value::Symbol("fulfill".into()),
+        "the session keeps serving at its cap: {delivered:?}"
+    );
+
+    drop(client);
+    far_end.abort();
 }
 
 /// Whether the next message the peer reads is an `op:abort` — read with a bound, so a leg that is

@@ -464,6 +464,10 @@ pub struct NodeProgram {
     enable_devnet_admin_public: bool,
     /// `host:port` to bind the OCapN listener on, or `None` (issue #249).
     ocapn_listen: Option<String>,
+    /// The node's log, for the one surface that had none: the OCapN listener served, refused and
+    /// spent in silence, so an operator could not tell "nobody is calling" from "calls are failing"
+    /// (HAZOP row E6).
+    log: Arc<dyn Log>,
     /// The chain-backed capability the listener publishes, or `None` when there is no key.
     /// The chain-backed capabilities the OCapN bridge publishes, each under its swiss number.
     ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
@@ -500,6 +504,7 @@ impl NodeProgram {
             enable_devnet_cors,
             enable_devnet_admin_public,
             ocapn_listen,
+            log,
             ocapn_chain,
             protocol_server,
             status_provider,
@@ -596,7 +601,12 @@ impl NodeProgram {
 
         // The OCapN listener (issue #249). Spawned even when it is not configured — see
         // `serve_ocapn` — so its select arm and drain slot are unconditional.
-        let mut ocapn = tokio::spawn(serve_ocapn(ocapn_listen, ocapn_chain, stop.clone()));
+        let mut ocapn = tokio::spawn(serve_ocapn(
+            ocapn_listen,
+            ocapn_chain,
+            log.clone(),
+            stop.clone(),
+        ));
 
         // **The first moment a node can say the expensive part is over, and the expensive part is
         // replay rather than the bind** (issue #60's observability half). Every costly step — the store
@@ -1254,24 +1264,35 @@ pub async fn setup_node_program(
         conf.api_server.ocapn_listen.as_ref(),
         faucet_deployer_key.as_ref(),
     ) {
-        (Some(_), Some(key)) => vec![
-            (
-                crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
-                Arc::new(ChainCapability::rev_vault_balance(
-                    routing.clone(),
-                    key.clone(),
-                    primary_id.to_string(),
-                )) as Arc<dyn Export>,
-            ),
-            (
-                crate::api::ocapn::ERTP_SWISS.to_vec(),
-                Arc::new(crate::api::ocapn::ertp_capability(
-                    routing.clone(),
-                    key.clone(),
-                    primary_id.to_string(),
-                )),
-            ),
-        ],
+        (Some(_), Some(key)) => {
+            // **One limiter for the node's whole OCapN surface**, shared by every capability and
+            // every session: each bridged delivery is a signed deploy paid for out of the node's own
+            // REV, so the bound has to be on the node, not per capability — two capabilities with a
+            // limiter each are a bound of twice the number (HAZOP row A3).
+            let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
+                crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
+            ));
+            vec![
+                (
+                    crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
+                    Arc::new(ChainCapability::rev_vault_balance(
+                        routing.clone(),
+                        key.clone(),
+                        primary_id.to_string(),
+                        limiter.clone(),
+                    )) as Arc<dyn Export>,
+                ),
+                (
+                    crate::api::ocapn::ERTP_SWISS.to_vec(),
+                    Arc::new(crate::api::ocapn::ertp_capability(
+                        routing.clone(),
+                        key.clone(),
+                        primary_id.to_string(),
+                        limiter,
+                    )),
+                ),
+            ]
+        }
         _ => Vec::new(),
     };
     let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
@@ -1334,6 +1355,7 @@ pub async fn setup_node_program(
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
         ocapn_listen: conf.api_server.ocapn_listen.clone(),
+        log: log.clone(),
         ocapn_chain,
         protocol_server: Some(build_protocol_server(
             conf,

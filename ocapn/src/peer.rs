@@ -74,6 +74,12 @@ impl PeerLocator {
             }
             _ => return Err(PeerError::BadField("hints")),
         };
+        // **The fields become keys.** A locator arrives in the peer's own `op:start-session` and its
+        // designator/transport are what the registry is keyed by, so the byte bound is applied here —
+        // where the value is parsed — rather than at each place one is stored (AUDIT C223). A count
+        // cap cannot help against a key that is itself megabytes.
+        crate::capacity::check_peer_sized(designator, transport, &hints)
+            .map_err(|_| PeerError::FieldTooLong)?;
         Ok(PeerLocator {
             designator: designator.clone(),
             transport: transport.clone(),
@@ -124,6 +130,8 @@ pub enum PeerError {
     NotASturdyrefRecord,
     /// A field held the wrong Syrup type; names the field.
     BadField(&'static str),
+    /// A field is longer than the bound its use as a key allows (AUDIT C223).
+    FieldTooLong,
 }
 
 impl fmt::Display for PeerError {
@@ -134,6 +142,9 @@ impl fmt::Display for PeerError {
                 write!(f, "peer: not an `<{STURDYREF_LABEL} …>` record")
             }
             PeerError::BadField(name) => write!(f, "peer: field {name:?} has the wrong type"),
+            PeerError::FieldTooLong => {
+                write!(f, "peer: a locator field is past its length bound")
+            }
         }
     }
 }

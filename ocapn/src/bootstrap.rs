@@ -138,7 +138,9 @@ impl Export for Bootstrap {
                     .clone()
                     .and_then(|s| s.handle.id.as_ref().map(|id| id.to_vec()))
                     .ok_or_else(|| "a deposit arrived on a session with no id".to_string())?;
-                self.handoffs.deposit(gift_id, session, to);
+                // A refused deposit is a refused deposit: the peer is told why rather than being left
+                // to discover it when its withdrawal times out (AUDIT C223).
+                self.handoffs.deposit(gift_id, session, to)?;
                 Ok(Act::nothing())
             }
             Some(Value::Symbol(m)) if m == "withdraw-gift" => {

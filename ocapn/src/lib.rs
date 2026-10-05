@@ -21,6 +21,7 @@
 //! state. What reaches consensus is only the signed deploy the bridge produces.
 
 pub mod bootstrap;
+pub mod capacity;
 pub mod captp;
 pub mod conn;
 pub mod enliven;

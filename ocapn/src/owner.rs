@@ -22,7 +22,6 @@
 //! `op_start_session.py` asserts in each variant, one on the leg the implementation dialed and one on
 //! the leg it accepted.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -239,12 +238,24 @@ struct PeerSessions {
 
 /// The live sessions this peer has with others, so a second connection between the same two peers
 /// can be resolved by the crossed-hello rule.
-#[derive(Default)]
 pub struct SessionRegistry {
     /// Keyed by *peer*, in the sense `PeerLocator::same_peer` uses: designator and transport, not
     /// hints. Two locators that differ only in hints are the same peer, and a crossing between them
     /// is a crossing.
-    peers: Mutex<BTreeMap<(String, String), PeerSessions>>,
+    ///
+    /// **Bounded** (AUDIT C223), and bounded twice over: the key is the peer's own designator, so
+    /// [`check_peer_sized`](crate::capacity::check_peer_sized) refuses a locator whose fields are past
+    /// their byte bounds at *parse* time, and this cap holds the count. `forget` removes what a
+    /// well-behaved peer leaves behind; the cap is what a peer varying its designator hits.
+    peers: Mutex<crate::capacity::Bounded<(String, String), PeerSessions>>,
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        SessionRegistry {
+            peers: Mutex::new(crate::capacity::Bounded::new(crate::capacity::MAX_PEERS)),
+        }
+    }
 }
 
 impl SessionRegistry {
@@ -259,7 +270,23 @@ impl SessionRegistry {
         handle: &SessionHandle,
     ) -> Result<Vec<SessionHandle>, String> {
         let mut peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
-        let entry = peers.entry(peer_key(peer)).or_default();
+        let key = peer_key(peer);
+        if !peers.contains_key(&key) {
+            // **A new peer past the cap is refused, not queued.** The map is keyed by the peer's own
+            // designator, so without this a peer that varies it accumulates entries for ever
+            // (AUDIT C223); the refusal is a handshake the caller answers with `op:abort`.
+            peers
+                .try_insert(key.clone(), PeerSessions::default())
+                .map_err(|full| {
+                    format!("this node is already tracking as many peers as it may ({full})")
+                })?;
+        }
+        let Some(entry) = peers.get_mut(&key) else {
+            // Not reachable: the key was just ensured present, and nothing else holds this lock.
+            // Written as a return rather than a panic because production code in this crate does not
+            // panic on a peer's input (AUDIT C223's bound is worth more than a tidier branch).
+            return Err("the peer's registry entry vanished as it was admitted".to_string());
+        };
 
         // A second session in the same direction is not a crossing, it is a duplicate: the older
         // one goes, so the peer's tables do not accumulate sessions to one object.
@@ -354,7 +381,7 @@ impl SessionRegistry {
     /// place that can turn an id back into a connection.
     pub fn by_id(&self, id: &Octets32) -> Option<SessionHandle> {
         let peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
-        for session in peers.values() {
+        for (_, session) in peers.iter() {
             for (_, handle) in [session.dialed.as_ref(), session.accepted.as_ref()]
                 .into_iter()
                 .flatten()

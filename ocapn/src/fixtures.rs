@@ -339,7 +339,18 @@ impl Export for Vow {
         let settled = lock(&self.0.state).clone();
         match settled {
             PromiseState::Pending => {
-                lock(&self.0.listeners).push(listener);
+                let mut listeners = lock(&self.0.listeners);
+                // **A bounded promise refuses rather than forgets.** An unresolved vow accepted one
+                // `op:listen` per message for ever, so a peer grew this list without limit
+                // (AUDIT C223, measured); the cap is per cell, and the cell count is itself bounded
+                // by the session's export table.
+                if listeners.len() >= crate::capacity::MAX_LISTENERS {
+                    return Some(ListenOutcome::Refused(format!(
+                        "this promise already has {} listeners, its cap",
+                        crate::capacity::MAX_LISTENERS
+                    )));
+                }
+                listeners.push(listener);
                 Some(ListenOutcome::Registered)
             }
             PromiseState::Fulfilled(v) => Some(ListenOutcome::Settled(vec![
