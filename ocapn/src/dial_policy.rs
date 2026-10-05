@@ -80,9 +80,7 @@ impl DialPolicy {
                     ));
                 };
                 for candidate in addresses {
-                    if let Err(reason) = self.permits_address(candidate.ip()) {
-                        return Err(reason);
-                    }
+                    self.permits_address(candidate.ip())?;
                 }
                 return Ok(());
             }
