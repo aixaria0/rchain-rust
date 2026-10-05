@@ -167,6 +167,11 @@ impl FixedChannels {
     pub fn http() -> Par {
         byte_name(31)
     }
+    /// The ERTP issuer ledger (issue #249). Byte 32 is the next free one; byte 9 is left alone
+    /// because it is the oracle's unexplained hole, not a gap to fill.
+    pub fn ertp_ledger() -> Par {
+        byte_name(32)
+    }
 }
 
 /// The dispatch-table ids (port of `SystemProcesses.BodyRefs`).
@@ -203,6 +208,7 @@ impl BodyRefs {
     pub const GOV_TALLY: i64 = 30;
     pub const TXN: i64 = 31;
     pub const HTTP: i64 = 32;
+    pub const ERTP_LEDGER: i64 = 33;
 }
 
 /// Per-block data exposed to the `rho:block:data` contract (port of `SystemProcesses.BlockData`).
@@ -246,6 +252,25 @@ pub struct Definition {
     pub remainder: bool,
     pub body_ref: i64,
     pub handler: ScalaBodyFn,
+}
+
+/// A name argument's bytes (issue #249).
+///
+/// Recovering them *here* is what keeps the ledger's keys unguessable: the bytes cross into Rust and
+/// are never returned, and no Rholang term can construct a `GPrivate` in the first place — only
+/// `reduce::alloc` and Rust callers of `RhoName::apply_bytes` can. A `GByteArray` of the right bytes
+/// is therefore not a name, which is exactly the gate this function is.
+fn ertp_name(p: &Par) -> Result<Vec<u8>, RholangError> {
+    RhoName::unapply(p)
+        .map(|name| name.id.clone())
+        .ok_or_else(|| illegal_arg("ertp expects an unforgeable name"))
+}
+
+/// An amount argument: an `Int` the ledger can hold. A `BigInt` is refused rather than truncated —
+/// `RhoNumber::unapply` matches `GInt` only, and `NonNegI64` is what `PREFIX_ERTP` stores.
+fn ertp_amount(p: &Par) -> Result<NonNegI64, RholangError> {
+    let n = RhoNumber::unapply(p).ok_or_else(|| illegal_arg("ertp expects an integer amount"))?;
+    NonNegI64::try_from(n).map_err(|_| illegal_arg("ertp amount must be non-negative"))
 }
 
 fn illegal_arg(msg: &str) -> RholangError {
@@ -833,6 +858,17 @@ impl SystemProcesses {
                 remainder: true,
                 body_ref: BodyRefs::HTTP,
                 handler: self.http(),
+            },
+            Definition {
+                // The ERTP issuer ledger (issue #249). Its urn is not a registry alias: every
+                // definition's urn is already in `urn_map` as `bundle+{channel}` (`runtime.rs`), so a
+                // contract binds it with `new L(\`rho:rchain:ertp:ledger\`)` and needs no lookup.
+                urn: "rho:rchain:ertp:ledger".to_string(),
+                fixed_channel: FixedChannels::ertp_ledger(),
+                arity: 1,
+                remainder: true,
+                body_ref: BodyRefs::ERTP_LEDGER,
+                handler: self.ertp(),
             },
         ]
     }
@@ -2298,6 +2334,169 @@ impl SystemProcesses {
                         cc.produce(&rand, &[key], ret, path).await
                     }
                     _ => Err(illegal_arg(&format!("revVault: unknown method {op}"))),
+                }
+            })
+        })
+    }
+
+    /// The ERTP issuer ledger, as Rholang sees it (issue #249).
+    ///
+    /// Every argument that names an object is a **name**, and the handler recovers its bytes with
+    /// `RhoName::unapply`. The bytes cross *into* Rust and are never returned, which is what keeps
+    /// the ledger's keys unguessable — possessing a name's bytes *is* possessing the name, so an op
+    /// that handed them back would unmake the name.
+    ///
+    /// Identities (brands, purses, payments) are minted here from the send's own RNG, so a replay
+    /// mints the same bytes and the same leaves. The reply is produced with the **advanced** rand,
+    /// which is what makes that true (`findOrCreate`'s precedent).
+    ///
+    /// Replies are `(true, value)` / `(false, reason)` — a refusal is a value a caller can branch on.
+    /// `revVault`'s classic `transfer` reports refusals as deploy errors instead, and that shape is
+    /// pinned by wallet vectors; this one is not, so it takes the shape that composes.
+    fn ertp(&self) -> ScalaBodyFn {
+        let cc = self.contract_call.clone();
+        let native = self.native_state.clone();
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
+            let cc = cc.clone();
+            let native = native.clone();
+            Box::pin(async move {
+                let (pars, rand) = cc
+                    .unapply(&args)
+                    .ok_or_else(|| illegal_arg("ertp expects a method and arguments"))?;
+                let [op, rest_par] = pars.as_slice() else {
+                    return Err(illegal_arg("ertp expects a method and arguments"));
+                };
+                let op = RhoString::unapply(op)
+                    .ok_or_else(|| illegal_arg("ertp method must be a string"))?;
+                let rest = RhoList::unapply(rest_par)
+                    .ok_or_else(|| illegal_arg("ertp arguments must be a list"))?;
+                let mut rand = rand;
+                let ok = |value: Par| RhoTupleN::apply(vec![RhoBoolean::apply(true), value]);
+                let no = |reason: &str| {
+                    RhoTupleN::apply(vec![
+                        RhoBoolean::apply(false),
+                        RhoString::apply(reason.to_string()),
+                    ])
+                };
+                match op {
+                    "makeKit" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("ertp makeKit expects a return channel"));
+                        };
+                        // Two names, drawn in order, so a replay draws the same pair.
+                        let brand = rand.next();
+                        let authority = rand.next();
+                        if let Err(reason) = native
+                            .ertp_register_brand(&brand, &authority)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            return Err(illegal_arg(&reason));
+                        }
+                        let kit = RhoTupleN::apply(vec![
+                            RhoName::apply_bytes(brand),
+                            RhoName::apply_bytes(authority),
+                        ]);
+                        cc.produce(&rand, &[kit], ret, path).await
+                    }
+                    "makePurse" => {
+                        let [brand, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp makePurse expects a brand and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let purse = rand.next();
+                        let reply = match native
+                            .ertp_make_purse(&brand, &purse)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(purse)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "balance" => {
+                        let [brand, holder, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp balance expects a brand, a holder and a return channel",
+                            ));
+                        };
+                        let (brand, holder) = (ertp_name(brand)?, ertp_name(holder)?);
+                        let reply = match native
+                            .ertp_holding(&brand, &holder)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Some(holding) => ok(RhoNumber::apply(i64::from(holding.amount))),
+                            // Not `(true, 0)`: an issuer that has never heard of a holder and an
+                            // issuer that says a holder is empty are different answers.
+                            None => no("no such holding"),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "mint" => {
+                        let [brand, auth, amount, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp mint expects a brand, an authority, an amount and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let auth = ertp_name(auth)?;
+                        let amount = ertp_amount(amount)?;
+                        let payment = rand.next();
+                        let reply = match native
+                            .ertp_mint(&brand, &auth, &payment, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(payment)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "withdraw" => {
+                        let [brand, auth, purse, amount, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp withdraw expects a brand, an authority, a purse, an amount and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let auth = ertp_name(auth)?;
+                        let purse = ertp_name(purse)?;
+                        let amount = ertp_amount(amount)?;
+                        let payment = rand.next();
+                        let reply = match native
+                            .ertp_withdraw(&brand, &auth, &purse, &payment, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(payment)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "deposit" => {
+                        let [brand, purse, payment, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp deposit expects a brand, a purse, a payment and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let purse = ertp_name(purse)?;
+                        let payment = ertp_name(payment)?;
+                        let reply = match native
+                            .ertp_deposit(&brand, &purse, &payment)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(balance) => ok(RhoNumber::apply(i64::from(balance))),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    other => Err(illegal_arg(&format!("ertp: unknown method {other}"))),
                 }
             })
         })
@@ -3792,5 +3991,201 @@ mod tests {
             RhoString::unapply(produced[0].1.pars[0].as_par()),
             Some("X")
         );
+    }
+
+    // --- ERTP ledger (issue #249) ------------------------------------------
+
+    /// A call to the ERTP ledger. `L!("op", args…)` reaches an `arity: 1, remainder: true` process
+    /// as `["op", [args…]]`, and the RNG is the send's own carried state — which a fixed seed makes
+    /// replayable, which is the property the minted ids depend on.
+    fn ertp_call(op: &str, args: Vec<Par>, tag: u8) -> ListParWithRandom {
+        ListParWithRandom {
+            pars: vec![
+                SortedProc::new(RhoString::apply(op.to_string())),
+                SortedProc::new(RhoList::apply(args)),
+            ],
+            random_state: Blake2b512Random::from_init(&[tag]),
+        }
+    }
+
+    fn ertp_reply(mock: &Arc<MockSpace>) -> Par {
+        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        produced.last().expect("the handler replied").1.pars[0]
+            .as_par()
+            .clone()
+    }
+
+    /// `(true, x)` / `(false, reason)` — the shape every ERTP op replies in.
+    fn ertp_pair(reply: &Par) -> (bool, Par) {
+        let parts = RhoTupleN::unapply(reply).expect("a pair");
+        let ok = RhoBoolean::unapply(&parts[0]).expect("a bool");
+        (ok, parts[1].clone())
+    }
+
+    fn a_name(tag: u8) -> Par {
+        RhoName::apply_bytes(vec![tag; 32])
+    }
+
+    #[tokio::test]
+    async fn the_ertp_ledger_mints_a_kit_and_consumes_a_payment_exactly_once() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_, defs) = mock_system_processes(&mock);
+        let ledger = defs
+            .iter()
+            .find(|d| d.urn == "rho:rchain:ertp:ledger")
+            .expect("the ERTP ledger is defined");
+
+        // A kit: two names, drawn in order, distinct.
+        (ledger.handler)(
+            vec![ertp_call("makeKit", vec![a_name(9)], 1)],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let kit = ertp_reply(&mock);
+        let names = RhoTupleN::unapply(&kit).expect("a kit pair");
+        assert_eq!(names.len(), 2);
+        let (brand, authority) = (names[0].clone(), names[1].clone());
+        assert_ne!(brand, authority, "a brand and its mint are different names");
+
+        // A purse starts empty, and empty is `(true, 0)` — not the `(false, …)` an unknown holder
+        // gets, because an issuer that has never heard of a holder is a different answer.
+        let purse_ret = a_name(1);
+        (ledger.handler)(
+            vec![ertp_call(
+                "makePurse",
+                vec![brand.clone(), purse_ret.clone()],
+                2,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, purse) = ertp_pair(&ertp_reply(&mock));
+        assert!(ok);
+        (ledger.handler)(
+            vec![ertp_call(
+                "balance",
+                vec![brand.clone(), purse.clone(), a_name(2)],
+                3,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, balance) = ertp_pair(&ertp_reply(&mock));
+        assert!(ok);
+        assert_eq!(RhoNumber::unapply(&balance), Some(0));
+
+        // Only the name that registered the brand may mint it.
+        (ledger.handler)(
+            vec![ertp_call(
+                "mint",
+                vec![brand.clone(), a_name(200), RhoNumber::apply(10), a_name(3)],
+                4,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, reason) = ertp_pair(&ertp_reply(&mock));
+        assert!(!ok, "a forged authority must not mint");
+        assert_eq!(
+            RhoString::unapply(&reason).map(str::to_string),
+            Some("only the name that registered the brand may mint it".to_string())
+        );
+
+        // The real authority does.
+        (ledger.handler)(
+            vec![ertp_call(
+                "mint",
+                vec![
+                    brand.clone(),
+                    authority.clone(),
+                    RhoNumber::apply(10),
+                    a_name(4),
+                ],
+                5,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, payment) = ertp_pair(&ertp_reply(&mock));
+        assert!(
+            ok,
+            "the real authority was refused: {:?}",
+            RhoString::unapply(&payment)
+        );
+
+        // Deposit credits the purse...
+        for expected in [10, 10] {
+            (ledger.handler)(
+                vec![ertp_call(
+                    "deposit",
+                    vec![brand.clone(), purse.clone(), payment.clone(), a_name(5)],
+                    6,
+                )],
+                DfsPath::root(),
+            )
+            .await
+            .unwrap();
+            let (ok, value) = ertp_pair(&ertp_reply(&mock));
+            if expected == 10 && ok {
+                assert_eq!(RhoNumber::unapply(&value), Some(10));
+            } else {
+                // ...and the second deposit is refused rather than double-counted.
+                assert!(!ok, "a payment is consumed by its first deposit");
+                assert_eq!(
+                    RhoString::unapply(&value).map(str::to_string),
+                    Some("that payment has already been deposited".to_string())
+                );
+            }
+        }
+        (ledger.handler)(
+            vec![ertp_call(
+                "balance",
+                vec![brand.clone(), purse.clone(), a_name(6)],
+                7,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, balance) = ertp_pair(&ertp_reply(&mock));
+        assert!(ok);
+        assert_eq!(
+            RhoNumber::unapply(&balance),
+            Some(10),
+            "the refused second deposit must not have moved the balance"
+        );
+    }
+
+    /// A byte array of a name's bytes is **not** a name. No Rholang term can construct a
+    /// `GPrivate`, so this refusal is what makes the ledger's keys unforgeable rather than merely
+    /// unguessable — and it is the gate the whole "the authority is a constant" argument rests on.
+    #[tokio::test]
+    async fn the_ertp_ledger_refuses_bytes_where_a_name_is_expected() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_, defs) = mock_system_processes(&mock);
+        let ledger = defs
+            .iter()
+            .find(|d| d.urn == "rho:rchain:ertp:ledger")
+            .expect("the ERTP ledger is defined");
+        let err = (ledger.handler)(
+            vec![ertp_call(
+                "makePurse",
+                vec![RhoByteArray::apply(vec![7u8; 32]), a_name(1)],
+                8,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .expect_err("bytes are not a name");
+        assert!(format!("{err:?}").contains("unforgeable name"), "{err:?}");
     }
 }

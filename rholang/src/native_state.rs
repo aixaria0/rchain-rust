@@ -6627,6 +6627,31 @@ impl NativeSystemState {
         );
     }
 
+    /// Create an **empty purse** holding. Permissionless on purpose: making a purse can only ever
+    /// *credit* one, so requiring the issuer's name here would be requiring a key to an empty room —
+    /// and the holder's own name is what the balance is keyed by, which nobody else can present.
+    ///
+    /// A purse gets a zero holding rather than none, because `None` means "this issuer has never
+    /// heard of that holder" and an empty purse is not that.
+    pub async fn ertp_make_purse(
+        &self,
+        brand: &[u8],
+        purse: &[u8],
+    ) -> Result<Result<(), String>, String> {
+        if self.ertp_holding(brand, purse).await?.is_some() {
+            return Ok(Err("that purse already exists".to_string()));
+        }
+        self.set_ertp_holding(
+            brand,
+            purse,
+            Holding {
+                amount: NonNegI64::zero(),
+                live: true,
+            },
+        );
+        Ok(Ok(()))
+    }
+
     /// Create a payment holding of `amount` under `authority` — the only path that makes a holding
     /// out of nothing, and therefore the one that must present the brand's issuer.
     pub async fn ertp_mint(
