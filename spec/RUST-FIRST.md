@@ -32,6 +32,15 @@ component. Native state therefore enters the same trie, under dedicated prefixes
 | `PREFIX_VAULT_AUTH` | `0x09` | vault **authority** (`unforgeable-name → base58 rev-address`) | `blake2b256(name)` |
 | `PREFIX_ERTP` | `0x0A` | ERTP issuer ledger: a brand's minting authority, and each purse's or payment's holding | `blake2b256(brand)` / `blake2b256(len(brand) ‖ brand ‖ holder)` |
 
+Both leaves under `PREFIX_ERTP` are **self-describing**, because the totals over the prefix are
+derivations by *enumeration* rather than running sums (`spec/`'s C109 idiom), and an enumeration that
+cannot tell a brand from a holding cannot sum one brand's value:
+
+| Leaf | Content |
+|---|---|
+| brand (`0x01`) | the bytes of the name that may mint it |
+| holding (`0x02`) | `u32_le(brand.len()) ‖ brand ‖ i64_le(amount) ‖ live` — the brand is in the **value**, not only in the key, so a holding's brand survives the hash; a leaf read under a key whose brand it does not name is refused |
+
 The PoS leaves under `PREFIX_POS`:
 
 | Leaf | Content |
