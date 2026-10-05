@@ -8,8 +8,11 @@ use async_trait::async_trait;
 use rchain_casper::api::block_api::BlockApi;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
+use rchain_models::ast::Expr;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
-use rchain_models::casper::protocol::deploy_service::{BlockInfo, LightBlockInfo};
+use rchain_models::casper::protocol::deploy_service::{
+    BlockInfo, DeployExecStatus as CasperDeployExecStatus, LightBlockInfo,
+};
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::base16;
 
@@ -53,11 +56,58 @@ impl WebApiImpl {
             faucet_ledger: Arc::new(Mutex::new(FaucetLedger::default())),
         }
     }
+
+    /// Read the recipient's REV balance from the same finalised fringe used by the public
+    /// explore-deploy endpoint. This is the faucet's durable per-account eligibility check: a
+    /// process restart can forget local reservations, but it cannot forget REV already delivered.
+    async fn finalized_rev_balance(&self, address: &str) -> Result<i64, BlockApiException> {
+        let term = format!(
+            r#"new return, vault(`rho:rchain:revVault`), ret in {{ vault!("getBalance", "{address}", *ret) | for (@b <- ret) {{ return!(b) }} }}"#
+        );
+        let (reply, _) = self
+            .block_api
+            .exploratory_deploy(&term, None, false)
+            .await
+            .map_err(BlockApiException)?;
+
+        reply
+            .data
+            .iter()
+            .flat_map(|par| par.exprs.iter())
+            .find_map(|expr| match expr {
+                Expr::GInt(balance) => Some(*balance),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                BlockApiException(format!(
+                    "faucet: finalized balance query for {address} returned no integer"
+                ))
+            })
+    }
+
+    /// Remove one exact reservation. A replay/submission failure refunds the total allocation; a
+    /// delivered drip only drops the in-process marker because its budget was genuinely spent.
+    fn clear_faucet_reservation(&self, address: &str, expected: Option<&[u8]>, refund: bool) {
+        let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let matches = match (ledger.pending.get(address), expected) {
+            (Some(None), None) => true,
+            (Some(Some(actual)), Some(expected)) => actual.as_slice() == expected,
+            _ => false,
+        };
+        if matches {
+            ledger.pending.remove(address);
+            if refund {
+                ledger.spent = ledger.spent.saturating_sub(faucet::FAUCET_AMOUNT);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 struct FaucetLedger {
-    counts: HashMap<String, u32>,
+    /// One in-process reservation per recipient. `None` means the submit is still in progress;
+    /// `Some(sig)` means it was accepted and later requests must reconcile its chain outcome.
+    pending: HashMap<String, Option<Vec<u8>>>,
     spent: i64,
 }
 
@@ -65,21 +115,19 @@ fn invalid_deploy_id() -> BlockApiException {
     BlockApiException("Deploy id is not valid base16 format.".to_string())
 }
 
-/// Maximum faucet drips any single address may receive (0.3 REV each). Bounds the dev-wallet drain
-/// a single caller can cause before other developers are starved.
-const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 1;
-/// Public-testnet faucet allocation: 10,000 REV. A drip is charged only after the deploy is accepted.
+/// Public-testnet faucet allocation: 10,000 REV. A drip is reserved before submission and refunded
+/// when submission or replay proves that nothing was delivered.
 const FAUCET_TOTAL_BUDGET: i64 = 10_000 * 100_000_000;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rchain_casper::runtime_manager::CapturedReply;
+    use rchain_casper::runtime_manager::{CapturedReply, ReplySource};
     use std::sync::Mutex as StdMutex;
 
     use rchain_block_storage::dag::dag_storage::DeployId;
     use rchain_casper::api::block_api::{ApiErr, Capabilities};
-    use rchain_models::ast::Par;
+    use rchain_models::ast::{Expr, Par};
     use rchain_models::block_metadata::BlockMetadata;
     use rchain_models::casper::protocol::casper_message::DeployData;
     use rchain_models::casper::protocol::deploy_service::{
@@ -94,7 +142,9 @@ mod tests {
     struct StubBlockApi {
         caps: Capabilities,
         pooled: Vec<SignedDeployData>,
-        deploy_status: ApiErr<DomainExecStatus>,
+        deploy_status: Arc<StdMutex<ApiErr<DomainExecStatus>>>,
+        finalized_balance: Arc<StdMutex<i64>>,
+        finalized_block_number: Arc<StdMutex<i64>>,
         /// What `deploy` was asked to pool, shared by handle so a test can read it after the stub
         /// has been boxed behind `Arc<dyn BlockApi>`.
         deployed: Arc<StdMutex<Vec<SignedDeployData>>>,
@@ -113,9 +163,11 @@ mod tests {
                     dev_mode: true,
                 },
                 pooled: Vec::new(),
-                deploy_status: Ok(DomainExecStatus::NotProcessed {
+                deploy_status: Arc::new(StdMutex::new(Ok(DomainExecStatus::NotProcessed {
                     status: "pending".to_string(),
-                }),
+                }))),
+                finalized_balance: Arc::new(StdMutex::new(0)),
+                finalized_block_number: Arc::new(StdMutex::new(0)),
                 deployed: Arc::new(StdMutex::new(Vec::new())),
                 deploy_error: Arc::new(StdMutex::new(None)),
             }
@@ -155,6 +207,27 @@ mod tests {
         }
     }
 
+    fn light_block_info(block_number: i64) -> LightBlockInfo {
+        LightBlockInfo {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: format!("block-{block_number}"),
+            block_number,
+            sender: "sender".to_string(),
+            seq_num: block_number,
+            pre_state_hash: "pre".to_string(),
+            post_state_hash: "post".to_string(),
+            justifications: Vec::new(),
+            bonds: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: "sig".to_string(),
+            block_size: "0".to_string(),
+            deploy_count: 0,
+            rejected_deploys: Vec::new(),
+            timestamp: 0,
+        }
+    }
+
     /// The trait's method list, copied signature-for-signature: every method this file does not
     /// call is `unreachable!`, so a call the implementation is not supposed to make fails loudly
     /// instead of being answered by a plausible stub value.
@@ -173,7 +246,7 @@ mod tests {
         }
 
         async fn deploy_status(&self, _: &DeployId) -> ApiErr<DomainExecStatus> {
-            self.deploy_status.clone()
+            self.deploy_status.lock().unwrap().clone()
         }
 
         async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
@@ -231,7 +304,17 @@ mod tests {
             _: Option<&str>,
             _: bool,
         ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
-            unreachable!("not exercised here")
+            let balance = *self.finalized_balance.lock().unwrap();
+            Ok((
+                CapturedReply {
+                    source: ReplySource::FirstPrivateName,
+                    data: vec![Par {
+                        exprs: vec![Expr::GInt(balance)],
+                        ..Default::default()
+                    }],
+                },
+                light_block_info(*self.finalized_block_number.lock().unwrap()),
+            ))
         }
         async fn get_data_at_par(
             &self,
@@ -242,7 +325,10 @@ mod tests {
             unreachable!("not exercised here")
         }
         async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
-            unreachable!("not exercised here")
+            Ok(BlockInfo {
+                block_info: light_block_info(*self.finalized_block_number.lock().unwrap()),
+                deploys: Vec::new(),
+            })
         }
         async fn is_finalized(&self, _: &str) -> ApiErr<bool> {
             unreachable!("not exercised here")
@@ -423,42 +509,67 @@ mod tests {
             .expect("somebody else is a target");
     }
 
-    /// The faucet's per-address budget (R17) is enforced: one drip for one address, the second
-    /// refused by name — the fix for a single caller draining the dev wallet.
+    /// One delivered drip is enforced by finalized chain state rather than a process-local count.
+    /// The first request reserves and submits; once that deploy is successful and finalised, the
+    /// recipient balance itself makes a second request ineligible.
     #[tokio::test]
-    async fn the_faucet_enforces_its_per_address_budget() {
+    async fn finalized_balance_makes_the_faucet_idempotent() {
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
+        let stub = StubBlockApi::default();
+        let balance = stub.finalized_balance.clone();
+        let finalized = stub.finalized_block_number.clone();
+        let deploy_status = stub.deploy_status.clone();
+        let deployed = stub.deployed.clone();
+        let web = api(stub, Some(sk));
+
+        let first = web.faucet(&address).await.expect("first drip submits");
+        assert_eq!(first.amount, faucet::FAUCET_AMOUNT);
+
+        *deploy_status.lock().unwrap() = Ok(DomainExecStatus::ProcessedWithSuccess {
+            deploy_result: Vec::new(),
+            block: light_block_info(7),
+        });
+        *finalized.lock().unwrap() = 7;
+        *balance.lock().unwrap() = faucet::FAUCET_AMOUNT;
+
+        let err = web
+            .faucet(&address)
+            .await
+            .expect_err("finalized delivery makes the account ineligible");
+        assert!(
+            err.0.contains("already funded in finalized state"),
+            "the refusal is derived from chain state: {}",
+            err.0
+        );
+        assert_eq!(
+            deployed.lock().unwrap().len(),
+            1,
+            "no second drip was submitted"
+        );
+    }
+
+    /// A submitted drip remains reserved until its outcome is known, closing the concurrent/retry
+    /// window before finality. The chain state becomes authoritative once delivery finalises.
+    #[tokio::test]
+    async fn a_pending_drip_keeps_the_address_reserved() {
         let (sk, _) = key_and_address();
         let address = faucet_target();
         let web = api(StubBlockApi::default(), Some(sk));
 
-        for i in 0..FAUCET_MAX_DRIPS_PER_ADDRESS {
-            let response = web.faucet(&address).await.expect("a drip");
-            assert_eq!(response.amount, faucet::FAUCET_AMOUNT);
-            assert_eq!(response.to, address);
-            assert!(!response.deploy_id.is_empty(), "drip {i} has an id");
-        }
-
-        let err = web.faucet(&address).await.expect_err("the budget is spent");
-        assert_eq!(
-            err,
-            BlockApiException(format!(
-                "faucet: address {address} has reached its drip budget ({FAUCET_MAX_DRIPS_PER_ADDRESS})"
-            ))
+        web.faucet(&address).await.expect("first drip submits");
+        let err = web
+            .faucet(&address)
+            .await
+            .expect_err("the first deploy is still pending");
+        assert!(
+            err.0.contains("still pending"),
+            "pending reservation is named: {}",
+            err.0
         );
-
-        // A *different* address still has its own budget.
-        let (_, other) = key_and_address();
-        assert!(other != address, "the two keys differ");
-        web.faucet(&other).await.expect("another address drips");
     }
 
-    /// With no deployer key the faucet refuses, naming the flags an operator needs — and it refuses
-    /// **before charging the drip**, which is a change (AUDIT R33).
-    ///
-    /// This test used to pin the opposite as deliberate: the budget was taken before the key was
-    /// checked, so a dev node started without `--deployer-private-key` burned its per-address allowance
-    /// serving nothing. That is the same defect as R33 one step over — a no-op that spends the budget
-    /// — and R33's fix needs the key *earlier* than the charge, so both went at once.
+    /// With no deployer key the faucet refuses before any chain read or reservation.
     #[tokio::test]
     async fn the_faucet_without_a_key_names_the_flags_it_needs() {
         let (_, address) = key_and_address();
@@ -469,19 +580,6 @@ mod tests {
         assert_eq!(
             err,
             BlockApiException("faucet requires --dev-mode --deployer-private-key".to_string())
-        );
-
-        // **The budget was not touched.** Wiring a key afterwards leaves the address its full
-        // allowance — the whole point of moving the check, and the arm that fails if the key is
-        // resolved after the charge again.
-        let (sk, _) = key_and_address();
-        let web = api(StubBlockApi::default(), Some(sk));
-        for _ in 0..FAUCET_MAX_DRIPS_PER_ADDRESS {
-            web.faucet(&address).await.expect("a drip");
-        }
-        assert!(
-            web.faucet(&address).await.is_err(),
-            "the per-address budget is spent"
         );
     }
 
@@ -512,6 +610,96 @@ mod tests {
         assert_eq!(
             after_success.faucet_remaining,
             FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
+        );
+    }
+
+    /// A successful replay is not delivery until the containing block is finalized. While finality
+    /// is behind, the recipient reservation stays closed; once finality reaches the block and the
+    /// finalized balance is still below one drip, the account can retry.
+    #[tokio::test]
+    async fn processed_success_waits_for_finality_before_reconciling_delivery() {
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
+        let stub = StubBlockApi::default();
+        let deploy_status = stub.deploy_status.clone();
+        let finalized = stub.finalized_block_number.clone();
+        let deployed = stub.deployed.clone();
+        let web = api(stub, Some(sk));
+
+        web.faucet(&address)
+            .await
+            .expect("first submit is accepted");
+        *deploy_status.lock().unwrap() = Ok(DomainExecStatus::ProcessedWithSuccess {
+            deploy_result: Vec::new(),
+            block: light_block_info(7),
+        });
+        *finalized.lock().unwrap() = 6;
+
+        let waiting = web
+            .faucet(&address)
+            .await
+            .expect_err("processed is not finalized delivery");
+        assert!(
+            waiting.0.contains("processed in block 7 but finality is 6"),
+            "the finality boundary is explicit: {}",
+            waiting.0
+        );
+        assert_eq!(
+            deployed.lock().unwrap().len(),
+            1,
+            "no retry before finality"
+        );
+
+        *finalized.lock().unwrap() = 7;
+        web.faucet(&address)
+            .await
+            .expect("finalized success with no delivered balance releases the retry");
+        assert_eq!(
+            deployed.lock().unwrap().len(),
+            2,
+            "retry happens after reconciliation"
+        );
+    }
+
+    /// A replay-time failure is different from a submission refusal: the deploy was accepted, but
+    /// the chain later proved that nothing was delivered. The next request must refund that stale
+    /// reservation and be allowed to submit again.
+    #[tokio::test]
+    async fn a_replay_failure_does_not_consume_recipient_eligibility() {
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
+        let stub = StubBlockApi::default();
+        let deploy_status = stub.deploy_status.clone();
+        let deployed = stub.deployed.clone();
+        let web = api(stub, Some(sk));
+
+        web.faucet(&address)
+            .await
+            .expect("first submit is accepted");
+        assert_eq!(
+            web.capabilities().await.unwrap().faucet_remaining,
+            FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
+        );
+
+        *deploy_status.lock().unwrap() = Ok(DomainExecStatus::ProcessedWithError {
+            deploy_error: "preCharge: insufficient funds (0 < 1000000)".to_string(),
+            block: light_block_info(5),
+        });
+
+        let retry = web
+            .faucet(&address)
+            .await
+            .expect("replay failure releases eligibility and retries");
+        assert_eq!(retry.amount, faucet::FAUCET_AMOUNT);
+        assert_eq!(
+            deployed.lock().unwrap().len(),
+            2,
+            "the retry reached the block API"
+        );
+        assert_eq!(
+            web.capabilities().await.unwrap().faucet_remaining,
+            FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT,
+            "the failed replay was refunded before the retry reservation"
         );
     }
 
@@ -639,14 +827,7 @@ impl WebApi for WebApiImpl {
         if !RevAddress::is_valid(address) {
             return Err(BlockApiException(format!("Invalid REV address: {address}")));
         }
-        // **The key is resolved before anything is charged, and that ordering is two findings'
-        // fix.** AUDIT R33: a drip to the deployer's *own* address moves nothing — `build_transfer_term`
-        // signs a transfer from the deployer's account to the deployer's account — and it still spent
-        // one of the address's drips and submitted a deploy that pays a phlo cost to do nothing.
-        // Catching that needs the key, so the key has to come first; and once it does, a node started
-        // without `--deployer-private-key` stops burning its whole drip budget on refusals, which this
-        // module's own test used to pin as deliberate ("a dev node without a key burns its drips
-        // without serving any"). Both are the same shape: a no-op that spends the budget.
+
         let sk = self.deployer_key.as_ref().ok_or_else(|| {
             BlockApiException("faucet requires --dev-mode --deployer-private-key".to_string())
         })?;
@@ -657,13 +838,88 @@ impl WebApi for WebApiImpl {
                  two accounts the node already holds, and would still spend the budget"
             )));
         }
-        // Reserve atomically before the async submit so concurrent requests cannot both pass the
-        // same-address or total-budget gate. A failed submit rolls the reservation back below.
+
+        // Reconcile an earlier reservation before consulting durable eligibility. Submission is not
+        // delivery: a replay-time failure refunds both the recipient reservation and the total budget.
+        let pending = {
+            let ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+            ledger.pending.get(address).cloned()
+        };
+        if let Some(pending) = pending {
+            let deploy_id = match pending {
+                None => {
+                    return Err(BlockApiException(format!(
+                        "faucet: address {address} already has a drip submission in progress"
+                    )))
+                }
+                Some(deploy_id) => deploy_id,
+            };
+
+            match self
+                .block_api
+                .deploy_status(&deploy_id)
+                .await
+                .map_err(BlockApiException)?
+            {
+                CasperDeployExecStatus::ProcessedWithError { .. } => {
+                    self.clear_faucet_reservation(address, Some(&deploy_id), true);
+                }
+                CasperDeployExecStatus::NotProcessed { status } => {
+                    return Err(BlockApiException(format!(
+                        "faucet: previous drip for {address} is still pending ({status})"
+                    )))
+                }
+                CasperDeployExecStatus::ProcessedWithSuccess { block, .. } => {
+                    let finalized = self
+                        .block_api
+                        .last_finalized_block()
+                        .await
+                        .map_err(BlockApiException)?;
+                    if finalized.block_info.block_number < block.block_number {
+                        return Err(BlockApiException(format!(
+                            "faucet: previous drip for {address} is processed in block {} but finality is {}",
+                            block.block_number, finalized.block_info.block_number
+                        )));
+                    }
+
+                    let balance = self.finalized_rev_balance(address).await?;
+                    if balance >= faucet::FAUCET_AMOUNT {
+                        self.clear_faucet_reservation(address, Some(&deploy_id), false);
+                        return Err(BlockApiException(format!(
+                            "faucet: address {address} is already funded in finalized state ({balance} drops)"
+                        )));
+                    }
+
+                    // Replay succeeded, finality passed, but the recipient still did not receive a
+                    // drip. Delivery is the invariant, so release the reservation and let it retry.
+                    self.clear_faucet_reservation(address, Some(&deploy_id), true);
+                }
+            }
+        }
+
+        // The chain, not a process-local counter, owns one-grant-per-account. explore-deploy without
+        // a block hash is anchored to last-finalized-block, so this survives process restarts and
+        // cannot lock out an account that received nothing.
+        let balance = self.finalized_rev_balance(address).await?;
+        if balance >= faucet::FAUCET_AMOUNT {
+            return Err(BlockApiException(format!(
+                "faucet: address {address} is already funded in finalized state ({balance} drops)"
+            )));
+        }
+
+        // Build the deploy before taking the reservation; a signing error must not consume budget.
+        let vabn = self.block_api.status().await.latest_block_number;
+        let signed =
+            faucet::sign_faucet_deploy(sk, address, faucet::FAUCET_AMOUNT, &self.shard_id, vabn)
+                .map_err(BlockApiException)?;
+
+        // Reserve atomically across the per-address in-flight gate and total allocation. This closes
+        // the concurrent-request window while the chain outcome is still unknown.
         {
             let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
-            if ledger.counts.get(address).copied().unwrap_or(0) >= FAUCET_MAX_DRIPS_PER_ADDRESS {
+            if ledger.pending.contains_key(address) {
                 return Err(BlockApiException(format!(
-                    "faucet: address {address} has reached its drip budget ({FAUCET_MAX_DRIPS_PER_ADDRESS})"
+                    "faucet: address {address} already has a drip reservation"
                 )));
             }
             if FAUCET_TOTAL_BUDGET.saturating_sub(ledger.spent) < faucet::FAUCET_AMOUNT {
@@ -671,27 +927,22 @@ impl WebApi for WebApiImpl {
                     "faucet: total budget exhausted".to_string(),
                 ));
             }
-            *ledger.counts.entry(address.to_string()).or_insert(0) += 1;
+            ledger.pending.insert(address.to_string(), None);
             ledger.spent = ledger.spent.saturating_add(faucet::FAUCET_AMOUNT);
         }
-        // Valid-from-now: a deploy with `valid_after_block_number = -1` is treated as expired once
-        // the node is past `DEPLOY_LIFESPAN` (50) blocks, so anchor it to the current height.
-        let vabn = self.block_api.status().await.latest_block_number;
-        let signed =
-            faucet::sign_faucet_deploy(sk, address, faucet::FAUCET_AMOUNT, &self.shard_id, vabn)
-                .map_err(BlockApiException)?;
-        // `deploy` validates, pools, and (with propose-on-deploy) proposes the transfer.
+
         if let Err(err) = self.block_api.deploy(&signed).await {
-            let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(count) = ledger.counts.get_mut(address) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    ledger.counts.remove(address);
-                }
-            }
-            ledger.spent = ledger.spent.saturating_sub(faucet::FAUCET_AMOUNT);
+            self.clear_faucet_reservation(address, None, true);
             return Err(BlockApiException(err));
         }
+
+        {
+            let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(slot) = ledger.pending.get_mut(address) {
+                *slot = Some(signed.sig.clone());
+            }
+        }
+
         Ok(FaucetResponse {
             deploy_id: base16::encode(&signed.sig),
             amount: faucet::FAUCET_AMOUNT,
