@@ -46,8 +46,8 @@ use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
-    InMemNativeStore, NativeStoreAction, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN,
-    PREFIX_VAULT, PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
+    InMemNativeStore, NativeStoreAction, PREFIX_ERTP, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY,
+    PREFIX_TXN, PREFIX_VAULT, PREFIX_VAULT_AUTH, PREFIX_VAULT_NAME,
 };
 
 use crate::util::rev_address::RevAddress;
@@ -6564,5 +6564,391 @@ pub fn pos_vault_put_action(value: NonNegI64) -> NativeStoreAction {
         prefix: PREFIX_POS,
         key: pos_vault_key(),
         value: i64::from(value).to_le_bytes().to_vec(),
+    }
+}
+
+// --------------------------------------------------------------------------------------------------
+// ERTP (issue #249)
+//
+// Appended at the tail for the same reason the checkpoint actions above are: this file's earlier line
+// numbers are cited by Lean declarations and spec rows, so a new section goes at the end rather than
+// in the middle where it would read better.
+// --------------------------------------------------------------------------------------------------
+
+impl NativeSystemState {
+    /// The bytes of the name that may mint this brand, if it is registered.
+    pub async fn ertp_brand_authority(&self, brand: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        self.store.get(PREFIX_ERTP, &ertp_brand_key(brand)).await
+    }
+
+    /// Register a brand and the name that may mint it.
+    ///
+    /// Idempotent for the *same* authority, and refused for a different one: a brand whose minter can
+    /// be replaced is a brand whose scarcity is not a fact, and every amount of it already in
+    /// circulation would be denominated in something a second party could also print.
+    pub async fn ertp_register_brand(
+        &self,
+        brand: &[u8],
+        authority: &[u8],
+    ) -> Result<Result<(), String>, String> {
+        match self.ertp_brand_authority(brand).await? {
+            Some(existing) if existing == authority => Ok(Ok(())),
+            Some(_) => Ok(Err("this brand already has an issuer".to_string())),
+            None => {
+                self.store
+                    .put(PREFIX_ERTP, ertp_brand_key(brand), authority.to_vec());
+                Ok(Ok(()))
+            }
+        }
+    }
+
+    /// What this issuer says `holder` (a purse or a payment) contains. `None` means the issuer has
+    /// never heard of it — which is not the same as zero, and is not flattened to one.
+    pub async fn ertp_holding(
+        &self,
+        brand: &[u8],
+        holder: &[u8],
+    ) -> Result<Option<Holding>, String> {
+        match self
+            .store
+            .get(PREFIX_ERTP, &ertp_holding_key(brand, holder))
+            .await?
+        {
+            Some(bytes) => decode_holding(&bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn set_ertp_holding(&self, brand: &[u8], holder: &[u8], holding: Holding) {
+        self.store.put(
+            PREFIX_ERTP,
+            ertp_holding_key(brand, holder),
+            encode_holding(holding),
+        );
+    }
+
+    /// Create a payment holding of `amount` under `authority` — the only path that makes a holding
+    /// out of nothing, and therefore the one that must present the brand's issuer.
+    pub async fn ertp_mint(
+        &self,
+        brand: &[u8],
+        authority: &[u8],
+        payment: &[u8],
+        amount: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        if self.ertp_brand_authority(brand).await?.as_deref() != Some(authority) {
+            return Ok(Err(
+                "only the name that registered the brand may mint it".to_string()
+            ));
+        }
+        if self.ertp_holding(brand, payment).await?.is_some() {
+            return Ok(Err("that payment already exists".to_string()));
+        }
+        self.set_ertp_holding(brand, payment, Holding { amount, live: true });
+        Ok(Ok(()))
+    }
+
+    /// Move everything a live payment holds into `purse`, consuming the payment.
+    ///
+    /// The liveness check and the clearing happen in the same call that credits the purse, so a
+    /// second deposit of the same payment is *refused* rather than double-counted. That is ERTP's
+    /// double-spend guard and the whole reason a payment is not a purse; doing it here, in one native
+    /// step, is what makes it hold against a caller that interleaves two deposits.
+    pub async fn ertp_deposit(
+        &self,
+        brand: &[u8],
+        purse: &[u8],
+        payment: &[u8],
+    ) -> Result<Result<NonNegI64, String>, String> {
+        let Some(from) = self.ertp_holding(brand, payment).await? else {
+            return Ok(Err("no such payment".to_string()));
+        };
+        if !from.live {
+            return Ok(Err("that payment has already been deposited".to_string()));
+        }
+        let credited = self
+            .ertp_holding(brand, purse)
+            .await?
+            .map(|h| h.amount)
+            .unwrap_or_else(NonNegI64::zero);
+        let total = balance_plus(credited, i64::from(from.amount), "ertp deposit")?;
+        self.set_ertp_holding(
+            brand,
+            purse,
+            Holding {
+                amount: total,
+                live: true,
+            },
+        );
+        self.set_ertp_holding(
+            brand,
+            payment,
+            Holding {
+                amount: NonNegI64::zero(),
+                live: false,
+            },
+        );
+        Ok(Ok(total))
+    }
+
+    /// Issue a payment of `amount` out of `purse`, under the brand's authority.
+    ///
+    /// Only the issuer may withdraw, because issuing is what an issuer *is*; the purse's own name is
+    /// the capability to deposit *into* it, which is why `ertp_deposit` asks for nothing more.
+    pub async fn ertp_withdraw(
+        &self,
+        brand: &[u8],
+        authority: &[u8],
+        purse: &[u8],
+        payment: &[u8],
+        amount: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        if self.ertp_brand_authority(brand).await?.as_deref() != Some(authority) {
+            return Ok(Err(
+                "only the name that registered the brand may issue it".to_string()
+            ));
+        }
+        if self.ertp_holding(brand, payment).await?.is_some() {
+            return Ok(Err("that payment already exists".to_string()));
+        }
+        let held = self
+            .ertp_holding(brand, purse)
+            .await?
+            .map(|h| h.amount)
+            .unwrap_or_else(NonNegI64::zero);
+        let (held, wanted) = (i64::from(held), i64::from(amount));
+        if held < wanted {
+            return Ok(Err("insufficient funds".to_string()));
+        }
+        let left = NonNegI64::try_from(held - wanted)
+            .map_err(|_| "the withdrawal left a negative balance".to_string())?;
+        self.set_ertp_holding(
+            brand,
+            purse,
+            Holding {
+                amount: left,
+                live: true,
+            },
+        );
+        self.set_ertp_holding(brand, payment, Holding { amount, live: true });
+        Ok(Ok(()))
+    }
+}
+
+/// Leaf key for a registered brand.
+fn ertp_brand_key(brand: &[u8]) -> Blake2b256Hash {
+    Blake2b256Hash::create(brand)
+}
+
+/// Leaf key for a holding. The brand's length is prefixed so that `(ab, c)` and `(a, bc)` cannot
+/// collide on the same leaf — the one way a concatenation-keyed map goes wrong.
+fn ertp_holding_key(brand: &[u8], holder: &[u8]) -> Blake2b256Hash {
+    let mut buf = Vec::with_capacity(4 + brand.len() + holder.len());
+    buf.extend_from_slice(&(brand.len() as u32).to_le_bytes());
+    buf.extend_from_slice(brand);
+    buf.extend_from_slice(holder);
+    Blake2b256Hash::create(&buf)
+}
+
+/// What an issuer's ledger says one purse or payment holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Holding {
+    pub amount: NonNegI64,
+    /// A payment is consumed by its first deposit; a purse is never consumed.
+    pub live: bool,
+}
+
+fn encode_holding(h: Holding) -> Vec<u8> {
+    let mut out = i64::from(h.amount).to_le_bytes().to_vec();
+    out.push(u8::from(h.live));
+    out
+}
+
+fn decode_holding(bytes: &[u8]) -> Result<Holding, String> {
+    let [amount @ .., live] = bytes else {
+        return Err("an ERTP holding is empty".to_string());
+    };
+    let amount: [u8; 8] = amount
+        .try_into()
+        .map_err(|_| format!("an ERTP holding amount is {} bytes", amount.len()))?;
+    let amount = NonNegI64::try_from(i64::from_le_bytes(amount))
+        .map_err(|_| "an ERTP holding is negative".to_string())?;
+    Ok(Holding {
+        amount,
+        live: *live != 0,
+    })
+}
+
+#[cfg(test)]
+mod ertp_tests {
+    use super::*;
+
+    fn nn(v: i64) -> NonNegI64 {
+        NonNegI64::try_from(v).expect("a test amount is non-negative")
+    }
+
+    fn state() -> NativeSystemState {
+        NativeSystemState::new(Arc::new(InMemNativeStore::empty()))
+    }
+
+    #[tokio::test]
+    async fn a_brand_belongs_to_the_issuer_that_registered_it() {
+        let native = state();
+        assert_eq!(
+            native.ertp_register_brand(b"kudos", b"issuer").await,
+            Ok(Ok(()))
+        );
+        // Idempotent for the same issuer...
+        assert_eq!(
+            native.ertp_register_brand(b"kudos", b"issuer").await,
+            Ok(Ok(()))
+        );
+        // ...and refused for another, because a replaceable minter is not scarcity.
+        assert_eq!(
+            native.ertp_register_brand(b"kudos", b"someone-else").await,
+            Ok(Err("this brand already has an issuer".to_string()))
+        );
+        assert_eq!(
+            native.ertp_brand_authority(b"kudos").await,
+            Ok(Some(b"issuer".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_name_that_registered_the_brand_may_mint_it() {
+        let native = state();
+        native
+            .ertp_register_brand(b"kudos", b"issuer")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            native.ertp_mint(b"kudos", b"thief", b"p1", nn(10)).await,
+            Ok(Err(
+                "only the name that registered the brand may mint it".to_string()
+            ))
+        );
+        assert_eq!(
+            native.ertp_mint(b"kudos", b"issuer", b"p1", nn(10)).await,
+            Ok(Ok(()))
+        );
+        assert_eq!(
+            native.ertp_holding(b"kudos", b"p1").await,
+            Ok(Some(Holding {
+                amount: nn(10),
+                live: true
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payment_is_consumed_by_its_first_deposit() {
+        let native = state();
+        native
+            .ertp_register_brand(b"kudos", b"issuer")
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .ertp_mint(b"kudos", b"issuer", b"p1", nn(10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            native.ertp_deposit(b"kudos", b"purse", b"p1").await,
+            Ok(Ok(nn(10)))
+        );
+        // The second deposit is refused rather than double-counted: the whole point of a payment
+        // being distinct from a purse.
+        assert_eq!(
+            native.ertp_deposit(b"kudos", b"purse", b"p1").await,
+            Ok(Err("that payment has already been deposited".to_string()))
+        );
+        assert_eq!(
+            native.ertp_holding(b"kudos", b"purse").await,
+            Ok(Some(Holding {
+                amount: nn(10),
+                live: true
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_holding_of_one_brand_is_not_a_holding_of_another() {
+        // A payment is not "worth zero" under another brand — that issuer has never heard of it, and
+        // the refusal is what keeps two brands' holdings from being interchangeable names.
+        let native = state();
+        native
+            .ertp_register_brand(b"kudos", b"issuer")
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .ertp_register_brand(b"other", b"issuer")
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .ertp_mint(b"kudos", b"issuer", b"p1", nn(10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            native.ertp_deposit(b"other", b"purse", b"p1").await,
+            Ok(Err("no such payment".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_withdrawal_beyond_the_balance_is_refused_and_a_live_one_moves_the_amount() {
+        let native = state();
+        native
+            .ertp_register_brand(b"kudos", b"issuer")
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .ertp_mint(b"kudos", b"issuer", b"seed", nn(10))
+            .await
+            .unwrap()
+            .unwrap();
+        native
+            .ertp_deposit(b"kudos", b"purse", b"seed")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            native
+                .ertp_withdraw(b"kudos", b"issuer", b"purse", b"out", nn(11))
+                .await,
+            Ok(Err("insufficient funds".to_string()))
+        );
+        assert_eq!(
+            native
+                .ertp_withdraw(b"kudos", b"issuer", b"purse", b"out", nn(4))
+                .await,
+            Ok(Ok(()))
+        );
+        assert_eq!(
+            native.ertp_holding(b"kudos", b"purse").await,
+            Ok(Some(Holding {
+                amount: nn(6),
+                live: true
+            }))
+        );
+        assert_eq!(
+            native.ertp_holding(b"kudos", b"out").await,
+            Ok(Some(Holding {
+                amount: nn(4),
+                live: true
+            }))
+        );
+    }
+
+    /// The one way a concatenation-keyed map goes wrong: `(ab, c)` and `(a, bc)` must not be the same
+    /// leaf, which is why the brand's length is prefixed rather than the two simply joined.
+    #[test]
+    fn an_ertp_holding_key_cannot_be_confused_by_a_concatenation() {
+        assert_ne!(ertp_holding_key(b"ab", b"c"), ertp_holding_key(b"a", b"bc"));
     }
 }

@@ -28,6 +28,9 @@ component. Native state therefore enters the same trie, under dedicated prefixes
 | `PREFIX_VAULT` | `0x05` | vault `address → NonNegI64` | `blake2b256(address)` |
 | `PREFIX_TXN` | `0x06` | cross-shard 2PC records (`txn-id → TxnRecord`) | `blake2b256(txn-id)` |
 | `PREFIX_HTTP` | `0x07` | HTTP-result oracle (`url → (value, block)`) | `blake2b256(b"http:records")` |
+| `PREFIX_VAULT_NAME` | `0x08` | vault **handle** (`unforgeable-name → base58 rev-address`) | `blake2b256(name)` |
+| `PREFIX_VAULT_AUTH` | `0x09` | vault **authority** (`unforgeable-name → base58 rev-address`) | `blake2b256(name)` |
+| `PREFIX_ERTP` | `0x0A` | ERTP issuer ledger: a brand's minting authority, and each purse's or payment's holding | `blake2b256(brand)` / `blake2b256(len(brand) ‖ brand ‖ holder)` |
 
 The PoS leaves under `PREFIX_POS`:
 

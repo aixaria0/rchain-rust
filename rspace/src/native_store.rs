@@ -39,6 +39,18 @@ pub const PREFIX_VAULT_NAME: u8 = 0x08;
 /// enough to spend, which is exactly the hole this level of the design exists to close. An authority
 /// is recorded only by `unforgeableAuthKey`, whose argument the caller must already hold.
 pub const PREFIX_VAULT_AUTH: u8 = 0x09;
+/// Trie prefix for the **ERTP issuer ledger** (issue #249): what an issuer says its purses and
+/// payments hold.
+///
+/// Two kinds of leaf share it, told apart by their key: a *brand* leaf records the bytes of the
+/// issuing authority (the issuer's unforgeable name, the one thing that may mint), and a *holding*
+/// leaf records one purse's or payment's amount and whether it is still live — a payment is consumed
+/// by its first deposit, which is ERTP's double-spend guard.
+///
+/// Separate from [`PREFIX_VAULT`] because REV is not special here: this is the multi-token layer
+/// REV becomes one brand of, and a REV balance stays where it was rather than moving into a ledger
+/// whose shapes would then have to serve two masters.
+pub const PREFIX_ERTP: u8 = 0x0A;
 
 /// A native-state mutation, folded into the trie at checkpoint (port of a `NativeStoreAction`).
 #[derive(Clone, Debug, PartialEq, Eq)]
