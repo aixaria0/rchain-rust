@@ -190,16 +190,34 @@ fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
             .await
             .expect("send the call");
 
-        // The node has to produce a block for the bridged deploy to land and reply. Drive one the
-        // way `deploy_block.rs` does — an explicit propose over the internal gRPC service — rather
-        // than relying on `propose-on-deploy`, which this harness does not exercise.
+        // The node has to produce a block for the bridged deploy to land and reply. `propose-on-deploy`
+        // is on (the bridged deploy arriving is what triggers the node's own propose), so an explicit
+        // nudge — the shape `deploy_block.rs` uses — can arrive while that one is already running, and
+        // the node then answers `Failure: another propose is in progress`. **That is not a failure
+        // here**: it says a block is being produced, which is the whole assertion this call was
+        // making. A CI machine reached that window where a quiet laptop did not, which is how the race
+        // was found; anything other than those two answers is still a real failure.
+        //
+        // The async propose first is what makes the window reachable *from a test*: it returns as soon
+        // as the node accepts it, so the blocking call behind it lands inside the node's own propose
+        // on essentially every run — measured, and that is what turns "only CI sees this" into "every
+        // run checks it". `Ok` and that refusal are both a block on its way; either satisfies this
+        // test, and the assertion below is what says so.
         let propose = GrpcProposeService::connect("127.0.0.1", ports[2] as i32, 16 * 1024 * 1024)
             .await
             .expect("propose gRPC");
         propose
-            .propose(false)
+            .propose(true)
             .await
-            .expect("propose produced a block");
+            .expect("the async propose is accepted");
+        match propose.propose(false).await {
+            Ok(_) => {}
+            Err(errors)
+                if errors
+                    .iter()
+                    .any(|e| e.contains("another propose is in progress")) => {}
+            Err(errors) => panic!("propose failed: {errors:?}"),
+        }
 
         // 3. The reply is the balance the deployed `revVault.getBalance` put on its reply channel —
         //    read from a block and carried back over CapTP.
@@ -208,11 +226,20 @@ fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
         //    (1_000_000_000_000 − 1_000_000). That is a stronger check than "a number arrived": the
         //    deploy paid for itself out of the vault it was reading, so the assertion pins the whole
         //    round trip rather than its shape.
-        let reply = client
-            .recv_message()
-            .await
-            .expect("read the reply")
-            .expect("a reply, not a closed connection");
+        //
+        //    **Bounded**, because "no block was produced" has to be a failure with the reason in it
+        //    rather than a job that sits here until its timeout: the deploy lands only if a block
+        //    carries it, and that is the node's half of this test.
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            client.recv_message(),
+        )
+        .await
+        .expect(
+            "the bridge should answer within 120s — a delivered call becomes a deploy and a block",
+        )
+        .expect("read the reply")
+        .expect("a reply, not a closed connection");
         let delivered = Deliver::from_syrup(&reply).expect("a delivery");
         assert_eq!(
             delivered.args[0],
