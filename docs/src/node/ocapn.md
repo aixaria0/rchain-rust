@@ -185,16 +185,26 @@ record was wrong:
 
 ## Invariants
 
-- **Nothing here is consensus state.** Session keys and ids, wire bytes and framing, swiss-num
-  transport, handoff gift-ids and counters, and the `gc-*` bookkeeping are node-local. The only
-  chain-visible object is the caller-signed deploy the bridge submits — the same object Layer 1
-  already defines.
-- **Session identity and chain identity are two layers, never merged.** A CapTP session key is
-  **Ed25519** and off-chain; the node's OCapN *designator* is the **secp256k1** deployer key.
-  Ed25519 is deliberately disabled as an on-chain signature algorithm
-  (`crypto/src/signatures/signatures_alg.rs`, RCHAIN-3560) and stays disabled; the binding between
-  a session key and a deployer key is a signed statement carried in the session, not a change to
-  the deploy's signature scheme.
+*(Corrected 2026-10-05 by the HAZOP at `spec/audit/evidence/ocapn-hazop.md`. Two of the three below
+were **false**: they described the state the design intends rather than the state the code is in, and
+a design page that does that is worse than one that says nothing, because it is the page an operator
+reads to decide what the listener exposes.)*
+
+- **Sessions, wire bytes and handoff bookkeeping are node-local; a bridged delivery is not.** The
+  caller-signed deploy is the only thing CapTP *itself* puts on chain — but a delivery to a
+  **method-carrying** capability also runs `rho:registry:insertArbitrary` in that same deploy, so it
+  mints a **permanent** registry entry holding the reply (capabilities included), and it spends the
+  node's own REV as phlo. That entry is consensus state on every node that replays, it is unbounded
+  in count, and nothing deletes it (AUDIT C221).
+- **Session identity and chain identity are two layers, and they are not merged *today*.** A CapTP
+  session key is **Ed25519**, ephemeral (`Identity::fresh`) and off-chain; Ed25519 stays disabled as
+  an on-chain signature algorithm (`crypto/src/signatures/signatures_alg.rs`, RCHAIN-3560). **But
+  there is no binding between them yet**: every bridged deploy is signed by the one
+  `dev.deployer-private-key`, so the chain sees the *node* as the caller for every peer. The design's
+  intent — a signed statement in the session that a deployer key stands for this session — is
+  **future work**, and the node's OCapN designator is the literal string `"rnode"`, not that key.
+  Until the binding exists, `api-server.ocapn-listen` must be treated as **publishing the node's own
+  authority**, not as admitting identified callers.
 - **A CapTP promise can be finalised by consensus** — but finalisation means "a finalised block
   committed the value on the reply channel", not a language-level future. Pending answers,
   timeouts, and breaks are session state; a contract that acts on an answer must be idempotent per

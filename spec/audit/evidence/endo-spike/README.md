@@ -8,9 +8,10 @@ Python conformance suite; this is the one Agoric actually ships.
 | | |
 |---|---|
 | Date | 2026-10-05 |
-| Implementation under test | `rchain-ocapn`, branch `ocapn/ertp-interop`, `cargo build -p rchain-ocapn --bin ocapn-tcp-testing` |
+| `run-1.txt` under test | `rchain-ocapn` on `ocapn/ertp-interop` — the **fixture binary** (`cargo build -p rchain-ocapn --bin ocapn-tcp-testing`) |
+| `run-2.txt` under test | **`rnode` itself** (`target/debug/rnode`, `spec/audit/evidence/endo-spike/node.conf`) — the ERTP round trip below |
 | Peer | `@endo/ocapn` **1.1.1** on Node **v22.22.2**, `framing: 'syrup'` |
-| Result | **handshake → `fetch` → call → reply, all green** |
+| Result | **handshake → `fetch` → call → reply, all green** (run-1) and **the ERTP round trip against a node** (run-2) |
 
 `run-1.txt` is the full transcript. The operative lines:
 
@@ -40,11 +41,10 @@ That is why this port's netstring framing is correct and needs no change.
 
 ## A divergence this found — the swiss number's type
 
-The first run failed, and the failure is the finding:
-
-```
-args: [ Symbol(break), 'fetch expects a byte-array swiss number' ]
-```
+The first run failed, and the failure is the finding. **That run's output was not kept** (the
+transcript in `run-1.txt` is the successful run that followed it, and the HAZOP's row E5 is the
+finding that this page used to quote a line appearing in no artifact). What it said, reconstructed
+from the fix it forced: the fetch broke with a reason naming the swiss number's type.
 
 Endo sends the swiss number as a **Syrup String**; the Python suite sends a **byte array**
 (`b"IO58l1laTyhcrgDKbEzFOO32MDd6zE5w"`); the Locators draft calls it a string. **The two reference

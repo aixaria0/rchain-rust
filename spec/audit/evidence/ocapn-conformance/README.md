@@ -10,33 +10,36 @@ implementation rather than to itself.
 | | |
 |---|---|
 | Date | 2026-10-05 |
-| Implementation under test | `rchain-ocapn`, branch `ocapn/ertp-interop`, `cargo build -p rchain-ocapn --bin ocapn-tcp-testing` |
+| Implementation under test | `rchain-ocapn` — **`ocapn/stage6` for runs 5–7**, `ocapn/ertp-interop` for runs 1–4 — `cargo build -p rchain-ocapn --bin ocapn-tcp-testing` |
 | Suite | `github.com/ocapn/ocapn-test-suite` at `31f0b80` |
 | Netlayer | `tcp-testing-only` (the suite's own; no encryption — it is not a deployment transport) |
 
-Six whole-suite runs are kept. `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after `op:listen`
-(`failures=6, errors=8`), `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`), and `run-4.txt`
-after `op:gc-answers` (`failures=6, errors=4`) are the stage-0–3 pass; `run-5.txt` is the driver's
-baseline; `run-6.txt` is stage 6's first half (the owned dialed session and the sturdyref enlivener:
-`op_start_session` 3/5 → **5/5**); and **`run-7.txt` is the finished suite, 24/24**. **Read the
-per-module numbers, not a summary line.** The runner reports a `setUp` error against the test it
+**Seven** whole-suite runs are kept. `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after
+`op:listen` (`failures=6, errors=8`), `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`), and
+`run-4.txt` after `op:gc-answers` (`failures=6, errors=4`) are the stage-0–3 pass; `run-5.txt` is the
+driver's baseline; `run-6.txt` is stage 6's first half (the owned dialed session and the sturdyref
+enlivener: `op_start_session` 3/5 → **5/5**); and **`run-7.txt` is the finished suite, 24/24**. **Read
+the per-module numbers, not a summary line.** The runner reports a `setUp` error against the test it
 aborted as well as the error itself, so its tallies exceed the test count; running each module on its
 own gives the numbers below.
 
 ## Per module
 
-The numbers below are `run-1.txt` … `run-7.txt` read down the columns, not a claim about the port in
-the abstract:
+**Read each column against its own run file.** Earlier versions of this table carried a "run-1" column
+holding run-4's numbers, which is worse than no table: `run-1.txt` is `op_listen` **0/3** and `op_gc`
+**0/4** (three `FAIL:` and four `ERROR:` lines, `:152,171,190` and `:54,73,82,91`), i.e. **9/24**, and
+the 16/24 in that column is `run-4.txt`'s state. Found by the HAZOP
+(`spec/audit/evidence/ocapn-hazop.md`, rows E2–E4):
 
-| Module | run-1 (stages 0–3) | run-4 | run-6 (stage 6, half) | **run-7 (finished)** | Note |
+| Module | run-1 | run-4 | run-6 (stage 6, half) | **run-7 (finished)** | Note |
 |---|---|---|---|---|---|
 | `op_abort` | 1 / 1 | 1 / 1 | 1 / 1 | **1 / 1** | ✅ |
 | `op_deliver` | 4 / 4 | 4 / 4 | 4 / 4 | **4 / 4** | ✅ including both promise-pipelining tests and the break-propagation test |
 | `op_start_session` | 3 / 5 | 3 / 5 | **5 / 5** | **5 / 5** | ✅ the crossed-hellos tests need the sturdyref enlivener, which run-6 has |
-| `op_listen` | 3 / 3 | 3 / 3 | 3 / 3 | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
-| `op_gc` | 4 / 4 | 4 / 4 | 4 / 4 | **4 / 4** | ✅ `op:gc-exports` with its wire-delta accounting, and `op:gc-answers` |
+| `op_listen` | **0 / 3** | 3 / 3 | 3 / 3 | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
+| `op_gc` | **0 / 4** | 4 / 4 | 4 / 4 | **4 / 4** | ✅ `op:gc-exports` with its wire-delta accounting, and `op:gc-answers` |
 | `third_party_handoffs` | 1 / 7 | 1 / 7 | 1 / 7 | **7 / 7** | ✅ all three roles — Receiver, Exporter and Gifter |
-| **Total** | **16 / 24** | **16 / 24** | **18 / 24** | **24 / 24** | |
+| **Total** | **9 / 24** | **16 / 24** | **18 / 24** | **24 / 24** | |
 
 So **every stage of the implementation guide now passes**: the handshake (with the two refusals it
 must make and the crossed-hello rule, asserted from both sides), `op:deliver`, the export table,
