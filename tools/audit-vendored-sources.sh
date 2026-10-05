@@ -20,10 +20,12 @@
 # its `legacy/**/resources/` original.
 #   1. identical            → ok
 #   2. differs              → must be an allowlisted entry naming the register row that justifies it
-#   3. no `legacy/` original → its own class, reported but not a failure: the ten `rgov/*.rho`
-#                             contracts (and the directory's `NOTICE`) are the port's own set, not
-#                             vendored text, and a classification that cannot tell "ours" from
-#                             "theirs" is not one. The count is printed rather than assumed.
+#   3. no `legacy/` original → its own class, reported but not a failure: the port's own contracts,
+#                             which have no upstream text to be held to. That is the `rgov/` set (ten
+#                             `*.rho` and the directory's `NOTICE`) and, since issue #249, `ERTP.rho`
+#                             — declared by name in `OWN` with the reason, because a classification
+#                             that cannot tell "ours" from "theirs" is not one. The count is printed
+#                             rather than assumed.
 #
 # The allowlist burns down rather than rotting: an entry whose file is now *identical* to its
 # original is a failure, not a pass — a justified difference that no longer exists is exactly the
@@ -44,6 +46,16 @@ ok() { printf 'ok    %s\n' "$*"; }
 declare -A ALLOW=(
   ["RevVault.rho"]="spec/API-SCHEMA.md's \`rho:block:data\` row: the consumer takes the port's three-element reply"
   ["Registry.rho"]="AUDIT §10 F5: the \`rho:id:\`/z-base-32 shorthand URIs replace the Scala's ZBase32 ones"
+)
+
+# **The port's own contracts, by name, with the reason each has no original.** These are not vendored
+# text and there is nothing upstream to hold them to, so they are a *classification* rather than a
+# justified difference — which is why they are declared here instead of being allowlisted as
+# divergences. A name is required per file (rather than a path prefix alone) so that a new "ours"
+# file has to say why, and so that the set can be read in one place. The reason is the citation, as
+# in `ALLOW`.
+declare -A OWN=(
+  ["ERTP.rho"]="issue #249: our own ERTP object API, installed at a key derived from a named string (spec/GENESIS.md)"
 )
 
 if [ ! -d "$RES" ]; then
@@ -67,8 +79,19 @@ while IFS= read -r path; do
   # tree would have turned every file into "no original" and left the check passing while comparing
   # nothing, which is the failure mode this file's own header warns about. A file directly under
   # `resources/` must now have an original here; only the port's own `rgov/` set may have none.
+  # The port's own files: the `rgov/` set by path, and anything declared in `OWN` by name. The reason
+  # is chosen into a variable rather than written as a `${var:-…}` default because **an apostrophe
+  # inside a parameter expansion opens a single-quoted string that bash then hunts for to EOF** —
+  # `bash -n` refuses the file at its last line, with a message about the *other* quote character, so
+  # the symptom points away from the line that caused it.
+  own_reason=""
   if [[ "$rel" == *"/rgov/"* ]]; then
-    echo "  no original expected: $rel (the port's own rgov set)"
+    own_reason="the port's own rgov set"
+  elif [[ -n "${OWN[$base]:-}" ]]; then
+    own_reason="${OWN[$base]}"
+  fi
+  if [ -n "$own_reason" ]; then
+    echo "  no original expected: $rel ($own_reason)"
     no_original=$((no_original + 1))
     continue
   fi
@@ -107,10 +130,19 @@ for base in "${!ALLOW[@]}"; do
   fi
 done
 
+# The own-list burns down the same way: a declared "ours" whose file is gone is a name claiming a
+# classification nothing carries, and leaving it would let the next `ERTP.rho`-shaped file arrive
+# unclassified while the list still looked inhabited.
+for base in "${!OWN[@]}"; do
+  if [ ! -f "$RES/$base" ]; then
+    fail "the own-list names $base, which does not exist — a stale entry"
+  fi
+done
+
 echo ""
 if [ "$failures" -gt 0 ]; then
   echo "===== $failures vendored-source check(s) FAILED ====="
   exit 1
 fi
-echo "ok    vendored contracts: $same identical to their originals, ${#seen_allow[@]} allowlisted difference(s), $no_original file(s) with no original (the rgov contract set)"
+echo "ok    vendored contracts: $same identical to their originals, ${#seen_allow[@]} allowlisted difference(s), $no_original file(s) with no original (the port's own set)"
 echo "===== the vendored sources match their originals ====="
