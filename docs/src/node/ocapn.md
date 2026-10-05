@@ -73,13 +73,17 @@ constants are pinned by known-answer vectors against an independent computation,
 composition (sort order, the `prot0` prefix, the round count) is the part that interoperates with
 nobody while passing every local round-trip.
 
-`ocapn/src/session.rs` carries the `op:start-session` message — `captp-version` (`"1.0"`),
-`crypto-version` (`"Ed25519_SHA256"`), `session-pubkey`, `acceptable-location`, and its signature —
-as a Syrup record, with the field order and the version constants pinned by a known-answer test.
-The spec is internally inconsistent about the receive-side `crypto-version` (its construction
-section says `Ed25519_SHA256`, its receiving section says `Ed25519`); this module sends the
-construction constant and does not yet enforce a receive value, rather than guessing which the
-document means. `op:abort` is carried too — "the reason text is the peer's to choose".
+`ocapn/src/session.rs` carries the `op:start-session` message. **Here the prose is wrong and the
+reference implementation is the oracle**: the CapTP draft gives the operation five fields, including
+a `crypto-version` it then contradicts itself about; the OCapN test suite's `OpStartSession` carries
+four — `captp_version`, `session_pubkey`, `location`, `location_sig` — with no `crypto-version` on
+the wire at all, so a port built from the prose would fail every handshake against Endo, Goblins,
+and DObjects. The port follows the implementation, and also reproduces the two fields that are
+gcrypt s-expressions rather than raw bytes: the session public key
+(`['public-key ['ecc ['curve 'Ed25519] ['flags 'eddsa] ['q …]]]`) and the signature
+(`['sig-val ['eddsa ['r …] ['s …]]]`), over the payload `<my-location <locator>>`. Both shapes are
+pinned by byte-level known-answer tests. (AUDIT C216.) `op:abort` is carried too — "the reason text
+is the peer's to choose".
 
 ### Built: the netlayer
 
