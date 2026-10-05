@@ -27,6 +27,7 @@ pub mod fixtures;
 pub mod locator;
 pub mod netlayer;
 pub mod netstring;
+pub mod par_value;
 pub mod peer;
 pub mod session;
 pub mod session_id;

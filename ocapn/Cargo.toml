@@ -13,6 +13,9 @@ num-bigint = "0.5"
 # Law 19's axiomatized primitives, reused rather than re-implemented: the session identity is
 # SHA-256 (KAT-pinned in `rchain-crypto`), and the session's signature scheme will be its Ed25519.
 rchain-crypto = { path = "../crypto" }
+# The `Par` type, for the bridge's value translation (`par_value.rs`). `models` does not depend on
+# `ocapn`, so the edge is acyclic.
+rchain-models = { path = "../models" }
 rchain-shared = { path = "../shared" }
 # The netlayer seam is async because CapTP is, and the node's runtime is tokio (the same choice
 # `rchain-comm` made). Minimal features: the netlayer needs `net` + `io-util` + a runtime, the
