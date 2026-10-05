@@ -39,6 +39,7 @@
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
+- [OCapN interoperability](node/ocapn.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
 - [Validator economics](node/validator-economics.md)
 - [Scaling and performance limits](node/scaling.md)

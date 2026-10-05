@@ -1,0 +1,12 @@
+[package]
+name = "rchain-ocapn"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "OCapN for RNode: the object-capability network (CapTP over a pluggable netlayer), so an Agoric vat can hold and invoke an RChain object."
+
+[dependencies]
+# Syrup integers are arbitrary precision ("An arbitrary precision signed integer", `Model.md`), so
+# a length or a counter in a CapTP message is not bounded by u64. Already in `Cargo.lock` via
+# `rchain-models`, which uses the same crate for `g_big_int`.
+num-bigint = "0.5"
