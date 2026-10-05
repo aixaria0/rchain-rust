@@ -3,10 +3,9 @@
 //! Two gates, because they fail independently. The first is the listener's own: a node configured
 //! with `api-server.ocapn-listen` answers a CapTP handshake and serves its fixtures. The second is
 //! the bridge: a delivery to a chain-backed capability becomes a signed deploy, and that deploy
-//! lands in a block. What the second does **not** yet prove is the reply *value* — the term runs but
-//! puts nothing on the reply channel, because Layer 1's `invoke_term` and the native `revVault` want
-//! different calling conventions (AUDIT C218). Its assertion pins the deploy's own verdict and says
-//! so.
+//! lands in a block. What the second does **not** yet prove is the reply *value*: the deploy runs,
+//! succeeds, and produces nothing on the reply channel, and the cause is not established (AUDIT
+//! C218). Its assertion pins the deploy's own verdict and says so.
 
 mod common;
 

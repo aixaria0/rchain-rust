@@ -18,13 +18,15 @@
 //!
 //! **What is proven, and what is not.** A delivery *does* become a signed deploy, and the deploy
 //! *does* land in a block — `node/tests/ocapn_listener.rs` asserts the deploy's own
-//! `ProcessedWithSuccess` verdict from the node. The reply **value** does not yet arrive, and the
-//! cause is a calling-convention mismatch rather than a plumbing fault: [`invoke_term`] spreads a
-//! call's arguments positionally and appends the reply channel as the last argument (the shape a
-//! `contract target(@method, @a, ret)` expects, which is what Layer 1's registry capabilities are),
-//! while a *native system process* like `rho:rchain:revVault` takes `(method, [args…])` — a method
-//! and one argument **list** — and wants the reply channel inside that list. So `invoke_term`
-//! cannot address the native revVault at all. That is AUDIT C218.
+//! `ProcessedWithSuccess` verdict from the node. The reply **value** does not arrive: the deploy
+//! runs, succeeds, and its `deploy_result` is **empty**, so nothing reached
+//! `` `rho:rchain:deployId` ``. **The cause is not established** — AUDIT C218 holds it, and the
+//! first explanation there was wrong: [`invoke_term`]'s shape *is* right. A system process is
+//! defined `arity: 1, remainder: true` (`rholang/src/system_processes.rs`), so a call's trailing
+//! arguments are collected into the single list the handler destructures — the faucet's
+//! five-argument `revVault!("transfer", …)` is the proof. Nothing is wrong with how the call is
+//! *shaped*, so something between the registry lookup, the send, and the write is dropping the
+//! reply.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
