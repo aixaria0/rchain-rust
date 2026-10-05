@@ -3,9 +3,9 @@
 //! Two gates, because they fail independently. The first is the listener's own: a node configured
 //! with `api-server.ocapn-listen` answers a CapTP handshake and serves its fixtures. The second is
 //! the bridge: a delivery to a chain-backed capability becomes a signed deploy, and that deploy
-//! lands in a block. What the second does **not** yet prove is the reply *value*: the deploy runs,
-//! succeeds, and produces nothing on the reply channel, and the cause is not established (AUDIT
-//! C218). Its assertion pins the deploy's own verdict and says so.
+//! lands in a block, and the value the deployed contract wrote to the deploy's reply channel comes
+//! back as the CapTP promise's fulfilment — the balance it reads is the wallet's, less the phlo that
+//! very deploy spent.
 
 mod common;
 
@@ -144,9 +144,8 @@ fn a_peer_dials_the_node_and_fetches_a_fixture() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The bridge: a CapTP delivery to a chain-backed capability becomes a signed deploy that lands in
-/// a block. The reply *value* is not yet delivered — see the module note and AUDIT C218 — so the
-/// assertion is on the deploy's own verdict.
+/// The bridge: a CapTP delivery to a chain-backed capability becomes a signed deploy, and the value
+/// that deploy wrote to its reply channel comes back as the CapTP promise's fulfilment.
 #[test]
 fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
     let dir = common::temp_dir("ocapn-bridge");
@@ -202,24 +201,29 @@ fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
             .await
             .expect("propose produced a block");
 
-        // 3. **What is proven today: the delivery became a deploy, and the deploy landed in a
-        //    block.** The reply *value* is not yet delivered, and the reason is named — see the
-        //    module note and AUDIT C218 — so this asserts the deploy's own verdict rather than a
-        //    `fulfill` it does not yet produce. When the reply starts working this assertion fails,
-        //    which is the point: it is the signal to replace it with the balance.
+        // 3. The reply is the balance the deployed `revVault.getBalance` put on its reply channel —
+        //    read from a block and carried back over CapTP.
+        //
+        //    The value is the genesis wallet's balance **less the phlo this very deploy spent**
+        //    (1_000_000_000_000 − 1_000_000). That is a stronger check than "a number arrived": the
+        //    deploy paid for itself out of the vault it was reading, so the assertion pins the whole
+        //    round trip rather than its shape.
         let reply = client
             .recv_message()
             .await
             .expect("read the reply")
             .expect("a reply, not a closed connection");
         let delivered = Deliver::from_syrup(&reply).expect("a delivery");
-        let reason = match delivered.args.get(1) {
-            Some(Value::String(reason)) => reason.clone(),
-            other => panic!("expected the bridge's reason, got {other:?}"),
-        };
-        assert!(
-            reason.contains("ProcessedWithSuccess"),
-            "the bridged deploy should have been processed by a block; the bridge said: {reason}"
+        assert_eq!(
+            delivered.args[0],
+            Value::Symbol("fulfill".into()),
+            "the bridge refused the delivery: {:?}",
+            delivered.args.get(1)
+        );
+        assert_eq!(
+            delivered.args[1],
+            Value::Int(999_999_000_000i64.into()),
+            "the balance should be the genesis wallet's less this deploy's phlo"
         );
 
         drop(client);

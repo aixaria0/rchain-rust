@@ -16,17 +16,14 @@
 //! builds the term with [`invoke_term`], signs it with [`signed_invoke`], submits it through
 //! `BlockApi::deploy` exactly as the faucet does, and reads the reply with [`reply_outcome`].
 //!
-//! **What is proven, and what is not.** A delivery *does* become a signed deploy, and the deploy
-//! *does* land in a block — `node/tests/ocapn_listener.rs` asserts the deploy's own
-//! `ProcessedWithSuccess` verdict from the node. The reply **value** does not arrive: the deploy
-//! runs, succeeds, and its `deploy_result` is **empty**, so nothing reached
-//! `` `rho:rchain:deployId` ``. **The cause is not established** — AUDIT C218 holds it, and the
-//! first explanation there was wrong: [`invoke_term`]'s shape *is* right. A system process is
-//! defined `arity: 1, remainder: true` (`rholang/src/system_processes.rs`), so a call's trailing
-//! arguments are collected into the single list the handler destructures — the faucet's
-//! five-argument `revVault!("transfer", …)` is the proof. Nothing is wrong with how the call is
-//! *shaped*, so something between the registry lookup, the send, and the write is dropping the
-//! reply.
+//! **The reply path is the whole round trip.** A delivery is built into a term, signed, submitted,
+//! and the value the deployed contract writes to the deploy's reply channel comes back as the CapTP
+//! promise's fulfilment: `node/tests/ocapn_listener.rs` reads a REV balance out of a block that way.
+//! **The reply channel being *bound* rather than written as a bare URI is load-bearing** (AUDIT
+//! C218): a backticked `` `rho:rchain:deployId` `` is an ordinary, guessable name that nothing
+//! reads, while the unforgeable per-deploy channel is what a `deployId(`rho:rchain:deployId`)`
+//! binding introduces. Writing the URI instead sent every reply into a channel nobody watched and
+//! the deploy still reported success.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

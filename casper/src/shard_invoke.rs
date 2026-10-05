@@ -50,8 +50,15 @@ pub const SHARD_ERROR_TAG: &str = "shard-error";
 ///
 /// `args` are already-normalized rholang `Par`s; they are rendered with the pretty
 /// printer so names/data keep their rholang literal form. The invoked capability's
-/// reply is sent to `` `rho:rchain:deployId` `` — the reply channel the caller listens
-/// on (see [`reply_channel`] / [`await_reply`]).
+/// reply is sent to the deploy's own id — the reply channel the caller listens on
+/// (see [`reply_channel`] / [`await_reply`]).
+///
+/// **The reply channel must be *bound*, not written as a URI** (AUDIT C218). A backticked
+/// `` `rho:rchain:deployId` `` is a `GUri` *ground* — an ordinary, guessable name — and the
+/// normalizer leaves it alone; the unforgeable per-deploy channel is what
+/// `deployId(`rho:rchain:deployId`)` **binds**, so the name has to be introduced and passed as
+/// `*deployId`, exactly as [`crate::txn_coordinator::txn_term`] does. Sending to the URI instead
+/// reaches a real channel that nobody reads, and the deploy still reports success.
 ///
 /// A registry miss yields `Nil`; the `for` then does not fire and the deploy produces
 /// nothing on the reply channel, which [`await_reply`] reports as a `shard-error`.
@@ -66,10 +73,10 @@ pub fn invoke_term(target_uri: &str, method: &str, args: &[Par]) -> String {
     let payload = payload.join(", ");
 
     format!(
-        "new lookup(`{REGISTRY_LOOKUP}`), cap in {{ \
+        "new lookup(`{REGISTRY_LOOKUP}`), deployId(`{REMOTE_REPLY_CHANNEL}`), cap in {{ \
            lookup!({uri_lit}, *cap) | \
            for (@(_, target) <- cap) {{ \
-             @target!({payload}, `{REMOTE_REPLY_CHANNEL}`) \
+             @target!({payload}, *deployId) \
            }} \
          }}"
     )
@@ -247,6 +254,14 @@ mod tests {
         assert!(term.contains("\"open\""), "{term}");
         // The reply channel is the deploy id, never a caller-local name.
         assert!(term.contains(REMOTE_REPLY_CHANNEL), "{term}");
+        // **And it must be *bound*, not written as a URI ground** (AUDIT C218): a backticked
+        // `rho:rchain:deployId` is an ordinary guessable name that nobody reads, so the send goes
+        // nowhere while the deploy reports success. Pinned here so it cannot come back silently.
+        assert!(
+            term.contains(&format!("deployId(`{REMOTE_REPLY_CHANNEL}`)")),
+            "the reply channel must be introduced as a binding: {term}"
+        );
+        assert!(term.contains("*deployId"), "{term}");
     }
 
     #[test]
