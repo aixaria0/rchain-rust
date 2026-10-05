@@ -8,8 +8,9 @@
 //!   `ocapn://<designator>.<transport>/s/<swiss-num>[?…]`.
 //!
 //! A designator "may itself contain dots" — the *trailing* dot is the designator/transport
-//! separator, so the split is at the last `.` ([`PeerLocator::parse_uri`]). The swiss number is an
-//! opaque string and is never parsed as a number.
+//! separator, so the split is at the last `.` ([`PeerLocator::parse_uri`]). The swiss number is
+//! opaque and is never parsed as a number; on the wire it is a byte array, so in the URI it is
+//! percent-encoded rather than assumed to be UTF-8 text.
 //!
 //! **Two peers are the same iff their designator and transport agree; hints are ignored**
 //! (`Locators.md`: "Equality only requires designator + transport to match"), which is
@@ -44,7 +45,10 @@ pub struct PeerLocator {
 pub struct Sturdyref {
     pub peer: PeerLocator,
     /// Opaque: "String which identifies the object". Never parsed as an integer.
-    pub swiss_num: String,
+    /// Opaque bytes identifying the object at that peer. The reference sends these as a Syrup
+    /// **byte array** (`b"VMDDd1voKWarCe2GvgLbxbVFysNzRPzx"`), where the Locators prose says
+    /// "string"; the implementation wins (AUDIT C216).
+    pub swiss_num: Vec<u8>,
 }
 
 impl PeerLocator {
@@ -90,7 +94,7 @@ impl Sturdyref {
                 transport,
                 hints: parse_hints(query.unwrap_or(""))?,
             },
-            swiss_num: percent_decode(swiss)?,
+            swiss_num: percent_decode_bytes(swiss)?,
         })
     }
 
@@ -100,7 +104,7 @@ impl Sturdyref {
         s.push('.');
         s.push_str(&percent_encode(&self.peer.transport, &[]));
         s.push_str("/s/");
-        s.push_str(&percent_encode(&self.swiss_num, &[]));
+        s.push_str(&percent_encode_bytes(&self.swiss_num, &[]));
         write_hints(&mut s, &self.peer.hints);
         s
     }
@@ -219,6 +223,12 @@ fn parse_hints(query: &str) -> Result<BTreeMap<String, String>, LocatorError> {
 }
 
 fn percent_decode(s: &str) -> Result<String, LocatorError> {
+    let bytes = percent_decode_bytes(s)?;
+    String::from_utf8(bytes).map_err(|_| LocatorError::BadEscape)
+}
+
+/// Percent-decode to raw bytes — for the swiss number, which is opaque and need not be UTF-8.
+fn percent_decode_bytes(s: &str) -> Result<Vec<u8>, LocatorError> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -236,7 +246,7 @@ fn percent_decode(s: &str) -> Result<String, LocatorError> {
             i += 1;
         }
     }
-    String::from_utf8(out).map_err(|_| LocatorError::BadEscape)
+    Ok(out)
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -251,8 +261,13 @@ fn hex_val(b: u8) -> Option<u8> {
 /// Percent-encode every byte outside the unreserved + sub-delims set, plus `:` and `@`, minus any
 /// byte in `deny`.
 fn percent_encode(s: &str, deny: &[u8]) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
+    percent_encode_bytes(s.as_bytes(), deny)
+}
+
+/// As [`percent_encode`], over raw bytes.
+fn percent_encode_bytes(bytes: &[u8], deny: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
         if is_uri_safe(b) && !deny.contains(&b) {
             out.push(b as char);
         } else {
@@ -314,7 +329,7 @@ mod tests {
         let s = Sturdyref::parse_uri(uri).unwrap();
         assert_eq!(s.peer.designator, "a2ef69ddd5f84840970612ff660f5058");
         assert_eq!(s.peer.transport, "tcp-testing-only");
-        assert_eq!(s.swiss_num, "JadQ0++RzsD4M+40uLxTWVaVqM10DcBJ");
+        assert_eq!(s.swiss_num, b"JadQ0++RzsD4M+40uLxTWVaVqM10DcBJ".to_vec());
         assert_eq!(s.peer.hints.get("port").map(String::as_str), Some("22045"));
         assert_eq!(s.to_uri(), uri);
     }

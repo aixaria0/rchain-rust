@@ -24,23 +24,21 @@ pub const PEER_LABEL: &str = "ocapn-peer";
 pub const STURDYREF_LABEL: &str = "ocapn-sturdyref";
 
 impl PeerLocator {
-    /// The `<ocapn-peer …>` record. Hints are `f` when empty, per the grammar.
+    /// The `<ocapn-peer …>` record. Hints are always a struct — the reference's `OCapNPeer` passes
+    /// its `hints` dict even when empty, so an empty hint set is `{}`, not the grammar's optional
+    /// `f`. (Emitting `f` would encode the same locator to different bytes, and the session
+    /// signature covers a record containing this struct.)
     pub fn to_syrup(&self) -> Value {
-        let hints = if self.hints.is_empty() {
-            Value::Bool(false)
-        } else {
+        Value::Record(vec![
+            Value::Symbol(PEER_LABEL.to_string()),
+            Value::Symbol(self.transport.clone()),
+            Value::String(self.designator.clone()),
             Value::Struct(
                 self.hints
                     .iter()
                     .map(|(k, v)| (k.clone(), Value::String(v.clone())))
                     .collect(),
-            )
-        };
-        Value::Record(vec![
-            Value::Symbol(PEER_LABEL.to_string()),
-            Value::Symbol(self.transport.clone()),
-            Value::String(self.designator.clone()),
-            hints,
+            ),
         ])
     }
 
@@ -85,12 +83,14 @@ impl PeerLocator {
 }
 
 impl Sturdyref {
-    /// The `<ocapn-sturdyref …>` record.
+    /// The `<ocapn-sturdyref …>` record. The swiss number is a **byte array**, not a string: the
+    /// reference passes `bytes` (`b"VMDDd1voKWarCe2GvgLbxbVFysNzRPzx"`) and Syrup encodes bytes as
+    /// `:<n>`, where the Locators prose says "string". The implementation wins (AUDIT C216).
     pub fn to_syrup(&self) -> Value {
         Value::Record(vec![
             Value::Symbol(STURDYREF_LABEL.to_string()),
             self.peer.to_syrup(),
-            Value::String(self.swiss_num.clone()),
+            Value::Bytes(self.swiss_num.clone()),
         ])
     }
 
@@ -107,7 +107,7 @@ impl Sturdyref {
             _ => return Err(PeerError::NotASturdyrefRecord),
         }
         let peer = PeerLocator::from_syrup(peer)?;
-        let Value::String(swiss) = swiss else {
+        let Value::Bytes(swiss) = swiss else {
             return Err(PeerError::BadField("swiss-num"));
         };
         Ok(Sturdyref {
@@ -152,9 +152,10 @@ mod tests {
             transport: "tcp-testing-only".into(),
             hints: BTreeMap::new(),
         };
+        // Hints are an (empty) struct, matching the reference's `OCapNPeer`, not the grammar's `f`.
         assert_eq!(
             l.to_syrup().to_bytes(),
-            b"<10'ocapn-peer16'tcp-testing-only3\"abcf>".to_vec()
+            b"<10'ocapn-peer16'tcp-testing-only3\"abc{}>".to_vec()
         );
         assert_eq!(PeerLocator::from_syrup(&l.to_syrup()).unwrap(), l);
     }
@@ -167,11 +168,12 @@ mod tests {
                 transport: "tcp-testing-only".into(),
                 hints: BTreeMap::new(),
             },
-            swiss_num: "s1".into(),
+            swiss_num: b"s1".to_vec(),
         };
+        // The swiss number is a byte array (`2:s1`), not a string (`2"s1`).
         assert_eq!(
             s.to_syrup().to_bytes(),
-            b"<15'ocapn-sturdyref<10'ocapn-peer16'tcp-testing-only3\"abcf>2\"s1>".to_vec()
+            b"<15'ocapn-sturdyref<10'ocapn-peer16'tcp-testing-only3\"abc{}>2:s1>".to_vec()
         );
         assert_eq!(Sturdyref::from_syrup(&s.to_syrup()).unwrap(), s);
     }

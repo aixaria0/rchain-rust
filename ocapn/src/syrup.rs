@@ -83,9 +83,20 @@ impl Value {
             Value::List(xs) => write_seq(out, b'[', b']', xs),
             Value::Record(xs) => write_seq(out, b'<', b'>', xs),
             Value::Struct(m) => {
+                // The reference sorts members by the *encoded key bytes*
+                // (`sorted(..., key=lambda x: x[0])` on `syrup_encode(key)`), not by the key
+                // string. The two orders diverge as soon as two keys differ in length — `"b"`
+                // sorts before `"aa"` by encoded bytes, after it by string — so getting this wrong
+                // would silently produce different bytes for the same value, and the session
+                // signature covers a record that contains a struct.
+                let mut pairs: Vec<(Vec<u8>, &Value)> = m
+                    .iter()
+                    .map(|(k, v)| (len_prefixed(b'"', k.as_bytes()), v))
+                    .collect();
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
                 out.push(b'{');
-                for (k, v) in m {
-                    write_len_prefixed(out, b'"', k.as_bytes());
+                for (encoded_key, v) in pairs {
+                    out.extend_from_slice(&encoded_key);
                     v.encode_into(out);
                 }
                 out.push(b'}');
@@ -129,10 +140,16 @@ impl Value {
     }
 }
 
-fn write_len_prefixed(out: &mut Vec<u8>, delim: u8, payload: &[u8]) {
+fn len_prefixed(delim: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 4);
     out.extend_from_slice(payload.len().to_string().as_bytes());
     out.push(delim);
     out.extend_from_slice(payload);
+    out
+}
+
+fn write_len_prefixed(out: &mut Vec<u8>, delim: u8, payload: &[u8]) {
+    out.extend_from_slice(&len_prefixed(delim, payload));
 }
 
 fn write_seq(out: &mut Vec<u8>, open: u8, close: u8, xs: &[Value]) {
@@ -470,6 +487,18 @@ mod tests {
             b"{1\"a1+1\"b2+}".to_vec()
         );
         rt(Value::Struct(m));
+    }
+
+    /// Members are ordered by the **encoded** key, not the key string, matching the reference's
+    /// `sorted(..., key=lambda x: x[0])`. `"b"` encodes to `1"b` and `"aa"` to `2"aa"`, so `"b"`
+    /// comes first — the reverse of string order. This is the case a plain `BTreeMap<String, _>`
+    /// gets wrong, and the session signature covers a struct, so it is not cosmetic.
+    #[test]
+    fn syrup_struct_keys_are_ordered_by_encoded_bytes_not_by_string() {
+        let mut m = BTreeMap::new();
+        m.insert("aa".to_string(), Value::Int(1.into()));
+        m.insert("b".to_string(), Value::Int(2.into()));
+        assert_eq!(Value::Struct(m).to_bytes(), b"{1\"b2+2\"aa1+}".to_vec());
     }
 
     #[test]

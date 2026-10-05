@@ -396,7 +396,8 @@ mod tests {
                 Value::Symbol("ocapn-peer".into()),
                 Value::Symbol("tcp-testing-only".into()),
                 Value::String("abc".into()),
-                Value::Bool(false),
+                // Hints are an empty struct, matching the reference's `OCapNPeer`, not `f`.
+                Value::Struct(BTreeMap::new()),
             ]),
             Value::List(vec![
                 Value::Symbol("sig-val".into()),

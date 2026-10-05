@@ -51,6 +51,15 @@ buffer, non-UTF-8 where a string is required, a duplicate struct key, or nesting
 Known-answer tests pin the byte patterns, because a codec that round-trips but orders itself
 differently from a peer is the one interop failure that never shows up locally.
 
+**Checked against the reference, not just against itself.** `ocapn/tests/reference_vectors.rs`
+pins the encodings of the real message shapes — the peer record, `op:deliver`, `op:start-session`,
+and the signed `<my-location …>` payload — to vectors produced by the suite's own `syrup_encode`. It
+was that check that surfaced three divergences, all now fixed: struct members must be ordered by
+their **encoded** key bytes rather than the key string (the reference's `sorted(key=syrup_encode)`,
+which differs as soon as two keys have different lengths, and the session signature covers a struct);
+a peer's hints are always a **struct**, so an empty hint set is `{}`, not the grammar's `f`; and the
+**swiss number is a byte array**, not the "string" `Locators.md` calls it.
+
 `ocapn/src/locator.rs` and `ocapn/src/peer.rs` implement the two locators of
 `draft-specifications/Locators.md`, in both their forms: the out-of-band URI
 (`ocapn://<designator>.<transport>[/s/<swiss-num>][?hints]`) and the in-band Syrup record
@@ -91,13 +100,15 @@ is the peer's to choose".
 `new_outgoing_connection(ocapn_locator)` and `accept_incoming_connection()`, over a channel that is
 "a bidirectional FIFO": one message is one Syrup value, and CapTP above sees only a queue.
 `ocapn/src/tcp_testing_only.rs` is the conformance suite's transport of the same name, implemented
-as the suite describes it — raw TCP, "pure Syrup-encoded data directly, without encryption", which
-its README flags as "HIGHLY INSECURE, DO NOT USE IN PRODUCTION". Framing is the grammar: a reader
-takes one complete Syrup value at a time, so two messages that arrive in one TCP read are two
-messages. Two bounds keep an adversarial stream harmless — the codec's nesting depth, and a
-message-size cap — and a stream that ends inside a value is an error, never a silently dropped
-message. A production netlayer (Tor, libp2p, IBC) implements the same two functions; nothing above
-the trait changes.
+as the suite describes it — raw TCP, no encryption, which its README flags as "HIGHLY INSECURE, DO
+NOT USE IN PRODUCTION". **The boundary is a netstring, not bare Syrup**: the prose says the netlayer
+"streams pure Syrup-encoded data directly", but the suite's `CapTPSocket.send_message` wraps every
+message in a `Netstring` and its reader takes one netstring at a time — the third prose-versus-
+implementation gap of its kind (AUDIT C216). `ocapn/src/netstring.rs` implements that framing, which
+is `<ascii-decimal length>:<payload>` with **no trailing comma**. Two bounds keep an adversarial
+stream harmless — the codec's nesting depth, and a message-size cap — and a stream that ends inside a
+message is an error, never a silently dropped message. A production netlayer (Tor, libp2p, IBC)
+implements the same two functions; nothing above the trait changes.
 
 ## Invariants
 

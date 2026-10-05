@@ -21,7 +21,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::locator::PeerLocator;
 use crate::netlayer::{NetConn, Netlayer};
-use crate::syrup::{SyrupError, Value};
+use crate::netstring;
 
 /// A single message larger than this is refused rather than buffered. The node's other ingress
 /// paths keep the same kind of bound; a netlayer that buffers without one is a remote DoS.
@@ -97,21 +97,23 @@ struct TcpConn {
 }
 
 impl TcpConn {
-    /// Read until `buf` holds one complete Syrup value and return its bytes. `Ok(None)` at a clean
-    /// end of stream; `UnexpectedEof` if the stream ends inside a value.
+    /// Read until `buf` holds one complete netstring and return its payload (one Syrup message).
+    /// `Ok(None)` at a clean end of stream; `UnexpectedEof` if the stream ends inside a message.
     async fn next_message(&mut self) -> io::Result<Option<Vec<u8>>> {
         loop {
-            let parsed = Value::decode_prefix(&self.buf);
-            match parsed {
-                Ok((_, used)) => return Ok(Some(self.buf.drain(..used).collect())),
-                // The two "need more bytes" answers; every other error is a protocol error.
-                Err(SyrupError::UnexpectedEof) | Err(SyrupError::LengthPastEnd { .. }) => {}
+            match netstring::decode_prefix(&self.buf) {
+                Ok(Some((payload, used))) => {
+                    self.buf.drain(..used);
+                    return Ok(Some(payload));
+                }
+                // Not enough bytes yet; read more.
+                Ok(None) => {}
                 Err(other) => return Err(io::Error::new(io::ErrorKind::InvalidData, other)),
             }
             if self.buf.len() > MAX_MESSAGE_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "syrup message exceeds the netlayer's bound",
+                    "netstring message exceeds the netlayer's bound",
                 ));
             }
             let mut chunk = [0u8; READ_CHUNK];
@@ -122,7 +124,7 @@ impl TcpConn {
                 } else {
                     Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
-                        "stream ended inside a syrup value",
+                        "stream ended inside a netstring message",
                     ))
                 };
             }
@@ -134,7 +136,8 @@ impl TcpConn {
 #[async_trait]
 impl NetConn for TcpConn {
     async fn send(&mut self, message: &[u8]) -> io::Result<()> {
-        self.stream.write_all(message).await?;
+        // The boundary is a netstring, matching `CapTPSocket.send_message`.
+        self.stream.write_all(&netstring::encode(message)).await?;
         self.stream.flush().await
     }
 
@@ -147,6 +150,8 @@ impl NetConn for TcpConn {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    use crate::syrup::Value;
 
     fn loopback_locator(addr: SocketAddr) -> PeerLocator {
         PeerLocator {
@@ -224,7 +229,8 @@ mod tests {
 
         tokio::spawn(async move {
             let mut stream = TcpStream::connect(addr).await.unwrap();
-            stream.write_all(b"<1'a").await.unwrap(); // an unfinished record
+            // Declares a 10-byte message and sends 4 of them, then closes.
+            stream.write_all(b"10:<1'a").await.unwrap();
             drop(stream);
         });
 

@@ -23,6 +23,7 @@
 pub mod captp;
 pub mod locator;
 pub mod netlayer;
+pub mod netstring;
 pub mod peer;
 pub mod session;
 pub mod session_id;

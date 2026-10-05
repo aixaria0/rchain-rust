@@ -17,6 +17,8 @@
 
 use self::CrossedHello::{Abort, Keep};
 
+use crate::syrup::Value;
+
 /// A 32-byte digest — the fixed width of both the Public Identifier and the Session ID.
 pub type Octets32 = [u8; 32];
 
@@ -33,8 +35,18 @@ fn sha256_32(input: &[u8]) -> Octets32 {
 }
 
 /// The Public Identifier of a session: two SHA-256 rounds over the serialized session public key.
+///
+/// "Serialized" is the **Syrup encoding of the public-key record** — the reference hashes
+/// `self.public_key.to_syrup()`, the gcrypt list `['public-key ['ecc …]]`, not the raw 32 key bytes.
+/// Passing raw key bytes here would produce a session id that agrees with nobody; use
+/// [`public_identifier_of_key`] to get it right.
 pub fn public_identifier(serialized_session_pubkey: &[u8]) -> Octets32 {
     sha256_32(&sha256_32(serialized_session_pubkey))
+}
+
+/// The Public Identifier of a session key given its [`crate::session::public_key_syrup`] record.
+pub fn public_identifier_of_key(public_key_record: &Value) -> Octets32 {
+    public_identifier(&public_key_record.to_bytes())
 }
 
 /// The Session ID shared by two peers: `SHA256(SHA256("prot0" ‖ sorted(PI_a, PI_b)))`.
