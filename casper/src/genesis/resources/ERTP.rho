@@ -1,0 +1,303 @@
+// ERTP: brands, issuers, purses and payments (issue #249).
+//
+// The consensus ledger (`rho:rchain:ertp:ledger`) holds what each purse and payment contains and
+// mints the names they are identified by; this file is the **object API** over it. The split is
+// deliberate: "a payment is consumed exactly once" is an invariant of consensus, and a purse's
+// behaviour is a capability an ocapp reader should be able to audit in Rholang.
+//
+// **Amounts are `(brand, value)` and the value is an `Int`.** The ledger holds a `NonNegI64`, so
+// `amountMath` *refuses* a value the ledger could not hold rather than letting one exist that
+// cannot be deposited. That is a deliberate cut against ERTP's arbitrary-precision NAT.
+//
+// **The deposit protocol is the load-bearing part.** A purse asks a payment for the payment's ledger
+// token and then calls the ledger with **its own brand and its own token**. It never trusts the
+// payment's claim: a payment of another brand names a token the ledger does not know *under this
+// brand*, so the refusal is structural rather than a check — and because the ledger refuses before
+// it consumes anything, the refused payment stays live.
+//
+// Replies are `(true, value)` / `(false, reason)`, so a caller has one shape to match. The one
+// exception is `makeIssuerKit`, which cannot fail and replies the kit itself.
+
+new
+  ERTP,
+  Ledger(`rho:rchain:ertp:ledger`),
+  rs(`rho:registry:insertSigned:secp256k1`),
+  deployerId(`rho:rchain:deployerId`),
+  uriOut
+in {
+  contract ERTP(@"makeIssuerKit", ret) = {
+    new kitCh in {
+      Ledger!("makeKit", *kitCh) |
+      for (@(brand, auth) <- kitCh) {
+        new
+          internalValue,
+          internalMakeIssuer,
+          internalMakeMint,
+          internalMakePurse,
+          internalMakePayment,
+          internalMakeAmountMath
+        in {
+          // --- the one place an amount is *read*
+          //
+          // Brand, type and sign are checked here and in `make` (the constructor) and nowhere else,
+          // so `amountMath`, the purse and the mint cannot disagree about what an amount is. A value
+          // the ledger cannot hold is refused, never truncated — including a negative, which must
+          // never reach the ledger, whose own parser answers a negative by failing the deploy rather
+          // than by refusing.
+          contract internalValue(@amount, ret) = {
+            match amount {
+              (aBrand, value) => {
+                if (aBrand == brand) {
+                  match value {
+                    Int => {
+                      if (value >= 0) {
+                        ret!((true, value))
+                      } else {
+                        ret!((false, "an amount is not negative"))
+                      }
+                    }
+                    _ => ret!((false, "an amount's value is an Int"))
+                  }
+                } else {
+                  ret!((false, "that amount is of another brand"))
+                }
+              }
+              _ => ret!((false, "an amount is a (brand, value) pair"))
+            }
+          } |
+
+          // --- amountMath: the pair, and the arithmetic on it
+          contract internalMakeAmountMath(return) = {
+            new this in {
+              contract this(@"make", @aBrand, @value, ret) = {
+                if (aBrand == brand) {
+                  match value {
+                    Int => {
+                      if (value >= 0) {
+                        ret!((true, (brand, value)))
+                      } else {
+                        ret!((false, "an amount is not negative"))
+                      }
+                    }
+                    _ => ret!((false, "an amount's value is an Int"))
+                  }
+                } else {
+                  ret!((false, "that amount is of another brand"))
+                }
+              } |
+              contract this(@"getValue", @amount, ret) = { internalValue!(amount, *ret) } |
+              contract this(@"getBrand", ret) = { ret!((true, brand)) } |
+              contract this(@"isEqual", @a, @b, ret) = { ret!((true, a == b)) } |
+              contract this(@"isEmpty", @amount, ret) = {
+                match amount {
+                  (aBrand, value) => { ret!((true, aBrand == brand && value == 0)) }
+                  _ => ret!((false, "an amount is a (brand, value) pair"))
+                }
+              } |
+              contract this(@"add", @a, @b, ret) = {
+                new aCh, bCh in {
+                  this!("getValue", a, *aCh) |
+                  this!("getValue", b, *bCh) |
+                  for (@ra <- aCh & @rb <- bCh) {
+                    match (ra, rb) {
+                      ((true, valueA), (true, valueB)) => {
+                        // The sum may promote to a BigInt, which the ledger cannot hold: refused
+                        // rather than truncated. (A `>=` guard would be vacuous here — Rholang
+                        // arithmetic never wraps.)
+                        match (valueA + valueB) {
+                          Int => { ret!((true, (brand, valueA + valueB))) }
+                          _ => { ret!((false, "the sum is larger than an amount can hold")) }
+                        }
+                      }
+                      (_, (false, reason)) => { ret!((false, reason)) }
+                      ((false, reason), _) => { ret!((false, reason)) }
+                    }
+                  }
+                }
+              } |
+              contract this(@"subtract", @a, @b, ret) = {
+                new aCh, bCh in {
+                  this!("getValue", a, *aCh) |
+                  this!("getValue", b, *bCh) |
+                  for (@ra <- aCh & @rb <- bCh) {
+                    match (ra, rb) {
+                      ((true, valueA), (true, valueB)) => {
+                        if (valueA >= valueB) {
+                          ret!((true, (brand, valueA - valueB)))
+                        } else {
+                          ret!((false, "the subtraction would be negative"))
+                        }
+                      }
+                      (_, (false, reason)) => { ret!((false, reason)) }
+                      ((false, reason), _) => { ret!((false, reason)) }
+                    }
+                  }
+                }
+              } |
+              return!(bundle+{*this})
+            }
+          } |
+
+          // --- payment: what carries a ledger token, and `getLedgerToken` is what reads it
+          contract internalMakePayment(token, return) = {
+            new this in {
+              contract this(@"getAllegedBrand", ret) = { ret!((true, brand)) } |
+              // Handed to whoever holds the payment, because **holding the payment is the authority
+              // to deposit it** — the token alone does nothing without a purse.
+              contract this(@"getLedgerToken", ret) = { ret!((true, *token)) } |
+              return!(bundle+{*this})
+            }
+          } |
+
+          // --- purse
+          contract internalMakePurse(token, return) = {
+            new this, depositOnly in {
+              contract this(@"getCurrentAmount", ret) = {
+                new ch in {
+                  Ledger!("balance", brand, *token, *ch) |
+                  for (@r <- ch) { ret!(r) }
+                }
+              } |
+              contract this(@"deposit", @payment, ret) = {
+                new tch in {
+                  @payment!("getLedgerToken", *tch) |
+                  for (@(true, paymentToken) <- tch) {
+                    new dch in {
+                      // This purse's brand and this purse's token — never the payment's claim.
+                      Ledger!("deposit", brand, *token, paymentToken, *dch) |
+                      for (@r <- dch) { ret!(r) }
+                    }
+                  }
+                }
+              } |
+              contract this(@"withdraw", @amount, ret) = {
+                new vch in {
+                  internalValue!(amount, *vch) |
+                  for (@v <- vch) {
+                    match v {
+                      (true, value) => {
+                        new ch in {
+                          Ledger!("withdraw", brand, auth, *token, value, *ch) |
+                          for (@r <- ch) {
+                            match r {
+                              (true, paymentToken) => {
+                                new pch in {
+                                  internalMakePayment!(paymentToken, *pch) |
+                                  for (@payment <- pch) { ret!((true, payment)) }
+                                }
+                              }
+                              _ => ret!(r)
+                            }
+                          }
+                        }
+                      }
+                      (false, reason) => { ret!((false, reason)) }
+                    }
+                  }
+                }
+              } |
+              // A facet that can only add: it forwards `deposit` and nothing else, so its holder
+              // never sees the purse's ledger token and cannot withdraw.
+              contract depositOnly(@"deposit", @payment, ret) = {
+                this!("deposit", payment, *ret)
+              } |
+              contract this(@"getDepositFacet", ret) = {
+                ret!((true, bundle+{*depositOnly}))
+              } |
+              return!(bundle+{*this})
+            }
+          } |
+
+          // --- mint: the only arm that makes a payment out of nothing
+          contract internalMakeMint(return) = {
+            new this in {
+              contract this(@"mintPayment", @amount, ret) = {
+                new vch in {
+                  internalValue!(amount, *vch) |
+                  for (@v <- vch) {
+                    match v {
+                      (true, value) => {
+                        new ch in {
+                          Ledger!("mint", brand, auth, value, *ch) |
+                          for (@r <- ch) {
+                            match r {
+                              (true, paymentToken) => {
+                                new pch in {
+                                  internalMakePayment!(paymentToken, *pch) |
+                                  for (@payment <- pch) { ret!((true, payment)) }
+                                }
+                              }
+                              _ => ret!(r)
+                            }
+                          }
+                        }
+                      }
+                      (false, reason) => { ret!((false, reason)) }
+                    }
+                  }
+                }
+              } |
+              return!(bundle+{*this})
+            }
+          } |
+
+          // --- issuer: the source of truth, and the only way to make a purse
+          contract internalMakeIssuer(return) = {
+            new this, amountMath in {
+              internalMakeAmountMath!(*amountMath) |
+              contract this(@"getBrand", ret) = { ret!((true, brand)) } |
+              // The factory's reply is the amountMath's *handle*, sent to the `amountMath` channel —
+              // `*amountMath` is only the name it was sent on, and a name is not a handle. Peeked
+              // rather than consumed, so a second caller gets one too.
+              contract this(@"getAmountMath", ret) = {
+                for (@am <<- amountMath) { ret!((true, am)) }
+              } |
+              contract this(@"makeEmptyPurse", ret) = {
+                new ch in {
+                  Ledger!("makePurse", brand, *ch) |
+                  for (@r <- ch) {
+                    match r {
+                      (true, purseToken) => {
+                        new pch in {
+                          internalMakePurse!(purseToken, *pch) |
+                          for (@purse <- pch) { ret!((true, purse)) }
+                        }
+                      }
+                      _ => ret!(r)
+                    }
+                  }
+                }
+              } |
+              contract this(@"getAmountOf", @payment, ret) = {
+                new tch in {
+                  @payment!("getLedgerToken", *tch) |
+                  for (@(true, paymentToken) <- tch) {
+                    new bch in {
+                      Ledger!("balance", brand, paymentToken, *bch) |
+                      for (@r <- bch) { ret!(r) }
+                    }
+                  }
+                }
+              } |
+              return!(bundle+{*this})
+            }
+          } |
+
+          // --- the kit
+          new mintCh, issuerCh in {
+            internalMakeMint!(*mintCh) |
+            internalMakeIssuer!(*issuerCh) |
+            for (@mint <- mintCh & @issuer <- issuerCh) {
+              ret!((brand, mint, issuer))
+            }
+          }
+        }
+      }
+    }
+  } |
+  match (9223372036854775807, bundle+{*ERTP}) {
+    state => {
+      rs!(state, *deployerId, *uriOut)
+    }
+  }
+}
