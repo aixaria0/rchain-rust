@@ -383,10 +383,22 @@ impl Export for ChainCapability {
         // **One object answers as one descriptor, not as a one-element list.** The peer asked for a
         // purse or an issuer, and `E(obj).makeEmptyPurse()` should hand it a purse — a list of one
         // would make every caller destructure a collection to reach the only thing in it.
-        Ok(match objects.len() {
-            1 => Act::object(objects.into_iter().next().expect("checked")),
-            _ => Act::objects(objects),
-        })
+        //
+        // Written as a split rather than a length check plus an `expect`, because `expect` in
+        // production code is a hard violation of the type system's partiality gate — and because the
+        // empty case is real enough to deserve a name: it cannot happen here (a leaf is what put the
+        // pattern in the list), and if it ever did, a promise that names the reason and breaks is
+        // better than a panicking node.
+        let mut objects = objects.into_iter();
+        let first = objects.next();
+        let rest: Vec<Arc<dyn Export>> = objects.collect();
+        match first {
+            Some(only) if rest.is_empty() => Ok(Act::object(only)),
+            Some(only) => Ok(Act::objects(
+                std::iter::once(only).chain(rest).collect::<Vec<_>>(),
+            )),
+            None => Err("the reply registered no capability to hand the peer".to_string()),
+        }
     }
 }
 
