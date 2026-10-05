@@ -205,6 +205,40 @@ impl OpListen {
     }
 }
 
+/// `op:gc-exports`'s record label.
+pub const GC_EXPORTS_LABEL: &str = "op:gc-exports";
+/// `op:gc-answers`'s record label.
+pub const GC_ANSWERS_LABEL: &str = "op:gc-answers";
+
+/// `op:gc-exports` — "tell the peer which of its exports we have released, and how many references
+/// we held". The positions are the peer's export positions, and each wire delta is how many times
+/// we received that reference since we last said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpGcExports {
+    pub positions: Vec<BigUint>,
+    pub wire_deltas: Vec<BigUint>,
+}
+
+impl OpGcExports {
+    pub fn to_syrup(&self) -> Value {
+        Value::Record(vec![
+            Value::Symbol(GC_EXPORTS_LABEL.to_string()),
+            Value::List(self.positions.iter().cloned().map(position_value).collect()),
+            Value::List(
+                self.wire_deltas
+                    .iter()
+                    .cloned()
+                    .map(position_value)
+                    .collect(),
+            ),
+        ])
+    }
+}
+
+fn position_value(n: BigUint) -> Value {
+    Value::Int(BigInt::from(n))
+}
+
 fn optional_position(pos: Option<&BigUint>) -> Value {
     match pos {
         Some(p) => Value::Int(BigInt::from(p.clone())),

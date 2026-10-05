@@ -14,11 +14,11 @@ implementation rather than to itself.
 | Suite | `github.com/ocapn/ocapn-test-suite` at `31f0b80` |
 | Netlayer | `tcp-testing-only` (the suite's own; no encryption — it is not a deployment transport) |
 
-`run-1.txt` is the raw output of the first whole-suite run (`failures=9, errors=8`);
-`run-2.txt` is the same run after `op:listen` was implemented (`failures=6, errors=8`). **Read the
-per-module numbers, not a summary line.** The runner reports a `setUp` error against the test it
-aborted as well as the error itself, so its tallies exceed the test count; running each module on its
-own gives the numbers below.
+Three whole-suite runs are kept: `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after `op:listen`
+(`failures=6, errors=8`), and `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`, and 10 s
+instead of 55 s because the GC timeouts are gone). **Read the per-module numbers, not a summary
+line.** The runner reports a `setUp` error against the test it aborted as well as the error itself,
+so its tallies exceed the test count; running each module on its own gives the numbers below.
 
 ## Per module
 
@@ -28,15 +28,15 @@ own gives the numbers below.
 | `op_deliver` | **4 / 4** | ✅ including both promise-pipelining tests and the break-propagation test |
 | `op_start_session` | **3 / 5** | the two failures are the crossed-hellos tests, which need the sturdyref enlivener (below) |
 | `op_listen` | **3 / 3** | ✅ the promise-resolver fixture, heard both before and after the settlement |
-| `op_gc` | 0 / 4 | `op:gc-exports` / `op:gc-answers` are not emitted at all |
+| `op_gc` | **3 / 4** | ✅ `op:gc-exports` with its wire-delta accounting; `test_gc_answer` needs the greeter to hand the peer a resolver, which needs `Act` to allocate an export |
 | `third_party_handoffs` | 1 / 7 | the one pass is an *invalid-signature* rejection that passes incidentally: this port answers every handoff with a `break` |
-| **Total** | **12 / 24** | |
+| **Total** | **15 / 24** | |
 
-So the implemented path is **stages 0–2 of the implementation guide**: the handshake (with the two
-refusals it must make), `op:deliver`, the export table, promise pipelining through the answer table,
-`fulfill`/`break` through `resolve-me-desc`, and `op:listen` with its promise/resolver pair. GC
-(stage 3) and handoffs (stage 6) are the stages not yet built, and the suite says exactly that —
-which is the point of running it.
+So the implemented path is **stages 0–2 of the implementation guide, plus `op:gc-exports` from stage
+3**: the handshake (with the two refusals it must make), `op:deliver`, the export table, promise
+pipelining through the answer table, `fulfill`/`break` through `resolve-me-desc`, `op:listen` with
+its promise/resolver pair, and the release accounting. `op:gc-answers` and handoffs (stage 6) are
+what remains, and the suite says exactly that — which is the point of running it.
 
 **Not implemented, and named in the code rather than guessed at:** the suite's *sturdyref
 enlivener* (`gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB`), which must dial a peer back from a sturdyref it is

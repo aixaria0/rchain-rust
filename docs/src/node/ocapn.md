@@ -9,10 +9,10 @@
 
 **Status.** Stages 0–2 are built — the wire codec and locators, the session identity, the netlayer,
 the CapTP connection with its tables, and `op:deliver` with promises, pipelining, `break`, and
-`op:listen`. They are checked against the OCapN conformance suite: **12 of 24 tests pass**, all in
-the implemented path. GC, handoffs, and the bridge to the chain are **proposed and not yet
-implemented**; the staging is the implementation guide's own six stages, and each is listed with its
-state.
+`op:listen` — plus `op:gc-exports` from stage 3. They are checked against the OCapN conformance
+suite: **15 of 24 tests pass**, all in the implemented path. `op:gc-answers`, handoffs, and the
+bridge to the chain are **proposed and not yet implemented**; the staging is the implementation
+guide's own six stages, and each is listed with its state.
 
 ## What OCapN is, in one paragraph
 
@@ -37,7 +37,8 @@ deploy the bridge produces (below).
 | 0c | Netlayer trait, `tcp-testing-only` netlayer, `op:abort` | **built** — `ocapn/src/{netlayer,tcp_testing_only}.rs`, `session.rs` |
 | 1 | Import/export tables, `op:deliver`, the bootstrap at position 0, `fetch` | **built** — `ocapn/src/{captp,conn,bootstrap,fixtures}.rs` |
 | 2 | Promises and answers: `fulfill`/`break` via `resolve-me-desc`, pipelining via the answer table, `op:listen` | **built** — `ocapn/src/{conn,captp,fixtures}.rs` |
-| 3 | GC: `op:gc-exports` / `op:gc-answers` and the wire-delta accounting | proposed |
+| 3 | GC: `op:gc-exports` and the wire-delta accounting | **built** — `ocapn/src/{captp,conn}.rs` |
+| 3 | GC: `op:gc-answers` | proposed |
 | 4–5 | Pipelining refinements, `resolve-me-desc` folding, `op:gc-answers` | proposed |
 | 6 | Third-party handoffs (Gifter / Receiver / Exporter) | proposed |
 | — | The bridge: an `op:deliver` to a chain-backed export becomes a signed deploy | proposed |
@@ -45,11 +46,12 @@ deploy the bridge produces (below).
 ### Checked against the reference suite
 
 `ocapn-tcp-testing` (`ocapn/src/bin/`) serves the suite's fixture objects, and the suite has been
-run against it: **12 of 24 tests pass**, all of them in the implemented path — `op_abort` 1/1,
+run against it: **15 of 24 tests pass**, all of them in the implemented path — `op_abort` 1/1,
 `op_deliver` 4/4 (including both promise-pipelining tests and the break-propagation test),
-`op_listen` 3/3 (the promise/resolver pair, heard before and after the settlement), and
-`op_start_session` 3/5 (the two failures need the sturdyref enlivener, which is not built). GC
-(0/4) and handoffs (1/7, incidentally) are the unimplemented stages, and the suite says so. The runs,
+`op_listen` 3/3 (the promise/resolver pair, heard before and after the settlement), `op_gc` 3/4
+(the wire-delta accounting; the fourth needs the greeter to hand out a resolver), and
+`op_start_session` 3/5 (the two failures need the sturdyref enlivener, which is not built). Handoffs
+(1/7, incidentally) are the unimplemented stage, and the suite says so. The runs,
 the suite revision, and the per-module counts are kept in
 [`spec/audit/evidence/ocapn-conformance/`](../../../spec/audit/evidence/ocapn-conformance/README.md)
 so a later run can be compared against them.

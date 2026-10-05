@@ -21,8 +21,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use num_bigint::{BigUint, Sign};
 
-use crate::captp::{Deliver, Desc, OpListen, DELIVER_LABEL, LISTEN_LABEL};
+use crate::captp::{
+    Deliver, Desc, OpGcExports, OpListen, DELIVER_LABEL, IMPORT_OBJECT_LABEL, IMPORT_PROMISE_LABEL,
+    LISTEN_LABEL,
+};
 use crate::locator::PeerLocator;
 use crate::netlayer::NetConn;
 use crate::session::{my_location_payload, Abort, SessionError, StartSession, ABORT_LABEL};
@@ -289,6 +293,10 @@ impl Session {
         let deliver =
             Deliver::from_syrup(message).map_err(|e| ConnectionError::Protocol(e.to_string()))?;
 
+        // The delivery's import descriptors are released as soon as it is handled, and the peer is
+        // told now — before anything is sent back, so the accounting never depends on the reply.
+        self.gc_released(&deliver.args).await?;
+
         let target = match resolve_to(&self.exports, &self.answers, &deliver.to)? {
             Resolution::Object(o) => o,
             Resolution::Broken(reason) => {
@@ -392,6 +400,29 @@ impl Session {
         Ok(())
     }
 
+    /// Tell the peer we have released every import descriptor a delivery carried.
+    ///
+    /// Nothing in this crate retains a reference it is handed: an object's only way to keep one is
+    /// to store the descriptor itself, and the command it may carry in an [`Act`] is a descriptor
+    /// it chose, not one it was given. So a delivery's imports are released as soon as it is
+    /// handled, and the release is reported at once. An object that *did* retain would need a
+    /// signal here that it had, and would then be over-collecting.
+    async fn gc_released(&mut self, args: &[Value]) -> Result<(), ConnectionError> {
+        let mut counts: BTreeMap<u64, u64> = BTreeMap::new();
+        for arg in args {
+            count_imports(arg, &mut counts);
+        }
+        if counts.is_empty() {
+            return Ok(());
+        }
+        let message = OpGcExports {
+            positions: counts.keys().copied().map(BigUint::from).collect(),
+            wire_deltas: counts.values().copied().map(BigUint::from).collect(),
+        }
+        .to_syrup();
+        send(&mut self.conn, &message).await
+    }
+
     /// Send `[<fulfill> …]` — or nothing, when the peer asked for no reply.
     async fn fulfil(
         &mut self,
@@ -419,6 +450,40 @@ impl Session {
             resolve_me_desc: None,
         };
         send(&mut self.conn, &deliver.to_syrup()).await
+    }
+}
+
+/// Count every import descriptor anywhere in a delivered value, keyed by the peer's export
+/// position — the wire-delta accounting `op:gc-exports` reports.
+fn count_imports(value: &Value, counts: &mut BTreeMap<u64, u64>) {
+    match value {
+        Value::Record(fields) => {
+            if let Some(Value::Symbol(label)) = fields.first() {
+                if label == IMPORT_OBJECT_LABEL || label == IMPORT_PROMISE_LABEL {
+                    if let Some(Value::Int(n)) = fields.get(1) {
+                        if n.sign() != Sign::Minus {
+                            if let Ok(pos) = u64::try_from(n.magnitude().clone()) {
+                                *counts.entry(pos).or_default() += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            for field in fields {
+                count_imports(field, counts);
+            }
+        }
+        Value::List(xs) => {
+            for x in xs {
+                count_imports(x, counts);
+            }
+        }
+        Value::Struct(m) => {
+            for v in m.values() {
+                count_imports(v, counts);
+            }
+        }
+        _ => {}
     }
 }
 
