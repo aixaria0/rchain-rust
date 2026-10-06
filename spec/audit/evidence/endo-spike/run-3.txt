@@ -1,0 +1,66 @@
+# The websocket interop run: `@endo/ocapn` 1.1.1 against this repository's node over `websocket`.
+#
+# command: bash spec/audit/evidence/endo-spike/run-ws.sh
+# peer:    @endo/ocapn 1.1.1 on Node v22.22.2, its `websocket` netlayer — a PUBLISHED package
+# node:    target/debug/rnode, ws-node.conf, `ocapn-listen-websocket = 127.0.0.1:22060`
+#
+# **THIS RUN IS A PARTIAL RESULT, NOT A PASS.** What it establishes and what it does not are both
+# below; the second list is the reason this file is not called `run-3` and left bare.
+
+## Established
+
+Agoric's published client, over its own `websocket` netlayer:
+
+- completed the **in-band challenge** — it sent `init:peer-auth`, this node signed the bytes it
+  received, and the client accepted the answer (`>>> Server received VALID location signature`);
+- completed the **CapTP handshake**: `handling handshake message of type op:start-session`, then
+  `session established`;
+- imported the node's bootstrap (`imported o-0 Object [Alleged: Remote Bootstrap]`).
+
+So the transport, the challenge/response and the session handshake interoperate with the
+implementation it was written against.
+
+## A defect this run found, and it is the reason to have run it
+
+The first attempt **failed**, and the failure was this repository's:
+
+    Error#1: InitPeerAuthSigEnvelope: read failed at index 0 of <unknown>
+      Error#2: OcapnSignature: read failed at index 75 of <unknown>
+        Error#3: Unexpected character "6", expected "[" at index 75 of <unknown>
+
+`desc:sig-envelope`'s signature field is a **gcrypt s-expression**
+(`['sig-val ['eddsa ['r …] ['s …]]]`), not raw bytes — the same shape `op:start-session` already
+carries, and this module was writing `Value::Bytes`. **The module's own tests could not have caught
+it**: they agreed with themselves. `ocapn/src/websocket.rs` now uses `session::signature_syrup` /
+`signature_bytes`, which is where that shape already lived.
+
+## NOT established
+
+**The fetch does not complete.** After `session established` the client's `enlivenSturdyRef` never
+resolves: no `FETCHED` line, and the node logs nothing after its listener line. The run was stopped by
+a 120 s bound rather than finishing. So a **CapTP delivery over this transport is not yet demonstrated
+end to end**, and the cause is not yet found.
+
+Two things are therefore untested and should not be assumed from the lines above: that this node answers
+a `fetch` over websocket, and that a call over it returns. `node/tests/ocapn_listener.rs` does exercise
+both — but with *this repository's* client, so it does not close the gap.
+
+Recorded as a residual on the transport rather than as a passing run.
+
+---
+node's Ed25519 verifying key: 0d59959a23e3784a91b7f97b74207ee8c993446e7acd91d6ca0528afc886afce
+dialling bvmzlgrd4n4evenx7f5xiid65dezgrdoplgzdvwkauuk7segv7ha over websocket at ws://127.0.0.1:22060
+ws-interop [1791324764488]: provideInternalSession connecting and establishing new session
+ws-interop [1791324764488]: Connecting to websocket { wsUrl: 'ws://127.0.0.1:22060' }
+ws-interop [1791324764556]: handleMessageData called
+ws-interop [1791324764557]: handling handshake message of type op:start-session
+ws-interop [1791324764561]: >> Server received VALID location signature
+ws-interop [1791324764565]: exported o+0 Object [Alleged: ws-interop:bootstrap] {
+  fetch: [Function: fetch],
+  'deposit-gift': [Function: deposit-gift],
+  'withdraw-gift': [Function: withdraw-gift]
+}
+ws-interop [1791324764566]: makeRemoteObject { position: 0n, label: 'Remote Bootstrap' }
+ws-interop [1791324764566]: imported o-0 Object [Alleged: Remote Bootstrap] {}
+ws-interop [1791324764566]: session established for ocapn://0d59959a23e3784a91b7f97b74207ee8c993446e7acd91d6ca0528afc886afce.websocket?url=ws%3A%2F%2F127.0.0.1%3A22060&verify=0d59959a23e3784a91b7f97b74207ee8c993446e7acd91d6ca0528afc886afce
+[silence from here: `enlivenSturdyRef` never resolved; stopped by a 120 s bound]

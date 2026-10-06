@@ -280,10 +280,16 @@ where
     let signature = identity
         .sign(&received)
         .map_err(|e| io::Error::other(format!("signing the challenge: {e}")))?;
+    // **The gcrypt s-expression, not raw bytes**, because that is what the reference's
+    // `OcapnSignature` codec reads: `['sig-val ['eddsa ['r …] ['s …]]]`. A bytestring here is a parse
+    // failure on the peer — which is exactly how this was found, by the interop run and not by these
+    // module's own tests, which agreed with themselves.
+    let signature = crate::session::signature_syrup(&signature)
+        .map_err(|e| io::Error::other(format!("encoding the signature: {e}")))?;
     let envelope = Value::Record(vec![
         Value::Symbol(SIG_ENVELOPE.to_string()),
         record,
-        Value::Bytes(signature),
+        signature,
     ]);
     conn.send_raw(Message::Binary(envelope.to_bytes())).await?;
     conn.authenticated = true;
@@ -309,22 +315,28 @@ fn is_peer_auth(value: &Value) -> bool {
 
 /// The signature out of a `desc:sig-envelope` record.
 fn signature_of_envelope(value: &Value) -> io::Result<Vec<u8>> {
+    let missing = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the websocket peer's answer was not a `desc:sig-envelope`",
+        )
+    };
     match value {
         Value::Record(fields)
             if fields.first() == Some(&Value::Symbol(SIG_ENVELOPE.to_string())) =>
         {
-            match fields.get(2) {
-                Some(Value::Bytes(signature)) => Ok(signature.clone()),
-                _ => Err(io::Error::new(
+            let signature = fields.get(2).ok_or_else(missing)?;
+            // The peer's gcrypt s-expression, read back into the 64 bytes it stands for — the mirror
+            // of what `authenticate_as_server` writes, and the reason the two are paired here rather
+            // than each writing its own shape.
+            crate::session::signature_bytes(signature).map_err(|e| {
+                io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "the `desc:sig-envelope` carried no signature",
-                )),
-            }
+                    format!("the `desc:sig-envelope` signature is not the gcrypt form: {e}"),
+                )
+            })
         }
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the websocket peer's answer was not a `desc:sig-envelope`",
-        )),
+        _ => Err(missing()),
     }
 }
 
@@ -524,15 +536,24 @@ mod tests {
     /// envelope is refused rather than guessed at.
     #[test]
     fn the_envelope_yields_its_signature_and_nothing_else_does() {
+        // The signature is the gcrypt s-expression the reference reads, not raw bytes — a bytestring
+        // here is what the interop run caught this module getting wrong.
         let good = Value::Record(vec![
             Value::Symbol(SIG_ENVELOPE.to_string()),
             peer_auth(&[0u8; CHALLENGE_LEN]),
-            Value::Bytes(vec![7u8; 64]),
+            crate::session::signature_syrup(&[7u8; 64]).expect("encodable"),
         ]);
         assert_eq!(
             signature_of_envelope(&good).expect("a signature"),
             vec![7u8; 64]
         );
+        // And raw bytes are refused rather than accepted as a short signature.
+        let raw = Value::Record(vec![
+            Value::Symbol(SIG_ENVELOPE.to_string()),
+            peer_auth(&[0u8; CHALLENGE_LEN]),
+            Value::Bytes(vec![7u8; 64]),
+        ]);
+        assert!(signature_of_envelope(&raw).is_err());
         assert!(signature_of_envelope(&Value::Symbol(SIG_ENVELOPE.to_string())).is_err());
         assert!(signature_of_envelope(&Value::Int(0.into())).is_err());
     }
