@@ -60,8 +60,8 @@ is the public endpoint's routing, and it has a cost if A dies — see
 | Direct, if you prefer | `GET http://164.90.140.144:40403/api/status`, `POST http://164.90.140.144:40403/api/explore-deploy` (eval a read-only term) |
 | Admin | `POST http://164.90.140.144:40405/api/v1/propose` — force a block (keep this one private in general) |
 
-Ports `40400` (protocol) and `40404` (discovery) are open on both nodes; `40401`, `40403` and `40405`
-are open on both for clients — what each one is for is in
+Ports `40400` (protocol) and `40404` (discovery) are open on all four nodes, as are `40401`, `40403` and
+`40405` for clients — and the `414xx` family for nodes D and C, which share the hosts — what each is for is in
 [running a public testnet § Ports](running-a-public-testnet.md#ports).
 
 ## Use it from r-wallet
@@ -102,15 +102,24 @@ POST https://<node>/api/faucet   {"address": "<your REV address>"}
 ```
 
 That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
-needs to fund a fresh address. It is a **dev-mode** endpoint: the node must have been started with
-`--dev-mode --deployer-private-key`, and it signs the transfer from that deployer's wallet. Without the
-key a node answers `400 "faucet requires --dev-mode --deployer-private-key"`, and reports `faucet: false`
-in its capability list.
+needs to fund a fresh address. It is a **dev-mode** endpoint: the node must be started with
+`--dev-mode --deployer-private-key`, and it signs the transfer from that key's vault. **Without the key
+the route is not mounted at all, so a keyless node answers `404`** — not a 400 with a message — and it
+reports `faucet: false` in its capability list.
 
 | node | faucet |
 |---|---|
+| `testnet.rhobot.net` (node A) | ✅ **works** — dev-mode plus a funded key (`/etc/rnode/faucet.env`), **0.3 REV per drip, ten drips per address per process**. Verified delivering on the 2026-10-06 chain |
 | `playground.rhobot.net` (and `rnodeapi.rhobot.net`) | ✅ **works** — dev-mode plus a deployer key |
-| `testnet.rhobot.net` | ❌ **by design** — that key is also the dummy-deploy injector, and this net's idle chain is load-bearing for its sizing ([K7](#known-issues)). See the room faucet below |
+
+Two facts a client needs and neither is obvious: the faucet's **`deployId` is the deploy signature**, so
+`GET /api/v1/deploy-status/<signature>` reports what became of the drip (`ProcessedWithSuccess`, or the
+error); and a drip is only visible in a **finalised** block, so read the recipient's balance once
+`/api/last-finalized-block` has passed the drip's `blockNumber`. The endpoint is also rate-limited —
+two quick requests earn `HTTP 429 "faucet rate limit exceeded"`.
+**This net's faucet was off until 2026-10-06, and this table said so**; it is on now, signed by a key whose
+vault holds REV ([#247](https://github.com/rchain-community/rchain-rust/issues/247) is the story of the one
+that was not).
 
 **In a room: `/facil faucet`.**
 
@@ -147,7 +156,7 @@ address whose key you care about.
 | `/health` monitoring snapshot | ✅ works |
 | **Deploys — browser, room agents, `rnode deploy` CLI** | ✅ works (the CLI needed `--valid-after-block-number` before the 2026-09-21 binary — K1) |
 | Transfers, including funding a brand-new key | ✅ verified: a fresh key's balance went `0` → `100000000000`, and it could then deploy |
-| **Becoming a validator** | ✅ verified end to end: `trust` → `(true)`, `bond` → `(true)`, bond pool 2 → 3, active set 3 |
+| **Becoming a validator** | ✅ verified end to end on the 2026-09-22 chain: `trust` → `(true)`, `bond` → `(true)`, bond pool 2 → 3, active set 3. The procedure is in [Onboarding an observer into the validator pool](#onboarding-an-observer-into-the-validator-pool) |
 
 ## Monitoring
 
@@ -359,15 +368,16 @@ agree on all of them or it will not join.
 
 ### Genesis wallets
 
-`wallets.txt` funds the standard dev keys from `scripts/localnet/pk.txt` with 1,000,000,000,000 each, so
-tooling already wired to them works unchanged, and so a facilitator can be handed a deploy key that has
-REV to give away:
+`wallets.txt` funds **four** REV addresses with 1,000,000,000,000 drops (10,000 REV) each, so tooling
+already wired to those keys works unchanged and a facilitator can be handed a key with REV to give away.
+The four funded addresses include **dave's** (`1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj`);
+the `deployer` key is **not** among them, and its vault reads `0`.
 
-| key | REV address |
+| key | role on this net |
 |---|---|
-| `deployer` (`3554e876…`) | the facilitator faucet's key |
-| `dave` (`7707a3e0…`) | `1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj` |
-| `alice`, `bob`, `carol` | see `wallet.txt` |
+| `dave` (`7707a3e0…`) | **the faucet's signing key** — funded, supplied through `/etc/rnode/faucet.env` — and the trusted key seeded by `--pos-multi-sig-public-keys`, so it is the key that can `trust` newcomers |
+| `deployer` (`3554e876…`) | **not funded on this genesis.** This page used to call it the faucet's key; drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rchain-community/rchain-rust/issues/247) |
+| the developer keys in `scripts/localnet/pk.txt` | funded accounts for tooling; not part of the net's operation |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
 here — they get REV from the faucet; this table is the answer to "which address funds them".
