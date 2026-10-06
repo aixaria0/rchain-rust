@@ -83,6 +83,12 @@ pub fn invoke_term(target_uri: &str, method: &str, args: &[Arg]) -> Result<Strin
     ))
 }
 
+/// The payload a call passes, and the binders its named arguments still need.
+///
+/// A capability is passed **bare** — `@purse!("deposit", payment, *ret)` — because the name is what
+/// the contract wants; a value is passed as its literal.
+type Binders = Vec<(usize, String, Option<String>)>;
+
 /// One argument of a built term.
 ///
 /// **A capability cannot be written as data** (C224 item 4). A peer holds one as a descriptor — a
@@ -103,6 +109,15 @@ pub enum Arg {
         location: String,
         pattern: Option<String>,
     },
+    /// A value with capabilities **inside** it — an ERTP amount `(brand, value)`, whose brand is a
+    /// capability the peer holds. `rendered` is the term to write, with each such capability already
+    /// replaced by the binder name `binders` binds; the indices are the caller's and must not collide
+    /// with `Named`'s (which uses the argument's own position in the call). A value containing no
+    /// capability is `Value`, so this variant is the only one that needs a rendered string.
+    Nested {
+        rendered: String,
+        binders: Binders,
+    },
 }
 
 impl Arg {
@@ -114,12 +129,6 @@ impl Arg {
         }
     }
 }
-
-/// The payload a call passes, and the binders its named arguments still need.
-///
-/// A capability is passed **bare** — `@purse!("deposit", payment, *ret)` — because the name is what
-/// the contract wants; a value is passed as its literal.
-type Binders = Vec<(usize, String, Option<String>)>;
 
 fn payload_and_binders(
     method_lit: &str,
@@ -149,6 +158,15 @@ fn payload_and_binders(
                 })?;
                 payload.push(format!("arg{index}"));
                 binders.push((index, location.clone(), pattern.clone()));
+            }
+            Arg::Nested {
+                rendered,
+                binders: nested,
+            } => {
+                // Already a term, built by the caller with the same `check_renderable` discipline on
+                // each literal it wrote; the binders ride along and are wrapped like any other.
+                payload.push(rendered.clone());
+                binders.extend(nested.iter().cloned());
             }
         }
     }
