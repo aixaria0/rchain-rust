@@ -17,10 +17,12 @@
 //! to evade a policy like this; a name that does not resolve is refused, since the dial would fail
 //! anyway.
 //!
-//! **Still not addressed, and named rather than implied:** a *remote* peer can aim the node at the
-//! node's own loopback services while `deny_local` is off. Fixing that needs the peer's own origin —
-//! the socket address of the session the dial came from — which the dial path does not carry. That is
-//! the registered refinement (C225), not something this file pretends to solve.
+//! **And the peer's own origin decides what *it* may reach** (Law 62, AUDIT C225). A dial a *remote*
+//! peer asked for is refused when the target is one of this node's own local addresses: the peer would
+//! be using this node to reach a service it cannot reach itself, which is what an SSRF is. A peer that
+//! *is* local is dialling its own neighbourhood, which is what a demo and the conformance suite do —
+//! so the rule keys on the origin rather than on the target alone, and a transport that cannot report
+//! an origin keeps the behaviour it had.
 
 use crate::locator::PeerLocator;
 use crate::netlayer::{NetConn, Netlayer};
@@ -88,6 +90,73 @@ impl DialPolicy {
         self.permits_address(address)
     }
 
+    /// Whether a dial to `locator` is permitted **for the peer at `origin`** — the socket address of
+    /// the session the dial was asked for on, when the transport knows it (Law 62, AUDIT C225).
+    ///
+    /// The first half is [`DialPolicy::permits`], unchanged. The second is the one this exists for: a
+    /// peer that is **not** on this host may not make this node reach this node's own local
+    /// addresses. A peer that *is* local may: loopback is how this crate is tested and demonstrated,
+    /// and a loopback peer reaching loopback is not an escalation.
+    ///
+    /// `None` means the transport cannot say where the peer is, and the dial is judged as before —
+    /// refusing on an unknowable origin would break every netlayer that cannot report one.
+    pub fn permits_from(
+        &self,
+        locator: &PeerLocator,
+        origin: Option<std::net::SocketAddr>,
+    ) -> Result<(), String> {
+        self.permits(locator)?;
+        let Some(origin) = origin else {
+            return Ok(());
+        };
+        let Some(host) = locator.hints.get("host") else {
+            return Ok(());
+        };
+        if self.allow.iter().any(|a| a == host) {
+            return Ok(());
+        }
+        if origin.ip().is_loopback() {
+            return Ok(());
+        }
+        let who = format!("a peer at {} (not on this host)", origin);
+        match host.parse::<std::net::IpAddr>() {
+            Ok(address) => self.not_a_local_target(address, &who),
+            Err(_) => {
+                let Ok(addresses) = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0))
+                else {
+                    // A name that does not resolve was refused by `permits` above.
+                    return Ok(());
+                };
+                for candidate in addresses {
+                    self.not_a_local_target(candidate.ip(), &who)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// **The origin rule**: a remote peer may not aim this node at one of its own local addresses.
+    fn not_a_local_target(&self, address: std::net::IpAddr, who: &str) -> Result<(), String> {
+        let local = match address {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+            }
+        };
+        if local {
+            return Err(format!(
+                "{who} cannot make this node dial {address}: it is one of this node's own local \
+                 addresses, so the peer is asking this node to reach a service the peer itself cannot"
+            ));
+        }
+        Ok(())
+    }
+
     /// The address half of [`DialPolicy::permits`], which a resolved name is checked with too.
     fn permits_address(&self, address: std::net::IpAddr) -> Result<(), String> {
         let what = match address {
@@ -145,10 +214,19 @@ impl<N: Netlayer> Netlayer for PolicyNetlayer<N> {
         &self,
         locator: &PeerLocator,
     ) -> std::io::Result<Box<dyn NetConn>> {
+        self.new_outgoing_connection_from(locator, None).await
+    }
+
+    /// The dial, judged against **the peer that asked for it** (Law 62).
+    async fn new_outgoing_connection_from(
+        &self,
+        locator: &PeerLocator,
+        origin: Option<std::net::SocketAddr>,
+    ) -> std::io::Result<Box<dyn NetConn>> {
         // **Refused before the connect, not after.** The point is to not make the connection: a
         // policy that dials and hangs up has already told the peer whether something is listening.
         self.policy
-            .permits(locator)
+            .permits_from(locator, origin)
             .map_err(|reason| std::io::Error::new(std::io::ErrorKind::PermissionDenied, reason))?;
         self.inner.new_outgoing_connection(locator).await
     }
@@ -188,6 +266,63 @@ mod tests {
             );
         }
         assert!(policy.permits(&locator("0.0.0.0")).is_err());
+    }
+
+    /// **A remote peer cannot aim this node at its own loopback** (Law 62, AUDIT C225) — and a
+    /// loopback peer still can, which is the control that keeps the rule from being "refuse local
+    /// targets", a rule that would break every demo.
+    ///
+    /// The origin is the socket address the request came from. `None` — a transport that cannot say —
+    /// keeps the behaviour it had, which is why it is asserted here too: the origin rule must not turn
+    /// an unknowable origin into a refusal.
+    #[test]
+    fn a_remote_peer_cannot_reach_this_nodes_own_services() {
+        let policy = DialPolicy::default();
+        let remote = "203.0.113.9:41234".parse().expect("a remote address");
+        for host in ["127.0.0.1", "::1", "192.168.1.10", "10.0.0.5"] {
+            let refused = policy.permits_from(&locator(host), Some(remote));
+            assert!(
+                refused.is_err(),
+                "a peer at {remote} must not make this node dial its own {host}"
+            );
+            assert!(
+                refused
+                    .expect_err("checked")
+                    .contains("cannot make this node dial"),
+                "and the reason says whose address it is"
+            );
+        }
+        // A public target is still a dial the peer may ask for: the rule is about *this node's* local
+        // addresses, not about who is asking.
+        assert!(policy
+            .permits_from(&locator("203.0.113.10"), Some(remote))
+            .is_ok());
+
+        // **The control.** A peer that is itself on loopback is dialling its own neighbourhood.
+        let local = "127.0.0.1:5555".parse().expect("a loopback address");
+        for host in ["127.0.0.1", "192.168.1.10"] {
+            assert!(
+                policy.permits_from(&locator(host), Some(local)).is_ok(),
+                "a loopback peer reaching {host} is the conformance suite's own case"
+            );
+        }
+
+        // And an origin the transport cannot report is judged as before, not refused.
+        assert!(policy.permits_from(&locator("127.0.0.1"), None).is_ok());
+    }
+
+    /// The origin rule **cannot be evaded by a name**: the same resolution `permits` does is applied
+    /// before the address is judged, so a name pointing at this node is refused for a remote peer.
+    #[test]
+    fn a_remote_peer_cannot_reach_this_node_by_name() {
+        let policy = DialPolicy::default();
+        let remote = "203.0.113.9:41234".parse().expect("a remote address");
+        // `localhost` resolves to loopback on every host this runs on.
+        let refused = policy.permits_from(&locator("localhost"), Some(remote));
+        assert!(
+            refused.is_err(),
+            "a name that resolves to loopback is the same dial: {refused:?}"
+        );
     }
 
     /// Loopback and private addresses are **permitted by default**, because that is how this crate is

@@ -416,6 +416,12 @@ impl Session {
         Ok(session)
     }
 
+    /// **Where the peer is**, when the transport knows (Law 62, AUDIT C225). A dial this peer asks for
+    /// is judged against it: a remote peer may not make this node reach its own loopback.
+    pub fn peer_address(&self) -> Option<std::net::SocketAddr> {
+        self.conn.peer_address()
+    }
+
     /// Write the held-back `op:start-session`, completing a [`Session::accept_deferred`] handshake.
     ///
     /// Idempotent: once sent there is nothing left to announce.

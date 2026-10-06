@@ -62,6 +62,9 @@ pub struct SessionHandle {
     pub peer_key: Option<Vec<u8>>,
     /// True when we dialed this session, false when we accepted it.
     pub dialed: bool,
+    /// **Where the peer is**, when the transport knows (Law 62, AUDIT C225). A dial this peer asks
+    /// for is judged against it: a remote peer may not make this node reach the node's own loopback.
+    pub peer_address: Option<std::net::SocketAddr>,
 }
 
 /// How long a sender waits for room in a session's hand-off queue before giving up.
@@ -214,6 +217,7 @@ pub(crate) fn split(mut session: Session) -> (SessionHandle, SessionLoop, Sessio
         peer_pi: peer_pi.cloned(),
         peer_key: session.peer_key().map(<[u8]>::to_vec),
         dialed: session.is_dialed(),
+        peer_address: session.peer_address(),
     };
     let context = SessionContext {
         handle: handle.clone(),
@@ -503,6 +507,19 @@ pub struct SessionContext {
 /// so it is always set by the time it is read. `None` means exactly that: the session does not exist
 /// yet, and a delivery could not have arrived.
 pub type SessionSlot = Arc<Mutex<Option<SessionContext>>>;
+
+/// **Where the peer on this session is**, when the transport knows (Law 62, AUDIT C225).
+///
+/// A dial a peer asks for is judged against this: a remote peer may not make this node reach the
+/// node's own loopback. `None` when the slot is empty or the transport cannot say — the policy treats
+/// both as "cannot be judged" and dials as it did before.
+pub fn session_origin(session: &SessionSlot) -> Option<std::net::SocketAddr> {
+    session
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .and_then(|context| context.handle.peer_address)
+}
 
 /// A slot, empty until its session exists.
 pub fn session_slot() -> SessionSlot {
