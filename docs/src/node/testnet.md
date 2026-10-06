@@ -437,13 +437,13 @@ INFO [casper.engine.NodeLaunch] Making a transition to Running state.
 
 A join takes about 15 seconds and ~19 MB, measured.
 
-## Do not onboard a validator yet
+## History — why onboarding was gated, and why it is not any more
 
-**This net takes one validator on purpose.** Three blockers were measured; the first two are fixed below,
-and the third's mechanism — the unattested storm, and the guard that let a fully-live net stop finalising
-— is fixed by C209/C210. **Lifting this gate is a re-verification on this net, not a code change**, and
-the readiness question is owned by the
-[testnet acceptance specification](../spec/testnet-acceptance.md) §3.2.
+**Adding a validator is a supported operation on this net, and the procedure is
+[Onboarding an observer into the validator pool](#onboarding-an-observer-into-the-validator-pool).**
+What follows is the record of why it was gated until 2026-10-04 — three blockers, all since fixed, and the
+measurements that lifted the gate — kept because the mechanisms are worth knowing, not because the gate
+still stands.
 
 1. ~~**Three validators panic at the first epoch boundary.**~~ **Fixed, 2026-09-28.** With bonds
    A 100 / B 100 / C 50 and `--epoch-length 10`, all three nodes used to die in the same second at
@@ -490,7 +490,7 @@ the readiness question is owned by the
    syncs 27 history / 198 data items, the joiner tracks the bootstrap's height, and both finalise in
    lockstep — 264/257, 286/278, 317/309 as the chain grew.
 
-The split is 1000 against 100 because **every bonded validator must have its message seen** for the
+The 2026-09-27/29 split was 1000 against 100 because **every bonded validator must have its message seen** for the
 fringe to advance, and B is the only other participant: A's share of the active set is what decides
 whether A alone can carry a quorum *when B is running*, and the 2026-09-22 incident is consistent with
 the partition reading rather than the arithmetic one — A held 1000 of a 1200 active set, **above** the
@@ -523,8 +523,8 @@ the last block B proposed — while the height reached 25, and stopping B did no
 there is the height rule (`casper/src/validate.rs:297`), which used to *skip failed justifications* when
 it computed the expected height, so once a node had failed one block no higher-numbered block was ever
 valid to it. That is #103's theme — one unprocessable block is permanent — reached by a different mechanism,
-and it is why this chain is **single-bond** rather than two-bond: the two-bond rebuild could not
-finalise at all on the current binary.
+and it is why the 2026-09-29 rebuild went **single-bond**: the two-bond shape could not finalise on the
+binary of that day, and it does on the current ones.
 
 **Re-measured on 2026-09-29 on `f36312a55`, which carries #104, #106, #107 and #108 — and this is where
 the picture above changes.** On the live two-host net, both shapes now behave differently:
@@ -564,14 +564,22 @@ so the storm is bounded by
   **shipped configuration**, not the attestation guard; see the caveat in
   `spec/audit/evidence/n148-results.md`.
 
-**So "do not onboard a validator yet" is still the rule, for a third reason again**: not blocker 2's
-unsatisfiable partition (fixed by #108), but **the unattested storm an absent validator lets run** — and
-behind that, whatever bounds the storm while every validator is live.
+**Adding one is supported.** The three blockers above are fixed, the four-validator shape tolerates the
+loss of any one member (measured — see [Recovery](#recovery)), and the join/leave rows A2.1–A2.4 pass on
+this net: [the acceptance specification](../spec/testnet-acceptance.md) §3.2 owns that question.
 
-> **The falsifiers that decide whether that rule still holds are in the
-> [testnet acceptance specification](../spec/testnet-acceptance.md)** — §3.2, rows A2.1–A2.5, which carry
-> the kill/join/bond measurements this gate was written for. That page is the single owner of the
-> readiness question; this section keeps the point-of-use warning.
+What still bites when a validator is added, and is worth knowing before you try:
+
+- **a bonded key needs a running node.** The pool counts its stake whether or not anything is producing
+  with it, so a bonded key with no node dilutes everyone who is contributing rather than merely failing to
+  help. Run that node with `--propose-on-deploy`.
+- **the pool shape decides how much can be lost.** Each of the four holds 250 of 1000; a joiner at the cap
+  takes the pool to 1250 with everyone at 20 %, which still tolerates any single loss. There is no
+  inactivity leak and no eviction, so an absent validator's stake goes on counting until it speaks again.
+- **two funding prerequisites and one ordering rule**, all in
+  [Onboarding an observer into the validator pool](#onboarding-an-observer-into-the-validator-pool): the
+  trusted key pays for its own `trust` deploy, the newcomer's vault must cover its stake, and only a
+  trusted key can confer `trust`.
 
 ## Onboarding an observer into the validator pool
 
