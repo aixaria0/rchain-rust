@@ -19,6 +19,7 @@ import Rchain.Syrup
 import Rchain.Install
 import Rchain.Session
 import Rchain.Perimeter
+import Rchain.Attribution
 import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Concurrent
