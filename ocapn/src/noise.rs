@@ -85,6 +85,14 @@ const MAX_CHUNK_PLAINTEXT: usize = 65535 - TAG_LEN;
 /// The largest whole message this transport will reassemble, matching [`crate::framed`]'s bound.
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
+/// How long a Noise handshake may take before the connection is abandoned.
+///
+/// **The peer chooses how long to take**, and the handshake runs on the connection's first use rather
+/// than in the accept loop — so without a bound a peer that connects and then stays silent would hold
+/// a session slot for ever. Thirty seconds is the bound the CapTP handshake already carries
+/// (`ocapn/src/conn.rs`), and a real handshake is a few round trips on any usable link.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 type NoiseHandshake = HandshakeState<X25519, ChaCha20Poly1305, Blake2s>;
 type NoiseCipher = CipherState<ChaCha20Poly1305>;
 
@@ -144,6 +152,16 @@ impl NoiseIdentity {
     /// The X25519 static public key.
     pub fn static_public(&self) -> [u8; 32] {
         self.static_public
+    }
+
+    /// The bytes this identity is persisted as: the Ed25519 seed, then the X25519 static — 64 bytes,
+    /// stored mode `0600` by whoever writes them. Both halves travel together because [`Self::new`]
+    /// re-derives everything else, so the file cannot disagree with itself.
+    pub fn to_persisted_bytes(&self) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        out[..32].copy_from_slice(&self.signing);
+        out[32..].copy_from_slice(&self.static_secret);
+        out
     }
 
     /// The payload this side puts in its handshake message: its verifying key, its signature over its
@@ -256,23 +274,33 @@ impl Netlayer for NoiseNetlayer {
                     "noise `verify` is not 32 bytes of base16",
                 )
             })?;
-        let peer = initiate(stream, &self.identity, peer_verifying).await?;
-        Ok(Box::new(peer))
+        Ok(Box::new(NoiseConn::dialing(
+            stream,
+            self.identity.clone(),
+            peer_verifying,
+        )))
     }
 
+    /// **The handshake does not happen here.** It runs on the connection's first use — see
+    /// [`NoiseConn`] — because an accept that completed a handshake would put a peer's *timing* into
+    /// the node's accept loop: one peer that connects and then stays silent would hold every other
+    /// peer out while it did, and a peer that connects and drops would fail this call outright and end
+    /// the listener. Here the accept is a socket accept and nothing else, so a bad peer costs one
+    /// session slot, bounded by [`HANDSHAKE_TIMEOUT`] — the same price it costs on every other
+    /// transport.
     async fn accept_incoming_connection(&self) -> io::Result<Box<dyn NetConn>> {
         let (stream, _peer) = self.listener.accept().await?;
-        let peer = respond(stream, &self.identity).await?;
-        Ok(Box::new(peer))
+        Ok(Box::new(NoiseConn::accepted(stream, self.identity.clone())))
     }
 }
 
 /// The initiator's half of the handshake: prefixed SYN, then read SYNACK, verify it, then ACK.
+/// Returns the transport ciphers as `(send, recv)`, which is the order the initiator gets them in.
 async fn initiate(
-    mut stream: TcpStream,
+    stream: &mut TcpStream,
     identity: &NoiseIdentity,
     peer_verifying: [u8; VERIFYING_KEY_LEN],
-) -> io::Result<NoiseConn> {
+) -> io::Result<(NoiseCipher, NoiseCipher)> {
     let mut handshake = NoiseHandshake::new(
         noise_xx(),
         true,   // initiator
@@ -321,12 +349,14 @@ async fn initiate(
     stream.write_all(&ack).await?;
     stream.flush().await?;
 
-    let (send, recv) = handshake.get_ciphers();
-    Ok(NoiseConn { stream, send, recv })
+    Ok(handshake.get_ciphers())
 }
 
 /// The responder's half: read SYN, answer SYNACK, then read and verify the ACK.
-async fn respond(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result<NoiseConn> {
+async fn respond(
+    stream: &mut TcpStream,
+    identity: &NoiseIdentity,
+) -> io::Result<(NoiseCipher, NoiseCipher)> {
     let mut prefixed = vec![0u8; PREFIXED_SYN_LEN];
     stream.read_exact(&mut prefixed).await?;
     let (intended, syn) = prefixed.split_at(VERIFYING_KEY_LEN);
@@ -375,48 +405,128 @@ async fn respond(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result<
     // The initiator proves it holds the signing key for the static key it offered in the SYN.
     let _initiator_verifying = check_payload(&initiator_payload, &initiator_static, "initiator")?;
 
+    // The responder's cipher order is the mirror of the initiator's: what it receives with is the
+    // first the handshake yields, and what it sends with is the second.
     let (recv, send) = handshake.get_ciphers();
-    Ok(NoiseConn { stream, send, recv })
+    Ok((send, recv))
+}
+
+/// Which half of the handshake this connection is due to run.
+enum Half {
+    /// We dialled. The peer's Ed25519 key is what the SYN's prefix must name.
+    Initiator {
+        peer_verifying: [u8; VERIFYING_KEY_LEN],
+    },
+    /// We accepted. Our own key is what the prefix must name.
+    Responder,
 }
 
 /// One encrypted connection. Messages are chunked: a `u32` length, then that many cipher-message
 /// bytes, each chunk at most [`MAX_CHUNK_PLAINTEXT`] of plaintext.
+///
+/// **The handshake runs on the first `send` or `recv`, not when the connection is made.** That is not
+/// laziness: an accept is called from the node's accept loop, so a handshake completed there would let
+/// one peer's *timing* — connect-and-stay-silent, or connect-and-drop — hold that loop and then fail
+/// it. Here the loop only ever accepts sockets, and a peer that will not finish a handshake costs one
+/// session slot until [`HANDSHAKE_TIMEOUT`], which is what a bad peer costs on every other transport.
 struct NoiseConn {
     stream: TcpStream,
-    send: NoiseCipher,
-    recv: NoiseCipher,
+    identity: NoiseIdentity,
+    /// `Some` until the handshake runs and `None` after, so a connection handshakes at most once and a
+    /// second attempt is not representable.
+    pending: Option<Half>,
+    /// `(send, recv)` once the handshake has completed.
+    ciphers: Option<(NoiseCipher, NoiseCipher)>,
 }
 
 impl NoiseConn {
+    /// A connection we dialled; the first use runs its handshake.
+    fn dialing(
+        stream: TcpStream,
+        identity: NoiseIdentity,
+        peer_verifying: [u8; VERIFYING_KEY_LEN],
+    ) -> NoiseConn {
+        NoiseConn {
+            stream,
+            identity,
+            pending: Some(Half::Initiator { peer_verifying }),
+            ciphers: None,
+        }
+    }
+
+    /// A connection we accepted; the first use runs its handshake.
+    fn accepted(stream: TcpStream, identity: NoiseIdentity) -> NoiseConn {
+        NoiseConn {
+            stream,
+            identity,
+            pending: Some(Half::Responder),
+            ciphers: None,
+        }
+    }
+
+    /// Run the handshake if it has not run. **Bounded**, because the peer chooses how long to take.
+    async fn ensure_ready(&mut self) -> io::Result<()> {
+        let Some(half) = self.pending.take() else {
+            return Ok(());
+        };
+        let finished = {
+            let NoiseConn {
+                stream, identity, ..
+            } = self;
+            tokio::time::timeout(HANDSHAKE_TIMEOUT, async move {
+                match half {
+                    Half::Initiator { peer_verifying } => {
+                        initiate(stream, identity, peer_verifying).await
+                    }
+                    Half::Responder => respond(stream, identity).await,
+                }
+            })
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("the Noise handshake did not finish within {HANDSHAKE_TIMEOUT:?}"),
+                )
+            })?
+        };
+        self.ciphers = Some(finished?);
+        Ok(())
+    }
+
     /// Encrypt `message` into as many chunks as it needs, each a separate cipher message.
-    fn seal(&mut self, message: &[u8]) -> Vec<u8> {
+    fn seal(&mut self, message: &[u8]) -> io::Result<Vec<u8>> {
+        let (send, _) = self
+            .ciphers
+            .as_mut()
+            .ok_or_else(|| io::Error::other("the Noise handshake has not run"))?;
         let mut out = Vec::with_capacity(message.len() + TAG_LEN);
         for chunk in message.chunks(MAX_CHUNK_PLAINTEXT) {
             let mut buf = vec![0u8; chunk.len() + TAG_LEN];
             buf[..chunk.len()].copy_from_slice(chunk);
-            self.send.encrypt_in_place(&mut buf, chunk.len());
+            send.encrypt_in_place(&mut buf, chunk.len());
             out.extend_from_slice(&buf);
         }
-        out
+        Ok(out)
     }
 
     /// Decrypt `ciphertext` — the whole body of one framed message — into its plaintext.
     fn open(&mut self, mut ciphertext: Vec<u8>) -> io::Result<Vec<u8>> {
+        let (_, recv) = self
+            .ciphers
+            .as_mut()
+            .ok_or_else(|| io::Error::other("the Noise handshake has not run"))?;
         let mut plain = Vec::with_capacity(ciphertext.len());
         // Chunks are `MAX_CHUNK_PLAINTEXT + TAG_LEN` bytes each, except the last.
         while !ciphertext.is_empty() {
             let take = ciphertext.len().min(MAX_CHUNK_PLAINTEXT + TAG_LEN);
             let mut chunk: Vec<u8> = ciphertext.drain(..take).collect();
             let chunk_len = chunk.len();
-            let written = self
-                .recv
-                .decrypt_in_place(&mut chunk, chunk_len)
-                .map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "a Noise transport message did not authenticate",
-                    )
-                })?;
+            let written = recv.decrypt_in_place(&mut chunk, chunk_len).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "a Noise transport message did not authenticate",
+                )
+            })?;
             plain.extend_from_slice(&chunk[..written]);
         }
         Ok(plain)
@@ -426,9 +536,10 @@ impl NoiseConn {
 #[async_trait]
 impl NetConn for NoiseConn {
     async fn send(&mut self, message: &[u8]) -> io::Result<()> {
-        let sealed = self.seal(message);
+        self.ensure_ready().await?;
+        let sealed = self.seal(message)?;
         // The length is the *ciphertext's*, because that is what the peer must read before it can
-        // decrypt; a peer that lies about it is bounded by the check below rather than by a buffer.
+        // decrypt; a peer that lies about it is bounded by the check in `recv`, not by a buffer.
         let len = u32::try_from(sealed.len())
             .map_err(|_| io::Error::other("a Noise message longer than 4 GiB is refused"))?;
         self.stream.write_all(&len.to_be_bytes()).await?;
@@ -443,6 +554,7 @@ impl NetConn for NoiseConn {
     }
 
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
+        self.ensure_ready().await?;
         let mut header = [0u8; 4];
         match self.stream.read_exact(&mut header).await {
             Ok(_) => {}

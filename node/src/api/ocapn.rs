@@ -5,14 +5,16 @@
 //! the node's end of that — a listener that serves a fresh session per connection — and the
 //! **bridge**: a chain-backed capability whose deliveries become signed deploys.
 //!
-//! **A node may listen on either of two transports, both, or (dial-only) neither.**
+//! **A node may listen on any of three transports, several, or (dial-only) none.**
 //! `tcp-testing-only` is the OCapN project's own, which its README flags as "HIGHLY INSECURE — DO NOT
 //! USE IN PRODUCTION": plain TCP, no encryption, no authentication, so it is off unless
 //! `api-server.ocapn-listen` names an address and a node reachable from anywhere it does not control
 //! should leave it unset. `unix` (`api-server.ocapn-listen-unix`) takes a socket path and
-//! authenticates by the socket's file mode — what admitted a peer is the filesystem's permission,
-//! which is what makes it more than a testing transport. **A Noise netlayer is deliberately not
-//! offered**: it is not built, because it would talk only to itself (see `ocapn/src/netlayer.rs`).
+//! authenticates by the socket's file mode, but is reachable only from this host. **`noise`
+//! (`api-server.ocapn-listen-noise`) is the one a remote peer can use**: the handshake authenticates
+//! both ends and encrypts everything above it, with no certificate authority and no daemon, and it is
+//! checked against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`). It needs
+//! `api-server.ocapn-identity-key`, because the handshake names this node by a key it must hold.
 //!
 //! **The bridge reuses Layer 1 rather than re-implementing it.** `docs/src/node/shard-invoke.md`
 //! established that a cross-shard call *is* a caller-signed deploy whose reply arrives on
@@ -52,6 +54,7 @@ use rchain_ocapn::fixtures;
 use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::multi::MultiNetlayer;
 use rchain_ocapn::netlayer::{NetConn, Netlayer};
+use rchain_ocapn::noise::{NoiseIdentity, NoiseNetlayer};
 use rchain_ocapn::par_value;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
@@ -135,22 +138,82 @@ const MAX_SESSIONS: usize = 64;
 /// configured is not an error — it is a **dial-only** node, and the task still runs so the surfaces
 /// that dial out have somewhere to live.
 ///
-/// **`noise` is deliberately absent.** The Noise netlayer is not built (see `ocapn/src/netlayer.rs`
-/// for the gate that would unblock it), so a key naming it would configure a transport this node
-/// cannot construct.
+/// **`noise` is the one a remote peer can reach.** `tcp-testing-only` is plaintext and
+/// unauthenticated and `unix` is local by construction, so this is the transport that makes the node
+/// a peer on a network rather than a service on the host that runs it. Its handshake is verified
+/// against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`).
+///
+/// **`onion` is absent.** It is the only concrete transport in the OCapN draft, and it is not built:
+/// it needs a `tor` daemon on the node and the draft it is pinned by says it is "likely to undergo
+/// significant change". A key naming it would configure a transport this node cannot construct.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OcapnListeners {
     /// `host:port` for the `tcp-testing-only` transport.
     pub tcp: Option<String>,
     /// A socket path for the `unix` transport, whose authentication is the socket's file mode.
     pub unix: Option<String>,
+    /// `host:port` for the `noise` transport, which authenticates both ends and encrypts the channel.
+    pub noise: Option<String>,
 }
 
 impl OcapnListeners {
     /// Whether the node listens on any transport. A node that listens on none is dial-only.
     pub fn any(&self) -> bool {
-        self.tcp.is_some() || self.unix.is_some()
+        self.tcp.is_some() || self.unix.is_some() || self.noise.is_some()
     }
+}
+
+/// The node's **Noise identity**, loaded from the configured key file: an Ed25519 seed and an X25519
+/// static, both stable across restarts.
+///
+/// **Why the node needs one and did not have one.** CapTP's own session identity is Ed25519, but it is
+/// *ephemeral* — fresh per session — so it cannot name the node to anyone. The Noise handshake needs
+/// the opposite: a key a peer can hold in advance and check, and the SYN it sends carries the peer's
+/// Ed25519 verifying key in cleartext precisely so the responder can refuse a handshake meant for
+/// someone else. `node_designator` is a *hash* of the deployer key and cannot sign, so a node that
+/// wants to be reachable over Noise needs its own key material.
+///
+/// **The file is 64 bytes**: the Ed25519 seed, then the X25519 static, mode `0600`. Generated on
+/// first use and persisted, because an identity that changes on restart is one no peer can name.
+pub fn load_or_create_noise_identity(
+    path: &str,
+) -> Result<rchain_ocapn::noise::NoiseIdentity, String> {
+    let path = std::path::Path::new(path);
+    let found = |n: usize| {
+        format!(
+            "{} is not a Noise identity: expected 64 bytes (an Ed25519 seed then an X25519 static), \
+             found {n}",
+            path.display()
+        )
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // **Generated, then written before it is used**, so a node that fails right after still
+            // has the identity it advertised rather than a new one on the next start.
+            let identity = rchain_ocapn::noise::NoiseIdentity::generate()?;
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(path, identity.to_persisted_bytes()).map_err(|e| e.to_string())?;
+            // Mode `0600`: a Noise static key is the node's identity, and one another uid can read is
+            // one another uid can impersonate. Set after the write, as the certificate path does.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| e.to_string())?;
+            }
+            return Ok(identity);
+        }
+        Err(e) => return Err(format!("reading {}: {e}", path.display())),
+    };
+    if bytes.len() != 64 {
+        return Err(found(bytes.len()));
+    }
+    let seed: [u8; 32] = bytes[..32].try_into().map_err(|_| found(bytes.len()))?;
+    let stat: [u8; 32] = bytes[32..].try_into().map_err(|_| found(bytes.len()))?;
+    rchain_ocapn::noise::NoiseIdentity::new(seed, stat)
 }
 
 /// The node's **outbound** OCapN surface (issue #249): what a dial this node starts itself needs.
@@ -313,6 +376,45 @@ async fn listen_unix(
     Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
 }
 
+/// Bind the `noise` listener and build the location a peer reaches it at.
+///
+/// **The location carries this node's Ed25519 verifying key**, in the `verify` hint, because that is
+/// what a dialler must put in the SYN's cleartext prefix — the handshake is where the name is checked,
+/// so the name has to travel with the address. This is the one advertised location that says *who*
+/// the node is and not only where it is.
+async fn listen_noise(
+    address: &str,
+    policy: DialPolicy,
+    designator: &str,
+    chain: usize,
+    identity: NoiseIdentity,
+    log: &Arc<dyn rchain_shared::log::Log>,
+    source: rchain_shared::log::LogSource,
+) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
+    let verifying = identity.verifying_key();
+    let bound = NoiseNetlayer::bind(address, identity)
+        .await
+        .map_err(|e| e.to_string())?;
+    let local = bound.local_addr().map_err(|e| e.to_string())?;
+    log.info(
+        source,
+        &format!("OCapN listener serving noise on {local} ({chain} chain-backed capability/ies)"),
+    );
+    let location = PeerLocator {
+        designator: designator.to_string(),
+        transport: "noise".to_string(),
+        hints: BTreeMap::from([
+            ("host".to_string(), local.ip().to_string()),
+            ("port".to_string(), local.port().to_string()),
+            (
+                "verify".to_string(),
+                rchain_shared::base16::encode(&verifying),
+            ),
+        ]),
+    };
+    Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
+}
+
 /// Serve OCapN on every configured transport until the node is asked to stop.
 ///
 /// The task is spawned whether or not any transport is configured — a node that listens on none is
@@ -328,6 +430,8 @@ pub async fn serve_ocapn(
     designator: String,
     deny_local_dial: bool,
     dial_slot: OcapnDialSlot,
+    // The node's Noise identity, required exactly when `listeners.noise` is set.
+    noise_identity: Option<NoiseIdentity>,
     log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -363,6 +467,30 @@ pub async fn serve_ocapn(
         }
         None => None,
     };
+    // **A `noise` address without an identity is a configuration the node cannot honour**, and it says
+    // so rather than binding a listener whose name would be thirty-two zero bytes.
+    let noise = match (listeners.noise.as_deref(), noise_identity) {
+        (Some(address), Some(identity)) => Some(
+            listen_noise(
+                address,
+                policy.clone(),
+                &designator,
+                chain.len(),
+                identity,
+                &log,
+                source,
+            )
+            .await?,
+        ),
+        (Some(_), None) => {
+            return Err(
+                "api-server.ocapn-listen-noise is set but no Noise identity was provided; set \
+                 api-server.ocapn-identity-key so the node has a name a peer can check"
+                    .to_string(),
+            )
+        }
+        (None, _) => None,
+    };
     // **The dialing netlayer is the dispatcher over every transport the node has**: a fixture that
     // dials `ocapn://peer.unix?path=…` reaches the unix layer and one that names `tcp-testing-only`
     // reaches the TCP layer. Accepting stays per listener below, because a session has to advertise
@@ -374,16 +502,23 @@ pub async fn serve_ocapn(
     if let Some((layer, _)) = &unix {
         dialer = dialer.with("unix", layer.clone());
     }
+    if let Some((layer, _)) = &noise {
+        dialer = dialer.with("noise", layer.clone());
+    }
     let dialer: Arc<dyn Netlayer> = Arc::new(dialer);
-    // The location this node advertises in a dial it starts itself: the first configured transport in
-    // a fixed order (tcp, then unix). A node listening on both still has one location to put in a
-    // start-session, and it must be one a peer can dial back.
-    let outward = tcp
+    // The location this node advertises in a dial it starts itself. **`noise` first, then the order
+    // that predates it (tcp, then unix)**: a peer that is handed this location has to be able to dial
+    // it back, and `noise` is both reachable and authenticated while `tcp-testing-only` is reachable
+    // and not and `unix` is authenticated and not. Putting `noise` first does not change what the two
+    // transports that existed before advertise between themselves.
+    let outward = noise
         .as_ref()
+        .or(tcp.as_ref())
         .or(unix.as_ref())
         .map(|(_, location)| location.clone());
     let tcp = Listener::new(tcp);
     let unix = Listener::new(unix);
+    let noise = Listener::new(noise);
     // One registry and one gift store for the node's whole OCapN surface: the crossed-hello rule
     // compares the sessions *this node* has with a peer, and a handoff is deposited on one session
     // and withdrawn on another.
@@ -415,6 +550,7 @@ pub async fn serve_ocapn(
             _ = stop_requested(stop.clone()) => return Ok(()),
             accepted = tcp.accept() => accepted.map_err(|e| e.to_string())?,
             accepted = unix.accept() => accepted.map_err(|e| e.to_string())?,
+            accepted = noise.accept() => accepted.map_err(|e| e.to_string())?,
         };
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
             // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
@@ -1136,11 +1272,13 @@ mod tests {
             OcapnListeners {
                 tcp: Some("127.0.0.1:0".to_string()),
                 unix: None,
+                noise: None,
             },
             Vec::new(),
             "rnode-test".to_string(),
             false,
             Arc::new(std::sync::OnceLock::new()),
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1180,11 +1318,13 @@ mod tests {
             OcapnListeners {
                 tcp: None,
                 unix: Some(path.display().to_string()),
+                noise: None,
             },
             Vec::new(),
             "rnode-test".to_string(),
             false,
             Arc::new(std::sync::OnceLock::new()),
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1222,6 +1362,7 @@ mod tests {
             "rnode-test".to_string(),
             false,
             Arc::new(std::sync::OnceLock::new()),
+            None,
             log.clone(),
             stop_rx,
         ));

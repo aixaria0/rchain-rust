@@ -249,10 +249,11 @@ bind, and a rate limit — which is why that route is off by default.
 
 ## 7. Writing a transport
 
-The node speaks two: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
-encryption, no authentication, which is why the listener is off unless you name an address — and
-`unix`, a domain socket authenticated by its file mode (`0600`). A third is small, because the seam is
-two functions (`ocapn/src/netlayer.rs`):
+The node speaks three: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
+encryption, no authentication, which is why the listener is off unless you name an address — `unix`, a
+domain socket authenticated by its file mode (`0600`) but reachable only from this host, and `noise`,
+which is the one a remote peer can use. A fourth is small, because the seam is two functions
+(`ocapn/src/netlayer.rs`):
 
 ```rust
 async fn new_outgoing_connection(&self, locator: &PeerLocator) -> io::Result<Box<dyn NetConn>>;
@@ -282,14 +283,17 @@ Endo version vendored for the spike (`1.1.1`) has `tcp-test-only` and `websocket
 write is the one the peers you care about actually speak — and whatever it is, it is the two functions
 above with the channel underneath it, and nothing above the seam moves.
 
-**Noise is the one to write if any is, and it is not built.** It is the transport the OCapN project
-names for a real deployment, and the reason to stop at "not built" is **interop**: neither
-implementation this repository tests against speaks it (see the list above), so a layer written here
-would talk only to itself — and its parameters (the pattern, the prologue, and how the Noise static key
-relates to the Ed25519 session identity) would be guesses rather than a specification to check against.
-The gate that changes this is a reference that speaks Noise; until one is reachable, the layer would be
-un-verifiable, which is the one thing this repository does not ship. `ocapn/src/netlayer.rs` records the
-same decision where a reader of the code will find it.
+**Noise is built, and it is the one a deployment should use.** `ocapn/src/noise.rs`, bound with
+`api-server.ocapn-listen-noise`; it needs `api-server.ocapn-identity-key`, because the handshake names
+the node by an Ed25519 key it must hold. **The gate that held it back was interop, and it is now
+measured rather than argued:** Agoric's endo repository carries `rust/ocapn_noise` and
+`packages/ocapn-noise`, pinning the pattern (`XX`), the primitives (X25519, ChaCha20Poly1305,
+BLAKE2s), the empty prologue, the message sizes, and — the part that is application protocol — the
+payload of a verifying key and a signature over the sender's X25519 static, behind a 32-byte cleartext
+prefix naming the intended responder. `spec/audit/evidence/ocapn-noise/` drives that reference, at a
+pinned commit, against this module, and the handshake completes. **Read that transcript before changing
+anything in the handshake**: it also says what the run does *not* cover — the record framing, for which
+the reference ships no counterpart.
 
 ### Unix domain sockets as the inner hop
 

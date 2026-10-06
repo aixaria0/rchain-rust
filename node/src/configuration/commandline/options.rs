@@ -396,6 +396,16 @@ pub struct Run {
     #[arg(long = "ocapn-listen-unix")]
     pub ocapn_listen_unix: Option<String>,
 
+    /// Bind the OCapN **`noise`** listener on this `host:port`; off when unset. The transport a peer
+    /// not on this host can reach: an authenticated, encrypted handshake with no certificate
+    /// authority. Needs `--ocapn-identity-key` (issue #249).
+    #[arg(long = "ocapn-listen-noise")]
+    pub ocapn_listen_noise: Option<String>,
+
+    /// Where this node's Noise identity is kept (64 bytes, mode `0600`); created on first use.
+    #[arg(long = "ocapn-identity-key")]
+    pub ocapn_identity_key: Option<String>,
+
     /// Port for external gRPC API.
     #[arg(short = 'e', long = "api-port-grpc-external")]
     pub api_port_grpc_external: Option<i32>,

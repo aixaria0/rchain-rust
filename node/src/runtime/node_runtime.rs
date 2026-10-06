@@ -465,6 +465,9 @@ pub struct NodeProgram {
     /// The transports to bind the OCapN listener on — `tcp-testing-only` and/or `unix`, or neither
     /// for a dial-only node (issue #249).
     ocapn_listeners: OcapnListeners,
+    /// The node's Noise identity, when it has one — required exactly when `ocapn_listeners.noise` is
+    /// set, and also what makes the designator a name a peer can verify (issue #249).
+    ocapn_identity: Option<rchain_ocapn::noise::NoiseIdentity>,
     /// Where the listener publishes the [`OcapnDialSlot`]'s dialer, and the admin server reads it to
     /// serve a node-started dial (issue #249).
     ocapn_dial: OcapnDialSlot,
@@ -514,6 +517,7 @@ impl NodeProgram {
             enable_devnet_cors,
             enable_devnet_admin_public,
             ocapn_listeners,
+            ocapn_identity,
             ocapn_dial,
             enable_ocapn_dial,
             ocapn_deny_local_dial,
@@ -626,6 +630,7 @@ impl NodeProgram {
             ocapn_designator,
             ocapn_deny_local_dial,
             ocapn_dial,
+            ocapn_identity,
             log.clone(),
             stop.clone(),
         ));
@@ -1278,14 +1283,39 @@ pub async fn setup_node_program(
     // API's `dev_mode` and its own key, asynchronously, which a synchronously-built router cannot
     // consult; the two values are the same pair the faucet handler refuses without.
     let faucet_enabled = conf.dev_mode && faucet_deployer_key.is_some();
-    // **This node's OCapN designator**, derived *here* because this is the last place the deployer key
-    // is in hand — it moves into the API below (C224 item 2).
-    let ocapn_designator = crate::api::ocapn::node_designator(faucet_deployer_key.as_ref(), id);
-    // **The listeners, resolved once** (issue #249): the tcp address and the unix path, either or
-    // both, or neither for a dial-only node.
+    // **The listeners, resolved once** (issue #249): the tcp address, the unix path, and the noise
+    // address, any of them or none — a node with none is dial-only.
     let ocapn_listeners = OcapnListeners {
         tcp: conf.api_server.ocapn_listen.clone(),
         unix: conf.api_server.ocapn_listen_unix.clone(),
+        noise: conf.api_server.ocapn_listen_noise.clone(),
+    };
+    // **The node's Noise identity**, loaded or generated at the configured path. Required exactly when
+    // the `noise` listener is configured, because that handshake names the node by a key it must hold
+    // — and this is also the point where the node stops being nameless: `node_designator` below is a
+    // *hash* of the deployer key and cannot sign, while this is a key a peer can hold in advance.
+    let ocapn_identity = match (&ocapn_listeners.noise, &conf.api_server.ocapn_identity_key) {
+        (Some(_), Some(path)) => Some(crate::api::ocapn::load_or_create_noise_identity(path)?),
+        (Some(_), None) => {
+            return Err(
+                "api-server.ocapn-listen-noise needs api-server.ocapn-identity-key: the handshake \
+                 names this node by an Ed25519 key, and a node with no key file cannot hold one across \
+                 restarts"
+                    .to_string(),
+            )
+        }
+        // A key file without a listener is not an error — it is what a node that will be dialled
+        // rather than dialling looks like — but nothing consumes it, so the designator does not move.
+        (None, _) => None,
+    };
+    // **This node's OCapN designator** — its name. When the node has a Noise identity the designator
+    // **is** the Ed25519 verifying key, because that is the name the handshake actually checks: a peer
+    // must put it in the SYN's cleartext prefix, and a responder refuses a SYN naming another node.
+    // Without one, it falls back to the derivation that predates Noise (C224 item 2), which is a hash
+    // of the deployer key and is stable across restarts but is not a key anything can sign with.
+    let ocapn_designator = match &ocapn_identity {
+        Some(identity) => rchain_shared::base16::encode(&identity.verifying_key()),
+        None => crate::api::ocapn::node_designator(faucet_deployer_key.as_ref(), id),
     };
     // Where the listener publishes the dialer it builds once its transports are bound; the admin
     // route reads it to start a dial of the node's own (issue #249).
@@ -1387,6 +1417,7 @@ pub async fn setup_node_program(
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
         ocapn_listeners,
+        ocapn_identity,
         ocapn_dial,
         enable_ocapn_dial: conf.api_server.enable_ocapn_dial,
         ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,

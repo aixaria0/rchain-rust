@@ -118,6 +118,16 @@ pub struct ApiServer {
     /// **not** a testing transport: what admits a peer is the socket's file mode (`0600`, set at bind),
     /// so `tcp-testing-only`'s "no authentication" does not apply here.
     pub ocapn_listen_unix: Option<String>,
+    /// Bind the **`noise`** OCapN listener on this `host:port`, or `None` for none (issue #249). This
+    /// is the transport a peer *not on this host* can reach: the handshake authenticates both ends and
+    /// encrypts everything above it, with no certificate authority and no daemon. It needs
+    /// `ocapn_identity_key`, because the handshake names the node by a key the node must hold.
+    pub ocapn_listen_noise: Option<String>,
+    /// Where the node's **Noise identity** is kept: an Ed25519 seed then an X25519 static, 64 bytes,
+    /// mode `0600`. Generated and written on first use when the file is absent, so a node's name is
+    /// stable across restarts — an identity that changed on every start would be one no peer could
+    /// hold in advance, which is the whole point of it.
+    pub ocapn_identity_key: Option<String>,
     /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4; off by default
     /// because the conformance suite and the ERTP transcript both dial loopback).
     pub ocapn_deny_local_dial: bool,
