@@ -824,7 +824,7 @@ specified" and resolves it from the node's own status, which already carries `la
 the same thing the faucet, the browser client, `gateway::current_height` and
 `txn_coordinator::run_phase_at` do. The fix is merged to `dev` as
 [#58](https://github.com/rchain-community/rchain-rust/pull/58), and both nodes run a binary that
-includes it (`3cd2b4152f5a…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
+includes it (the builds the nodes run now (host A `efc1be75f`, host B `777953de6`; see the Binary row), which carry the same fixes), so `rnode deploy` works
 with no extra flags. Rollbacks are kept in place as `/usr/local/bin/rnode.old-<sha>`.
 **A binary built before that commit still needs `--valid-after-block-number <height>`.**
 
@@ -863,7 +863,7 @@ so that its return value is stored and handed back. That is how the
 An earlier revision warned that this read-back "lags by about one deploy". That was wrong: the lag was
 dev's registry-lookup divergence (C18 — the native handler wrapped its reply in `(uri, value)` while
 the genesis `Registry.rho` forwards it unwrapped, so a client's `for (X <- ch) { X!(…) }` silently did
-nothing, with no error and no result). It is fixed in the binary these nodes run (`3cd2b4152f5a…`), and
+nothing, with no error and no result). It is fixed in the builds these nodes run now (see the Binary row), and
 with it deploy result values are readable — which is what unblocked the whole diagnosis.
 
 **K5 — disk and memory growth.** Disk now grows only with real usage (~6.6 KB/block) since the injector
