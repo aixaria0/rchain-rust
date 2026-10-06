@@ -62,14 +62,54 @@ impl DialPolicy {
         }
     }
 
+    /// The host a locator names, if it names one — from the `host` hint, **or from the authority of a
+    /// `url` hint**.
+    ///
+    /// **A `url` hint is a host by another name, and this policy was blind to it.** The `websocket`
+    /// transport carries its whole address in `url` (`ws://host:port`), so a policy that keyed on
+    /// `host` alone returned `Ok` for every websocket target: the link-local and metadata refusals and
+    /// Law 62's origin rule were **skipped entirely**, and a sturdyref naming
+    /// `ws://169.254.169.254/` was dialled. The HAZOP's red team measured it — with
+    /// `ocapn-deny-local-dial = true` the node refused a loopback target over `tcp-testing-only` and
+    /// *connected* to one over `websocket` (row E10).
+    ///
+    /// A transport whose locator carries neither — `unix`, whose `path` is not an address — still
+    /// yields `None`, which is the "cannot be judged" answer the module doc describes and the right
+    /// one for a peer the filesystem admitted.
+    fn host_of(locator: &PeerLocator) -> Option<String> {
+        if let Some(host) = locator.hints.get("host") {
+            return Some(host.clone());
+        }
+        let url = locator.hints.get("url")?;
+        let authority = url
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(url.as_str())
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("");
+        let host = match authority.strip_prefix('[') {
+            // A bracketed IPv6 literal: `[fe80::1]:9045`.
+            Some(after) => after.split(']').next().unwrap_or(after).to_string(),
+            // `host:port`, or a bare host.
+            None => authority
+                .rsplit_once(':')
+                .map(|(host, _)| host)
+                .unwrap_or(authority)
+                .to_string(),
+        };
+        (!host.is_empty()).then_some(host)
+    }
+
     /// Whether a dial to `locator` is permitted, or why it is not.
     pub fn permits(&self, locator: &PeerLocator) -> Result<(), String> {
-        let Some(host) = locator.hints.get("host") else {
-            // A transport whose hints carry no host cannot be checked, and refusing everything that
-            // lacks a hint would break every netlayer that reaches its peer another way.
+        let Some(host) = Self::host_of(locator) else {
+            // A transport whose hints name no host — `unix`'s `path`, say — cannot be checked, and
+            // refusing everything that lacks one would break every netlayer that reaches its peer
+            // another way.
             return Ok(());
         };
-        if self.allow.iter().any(|a| a == host) {
+        if self.allow.iter().any(|a| *a == host) {
             return Ok(());
         }
         let address = match host.parse::<std::net::IpAddr>() {
@@ -116,10 +156,10 @@ impl DialPolicy {
         let Some(origin) = origin else {
             return Ok(());
         };
-        let Some(host) = locator.hints.get("host") else {
+        let Some(host) = Self::host_of(locator) else {
             return Ok(());
         };
-        if self.allow.iter().any(|a| a == host) {
+        if self.allow.iter().any(|a| *a == host) {
             return Ok(());
         }
         if origin.ip().is_loopback() {
@@ -391,5 +431,45 @@ mod tests {
             .permits(&locator("no-such-host.invalid"))
             .expect_err("unresolvable")
             .contains("does not resolve"));
+    }
+
+    /// **A `url` hint names a host, and the policy judges it.**
+    ///
+    /// The `websocket` transport carries its whole address in `url` rather than in `host`, so a policy
+    /// that read only `host` returned `Ok` for every websocket target — the link-local and metadata
+    /// refusals and Law 62's origin rule were skipped, and a sturdyref naming
+    /// `ws://169.254.169.254/` was dialled. The HAZOP's red team measured exactly that (row E10); this
+    /// is the test that would have caught it.
+    #[test]
+    fn a_websocket_target_is_judged_by_its_url() {
+        let policy = DialPolicy::default();
+        let ws = |url: &str| PeerLocator {
+            designator: "peer".to_string(),
+            transport: "websocket".to_string(),
+            hints: BTreeMap::from([("url".to_string(), url.to_string())]),
+        };
+
+        // The metadata endpoint, named only by a url, is refused.
+        assert!(
+            policy.permits(&ws("ws://169.254.169.254/")).is_err(),
+            "a url naming the metadata endpoint must be refused like any other"
+        );
+        // A bracketed IPv6 literal is read as an address, not as a host containing a colon.
+        assert!(policy.permits(&ws("ws://[fe80::1]:9045/")).is_err());
+        // And Law 62 applies through a url too: a remote peer may not aim this node at its own
+        // loopback by naming it in a websocket address.
+        let remote = "203.0.113.9:41234".parse().expect("a remote address");
+        assert!(policy
+            .permits_from(&ws("ws://127.0.0.1:9000/"), Some(remote))
+            .is_err());
+        // A public target is still a dial a peer may ask for.
+        assert!(policy.permits(&ws("ws://203.0.113.10:9000/")).is_ok());
+        // And a locator that names no host at all is still "cannot be judged", as `unix` requires.
+        let unix = PeerLocator {
+            designator: "peer".to_string(),
+            transport: "unix".to_string(),
+            hints: BTreeMap::from([("path".to_string(), "/run/peer.sock".to_string())]),
+        };
+        assert!(policy.permits(&unix).is_ok());
     }
 }

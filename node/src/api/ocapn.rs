@@ -224,25 +224,76 @@ pub fn load_or_create_noise_identity(
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::write(path, identity.to_persisted_bytes()).map_err(|e| e.to_string())?;
-            // Mode `0600`: a Noise static key is the node's identity, and one another uid can read is
-            // one another uid can impersonate. Set after the write, as the certificate path does.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                    .map_err(|e| e.to_string())?;
-            }
+            // **Created with the mode, not chmodded after, and created exclusively.** Writing first
+            // and restricting second left the node's identity — the key that names it on both
+            // transports — readable at the process umask for as long as the two calls took, and a
+            // plain write let two concurrent starts both generate and both overwrite, so a node could
+            // run on a key the file no longer held (HAZOP rows C12, D3, E6, E8).
+            write_new_private(path, &identity.to_persisted_bytes())?;
             return Ok(identity);
         }
         Err(e) => return Err(format!("reading {}: {e}", path.display())),
     };
+    // **The mode is checked on the read side too.** It was enforced only when this node created the
+    // file, so a world-readable identity — a copy, a restore from a backup, a file another tool made
+    // — was read and trusted silently, and any other uid could then impersonate the node (HAZOP rows
+    // E5, D3, F7). Refused rather than repaired: an operator who sees this has a key they should
+    // re-issue, and quietly tightening the mode would hide that it was exposed.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "{} is mode {:03o}: a node identity must not be readable or writable by another uid \
+                 — re-issue it rather than widening who can impersonate this node",
+                path.display(),
+                mode & 0o777
+            ));
+        }
+    }
     if bytes.len() != 64 {
         return Err(found(bytes.len()));
     }
     let seed: [u8; 32] = bytes[..32].try_into().map_err(|_| found(bytes.len()))?;
     let stat: [u8; 32] = bytes[32..].try_into().map_err(|_| found(bytes.len()))?;
+    // **An all-zero key is refused.** `NoiseIdentity::new` re-derives the verifying key and the
+    // X25519 public from whatever it is given, and for a zeroed file both are publicly computable —
+    // so a truncated or blanked identity yielded a node whose name and session keys anyone could
+    // derive, while every length check passed (HAZOP row D5). Only the *length* used to be validated.
+    if seed == [0u8; 32] || stat == [0u8; 32] {
+        return Err(format!(
+            "{} is an all-zero key: this node's name and session keys would be publicly computable",
+            path.display()
+        ));
+    }
     rchain_ocapn::noise::NoiseIdentity::new(seed, stat)
+}
+
+/// Create the identity file at `path` with mode `0600`, failing rather than overwriting if it already
+/// exists — the exclusive half of [`load_or_create_noise_identity`].
+#[cfg(unix)]
+fn write_new_private(path: &std::path::Path, bytes: &[u8; 64]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("creating {}: {e}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+/// The same, where there is no mode to set — the file is created exclusively and the platform's own
+/// permissions decide who can read it.
+#[cfg(not(unix))]
+fn write_new_private(path: &std::path::Path, bytes: &[u8; 64]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 /// The node's **outbound** OCapN surface (issue #249): what a dial this node starts itself needs.
