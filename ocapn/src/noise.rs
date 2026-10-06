@@ -85,6 +85,16 @@ const MAX_CHUNK_PLAINTEXT: usize = 65535 - TAG_LEN;
 /// The largest whole message this transport will reassemble, matching [`crate::framed`]'s bound.
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
+/// The largest **ciphertext** body this transport will take — which is not [`MAX_MESSAGE_BYTES`].
+///
+/// A message of [`MAX_MESSAGE_BYTES`] plaintext is not `MAX_MESSAGE_BYTES + one tag` on the wire: it
+/// is `ceil(MAX_MESSAGE_BYTES / MAX_CHUNK_PLAINTEXT)` cipher messages, each carrying its own tag. The
+/// received bound used to be `MAX_MESSAGE_BYTES + TAG_LEN`, which is in the wrong unit — it refused
+/// a plaintext a little under the documented bound and *accepted* up to a tag's worth of padding past
+/// it (HAZOP row A3). This is the plaintext bound plus one tag per chunk.
+const MAX_CIPHERTEXT_BYTES: usize =
+    MAX_MESSAGE_BYTES + TAG_LEN * (1 + MAX_MESSAGE_BYTES / MAX_CHUNK_PLAINTEXT);
+
 /// How long a Noise handshake may take before the connection is abandoned.
 ///
 /// **The peer chooses how long to take**, and the handshake runs on the connection's first use rather
@@ -525,12 +535,31 @@ impl NoiseConn {
             .ciphers
             .as_mut()
             .ok_or_else(|| io::Error::other("the Noise handshake has not run"))?;
+        // **Every chunk has to be at least one tag, and a body shorter than one is refused here.**
+        // `CipherState::decrypt_in_place` *asserts* `ciphertext_len >= 16` rather than returning an
+        // error, so handing it a shorter chunk does not fail the message — it panics the task that
+        // owns the session. A peer that completed the handshake and then framed a five-byte body did
+        // exactly that, which is what the HAZOP's protocol lens measured; the length is checked
+        // before the call rather than caught after it.
+        let frames_a_message = |n: usize| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("a Noise transport message of {n} bytes is shorter than one AEAD tag"),
+            )
+        };
+        if ciphertext.len() < TAG_LEN {
+            return Err(frames_a_message(ciphertext.len()));
+        }
         let mut plain = Vec::with_capacity(ciphertext.len());
-        // Chunks are `MAX_CHUNK_PLAINTEXT + TAG_LEN` bytes each, except the last.
+        // Chunks are `MAX_CHUNK_PLAINTEXT + TAG_LEN` bytes each, except the last — and the last is
+        // where a peer can aim the remainder, so it is checked too.
         while !ciphertext.is_empty() {
             let take = ciphertext.len().min(MAX_CHUNK_PLAINTEXT + TAG_LEN);
             let mut chunk: Vec<u8> = ciphertext.drain(..take).collect();
             let chunk_len = chunk.len();
+            if chunk_len < TAG_LEN {
+                return Err(frames_a_message(chunk_len));
+            }
             let written = recv.decrypt_in_place(&mut chunk, chunk_len).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -547,6 +576,15 @@ impl NoiseConn {
 impl NetConn for NoiseConn {
     async fn send(&mut self, message: &[u8]) -> io::Result<()> {
         self.ensure_ready().await?;
+        // **The send is bounded too.** It was not: only `sealed.len()` was checked, against `u32`, so
+        // this transport would encrypt and emit a message up to 4 GiB — one its own receive bound, and
+        // every other transport's, refuses. Both directions are bounded at the same number now.
+        if message.len() > MAX_MESSAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a Noise netlayer message exceeds the transport's bound",
+            ));
+        }
         let sealed = self.seal(message)?;
         // The length is the *ciphertext's*, because that is what the peer must read before it can
         // decrypt; a peer that lies about it is bounded by the check in `recv`, not by a buffer.
@@ -572,7 +610,7 @@ impl NetConn for NoiseConn {
             Err(e) => return Err(e),
         }
         let len = u32::from_be_bytes(header) as usize;
-        if len > MAX_MESSAGE_BYTES + TAG_LEN {
+        if len > MAX_CIPHERTEXT_BYTES {
             // Refused **before** buffering, the rule `framed` pins for netstrings.
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -701,6 +739,59 @@ mod tests {
         assert!(
             err.to_string().contains("did not prove"),
             "the refusal names what failed: {err}"
+        );
+    }
+
+    /// **A body shorter than one AEAD tag is refused, not panicked on.**
+    ///
+    /// `CipherState::decrypt_in_place` *asserts* `ciphertext_len >= 16` rather than returning an
+    /// error, so a peer that completed the handshake and then framed five bytes did not fail the
+    /// message — it **panicked the task that owned the session**. This drives the real path: a
+    /// handshake over a real socket, then a length header of 5 and five bytes written raw. Before the
+    /// guard in `open` this test aborted the task (HAZOP row A1, which the protocol lens measured).
+    #[tokio::test]
+    async fn a_body_shorter_than_a_tag_is_refused_rather_than_panicking() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server_identity = NoiseIdentity::generate().expect("a fresh identity");
+        let client_identity = NoiseIdentity::generate().expect("a fresh identity");
+        let peer_key = server_identity.verifying_key();
+
+        let accepting = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut conn = NoiseConn::accepted(tcp, server_identity);
+            conn.ensure_ready().await.expect("the server handshake");
+            conn
+        });
+        let mut client = NoiseConn::dialing(
+            TcpStream::connect(addr).await.expect("connect"),
+            client_identity,
+            peer_key,
+        );
+        client.ensure_ready().await.expect("the client handshake");
+        let mut server = accepting.await.expect("join");
+
+        // The attack: a five-byte body, framed as though it were a message. It is written raw
+        // because the point is to send something the transport's own `send` would never produce.
+        client
+            .stream
+            .write_all(&5u32.to_be_bytes())
+            .await
+            .expect("the length header");
+        client.stream.write_all(&[0u8; 5]).await.expect("the body");
+        client.stream.flush().await.expect("flush");
+
+        let refused = server.recv().await;
+        assert!(
+            refused.is_err(),
+            "a body under one AEAD tag must be refused, not accepted"
+        );
+        assert!(
+            refused
+                .expect_err("checked")
+                .to_string()
+                .contains("shorter than one AEAD tag"),
+            "and the refusal says which rule it broke"
         );
     }
 }

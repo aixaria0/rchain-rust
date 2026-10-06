@@ -735,7 +735,14 @@ pub async fn serve_ocapn(
                 };
             *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
             // One session per connection; its end is this task's end.
-            let _ = loop_.run().await;
+            // **The loop's outcome was discarded**, so a session that ended with an error was
+            // indistinguishable from one that ended cleanly — the node said nothing either way, and
+            // it took an instrumented run to see that a session had ended at all. Said at `debug`,
+            // because a peer closing its session is ordinary and a `warn` would be meaningless; but
+            // said, which it was not. (Found by this study's RCA.)
+            if let Err(e) = loop_.run().await {
+                log.debug(source, &format!("session loop ended: {e}"));
+            }
             registry.forget(&peer_location, &handle.own_pi, handle.dialed);
         });
     }

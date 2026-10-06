@@ -33,8 +33,9 @@ use futures_util::{SinkExt, StreamExt};
 use rchain_crypto::signatures::ed25519::Ed25519;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{accept_async, connect_async, WebSocketStream};
+use tokio_tungstenite::{accept_async_with_config, connect_async_with_config, WebSocketStream};
 
 use crate::framed::CONNECT_TIMEOUT;
 use crate::locator::PeerLocator;
@@ -67,6 +68,22 @@ const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// neither**, and without a bound a peer that connects and then sends nothing holds this connection
 /// for ever — which, because the upgrade runs inside the node's accept loop, is every peer.
 const ESTABLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The WebSocket layer's own bounds.
+///
+/// **Without these, this transport's declared bound was not the operative one.** `MAX_MESSAGE_BYTES`
+/// was checked *after* `into_data()`, i.e. after tungstenite had already assembled and allocated the
+/// whole message, so what actually sized the allocation was tungstenite's defaults — 16 MiB frames and
+/// a 64 MiB message — on both the data path **and** the handshake read, which had no check at all
+/// (HAZOP rows A5 and A6). Setting them here puts the refusal where `framed` puts it: before the
+/// buffer, not after it.
+fn ws_config() -> WebSocketConfig {
+    WebSocketConfig {
+        max_message_size: Some(MAX_MESSAGE_BYTES),
+        max_frame_size: Some(MAX_MESSAGE_BYTES),
+        ..Default::default()
+    }
+}
 
 /// The byte stream under the WebSocket layer, as a trait object — the one place the two ways in
 /// differ, since a plain listener yields `TcpStream` and a TLS one yields `TlsStream<TcpStream>`.
@@ -153,15 +170,18 @@ impl Netlayer for WebsocketNetlayer {
         // that cannot name the peer cannot tell an impostor from it, so this is refused, not skipped.
         let peer = peer_key(locator)?;
 
-        let (stream, _response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url))
-            .await
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("connecting to {url} took longer than {CONNECT_TIMEOUT:?}"),
-                )
-            })?
-            .map_err(io::Error::other)?;
+        let (stream, _response) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            connect_async_with_config(url, Some(ws_config()), false),
+        )
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("connecting to {url} took longer than {CONNECT_TIMEOUT:?}"),
+            )
+        })?
+        .map_err(io::Error::other)?;
         let peer_addr = match stream.get_ref() {
             tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp.peer_addr().ok(),
             // A TLS stream's address is not exposed here; the dial policy reads an unknown origin as
@@ -196,7 +216,9 @@ impl Netlayer for WebsocketNetlayer {
                 }
                 None => Box::new(tcp),
             };
-            accept_async(io).await.map_err(io::Error::other)
+            accept_async_with_config(io, Some(ws_config()))
+                .await
+                .map_err(io::Error::other)
         };
         let stream = tokio::time::timeout(ESTABLISH_TIMEOUT, establishing)
             .await
@@ -304,12 +326,20 @@ fn peer_auth(challenge: &[u8]) -> Value {
     ])
 }
 
-/// Whether a value is an `init:peer-auth` record with one bytestring field.
+/// Whether a value is an `init:peer-auth` record with **exactly one** bytestring field **of the
+/// challenge's length**.
+///
+/// **The length and the arity are checked, not just the label.** The responder signs these bytes, and
+/// the record wrapper is what stops it being a signing oracle over a peer's choice — so accepting a
+/// zero-byte "challenge", a multi-megabyte one, or a record with extra fields is accepting a signing
+/// request the protocol never made (HAZOP row A7). `CHALLENGE_LEN` is the reference's
+/// `DESIGNATOR_CHALLENGE_PAYLOAD_BYTES`, which the client uses to build its own.
 fn is_peer_auth(value: &Value) -> bool {
     matches!(value,
         Value::Record(fields)
-            if fields.first() == Some(&Value::Symbol(INIT_PEER_AUTH.to_string()))
-                && matches!(fields.get(1), Some(Value::Bytes(_)))
+            if fields.len() == 2
+                && fields[0] == Value::Symbol(INIT_PEER_AUTH.to_string())
+                && matches!(&fields[1], Value::Bytes(bytes) if bytes.len() == CHALLENGE_LEN)
     )
 }
 
@@ -387,8 +417,15 @@ where
                 "the websocket peer closed before it answered",
             )),
             Some(Err(e)) => Err(io::Error::other(e)),
-            // In this tungstenite `into_data` hands the payload back whole; there is no fallible form.
-            Some(Ok(message)) => Ok(message.into_data()),
+            // **Only a binary frame is a challenge.** `into_data` hands back a text frame's payload
+            // and a close frame's reason bytes, so the handshake used to sign whatever a peer put in
+            // a *close* — and signing bytes of the peer's choosing is what the record wrapper exists
+            // to prevent (HAZOP row A4). Anything that is not a binary message is refused here.
+            Some(Ok(Message::Binary(bytes))) => Ok(bytes),
+            Some(Ok(other)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("a websocket frame that is not a binary message: {other:?}"),
+            )),
         }
     }
 }
@@ -419,23 +456,35 @@ where
     }
 
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-        // A clean close at a message boundary is end of stream; anything else is an error.
-        let next = self.stream.next().await;
-        match next {
-            None => Ok(None),
-            Some(Err(e)) => Err(io::Error::other(e)),
-            Some(Ok(message)) => {
-                if message.is_close() {
-                    return Ok(None);
+        loop {
+            let Some(next) = self.stream.next().await else {
+                return Ok(None);
+            };
+            match next.map_err(io::Error::other)? {
+                Message::Binary(bytes) => {
+                    if bytes.len() > MAX_MESSAGE_BYTES {
+                        // Belt to the configuration's braces: `ws_config` refuses this before the
+                        // buffer, and this refuses it again if that ever stops being true.
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "a websocket message exceeds the transport's bound",
+                        ));
+                    }
+                    return Ok(Some(bytes));
                 }
-                let bytes = message.into_data();
-                if bytes.len() > MAX_MESSAGE_BYTES {
+                // **A close is the end of the stream, at a message boundary.** `into_data` would hand
+                // back the close frame's *reason bytes* as though they were a message, and it does the
+                // same for a text frame and for ping/pong — so this transport used to feed a peer's
+                // close reason to the CapTP dispatch, and its own doc said the opposite (HAZOP row A4).
+                Message::Close(_) => return Ok(None),
+                // Ping/Pong are the WebSocket layer's own keepalive, and tungstenite answers them.
+                Message::Ping(_) | Message::Pong(_) => continue,
+                other => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "a websocket message exceeds the transport's bound",
-                    ));
+                        format!("a websocket frame that is not a binary message: {other:?}"),
+                    ))
                 }
-                Ok(Some(bytes))
             }
         }
     }
