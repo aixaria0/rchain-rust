@@ -1,0 +1,12 @@
+syrup	true	t
+syrup	42	42
+syrup	-7	-7
+syrup	"hi"	"hi"
+syrup	`rho:id:abc`	'rho:id:abc
+syrup	[]	[]
+syrup	[1, 2]	[1, 2]
+syrup	(true, 0)	<'desc:tagged 'rho:tuple [t, 0]>
+syrup	(1, "a")	<'desc:tagged 'rho:tuple [1, "a"]>
+syrup	[(1, 2)]	[<'desc:tagged 'rho:tuple [1, 2]>]
+syrup	((1, 2), 3)	<'desc:tagged 'rho:tuple [<'desc:tagged 'rho:tuple [1, 2]>, 3]>
+syrup	{"a": 1}	{a: 1}

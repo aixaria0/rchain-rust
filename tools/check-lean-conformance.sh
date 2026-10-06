@@ -263,6 +263,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       envelope) test_name="lean_envelope_corpus";  crate="rchain-node" ;;
       lex)      test_name="lean_lex_corpus";       crate="rchain-node" ;;
       json)     test_name="lean_json_corpus";      crate="rchain-node" ;;
+      syrup)    test_name="lean_syrup_corpus";    crate="rchain-node" ;;
       *)        fail "corpus spec/conformance/$layer.tsv has no consumer mapping"; continue ;;
     esac
     if [[ ! -f "$ROOT/rholang/tests/$test_name.rs" && ! -f "$ROOT/node/tests/$test_name.rs" ]]; then

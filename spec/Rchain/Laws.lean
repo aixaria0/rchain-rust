@@ -195,6 +195,12 @@ structure Law where
   /-- A note where the status needs qualifying. -/
   note : String := ""
 
+-- **The budget is raised for this one literal, measured.** The register is a single list of 77 rows,
+-- and elaborating it is a unification problem over the rows' field types rather than a proof: it fits
+-- the default 200 000 heartbeats at 58 laws and not at 59. Raising it beats splitting the register into
+-- chunks an accidental duplicate could hide between.
+set_option maxHeartbeats 1000000
+
 /-- Every law in the catalog, the orphaned ones and the open ones included, because a register
 that lists only the formalized laws cannot notice a law that was dropped.
 
@@ -897,7 +903,7 @@ def laws : List Law := [
       \"add support for epoch changes, simple comparison for senders count is not enough\"). Count-only \
       admitted `[A, A, B]` for bonds `{A, B, C}`: the layer fold collapsed the duplicate sender, and \
       the published fringe **omitted bonded validator `C`** while presenting A's stake twice — 90 of \
-      100 on the merged change's own fixture. The model follows the port (`Rchain.checkMinMessages`), \
+      100 on the merged change's own fixture. The model follows the port (`Rchain.checkMinMessages`),
       the divergence is §6's, and the gate is pinned both ways by `the_gate_demands_the_bonded_senders` \
       here and by `check_min_messages_needs_all_bonded_senders` on the Rust side" },
   { number := 14, clause := "b", layer := "Casper",
@@ -2357,7 +2363,7 @@ def laws : List Law := [
     declarations := [`Rchain.rewardPot, `Rchain.reward],
     rust := ["rholang/src/native_state.rs"],
     witness := [`Rchain.the_dust_is_real],
-    falsifiable := some "`Rchain.the_dust_is_real` decides an instance: minimum bond 3, bonds `[4, 8]`, \
+    falsifiable := some "`Rchain.the_dust_is_real` decides an instance: minimum bond 3, bonds `[4, 8]`,
       pot 10 — the validators' scaled shares are `4/3 = 1` and `8/3 = 2`, so they are paid 2 and 5 and \
       the epoch distributes **7 of 10**. A statement that said the shares sum to the pot is refuted by \
       that line, and so is one that dropped either division. On the Rust side \
@@ -2763,7 +2769,7 @@ def laws : List Law := [
       `Rchain.System.split_refutes_agreement],
     falsifiable := some "both are *refutations*, so the falsifier is a predicate that does what the \
       cause says cannot be done: a liveness predicate that reads only the current view refutes \
-      `Rchain.Historic` (the window in `block-storage/src/dag/liveness.rs` is such a predicate, \
+      `Rchain.Historic` (the window in `block-storage/src/dag/liveness.rs` is such a predicate,
       and the Rust test named above is its witness), and two readers that cannot disagree refute \
       `Rchain.System.Split` (which is what C172's fix — one order, or one authoritative side — \
       establishes). **The index/store test for the second half lands with the fix itself** (PR #106, \
@@ -2835,7 +2841,7 @@ def laws : List Law := [
       shipped fix is asymmetric for this reason (partition = the live set, quorum = the whole bonded map, \
       registered in `spec/audit/passes.md` §6, AUDIT C174), and the phrasing of the requirement that this \
       law pins is the issue's own title: finality needs quorum *stake*, not live nodes. **The hypotheses \
-      are named in the instance module** (`Rchain.Participation`, `Rchain.Delivery`, \
+      are named in the instance module** (`Rchain.Participation`, `Rchain.Delivery`,
       `Rchain.StalenessBound`) rather than left implicit, because a liveness claim without its hypothesis \
       is Law 20's trap: `law20_deadlock_freedom` was an axiom until it was deleted as unprovable as \
       stated" },
@@ -3301,6 +3307,81 @@ def laws : List Law := [
       before this row — are consumed here; `StalenessBound` is reached through `stalenessBound_iff`. \
       **What the tie does not reach:** the `3 × LIVENESS_WINDOW` factor, which is measured rather than \
       proved." },
+  { number := 59, clause := "a", layer := "Wire",
+    statement := "**A value the bridge decoded is a value it encodes, and decodes again** — the CapTP \
+      value map round-trips its domain. Stated as Law 42 states the JSON round trip: over the values \
+      `syToPar` answers, so a shape outside the domain carries no claim.",
+    status := .provedTied,
+    declarations := [`Rchain.parToSy, `Rchain.syToPar, `Rchain.wireable, `Rchain.wireableList,
+      `Rchain.syrup_decode_encode, `Rchain.parToSy_decoded, `Rchain.ssToPars_round,
+      `Rchain.kvsSyToPars_round, `Rchain.syToPar_isSome, `Rchain.ssToPars_isSome],
+    axioms := [],
+    corpus := some "syrup",
+    rust := ["ocapn/src/par_value.rs"],
+    rustWitness := ["ocapn/src/par_value.rs:collections_round_trip_and_a_tuple_stays_a_tuple"],
+    witness := [`Rchain.syrup_decode_encode, `Rchain.parToSy_decoded],
+    falsifiable := some "**the tuple, and it was false when the law was written.** `(true, 0)` — every \
+      `(ok, value)` reply in this codebase — crossed as a Syrup `List` and came back an `EList`, so \
+      `syToPar` of what `parToSy` produced was not the tuple: a peer could hold an ERTP purse and not \
+      fund it (AUDIT C226). The URI was the same failure on a leaf (`GUri → Symbol` with `Symbol` \
+      refused back). `syrupCases_decide` pins twelve cases, of which the tuple and the nested tuple are \
+      two, and `node/tests/lean_syrup_corpus.rs` runs every one through the node's own bridge.",
+    note := "**The law decided the wire shape, and two candidates were refuted by the references \
+      rather than by preference.** A Syrup `record` is *labelled* and the label must be a string, \
+      selector or bytestring (`@endo/ocapn`'s `decode.js`), so a bare record would need the label \
+      `true`; and a record is not in Endo's CapTP passable union (`{list, struct, tagged}`) either. A \
+      tuple therefore crosses as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [fields…]>` — the \
+      union's own extension point, whose `value` may be any passable. `Sy.tuple` is that shape named, \
+      so the round trip descends structurally instead of through a label test the equation compiler \
+      cannot see (`taggedRecord` is the same shape spelled as a record). **Two shapes are outside the \
+      domain, named:** a `Float64` (Rholang has no float) and a **small** `GBigInt` — Syrup's integer \
+      is one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form. **What the tie \
+      does not reach:** the refusals' *reason strings* are the node's (`BridgeError`), tied by the \
+      corpus's sources rather than by a theorem." },
+  { number := 59, clause := "b", layer := "Wire",
+    statement := "**Two wireable Syrup values that decode to the same `Par` are the same wire form.** \
+      The decode is injective on the domain, so no two shapes stand for one value.",
+    status := .provedTied,
+    declarations := [`Rchain.syToPar_injective, `Rchain.parToSy_decoded],
+    axioms := [],
+    corpus := some "syrup",
+    rust := ["ocapn/src/par_value.rs"],
+    witness := [`Rchain.syToPar_injective],
+    falsifiable := some "**a rendering rule refutes it, which is what makes the clause load-bearing \
+      rather than decorative.** 'An inbound list argument becomes a tuple' is the cheap fix for C226, \
+      and under it a peer's `[brand, 10]` and a peer's `(brand, 10)` would be one `Par` reached from \
+      two wire forms — `syToPar_injective` is false of it by construction. The corpus's \
+      `[1, 2]` row beside its `(true, 0)` row is the same statement on the wire: the two render \
+      differently, and `node/tests/lean_syrup_corpus.rs` asserts it of the node.",
+    note := "**The clause the bridge had no way to state before.** With only an encode and a decode, \
+      'a list and a tuple are different things' is a fact about two functions that happens to hold; \
+      stated as injectivity it is a property of the map, and it is what makes the *shape* a decision \
+      the law fixes. Both clauses 59a and 59b follow from `parToSy_decoded` — what a value the decoder \
+      answered encodes back to — so the row carries one proof obligation, not two." },
+  { number := 59, clause := "c", layer := "Wire",
+    statement := "**The encoder never emits a shape outside the domain.** A value with no counterpart on \
+      the other side is *refused*, never approximated by one that nearly fits — §1.6's no-silent-\
+      partiality applied to a wire.",
+    status := .provedTied,
+    declarations := [`Rchain.parToSy_wireable, `Rchain.exprToSy_wireable, `Rchain.parsToSy_wireable,
+      `Rchain.kvsToSy_wireable, `Rchain.wireable],
+    axioms := [],
+    corpus := some "syrup",
+    rust := ["ocapn/src/par_value.rs"],
+    witness := [`Rchain.parToSy_wireable],
+    falsifiable := some "**the URI was the violation, and it is why this clause exists.** `GUri → \
+      `Symbol` outbound with `Symbol` refused inbound is a *lossy* map: the encoder emits a shape from \
+      which the value does not come back, which is exactly what this clause forbids. The domain's \
+      `float` and small-`GBigInt` exclusions are the other side of it — shapes the encoder must not \
+      produce and the decoder must not accept. `node/tests/lean_syrup_corpus.rs`'s round trip is the \
+      falsifier on the node: an encoder that emitted a lossy shape fails on the case that carries it.",
+    note := "**This is the clause that turns a documented decision into a checked one.** The bridge's \
+      module doc used to call the `GUri`/`Symbol` asymmetry 'deliberate and worth a second opinion', \
+      and the tuple's image 'the one loss, and it is the loss Syrup forces'. Both were true as prose \
+      about two functions and neither was a property: 59c says the encoder's image lies inside the \
+      domain, so a loss is a violation rather than a note. The leaf is `exprToSy_wireable` over the \
+      expression constructors — every one the encoder refuses is refused by the definition's own \
+      fall-through, so the proof is a case per constructor rather than an argument." },
 ]
 
 

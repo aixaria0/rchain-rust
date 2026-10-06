@@ -6,6 +6,7 @@ import Rchain.Silence
 import Rchain.Store
 import Rchain.Protocol
 import Rchain.Json
+import Rchain.Syrup
 import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Parse
@@ -788,6 +789,111 @@ theorem jsonCases_length : jsonCases.length = jsonCaseCount := by decide
 "absent", so no column is ever blank). -/
 def jsonLine (c : JsonCase) : String :=
   "json\t" ++ c.source ++ "\t" ++ (match c.je with | none => "-" | some j => render j)
+
+/-! ## Law 59 — the wire-fidelity layer
+
+Each case is a *value* — a rholang expression a peer would send — the model's view of the `Par` it
+becomes, and the Syrup shape the encode must produce. The verdict is `decide`d by comparing the
+model's rendering of the encode against the rendering of the declared shape, so a case that drifted
+fails `lake build`; the Rust consumer runs the same source through the bridge and compares its own
+rendering, so a case that disagrees with the node fails the corpus.
+
+The cases are the law's own clauses: the tuple (C226 — sent as a list it comes back a list, which is
+what made a peer able to hold a purse and not fund it), the URI (whose asymmetry was a lossy map), and
+the containers around them. `renderSy` writes the **record** a tuple crosses as, so the tuple's row
+shows the wire shape rather than the model's name for it. -/
+
+/-- A wire-fidelity case: the value as rholang spells it, the model's view of it, and the Syrup shape
+the encode must produce. -/
+structure SyrupCase where
+  /-- The value, as a peer sends it. -/
+  source : String
+  /-- The model's view of the `Par` that value becomes. -/
+  par : Par
+  /-- What the encode must produce. -/
+  sy : Sy
+
+/-- The two selector texts a tuple's record carries, as constants so `renderSy` descends only into
+subterms. -/
+def tupleLabelText : String := "'" ++ syString taggedLabel
+
+def tupleTagText : String := "'" ++ syString tupleTag
+
+mutual
+  /-- The wire text of a Syrup value, in the compact form both sides write. A tuple is rendered as
+  the tagged record it is, so the row shows what actually crosses. -/
+  def renderSy : Sy → String
+    | .bool b => if b then "t" else "f"
+    | .int n => toString n
+    | .str l => "\"" ++ syString l ++ "\""
+    | .sym l => "'" ++ syString l
+    | .bytes l => "b" ++ toString l.length
+    | .float => "D"
+    | .list ss => "[" ++ String.intercalate ", " (renderSys ss) ++ "]"
+    | .struct kvs => "{" ++ String.intercalate ", " (renderKvs kvs) ++ "}"
+    | .record xs => "<" ++ String.intercalate " " (renderSys xs) ++ ">"
+    | .tuple ss =>
+        "<" ++ tupleLabelText ++ " " ++ tupleTagText ++ " " ++
+          "[" ++ String.intercalate ", " (renderSys ss) ++ "]>"
+
+  def renderSys : List Sy → List String
+    | [] => []
+    | s :: rest => renderSy s :: renderSys rest
+
+  def renderKvs : List (String × Sy) → List String
+    | [] => []
+    | (k, v) :: rest => (k ++ ": " ++ renderSy v) :: renderKvs rest
+end
+
+/-- The cases. -/
+def syrupCases : List SyrupCase :=
+  [ { source := "true", par := boolOf true, sy := .bool true }
+  , { source := "42", par := intOf 42, sy := .int 42 }
+  , { source := "-7", par := intOf (-7), sy := .int (-7) }
+  , { source := "\"hi\"", par := strPar "hi", sy := .str (syChars "hi") }
+  , { source := "`rho:id:abc`", par := one (.ground (.uri (syChars "rho:id:abc"))),
+      sy := .sym (syChars "rho:id:abc") }
+  , { source := "[]", par := listPat [] none, sy := .list [] }
+  , { source := "[1, 2]", par := listPat [intOf 1, intOf 2] none, sy := .list [.int 1, .int 2] }
+  , -- **C226's case**: a tuple must cross as a tuple, so a peer can send an amount back.
+    { source := "(true, 0)", par := one (.etuple [boolOf true, intOf 0]),
+      sy := .tuple [.bool true, .int 0] }
+  , { source := "(1, \"a\")", par := one (.etuple [intOf 1, strPar "a"]),
+      sy := .tuple [.int 1, .str (syChars "a")] }
+  , { source := "[(1, 2)]", par := listPat [one (.etuple [intOf 1, intOf 2])] none,
+      sy := .list [.tuple [.int 1, .int 2]] }
+  , -- A tuple inside a tuple: the nesting an amount carries when its value is itself structured.
+    { source := "((1, 2), 3)", par := one (.etuple [one (.etuple [intOf 1, intOf 2]), intOf 3]),
+      sy := .tuple [.tuple [.int 1, .int 2], .int 3] }
+  , { source := "{\"a\": 1}", par := mapOf [("a", intOf 1)] none, sy := .struct [("a", .int 1)] }
+  ]
+
+/-- Every case's verdict holds of the model: the encode of the case's `Par` renders to the same text as
+the case's declared shape. `decide`d, so a case that drifted fails the build rather than being
+trusted. -/
+theorem syrupCases_decide :
+    syrupCases.all (fun c => (parToSy c.par).map renderSy == some (renderSy c.sy)) = true := by
+  decide
+
+/-- **Law 59 instantiated on the layer's cases, discharged by computation.** The general statement is
+`Rchain/Syrup.lean`'s `syrup_decode_encode`; what this adds is that *these* cases — the tuple above
+all — are not owed: for each one the kernel reduces the encode, the decode and the encode again, and
+the wire text is unchanged. -/
+theorem syrupCases_round_trip :
+    syrupCases.all (fun c =>
+      (((parToSy c.par).bind syToPar).bind parToSy).map renderSy
+        == (parToSy c.par).map renderSy) = true := by
+  decide
+
+/-- The count the Rust consumer asserts it read. -/
+def syrupCaseCount : Nat := 12
+
+/-- The layer carries exactly `syrupCaseCount` cases. -/
+theorem syrupCases_length : syrupCases.length = syrupCaseCount := by decide
+
+/-- One wire-fidelity corpus line: layer, the value, and the Syrup shape it must produce. -/
+def syrupLine (c : SyrupCase) : String :=
+  "syrup\t" ++ c.source ++ "\t" ++ renderSy c.sy
 
 /-! ## Law 43 — the envelope layer
 
@@ -1640,6 +1746,7 @@ def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
+      || a == "syrup"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
       || a == "stake" || a == "block" || a == "liveness")).getD "flags"
   let (lines, count) :=
@@ -1653,6 +1760,8 @@ def main (args : List String) : IO UInt32 := do
       (replyCatalog.map Corpus.protocolLine, replyCaseCount)
     else if want == "json" then
       (Corpus.jsonCases.map Corpus.jsonLine, Corpus.jsonCaseCount)
+    else if want == "syrup" then
+      (Corpus.syrupCases.map Corpus.syrupLine, Corpus.syrupCaseCount)
     else if want == "envelope" then
       (envelopeCatalog.map Corpus.envelopeLine, envelopeCaseCount)
     else if want == "sort" then
