@@ -31,7 +31,7 @@ hosts, the genesis, the wallets, and the incident record.
 | Validators | **four, at equal stake — 250 each, pool 1000** (A `0410b8c5…`, B `04d7707c…`, C `04dce59b…`, D `041ed2a2…`). Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | **not uniform — this is a known inconsistency to resolve.** Host A (nodes A, D): `dev` @ `efc1be75f`, static musl, `sha256:675980ee95bb…`. Host B (nodes B, C): `dev` @ `777953de6`, `sha256:7dfe79dcdd20…`. Both carry the #223 rejoin fix (`7d5c22a9c`); the net peers and finalises on both, but one build across all four is the intended state |
+| Binary | `dev` @ `efc1be75f`, static musl, `sha256:675980ee95bb…`, **the same build on all four nodes** — it carries the #223 rejoin fix (`7d5c22a9c`). The net was rebuilt onto one build on 2026-10-06; before that the two hosts ran different ones |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
