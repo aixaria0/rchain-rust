@@ -680,11 +680,13 @@ new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
 Deploy them with:
 
 ```bash
-# `rnode deploy` defaults to --grpc-host localhost, so from another machine name the node:
-rnode --profile docker deploy --grpc-host 164.90.140.144 --grpc-port 40401 \
+# `--grpc-host`/`--grpc-port` are GLOBAL options, so they go BEFORE the subcommand. Put them after
+# it and the CLI exits with `unexpected argument '--grpc-host' found` and prints jemalloc statistics
+# on the way out, which reads like a crash. On the node's own host, omit both.
+rnode --profile docker --grpc-host 164.90.140.144 --grpc-port 40401 deploy \
   --phlo-limit 90000 --phlo-price 1 --shard-id /root --private-key <hex> term.rho
 # (D: 41401 on host A.  B: 40401, C: 41401, both on host B.)
-rnode --profile docker deploy-status --grpc-host 164.90.140.144 --grpc-port 40401 \
+rnode --profile docker --grpc-host 164.90.140.144 --grpc-port 40401 deploy-status \
   --deploy-signature <deployId>
 ```
 
