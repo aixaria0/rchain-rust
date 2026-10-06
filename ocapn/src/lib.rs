@@ -40,3 +40,4 @@ pub mod session_id;
 pub mod syrup;
 pub mod tcp_testing_only;
 pub mod unix;
+pub mod websocket;

@@ -154,6 +154,16 @@ impl NoiseIdentity {
         self.static_public
     }
 
+    /// Sign `bytes` with the node's Ed25519 key.
+    ///
+    /// **This is the node's identity, not this transport's.** The Noise handshake names the node by
+    /// it, and `websocket`'s in-band challenge/response authenticates with the same key — one identity,
+    /// two transports, so a peer that knows the node can reach it either way. The X25519 half is
+    /// Noise's alone; this half is what a peer can hold in advance.
+    pub fn sign(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
+        Ed25519::sign_bytes(bytes, &self.signing).map_err(|e| e.to_string())
+    }
+
     /// The bytes this identity is persisted as: the Ed25519 seed, then the X25519 static — 64 bytes,
     /// stored mode `0600` by whoever writes them. Both halves travel together because [`Self::new`]
     /// re-derives everything else, so the file cannot disagree with itself.
