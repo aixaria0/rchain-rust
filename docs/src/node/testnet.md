@@ -1,25 +1,23 @@
 # The public testnet — `testnet.rhobot.net`
 
 A small public RChain testnet running this codebase, used by the Rholang playground and the quantum-os
-room agents. Two hosts — a genesis master that holds the bond, and a joining node that can be bonded into
-the pool — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
+room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
+second — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
 
 The **generalised** procedure — standing up a testnet of your own, from the stake split to a rebuild —
 is [Running a public testnet](running-a-public-testnet.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets, and the incident record.
 
-> **Status: reads, writes and the single-validator shape all work — re-verified on the current chain
-> on 2026-09-29** (evidence in [Status](#status-of-the-verified-path); the chain was rebuilt that day and
-> on 2026-09-27 before it, so the older transcripts there are labelled as such). A brand-new key can be funded by transfer, deploy,
-> be trusted, and bond into the validator pool — **but do not add one to this net yet**: see
-> [Do not onboard a validator yet](#do-not-onboard-a-validator-yet). `/api/status`, `/api/explore-deploy`, `getBonds`,
-> `getActiveValidators`, `/health`, and `rnode deploy` with no extra flags all work — note that a CLI
-> deploy does need a **funded** key, or it is accepted and mined and then reports `processedWithError`
-> for phlo. The chain is
-> deliberately **idle** (no `--autopropose`): blocks appear when a deploy arrives. A
-> continuously-producing chain cannot be restarted on a 1 GB host — that is what broke the previous
-> chain, and it is [K7](#known-issues), the most important operational constraint here. Not
-> production, holds no value, and its chain can be reset at any time.
+> **Status: four bonded validators at 250 each, and the chain finalises — re-measured 2026-10-04**
+> (evidence in [Status](#status-of-the-verified-path)). A brand-new key can be funded, deploy, be trusted
+> and bond into the pool. **Losing any one validator is survivable**: stopping A — the genesis master and
+> the node the endpoint routes to — left the other three at 75 % finalising (f 65 → 90), and A was level
+> with the tip again in under 20 s. `/api/status`, `/api/explore-deploy`, `getBonds`,
+> `getActiveValidators`, `/health`, and `rnode deploy` all work — a CLI deploy needs a **funded** key, or
+> it is accepted and mined and then reports `processedWithError` for phlo. The chain is deliberately
+> **idle** (no `--autopropose`): blocks appear when a deploy arrives. A continuously-producing chain
+> cannot be restarted on a 1 GB host — that is [K7](#known-issues), the most important operational
+> constraint here. Not production, holds no value, and its chain can be reset at any time.
 
 ---
 
@@ -33,7 +31,7 @@ hosts, the genesis, the wallets, and the incident record.
 | Validators | **four, at equal stake — 250 each, pool 1000** (A `0410b8c5…`, B `04d7707c…`, C `04dce59b…`, D `041ed2a2…`). Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `777953de6`, static musl, `sha256:7dfe79dcdd20…`, on both hosts — this build carries the #223 rejoin fix (`7d5c22a9c`) |
+| Binary | **not uniform — this is a known inconsistency to resolve.** Host A (nodes A, D): `dev` @ `efc1be75f`, static musl, `sha256:675980ee95bb…`. Host B (nodes B, C): `dev` @ `777953de6`, `sha256:7dfe79dcdd20…`. Both carry the #223 rejoin fix (`7d5c22a9c`); the net peers and finalises on both, but one build across all four is the intended state |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
@@ -42,9 +40,10 @@ so it can be recomputed from the release; the bare ones are block hashes and add
 prints them. (Before the September 2026 audit the binary's digest was written unlabelled, which made it
 indistinguishable from a commit and unverifiable either way.)
 
-A's stake is 1000 against B's 100 on purpose: the quorum is measured against the **whole bond pool**
-(including any stake sitting in withdrawal quarantine), so A must hold **more than ⅔ of it** to be able
-to close the fringe on its own. That is what keeps A able to finalise after observers bond.
+The quorum is measured against the **whole bond pool** (including stake sitting in withdrawal
+quarantine), with no inactivity leak, no decay and no eviction — so an absent validator's stake goes on
+counting. That is why the *shape* is chosen for what it can lose rather than for who proposes: at four
+equal stakes each validator is a quarter and any one of them can stop ([Recovery](#recovery)).
 
 **There is no single-proposer mode, and this page no longer claims one.** With
 `--propose-on-deploy --attest-on-new-blocks` on each node, any bonded validator that receives a deploy
@@ -157,15 +156,15 @@ that node's snapshot (node A's, since nginx fronts A):
 
 ```json
 { "host": "testnet-a", "ok": true, "rnode_unit": "active", "api_reachable": true,
-  "blocks": 6, "blocks_since_last_tick": 0, "peers": 1, "nodes": 1,
-  "finalized_fringe": false, "autopropose": false,
-  "mem_available_mb": 627, "disk_free_mb": 22665 }
+  "blocks": 135, "blocks_since_last_tick": 0, "peers": 3, "nodes": 4,
+  "finalized_fringe": true, "autopropose": false,
+  "mem_available_mb": 300, "disk_free_mb": 20000 }
 ```
 
 `ok: false` means the unit is down, the API is unreachable, or the height is zero. **`finalized_fringe:
-false` is expected here and is not a failure** — this chain is idle, and nothing is finalised while no
-blocks are produced. Joining nodes still sync: they restore from the *approved genesis* fringe, which
-was verified twice with node B. DigitalOcean's dashboard also graphs CPU/RAM/disk for both hosts
+false` is a fault on this net**: with four validators attesting, the fringe advances, and a `false` here
+means finality has stopped and wants investigating. Note the snapshot is refreshed every 60 s, so it can
+lag the chain by up to a minute — read `/api/last-finalized-block` for the current value. DigitalOcean's dashboard also graphs CPU/RAM/disk for both hosts
 (`do-agent`).
 
 ## Limits to expect
@@ -178,7 +177,8 @@ was verified twice with node B. DigitalOcean's dashboard also graphs CPU/RAM/dis
 - **Start-up is the expensive part.** Replay costs about **0.25 MB of RAM and ~0.2 s per existing
   block** before the API opens at all (a 1142-block chain: ~285 MB, ~3.5 minutes), while *producing*
   blocks is nearly free. Budget ≥2 GB for ~1k blocks, ≥4 GB to be comfortable — see
-  [K7](#known-issues) and [rchain-rust#60](https://github.com/rchain-community/rchain-rust/issues/60).
+  
+[K7](#known-issues) (the upstream issue, #60, was closed as not planned).
 - No SLA, no backups of chain state beyond the genesis files.
 
 ---
@@ -290,21 +290,26 @@ the others are arithmetic on the same numbers, and are labelled as such.
 | a validator's **key or host** permanently | as above, while its stake still sits in the pool | restore that validator's `validator.key` and data directory, or its host from the provider's backup. Because no stake exceeds a quarter, **no single loss is fatal** — but two simultaneous permanent losses are, since 50 % can never reach a quorum |
 
 What this shape gives up is nothing structural: with no stake above a quarter, the tolerance is
-symmetric — which is the property a validator set needs before the *join and leave* questions in
-[#214](https://github.com/rchain-community/rchain-rust/issues/214) can be answered on it at all.
+symmetric — the property a validator set needs before the *join and leave* questions can be answered on
+it. [#214](https://github.com/rchain-community/rchain-rust/issues/214) closed on 2026-10-04; the
+residual join/leave work is
+[#242](https://github.com/rchain-community/rchain-rust/issues/242).
 
 ## Genesis
 
-Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
+Built once with `scripts/localnet/keys.mjs` — which lives in the **quantum-os** repository, not this
+one, as do `scripts/qos-cli/agent.mjs` and `scripts/localnet/pk.txt`. The exact files are on each node:
 
 ```
-/var/lib/rnode/genesis/bonds.txt    4 lines: <65-byte pubkey> <stake>  (four validators at 250 each)
-/var/lib/rnode/genesis/wallets.txt  4 funded REV addresses (the dev keys)
-/etc/rnode/validator.key            that node's validator key (0600 rnode:rnode)
-/etc/rnode/deployer.env             DEPLOYER_PRIVATE_KEY=… (kept on disk, now unused: no injector)
+/var/lib/rnode/genesis/bonds.txt       4 lines: <65-byte pubkey> <stake>  (four validators at 250 each)
+/var/lib/rnode/genesis/wallets.txt     4 funded REV addresses, 1e12 drops = 10,000 REV each
+/etc/rnode/validator.key               node A's validator key        (0600 rnode:rnode)
+/etc/rnode-d/validator.key             node D's validator key        (host A runs two validators)
+/etc/rnode-c/validator.key             node C's validator key        (host B runs two)
+/etc/rnode/faucet.env                  FAUCET_KEY=… — the key node A's faucet signs with (dave's, funded)
 ```
 
-Genesis hash `9f09e7a02d17ef41e40dd3b170dc67c73b9e61b493883bf8b86caa356b3981dc`.
+Genesis hash `713c0ebb0eb4ce866ae118aa1177a498b4edb2d431dd8b77d28abcdd4da9ea91` (four bonds at 250).
 
 **Node ids are deliberately not written down here.** A rebuild regenerates them — both changed twice on
 2026-09-29 alone — so a page that pins them is wrong within the hour. Read the live ones per host from
@@ -314,8 +319,9 @@ The genesis hash depends only on the genesis *inputs* — bonds, wallets, parame
 content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
 those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, adding B's
 bond moved it to `6a6db0db…`, and the 2026-09-29 rebuild — one bond *and* the content change below —
-produced `9f09e7a0…`. **The old single-bond hash is not reachable again**: #71's fix moved the content, so
-the same bond set no longer gives the same block.
+produced `9f09e7a0…`, and the 2026-10-04 rebuild — four bonds at 250, a cap of 250 and an active set of
+4 — produced `713c0ebb…`. **The old single-bond hash is not reachable again**: #71's fix moved the content,
+so the same bond set no longer gives the same block.
 
 **The content half of that list was missing until 2026-09-28, and it is the half that bites.** The
 blessed contract set and the governance deploys are genesis *state*, so a change to any of them moves the
@@ -339,9 +345,14 @@ genesis. That is what makes live admission possible (K6): dave is the key that c
 Give the same list to every node, or a joiner's own view of the genesis PoS spec will not match the
 chain it is joining.
 
-Bond parameters come from defaults: `--bond-minimum 1`, `--bond-maximum 100`,
-`number_of_active_validators 10`. **10 is larger than the bond pool**, so every properly bonded
-validator is active — no top-N truncation to reason about.
+**This net sets bond parameters explicitly; none of them is a default.** The shipped defaults are
+`bond-minimum 1`, `bond-maximum 9223372036854775807`, `number-of-active-validators 100`,
+`epoch-length 10000` and `quarantine-length 50000` (`node/src/configuration/defaults.conf`). This net
+runs `--bond-minimum 1 --bond-maximum 250 --number-of-active-validators 4 --epoch-length 10
+--quarantine-length 10`. The active set (4) equals the number of bonds, so every bonded validator is
+active — no top-N truncation to reason about. `--executor-share`, `--absence-slack` and
+`--participation-grace` are also **genesis parameters** and are at their defaults here; every node must
+agree on all of them or it will not join.
 
 `--validator-private-key-path` (a file, not a flag value) works because the fix merged
 2026-09-21; on older binaries it is silently ignored and the key must be passed inline.
@@ -364,7 +375,9 @@ here — they get REV from the faucet; this table is the answer to "which addres
 ## Operating the nodes
 
 ```bash
-systemctl {status,restart,log} rnode            # the node
+systemctl status rnode                          # node A (also: rnode-d on host A, rnode-c on host B)
+systemctl restart rnode
+journalctl -u rnode -n 50                       # `systemctl log` is not a command
 systemctl list-timers rnode-health.timer        # monitoring
 journalctl -t rnode-health -n 20                # health warnings only
 ```
@@ -372,14 +385,26 @@ journalctl -t rnode-health -n 20                # health warnings only
 Rebuild / re-key (the whole network):
 
 ```bash
-# on the master
-rnode --profile docker run -s --dev-mode --propose-on-deploy --no-upnp --host <ip> \
+# node A — the genesis master. These are the flags it actually runs (from its unit file);
+# the bond parameters are genesis inputs, so changing any of them gives a different genesis.
+rnode --profile docker run -s --dev-mode --propose-on-deploy --no-upnp --network-id testnet \
+  --host 164.90.140.144 \
+  --protocol-port 40400 --api-port-grpc-external 40401 --api-port-grpc-internal 40402 \
+  --api-port-http 40403 --discovery-port 40404 --api-port-admin-http 40405 \
   --data-dir /var/lib/rnode \
   --bonds-file /var/lib/rnode/genesis/bonds.txt \
   --wallets-file /var/lib/rnode/genesis/wallets.txt \
   --pos-multi-sig-public-keys <dave pubkey> --pos-multi-sig-quorum 1 \
+  --epoch-length 10 --quarantine-length 10 \
+  --bond-minimum 1 --bond-maximum 250 --number-of-active-validators 4 \
   --validator-private-key-path /etc/rnode/validator.key
-# a joining validator: same flags minus -s, plus --bootstrap, and its own validator key
+# a joining validator: same flags minus -s, its own ports/data-dir/key, plus
+#   --bootstrap rnode://<A's id from /api/status>@164.90.140.144?protocol=40400&discovery=40404
+# D: ports 414xx, --data-dir /var/lib/rnode-d, --validator-private-key-path /etc/rnode-d/validator.key
+# B: host B, ports 404xx, /var/lib/rnode, /etc/rnode/validator.key
+# C: host B, ports 414xx, --data-dir /var/lib/rnode-c, /etc/rnode-c/validator.key
+#
+# --attest-on-new-blocks is ON by default; the control is the opt-out --no-attest-on-new-blocks.
 ```
 
 There is **no `--no-autopropose` flag** — you omit `--autopropose`. (`tools/devnet.sh` accepts
@@ -434,7 +459,7 @@ the readiness question is owned by the
 2. **A silent validator caps finality, whatever the survivors hold.** Two constraints, and the second
    is the binding one. The quorum itself is a *strict* supermajority — `sdk/src/consensus.rs:15`,
    `stake * 3 > total * 2`, with a test named `two_thirds_is_not_supermajority` — taken over the
-   **active set** (`compute_bonds` reads `pos:active`, `casper/src/runtime_manager.rs:1370-1381`;
+   **active set** (`compute_bonds` reads `pos:active`, `casper/src/runtime_manager.rs:1435`;
    `defaults.conf` caps that set at 100, so on a small net it equals the whole pool), and there is no
    inactivity leak, no decay and no eviction, so an absent validator's stake counts forever. The
    binding constraint was stricter still, and until 2026-09-29 it was not just arithmetic: the fringe's
@@ -485,19 +510,19 @@ held it, and nothing re-queued it
 live-testnet run found a third: a node that attributes one failure to a **bonded** validator's block is
 estranged from its chain permanently — the height maximum skips failed justifications and
 `neglected_invalid_block` refuses any block justifying a failed bonded sender
-([#105](https://github.com/rchain-community/rchain-rust/issues/105), AUDIT C173, open). So the order is
-C173's decision, then this measurement again, and until then add nothing to a live net: read or deploy
-against A, which is where the public endpoint routes — the node configuration is not single-proposer
-([Routing](#routing-and-what-it-costs-if-a-dies)).
+([#105](https://github.com/rchain-community/rchain-rust/issues/105); AUDIT C173 is **done**, and the
+height rule now counts every resolved parent, failed or not). That order is complete: the four-validator
+net was rebuilt on 2026-10-04, the kill and rejoin were measured on it, and #70, #105 and #148 are
+closed — see [Recovery](#recovery) and [Routing](#routing-and-what-it-costs-if-a-dies).
 
 **A second, independent way for a live net to lose a validator:**
 [#105](https://github.com/rchain-community/rchain-rust/issues/105). On 2026-09-29 the two-bond shape was
 rebuilt on this net itself (genesis A 1000 / B 100, both attesting) and **node B failed five blocks with
 `InvalidStateHash` and four with `InvalidBlockNumber` while A failed none**; finality froze at block 8 —
 the last block B proposed — while the height reached 25, and stopping B did not restore it. The wedge
-there is the height rule (`casper/src/validate.rs:221-241`), which *skips failed justifications* when it
-computes the expected height, so once a node has failed one block no higher-numbered block is ever valid
-to it. That is #103's theme — one unprocessable block is permanent — reached by a different mechanism,
+there is the height rule (`casper/src/validate.rs:297`), which used to *skip failed justifications* when
+it computed the expected height, so once a node had failed one block no higher-numbered block was ever
+valid to it. That is #103's theme — one unprocessable block is permanent — reached by a different mechanism,
 and it is why this chain is **single-bond** rather than two-bond: the two-bond rebuild could not
 finalise at all on the current binary.
 
@@ -521,7 +546,8 @@ the picture above changes.** On the live two-host net, both shapes now behave di
   validation failures on either survivor. That is **351 blocks in about two minutes, ~4 blocks/second**,
   halted there deliberately because these hosts are 1 GB (see [#60](#known-issues) and #68 — a chain at
   that rate cannot be restarted here). The mechanism the guard's own shape suggests is a **loop**:
-  `suppress_attestation = nothing_to_finalize || waiting_for_supermajority`, so the storm is bounded by
+  `attestation_suppressed(nothing_to_finalize, new_state_transition, quorum_reachable, cadence, paced)`,
+so the storm is bounded by
   finality catching up — a validator that cannot finalise keeps attesting, every attestation is a block,
   and every block is a reason for the other survivor to attest. Absent validator → no finality →
   unbounded production → a DAG widening faster than any fringe can close. It is a liveness **and** a
@@ -534,7 +560,7 @@ the picture above changes.** On the live two-host net, both shapes now behave di
   end of a 420 s window in **3 of 3** attempts; the all-live control held finality at a gap of 4 throughout.
   In that run finality stopped about **55 s before** the single deploy, so "one deploy re-arms it" is not
   what the rig shows. The run used the devnet defaults — **autopropose on**, which is the gate that makes
-  the dev-mode dummy deploy live (`dummy_deploy_key`, `node_runtime.rs:2575`) — so it measures the
+  the dev-mode dummy deploy live (`dummy_deploy_key`, `node_runtime.rs:2805`) — so it measures the
   **shipped configuration**, not the attestation guard; see the caveat in
   `spec/audit/evidence/n148-results.md`.
 
@@ -588,7 +614,7 @@ means a **new genesis and a new chain**.
 
 ```
 1. a trusted key deploys        pos!("trust", [*deployerId, "<newcomer 65-byte pubkey>".hexToBytes(), *ret])
-2. the newcomer deploys         pos!("bond",  [*deployerId, <stake>, *ret])      # 1..100 here
+2. the newcomer deploys         pos!("bond",  [*deployerId, <stake>, *ret])      # 1..250 here
 ```
 
 Two funding prerequisites, both easy to miss and both **verified working here** (the general form, with
@@ -600,8 +626,9 @@ the reasoning, is upstream):
 - the **newcomer must hold REV ≥ stake**, because the bond is deducted from its vault.
 
 Funding either one is an ordinary transfer. There is **no `pos` method to read a vault balance**: the
-native dispatcher implements `getBonds`, `getActiveValidators`, `getTrusted`, `bond`, `withdraw`,
-`trust` and `untrust` and nothing else, so `pos!("getBalance", …)` fails with
+native dispatcher implements `getBonds`, `getActiveValidators`, `getTrusted`, `getDelegations`,
+`bond`, `withdraw`, `trust`, `untrust`, `delegate` and `undelegate` — and **no balance read** — so
+`pos!("getBalance", …)` fails with
 `pos: unknown method getBalance` (`rholang/src/system_processes.rs`). A balance read has to go through
 the REV vault contract, or a client macro that wraps it — not `pos`. The terms this net uses are below.
 
@@ -617,13 +644,13 @@ with `Top level free variables are not allowed`.
 new return, pos(`rho:rchain:pos`), ret in {
   pos!("getBonds", [*ret]) | for (@b <- ret) { return!(b) }
 }
-// → {"expr":[{"ExprMap":[["0410b8c5…0c3c73",{"ExprInt":1000}],["04675f16…514404",{"ExprInt":100}]]}]}
+// → four entries, one per validator, each {"ExprInt":250}
 
 // read the consensus set (works today)
 new return, pos(`rho:rchain:pos`), ret in {
   pos!("getActiveValidators", [*ret]) | for (@v <- ret) { return!(v) }
 }
-// → {"expr":[{"ExprSet":[{"ExprBytes":"0410b8c5…"},{"ExprBytes":"04675f16…"}]}]}
+// → {"expr":[{"ExprSet":[…four ExprBytes…]}]}
 
 // confer trust on a newcomer (deploy signed by a trusted, funded key)
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
@@ -631,7 +658,7 @@ new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
   for (@r <- ret) { return!(r) }
 }
 
-// bond yourself (deploy signed by the newcomer; stake 1..100)
+// bond yourself (deploy signed by the newcomer; stake 1..250 on this net)
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
   pos!("bond", *deployerId, 100, *ret) | for (@r <- ret) { return!(r) }
 }
@@ -645,9 +672,12 @@ new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
 Deploy them with:
 
 ```bash
-rnode --profile docker deploy --phlo-limit 90000 --phlo-price 1 --shard-id /root \
-  --private-key <hex> term.rho
-rnode --profile docker deploy-status --deploy-signature <deployId>
+# `rnode deploy` defaults to --grpc-host localhost, so from another machine name the node:
+rnode --profile docker deploy --grpc-host 164.90.140.144 --grpc-port 40401 \
+  --phlo-limit 90000 --phlo-price 1 --shard-id /root --private-key <hex> term.rho
+# (D: 41401 on host A.  B: 40401, C: 41401, both on host B.)
+rnode --profile docker deploy-status --grpc-host 164.90.140.144 --grpc-port 40401 \
+  --deploy-signature <deployId>
 ```
 
 Two easy-to-miss details:
@@ -660,7 +690,7 @@ Two easy-to-miss details:
 
 ### Status of the verified path
 
-#### Current chain — rebuilt 2026-09-29, single-bond
+#### History — 2026-09-29, single-bond (superseded by the four-validator rebuild of 2026-10-04)
 
 Genesis `9f09e7a0…`, binary `sha256:3cd2b4152f5a…` (`dev` @ `f36312a55`).
 Genesis signed for **one** validator (A, stake 1000) and B runs as a plain observer with no bond. Height 8,
@@ -704,12 +734,12 @@ Two things this pinned down, both of which earlier revisions of this page had wr
   proposal failure and no bond-map disagreement — the hazard is the unfinalised case, not bond changes
   as such.
 
-**A caution that still stands:** with `--attest-on-new-blocks` on both validators, six deploys produced
-23 blocks in about two minutes. Each attestation is itself a remote block for the other node, so the
+**A caution that still stands (measured then, and since fixed):** with `--attest-on-new-blocks` on both
+validators, six deploys produced 23 blocks in about two minutes. Each attestation is itself a remote block for the other node, so the
 chain runs a storm until the deploys are finalised and `suppress_attestation` stops it. That is the
 unbounded-attestation problem of
-[#70](https://github.com/rchain-community/rchain-rust/issues/70) observed again; it is why this net is
-otherwise kept to a single proposer, and why a deploy to an unbonded node is worse than useless — it is
+[#70](https://github.com/rchain-community/rchain-rust/issues/70) observed again; it is also why a deploy to an
+unbonded node is worse than useless — it is
 accepted into that node's pool, and since deploys are not gossiped, nothing ever proposes it.
 
 #### Re-verified on the current chain — 2026-09-22, genesis `aab081c7…`, height 3 → 7
@@ -866,7 +896,7 @@ Re-verified on the 2026-09-22 rebuilt chain (`aab081c7…`): dave's `trust` retu
 83 % of the pool, above the ⅔ threshold, so admitting a validator does not stall finality.
 
 **K7 — start-up replay is the expensive part of a node's life, and it is invisible while it runs.
-This is the most important operational constraint here. Now tracked upstream as
+This is the most important operational constraint here. Upstream tracking (closed as not planned) was
 [rchain-rust#60](https://github.com/rchain-community/rchain-rust/issues/60).**
 
 Measured on the same 1142-block state, on a 4 GB host so the replay could actually finish:
@@ -931,7 +961,9 @@ the registry result slot — the same path the verified transcripts on this page
   `/usr/local/bin/rnode.old-<sha>`, and each rebuild left the previous data dir as
   `/var/lib/rnode.bak-<timestamp>`. The genesis files are the source of truth and are tiny; those old
   data dirs (4.5 MB each) can be deleted once the new chain is confirmed.
-- Firewall: `ufw` allows `22`, `40400`, `40401`, `40403`, `40404`, `40405`, plus `80`/`443` on A.
+- Firewall: `ufw` allows `22`, `40400`, `40401`, `40403`, `40404`, `40405`, **the `414xx` family
+  (`41400`–`41405`, with `41404/udp`)**, plus `80`/`443` on A. The `414xx` ports are what nodes D and C
+  listen on and what the deploy table above publishes.
   Nothing else — the old rhobot box's 36-rule ruleset was pruned to what actually has listeners.
 - Certificates renew via `certbot.timer` on A (nginx authenticator), first expiry 2026-12-20.
 - To move the testnet to another host: copy `bonds.txt`, `wallets.txt`, the validator key and the
