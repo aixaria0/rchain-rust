@@ -266,6 +266,82 @@ async fn a_minted_vault_handle_spends_in_the_deploy_that_minted_it() {
     let _ = post_state;
 }
 
+/// **A minted vault handle answers its `balance` arm** (AUDIT C219; the law is Law 60).
+///
+/// `install_vault_handle` used to install two continuations on **one** channel — `balance` at arity 2
+/// and `transfer` at arity 5 — and the space keeps one per channel, so the second install replaced the
+/// first: `transfer` replied and `balance` answered **nothing at all**, with no error, because an
+/// unmatched receive is silence. The neighbouring test asserts the handle's *effect* and never its
+/// reply, which is why the defect survived it. The handle is now one continuation at
+/// `arity: 1, remainder: true` dispatching on the method, and this reads the arm that had never
+/// existed.
+///
+/// The vault is seeded with 1_000_000_000, so the assertion is that the arm answers **that vault's**
+/// balance rather than merely answering: a handler that replied a constant would pass a `== 0`.
+#[tokio::test]
+async fn a_minted_vault_handle_answers_its_balance_arm() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let (_pre, post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let term = r#"new revVault(`rho:rchain:revVault`), deployerId(`rho:rchain:deployerId`),
+               vaultCh, bch in {
+            revVault!("findOrCreate", *deployerId, *vaultCh) |
+            for (@(_, *vault) <- vaultCh) {
+                vault!("balance", *bch) |
+                for (@b <- bch) { @"handle-balance"!(b) }
+            }
+        }"#;
+
+    let (_post_state, user_results, _) = rm
+        .compute_state(
+            &post,
+            &[deploy(term)],
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(1),
+        )
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "the handle read must run: {:?}",
+        user_results[0].eval_result.errors
+    );
+
+    let tag = rchain_models::sorted::SortedProc::new(rchain_models::par_ops::from_expr(
+        rchain_models::ast::Expr::GString("handle-balance".to_string()),
+    ));
+    let data = rm
+        .runtime()
+        .get_data_par(&tag)
+        .await
+        .expect("read the driver's channel");
+    assert_eq!(
+        data.len(),
+        1,
+        "`handle-balance` must have been sent exactly once — an absent tag is the *silence* this \
+         row is about, not an error: {data:?}"
+    );
+    let balance = rchain_models::rholang::RhoType::RhoNumber::unapply(&data[0])
+        .unwrap_or_else(|| panic!("the balance arm answers an Int: {:?}", data[0]));
+    assert!(
+        balance > 0,
+        "the handle must answer *its vault's* balance, not merely answer — the vault is seeded with \
+         1_000_000_000: got {balance}"
+    );
+}
+
 /// **And the authority check is real.** The same transfer with a name that opens nothing — a fresh
 /// `new`, which is exactly what a caller without the handle holds — must move nothing. Without this
 /// arm the first test would pass on a handler that ignored its auth argument entirely.

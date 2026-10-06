@@ -106,11 +106,11 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
     /// builds a fresh dispatcher), so the continuation would dispatch nowhere on the second run. A
     /// hash of the name is a function of the name, and the name is a function of the deploy's RNG.
     ///
-    /// **The arity is part of the id because a channel can carry several continuations.** RSpace
-    /// matches by arity, and the oracle's vault is exactly that shape: one `contract` per method
-    /// (`@"balance", ret` at arity 2 beside `@"transfer", @to, @amount, @auth, ret` at arity 4). A
-    /// native handler has one arity, so serving that API means one install per arity under one name —
-    /// which only works if the ids differ.
+    /// **The arity is part of the id, and it is the arity of the *pattern* the channel carries.** A
+    /// channel now carries exactly one installed continuation (Law 60), so the arity distinguishes a
+    /// contract installed at `arity: 1, remainder: true` from the same name installed flat — which is
+    /// what a byte-identical re-install has to be recognised as (`locked_install` skips it by
+    /// comparing the consume, and this id is what that consume is built from).
     pub fn native_body_ref(name_bytes: &[u8], arity: i32) -> i64 {
         let digest = rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::create_many(&[
             name_bytes,
@@ -121,15 +121,22 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
         i64::from_be_bytes(first_eight) | i64::MIN
     }
 
-    /// Bind `handler` to one arity of a channel minted from `name_bytes`, returning that channel as a
-    /// `Par`, ready to be handed out as a capability.
+    /// Bind `handler` to one pattern of a channel minted from `name_bytes`, returning that channel as
+    /// a `Par`, ready to be handed out as a capability.
     ///
     /// This is the whole of the minted-channel primitive: build the name the way `reduce::alloc` does
     /// for a rholang `new` ([`RhoName::apply_bytes`]), register the handler against the id derived
     /// from those bytes and that arity, and install the persistent continuation the space will match a
-    /// send against. Calling it again for another arity of the same name returns the same channel and
-    /// adds a second continuation — which is how one native handler serves `balance`'s two arguments
-    /// and `transfer`'s five.
+    /// send against. `remainder` makes the last field a rest pattern (`arity: 1, remainder: true` is
+    /// the shape a method-taking contract uses), exactly as `install_system_processes` builds it for a
+    /// `Definition`.
+    ///
+    /// **One pattern per channel, not several** (AUDIT C219, Law 60). The space keeps one installed
+    /// continuation per channel, so a second install of a *different* pattern on the same name is
+    /// **refused** by `install_continuation` rather than replacing the first — calling this twice for
+    /// two arities of one name used to leave only the second matching, silently. A contract with
+    /// several methods is one continuation at `arity: 1, remainder: true` dispatching on the method
+    /// inside it.
     ///
     /// **Register before installing**, so a failure leaves a handler nobody can reach rather than a
     /// continuation that dispatches into an empty table — the second is an error inside the reducer,
@@ -138,6 +145,7 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
         &self,
         name_bytes: Vec<u8>,
         arity: i32,
+        remainder: bool,
         handler: crate::dispatch::ScalaBodyFn,
     ) -> Result<Par, RholangError> {
         let channel = RhoName::apply_bytes(name_bytes.clone());
@@ -148,8 +156,12 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
             patterns: (0..arity)
                 .map(|i| SortedProc::new(from_expr(Expr::EVar(Box::new(Var::FreeVar(i))))))
                 .collect(),
-            remainder: None,
-            free_count: arity,
+            remainder: if remainder {
+                Some(Var::FreeVar(arity))
+            } else {
+                None
+            },
+            free_count: if remainder { arity + 1 } else { arity },
         }];
         self.space
             .install(

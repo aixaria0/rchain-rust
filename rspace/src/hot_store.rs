@@ -106,7 +106,13 @@ pub trait HotStore<C, P, A, K>: Send + Sync {
         channels: &[C],
         wc: WaitingContinuation<P, K>,
     ) -> Result<(), RSpaceError>;
-    async fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>);
+    /// Install the persistent continuation a channel matches against. `Err` when the channel already
+    /// carries a **different** one — see [`RSpaceError::InstallConflict`] and Law 60.
+    async fn install_continuation(
+        &self,
+        channels: &[C],
+        wc: WaitingContinuation<P, K>,
+    ) -> Result<(), RSpaceError>;
     async fn remove_continuation(&self, channels: &[C], index: usize) -> Result<(), RSpaceError>;
 
     async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>;
@@ -316,11 +322,35 @@ where
         Ok(())
     }
 
-    async fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) {
+    /// Install the persistent continuation a channel matches against.
+    ///
+    /// **A channel carries one, and an install that would replace a different one is refused here
+    /// rather than dropped** (AUDIT C219; the law is Law 60). The map holds one
+    /// `WaitingContinuation` per channel, so before this a second install simply overwrote the first:
+    /// a minted vault handle installed `balance` at arity 2 and then `transfer` at arity 5, and only
+    /// `transfer` ever matched — with no error, because a send that finds no continuation is what an
+    /// unmatched receive has always been. An *identical* re-install stays a no-op: `locked_install`
+    /// skips that case before reaching here (play and replay both install the system contracts over
+    /// one store), and the guard keeps this method honest on its own.
+    async fn install_continuation(
+        &self,
+        channels: &[C],
+        wc: WaitingContinuation<P, K>,
+    ) -> Result<(), RSpaceError> {
         let mut state = self.state[channels_shard(channels, self.state.len())]
             .lock()
             .await;
+        if let Some(existing) = state.installed_continuations.get(channels) {
+            if existing.source == wc.source {
+                return Ok(());
+            }
+            return Err(RSpaceError::InstallConflict(
+                "a contract that serves several methods installs one continuation at \
+                 `arity: 1, remainder: true` and dispatches on the method inside it",
+            ));
+        }
         state.installed_continuations.insert(channels.to_vec(), wc);
+        Ok(())
     }
 
     async fn remove_continuation(&self, channels: &[C], index: usize) -> Result<(), RSpaceError> {
@@ -561,6 +591,51 @@ mod tests {
         )
     }
 
+    /// **A channel carries one installed continuation, and a different second one is refused**
+    /// (AUDIT C219; the law is Law 60).
+    ///
+    /// The map is keyed by the channel and holds one `WaitingContinuation`, so a second install used
+    /// to **replace** the first silently — which is how a minted vault handle's `balance` arm came to
+    /// have never existed while its `transfer` arm worked. The `Err` is the whole point: an install
+    /// that cannot take effect says so rather than dropping what was there.
+    ///
+    /// The *identical* re-install is asserted first, because play and replay both install the system
+    /// contracts over one store and that path has to stay a no-op rather than becoming a refusal.
+    #[tokio::test]
+    async fn a_second_different_install_on_a_channel_is_refused() {
+        let store = test_store(1).await;
+        let channels = vec!["a".to_string(), "b".to_string()];
+        store
+            .install_continuation(&channels, continuation(&["a", "b"]))
+            .await
+            .expect("the first install lands");
+        store
+            .install_continuation(&channels, continuation(&["a", "b"]))
+            .await
+            .expect("an identical re-install is a no-op, not a conflict");
+        let other = WaitingContinuation::create(
+            &channels,
+            vec![],
+            "other".to_string(),
+            false,
+            BTreeSet::new(),
+        );
+        let refused = store.install_continuation(&channels, other).await;
+        assert!(
+            matches!(refused, Err(RSpaceError::InstallConflict(_))),
+            "a different second install on one channel must be refused, got {refused:?}"
+        );
+        let installed = store
+            .get_continuations(&channels)
+            .await
+            .expect("read the continuation back");
+        assert_eq!(
+            installed.len(),
+            1,
+            "the refused install must not have replaced the one that was there: {installed:?}"
+        );
+    }
+
     /// A scripted sequence covering every mutation, run against both stores. `f` awaits one op.
     async fn run_script(store: &InMemHotStore<String, String, String, String>) {
         store
@@ -594,7 +669,8 @@ mod tests {
                 &["a".to_string(), "b".to_string()],
                 continuation(&["a", "b"]),
             )
-            .await;
+            .await
+            .expect("the script installs on a channel that carries none");
         store
             .remove_continuation(&["a".to_string(), "b".to_string()], 0)
             .await

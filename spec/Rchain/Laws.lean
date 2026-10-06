@@ -3382,6 +3382,65 @@ def laws : List Law := [
       domain, so a loss is a violation rather than a note. The leaf is `exprToSy_wireable` over the \
       expression constructors — every one the encoder refuses is refused by the definition's own \
       fall-through, so the proof is a case per constructor rather than an argument." },
+  { number := 60, clause := "a", layer := "RSpace",
+    statement := "**An install is total on a channel.** An install that would replace a *different* \
+      installed continuation is **refused**, and an idempotent re-install of the same one changes \
+      nothing — so an install that cannot take effect says so rather than dropping what was there.",
+    status := .provedModel,
+    declarations := [`Rchain.installed, `Rchain.InstallStep, `Rchain.ReplacingStep,
+      `Rchain.a_different_install_has_no_step],
+    axioms := [],
+    rust := ["rspace/src/hot_store.rs", "rholang/src/system_processes.rs"],
+    rustWitness := [
+      "rspace/src/hot_store.rs:a_second_different_install_on_a_channel_is_refused",
+      "casper/tests/determinism.rs:a_minted_vault_handle_answers_its_balance_arm"],
+    witness := [`Rchain.a_different_install_has_no_step],
+    falsifiable := some "**the defect's shape is a second relation, and the row is the pair.** \
+      `ReplacingStep` is what `installed_continuations.insert` did — the second install replaces the \
+      first — and `the_replacing_rule_does_not_keep_the_first` states that the first is then gone. \
+      `the_vault_handles_balance_arm_was_lost` is the same fact at the size of the finding: install \
+      `transfer` after `balance` on one channel and the channel no longer carries `balance`. On the \
+      port, `rspace`'s test asserts the `Err`, and \
+      `casper/tests/determinism.rs:a_minted_vault_handle_answers_its_balance_arm` reads the arm that \
+      used to answer nothing — a vault seeded with 1_000_000_000, so a handler that replied a \
+      constant fails it.",
+    note := "**The refusal is the clause, and it is why 60a is not the store's own type.** The map \
+      holds one `WaitingContinuation` per channel, so a second `insert` *cannot* fail — the \
+      statement has to be about the operation, not the container: an install that would replace a \
+      different continuation has no step, which is what `install_continuation` now returns. The \
+      idempotent case is load-bearing rather than incidental: play and replay both install the system \
+      contracts over one store, and a rule that refused the *same* install twice would break every \
+      deploy. **What the tie does not reach:** the model's continuations are abstract tokens, so it \
+      says which one a channel keeps and nothing about what a continuation is; `locked_install`'s \
+      consume comparison is the node's, pinned by the rspace test rather than by a theorem." },
+  { number := 60, clause := "b", layer := "RSpace",
+    statement := "**What a channel carries after any permitted run** — the continuation it was first \
+      given. A contract with several methods is therefore **one** continuation that dispatches on the \
+      method, not several installs on one name.",
+    status := .provedModel,
+    declarations := [`Rchain.a_permitted_run_keeps_the_first, `Rchain.InstallStep, `Rchain.installed],
+    axioms := [],
+    rust := ["rholang/src/system_processes.rs", "rspace/src/hot_store.rs"],
+    rustWitness := [
+      "casper/tests/determinism.rs:a_minted_vault_handle_spends_in_the_deploy_that_minted_it"],
+    witness := [`Rchain.a_permitted_run_keeps_the_first],
+    falsifiable := some "**the pair with 60a's falsifier is the falsifier**, which is the shape \
+      `Rchain/Casper/Dag.lean` establishes for law 14b: `a_permitted_run_keeps_the_first` is the law \
+      on the rule, and `the_replacing_rule_does_not_keep_the_first` is the *same statement* false of \
+      the rule the fix replaces. Without the second, the first would be a restatement of a container's \
+      type; with it, the rule is what is being judged. On the port the control is a *movement*: \
+      `a_minted_vault_handle_spends_in_the_deploy_that_minted_it` asserts the transfer moved \
+      30_000_000, so the one-continuation handle is a working capability rather than merely a \
+      non-refusing one.",
+    note := "**The shape every multi-method contract here already used, now the only shape that \
+      installs.** `rev_vault`, `ertp` and `pos` are one continuation at `arity: 1, remainder: true` \
+      with the method dispatched inside; a vault handle is the one site that did it the other way, and \
+      this is the row that says which way is the rule. **What the change costs:** the handle's \
+      `body_ref` is derived from `(name, arity)` and the arity went 2/5 → 1, so newly minted handles \
+      move — consensus-visible, with the note in `spec/GENESIS.md`. The oracle's \
+      `RevVault.rho:196-200` spells the two arms as two `contract`s on one name, which is what the \
+      port's one-continuation-per-channel store cannot express; the dispatch is where that difference \
+      is paid." },
 ]
 
 

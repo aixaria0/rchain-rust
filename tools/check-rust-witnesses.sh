@@ -72,6 +72,7 @@ crate_of() {
     rspace)        echo rchain-rspace ;;
     rholang)       echo rchain-rholang ;;
     casper)        echo rchain-casper ;;
+    ocapn)         echo rchain-ocapn ;;
     node)          echo rchain-node ;;
     *)             echo "" ;;
   esac
