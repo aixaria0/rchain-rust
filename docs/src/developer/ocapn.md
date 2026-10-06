@@ -168,6 +168,128 @@ Also note:
   the chain sees the node, not you. There is no session-to-deployer binding yet.
 - **The listener serves a fixed number of sessions** (64). Past that, new connections are closed.
 
+## 6. Putting a shard in front of the peers
+
+Everything above serves **one node**. The bridge signs every delivery with that node's key
+(`dev.deployer-private-key`), so the chain's `deployerId` is the node and the node's REV pays the phlo.
+That is fine for a demo and wrong for a boundary you publish: a peer's call spends your REV, and
+nothing on chain records whose call it was.
+
+A deployment that fixes the *shape* of that uses machinery already here: make the boundary a **shard**.
+
+A node is a member of the shards listed in `casper.shards` — file-configured only, the first entry is
+the primary and later ones get their own data directory under `<data-dir>/shard/`. A node with more
+than one membership is a **gateway**; a shard whose only bonded key is that node is a **single-node
+shard**. So:
+
+```hocon
+casper {
+  shards = [
+    { shard-name = root,  parent-shard-id = / }
+    { shard-name = ocapn, parent-shard-id = /root, genesis-block-data { ... } }
+  ]
+  # The cross-shard routes, on the ADMIN server. Only a node with more than one shard
+  # membership and a validator key serves them; the coordinator signs each leg with that
+  # key and spends from its own REV account (AUDIT C121).
+  enable-txn-api = true
+}
+api-server {
+  ocapn-listen = "127.0.0.1:22045"
+}
+dev {
+  deployer-private-key = "<hex secp256k1 private key>"
+}
+```
+
+The peers dial that node. The ERTP objects they hold live in `root/ocapn`'s state, and a call that has
+to reach the rest of the network leaves as a **cross-shard transaction** — a two-phase commit this node
+coordinates (`casper/src/txn_coordinator.rs`, Laws 26–29).
+
+**What it buys.** The perimeter becomes a *named shard* rather than "the node", and the spend becomes
+bounded and visible: one shard's REV, one validator key, a shard-level fact — instead of the node's
+own key paying for calls it did not make. The txn routes' config note says the same thing in its own
+words: the coordinator "signs each leg with this node's validator key and spends from that key's own
+REV account".
+
+**Why it is not a trick.** The coordinator's record is deliberately **node-local, not consensus state**
+(`casper/src/gateway/ledger.rs`, first paragraph): writing one node's off-chain coordination into the
+content-addressed trie would make a shard's state hash depend on that node's off-chain work and diverge
+consensus. That is the same rule the OCapN session already follows — the export and answer tables are
+per-session and never chain state — so a shard acting as the boundary does nothing a gateway does not
+already do.
+
+**What it costs, and what it does not fix.** Each call that crosses becomes a 2PC transaction: atomic,
+but dearer than today's single deploy, and it has a coordinator that can stall. A one-key shard
+localises trust rather than removing it — the boundary's integrity is that validator. And the peer
+still is not the payer: the boundary shard's key is *yours*. That obligation is stated, and left open,
+in `spec/Rchain/Attribution.lean`; it closes only when the peer is itself a chain, which is what the
+next section is about.
+
+**Status.** The pieces are built and tested separately — `node/tests/gateway.rs` runs two shards in one
+node and coordinates a two-shard transaction, and the bridge's tests are above — but the *combination*
+in this section has not been run in this repository. It is the deployment these parts add up to, not a
+recipe anyone has followed.
+
+**Dialling out.** The node does dial, but only on a peer's word: the enlivener connects to a sturdyref's
+locator and the greeter to a handoff give's `exporter-location`, each over whatever netlayer the node
+holds (`ocapn/src/enliven.rs`, `ocapn/src/fixtures.rs`). A boundary wants two things beyond that: a
+session the **node** starts — notifying a peer that nothing has dialled in from — and per-transport
+dispatch, so a locator naming a transport other than its one netlayer resolves. Neither is built. And
+neither is free of the perimeter below: "dial an address of the peer's choosing" *is* the SSRF surface
+the dial policy exists for, so a gateway that dials out is one that wants `ocapn-deny-local-dial` set
+and the origin rule holding — the same trade Law 62 names.
+
+## 7. Writing a transport
+
+The node speaks exactly one: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
+encryption, no authentication, which is why the listener is off unless you name an address. A second
+transport is small, because the seam is two functions (`ocapn/src/netlayer.rs`):
+
+```rust
+async fn new_outgoing_connection(&self, locator: &PeerLocator) -> io::Result<Box<dyn NetConn>>;
+async fn accept_incoming_connection(&self) -> io::Result<Box<dyn NetConn>>;
+```
+
+plus `NetConn::peer_address` and a provided `new_outgoing_connection_from(locator, origin)`, which
+exists so the dial policy can tell a *remote* peer from a local one (see the node page). Three things
+to know before writing one:
+
+- **The locator already names the transport.** It is `ocapn://<designator>.<transport>`, and designator
+  plus transport *is* the spec's peer identity (`ocapn/src/locator.rs`) — so a new transport is a name
+  plus whatever hints it needs. What does not exist yet is per-transport dispatch: the node holds one
+  `Arc<dyn Netlayer>`.
+- **`recv` promises a bidirectional FIFO and nothing else.** Not liveness, not that the session stays
+  up. CapTP above assumes it does, and `op:abort` has no analogue on a packet network — so decide what
+  a session means when a packet is merely late before writing one.
+- **A transport built on a chain gives you the payer.** Packets on IBC are sent by a chain that pays
+  for its own gas, which closes the attribution obligation this repository states and leaves open. That
+  is the strongest reason to want one.
+
+### Which transport
+
+The implementations this repository tests against carry four transports between them, and none is a
+production one: the conformance suite (`31f0b80`) has `testing_only_tcp` and `onion` (Tor), and the
+Endo version vendored for the spike (`1.1.1`) has `tcp-test-only` and `websocket`. So the transport to
+write is the one the peers you care about actually speak — and whatever it is, it is the two functions
+above with the channel underneath it, and nothing above the seam moves.
+
+### Unix domain sockets as the inner hop
+
+A Unix domain socket is the smallest transport that is not `testing-only`, and the security is the
+operating system's rather than ours: a UDS peer is a process whose uid and gid the socket's filesystem
+permissions admitted. That is authentication, where `tcp-testing-only` has none, with no key exchange
+to write. The netlayer is the same two functions — connect to a path, accept on a bound socket — plus
+`transport = "unix"` and a `path` hint. `NetConn::peer_address` returns `None` for it, which the dial
+policy already reads as "cannot be judged" and which is right here: a UDS peer is local by
+construction, and the permission on the socket is what admitted it.
+
+**And it is the right place to compose.** A gateway speaking UDS to a handful of local agents, each of
+which speaks something else outward, keeps the wide-area transport and its credentials out of the
+chain-facing process — and gives the accountability a home, because each agent is a process the
+operator started deliberately, with its own identity. That is the shape section 6's payer question
+wants: the boundary shard is the chain's side, the agents are the network's side, and neither has to
+be the other.
+
 ## See also
 
 - [OCapN interoperability](../node/ocapn.md) — the node side: config, the bridge, the wire.
