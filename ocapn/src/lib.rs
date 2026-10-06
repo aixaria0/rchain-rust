@@ -30,6 +30,7 @@ pub mod locator;
 pub mod multi;
 pub mod netlayer;
 pub mod netstring;
+pub mod noise;
 pub mod owner;
 pub mod par_value;
 pub mod peer;

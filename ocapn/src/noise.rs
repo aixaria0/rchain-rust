@@ -1,0 +1,525 @@
+//! The `noise` netlayer — TCP under a Noise `XX` handshake, and the transport OCapN is converging on.
+//!
+//! **What makes this different from `tcp_testing_only`.** That transport is plaintext and
+//! unauthenticated: any peer that can reach the port is trusted, which is why its own README says
+//! "HIGHLY INSECURE — DO NOT USE IN PRODUCTION" and why the listener is off unless configured. This
+//! one completes a Noise `XX` handshake before a single CapTP byte moves, so the channel is encrypted
+//! and **both** ends are authenticated: each side proves it holds an Ed25519 signing key by signing
+//! its own X25519 static public key, and `XX` binds those statics to the session. No certificate
+//! authority and no daemon are involved — a node needs a key pair and a listening port.
+//!
+//! **The parameters are Agoric's, not ours, and that is the entire basis on which this is
+//! interoperable.** `XX` with X25519, ChaCha20Poly1305 and **BLAKE2s**, an **empty prologue**, the
+//! three-flight SYN (132 B) / SYNACK (193 B) / ACK (64 B), and — the part that is *application*
+//! protocol rather than Noise — a payload of the sender's Ed25519 verifying key followed by its
+//! signature over its own X25519 static public. All of that is pinned by
+//! `rust/ocapn_noise` in Agoric's endo repository, which this module mirrors step for step, and the
+//! same `noise-protocol` and `noise-rust-crypto` crates produce the bytes on both sides, so the two
+//! implementations are the same code underneath rather than two that have to be argued equivalent.
+//!
+//! **Framing is this module's own, and it chunks.** A Noise transport message carries at most 65535
+//! bytes, well under the CapTP messages this codebase produces, so a message longer than one cipher
+//! message is split and each chunk is encrypted separately — the cipher state's nonce advances per
+//! chunk, so the chunks are ordered and a re-order or a drop is a decryption failure rather than a
+//! silent corruption. [`crate::framed`] is not reused: it frames with netstrings, and its own doc
+//! already says a transport with different framing writes its own module.
+//!
+//! **`peer_address` is reported**, unlike [`crate::unix`]. This is TCP underneath, so the dial policy
+//! *can* judge a peer of this transport and Law 62's origin rule applies to it in full — a remote
+//! Noise peer may not aim this node at one of the node's own local addresses. That the channel is
+//! encrypted says nothing about where the peer is or what it may reach.
+
+use std::io;
+use std::net::SocketAddr;
+
+use async_trait::async_trait;
+use noise_protocol::patterns::noise_xx;
+use noise_protocol::{CipherState, HandshakeState, U8Array};
+use noise_rust_crypto::sensitive::Sensitive;
+use noise_rust_crypto::{Blake2s, ChaCha20Poly1305, X25519};
+use rchain_crypto::signatures::ed25519::Ed25519;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+use crate::framed::CONNECT_TIMEOUT;
+use crate::locator::PeerLocator;
+use crate::netlayer::{NetConn, Netlayer};
+
+/// The three handshake messages, at the lengths the reference asserts.
+const SYN_LEN: usize = 132;
+const SYNACK_LEN: usize = 193;
+const ACK_LEN: usize = 64;
+
+/// The handshake payloads: an Ed25519 verifying key, its signature over the sender's X25519 static
+/// public key, and the encoding-negotiation bytes the reference reserves (zeros here — it reads them
+/// as `f`/unused, and the lengths are what a peer parses).
+const INITIATOR_PAYLOAD_LEN: usize = 100;
+const RESPONDER_PAYLOAD_LEN: usize = 97;
+const VERIFYING_KEY_LEN: usize = 32;
+const SIGNATURE_LEN: usize = 64;
+
+/// The AEAD tag every cipher message carries, and the largest plaintext one may hold: a Noise transport
+/// message is capped at 65535 bytes, so this is the chunk size, not the message size.
+const TAG_LEN: usize = 16;
+const MAX_CHUNK_PLAINTEXT: usize = 65535 - TAG_LEN;
+
+/// The largest whole message this transport will reassemble, matching [`crate::framed`]'s bound.
+const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+
+type NoiseHandshake = HandshakeState<X25519, ChaCha20Poly1305, Blake2s>;
+type NoiseCipher = CipherState<ChaCha20Poly1305>;
+
+/// A node's Noise identity: the two key pairs the handshake needs, and nothing else.
+///
+/// Both are **static** — they are the node's identity across sessions and across restarts — which is
+/// what distinguishes them from the ephemeral X25519 key the handshake generates per session and from
+/// CapTP's own per-session Ed25519 key. The Ed25519 half is what a peer ends up able to name; the
+/// X25519 half is what the session's keys are derived from.
+#[derive(Clone)]
+pub struct NoiseIdentity {
+    /// The Ed25519 signing seed (32 bytes).
+    signing: [u8; 32],
+    /// Its verifying key, which the handshake carries and signs over the X25519 static.
+    verifying: [u8; 32],
+    /// The X25519 static secret.
+    static_secret: [u8; 32],
+    /// Its public half — what the signature in the payload covers.
+    static_public: [u8; 32],
+}
+
+impl NoiseIdentity {
+    /// Build an identity from an Ed25519 signing seed and an X25519 static secret.
+    ///
+    /// The verifying key is **derived rather than taken**, so it cannot disagree with the seed. Both
+    /// conversions are total for a 32-byte seed, but they return `Result`s and so are propagated
+    /// rather than defaulted: a silent `unwrap_or` here would mint an identity whose *name* is
+    /// thirty-two zero bytes, which is a peer that cannot be told apart from any other node that
+    /// made the same mistake.
+    pub fn new(signing: [u8; 32], static_secret: [u8; 32]) -> Result<NoiseIdentity, String> {
+        let verifying: [u8; VERIFYING_KEY_LEN] = Ed25519::to_public_bytes(&signing)
+            .map_err(|e| format!("a 32-byte Ed25519 seed must have a public key: {e}"))?
+            .try_into()
+            .map_err(|_| "an Ed25519 public key is 32 bytes".to_string())?;
+        Ok(NoiseIdentity {
+            signing,
+            verifying,
+            static_secret,
+            static_public: rchain_crypto::encryption::x25519::public_from_secret(&static_secret),
+        })
+    }
+
+    /// Draw a fresh identity. A deployment persists these; a test does not need to.
+    pub fn generate() -> Result<NoiseIdentity, String> {
+        let mut signing = [0u8; 32];
+        let mut stat = [0u8; 32];
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut signing);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut stat);
+        NoiseIdentity::new(signing, stat)
+    }
+
+    /// The Ed25519 verifying key — the half a peer names this node by.
+    pub fn verifying_key(&self) -> [u8; 32] {
+        self.verifying
+    }
+
+    /// The X25519 static public key.
+    pub fn static_public(&self) -> [u8; 32] {
+        self.static_public
+    }
+
+    /// The payload this side puts in its handshake message: its verifying key, its signature over its
+    /// own X25519 static public, and the reserved encoding bytes.
+    fn payload(&self, length: usize) -> io::Result<Vec<u8>> {
+        let mut payload = vec![0u8; length];
+        payload[..VERIFYING_KEY_LEN].copy_from_slice(&self.verifying);
+        let signature = Ed25519::sign_bytes(&self.static_public, &self.signing)
+            .map_err(|e| io::Error::other(format!("signing the static key: {e}")))?;
+        if signature.len() != SIGNATURE_LEN {
+            return Err(io::Error::other(
+                "Ed25519 produced a signature of the wrong length",
+            ));
+        }
+        payload[VERIFYING_KEY_LEN..VERIFYING_KEY_LEN + SIGNATURE_LEN].copy_from_slice(&signature);
+        Ok(payload)
+    }
+}
+
+/// Read a verifying key and a signature out of a handshake payload, and check the signature covers
+/// `static_public` — the property that ties an Ed25519 name to an X25519 key.
+fn check_payload(payload: &[u8], static_public: &[u8; 32], who: &str) -> io::Result<[u8; 32]> {
+    if payload.len() < VERIFYING_KEY_LEN + SIGNATURE_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the {who} handshake payload is too short to carry a key and a signature"),
+        ));
+    }
+    let verifying: [u8; 32] = payload[..VERIFYING_KEY_LEN]
+        .try_into()
+        .map_err(|_| io::Error::other("verifying key"))?;
+    let signature = &payload[VERIFYING_KEY_LEN..VERIFYING_KEY_LEN + SIGNATURE_LEN];
+    if !Ed25519::verify_bytes(static_public, signature, &verifying) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "the {who} did not prove it holds the signing key for the static key it offered"
+            ),
+        ));
+    }
+    Ok(verifying)
+}
+
+/// A `noise` endpoint. The same value dials (as an initiator) and accepts (as a responder); dialling
+/// needs no listener, so a purely outgoing peer still binds one on an ephemeral port.
+pub struct NoiseNetlayer {
+    listener: TcpListener,
+    identity: NoiseIdentity,
+}
+
+impl NoiseNetlayer {
+    /// Bind a listening socket. `addr` is `host:port`; `127.0.0.1:0` asks the OS for a free port.
+    pub async fn bind(addr: &str, identity: NoiseIdentity) -> io::Result<NoiseNetlayer> {
+        Ok(NoiseNetlayer {
+            listener: TcpListener::bind(addr).await?,
+            identity,
+        })
+    }
+
+    /// The bound address, including the port chosen for `:0`.
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    /// The identity this endpoint presents.
+    pub fn identity(&self) -> &NoiseIdentity {
+        &self.identity
+    }
+}
+
+#[async_trait]
+impl Netlayer for NoiseNetlayer {
+    async fn new_outgoing_connection(&self, locator: &PeerLocator) -> io::Result<Box<dyn NetConn>> {
+        let host = locator.hints.get("host").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "noise needs a `host` hint")
+        })?;
+        let port: u16 = locator
+            .hints
+            .get("port")
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "noise needs a `port` hint")
+            })?
+            .parse()
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "noise `port` is not a number")
+            })?;
+        let stream =
+            tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host.as_str(), port)))
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("connecting to {host}:{port} took longer than {CONNECT_TIMEOUT:?}"),
+                    )
+                })??;
+        let peer = initiate(stream, &self.identity).await?;
+        Ok(Box::new(peer))
+    }
+
+    async fn accept_incoming_connection(&self) -> io::Result<Box<dyn NetConn>> {
+        let (stream, _peer) = self.listener.accept().await?;
+        let peer = respond(stream, &self.identity).await?;
+        Ok(Box::new(peer))
+    }
+}
+
+/// The initiator's half of the handshake: SYN, then read SYNACK, verify it, then ACK.
+async fn initiate(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result<NoiseConn> {
+    let mut handshake = NoiseHandshake::new(
+        noise_xx(),
+        true,   // initiator
+        vec![], // empty prologue
+        // `Sensitive` is the crate's own zeroing key wrapper; the static secret is put into it rather
+        // than kept beside it, so the working copy the handshake holds is zeroed on drop too.
+        Some(Sensitive::from_slice(&identity.static_secret)),
+        None, // ephemeral key generated for us
+        None, // the responder's static key is learned in the handshake
+        None, // no remote ephemeral
+    );
+
+    let mut syn = vec![0u8; SYN_LEN];
+    handshake
+        .write_message(&identity.payload(INITIATOR_PAYLOAD_LEN)?, &mut syn)
+        .map_err(|_| io::Error::other("writing the Noise SYN"))?;
+    stream.write_all(&syn).await?;
+    stream.flush().await?;
+
+    let mut synack = vec![0u8; SYNACK_LEN];
+    stream.read_exact(&mut synack).await?;
+    let mut payload = vec![0u8; RESPONDER_PAYLOAD_LEN];
+    handshake.read_message(&synack, &mut payload).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the Noise SYNACK did not verify",
+        )
+    })?;
+    let responder_static = handshake.get_rs().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the SYNACK carried no static key",
+        )
+    })?;
+    // The responder proves it holds the signing key for the static key it just offered.
+    let _responder_verifying = check_payload(&payload, &responder_static, "responder")?;
+
+    let mut ack = vec![0u8; ACK_LEN];
+    handshake
+        .write_message(&[], &mut ack)
+        .map_err(|_| io::Error::other("writing the Noise ACK"))?;
+    stream.write_all(&ack).await?;
+    stream.flush().await?;
+
+    let (send, recv) = handshake.get_ciphers();
+    Ok(NoiseConn { stream, send, recv })
+}
+
+/// The responder's half: read SYN, answer SYNACK, then read and verify the ACK.
+async fn respond(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result<NoiseConn> {
+    let mut syn = vec![0u8; SYN_LEN];
+    stream.read_exact(&mut syn).await?;
+
+    let mut handshake = NoiseHandshake::new(
+        noise_xx(),
+        false,  // responder
+        vec![], // empty prologue
+        // `Sensitive` is the crate's own zeroing key wrapper; the static secret is put into it rather
+        // than kept beside it, so the working copy the handshake holds is zeroed on drop too.
+        Some(Sensitive::from_slice(&identity.static_secret)),
+        None,
+        None,
+        None,
+    );
+
+    let mut initiator_payload = vec![0u8; INITIATOR_PAYLOAD_LEN];
+    handshake
+        .read_message(&syn, &mut initiator_payload)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the Noise SYN did not verify"))?;
+
+    let mut synack = vec![0u8; SYNACK_LEN];
+    handshake
+        .write_message(&identity.payload(RESPONDER_PAYLOAD_LEN)?, &mut synack)
+        .map_err(|_| io::Error::other("writing the Noise SYNACK"))?;
+    stream.write_all(&synack).await?;
+    stream.flush().await?;
+
+    let mut ack = vec![0u8; ACK_LEN];
+    stream.read_exact(&mut ack).await?;
+    handshake
+        .read_message(&ack, &mut [])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the Noise ACK did not verify"))?;
+
+    let initiator_static = handshake.get_rs().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "the ACK carried no static key")
+    })?;
+    // The initiator proves it holds the signing key for the static key it offered in the SYN.
+    let _initiator_verifying = check_payload(&initiator_payload, &initiator_static, "initiator")?;
+
+    let (recv, send) = handshake.get_ciphers();
+    Ok(NoiseConn { stream, send, recv })
+}
+
+/// One encrypted connection. Messages are chunked: a `u32` length, then that many cipher-message
+/// bytes, each chunk at most [`MAX_CHUNK_PLAINTEXT`] of plaintext.
+struct NoiseConn {
+    stream: TcpStream,
+    send: NoiseCipher,
+    recv: NoiseCipher,
+}
+
+impl NoiseConn {
+    /// Encrypt `message` into as many chunks as it needs, each a separate cipher message.
+    fn seal(&mut self, message: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(message.len() + TAG_LEN);
+        for chunk in message.chunks(MAX_CHUNK_PLAINTEXT) {
+            let mut buf = vec![0u8; chunk.len() + TAG_LEN];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            self.send.encrypt_in_place(&mut buf, chunk.len());
+            out.extend_from_slice(&buf);
+        }
+        out
+    }
+
+    /// Decrypt `ciphertext` — the whole body of one framed message — into its plaintext.
+    fn open(&mut self, mut ciphertext: Vec<u8>) -> io::Result<Vec<u8>> {
+        let mut plain = Vec::with_capacity(ciphertext.len());
+        // Chunks are `MAX_CHUNK_PLAINTEXT + TAG_LEN` bytes each, except the last.
+        while !ciphertext.is_empty() {
+            let take = ciphertext.len().min(MAX_CHUNK_PLAINTEXT + TAG_LEN);
+            let mut chunk: Vec<u8> = ciphertext.drain(..take).collect();
+            let chunk_len = chunk.len();
+            let written = self
+                .recv
+                .decrypt_in_place(&mut chunk, chunk_len)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a Noise transport message did not authenticate",
+                    )
+                })?;
+            plain.extend_from_slice(&chunk[..written]);
+        }
+        Ok(plain)
+    }
+}
+
+#[async_trait]
+impl NetConn for NoiseConn {
+    async fn send(&mut self, message: &[u8]) -> io::Result<()> {
+        let sealed = self.seal(message);
+        // The length is the *ciphertext's*, because that is what the peer must read before it can
+        // decrypt; a peer that lies about it is bounded by the check below rather than by a buffer.
+        let len = u32::try_from(sealed.len())
+            .map_err(|_| io::Error::other("a Noise message longer than 4 GiB is refused"))?;
+        self.stream.write_all(&len.to_be_bytes()).await?;
+        self.stream.write_all(&sealed).await?;
+        self.stream.flush().await
+    }
+
+    fn peer_address(&self) -> Option<SocketAddr> {
+        // **Reported, unlike `unix`**: this is TCP underneath, so the dial policy can judge the peer
+        // and Law 62's origin rule applies. See the module doc.
+        self.stream.peer_addr().ok()
+    }
+
+    async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let mut header = [0u8; 4];
+        match self.stream.read_exact(&mut header).await {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        let len = u32::from_be_bytes(header) as usize;
+        if len > MAX_MESSAGE_BYTES + TAG_LEN {
+            // Refused **before** buffering, the rule `framed` pins for netstrings.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a Noise netlayer message exceeds the transport's bound",
+            ));
+        }
+        let mut body = vec![0u8; len];
+        self.stream.read_exact(&mut body).await?;
+        Ok(Some(self.open(body)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn locator(addr: SocketAddr) -> PeerLocator {
+        PeerLocator {
+            designator: "peer".into(),
+            transport: "noise".into(),
+            hints: BTreeMap::from([
+                ("host".to_string(), addr.ip().to_string()),
+                ("port".to_string(), addr.port().to_string()),
+            ]),
+        }
+    }
+
+    async fn dialer() -> NoiseNetlayer {
+        NoiseNetlayer::bind(
+            "127.0.0.1:0",
+            NoiseIdentity::generate().expect("a fresh Noise identity"),
+        )
+        .await
+        .expect("bind the dialing side")
+    }
+
+    /// **A full handshake, then a message each way** — the transport's own two-sided test, with no
+    /// reference involved. What it proves is that the state machine and the framing agree with each
+    /// other; what it cannot prove is that they agree with Agoric's, which the interop harness does.
+    #[tokio::test]
+    async fn a_noise_session_handshakes_and_carries_messages_both_ways() {
+        let server = NoiseNetlayer::bind(
+            "127.0.0.1:0",
+            NoiseIdentity::generate().expect("a fresh Noise identity"),
+        )
+        .await
+        .expect("bind");
+        let addr = server.local_addr().expect("addr");
+
+        let inbound = tokio::spawn(async move {
+            let mut conn = server.accept_incoming_connection().await.expect("accept");
+            let message = conn.recv().await.expect("recv").expect("a message");
+            conn.send(b"pong").await.expect("send");
+            message
+        });
+
+        let mut client = dialer()
+            .await
+            .new_outgoing_connection(&locator(addr))
+            .await
+            .expect("dial");
+        client.send(b"ping").await.expect("send");
+        let reply = client.recv().await.expect("recv").expect("a reply");
+        assert_eq!(reply, b"pong");
+        assert_eq!(inbound.await.expect("join"), b"ping");
+    }
+
+    /// **A message larger than one cipher message is chunked and reassembled.** The Noise transport
+    /// caps a message at 65535 bytes; a CapTP message is not bounded by that, so this crosses the
+    /// chunk boundary in both directions.
+    #[tokio::test]
+    async fn a_message_larger_than_one_cipher_message_crosses_intact() {
+        let server = NoiseNetlayer::bind(
+            "127.0.0.1:0",
+            NoiseIdentity::generate().expect("a fresh Noise identity"),
+        )
+        .await
+        .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let big: Vec<u8> = (0..(MAX_CHUNK_PLAINTEXT * 2 + 777))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let expected = big.clone();
+
+        let inbound = tokio::spawn(async move {
+            let mut conn = server.accept_incoming_connection().await.expect("accept");
+            let received = conn.recv().await.expect("recv").expect("a message");
+            conn.send(&received).await.expect("echo");
+            received
+        });
+
+        let mut client = dialer()
+            .await
+            .new_outgoing_connection(&locator(addr))
+            .await
+            .expect("dial");
+        client.send(&big).await.expect("send");
+        let echoed = client.recv().await.expect("recv").expect("an echo");
+        assert_eq!(echoed, expected);
+        assert_eq!(inbound.await.expect("join"), expected);
+    }
+
+    /// **A peer that does not hold the signing key for the static key it offers is refused.** The
+    /// responder is shown a SYN whose payload names a verifying key that did not sign the static key
+    /// the handshake bound — the substitution the signature exists to stop.
+    #[tokio::test]
+    async fn a_static_key_without_its_signing_key_is_refused() {
+        let signer = NoiseIdentity::generate().expect("a fresh identity");
+        let other = NoiseIdentity::generate().expect("a fresh identity");
+        // A payload that names `signer`'s name but carries `other`'s signature over `other`'s key.
+        let mut payload = vec![0u8; INITIATOR_PAYLOAD_LEN];
+        payload[..VERIFYING_KEY_LEN].copy_from_slice(&signer.verifying_key());
+        let mis_signed = Ed25519::sign_bytes(&other.static_public(), &other.signing)
+            .expect("sign with a key this test holds");
+        payload[VERIFYING_KEY_LEN..VERIFYING_KEY_LEN + SIGNATURE_LEN].copy_from_slice(&mis_signed);
+
+        let err = check_payload(&payload, &signer.static_public(), "initiator")
+            .expect_err("a signature over the wrong key must not verify");
+        assert!(
+            err.to_string().contains("did not prove"),
+            "the refusal names what failed: {err}"
+        );
+    }
+}

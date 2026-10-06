@@ -25,3 +25,10 @@ tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", 
 # Fresh per-session Ed25519 seeds for the conformance peer. Already in `Cargo.lock`; the workspace
 # draws its OS-seeded randomness through the same `rand::rng()` (see `rchain-crypto`).
 rand = "0.10"
+# The `noise` netlayer. **`noise-protocol` is the crate Agoric's `rust/ocapn_noise` uses**, so the
+# handshake is produced by the same code rather than by a lookalike that has to be argued equivalent —
+# which is the whole basis on which this transport can be called interoperable at all.
+# `noise-rust-crypto` supplies the X25519 / ChaCha20Poly1305 / Blake2s the reference pins. Both are
+# Unlicense, which `deny.toml` already allows.
+noise-protocol = "0.2"
+noise-rust-crypto = { version = "0.6.2", features = ["x25519", "use-chacha20poly1305", "use-blake2"] }
