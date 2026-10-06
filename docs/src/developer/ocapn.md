@@ -151,14 +151,14 @@ Two behaviours to expect:
 | call an arm that takes plain values | yes — strings, numbers, booleans, byte arrays, lists |
 | call an arm that takes **a capability** | yes — pass a remote reference as an argument |
 | hold a returned capability and call it | yes |
-| pass an **amount** (`(brand, value)`) back to the node | **no** |
+| pass an **amount** (`(brand, value)`) back to the node | yes — a tuple crosses as OCapN's tagged value |
 
-The last row is the current edge. A tuple crosses to a peer as a **list**, and a list coming back does
-not match a contract's `(brand, value)` tuple pattern. So the ERTP arms that read or take no amount —
-`getCurrentAmount`, `makeEmptyPurse`, `getBrand` — are reachable, while the arms that *move* value —
-`mintPayment(amount)`, `withdraw(amount)`, `revFund(funder, amount)` — are not. A peer can make a
-purse and read it, but cannot yet put anything in it. See [ERTP](../node/ertp.md) for the ledger
-underneath and [`spec/AUDIT.md`](../../../spec/AUDIT.md) (C226) for the wire-shape decision it needs.
+The last row is the edge that has since been crossed. A tuple crosses to a peer as OCapN's **tagged**
+value — `<desc:tagged 'rho:tuple' [fields…]>` — because a Syrup record is labelled and a Rholang tuple
+has no label, and it comes back a **tuple**, so a contract's `(brand, value)` pattern matches. (A bare
+list would not; that was the reading this wire shape replaced — AUDIT C226, Law 59.) The arms that
+*move* value — `mintPayment(amount)`, `withdraw(amount)`, `revFund(funder, amount)` — are therefore
+reachable. See [ERTP](../node/ertp.md) for the ledger underneath.
 
 Also note:
 
@@ -230,20 +230,29 @@ node and coordinates a two-shard transaction, and the bridge's tests are above �
 in this section has not been run in this repository. It is the deployment these parts add up to, not a
 recipe anyone has followed.
 
-**Dialling out.** The node does dial, but only on a peer's word: the enlivener connects to a sturdyref's
-locator and the greeter to a handoff give's `exporter-location`, each over whatever netlayer the node
-holds (`ocapn/src/enliven.rs`, `ocapn/src/fixtures.rs`). A boundary wants two things beyond that: a
-session the **node** starts — notifying a peer that nothing has dialled in from — and per-transport
-dispatch, so a locator naming a transport other than its one netlayer resolves. Neither is built. And
-neither is free of the perimeter below: "dial an address of the peer's choosing" *is* the SSRF surface
+**Dialling out.** The node dials on a peer's word — the enlivener connects to a sturdyref's locator and
+the greeter to a handoff give's `exporter-location` — and, since issue #249, on its **own**: `POST
+/api/v1/ocapn/dial` on the admin server makes the node dial a peer a caller names and fetch the object
+at the swiss number it gives. Both uses are the *same code* (`Enlivener::dial_and_fetch`), because a
+dial the node starts and one a peer asked for differ in who asked, not in what a dial is.
+
+**Per-transport dispatch is built**: `ocapn/src/multi.rs`'s `MultiNetlayer` routes a dial by the
+locator's transport name, and the node hands it to its fixtures and its own dialer, so a peer dialled
+over unix and one dialled over TCP are reached by the layer each named.
+
+Neither is free of the perimeter below: "dial an address of the peer's choosing" *is* the SSRF surface
 the dial policy exists for, so a gateway that dials out is one that wants `ocapn-deny-local-dial` set
-and the origin rule holding — the same trade Law 62 names.
+and the origin rule holding — the same trade Law 62 names. **The node-started dial has no origin**, so
+Law 62's origin rule cannot apply to it: there is no peer asking. What guards it is the target policy
+(`ocapn-deny-local-dial`) plus the route's own `enable-ocapn-dial` gate, the loopback-by-default admin
+bind, and a rate limit — which is why that route is off by default.
 
 ## 7. Writing a transport
 
-The node speaks exactly one: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
-encryption, no authentication, which is why the listener is off unless you name an address. A second
-transport is small, because the seam is two functions (`ocapn/src/netlayer.rs`):
+The node speaks two: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
+encryption, no authentication, which is why the listener is off unless you name an address — and
+`unix`, a domain socket authenticated by its file mode (`0600`). A third is small, because the seam is
+two functions (`ocapn/src/netlayer.rs`):
 
 ```rust
 async fn new_outgoing_connection(&self, locator: &PeerLocator) -> io::Result<Box<dyn NetConn>>;
@@ -256,8 +265,8 @@ to know before writing one:
 
 - **The locator already names the transport.** It is `ocapn://<designator>.<transport>`, and designator
   plus transport *is* the spec's peer identity (`ocapn/src/locator.rs`) — so a new transport is a name
-  plus whatever hints it needs. What does not exist yet is per-transport dispatch: the node holds one
-  `Arc<dyn Netlayer>`.
+  plus whatever hints it needs. Dispatch is by that name: `ocapn/src/multi.rs` routes a dial to the
+  layer the locator names, and the node holds one `MultiNetlayer` over its transports.
 - **`recv` promises a bidirectional FIFO and nothing else.** Not liveness, not that the session stays
   up. CapTP above assumes it does, and `op:abort` has no analogue on a packet network — so decide what
   a session means when a packet is merely late before writing one.
@@ -273,15 +282,25 @@ Endo version vendored for the spike (`1.1.1`) has `tcp-test-only` and `websocket
 write is the one the peers you care about actually speak — and whatever it is, it is the two functions
 above with the channel underneath it, and nothing above the seam moves.
 
+**Noise is the one to write if any is, and it is not built.** It is the transport the OCapN project
+names for a real deployment, and the reason to stop at "not built" is **interop**: neither
+implementation this repository tests against speaks it (see the list above), so a layer written here
+would talk only to itself — and its parameters (the pattern, the prologue, and how the Noise static key
+relates to the Ed25519 session identity) would be guesses rather than a specification to check against.
+The gate that changes this is a reference that speaks Noise; until one is reachable, the layer would be
+un-verifiable, which is the one thing this repository does not ship. `ocapn/src/netlayer.rs` records the
+same decision where a reader of the code will find it.
+
 ### Unix domain sockets as the inner hop
 
-A Unix domain socket is the smallest transport that is not `testing-only`, and the security is the
-operating system's rather than ours: a UDS peer is a process whose uid and gid the socket's filesystem
-permissions admitted. That is authentication, where `tcp-testing-only` has none, with no key exchange
-to write. The netlayer is the same two functions — connect to a path, accept on a bound socket — plus
-`transport = "unix"` and a `path` hint. `NetConn::peer_address` returns `None` for it, which the dial
-policy already reads as "cannot be judged" and which is right here: a UDS peer is local by
-construction, and the permission on the socket is what admitted it.
+**Implemented** as `ocapn/src/unix.rs`, bound with `api-server.ocapn-listen-unix`. It is the smallest
+transport that is not `testing-only`, and the security is the operating system's rather than ours: a
+UDS peer is a process whose uid and gid the socket's filesystem permissions admitted. That is
+authentication, where `tcp-testing-only` has none, with no key exchange to write. The netlayer is the
+same two functions — connect to a path, accept on a bound socket — plus `transport = "unix"` and a
+`path` hint. `NetConn::peer_address` returns `None` for it, which the dial policy reads as "cannot be
+judged" and which is right here: a UDS peer is local by construction, and the permission on the socket
+is what admitted it.
 
 **And it is the right place to compose.** A gateway speaking UDS to a handful of local agents, each of
 which speaks something else outward, keeps the wide-area transport and its credentials out of the

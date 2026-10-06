@@ -19,18 +19,40 @@ The listener is **off unless `api-server.ocapn-listen` names an address**.
 
 | Config key | CLI flag | Meaning |
 |---|---|---|
-| `api-server.ocapn-listen` | `--ocapn-listen` | `host:port` to bind. Unset: no listener. |
+| `api-server.ocapn-listen` | `--ocapn-listen` | `host:port` to bind for `tcp-testing-only`. Unset: no TCP listener. |
+| `api-server.ocapn-listen-unix` | `--ocapn-listen-unix` | Socket path to bind for `unix`. Unset: no UDS listener. |
 | `api-server.ocapn-deny-local-dial` | — | Refuse to dial loopback and private addresses a peer names. Off by default. |
+| `api-server.enable-ocapn-dial` | — | Mount `POST /api/v1/ocapn/dial` on the admin server. Off by default. |
+
+The netlayers implemented are the OCapN project's `tcp-testing-only` — plain TCP, **no encryption and
+no authentication**, which the project's own README flags "HIGHLY INSECURE — DO NOT USE IN
+PRODUCTION" — and `unix`, a Unix domain socket whose authentication is the socket's file mode
+(`0600`). Either or both may be bound, on separate keys:
 
 ```hocon
 api-server {
-  ocapn-listen = "127.0.0.1:22045"
+  ocapn-listen = "127.0.0.1:22045"            # tcp-testing-only
+  ocapn-listen-unix = "/run/rnode/ocapn.sock" # unix
 }
 ```
 
-The only netlayer implemented is the OCapN project's `tcp-testing-only`: plain TCP, **no encryption
-and no authentication**. The project's own README flags it "HIGHLY INSECURE — DO NOT USE IN
-PRODUCTION".
+A node that binds **neither** has no transport at all: it does not listen, and the dial route answers
+**503** rather than dialing into "this node speaks nothing". **Noise is not implemented** — until a
+reference implementation speaks it, a Noise netlayer here would talk only to itself.
+
+**The node can also start a session of its own.** With `enable-ocapn-dial = true`, `POST
+/api/v1/ocapn/dial` on the admin server makes it dial a peer the request names and fetch the object at
+the swiss number it gives:
+
+```json
+{ "designator": "peer", "transport": "unix",
+  "hints": { "path": "/run/peer.sock" }, "swiss": "3c0f…" }
+```
+
+It is off by default and rate limited, and it is served on the admin listener — loopback unless
+`enable-devnet-admin-public` — because it makes the node act, on a caller's word, against a peer of
+that caller's choosing. **A dial the node starts carries no peer origin**, so Law 62's origin rule has
+nothing to judge; the guard is the target policy (`ocapn-deny-local-dial`) alone, plus that gate.
 
 **A peer that completes a handshake can do two things, and both are the node's own authority:**
 
@@ -93,10 +115,11 @@ port had to choose. They matter to anyone integrating a new peer.
   `<length>:<payload>`. Bare Syrup interoperates with nothing.
 - **The swiss number is a byte array to the suite and a string to Endo.** The two reference
   implementations disagree, so the bootstrap accepts either and keys its directory by bytes.
-- **A tuple crosses Syrup as a list.** A Syrup record is *labelled*, and a Rholang tuple has no label,
-  so `(true, 0)` arrives at a peer as `[true, 0]`. It does not convert back: a list from the peer does
-  not match a contract's `(brand, value)` tuple pattern, which is what keeps the ERTP arms that take an
-  amount out of reach over OCapN (see [ERTP](ertp.md)).
+- **A tuple crosses as OCapN's tagged value.** A Syrup record is *labelled* and a Rholang tuple has no
+  label, so `(true, 0)` crosses as `<desc:tagged 'rho:tuple' [true, 0]>` — the passable union's own
+  extension point — and comes back a tuple. A bare list would not do: a list from the peer does not
+  match a contract's `(brand, value)` pattern, which is what had kept the ERTP arms that take an amount
+  out of reach (see [ERTP](ertp.md); the wire-shape decision is AUDIT C226, Law 59).
 - **Struct members are ordered by their encoded key bytes**, not by the key string — the reference's
   own sort. The session signature covers a struct, so this is load-bearing.
 - The session Public Identifier is two SHA-256 rounds over the session public key; the Session ID is
@@ -110,7 +133,8 @@ port had to choose. They matter to anyone integrating a new peer.
 | `syrup.rs`, `netstring.rs` | the Syrup codec and the length-prefixed framing |
 | `locator.rs`, `peer.rs` | the URI and in-band locator forms |
 | `session.rs`, `session_id.rs` | `op:start-session`, Public Identifier, Session ID, `op:abort` |
-| `netlayer.rs`, `tcp_testing_only.rs` | the netlayer trait and the test transport |
+| `netlayer.rs`, `tcp_testing_only.rs`, `unix.rs` | the netlayer trait and the two transports |
+| `multi.rs` | the dialing dispatcher: a locator's transport name picks the layer |
 | `captp.rs`, `conn.rs` | the import/export and answer tables, `op:deliver`, `op:listen`, GC |
 | `bootstrap.rs`, `fixtures.rs` | the bootstrap object and the conformance fixtures |
 | `owner.rs`, `proxy.rs` | session ownership (a handle and the loop that owns the socket) and cross-session forwarding |
@@ -127,8 +151,10 @@ itself differently from a peer passes every local test and fails every handshake
 
 ## Limits
 
-- **`tcp-testing-only` is the only transport.** A production netlayer (Tor, libp2p, IBC) implements
-  the same two-function trait; nothing above it changes.
+- **The transports are `tcp-testing-only` and `unix`.** `tcp-testing-only` is the OCapN project's own
+  test transport, unauthenticated by design; `unix` authenticates by the socket's file mode. **Noise is
+  not built** (it would talk only to itself until a reference speaks it), and a production netlayer
+  (Tor, libp2p, IBC) implements the same two-function trait; nothing above it changes.
 - **A bridged call's reply is written to the permanent registry**, because a Rholang value returned to
   a peer has no source literal and must be registered to be reachable. Nothing deletes those entries.
 - **The node cannot yet name the peer on chain.** Until a session is bound to a deployer key, binding

@@ -95,7 +95,7 @@ use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
-use crate::api::ocapn::{serve_ocapn, ChainCapability};
+use crate::api::ocapn::{serve_ocapn, ChainCapability, OcapnDialSlot, OcapnListeners};
 use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
@@ -462,8 +462,14 @@ pub struct NodeProgram {
     enable_txn_api: bool,
     enable_devnet_cors: bool,
     enable_devnet_admin_public: bool,
-    /// `host:port` to bind the OCapN listener on, or `None` (issue #249).
-    ocapn_listen: Option<String>,
+    /// The transports to bind the OCapN listener on — `tcp-testing-only` and/or `unix`, or neither
+    /// for a dial-only node (issue #249).
+    ocapn_listeners: OcapnListeners,
+    /// Where the listener publishes the [`OcapnDialSlot`]'s dialer, and the admin server reads it to
+    /// serve a node-started dial (issue #249).
+    ocapn_dial: OcapnDialSlot,
+    /// Whether the node-started dial route is mounted (`api-server.enable-ocapn-dial`).
+    enable_ocapn_dial: bool,
     /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4).
     ocapn_deny_local_dial: bool,
     /// The name this node advertises in every session (C224 item 2).
@@ -507,7 +513,9 @@ impl NodeProgram {
             enable_txn_api,
             enable_devnet_cors,
             enable_devnet_admin_public,
-            ocapn_listen,
+            ocapn_listeners,
+            ocapn_dial,
+            enable_ocapn_dial,
             ocapn_deny_local_dial,
             ocapn_designator,
             log,
@@ -577,6 +585,9 @@ impl NodeProgram {
         let mut admin = tokio::spawn({
             let host = host.clone();
             let stop = stop.clone();
+            // The listener publishes the dialer through this slot; the admin route reads it. Cloned
+            // here so the listener task below can still take the slot by value.
+            let ocapn_dial = ocapn_dial.clone();
             async move {
                 // The admin HTTP server hosts the **unauthenticated** `/api/propose`, which triggers
                 // block production. It used to bind `api-server.host` — `0.0.0.0` — unconditionally,
@@ -598,6 +609,8 @@ impl NodeProgram {
                     enable_devnet_cors,
                     gateway,
                     enable_txn_api,
+                    ocapn_dial,
+                    enable_ocapn_dial,
                     max_connection_idle,
                     stop,
                 )
@@ -608,10 +621,11 @@ impl NodeProgram {
         // The OCapN listener (issue #249). Spawned even when it is not configured — see
         // `serve_ocapn` — so its select arm and drain slot are unconditional.
         let mut ocapn = tokio::spawn(serve_ocapn(
-            ocapn_listen,
+            ocapn_listeners,
             ocapn_chain,
             ocapn_designator,
             ocapn_deny_local_dial,
+            ocapn_dial,
             log.clone(),
             stop.clone(),
         ));
@@ -1267,45 +1281,52 @@ pub async fn setup_node_program(
     // **This node's OCapN designator**, derived *here* because this is the last place the deployer key
     // is in hand — it moves into the API below (C224 item 2).
     let ocapn_designator = crate::api::ocapn::node_designator(faucet_deployer_key.as_ref(), id);
-    // The OCapN bridge (issue #249): a delivery to a chain-backed capability becomes a signed
-    // deploy. Built only when there is a listener to serve it and a key to sign with — today the
-    // node's own dev deployer key, because binding a CapTP session to a caller's identity is the
-    // work `docs/src/node/ocapn.md` lists as future.
-    let ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)> = match (
-        conf.api_server.ocapn_listen.as_ref(),
-        faucet_deployer_key.as_ref(),
-    ) {
-        (Some(_), Some(key)) => {
-            // **One limiter for the node's whole OCapN surface**, shared by every capability and
-            // every session: each bridged delivery is a signed deploy paid for out of the node's own
-            // REV, so the bound has to be on the node, not per capability — two capabilities with a
-            // limiter each are a bound of twice the number (HAZOP row A3).
-            let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
-                crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
-            ));
-            vec![
-                (
-                    crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
-                    Arc::new(ChainCapability::rev_vault_balance(
-                        routing.clone(),
-                        key.clone(),
-                        primary_id.to_string(),
-                        limiter.clone(),
-                    )) as Arc<dyn Export>,
-                ),
-                (
-                    crate::api::ocapn::ERTP_SWISS.to_vec(),
-                    Arc::new(crate::api::ocapn::ertp_capability(
-                        routing.clone(),
-                        key.clone(),
-                        primary_id.to_string(),
-                        limiter,
-                    )),
-                ),
-            ]
-        }
-        _ => Vec::new(),
+    // **The listeners, resolved once** (issue #249): the tcp address and the unix path, either or
+    // both, or neither for a dial-only node.
+    let ocapn_listeners = OcapnListeners {
+        tcp: conf.api_server.ocapn_listen.clone(),
+        unix: conf.api_server.ocapn_listen_unix.clone(),
     };
+    // Where the listener publishes the dialer it builds once its transports are bound; the admin
+    // route reads it to start a dial of the node's own (issue #249).
+    let ocapn_dial: OcapnDialSlot = Arc::new(std::sync::OnceLock::new());
+    // The OCapN bridge (issue #249): a delivery to a chain-backed capability becomes a signed deploy.
+    // Built only when the node both listens and has a key to sign with — today the node's own dev
+    // deployer key, because binding a CapTP session to a caller's identity is the work
+    // `docs/src/node/ocapn.md` lists as future.
+    let ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)> =
+        match (ocapn_listeners.any(), faucet_deployer_key.as_ref()) {
+            (true, Some(key)) => {
+                // **One limiter for the node's whole OCapN surface**, shared by every capability and
+                // every session: each bridged delivery is a signed deploy paid for out of the node's own
+                // REV, so the bound has to be on the node, not per capability — two capabilities with a
+                // limiter each are a bound of twice the number (HAZOP row A3).
+                let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
+                    crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
+                ));
+                vec![
+                    (
+                        crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
+                        Arc::new(ChainCapability::rev_vault_balance(
+                            routing.clone(),
+                            key.clone(),
+                            primary_id.to_string(),
+                            limiter.clone(),
+                        )) as Arc<dyn Export>,
+                    ),
+                    (
+                        crate::api::ocapn::ERTP_SWISS.to_vec(),
+                        Arc::new(crate::api::ocapn::ertp_capability(
+                            routing.clone(),
+                            key.clone(),
+                            primary_id.to_string(),
+                            limiter,
+                        )),
+                    ),
+                ]
+            }
+            _ => Vec::new(),
+        };
     let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
         routing.clone(),
         primary_parts.transaction_api.clone(),
@@ -1365,7 +1386,9 @@ pub async fn setup_node_program(
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
-        ocapn_listen: conf.api_server.ocapn_listen.clone(),
+        ocapn_listeners,
+        ocapn_dial,
+        enable_ocapn_dial: conf.api_server.enable_ocapn_dial,
         ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,
         ocapn_designator,
         log: log.clone(),
