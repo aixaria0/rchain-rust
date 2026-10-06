@@ -7,35 +7,25 @@
 //! [`crate::session`]'s handshake and stage 1's `op:deliver` will be exercised over. A deployment
 //! uses a different netlayer through the same [`Netlayer`] trait; nothing above this module changes.
 //!
-//! Framing is by the Syrup grammar itself: messages are values written back to back, and a reader
-//! takes one complete value at a time ([`crate::syrup::Value::decode_prefix`]). Two bounds make an
-//! adversarial peer's stream harmless — the codec's nesting depth, and a message-size cap here, so
-//! a peer that opens a value and never closes it cannot grow our memory.
+//! Framing is one netstring per message, shared with the `unix` transport in [`crate::framed`] — the
+//! two differ only in the socket underneath, and a framing written twice is a framing that can drift.
+//! Two bounds make an adversarial peer's stream harmless: the codec's nesting depth (`crate::syrup`)
+//! and the message-size cap the framing applies, so a peer that opens a value and never closes it
+//! cannot grow our memory.
 
 use std::io;
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::framed::Framed;
 use crate::locator::PeerLocator;
 use crate::netlayer::{NetConn, Netlayer};
-use crate::netstring;
 
-/// A single message larger than this is refused rather than buffered. The node's other ingress
-/// paths keep the same kind of bound; a netlayer that buffers without one is a remote DoS.
-const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
-const READ_CHUNK: usize = 8 * 1024;
-
-/// How long a dial may take before it is abandoned.
-///
-/// **The peer chooses the address.** A sturdyref's locator and a handoff give's `exporter-location`
-/// both arrive over the wire (`enliven.rs`, `fixtures.rs`), so `TcpStream::connect` here is a
-/// connection attempt to wherever a stranger said — a port probe into the node's network position,
-/// and without a bound one that hangs holds a session's loop open for the kernel's own (~130 s) or
-/// for ever. Bounded, it is still a probe; the bound is what keeps it from also being a stall.
-pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// The dial bound lives with the framing both transports share; re-exported here because this is
+/// where the TCP transport's reader has always found it.
+pub use crate::framed::CONNECT_TIMEOUT;
 
 /// A `tcp-testing-only` endpoint. The same value dials (as a client) and accepts (as a server);
 /// dialling needs no listener, so a purely outgoing peer still binds one on an ephemeral port.
@@ -93,79 +83,37 @@ impl Netlayer for TcpTestingOnly {
                     )
                 })??;
         Ok(Box::new(TcpConn {
-            stream,
-            buf: Vec::new(),
+            framed: Framed::new(stream),
         }))
     }
 
     async fn accept_incoming_connection(&self) -> io::Result<Box<dyn NetConn>> {
         let (stream, _peer) = self.listener.accept().await?;
         Ok(Box::new(TcpConn {
-            stream,
-            buf: Vec::new(),
+            framed: Framed::new(stream),
         }))
     }
 }
 
-/// A dialled TCP connection, plus the bytes read but not yet consumed by a completed message.
+/// A dialled TCP connection: the netstring framing both transports share, over a socket.
 struct TcpConn {
-    stream: TcpStream,
-    buf: Vec<u8>,
-}
-
-impl TcpConn {
-    /// Read until `buf` holds one complete netstring and return its payload (one Syrup message).
-    /// `Ok(None)` at a clean end of stream; `UnexpectedEof` if the stream ends inside a message.
-    async fn next_message(&mut self) -> io::Result<Option<Vec<u8>>> {
-        loop {
-            match netstring::decode_prefix(&self.buf) {
-                Ok(Some((payload, used))) => {
-                    self.buf.drain(..used);
-                    return Ok(Some(payload));
-                }
-                // Not enough bytes yet; read more.
-                Ok(None) => {}
-                Err(other) => return Err(io::Error::new(io::ErrorKind::InvalidData, other)),
-            }
-            if self.buf.len() > MAX_MESSAGE_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "netstring message exceeds the netlayer's bound",
-                ));
-            }
-            let mut chunk = [0u8; READ_CHUNK];
-            let n = self.stream.read(&mut chunk).await?;
-            if n == 0 {
-                return if self.buf.is_empty() {
-                    Ok(None)
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "stream ended inside a netstring message",
-                    ))
-                };
-            }
-            self.buf.extend_from_slice(&chunk[..n]);
-        }
-    }
+    framed: Framed<TcpStream>,
 }
 
 #[async_trait]
 impl NetConn for TcpConn {
     async fn send(&mut self, message: &[u8]) -> io::Result<()> {
-        // The boundary is a netstring, matching `CapTPSocket.send_message`.
-        self.stream.write_all(&netstring::encode(message)).await?;
-        self.stream.flush().await
+        self.framed.send_message(message).await
     }
 
     fn peer_address(&self) -> Option<std::net::SocketAddr> {
         // A TCP socket always knows; this is what lets the dial policy tell a remote peer from a
-        // local one (Law 62).
-        self.stream.peer_addr().ok()
+        // local one (Law 62). A transport whose socket does not know leaves this at the default.
+        self.framed.get_ref().peer_addr().ok()
     }
 
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-        self.next_message().await
+        self.framed.next_message().await
     }
 }
 
@@ -173,6 +121,10 @@ impl NetConn for TcpConn {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    // The framing moved to `crate::framed`; a test that writes raw bytes to the socket still needs
+    // the extension traits in scope.
+    use tokio::io::AsyncWriteExt;
 
     use crate::syrup::Value;
 
