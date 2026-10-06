@@ -1,7 +1,6 @@
 # The public testnet — `testnet.rhobot.net`
 
-A small public RChain testnet running this codebase, used by the Rholang playground and the quantum-os
-room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
+A small public RChain testnet running this codebase, used by the [r-wallet]([url](https://rchain-community.github.io/r-wallet)) and the [quantum-os]([url](https://github.com/rchain-community/quantum-os/blob/main/README.md)) room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
 second — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
 
 The **generalised** procedure — standing up a testnet of your own, from the stake split to a rebuild —
