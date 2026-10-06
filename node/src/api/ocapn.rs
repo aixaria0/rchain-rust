@@ -38,7 +38,6 @@ use rchain_casper::shard_invoke::{
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::rholang::RhoType::RhoString;
-use rchain_rholang::pretty_printer::PrettyPrinter;
 use rchain_ocapn::captp::{
     EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
     IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
@@ -50,6 +49,7 @@ use rchain_ocapn::netlayer::Netlayer;
 use rchain_ocapn::par_value;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
+use rchain_rholang::pretty_printer::PrettyPrinter;
 use rchain_shared::base16;
 use tokio::sync::watch;
 
@@ -363,11 +363,12 @@ fn value_to_term(
         binders.push((index, location, pattern));
         return Ok(format!("arg{index}"));
     }
-    let parts = |xs: &[Value], counter: &mut usize, binders: &mut _| -> Result<Vec<String>, String> {
-        xs.iter()
-            .map(|x| value_to_term(x, session, pp, counter, binders))
-            .collect()
-    };
+    let parts =
+        |xs: &[Value], counter: &mut usize, binders: &mut _| -> Result<Vec<String>, String> {
+            xs.iter()
+                .map(|x| value_to_term(x, session, pp, counter, binders))
+                .collect()
+        };
     match value {
         Value::List(xs) => Ok(format!("[{}]", parts(xs, counter, binders)?.join(", "))),
         Value::Struct(entries) => {

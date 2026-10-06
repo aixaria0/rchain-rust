@@ -483,7 +483,6 @@ fn a_captp_peer_sends_an_amount_and_the_contract_reads_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// Call `method` on `capability` and read the reply, which must be **one** descriptor.
 ///
 /// One object is one descriptor, not a one-element list: `E(obj).makeEmptyPurse()` should hand the

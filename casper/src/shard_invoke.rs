@@ -114,10 +114,7 @@ pub enum Arg {
     /// replaced by the binder name `binders` binds; the indices are the caller's and must not collide
     /// with `Named`'s (which uses the argument's own position in the call). A value containing no
     /// capability is `Value`, so this variant is the only one that needs a rendered string.
-    Nested {
-        rendered: String,
-        binders: Binders,
-    },
+    Nested { rendered: String, binders: Binders },
 }
 
 impl Arg {

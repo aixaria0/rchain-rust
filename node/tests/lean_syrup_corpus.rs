@@ -61,7 +61,10 @@ async fn the_bridge_shape_is_the_lean_models_and_the_tuple_round_trips() {
     let path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../spec/conformance/syrup.tsv");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("read {}: {e}\n(run tools/emit-lean-corpus.sh)", path.display())
+        panic!(
+            "read {}: {e}\n(run tools/emit-lean-corpus.sh)",
+            path.display()
+        )
     });
 
     let mut cases = 0usize;
@@ -71,10 +74,19 @@ async fn the_bridge_shape_is_the_lean_models_and_the_tuple_round_trips() {
         }
         let mut columns = line.split('\t');
         let layer = columns.next().unwrap_or_default();
-        assert_eq!(layer, "syrup", "corpus line {}: unexpected layer {layer:?}", i + 1);
+        assert_eq!(
+            layer,
+            "syrup",
+            "corpus line {}: unexpected layer {layer:?}",
+            i + 1
+        );
         let source = columns.next().expect("the value column");
         let expected = columns.next().expect("the shape column");
-        assert!(columns.next().is_none(), "corpus line {}: trailing columns", i + 1);
+        assert!(
+            columns.next().is_none(),
+            "corpus line {}: trailing columns",
+            i + 1
+        );
 
         // The value as a datum, and a control datum that proves the term ran.
         let term = format!("@\"out\"!({source}) | @\"ctl\"!(\"ran\")");
@@ -83,7 +95,11 @@ async fn the_bridge_shape_is_the_lean_models_and_the_tuple_round_trips() {
             .evaluate_with_env(&term, &Default::default(), &fixed_rand())
             .await
             .expect("evaluate returns Ok");
-        assert!(res.succeeded(), "{source}: the term failed to run: {:?}", res.errors);
+        assert!(
+            res.succeeded(),
+            "{source}: the term failed to run: {:?}",
+            res.errors
+        );
         let ctl = rt.get_data_par(&chan("ctl")).await.expect("read ctl");
         assert_eq!(
             ctl.len(),
@@ -111,8 +127,9 @@ async fn the_bridge_shape_is_the_lean_models_and_the_tuple_round_trips() {
         );
 
         // The bridge's own round trip: decode what it encoded, encode again.
-        let back = value_to_par(&value)
-            .unwrap_or_else(|e| panic!("{source}: the bridge will not read back what it wrote: {e}"));
+        let back = value_to_par(&value).unwrap_or_else(|e| {
+            panic!("{source}: the bridge will not read back what it wrote: {e}")
+        });
         let again = par_to_value(&back)
             .unwrap_or_else(|e| panic!("{source}: the decoded par does not re-encode: {e}"));
         assert_eq!(

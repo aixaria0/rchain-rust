@@ -451,9 +451,6 @@ mod tests {
     fn a_uri_leaves_as_a_symbol_and_comes_back() {
         let uri = ground(Expr::GUri("rho:id:abc".into()));
         assert_eq!(par_to_value(&uri), Ok(Value::Symbol("rho:id:abc".into())));
-        assert_eq!(
-            value_to_par(&Value::Symbol("rho:id:abc".into())),
-            Ok(uri)
-        );
+        assert_eq!(value_to_par(&Value::Symbol("rho:id:abc".into())), Ok(uri));
     }
 }
