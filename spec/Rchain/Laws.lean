@@ -2817,7 +2817,7 @@ def laws : List Law := [
       validator that has stopped producing messages stops being required to have seen the cut",
     status := .provedModel,
     declarations := [`Rchain.supermajorities_overlap, `Rchain.bonds4, `Rchain.bondsAB, `Rchain.bondsCD,
-      `Rchain.suppOf, `Rchain.Participation, `Rchain.Delivery, `Rchain.StalenessBound],
+      `Rchain.suppOf, `Rchain.Participation, `Rchain.StalenessBound],
     axioms := [],
     rust := ["block-storage/src/dag/liveness.rs", "block-storage/src/dag/finalizer.rs",
       "casper/src/blocks/proposer/proposer.rs"],
@@ -3441,6 +3441,64 @@ def laws : List Law := [
       `RevVault.rho:196-200` spells the two arms as two `contract`s on one name, which is what the \
       port's one-continuation-per-channel store cannot express; the dispatch is where that difference \
       is paid." },
+  { number := 61, clause := "a", layer := "Progress",
+    statement := "**A delivery in flight does not stall the loop.** With an answer outstanding, the \
+      session's loop can still read the next delivery — so an unrelated delivery on the same session \
+      is served while an object waits on something outside the session.",
+    status := .provedModel,
+    declarations := [`Rchain.LoopState, `Rchain.Step, `Rchain.BlockingStep,
+      `Rchain.a_pending_answer_does_not_block_the_next_delivery],
+    axioms := [],
+    rust := ["ocapn/src/conn.rs", "ocapn/src/owner.rs", "ocapn/src/bootstrap.rs"],
+    rustWitness := [
+      "ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session"],
+    witness := [`Rchain.a_pending_answer_does_not_block_the_next_delivery],
+    falsifiable := some "**the defect's shape is a second relation, and the pair is the claim.** \
+      `BlockingStep` is what polling inside the delivery did — an answer outstanding means the loop \
+      stays exactly where it is — and `the_blocking_rule_never_shortens_the_queue` states that under \
+      it **no** step shortens the queue while an answer is outstanding: the loop spins, and the \
+      delivery behind it is unreachable. That is the stall, and it is false of `Step`, where \
+      `Step.defer` reads the delivery and takes the answer on. On the port \
+      `ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session` sends a signed \
+      handoff claim for a gift nobody will ever deposit and then, on the **same** socket, a fetch: the \
+      fetch must be fulfilled within seconds, where the old shape could not read it until the \
+      ten-second deposit wait ended.",
+    note := "**The statement is about the loop, because that is where the stall was.** `handle_deliver` \
+      is awaited on the task that owns the socket, so an object that awaits something outside the \
+      session does not merely delay its own answer — it stops the session reading anything. The fix \
+      is `Reply::Deferred`: the object hands the loop a future, the loop writes the answer when it \
+      lands, and the *connection stays single-owner*, which is the invariant the whole module is \
+      built on. **What the model does not claim:** deliveries are abstract tokens, so it says when the \
+      loop reads and nothing about what a delivery says, and the queue is a `List` where the port's is \
+      a socket. **What the deferral costs:** the answer position of a deferred delivery is recorded \
+      with no object, so a delivery *pipelined* onto it breaks rather than resolving — the honest \
+      answer while the answer itself is unknown, and re-recording it later would be the silent \
+      re-point C223 already refuses." },
+  { number := 61, clause := "b", layer := "Progress",
+    statement := "**And the outstanding answer is still written** — deferring is not dropping. The loop \
+      reaches a state with nothing pending.",
+    status := .provedModel,
+    declarations := [`Rchain.Reach, `Rchain.a_deferred_answer_is_still_written, `Rchain.Step],
+    axioms := [],
+    rust := ["ocapn/src/owner.rs", "ocapn/src/conn.rs", "ocapn/src/bootstrap.rs"],
+    rustWitness := [
+      "ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session"],
+    witness := [`Rchain.a_deferred_answer_is_still_written],
+    falsifiable := some "**the clause a deferral most easily gets wrong**, and the reason it is stated \
+      separately: 'the loop reads on' is trivially satisfiable by never answering at all. The proof \
+      exhibits the run — serve, then fulfil — so a relation that only had the reading step would not \
+      satisfy it. On the port the same shape is the conformance suite's \
+      `test_valid_handoff_wait_deposit_gift`, which withdraws *before* the deposit and requires the \
+      gift anyway: the deferred path is exercised by \
+      `spec/audit/evidence/ocapn-conformance/run-11.txt` (24/24), and a deferral that dropped the \
+      answer would fail it.",
+    note := "**Two clauses rather than one, because they fail independently.** 61a says the loop is not \
+      blocked; 61b says the work is not lost. A change that answered nothing would satisfy the first \
+      and fail the second, which is why the row exists — and why the port's fix had to write the \
+      answer *from the loop* (a spawned waiter would have had to reach the socket, which is the \
+      single-owner invariant). **What the model does not claim:** that the answer is written in \
+      bounded time — `DEPOSIT_WAIT` bounds the wait and the `Deferred` queue is bounded \
+      (`MAX_DEFERRED_ANSWERS`), but neither bound is in this model." },
 ]
 
 

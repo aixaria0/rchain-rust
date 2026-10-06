@@ -17,6 +17,7 @@ import Rchain.Protocol
 import Rchain.Json
 import Rchain.Syrup
 import Rchain.Install
+import Rchain.Session
 import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Concurrent

@@ -123,7 +123,7 @@ recorded in the Scala-deviation register, [`spec/audit/passes.md`](spec/audit/pa
 ## The target, and how work is tracked
 
 **The oracle is done.** `spec/laws.tsv` reads **0 `owed`, 0 `open`** across
-<!-- counts:entries -->79 entries<!-- counts:end --> — <!-- counts:proved-model-entries -->50<!-- counts:end --> `proved-model`, <!-- counts:proved-tied-entries -->23<!-- counts:end -->
+<!-- counts:entries -->81 entries<!-- counts:end --> — <!-- counts:proved-model-entries -->52<!-- counts:end --> `proved-model`, <!-- counts:proved-tied-entries -->23<!-- counts:end -->
 `proved-tied`, <!-- counts:axioms -->10 axioms<!-- counts:end --> (9 crypto by design, 1 named) — so the
 mathematical programme the prime directive sets is finished. Adding a law, or re-opening a proof, is a
 deliberate act rather than the default next step.

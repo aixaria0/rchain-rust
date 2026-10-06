@@ -619,3 +619,175 @@ async fn is_abort_within(session: &mut Session, within: Duration) -> bool {
             if matches!(fields.first(), Some(Value::Symbol(label)) if label == "op:abort")
     )
 }
+
+/// **A claim that waits does not stall its session** (Law 61, AUDIT C223).
+///
+/// The withdraw arm used to poll for a deposit **inside** `handle_deliver`, which is awaited on the
+/// session's loop task: nothing else on that socket was read for up to `DEPOSIT_WAIT` — ten seconds —
+/// so a peer that claimed a gift before the gifter deposited it froze its *own* connection. The arm
+/// now returns `Reply::Deferred` and the loop writes the answer when the waiter lands, so the session
+/// keeps serving.
+///
+/// **The assertion is the latency of the unrelated delivery**, not the claim's outcome. The claim is
+/// one nobody will ever deposit; what is measured is the fetch sent behind it on the same socket,
+/// which the server reads next. Under the old shape that read could not happen until the wait ended.
+#[tokio::test]
+async fn a_claim_that_waits_does_not_stall_its_session() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    // A bootstrap that can be *claimed* of: a gift store, its own session slot, and one object at a
+    // swiss number so there is something unrelated to fetch.
+    let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
+    let slot = rchain_ocapn::owner::session_slot();
+    let registry = Arc::new(SessionRegistry::default());
+    let directory = BTreeMap::from([(b"swiss".to_vec(), Arc::new(Pong) as Arc<dyn Export>)]);
+    let bootstrap = Arc::new(Bootstrap::with_handoffs(
+        directory,
+        handoffs,
+        slot.clone(),
+        registry.clone(),
+    ));
+
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([81u8; 32], locator(port)).unwrap();
+        let (handle, loop_, context, _peer) =
+            accept_and_book(conn, &identity, bootstrap, &registry)
+                .await
+                .expect("the session is booked");
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        let _ = handle;
+        let _ = loop_.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([82u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    let session_id = client
+        .id
+        .as_ref()
+        .expect("the session id is known once the peer has spoken")
+        .to_vec();
+
+    // The claim: a signed handoff receive for a gift nobody will deposit. It verifies — the receiver
+    // key is the one the receive is signed with — so it reaches the *wait*, which is the point.
+    let give = rchain_ocapn::handoff::HandoffGive {
+        receiver_key: rchain_ocapn::session::public_key_syrup(
+            &rchain_crypto::signatures::ed25519::Ed25519::to_public_bytes(&[83u8; 32]).unwrap(),
+        ),
+        exporter_location: locator(port),
+        session: session_id.clone(),
+        gifter_side: vec![2u8; 32],
+        gift_id: b"never-deposited".to_vec(),
+    };
+    let envelope = rchain_ocapn::handoff::Envelope::sign(give.to_syrup(), &[84u8; 32]).unwrap();
+    let receive = rchain_ocapn::handoff::HandoffReceive {
+        receiving_session: session_id,
+        receiving_side: vec![4u8; 32],
+        handoff_count: 0,
+        signed_give: envelope,
+    };
+    let claim = rchain_ocapn::handoff::Envelope::sign(receive.to_syrup(), &[83u8; 32]).unwrap();
+
+    // The claim asks for its answer at **import 1**, which the fetch does not use — so the two
+    // fulfillments this test reads are distinguishable by the descriptor they are addressed to.
+    client
+        .send_message(
+            &Deliver {
+                to: Desc::Export(0u64.into()),
+                args: vec![Value::Symbol("withdraw-gift".to_string()), claim.to_syrup()],
+                answer_pos: None,
+                resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+            }
+            .to_syrup(),
+        )
+        .await
+        .expect("send the claim");
+
+    // The unrelated delivery, sent immediately behind it on the same session.
+    let started = std::time::Instant::now();
+    client
+        .send_message(
+            &Deliver {
+                to: Desc::Export(0u64.into()),
+                args: vec![
+                    Value::Symbol("fetch".to_string()),
+                    Value::Bytes(b"swiss".to_vec()),
+                ],
+                answer_pos: None,
+                resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+            }
+            .to_syrup(),
+        )
+        .await
+        .expect("send the fetch");
+
+    let reply = tokio::time::timeout(Duration::from_secs(3), client.recv_message())
+        .await
+        .expect("the fetch must be answered while the claim waits — under the old shape this read                  could not happen until the ten-second deposit wait ended")
+        .expect("a message")
+        .expect("a session");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    assert_eq!(
+        delivered.args.first(),
+        Some(&Value::Symbol("fulfill".into())),
+        "the fetch behind a waiting claim is fulfilled: {delivered:?}"
+    );
+    assert_eq!(
+        delivered.to,
+        Desc::Export(0u64.into()),
+        "and it is the *fetch's* answer, not the claim's: {delivered:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the fetch took {:?}, so the claim stalled the session",
+        started.elapsed()
+    );
+
+    // **And the deferred answer is still written** (61b) — deferring is not dropping. Depositing the
+    // gift now resolves the waiter the claim left behind, and the loop writes the answer it took on.
+    client
+        .send_message(
+            &Deliver {
+                to: Desc::Export(0u64.into()),
+                args: vec![
+                    Value::Symbol("deposit-gift".to_string()),
+                    Value::Bytes(b"never-deposited".to_vec()),
+                    Desc::Export(0u64.into()).to_syrup(),
+                ],
+                answer_pos: None,
+                resolve_me_desc: None,
+            }
+            .to_syrup(),
+        )
+        .await
+        .expect("send the deposit");
+
+    let reply = tokio::time::timeout(Duration::from_secs(3), client.recv_message())
+        .await
+        .expect("the deferred answer must be written once the gift lands")
+        .expect("a message")
+        .expect("a session");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    assert_eq!(
+        delivered.args.first(),
+        Some(&Value::Symbol("fulfill".into())),
+        "the claim's own answer, written from the loop: {delivered:?}"
+    );
+    assert_eq!(
+        delivered.to,
+        Desc::Export(1u64.into()),
+        "addressed to the claim's resolve-me, which is import 1: {delivered:?}"
+    );
+
+    drop(client);
+    far_end.abort();
+}
