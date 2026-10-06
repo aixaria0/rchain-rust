@@ -1,11 +1,11 @@
 # The public testnet — `testnet.rhobot.net`
 
-A small public RChain testnet running this codebase, used by the [r-wallet]([url](https://rchain-community.github.io/r-wallet)) and the [quantum-os]([url](https://github.com/rchain-community/quantum-os/blob/main/README.md)) room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
+A small public RChain testnet running this codebase, used by the [r-wallet](https://rchain-community.github.io/r-wallet) and the [quantum-os](https://github.com/rchain-community/quantum-os/blob/main/README.md) room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
 second — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
 
 The **generalised** procedure — standing up a testnet of your own, from the stake split to a rebuild —
 is [Running a public testnet](running-a-public-testnet.md). This page is the concrete instance: the live
-hosts, the genesis, the wallets, and the incident record.
+hosts, the genesis, the wallets.
 
 > **Status: four bonded validators at 250 each, and the chain finalises — re-measured 2026-10-04**
 > (evidence in [Status](#status)). A brand-new key can be funded, deploy, be trusted
