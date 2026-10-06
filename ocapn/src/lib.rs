@@ -30,6 +30,7 @@ pub mod fixtures;
 pub mod framed;
 pub mod handoff;
 pub mod locator;
+pub mod multi;
 pub mod netlayer;
 pub mod netstring;
 pub mod owner;
