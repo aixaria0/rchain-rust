@@ -16,7 +16,7 @@ hosts, the genesis, the wallets, and the incident record.
 > `getActiveValidators`, `/health`, and `rnode deploy` all work — a CLI deploy needs a **funded** key, or
 > it is accepted and mined and then reports `processedWithError` for phlo. The chain is deliberately
 > **idle** (no `--autopropose`): blocks appear when a deploy arrives. A continuously-producing chain
-> cannot be restarted on a 1 GB host — that is [K7](#known-issues), the most important operational
+> cannot be restarted on a 1 GB host — that is the most important operational
 > constraint here. Not production, holds no value, and its chain can be reset at any time.
 
 ---
@@ -187,7 +187,7 @@ lag the chain by up to a minute — read `/api/last-finalized-block` for the cur
   block** before the API opens at all (a 1142-block chain: ~285 MB, ~3.5 minutes), while *producing*
   blocks is nearly free. Budget ≥2 GB for ~1k blocks, ≥4 GB to be comfortable — see
 
-[K7](#known-issues) (the upstream issue, #60, was closed as not planned).
+Restart cost is proportional to the length of the chain, not to activity — that is the constraint to
 - No SLA, no backups of chain state beyond the genesis files.
 
 ---
@@ -197,7 +197,7 @@ lag the chain by up to a minute — read `/api/last-finalized-block` for the cur
 ## Related pages
 
 Where this page and the generalised ones overlap, prefer those: this one is the record for **this** net —
-our hosts, keys, genesis, health checks and incident log (–K7).
+our hosts, keys, genesis and health checks.
 
 | page | what lives there |
 |---|---|
@@ -513,7 +513,7 @@ the reasoning, is upstream):
 
 - the **trusting key must hold REV**, because it pays for the `trust` deploy's phlo from its own vault. A
   genesis-trusted key that is not in `wallets.txt` cannot deploy at all — which is why **dave** is the
-  trusted key on this net (see K6);
+  trusted key on this net (`--pos-multi-sig-public-keys`);
 - the **newcomer must hold REV ≥ stake**, because the bond is deducted from its vault.
 
 Funding either one is an ordinary transfer. There is **no `pos` method to read a vault balance**: the
