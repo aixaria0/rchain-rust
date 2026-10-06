@@ -154,7 +154,7 @@ address whose key you care about.
 | Reads of chain state (`getBonds`, `getActiveValidators`) | ✅ works |
 | `GET /api/status` | ✅ works |
 | `/health` monitoring snapshot | ✅ works |
-| **Deploys — browser, room agents, `rnode deploy` CLI** | ✅ works (the CLI needed `--valid-after-block-number` before the 2026-09-21 binary — K1) |
+| **Deploys — browser, room agents, `rnode deploy` CLI** | ✅ works (the CLI needed `--valid-after-block-number` before the 2026-09-21 binary) |
 | Transfers, including funding a brand-new key | ✅ verified: a fresh key's balance went `0` → `100000000000`, and it could then deploy |
 | **Becoming a validator** | ✅ verified end to end on the 2026-09-22 chain: `trust` → `(true)`, `bond` → `(true)`, bond pool 2 → 3, active set 3. The procedure is in [Onboarding an observer into the validator pool](#onboarding-an-observer-into-the-validator-pool) |
 
