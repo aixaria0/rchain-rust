@@ -23,6 +23,12 @@
 //! doing any cryptography — so the prefix is not decoration, it is the frame, and it is also what lets
 //! an intermediary route a handshake it must not be able to read.
 //!
+//! **Interoperability here is a measured fact, not an argument.** `spec/audit/evidence/ocapn-noise/`
+//! drives Agoric's own core, fetched at a pinned commit, against this module: the reference accepts
+//! our SYN and our ACK and messages decrypt in both directions. What that run does **not** cover — the
+//! record framing, for which the reference ships no counterpart — is written into the transcript
+//! rather than left for a reader to assume from a green result.
+//!
 //! **Framing is this module's own, and it chunks.** A Noise transport message carries at most 65535
 //! bytes, well under the CapTP messages this codebase produces, so a message longer than one cipher
 //! message is split and each chunk is encrypted separately — the cipher state's nonce advances per
