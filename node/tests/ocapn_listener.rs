@@ -311,12 +311,19 @@ fn a_captp_peer_holds_an_ertp_issuer_and_calls_it() {
         // 4. **The purse answers.** `getCurrentAmount` is data, so it comes back as a value — and it
         //    is the answer of a *live ERTP purse* on chain, reached through a reference this peer was
         //    handed over CapTP and never knew the name of.
+        // It is a *value* reply, so it arrives in its Syrup form: the Rholang pair `(true, 0)` as the
+        // **tagged record** a tuple crosses as — `<desc:tagged 'rho:tuple' [true, 0]>` (AUDIT C226;
+        // the law is `Rchain.syrup_decode_encode`). This is what makes the pair come back a pair:
+        // sent as a bare list it would arrive at a contract's `@(brand, value)` pattern as an `EList`
+        // and match nothing, which is why a peer could hold a purse and not fund it.
         let reply = call_value(&mut client, &purse, "getCurrentAmount", &[]).await;
-        // It is a *value* reply, so it arrives in its Syrup form: the Rholang pair `(true, 0)` as a
-        // Syrup **list** — a tuple is a list on the wire, because a Syrup record is labelled and a
-        // tuple has no label (see `ocapn::par_value`; Endo refused the first encoding outright).
-        let Value::List(fields) = &reply else {
-            panic!("a purse answers `(true, amount)`, got {reply:?}");
+        let Value::Record(parts) = &reply else {
+            panic!("a purse answers the tagged tuple, got {reply:?}");
+        };
+        assert_eq!(parts[0], Value::Symbol("desc:tagged".into()), "{reply:?}");
+        assert_eq!(parts[1], Value::Symbol("rho:tuple".into()), "{reply:?}");
+        let Value::List(fields) = &parts[2] else {
+            panic!("the tuple's fields are a list, got {reply:?}");
         };
         assert_eq!(fields.len(), 2, "a purse answers a pair: {reply:?}");
         assert_eq!(
@@ -397,6 +404,77 @@ fn a_captp_peer_passes_a_capability_back_as_an_argument() {
         assert_ne!(
             amount, brand,
             "the amount is a new object holding the brand, not the brand itself"
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **An amount a peer builds itself** (AUDIT C226's observable).
+///
+/// The gap this closes: a peer could pass a capability as an argument (the test above), but not a
+/// capability *inside* a value — an ERTP amount is `(brand, value)`, and the brand is a capability
+/// it holds. `amountMath.getValue` matches its argument against `@(brand, value)`, so the pair has to
+/// arrive as a **tuple** with the brand **named**: sent as a bare list it would arrive an `EList`
+/// and match nothing, and with the brand as data it could not be the same brand the contract knows.
+///
+/// Before the fix the delivery broke with "a capability nested inside a value cannot be named yet".
+#[test]
+fn a_captp_peer_sends_an_amount_and_the_contract_reads_it() {
+    let dir = common::temp_dir("ocapn-ertp-amount");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
+    conf.dev_mode = true;
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    conf.propose_on_deploy = true;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+        wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
+
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let connection = dialer
+            .new_outgoing_connection(&locator(ports[5]))
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(locator(0)).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the handshake");
+
+        let ertp = fetch(&mut client, ERTP_SWISS).await;
+        let kit = call_many(&mut client, &ertp, "makeIssuerKit", &[]).await;
+        let (brand, issuer) = (kit[0].clone(), kit[2].clone());
+        let amount_math = call(&mut client, &issuer, "getAmountMath", &[]).await;
+
+        // **The amount, as the peer builds it**: the tagged tuple a Rholang pair crosses as, whose
+        // first field is the brand *reference* the peer holds.
+        let amount = Value::Record(vec![
+            Value::Symbol("desc:tagged".into()),
+            Value::Symbol("rho:tuple".into()),
+            Value::List(vec![brand.to_syrup(), Value::Int(10.into())]),
+        ]);
+        let reply = call_value(&mut client, &amount_math, "getValue", &[amount]).await;
+
+        // `(true, 10)`: the contract read the brand out of the tuple, found it *its own* (`if (aBrand
+        // == brand)`), and answered the value. A brand that had crossed as data could not have been
+        // the same name, and one inside a bare list would not have reached the pattern.
+        let Value::Record(parts) = &reply else {
+            panic!("getValue answers a tagged tuple, got {reply:?}");
+        };
+        let Value::List(fields) = &parts[2] else {
+            panic!("the tuple's fields are a list, got {reply:?}");
+        };
+        assert_eq!(
+            fields,
+            &vec![Value::Bool(true), Value::Int(10.into())],
+            "the contract must read the amount the peer built: {reply:?}"
         );
 
         drop(client);

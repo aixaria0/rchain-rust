@@ -26,8 +26,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
+use crate::captp::Deliver;
 use crate::captp::Desc;
-use crate::conn::{ConnectionError, Export, Session};
+use crate::conn::{Act, ConnectionError, Export, Session};
 use crate::locator::PeerLocator;
 use crate::netlayer::NetConn;
 use crate::session_id::{crossed_hello, CrossedHello, Octets32};
@@ -61,6 +62,9 @@ pub struct SessionHandle {
     pub peer_key: Option<Vec<u8>>,
     /// True when we dialed this session, false when we accepted it.
     pub dialed: bool,
+    /// **Where the peer is**, when the transport knows (Law 62, AUDIT C225). A dial this peer asks
+    /// for is judged against it: a remote peer may not make this node reach the node's own loopback.
+    pub peer_address: Option<std::net::SocketAddr>,
 }
 
 /// How long a sender waits for room in a session's hand-off queue before giving up.
@@ -102,6 +106,12 @@ pub struct SessionLoop {
     session: Session,
     rx: mpsc::Receiver<HandOff>,
     abort: mpsc::Receiver<()>,
+    /// **Answers that landed after the delivery that owed them** (Law 61). An object that cannot
+    /// answer without waiting returns `Reply::Deferred` and a waiter sends the resolved act here, so
+    /// the *loop* writes it and the session goes on serving meanwhile. AUDIT C223's stall was the
+    /// alternative: the wait happened inside `handle_deliver`, and an unrelated delivery on the same
+    /// session waited with it.
+    deferred: mpsc::Receiver<(Deliver, Result<Act, String>)>,
 }
 
 impl SessionLoop {
@@ -112,36 +122,73 @@ impl SessionLoop {
 
     /// Run until the peer aborts, the socket closes, or the crossed-hello rule kills this session.
     pub async fn run(mut self) -> Result<(), ConnectionError> {
+        /// What one turn of the loop was woken by.
+        enum Next {
+            Abort,
+            HandOff(Option<HandOff>),
+            Answer(Option<(Deliver, Result<Act, String>)>),
+            Message(Result<Option<Value>, ConnectionError>),
+            NoHandles,
+        }
         // Every handle can go away — the node's accepted sessions have none at all — and the session
         // still serves deliveries. `select!`'s `if` disables the branch instead of polling a channel
         // that is closed, which would spin.
         let mut handles_live = true;
         loop {
-            let hand_off = tokio::select! {
+            // **The futures are built before the `select!`**, because `select!`'s bodies run while
+            // the losing futures are still alive: `recv_message` holds a mutable borrow of the session
+            // for the whole select, so the branch that writes a deferred answer could not otherwise
+            // touch it. Pinning them here drops those borrows before the body runs.
+            // The whole select lives in its own block: the pinned futures borrow the session, so they
+            // must be dropped before the bodies below touch it again.
+            let next = {
+                let message = self.session.recv_message();
+                let answer = self.deferred.recv();
+                tokio::pin!(message, answer);
+                tokio::select! {
                 // The rule's word first: a session marked as the loser must not keep serving.
-                _ = self.abort.recv() => {
+                    _ = self.abort.recv() => Next::Abort,
+                    out = self.rx.recv(), if handles_live => match out {
+                        Some(hand_off) => Next::HandOff(Some(hand_off)),
+                        None => Next::NoHandles,
+                    },
+                    landed = &mut answer => Next::Answer(landed),
+                    read = &mut message => Next::Message(read),
+                }
+            };
+            match next {
+                Next::Abort => {
                     self.session.abort_with("Crossed hellos mitigated").await;
                     return Ok(());
                 }
-                out = self.rx.recv(), if handles_live => match out {
-                    Some(hand_off) => Some(hand_off),
-                    None => {
-                        handles_live = false;
-                        continue;
-                    }
-                },
-                message = self.session.recv_message() => {
-                    let Some(message) = message? else { return Ok(()) };
+                Next::NoHandles => handles_live = false,
+                Next::HandOff(Some(hand_off)) => {
+                    self.session
+                        .hand_off(hand_off.to, hand_off.args, hand_off.resolve_me)
+                        .await?;
+                }
+                Next::HandOff(None) => {}
+                Next::Answer(Some((deliver, Ok(act)))) => {
+                    // The answer the object could not give yet. Writing it here rather than on the
+                    // waiter's task is what keeps the connection single-owner.
+                    let _ = self.session.answer(&deliver, act).await?;
+                }
+                Next::Answer(Some((deliver, Err(reason)))) => {
+                    self.session.break_answer(&deliver, reason).await?;
+                }
+                // Unreachable while the loop owns the session: the session's own sender keeps the
+                // channel open, so a closed receiver would mean the session was dropped.
+                Next::Answer(None) => {
+                    return Err(ConnectionError::Protocol(
+                        "the deferred-answer channel closed under the loop".to_string(),
+                    ))
+                }
+                Next::Message(read) => {
+                    let Some(message) = read? else { return Ok(()) };
                     if self.session.handle_message(message).await? == crate::conn::Flow::Stop {
                         return Ok(());
                     }
-                    continue;
                 }
-            };
-            if let Some(hand_off) = hand_off {
-                self.session
-                    .hand_off(hand_off.to, hand_off.args, hand_off.resolve_me)
-                    .await?;
             }
         }
     }
@@ -153,9 +200,14 @@ impl SessionLoop {
 /// The context carries the session **secret**, which is why it is produced here rather than by the
 /// caller: a handoff receive is signed with it, and only something that owns a session should be able
 /// to sign as it.
-pub(crate) fn split(session: Session) -> (SessionHandle, SessionLoop, SessionContext) {
+pub(crate) fn split(mut session: Session) -> (SessionHandle, SessionLoop, SessionContext) {
     let (tx, rx) = mpsc::channel(HANDOFF_DEPTH);
     let (abort_tx, abort_rx) = mpsc::channel(1);
+    // Taken from the session here because the loop must own it: only the loop writes to the
+    // connection, and a deferred answer is an answer (Law 61).
+    let deferred = session
+        .take_deferred()
+        .expect("a session's deferred-answer receiver is taken exactly once, by `split`");
     let (own_pi, peer_pi) = session.public_identifiers();
     let handle = SessionHandle {
         tx,
@@ -165,6 +217,7 @@ pub(crate) fn split(session: Session) -> (SessionHandle, SessionLoop, SessionCon
         peer_pi: peer_pi.cloned(),
         peer_key: session.peer_key().map(<[u8]>::to_vec),
         dialed: session.is_dialed(),
+        peer_address: session.peer_address(),
     };
     let context = SessionContext {
         handle: handle.clone(),
@@ -176,6 +229,7 @@ pub(crate) fn split(session: Session) -> (SessionHandle, SessionLoop, SessionCon
             session,
             rx,
             abort: abort_rx,
+            deferred,
         },
         context,
     )
@@ -453,6 +507,19 @@ pub struct SessionContext {
 /// so it is always set by the time it is read. `None` means exactly that: the session does not exist
 /// yet, and a delivery could not have arrived.
 pub type SessionSlot = Arc<Mutex<Option<SessionContext>>>;
+
+/// **Where the peer on this session is**, when the transport knows (Law 62, AUDIT C225).
+///
+/// A dial a peer asks for is judged against this: a remote peer may not make this node reach the
+/// node's own loopback. `None` when the slot is empty or the transport cannot say — the policy treats
+/// both as "cannot be judged" and dials as it did before.
+pub fn session_origin(session: &SessionSlot) -> Option<std::net::SocketAddr> {
+    session
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .and_then(|context| context.handle.peer_address)
+}
 
 /// A slot, empty until its session exists.
 pub fn session_slot() -> SessionSlot {

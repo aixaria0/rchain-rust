@@ -58,7 +58,34 @@ pub enum Reply {
     Object(Arc<dyn Export>),
     /// Several new objects; the reply is a list of their descriptors, in order.
     Objects(Vec<Arc<dyn Export>>),
+    /// **An answer this object is not ready to give** (Law 61, AUDIT C223).
+    ///
+    /// Some objects cannot produce their answer without waiting on something outside the session — a
+    /// handoff claim whose gift has not been deposited yet is the one this port has. Waiting *inside*
+    /// `handle_deliver` stalls the whole session: the loop cannot read the next message, so an
+    /// unrelated delivery on the same session goes unanswered for as long as the wait lasts. So the
+    /// object hands the loop a future instead and the session goes on serving; the loop writes this
+    /// delivery's answer when the future lands.
+    ///
+    /// The observable is the *stall*, not the timeout: with a claim waiting, an unrelated delivery on
+    /// the same session is answered promptly.
+    Deferred(DeferredAct),
 }
+
+/// What writing an answer did.
+pub(crate) enum AnswerOutcome {
+    /// The answer was written, and it names this export position when it was an object (so the answer
+    /// position can be pointed at it).
+    Answered(Option<u64>),
+    /// The export table was full, so the delivery was broken instead — and nothing may be recorded for
+    /// its answer position, because there is no answer.
+    Broke,
+}
+
+/// A future that produces the act an answer owes, boxed so `Reply` stays a plain enum and `dyn` so an
+/// object can build it without naming its own type.
+pub type DeferredAct =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Act, String>> + Send>>;
 
 /// What a promise does when `op:listen` arrives.
 pub enum ListenOutcome {
@@ -305,6 +332,13 @@ pub struct Session {
     /// Our `op:start-session`, written but not yet sent: a deferred accept reads the peer's first and
     /// holds ours back until the session is booked in the registry (see [`Session::announce`]).
     pending_start: Option<Value>,
+    /// Answers that landed after the delivery that owed them (Law 61). A spawned waiter sends the
+    /// resolved act here and the **loop** writes it, so nothing outside the loop touches the
+    /// connection.
+    deferred: tokio::sync::mpsc::Sender<(Deliver, Result<Act, String>)>,
+    /// The receiving half of the above, taken once by [`crate::owner::split`] and owned by the loop
+    /// from then on. `None` after the take; the session never reads it itself.
+    deferred_rx: Option<tokio::sync::mpsc::Receiver<(Deliver, Result<Act, String>)>>,
 }
 
 impl Session {
@@ -380,6 +414,12 @@ impl Session {
         let mut session = Session::new(conn, identity, Some(peer), bootstrap, false);
         session.pending_start = Some(ours.to_syrup()?);
         Ok(session)
+    }
+
+    /// **Where the peer is**, when the transport knows (Law 62, AUDIT C225). A dial this peer asks for
+    /// is judged against it: a remote peer may not make this node reach its own loopback.
+    pub fn peer_address(&self) -> Option<std::net::SocketAddr> {
+        self.conn.peer_address()
     }
 
     /// Write the held-back `op:start-session`, completing a [`Session::accept_deferred`] handshake.
@@ -479,6 +519,12 @@ impl Session {
         // Position 0 is the bootstrap, by definition — and it is never refused, because the cap is
         // far above one entry.
         let _ = exports.try_insert(0, bootstrap);
+        // **Bounded**, like every queue on a path a peer can drive: a peer that keeps claiming gifts
+        // that never arrive must not be able to grow this without limit. A full queue is not an error
+        // for the waiter — see `Reply::Deferred`: the answer simply never lands, and the claim waits
+        // out its own deadline, which is the behaviour it had before.
+        let (deferred_tx, deferred_rx) =
+            tokio::sync::mpsc::channel(crate::capacity::MAX_DEFERRED_ANSWERS);
         let mut session = Session {
             conn,
             peer: None,
@@ -494,6 +540,8 @@ impl Session {
             peer_key: None,
             dialed,
             pending_start: None,
+            deferred: deferred_tx,
+            deferred_rx: Some(deferred_rx),
         };
         if let Some(peer) = peer {
             // A construction-time peer is one whose start-session was already read (`accept`), so a
@@ -708,62 +756,38 @@ impl Session {
             }
         };
 
-        for outgoing in act.out {
-            self.send_outgoing(outgoing).await?;
+        // **An answer the object could not produce yet keeps the loop free** (Law 61, AUDIT C223).
+        // The out-messages go now — they are what the object wanted to say whatever the answer turns
+        // out to be — and the answer itself is written by the loop when the waiter lands. The wait
+        // used to happen *inside* `deliver_in` above, which is what stalled the session: `handle_deliver`
+        // is awaited on the loop task, so nothing else on this session was read while a claim waited
+        // out its ten seconds.
+        if let Reply::Deferred(fut) = act.reply {
+            for outgoing in act.out {
+                self.send_outgoing(outgoing).await?;
+            }
+            // Checked now — an abort must be the first thing the peer sees — and recorded with **no**
+            // object yet: a pipelined delivery to this position breaks rather than resolving, which is
+            // the honest answer while the answer itself is unknown. Re-recording it when the waiter
+            // lands would be the silent re-point AUDIT C223 refuses.
+            self.check_answer(&deliver).await?;
+            self.record_answer(&deliver, None);
+            let tx = self.deferred_sender();
+            let deliver = deliver.clone();
+            tokio::spawn(async move {
+                let act = fut.await;
+                // A full queue loses the answer rather than the session (see
+                // `MAX_DEFERRED_ANSWERS`): the claim times out exactly as it did before the deferral.
+                let _ = tx.send((deliver, act)).await;
+            });
+            return Ok(());
         }
 
         // What we owe the peer, and what a later pipelined delivery to this answer must reach.
-        let (reply, answer_target) = match act.reply {
-            Reply::Nothing => (None, None),
-            Reply::Value(v) => (Some(v), None),
-            // **A full export table breaks this delivery rather than dropping the object.** The
-            // alternative — exporting nothing and answering as though it had — would hand the peer a
-            // descriptor for a position that does not exist, which is the C18 class: it fails
-            // silently instead of loudly. The answer is a `break` naming the bound (AUDIT C223).
-            Reply::Object(o) => match self.insert_export(o) {
-                Ok(pos) => (Some(Desc::ImportObject(pos.into()).to_syrup()), Some(pos)),
-                Err(reason) => {
-                    break_delivery(&mut self.conn, &deliver, reason).await?;
-                    return Ok(());
-                }
-            },
-            Reply::Objects(os) => {
-                let mut parts = Vec::with_capacity(os.len());
-                for o in os {
-                    match self.insert_export(o) {
-                        Ok(pos) => parts.push(Desc::ImportObject(pos.into()).to_syrup()),
-                        Err(reason) => {
-                            break_delivery(&mut self.conn, &deliver, reason).await?;
-                            return Ok(());
-                        }
-                    }
-                }
-                (Some(Value::List(parts)), None)
-            }
-        };
-        if let Some(n) = &deliver.answer_pos {
-            let pos = position(n)?;
-            // **A position the peer already used is refused, not re-pointed** (AUDIT C223). An answer
-            // position is the sender's own promise slot: the peer hands out `desc:answer N` to third
-            // parties, so silently re-pointing N at a different delivery breaks a reference the peer
-            // (or someone it told) may still hold. Before this check, `try_insert` replaced the
-            // mapping and nothing said so.
-            if self.answers.contains_key(&pos) {
-                let reason = format!("answer position {pos} was already used on this session");
-                send_abort(&mut self.conn, &reason).await;
-                return Err(ConnectionError::Protocol(reason));
-            }
-            // A *full* table is not an error: the peer chose the position, and one it cannot have is
-            // one a later delivery cannot pipeline onto — which the existing `Resolution::Missing`
-            // path already reports as "no such export or answer".
-            let _ = self.answers.try_insert(pos, answer_target);
-        }
-        if let Some(value) = reply {
-            self.fulfil(
-                deliver.resolve_me_desc.as_ref(),
-                vec![Value::Symbol("fulfill".to_string()), value],
-            )
-            .await?;
+        self.check_answer(&deliver).await?;
+        match self.answer(&deliver, act).await? {
+            AnswerOutcome::Answered(target) => self.record_answer(&deliver, target),
+            AnswerOutcome::Broke => {}
         }
         Ok(())
     }
@@ -838,6 +862,134 @@ impl Session {
             self.send_deliver(Desc::Export(p.clone()), args).await?;
         }
         Ok(())
+    }
+
+    /// **Write the answer a delivery is owed** — what its `resolve-me-desc` receives, and what a later
+    /// pipelined delivery to its answer position reaches. Returns the export position the answer named
+    /// if it was an object, so the caller can point the answer position at it.
+    ///
+    /// Split out of [`Session::handle_deliver`] so a **deferred** answer (Law 61, AUDIT C223) is
+    /// written by the same code as an immediate one rather than by a second implementation that could
+    /// drift. The answer position is *not* booked here: the immediate path books it with the position
+    /// this returns, and the deferred path booked it when it deferred (with no object yet).
+    pub(crate) async fn answer(
+        &mut self,
+        deliver: &Deliver,
+        act: Act,
+    ) -> Result<AnswerOutcome, ConnectionError> {
+        for outgoing in act.out {
+            self.send_outgoing(outgoing).await?;
+        }
+        let (reply, answer_target) = match act.reply {
+            Reply::Nothing => (None, None),
+            Reply::Value(v) => (Some(v), None),
+            // **A full export table breaks this delivery rather than dropping the object.** The
+            // alternative — exporting nothing and answering as though it had — would hand the peer a
+            // descriptor for a position that does not exist, which is the C18 class: it fails
+            // silently instead of loudly. The answer is a `break` naming the bound (AUDIT C223).
+            Reply::Object(o) => match self.insert_export(o) {
+                Ok(pos) => (Some(Desc::ImportObject(pos.into()).to_syrup()), Some(pos)),
+                Err(reason) => {
+                    break_delivery(&mut self.conn, deliver, reason).await?;
+                    return Ok(AnswerOutcome::Broke);
+                }
+            },
+            Reply::Objects(os) => {
+                let mut parts = Vec::with_capacity(os.len());
+                for o in os {
+                    match self.insert_export(o) {
+                        Ok(pos) => parts.push(Desc::ImportObject(pos.into()).to_syrup()),
+                        Err(reason) => {
+                            break_delivery(&mut self.conn, deliver, reason).await?;
+                            return Ok(AnswerOutcome::Broke);
+                        }
+                    }
+                }
+                (Some(Value::List(parts)), None)
+            }
+            // An answer cannot defer an answer: the deferral exists so the *loop* is free, and a
+            // deferred answer that deferred again would leave nothing to write.
+            Reply::Deferred(_) => {
+                return Err(ConnectionError::Protocol(
+                    "a deferred answer cannot itself be deferred".to_string(),
+                ))
+            }
+        };
+        if let Some(value) = reply {
+            self.fulfil(
+                deliver.resolve_me_desc.as_ref(),
+                vec![Value::Symbol("fulfill".to_string()), value],
+            )
+            .await?;
+        }
+        Ok(AnswerOutcome::Answered(answer_target))
+    }
+
+    /// **Refuse a re-used answer position before anything is written for this delivery.**
+    ///
+    /// An answer position is the sender's own promise slot: the peer hands out `desc:answer N` to
+    /// third parties, so silently re-pointing N at a different delivery breaks a reference the peer
+    /// (or someone it told) may still hold. Before this check, `try_insert` replaced the mapping and
+    /// nothing said so.
+    ///
+    /// Checked *before* the answer is written rather than after: an abort must be the first thing the
+    /// peer sees for the offending delivery, not something that arrives behind a `fulfill` it will
+    /// act on.
+    pub(crate) async fn check_answer(&mut self, deliver: &Deliver) -> Result<(), ConnectionError> {
+        let Some(n) = &deliver.answer_pos else {
+            return Ok(());
+        };
+        let pos = position(n)?;
+        if self.answers.contains_key(&pos) {
+            let reason = format!("answer position {pos} was already used on this session");
+            send_abort(&mut self.conn, &reason).await;
+            return Err(ConnectionError::Protocol(reason));
+        }
+        Ok(())
+    }
+
+    /// Record what a delivery's answer position resolved to, so a later pipelined delivery reaches it.
+    ///
+    /// A **full** table is not an error: the peer chose the position, and one it cannot have is one a
+    /// later delivery cannot pipeline onto — which the `Resolution::Missing` path reports as
+    /// "no such export or answer".
+    pub(crate) fn record_answer(&mut self, deliver: &Deliver, target: Option<u64>) {
+        let Some(n) = &deliver.answer_pos else {
+            return;
+        };
+        let Ok(pos) = position(n) else {
+            return;
+        };
+        let _ = self.answers.try_insert(pos, target);
+    }
+
+    /// Tell the peer a **deferred** answer broke. The same `[<break> <reason>]` an immediate refusal
+    /// sends, written by the loop when the waiter fails rather than by the object that started it.
+    pub(crate) async fn break_answer(
+        &mut self,
+        deliver: &Deliver,
+        reason: String,
+    ) -> Result<(), ConnectionError> {
+        self.fulfil(
+            deliver.resolve_me_desc.as_ref(),
+            vec![Value::Symbol("break".to_string()), Value::String(reason)],
+        )
+        .await
+    }
+
+    /// Take the receiving half of the deferred-answer channel. [`crate::owner::split`] calls this
+    /// once; the session never reads it, because only the loop writes to the connection.
+    pub(crate) fn take_deferred(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<(Deliver, Result<Act, String>)>> {
+        self.deferred_rx.take()
+    }
+
+    /// Hand a resolved deferred answer to the loop.
+    pub(crate) fn deferred_sender(
+        &self,
+    ) -> tokio::sync::mpsc::Sender<(Deliver, Result<Act, String>)> {
+        self.deferred.clone()
     }
 
     /// Give an object a position in the export table, or refuse because the table is full.

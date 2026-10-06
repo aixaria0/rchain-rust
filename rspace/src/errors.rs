@@ -19,6 +19,17 @@ pub enum RSpaceError {
     HistoryCommitFailed,
     /// `install` was attempted outside of startup.
     InstallNotAllowed,
+    /// A **different** continuation was installed on a channel that already carries one.
+    ///
+    /// `installed_continuations` is keyed by the channel and holds one `WaitingContinuation`, so a
+    /// second install used to replace the first **silently** — which is how a minted vault handle's
+    /// `balance` arm came to have never existed while its `transfer` arm worked (AUDIT C219, and its
+    /// law is `Rchain`'s Law 60: an install that cannot take effect is refused rather than dropped).
+    /// A contract that serves several methods installs **one** continuation at
+    /// `arity: 1, remainder: true` and dispatches on the method inside it, as `rev_vault` and `ertp`
+    /// do; an idempotent re-install of the same consume stays a no-op (`locked_install` skips it
+    /// before reaching here).
+    InstallConflict(&'static str),
     /// A cached key was unexpectedly missing.
     CachedKeyMissing,
     /// A radix action key had an empty prefix.
@@ -51,6 +62,12 @@ impl fmt::Display for RSpaceError {
             }
             RSpaceError::HistoryCommitFailed => write!(f, "history commit failed"),
             RSpaceError::InstallNotAllowed => write!(f, "installing can be done only on startup"),
+            RSpaceError::InstallConflict(what) => {
+                write!(
+                    f,
+                    "a channel already carries a different installed continuation: {what}"
+                )
+            }
             RSpaceError::CachedKeyMissing => write!(f, "cached key must be present"),
             RSpaceError::EmptyPrefix => write!(f, "prefix must be non-empty"),
             RSpaceError::ReplayDataNotEmpty => write!(f, "replay data must be empty at checkpoint"),
@@ -76,7 +93,7 @@ mod tests {
     /// that dropped its detail would leave a reader with "decode  failed" and no idea which decoder.
     #[test]
     fn every_variant_renders_and_the_carrying_variants_keep_their_detail() {
-        let cases: [(RSpaceError, &str); 10] = [
+        let cases: [(RSpaceError, &str); 11] = [
             (RSpaceError::LockPoisoned, "lock poisoned"),
             (RSpaceError::Codec("rnd"), "decode rnd failed"),
             (
@@ -87,6 +104,11 @@ mod tests {
             (
                 RSpaceError::InstallNotAllowed,
                 "installing can be done only on startup",
+            ),
+            (
+                RSpaceError::InstallConflict("install one continuation at arity 1"),
+                "a channel already carries a different installed continuation: install one \
+                 continuation at arity 1",
             ),
             (RSpaceError::CachedKeyMissing, "cached key must be present"),
             (RSpaceError::EmptyPrefix, "prefix must be non-empty"),

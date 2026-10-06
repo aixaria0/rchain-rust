@@ -158,6 +158,12 @@ impl NetConn for TcpConn {
         self.stream.flush().await
     }
 
+    fn peer_address(&self) -> Option<std::net::SocketAddr> {
+        // A TCP socket always knows; this is what lets the dial policy tell a remote peer from a
+        // local one (Law 62).
+        self.stream.peer_addr().ok()
+    }
+
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
         self.next_message().await
     }

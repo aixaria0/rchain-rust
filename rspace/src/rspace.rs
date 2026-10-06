@@ -464,6 +464,10 @@ where
                     peeks: BTreeSet::new(),
                     source: consume_ref,
                 };
+                // **The store first**: an install that would replace a different continuation on the
+                // channel is refused there (Law 60), and recording it in `installs` before that would
+                // leave this space claiming a continuation the store never took.
+                store.install_continuation(channels, wc).await?;
                 crate::lock::wlock(&self.installs).insert(
                     channels.to_vec(),
                     Install {
@@ -471,7 +475,6 @@ where
                         continuation: continuation.clone(),
                     },
                 );
-                store.install_continuation(channels, wc).await;
                 for channel in channels {
                     store.install_join(channel, channels).await;
                 }

@@ -140,6 +140,13 @@ pub const MAX_EXPORTS: usize = 1024;
 /// peer from naming a fresh position per delivery for ever. The suite's pipelining cases use a handful.
 pub const MAX_ANSWERS: usize = 1024;
 
+/// Answers a session may have **in flight** at once (Law 61): deliveries whose object returned
+/// `Reply::Deferred` and whose waiter has not resolved yet. Bounded like every queue a peer can drive
+/// — a peer that keeps claiming gifts nobody deposits must not grow this without limit. A full queue
+/// costs the *waiter* nothing: its answer never lands, and the claim times out as it did before the
+/// deferral existed. 64 is the hand-off queue's depth, which bounds the same shape one layer up.
+pub const MAX_DEFERRED_ANSWERS: usize = 64;
+
 /// Gifts the node's store may hold, across all sessions (the store is per peer, not per session).
 /// With a bounded gift id this is a bounded number of bytes; without one it was the 4 GiB table.
 pub const MAX_GIFTS: usize = 256;

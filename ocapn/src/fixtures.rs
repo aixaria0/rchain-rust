@@ -165,7 +165,10 @@ impl Greeter {
             None => {
                 let connection = self
                     .netlayer
-                    .new_outgoing_connection(&peer)
+                    .new_outgoing_connection_from(
+                        &peer,
+                        crate::owner::session_origin(&self.session),
+                    )
                     .await
                     .map_err(|e| e.to_string())?;
                 let identity = crate::conn::Identity::fresh(self.location.clone())

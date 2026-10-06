@@ -37,6 +37,7 @@ use rchain_casper::shard_invoke::{
 };
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
+use rchain_models::rholang::RhoType::RhoString;
 use rchain_ocapn::captp::{
     EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
     IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
@@ -48,6 +49,7 @@ use rchain_ocapn::netlayer::Netlayer;
 use rchain_ocapn::par_value;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
+use rchain_rholang::pretty_printer::PrettyPrinter;
 use rchain_shared::base16;
 use tokio::sync::watch;
 
@@ -281,7 +283,12 @@ pub async fn serve_ocapn(
 /// **Every case that cannot be named gets its own reason**, because the one it used to get —
 /// `par_value`'s "a Symbol — Rholang has no symbol for it to land in" — described the *label* rather
 /// than the situation, and a peer reading it would look for a Symbol in the wrong place.
-fn argument(value: &Value, session: Option<&dyn ExportView>) -> Result<Arg, String> {
+fn argument(
+    value: &Value,
+    session: Option<&dyn ExportView>,
+    pp: &PrettyPrinter,
+    counter: &mut usize,
+) -> Result<Arg, String> {
     if let Some((label, position)) = rchain_ocapn::captp::descriptor_of(value) {
         return match label.as_str() {
             // The peer's own object, addressed by the position *it* exported at. This node cannot
@@ -293,41 +300,113 @@ fn argument(value: &Value, session: Option<&dyn ExportView>) -> Result<Arg, Stri
                  registry, and a peer's object has no such name"
             )),
             EXPORT_LABEL => {
-                let session = session.ok_or_else(|| {
-                    "a capability argument arrived outside a session, so the export it names cannot \
-                     be resolved"
-                        .to_string()
-                })?;
-                let object = session.exported(&position).ok_or_else(|| {
-                    format!("no export at position {position} in this session to pass as an argument")
-                })?;
-                match object.named() {
-                    Some(named) => Ok(Arg::Named {
-                        location: named.location,
-                        pattern: named.pattern,
-                    }),
-                    None => Err(format!(
-                        "the export at position {position} is a session-local object of this node's, \
-                         not a chain object; it has no registry name to give a contract"
-                    )),
-                }
+                let (location, pattern) = named_capability(value, session)?;
+                Ok(Arg::Named { location, pattern })
             }
             other => Err(format!("argument <{other} {position}> is not a descriptor")),
         };
     }
-    // A capability *nested* inside a value — a brand inside an amount, say. Naming it would need the
-    // term to bind it inside the value's own shape, which is the tuple round-trip C224's item 4 does
-    // not yet cover; refused with its own reason rather than folded into the value path.
-    if contains_descriptor(value) {
-        return Err(
-            "a capability nested inside a value cannot be named yet: only a capability passed as its \
-             own argument can be resolved to a chain object (an amount's brand is the known case)"
-                .to_string(),
-        );
+    if !contains_descriptor(value) {
+        return par_value::value_to_par(value)
+            .map(Arg::Value)
+            .map_err(|e| e.to_string());
     }
-    par_value::value_to_par(value)
-        .map(Arg::Value)
-        .map_err(|e| e.to_string())
+    // **A capability *inside* a value** — an amount's brand. It cannot be passed bare, so the term
+    // binds it where it stands: the value is rendered with each capability replaced by a fresh name,
+    // and `wrap_binders` looks each one up and matches its pattern around the call (AUDIT C226).
+    let mut binders: Vec<(usize, String, Option<String>)> = Vec::new();
+    let rendered = value_to_term(value, session, pp, counter, &mut binders)?;
+    Ok(Arg::Nested { rendered, binders })
+}
+
+/// The registry location and binding pattern of the capability a `<desc:export N>` names in this
+/// session's export table, or a refusal naming why it cannot be given to a chain contract.
+fn named_capability(
+    value: &Value,
+    session: Option<&dyn ExportView>,
+) -> Result<(String, Option<String>), String> {
+    let (_, position) = rchain_ocapn::captp::descriptor_of(value)
+        .ok_or_else(|| "not a capability descriptor".to_string())?;
+    let session = session.ok_or_else(|| {
+        "a capability argument arrived outside a session, so the export it names cannot be resolved"
+            .to_string()
+    })?;
+    let object = session.exported(&position).ok_or_else(|| {
+        format!("no export at position {position} in this session to pass as an argument")
+    })?;
+    match object.named() {
+        Some(named) => Ok((named.location, named.pattern)),
+        None => Err(format!(
+            "the export at position {position} is a session-local object of this node's, not a \
+             chain object; it has no registry name to give a contract"
+        )),
+    }
+}
+
+/// Render a peer's value into a rholang term, binding every capability inside it.
+///
+/// A leaf is printed by the same rule as any other value — `check_renderable` first (AUDIT C220),
+/// because Rholang's literal grammar has no escapes and a `"` would end the literal early in a deploy
+/// the node's own key signs. A container is rebuilt around its rendered parts, so a tuple stays a
+/// tuple: an amount the peer sends must reach the contract's `@(brand, value)` pattern as one.
+fn value_to_term(
+    value: &Value,
+    session: Option<&dyn ExportView>,
+    pp: &PrettyPrinter,
+    counter: &mut usize,
+    binders: &mut Vec<(usize, String, Option<String>)>,
+) -> Result<String, String> {
+    if rchain_ocapn::captp::descriptor_of(value).is_some() {
+        let (location, pattern) = named_capability(value, session)?;
+        let index = *counter;
+        *counter += 1;
+        binders.push((index, location, pattern));
+        return Ok(format!("arg{index}"));
+    }
+    let parts =
+        |xs: &[Value], counter: &mut usize, binders: &mut _| -> Result<Vec<String>, String> {
+            xs.iter()
+                .map(|x| value_to_term(x, session, pp, counter, binders))
+                .collect()
+        };
+    match value {
+        Value::List(xs) => Ok(format!("[{}]", parts(xs, counter, binders)?.join(", "))),
+        Value::Struct(entries) => {
+            let mut fields = Vec::with_capacity(entries.len());
+            for (key, v) in entries {
+                fields.push(format!(
+                    "{}: {}",
+                    pp.build_string(&RhoString::apply(key.clone())),
+                    value_to_term(v, session, pp, counter, binders)?
+                ));
+            }
+            Ok(format!("{{{}}}", fields.join(", ")))
+        }
+        Value::Record(xs) => match xs.as_slice() {
+            [Value::Symbol(label), Value::Symbol(tag), Value::List(fields)]
+                if label == par_value::TAGGED_LABEL && tag == par_value::TUPLE_TAG =>
+            {
+                // A one-element tuple has no literal — `(x)` parses as `x` — so it is refused rather
+                // than written as something the parser would read as the element.
+                if fields.len() < 2 {
+                    return Err(format!(
+                        "a tuple of {} element has no rholang literal to be written as",
+                        fields.len()
+                    ));
+                }
+                Ok(format!("({})", parts(fields, counter, binders)?.join(", ")))
+            }
+            _ => Err(
+                "a labelled record that is not the tagged tuple has no rholang term".to_string(),
+            ),
+        },
+        leaf => {
+            let par = par_value::value_to_par(leaf).map_err(|e| e.to_string())?;
+            rchain_rholang::pretty_printer::check_renderable(&par)
+                .map_err(|e| format!("the argument cannot be rendered into a term: {e}"))?;
+            Ok(pp.build_string(&par))
+        }
+    }
 }
 
 /// Whether a descriptor is nested anywhere inside this value.
@@ -523,9 +602,13 @@ impl ChainCapability {
                 }
             },
         };
+        let pp = PrettyPrinter::new();
+        // A capability *inside* an argument takes a binder index of its own; the counter starts past
+        // the argument positions so it cannot collide with `Named`, which uses the argument's index.
+        let mut counter = args.len() + 1;
         let pars = args
             .iter()
-            .map(|arg| argument(arg, session))
+            .map(|arg| argument(arg, session, &pp, &mut counter))
             .collect::<Result<Vec<_>, _>>()?;
 
         // A capability whose method rides the message is one that may *return* capabilities, and a

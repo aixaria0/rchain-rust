@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use rchain_shared::base16;
 
 use crate::captp::Desc;
-use crate::conn::{Act, Export};
+use crate::conn::{Act, Export, Reply};
 use crate::handoff::{Envelope, HandoffGive, HandoffReceive, Handoffs};
 use crate::owner::{SessionRegistry, SessionSlot};
 use crate::proxy::Forward;
@@ -180,47 +180,64 @@ impl Export for Bootstrap {
                     );
                 }
 
-                // The gift may not have arrived yet — the two halves of a handoff race — so wait for
-                // it, briefly, rather than breaking a claim that is merely early.
-                let deadline = tokio::time::Instant::now() + DEPOSIT_WAIT;
-                loop {
-                    match self.handoffs.withdraw(
-                        &give.gift_id,
-                        &give.session,
-                        receive.handoff_count,
-                    )? {
-                        Some(to) => {
-                            // The object lives on the **gifter's** session, which the give names by
-                            // id. Answering the receiver with a forward is what a handoff *is*: the
-                            // receiver ends up holding something it never had a connection with.
-                            let gifter = self.registry.by_id(
-                                &crate::session_id::Octets32::try_from(give.session.as_slice())
-                                    .map_err(|_| {
-                                        "the give's session id is not a session id".to_string()
-                                    })?,
-                            );
-                            let Some(gifter) = gifter else {
-                                return Err(
-                                    "the give names a session this peer does not have".to_string()
-                                );
-                            };
-                            return Ok(Act::object(Arc::new(Forward::new(gifter, to))));
-                        }
-                        None if tokio::time::Instant::now() < deadline => {
+                // **The wait belongs to the loop, not to this delivery** (Law 61, AUDIT C223). The
+                // gift may not have arrived yet — the two halves of a handoff race — and waiting for
+                // it *here* stalled the whole session: `handle_deliver` is awaited on the loop task,
+                // so nothing else on this session was read until the wait ended. A claim that is
+                // early now returns a future instead, and the session goes on serving. The
+                // observable is the *stall*, not the timeout.
+                let handoffs = self.handoffs.clone();
+                let registry = self.registry.clone();
+                let gift_id = give.gift_id.clone();
+                let session_id = give.session.clone();
+                let count = receive.handoff_count;
+                if let Some(to) = handoffs.withdraw(&gift_id, &session_id, count)? {
+                    return forward_to(&registry, &session_id, to);
+                }
+                return Ok(Act {
+                    out: Vec::new(),
+                    reply: Reply::Deferred(Box::pin(async move {
+                        let deadline = tokio::time::Instant::now() + DEPOSIT_WAIT;
+                        loop {
+                            if let Some(to) = handoffs.withdraw(&gift_id, &session_id, count)? {
+                                return forward_to(&registry, &session_id, to);
+                            }
+                            if tokio::time::Instant::now() >= deadline {
+                                return Err(format!(
+                                    "no gift is deposited under {}",
+                                    base16::encode(&gift_id)
+                                ));
+                            }
                             tokio::time::sleep(DEPOSIT_POLL).await;
                         }
-                        None => {
-                            return Err(format!(
-                                "no gift is deposited under {}",
-                                base16::encode(&give.gift_id)
-                            ))
-                        }
-                    }
-                }
+                    })),
+                });
             }
             other => Err(format!("unknown bootstrap method: {other:?}")),
         }
     }
+}
+
+/// Answer a withdrawal with a **forward** to the session the gift lives on.
+///
+/// The object lives on the **gifter's** session, which the give names by id. Answering the receiver
+/// with a forward is what a handoff *is*: the receiver ends up holding something it never had a
+/// connection with.
+///
+/// A free function rather than a method so both the immediate answer and the deferred one (Law 61)
+/// use it — the deferred future cannot borrow the `Bootstrap`, since the loop owns the session by
+/// then, so the two things it needs are passed in.
+fn forward_to(
+    registry: &SessionRegistry,
+    session: &[u8],
+    to: crate::captp::Desc,
+) -> Result<Act, String> {
+    let id = crate::session_id::Octets32::try_from(session)
+        .map_err(|_| "the give's session id is not a session id".to_string())?;
+    let Some(gifter) = registry.by_id(&id) else {
+        return Err("the give names a session this peer does not have".to_string());
+    };
+    Ok(Act::object(Arc::new(Forward::new(gifter, to))))
 }
 
 #[cfg(test)]

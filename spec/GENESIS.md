@@ -300,3 +300,20 @@ master directory) live in `rchain-community/rgov`, not in this repository, and a
 this change. Making them genesis content is a separate sourcing decision with its own requirements —
 fixed keys/timestamps, `insertSigned` instead of `insertArbitrary` so their URIs stop shifting per
 chain, and the dependency markers substituted with those constants.
+
+## The vault handle's dispatch id moved (2026-10-06)
+
+**A consensus-visible change, and it is deliberate.** A vault handle minted by `findOrCreate` used to
+carry **two** installed continuations — `balance` at arity 2 and `transfer` at arity 5 — and the space
+keeps one per channel, so the second install replaced the first and `balance` answered nothing at all
+(AUDIT C219). The handle is now **one** continuation at `arity: 1, remainder: true` dispatching on the
+method, which is the shape `rev_vault`, `ertp` and `pos` already use.
+
+The continuation's `body_ref` is `native_body_ref(name, arity)` — a hash of the name *and* the arity —
+so a handle minted under the new rule carries a **different** `body_ref` than the old rule would have
+given it. Nothing in this tree's genesis content changes (the handle is minted by a deploy, not by the
+genesis), and no *existing* state is rewritten: what moves is what a **newly minted** handle's
+post-state carries. Chain state produced before this commit stays valid — the RSpace under a handle is
+whatever it was — and the wire is unchanged: a 5-field `transfer` send matches the new pattern exactly
+as it matched the old one, which `casper/tests/determinism.rs` asserts as a fund *movement* rather
+than a reply.

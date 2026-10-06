@@ -19,35 +19,43 @@
 //! | `GInt`, `GBigInt` | `Int` | Syrup's integer is arbitrary-precision, so both are lossless |
 //! | `GString` | `String` | |
 //! | `GByteArray` | `Bytes` | |
-//! | `GUri` | `Symbol` | see the asymmetry below |
+//! | `GUri` | `Symbol` | a symbol comes back as a `GUri` |
 //! | `EList` | `List` | a `remainder` pattern is refused |
-//! | `ETuple` | `List` | **not a `Record`** — see the tuple note below; `Record` is inbound-only |
+//! | `ETuple` | `Record` | `<desc:tagged 'rho:tuple' [fields]>` — see the tuple note below |
 //! | `ParMap` (string keys) | `Struct` | a non-string key is refused |
 //! | `GUnforgeable`, `Bundle` | — | **refused: a capability is not data** |
 //! | `ParSet` | — | refused: Syrup has no set, and a list would lose order-insensitivity silently |
 //! | operators, `EMethod`, sends/receives/news/matches | — | refused: a process is not a value |
-//! | `Symbol` **inbound** | — | refused: Rholang has no symbol, so it has nowhere to land |
+//! | any other `Record` **inbound** | — | refused: a labelled record that is not the tagged tuple |
 //! | `Float64` **inbound** | — | refused: Rholang has no float |
 //!
-//! **The `GUri`/`Symbol` asymmetry is deliberate and worth a second opinion.** Outbound, a URI is
-//! tagged as a Symbol so a peer sees a structured name rather than an opaque string. Inbound, an
-//! untagged Symbol is refused, so a URI that leaves does not come back. The alternative — mapping a
-//! Symbol to a `GUri` — would let a peer mint an arbitrary `rho:id:…` URI; that is *probably*
-//! harmless (registry URIs are hashes of public keys, and knowing one grants nothing without a
-//! `lookup!` that the registry answers anyway), but it is a decision about authority and this
-//! module takes the refusing side until something needs otherwise.
+//! **The map round-trips its domain, and its refusals are named** (AUDIT C226). The law is
+//! `spec/Rchain/Syrup.lean`, stated the way Law 42 states the JSON round trip: a value the decoder
+//! answers encodes back and decodes again (`syrup_decode_encode`); two wireable values that decode
+//! to one `Par` are one wire form (`syToPar_injective`); and the encoder never emits a shape outside
+//! the domain (`parToSy_wireable`). The last is §1.6's no-silent-partiality on a wire: a value with
+//! no counterpart is *refused*, never approximated by one that nearly fits.
 //!
-//! **A tuple crosses as a list, and that is a correction, not a preference.** The first cut mapped
-//! `ETuple` to a Syrup `Record` "so a tuple survives a round trip", which is only *spellable* when
-//! the tuple happens to start with a symbol, string or byte string: Syrup records are **labelled**,
-//! and a label must be one of those three. `(true, 0)` — an ERTP reply, and the shape every
-//! `(ok, value)` answer in this codebase uses — encoded to a record whose label was `true`, which
-//! Endo refused outright (`Unexpected type "boolean", Syrup record labels must be strings, selectors
-//! or bytestrings`) and which the Python suite would have refused too had anything ever sent one. A
-//! Syrup `List` is the ordered, heterogeneous, unlabelled thing a Rholang tuple actually is, so that
-//! is what it becomes; `Record` stays **inbound-only**, where the label is a peer's and the tuple is
-//! the counterpart (a `desc:import-object N` the node hands to a contract). A tuple that crosses and
-//! comes back is a list — the one loss, and it is the loss Syrup forces.
+//! **A tuple crosses as OCapN's tagged value**, `<desc:tagged 'rho:tuple' [fields…]>`. Two earlier
+//! shapes are refuted by the references, and both are worth not re-trying:
+//!
+//! - **a bare record.** Syrup records are *labelled*, and the label must be a string, selector or
+//!   byte string (`@endo/ocapn`'s `decode.js`), so `(true, 0)` — the shape every `(ok, value)` reply
+//!   in this codebase uses — would need the label `true`, which Endo refuses outright. A record is
+//!   not even in Endo's CapTP passable union (`{list, struct, tagged}`), so it would not survive as
+//!   an argument either.
+//! - **a list.** A list is unlabelled, so a tuple sent as one comes back as a `List`, which no
+//!   contract's `@(brand, value)` tuple pattern matches. Under the law that is worse than a bug: it
+//!   makes one wire form stand for two values, which `syToPar_injective` forbids.
+//!
+//! The tagged form is the union's own extension point, whose `value` may be any passable, and both
+//! the Python suite and Endo carry it. Outbound a URI is a `Symbol` and inbound a `Symbol` is a
+//! `GUri` — the asymmetry that used to refuse a returning URI is gone, because it was a lossy map.
+//!
+//! **Two shapes are outside the domain, named rather than implied:** a `Float64` (Rholang has no
+//! float), and a **small** `GBigInt` — Syrup's integer is one type where Rholang has two, so
+//! `GBigInt 5` and `GInt 5` share a wire form and the encoder emits the narrow one (AUDIT C226 is
+//! the tuple half of this row; the register holds the rest).
 
 use num_bigint::BigInt;
 use rchain_models::ast::{Expr, Par};
@@ -81,6 +89,14 @@ impl std::fmt::Display for BridgeError {
 }
 
 impl std::error::Error for BridgeError {}
+
+/// The record label a Rholang tuple crosses as: OCapN's **tagged** value, `<desc:tagged :tagName
+/// value>` — the CapTP union's own extension point (`@endo/ocapn`'s `OcapnTaggedCodec`), whose
+/// `value` may be any passable.
+pub const TAGGED_LABEL: &str = "desc:tagged";
+
+/// The tag that says the payload is a Rholang tuple.
+pub const TUPLE_TAG: &str = "rho:tuple";
 
 /// A one-expression `Par` — the shape every ground value takes.
 fn ground(expr: Expr) -> Par {
@@ -129,10 +145,17 @@ fn expr_to_value(expr: &Expr) -> Result<Value, BridgeError> {
             }
             Ok(Value::List(each(&list.ps)?))
         }
-        // A tuple is a list on the wire: Syrup's `Record` is *labelled*, and a Rholang tuple has no
-        // label — see the module note. A record leaves this module only where a caller built one by
-        // hand with a label it chose (`Desc::to_syrup`'s `<desc:import-object N>`).
-        Expr::ETuple(tuple) => Ok(Value::List(each(&tuple.ps)?)),
+        // **A tuple crosses as OCapN's tagged value**, `<desc:tagged 'rho:tuple' [fields…]>` — a
+        // Syrup record, so it is *labelled*, which is what a bare record cannot be for a tuple: the
+        // label of `(true, 0)` would be `true`, and Endo refuses a non-selector label outright. The
+        // tagged form is the union's own extension point and the only record shape its passable
+        // union carries (`{list, struct, tagged}`), so this is the shape that comes back. AUDIT
+        // C226; the law is `Rchain.syrup_decode_encode` in `spec/Rchain/Syrup.lean`.
+        Expr::ETuple(tuple) => Ok(Value::Record(vec![
+            Value::Symbol(TAGGED_LABEL.to_string()),
+            Value::Symbol(TUPLE_TAG.to_string()),
+            Value::List(each(&tuple.ps)?),
+        ])),
         Expr::ESet(_) => Err(BridgeError::NoCounterpart(
             "a set (Syrup has no set, and a list would lose order-insensitivity)",
         )),
@@ -176,10 +199,25 @@ pub fn value_to_par(value: &Value) -> Result<Par, BridgeError> {
             ps: each_to_par(xs)?,
             ..Default::default()
         })),
-        Value::Record(xs) => ground(Expr::ETuple(rchain_models::ast::ETuple {
-            ps: each_to_par(xs)?,
-            ..Default::default()
-        })),
+        // A record is what a tuple crosses as, and only in the one tagged shape: `<desc:tagged
+        // 'rho:tuple' [fields]>`. Any *other* labelled record is a peer's, has no Rholang
+        // counterpart, and is refused with its own reason rather than read as a tuple — the reason
+        // the encoder never emits one either (C226, `Rchain.parToSy_wireable` in `Syrup.lean`).
+        Value::Record(xs) => match xs.as_slice() {
+            [Value::Symbol(label), Value::Symbol(tag), Value::List(fields)]
+                if label == TAGGED_LABEL && tag == TUPLE_TAG =>
+            {
+                ground(Expr::ETuple(rchain_models::ast::ETuple {
+                    ps: each_to_par(fields)?,
+                    ..Default::default()
+                }))
+            }
+            _ => {
+                return Err(BridgeError::NoCounterpart(
+                    "a labelled record that is not the tagged tuple",
+                ))
+            }
+        },
         Value::Struct(m) => ground(Expr::EMap(rchain_models::ast::ParMap {
             kvs: m
                 .iter()
@@ -187,11 +225,10 @@ pub fn value_to_par(value: &Value) -> Result<Par, BridgeError> {
                 .collect::<Result<Vec<_>, BridgeError>>()?,
             ..Default::default()
         })),
-        Value::Symbol(_) => {
-            return Err(BridgeError::NoCounterpart(
-                "a Symbol — Rholang has no symbol for it to land in",
-            ))
-        }
+        // A symbol is a URI's wire form: `GUri → Symbol` outbound, so this is the leg that makes the
+        // round trip hold. Refusing it here is what made a URI leave and never come back — a lossy
+        // map, which is what `Rchain.parToSy_wireable` forbids (AUDIT C226).
+        Value::Symbol(s) => ground(Expr::GUri(s.clone())),
         Value::Float64(_) => {
             return Err(BridgeError::NoCounterpart(
                 "a Float64 — Rholang has no float",
@@ -240,15 +277,17 @@ mod tests {
     }
 
     #[test]
-    fn collections_round_trip_and_a_tuple_crosses_as_a_list() {
+    fn collections_round_trip_and_a_tuple_stays_a_tuple() {
         let list = ground(Expr::EList(rchain_models::ast::EList {
             ps: vec![ground(Expr::GInt(1)), ground(Expr::GString("a".into()))],
             ..Default::default()
         }));
         round_trip(&list);
-        // A tuple is a list on the wire, and comes back as one. The first cut sent it as a `Record`
-        // and asserted the two stayed distinct; that only holds for a tuple whose head is a valid
-        // Syrup *label*, and `(true, 0)` — every `(ok, value)` reply in this codebase — is not one.
+        // **The falsifier for C226.** A tuple crosses as `<desc:tagged 'rho:tuple' [fields]>` and
+        // comes back a *tuple* — which is what makes an ERTP amount `(brand, value)` reach an arm
+        // that matches `@(brand, value)`. Before this, a tuple crossed as a `List` and came back an
+        // `EList`, so a peer could hold a purse and not fund it. `(true, 0)` is the shape every
+        // `(ok, value)` reply uses, so it is the one that has to work.
         let tuple = ground(Expr::ETuple(rchain_models::ast::ETuple {
             ps: vec![ground(Expr::GBool(true)), ground(Expr::GInt(0))],
             ..Default::default()
@@ -256,17 +295,40 @@ mod tests {
         let crossed = par_to_value(&tuple).expect("a tuple crosses");
         assert_eq!(
             crossed,
-            Value::List(vec![Value::Bool(true), Value::Int(0.into())])
+            Value::Record(vec![
+                Value::Symbol(TAGGED_LABEL.to_string()),
+                Value::Symbol(TUPLE_TAG.to_string()),
+                Value::List(vec![Value::Bool(true), Value::Int(0.into())]),
+            ]),
+            "a tuple crosses as the tagged record, not as a bare list"
         );
-        let back = value_to_par(&crossed).expect("and comes back");
         assert_eq!(
-            back,
-            ground(Expr::EList(rchain_models::ast::EList {
-                ps: vec![ground(Expr::GBool(true)), ground(Expr::GInt(0))],
-                ..Default::default()
-            })),
-            "a crossed tuple arrives as the list it was sent as"
+            value_to_par(&crossed).expect("and comes back"),
+            tuple,
+            "the tuple survives the round trip it used to lose"
         );
+        round_trip(&tuple);
+        // A list is still a list: the two are not interchangeable, which is the injectivity the law
+        // states (`Rchain.syToPar_injective`).
+        assert_ne!(
+            par_to_value(&list).unwrap(),
+            par_to_value(&tuple).unwrap(),
+            "a list and a tuple must not share a wire form"
+        );
+    }
+
+    #[test]
+    fn a_labelled_record_that_is_not_the_tuple_is_refused() {
+        // A peer's own record has no Rholang counterpart, so it is refused with a reason rather than
+        // read as a tuple — the other half of the law's domain clause.
+        let peer_record = Value::Record(vec![
+            Value::Symbol("desc:something".to_string()),
+            Value::Int(1.into()),
+        ]);
+        assert!(matches!(
+            value_to_par(&peer_record),
+            Err(BridgeError::NoCounterpart(_))
+        ));
     }
 
     #[test]
@@ -328,12 +390,12 @@ mod tests {
     }
 
     #[test]
-    fn a_symbol_inbound_has_nowhere_to_land() {
+    fn a_symbol_inbound_lands_as_the_uri_it_came_from() {
+        // A symbol is a URI's wire form. Refusing it here is what made a URI leave and never come
+        // back — the lossy map C226's law (`Rchain.parToSy_wireable`) forbids.
         assert_eq!(
-            value_to_par(&Value::Symbol("op:deliver".into())),
-            Err(BridgeError::NoCounterpart(
-                "a Symbol — Rholang has no symbol for it to land in"
-            ))
+            value_to_par(&Value::Symbol("rho:rchain:ertp".into())),
+            Ok(ground(Expr::GUri("rho:rchain:ertp".into())))
         );
     }
 
@@ -383,11 +445,12 @@ mod tests {
         ));
     }
 
-    /// The asymmetry is deliberate: a URI leaves as a Symbol and does **not** come back.
+    /// A URI leaves as a Symbol and comes back: the asymmetry that used to refuse the return was a
+    /// lossy map, which is what `Rchain.parToSy_wireable` names as a violation rather than a choice.
     #[test]
-    fn a_uri_leaves_as_a_symbol_and_is_not_accepted_back() {
+    fn a_uri_leaves_as_a_symbol_and_comes_back() {
         let uri = ground(Expr::GUri("rho:id:abc".into()));
         assert_eq!(par_to_value(&uri), Ok(Value::Symbol("rho:id:abc".into())));
-        assert!(value_to_par(&Value::Symbol("rho:id:abc".into())).is_err());
+        assert_eq!(value_to_par(&Value::Symbol("rho:id:abc".into())), Ok(uri));
     }
 }
