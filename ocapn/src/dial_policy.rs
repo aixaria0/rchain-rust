@@ -17,6 +17,13 @@
 //! to evade a policy like this; a name that does not resolve is refused, since the dial would fail
 //! anyway.
 //!
+//! **A transport with no `host` hint is not judged at all**, and neither is a session whose origin the
+//! transport cannot report. `unix` is both: its locator carries a path rather than a host, and a
+//! Unix-socket peer has no `SocketAddr` for `NetConn::peer_address` to return. That is the right
+//! answer rather than a hole — such a peer is local by construction, and what admitted it is the
+//! **socket's filesystem permission**, which is the transport's authentication. The rule this file
+//! enforces is about peers that arrive over a network; a peer the filesystem let in is not one.
+//!
 //! **And the peer's own origin decides what *it* may reach** (Law 62, AUDIT C225). A dial a *remote*
 //! peer asked for is refused when the target is one of this node's own local addresses: the peer would
 //! be using this node to reach a service it cannot reach itself, which is what an SSRF is. A peer that
