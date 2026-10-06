@@ -230,6 +230,15 @@ node and coordinates a two-shard transaction, and the bridge's tests are above �
 in this section has not been run in this repository. It is the deployment these parts add up to, not a
 recipe anyone has followed.
 
+**Dialling out.** The node does dial, but only on a peer's word: the enlivener connects to a sturdyref's
+locator and the greeter to a handoff give's `exporter-location`, each over whatever netlayer the node
+holds (`ocapn/src/enliven.rs`, `ocapn/src/fixtures.rs`). A boundary wants two things beyond that: a
+session the **node** starts — notifying a peer that nothing has dialled in from — and per-transport
+dispatch, so a locator naming a transport other than its one netlayer resolves. Neither is built. And
+neither is free of the perimeter below: "dial an address of the peer's choosing" *is* the SSRF surface
+the dial policy exists for, so a gateway that dials out is one that wants `ocapn-deny-local-dial` set
+and the origin rule holding — the same trade Law 62 names.
+
 ## 7. Writing a transport
 
 The node speaks exactly one: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
@@ -255,6 +264,31 @@ to know before writing one:
 - **A transport built on a chain gives you the payer.** Packets on IBC are sent by a chain that pays
   for its own gas, which closes the attribution obligation this repository states and leaves open. That
   is the strongest reason to want one.
+
+### Which transport
+
+The implementations this repository tests against carry four transports between them, and none is a
+production one: the conformance suite (`31f0b80`) has `testing_only_tcp` and `onion` (Tor), and the
+Endo version vendored for the spike (`1.1.1`) has `tcp-test-only` and `websocket`. So the transport to
+write is the one the peers you care about actually speak — and whatever it is, it is the two functions
+above with the channel underneath it, and nothing above the seam moves.
+
+### Unix domain sockets as the inner hop
+
+A Unix domain socket is the smallest transport that is not `testing-only`, and the security is the
+operating system's rather than ours: a UDS peer is a process whose uid and gid the socket's filesystem
+permissions admitted. That is authentication, where `tcp-testing-only` has none, with no key exchange
+to write. The netlayer is the same two functions — connect to a path, accept on a bound socket — plus
+`transport = "unix"` and a `path` hint. `NetConn::peer_address` returns `None` for it, which the dial
+policy already reads as "cannot be judged" and which is right here: a UDS peer is local by
+construction, and the permission on the socket is what admitted it.
+
+**And it is the right place to compose.** A gateway speaking UDS to a handful of local agents, each of
+which speaks something else outward, keeps the wide-area transport and its credentials out of the
+chain-facing process — and gives the accountability a home, because each agent is a process the
+operator started deliberately, with its own identity. That is the shape section 6's payer question
+wants: the boundary shard is the chain's side, the agents are the network's side, and neither has to
+be the other.
 
 ## See also
 
