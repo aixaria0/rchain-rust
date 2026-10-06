@@ -3575,6 +3575,98 @@ def laws : List Law := [
       nothing about what a reply holds; the surviving growth is a chain-wide property of the registry \
       (no delete anywhere), bounded economically by whoever pays, and that property is the registry
       layer's rather than this one's." },
+  { number := 64, clause := "a", layer := "Wire",
+    statement := "**Where the draft and the implementations differ, the port speaks the
+      implementations' reading.** The prose is not the oracle; what every peer actually speaks is.",
+    status := .provedModel,
+    declarations := [`Rchain.Source, `Rchain.Form, `Rchain.Disagreement, `Rchain.speaks,
+      `Rchain.the_port_speaks_the_implementations_reading, `Rchain.the_draft_is_not_the_oracle],
+    axioms := [],
+    rust := ["ocapn/src/captp.rs", "ocapn/src/session.rs", "casper/src/shard_invoke.rs"],
+    rustWitness := [
+      "ocapn/tests/reference_vectors.rs:start_session_matches_the_reference",
+      "casper/src/shard_invoke.rs:reply_channel_is_the_deploy_id"],
+    witness := [`Rchain.the_port_speaks_the_implementations_reading, `Rchain.the_draft_is_not_the_oracle],
+    falsifiable := some "**the figures are the drafts', and they disagree.** AUDIT C216: the draft
+      defines `op:start-session` with **five** fields and contradicts itself about one of them \
+      (`Ed25519_SHA256` when constructing, `Ed25519` when receiving), while the suite's
+      `OpStartSession` carries **four** — so a port following the prose fails against every \
+      implementation. AUDIT C218: `invoke_term` passed the reply channel as a backticked \
+      `` `rho:rchain:deployId` ``, which is a `GUri` *ground* — an ordinary, guessable name — where the
+      reference binds the unforgeable per-deploy channel; the port spoke a reading **no** \
+      implementation produces, and every reply went nowhere while the deploy reported success.
+      `the_draft_is_not_the_oracle` is the clause as a theorem: the two readings differ, so speaking
+      one is not speaking the other. The tie is the known-answer corpus — \
+      `ocapn/tests/reference_vectors.rs`'s vectors are produced by the suite's own \
+      `contrib/syrup.py` encoder, and `start_session_matches_the_reference` pins the four-field form.",
+    note := "**Both halves of this row are about the same mistake, made in opposite directions.**
+      Following the prose (C216) fails against the peers; inventing a reading the prose and the peers \
+      both lack (C218) fails silently, because the wire does not complain about a name nobody reads.
+      The oracle is the **implementation**, which is what `ocapn/src/captp.rs`'s module doc states and
+      what the KATs enforce. **What the model does not claim:** a reading is a `Nat` where the port has \
+      a record shape, so the model says *which* reading is spoken and nothing about its fields; the
+      divergences themselves are rows in the findings register (C216, C218, C224), which is where a
+      reader finds what each one is." },
+  { number := 64, clause := "b", layer := "Wire",
+    statement := "**Where the implementations disagree with each other, the port accepts every reading
+      they produce** — the union on the reading side, because there is no single reading to speak.",
+    status := .provedModel,
+    declarations := [`Rchain.accepts, `Rchain.every_reference_reading_is_accepted, `Rchain.oneReading,
+      `Rchain.one_reading_refuses_another, `Rchain.the_union_accepts_it],
+    axioms := [],
+    rust := ["ocapn/src/bootstrap.rs", "ocapn/src/session.rs"],
+    rustWitness := [
+      "ocapn/src/bootstrap.rs:bootstrap_deliver_accepts_a_swiss_number_as_bytes_or_as_a_string"],
+    witness := [`Rchain.every_reference_reading_is_accepted],
+    falsifiable := some "**the falsifier is the port's own history, stated as a rule.** `oneReading` is
+      what 'the reference implementation is the oracle' was taken to mean before it was noticed that \
+      there are two — a port that speaks one reading — and `one_reading_refuses_another` is AUDIT C217 \
+      exactly: `@endo/ocapn` sends a swiss number as a Syrup **String** (which is what the draft says \
+      it is) and the Python suite sends a **byte array**, so a port built to either alone refuses the
+      other. `the_union_accepts_it` states the contrast on the same row, so the pair is a claim rather
+      than a preference. On the port,
+      `bootstrap_deliver_accepts_a_swiss_number_as_bytes_or_as_a_string` asserts both readings are \
+      accepted, and C224's locator-hints case is the same shape one field over.",
+    note := "**Why the reading side is a union and the speaking side is not.** A port has to *choose* \
+      one shape to emit, and choosing the implementations' is right because they are what peers read;
+      it does not have to choose one to *accept*, and choosing would refuse a peer that is not wrong.
+      The asymmetry is the law's content, not an inconsistency. **What the model does not claim:**
+      that every divergence is tolerated — C217's is, and C224's four are settled readings the port
+      *pins* rather than accepts both ways; the register's rows say which is which. **What the law \
+      cannot reach:** a third implementation with a third reading would be another row, and nothing in
+      this model finds it — the corpus is where a new reading shows up." },
+  { number := 65, layer := "Rholang",
+    statement := "**A value with no faithful literal is refused, not written.** Every literal the
+      printer writes reads back as the value it was written for, and a value that has no such literal
+      is refused rather than written as one that reads back as something else.",
+    status := .provedModel,
+    declarations := [`Rchain.Literal, `Rchain.Faithful, `Rchain.mayWrite,
+      `Rchain.the_printer_writes_only_what_reads_back, `Rchain.an_unfaithful_literal_is_refused,
+      `Rchain.theQuotedStringCase, `Rchain.the_quoted_string_case_is_refused],
+    axioms := [],
+    rust := ["rholang/src/pretty_printer.rs", "casper/src/shard_invoke.rs"],
+    rustWitness := [
+      "casper/src/shard_invoke.rs:an_argument_that_would_close_its_literal_is_refused"],
+    witness := [`Rchain.the_printer_writes_only_what_reads_back,
+      `Rchain.the_quoted_string_case_is_refused],
+    falsifiable := some "**the falsifier is a concrete literal, and it was written into signed terms.**
+      Rholang's literal grammar has **no escape**, so a string containing a quote has no faithful
+      literal at all: `theQuotedStringCase` is one — the printer meant seven units and a reader gets \
+      the three before the quote — and `the_quoted_string_case_is_refused` says both that it is \
+      unfaithful and that the guard refuses it. Two production paths printed values into terms they \
+      then parsed, and **the values arrived from a peer** in the OCapN bridge's case
+      (`casper/src/shard_invoke.rs`'s builders), so what was signed was a body the peer chose. On the
+      port, `an_argument_that_would_close_its_literal_is_refused` is that case.",
+    note := "**This is Law 59's clause c for a second encoder.** 59c says an encoder never emits a shape \
+      outside its domain; here the domain is the literals that read back, and the encoder is the
+      printer rather than the bridge. It is a separate law rather than a clause of 59 because the \
+      *domain* is different — a printable literal is a syntactic object, not a wire value — and because
+      the failing thing is different: 59's writes go to a peer, this one's go into a term the node's
+      own key signs. **What the model does not claim:** the values are `Nat`s standing for a value and \
+      its read-back, so it says the *guard* and nothing about the encoding; that Rholang *could* have
+      an escape (it cannot — that is the grammar's choice, and it is why the answer is refusal rather
+      than quoting) is stated in the module doc, not modelled. **What the tie does not reach:** the
+      three printer warts Law 33 names are a different row's." },
 ]
 
 

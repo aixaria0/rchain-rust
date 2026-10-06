@@ -20,6 +20,8 @@ import Rchain.Install
 import Rchain.Session
 import Rchain.Perimeter
 import Rchain.Attribution
+import Rchain.Interop
+import Rchain.Literal
 import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Concurrent
