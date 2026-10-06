@@ -10,12 +10,18 @@
 //!
 //! **The parameters are Agoric's, not ours, and that is the entire basis on which this is
 //! interoperable.** `XX` with X25519, ChaCha20Poly1305 and **BLAKE2s**, an **empty prologue**, the
-//! three-flight SYN (132 B) / SYNACK (193 B) / ACK (64 B), and — the part that is *application*
-//! protocol rather than Noise — a payload of the sender's Ed25519 verifying key followed by its
-//! signature over its own X25519 static public. All of that is pinned by
-//! `rust/ocapn_noise` in Agoric's endo repository, which this module mirrors step for step, and the
-//! same `noise-protocol` and `noise-rust-crypto` crates produce the bytes on both sides, so the two
-//! implementations are the same code underneath rather than two that have to be argued equivalent.
+//! three-flight handshake — SYN 132 B sent behind a 32-byte **cleartext prefix** naming the intended
+//! responder, SYNACK 193 B, ACK 64 B — and, the part that is *application* protocol rather than Noise,
+//! a payload of the sender's Ed25519 verifying key followed by its signature over its own X25519
+//! static public. All of that is pinned by `rust/ocapn_noise` and `packages/ocapn-noise` in Agoric's
+//! endo repository, which this module mirrors step for step, and the same `noise-protocol` and
+//! `noise-rust-crypto` crates produce the bytes on both sides, so the two implementations are the same
+//! code underneath rather than two that have to be argued equivalent.
+//!
+//! **A dial therefore has to name the peer's Ed25519 key**, in the locator's `verify` hint (base16):
+//! the SYN's prefix *is* that key, and a responder refuses a SYN whose prefix is not its own before
+//! doing any cryptography — so the prefix is not decoration, it is the frame, and it is also what lets
+//! an intermediary route a handshake it must not be able to read.
 //!
 //! **Framing is this module's own, and it chunks.** A Noise transport message carries at most 65535
 //! bytes, well under the CapTP messages this codebase produces, so a message longer than one cipher
@@ -49,6 +55,13 @@ use crate::netlayer::{NetConn, Netlayer};
 const SYN_LEN: usize = 132;
 const SYNACK_LEN: usize = 193;
 const ACK_LEN: usize = 64;
+
+/// **The SYN goes on the wire prefixed with the intended responder's Ed25519 key.** The reference's
+/// binding computes `PREFIXED_SYN_LENGTH = 32 + 132` and sends both: the prefix is what lets an
+/// intermediary route a SYN it cannot (and must not) decrypt, and the responder reads it and refuses
+/// a SYN meant for someone else *before* doing any cryptography. A bare 132-byte SYN would be read as
+/// 32 bytes of key and 100 of message, so this is not a nicety — it is the frame.
+const PREFIXED_SYN_LEN: usize = VERIFYING_KEY_LEN + SYN_LEN;
 
 /// The handshake payloads: an Ed25519 verifying key, its signature over the sender's X25519 static
 /// public key, and the encoding-negotiation bytes the reference reserves (zeros here — it reads them
@@ -220,7 +233,24 @@ impl Netlayer for NoiseNetlayer {
                         format!("connecting to {host}:{port} took longer than {CONNECT_TIMEOUT:?}"),
                     )
                 })??;
-        let peer = initiate(stream, &self.identity).await?;
+        // **The peer's Ed25519 verifying key, which the SYN must be prefixed with.** The reference's
+        // binding takes it as an argument to its write-SYN call, and the responder refuses a SYN whose
+        // prefix is not its own key — so a dial that cannot name the peer cannot complete a handshake.
+        let peer_verifying = locator.hints.get("verify").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "noise needs a `verify` hint: the peer's Ed25519 verifying key, base16",
+            )
+        })?;
+        let peer_verifying: [u8; VERIFYING_KEY_LEN] = rchain_shared::base16::decode(peer_verifying)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "noise `verify` is not 32 bytes of base16",
+                )
+            })?;
+        let peer = initiate(stream, &self.identity, peer_verifying).await?;
         Ok(Box::new(peer))
     }
 
@@ -231,8 +261,12 @@ impl Netlayer for NoiseNetlayer {
     }
 }
 
-/// The initiator's half of the handshake: SYN, then read SYNACK, verify it, then ACK.
-async fn initiate(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result<NoiseConn> {
+/// The initiator's half of the handshake: prefixed SYN, then read SYNACK, verify it, then ACK.
+async fn initiate(
+    mut stream: TcpStream,
+    identity: &NoiseIdentity,
+    peer_verifying: [u8; VERIFYING_KEY_LEN],
+) -> io::Result<NoiseConn> {
     let mut handshake = NoiseHandshake::new(
         noise_xx(),
         true,   // initiator
@@ -249,7 +283,11 @@ async fn initiate(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result
     handshake
         .write_message(&identity.payload(INITIATOR_PAYLOAD_LEN)?, &mut syn)
         .map_err(|_| io::Error::other("writing the Noise SYN"))?;
-    stream.write_all(&syn).await?;
+    // The frame: the intended responder's key in the clear, then the SYN. See `PREFIXED_SYN_LEN`.
+    let mut prefixed = Vec::with_capacity(PREFIXED_SYN_LEN);
+    prefixed.extend_from_slice(&peer_verifying);
+    prefixed.extend_from_slice(&syn);
+    stream.write_all(&prefixed).await?;
     stream.flush().await?;
 
     let mut synack = vec![0u8; SYNACK_LEN];
@@ -283,8 +321,17 @@ async fn initiate(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result
 
 /// The responder's half: read SYN, answer SYNACK, then read and verify the ACK.
 async fn respond(mut stream: TcpStream, identity: &NoiseIdentity) -> io::Result<NoiseConn> {
-    let mut syn = vec![0u8; SYN_LEN];
-    stream.read_exact(&mut syn).await?;
+    let mut prefixed = vec![0u8; PREFIXED_SYN_LEN];
+    stream.read_exact(&mut prefixed).await?;
+    let (intended, syn) = prefixed.split_at(VERIFYING_KEY_LEN);
+    // **Refused before any cryptography**, as the reference does: a SYN that names another node is not
+    // this node's to answer, and answering it would be answering on someone else's behalf.
+    if intended != identity.verifying.as_slice() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the SYN named a different node as its intended responder",
+        ));
+    }
 
     let mut handshake = NoiseHandshake::new(
         noise_xx(),
@@ -415,13 +462,19 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn locator(addr: SocketAddr) -> PeerLocator {
+    /// A locator for `addr` naming the peer by its Ed25519 verifying key — which the dialler must
+    /// know, because the SYN is prefixed with it.
+    fn locator(addr: SocketAddr, verifying: [u8; VERIFYING_KEY_LEN]) -> PeerLocator {
         PeerLocator {
             designator: "peer".into(),
             transport: "noise".into(),
             hints: BTreeMap::from([
                 ("host".to_string(), addr.ip().to_string()),
                 ("port".to_string(), addr.port().to_string()),
+                (
+                    "verify".to_string(),
+                    rchain_shared::base16::encode(&verifying),
+                ),
             ]),
         }
     }
@@ -440,12 +493,12 @@ mod tests {
     /// other; what it cannot prove is that they agree with Agoric's, which the interop harness does.
     #[tokio::test]
     async fn a_noise_session_handshakes_and_carries_messages_both_ways() {
-        let server = NoiseNetlayer::bind(
-            "127.0.0.1:0",
-            NoiseIdentity::generate().expect("a fresh Noise identity"),
-        )
-        .await
-        .expect("bind");
+        let server_identity = NoiseIdentity::generate().expect("a fresh Noise identity");
+        // The dialler has to know the responder's Ed25519 key — the SYN is prefixed with it.
+        let peer_key = server_identity.verifying_key();
+        let server = NoiseNetlayer::bind("127.0.0.1:0", server_identity)
+            .await
+            .expect("bind");
         let addr = server.local_addr().expect("addr");
 
         let inbound = tokio::spawn(async move {
@@ -457,7 +510,7 @@ mod tests {
 
         let mut client = dialer()
             .await
-            .new_outgoing_connection(&locator(addr))
+            .new_outgoing_connection(&locator(addr, peer_key))
             .await
             .expect("dial");
         client.send(b"ping").await.expect("send");
@@ -471,12 +524,12 @@ mod tests {
     /// chunk boundary in both directions.
     #[tokio::test]
     async fn a_message_larger_than_one_cipher_message_crosses_intact() {
-        let server = NoiseNetlayer::bind(
-            "127.0.0.1:0",
-            NoiseIdentity::generate().expect("a fresh Noise identity"),
-        )
-        .await
-        .expect("bind");
+        let server_identity = NoiseIdentity::generate().expect("a fresh Noise identity");
+        // The dialler has to know the responder's Ed25519 key — the SYN is prefixed with it.
+        let peer_key = server_identity.verifying_key();
+        let server = NoiseNetlayer::bind("127.0.0.1:0", server_identity)
+            .await
+            .expect("bind");
         let addr = server.local_addr().expect("addr");
         let big: Vec<u8> = (0..(MAX_CHUNK_PLAINTEXT * 2 + 777))
             .map(|i| (i % 251) as u8)
@@ -492,7 +545,7 @@ mod tests {
 
         let mut client = dialer()
             .await
-            .new_outgoing_connection(&locator(addr))
+            .new_outgoing_connection(&locator(addr, peer_key))
             .await
             .expect("dial");
         client.send(&big).await.expect("send");
