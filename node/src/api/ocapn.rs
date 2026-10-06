@@ -5,16 +5,23 @@
 //! the node's end of that — a listener that serves a fresh session per connection — and the
 //! **bridge**: a chain-backed capability whose deliveries become signed deploys.
 //!
-//! **A node may listen on any of three transports, several, or (dial-only) none.**
+//! **A node may listen on any of four transports, several, or (dial-only) none.**
 //! `tcp-testing-only` is the OCapN project's own, which its README flags as "HIGHLY INSECURE — DO NOT
 //! USE IN PRODUCTION": plain TCP, no encryption, no authentication, so it is off unless
 //! `api-server.ocapn-listen` names an address and a node reachable from anywhere it does not control
 //! should leave it unset. `unix` (`api-server.ocapn-listen-unix`) takes a socket path and
 //! authenticates by the socket's file mode, but is reachable only from this host. **`noise`
-//! (`api-server.ocapn-listen-noise`) is the one a remote peer can use**: the handshake authenticates
+//! (`api-server.ocapn-listen-noise`) is the one a remote peer should use**: the handshake authenticates
 //! both ends and encrypts everything above it, with no certificate authority and no daemon, and it is
-//! checked against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`). It needs
-//! `api-server.ocapn-identity-key`, because the handshake names this node by a key it must hold.
+//! checked against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`).
+//! `websocket` (`api-server.ocapn-listen-websocket`) is the transport `@endo/ocapn` speaks, so it is
+//! the one a *published* peer can be pointed at — and it is **weaker**: as the reference writes it,
+//! `ws://` carries no TLS and its handshake has only the server prove itself.
+//!
+//! **The last two need `api-server.ocapn-identity-key`**, because both name this node by an Ed25519
+//! key it must hold: `noise` puts it in the SYN's cleartext prefix and `websocket` signs a challenge
+//! with it. That key is also what makes the node's designator a name a peer can *check* rather than a
+//! hash of the deployer key.
 //!
 //! **The bridge reuses Layer 1 rather than re-implementing it.** `docs/src/node/shard-invoke.md`
 //! established that a cross-shard call *is* a caller-signed deploy whose reply arrives on
@@ -59,6 +66,7 @@ use rchain_ocapn::par_value;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
 use rchain_ocapn::unix::UnixNetlayer;
+use rchain_ocapn::websocket::WebsocketNetlayer;
 use rchain_rholang::pretty_printer::PrettyPrinter;
 use rchain_shared::base16;
 use tokio::sync::watch;
@@ -130,6 +138,13 @@ const CHAIN_REPLY_DEPTH: i32 = 50;
 /// descriptor ceiling; the parameter that matters for an operator is that it is *finite*.
 const MAX_SESSIONS: usize = 64;
 
+/// How long the accept loop waits before trying again after a connection it could not establish.
+///
+/// Small, because an honest peer establishes in milliseconds and the retry exists only to keep a
+/// listener that has genuinely broken from spinning a core; large enough that a peer which can only
+/// fail holds the loop for a fraction of the time rather than all of it.
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Where the node listens for OCapN peers (issue #249).
 ///
 /// **A fixed struct rather than a list, because the accept loop's `select!` is fixed-arity**: each
@@ -154,12 +169,26 @@ pub struct OcapnListeners {
     pub unix: Option<String>,
     /// `host:port` for the `noise` transport, which authenticates both ends and encrypts the channel.
     pub noise: Option<String>,
+    /// `host:port` for the `websocket` transport — the one `@endo/ocapn` speaks, and so the one a
+    /// published peer can be pointed at. **Weaker than `noise`**: as the reference writes it, `ws://`
+    /// carries no TLS and authenticates only the server. Reach for `noise` unless the peer speaks
+    /// nothing else.
+    pub websocket: Option<String>,
 }
 
 impl OcapnListeners {
     /// Whether the node listens on any transport. A node that listens on none is dial-only.
     pub fn any(&self) -> bool {
-        self.tcp.is_some() || self.unix.is_some() || self.noise.is_some()
+        self.tcp.is_some()
+            || self.unix.is_some()
+            || self.noise.is_some()
+            || self.websocket.is_some()
+    }
+
+    /// Whether any configured transport needs the node's own key material — which is the two that
+    /// authenticate with it, as opposed to the two that do not.
+    pub fn needs_identity(&self) -> bool {
+        self.noise.is_some() || self.websocket.is_some()
     }
 }
 
@@ -307,6 +336,34 @@ impl Listener {
             None => std::future::pending().await,
         }
     }
+
+    /// Accept one connection, **retrying a failure rather than letting it end the listener**.
+    ///
+    /// **The two establishing transports fail their accept for reasons a peer chooses.** `noise` runs
+    /// a handshake inside accept and `websocket` an upgrade and an in-band challenge, so a peer that
+    /// connects and then abandons one fails the accept — and a listener that ended there would let a
+    /// port scan take the node's whole OCapN surface down with a connection it did not even have to
+    /// finish. `tcp-testing-only` and `unix` fail only for real listener trouble, which is retried
+    /// here too and said out loud at `warn`: the delay is what keeps a listener that has genuinely
+    /// broken from spinning a core while it complains, and a burst of warnings is a signal an operator
+    /// can act on where a silent death is not.
+    ///
+    /// Never returns for a transport the node does not listen on — `accept` is `pending()` there.
+    async fn accept_recovering(
+        &self,
+        log: &Arc<dyn rchain_shared::log::Log>,
+        source: rchain_shared::log::LogSource,
+    ) -> (Box<dyn NetConn>, PeerLocator) {
+        loop {
+            match self.accept().await {
+                Ok(accepted) => return accepted,
+                Err(e) => {
+                    log.warn(source, &format!("an OCapN connection was refused: {e}"));
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                }
+            }
+        }
+    }
 }
 
 /// Bind the `tcp-testing-only` listener and build the location a peer reaches it at.
@@ -415,6 +472,34 @@ async fn listen_noise(
     Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
 }
 
+/// Bind the `websocket` listener and build the location a peer reaches it at.
+///
+/// The location carries the `url` hint the reference reads — it appends no path and no query, so the
+/// whole address is the hint — and this node's Ed25519 verifying key, which the peer checks the
+/// challenge response against.
+async fn listen_websocket(
+    address: &str,
+    policy: DialPolicy,
+    designator: &str,
+    chain: usize,
+    identity: NoiseIdentity,
+    log: &Arc<dyn rchain_shared::log::Log>,
+    source: rchain_shared::log::LogSource,
+) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
+    let bound = WebsocketNetlayer::bind(address, identity)
+        .await
+        .map_err(|e| e.to_string())?;
+    let local = bound.local_addr().map_err(|e| e.to_string())?;
+    log.info(
+        source,
+        &format!(
+            "OCapN listener serving websocket on {local} ({chain} chain-backed capability/ies)"
+        ),
+    );
+    let location = bound.location(designator).map_err(|e| e.to_string())?;
+    Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
+}
+
 /// Serve OCapN on every configured transport until the node is asked to stop.
 ///
 /// The task is spawned whether or not any transport is configured — a node that listens on none is
@@ -469,14 +554,14 @@ pub async fn serve_ocapn(
     };
     // **A `noise` address without an identity is a configuration the node cannot honour**, and it says
     // so rather than binding a listener whose name would be thirty-two zero bytes.
-    let noise = match (listeners.noise.as_deref(), noise_identity) {
+    let noise = match (listeners.noise.as_deref(), noise_identity.as_ref()) {
         (Some(address), Some(identity)) => Some(
             listen_noise(
                 address,
                 policy.clone(),
                 &designator,
                 chain.len(),
-                identity,
+                identity.clone(),
                 &log,
                 source,
             )
@@ -484,8 +569,32 @@ pub async fn serve_ocapn(
         ),
         (Some(_), None) => {
             return Err(
-                "api-server.ocapn-listen-noise is set but no Noise identity was provided; set \
+                "api-server.ocapn-listen-noise is set but the node has no identity; set \
                  api-server.ocapn-identity-key so the node has a name a peer can check"
+                    .to_string(),
+            )
+        }
+        (None, _) => None,
+    };
+    // The same shape, and the same requirement: the challenge response is signed with the node's key,
+    // so a websocket listener without one could not answer it.
+    let websocket = match (listeners.websocket.as_deref(), noise_identity.as_ref()) {
+        (Some(address), Some(identity)) => Some(
+            listen_websocket(
+                address,
+                policy.clone(),
+                &designator,
+                chain.len(),
+                identity.clone(),
+                &log,
+                source,
+            )
+            .await?,
+        ),
+        (Some(_), None) => {
+            return Err(
+                "api-server.ocapn-listen-websocket is set but the node has no identity; set \
+                 api-server.ocapn-identity-key so the node has a key to answer the challenge with"
                     .to_string(),
             )
         }
@@ -505,6 +614,9 @@ pub async fn serve_ocapn(
     if let Some((layer, _)) = &noise {
         dialer = dialer.with("noise", layer.clone());
     }
+    if let Some((layer, _)) = &websocket {
+        dialer = dialer.with("websocket", layer.clone());
+    }
     let dialer: Arc<dyn Netlayer> = Arc::new(dialer);
     // The location this node advertises in a dial it starts itself. **`noise` first, then the order
     // that predates it (tcp, then unix)**: a peer that is handed this location has to be able to dial
@@ -515,10 +627,12 @@ pub async fn serve_ocapn(
         .as_ref()
         .or(tcp.as_ref())
         .or(unix.as_ref())
+        .or(websocket.as_ref())
         .map(|(_, location)| location.clone());
     let tcp = Listener::new(tcp);
     let unix = Listener::new(unix);
     let noise = Listener::new(noise);
+    let websocket = Listener::new(websocket);
     // One registry and one gift store for the node's whole OCapN surface: the crossed-hello rule
     // compares the sessions *this node* has with a peer, and a handoff is deposited on one session
     // and withdrawn on another.
@@ -548,9 +662,10 @@ pub async fn serve_ocapn(
         let (connection, location) = tokio::select! {
             // The operator's word, and a dropped coordinator, both land here.
             _ = stop_requested(stop.clone()) => return Ok(()),
-            accepted = tcp.accept() => accepted.map_err(|e| e.to_string())?,
-            accepted = unix.accept() => accepted.map_err(|e| e.to_string())?,
-            accepted = noise.accept() => accepted.map_err(|e| e.to_string())?,
+            accepted = tcp.accept_recovering(&log, source) => accepted,
+            accepted = unix.accept_recovering(&log, source) => accepted,
+            accepted = noise.accept_recovering(&log, source) => accepted,
+            accepted = websocket.accept_recovering(&log, source) => accepted,
         };
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
             // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
@@ -1273,6 +1388,7 @@ mod tests {
                 tcp: Some("127.0.0.1:0".to_string()),
                 unix: None,
                 noise: None,
+                websocket: None,
             },
             Vec::new(),
             "rnode-test".to_string(),
@@ -1319,6 +1435,7 @@ mod tests {
                 tcp: None,
                 unix: Some(path.display().to_string()),
                 noise: None,
+                websocket: None,
             },
             Vec::new(),
             "rnode-test".to_string(),

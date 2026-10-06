@@ -23,6 +23,7 @@ use rchain_ocapn::noise::NoiseNetlayer;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
 use rchain_ocapn::unix::UnixNetlayer;
+use rchain_ocapn::websocket::WebsocketNetlayer;
 
 /// The echo fixture's swiss number, as the conformance suite spells it.
 const ECHO_SWISS: &[u8] = b"IO58l1laTyhcrgDKbEzFOO32MDd6zE5w";
@@ -331,6 +332,93 @@ fn a_peer_dials_the_node_over_noise_and_reaches_its_ertp_capability() {
             delivered.args[0],
             Value::Symbol("fulfill".into()),
             "the ERTP capability should be fulfilled over noise; got {:?}",
+            delivered.args.get(1)
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The node serves a peer over `websocket`** — the transport `@endo/ocapn` speaks, and so the one a
+/// published Agoric peer can reach. Weaker than `noise` (no TLS, and only the server proves itself),
+/// but it is the transport with a live peer to interoperate with.
+///
+/// The dialler has to name the node by its Ed25519 key, exactly as over `noise`: the in-band
+/// challenge is a signature the dialler checks against that key, and a node that could not produce it
+/// would be indistinguishable from an impostor.
+#[test]
+fn a_peer_dials_the_node_over_websocket_and_reaches_its_ertp_capability() {
+    let dir = common::temp_dir("ocapn-ws");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    let identity_path = dir.join("ocapn-identity.key");
+    conf.api_server.ocapn_listen_websocket = Some(format!("127.0.0.1:{}", ports[5]));
+    conf.api_server.ocapn_identity_key = Some(identity_path.display().to_string());
+    // One transport at a time.
+    conf.api_server.ocapn_listen = None;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+
+        let stored = std::fs::read(&identity_path).expect("the node should write its identity");
+        assert_eq!(stored.len(), 64, "an Ed25519 seed then an X25519 static");
+        let node_identity = rchain_ocapn::noise::NoiseIdentity::new(
+            stored[..32].try_into().expect("32 bytes"),
+            stored[32..].try_into().expect("32 bytes"),
+        )
+        .expect("a valid identity");
+        let verify = rchain_shared::base16::encode(&node_identity.verifying_key());
+
+        let dialer = WebsocketNetlayer::bind(
+            "127.0.0.1:0",
+            rchain_ocapn::noise::NoiseIdentity::generate().expect("a fresh identity"),
+        )
+        .await
+        .expect("bind the dialing side");
+        let locator = PeerLocator {
+            designator: verify.clone(),
+            transport: "websocket".to_string(),
+            hints: std::collections::BTreeMap::from([
+                ("url".to_string(), format!("ws://127.0.0.1:{}", ports[5])),
+                ("verify".to_string(), verify),
+            ]),
+        };
+        let connection = dialer
+            .new_outgoing_connection(&locator)
+            .await
+            .expect("the node should answer the in-band challenge");
+        let identity = Identity::fresh(locator.clone()).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the CapTP handshake over websocket");
+
+        let fetch = Deliver {
+            to: Desc::Export(0u64.into()),
+            args: vec![
+                Value::Symbol("fetch".into()),
+                Value::Bytes(ERTP_SWISS.to_vec()),
+            ],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+        };
+        client
+            .send_message(&fetch.to_syrup())
+            .await
+            .expect("send the fetch");
+        let reply = client
+            .recv_message()
+            .await
+            .expect("read the reply")
+            .expect("a reply, not a closed connection");
+        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+        assert_eq!(
+            delivered.args[0],
+            Value::Symbol("fulfill".into()),
+            "the ERTP capability should be fulfilled over websocket; got {:?}",
             delivered.args.get(1)
         );
 

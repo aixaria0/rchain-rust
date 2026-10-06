@@ -402,7 +402,13 @@ pub struct Run {
     #[arg(long = "ocapn-listen-noise")]
     pub ocapn_listen_noise: Option<String>,
 
-    /// Where this node's Noise identity is kept (64 bytes, mode `0600`); created on first use.
+    /// Bind the OCapN **`websocket`** listener on this `host:port`; off when unset. The transport
+    /// `@endo/ocapn` speaks, and weaker than `--ocapn-listen-noise`. Needs `--ocapn-identity-key`.
+    #[arg(long = "ocapn-listen-websocket")]
+    pub ocapn_listen_websocket: Option<String>,
+
+    /// Where this node's OCapN identity is kept (64 bytes, mode `0600`); created on first use. Required
+    /// by the `noise` and `websocket` listeners, which authenticate with it.
     #[arg(long = "ocapn-identity-key")]
     pub ocapn_identity_key: Option<String>,
 

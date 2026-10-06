@@ -247,6 +247,9 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         ocapn_listen_unix: to_optional_string(h, "ocapn-listen-unix")?.filter(|s| !s.is_empty()),
         // The `noise` transport, same shape again.
         ocapn_listen_noise: to_optional_string(h, "ocapn-listen-noise")?.filter(|s| !s.is_empty()),
+        // And the `websocket` one.
+        ocapn_listen_websocket: to_optional_string(h, "ocapn-listen-websocket")?
+            .filter(|s| !s.is_empty()),
         // Where the node's Noise identity lives; absent means "generate one in memory", which is only
         // usable with no `noise` listener.
         ocapn_identity_key: to_optional_string(h, "ocapn-identity-key")?.filter(|s| !s.is_empty()),

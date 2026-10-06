@@ -63,6 +63,11 @@ const SIG_ENVELOPE: &str = "desc:sig-envelope";
 /// on the node's side is a session slot.
 const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long the TLS handshake and the WebSocket upgrade may take, together. **The reference bounds
+/// neither**, and without a bound a peer that connects and then sends nothing holds this connection
+/// for ever — which, because the upgrade runs inside the node's accept loop, is every peer.
+const ESTABLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The byte stream under the WebSocket layer, as a trait object — the one place the two ways in
 /// differ, since a plain listener yields `TcpStream` and a TLS one yields `TlsStream<TcpStream>`.
 ///
@@ -168,19 +173,39 @@ impl Netlayer for WebsocketNetlayer {
         Ok(Box::new(conn))
     }
 
+    /// The socket is accepted, then the transport, the WebSocket upgrade and the in-band challenge
+    /// run — **each bounded**, because the peer chooses how long to take at every one of them.
+    ///
+    /// **The residual, stated rather than hidden.** Everything up to and including the challenge runs
+    /// *here*, inside the node's accept loop, so a peer that connects and then stays silent holds that
+    /// loop until [`ESTABLISH_TIMEOUT`] elapses. [`crate::noise`] does not have this shape: its accept
+    /// is a socket accept and the handshake runs in the session task. The fix is the same one — defer
+    /// the upgrade to the connection's first use — and it is deferred here rather than done because
+    /// unifying the two directions under one stream type means hand-rolling the dialler's TLS, which
+    /// `connect_async` does internally. Named, not forgotten.
     async fn accept_incoming_connection(&self) -> io::Result<Box<dyn NetConn>> {
         let (tcp, peer_addr) = self.listener.accept().await?;
-        // The transport first, then the WebSocket layer, then the in-band handshake. The two arms
-        // produce different stream types, so the byte stream is boxed *before* the WebSocket layer is
-        // built — after which everything downstream is one type.
-        let io: BoxedIo = match &self.tls {
-            Some(config) => {
-                let acceptor = tokio_rustls::TlsAcceptor::from(config.clone());
-                Box::new(acceptor.accept(tcp).await?)
-            }
-            None => Box::new(tcp),
+        let establishing = async {
+            // The transport first, then the WebSocket layer. The two arms produce different stream
+            // types, so the byte stream is boxed *before* the WebSocket layer is built — after which
+            // everything downstream is one type.
+            let io: BoxedIo = match &self.tls {
+                Some(config) => {
+                    let acceptor = tokio_rustls::TlsAcceptor::from(config.clone());
+                    Box::new(acceptor.accept(tcp).await?)
+                }
+                None => Box::new(tcp),
+            };
+            accept_async(io).await.map_err(io::Error::other)
         };
-        let stream = accept_async(io).await.map_err(io::Error::other)?;
+        let stream = tokio::time::timeout(ESTABLISH_TIMEOUT, establishing)
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("the websocket upgrade took longer than {ESTABLISH_TIMEOUT:?}"),
+                )
+            })??;
         let mut conn = WsConn::new(stream, Some(peer_addr));
         authenticate_as_server(&mut conn, &self.identity).await?;
         Ok(Box::new(conn))

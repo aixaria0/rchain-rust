@@ -352,6 +352,11 @@ pub fn from_options(options: &Options) -> Hocon {
         );
         opt_str(
             &mut e,
+            "api-server.ocapn-listen-websocket",
+            &run.ocapn_listen_websocket,
+        );
+        opt_str(
+            &mut e,
             "api-server.ocapn-identity-key",
             &run.ocapn_identity_key,
         );

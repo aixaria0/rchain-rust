@@ -1289,24 +1289,27 @@ pub async fn setup_node_program(
         tcp: conf.api_server.ocapn_listen.clone(),
         unix: conf.api_server.ocapn_listen_unix.clone(),
         noise: conf.api_server.ocapn_listen_noise.clone(),
+        websocket: conf.api_server.ocapn_listen_websocket.clone(),
     };
-    // **The node's Noise identity**, loaded or generated at the configured path. Required exactly when
-    // the `noise` listener is configured, because that handshake names the node by a key it must hold
-    // — and this is also the point where the node stops being nameless: `node_designator` below is a
-    // *hash* of the deployer key and cannot sign, while this is a key a peer can hold in advance.
-    let ocapn_identity = match (&ocapn_listeners.noise, &conf.api_server.ocapn_identity_key) {
-        (Some(_), Some(path)) => Some(crate::api::ocapn::load_or_create_noise_identity(path)?),
-        (Some(_), None) => {
+    // **The node's OCapN identity**, loaded or generated at the configured path. Required exactly by
+    // the two transports that authenticate with it — `noise` names the node by the key, and
+    // `websocket` signs its challenge response with it — and this is also where the node stops being
+    // nameless: `node_designator` below is a *hash* of the deployer key and cannot sign, while this is
+    // a key a peer can hold in advance.
+    let ocapn_identity = match (ocapn_listeners.needs_identity(), &conf.api_server.ocapn_identity_key)
+    {
+        (true, Some(path)) => Some(crate::api::ocapn::load_or_create_noise_identity(path)?),
+        (true, None) => {
             return Err(
-                "api-server.ocapn-listen-noise needs api-server.ocapn-identity-key: the handshake \
-                 names this node by an Ed25519 key, and a node with no key file cannot hold one across \
-                 restarts"
+                "api-server.ocapn-listen-noise and api-server.ocapn-listen-websocket need \
+                 api-server.ocapn-identity-key: both name this node by an Ed25519 key it must hold, \
+                 and a node with no key file cannot hold one across restarts"
                     .to_string(),
             )
         }
-        // A key file without a listener is not an error — it is what a node that will be dialled
+        // A key file without either listener is not an error — it is what a node that will be dialled
         // rather than dialling looks like — but nothing consumes it, so the designator does not move.
-        (None, _) => None,
+        (false, _) => None,
     };
     // **This node's OCapN designator** — its name. When the node has a Noise identity the designator
     // **is** the Ed25519 verifying key, because that is the name the handshake actually checks: a peer

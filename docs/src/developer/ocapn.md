@@ -249,10 +249,11 @@ bind, and a rate limit — which is why that route is off by default.
 
 ## 7. Writing a transport
 
-The node speaks three: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
+The node speaks four: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
 encryption, no authentication, which is why the listener is off unless you name an address — `unix`, a
-domain socket authenticated by its file mode (`0600`) but reachable only from this host, and `noise`,
-which is the one a remote peer can use. A fourth is small, because the seam is two functions
+domain socket authenticated by its file mode (`0600`) but reachable only from this host; `noise`, which
+is the one a remote peer should use; and `websocket`, which is the one `@endo/ocapn` speaks and the
+weaker of the two networked ones. A fifth is small, because the seam is two functions
 (`ocapn/src/netlayer.rs`):
 
 ```rust
@@ -294,6 +295,17 @@ prefix naming the intended responder. `spec/audit/evidence/ocapn-noise/` drives 
 pinned commit, against this module, and the handshake completes. **Read that transcript before changing
 anything in the handshake**: it also says what the run does *not* cover — the record framing, for which
 the reference ships no counterpart.
+
+**`websocket` is built too, and is the weaker of the two** (`ocapn/src/websocket.rs`,
+`api-server.ocapn-listen-websocket`). Its reason to exist is that `@endo/ocapn` 1.1.1 — a *published*
+peer — speaks it. What the reference actually defines, read rather than assumed: framing is **one
+WebSocket frame per CapTP message with nothing inside it**; the URL is a single `url` hint used
+verbatim, with no path or query; and before any CapTP byte there is an in-band **`init:peer-auth` /
+`desc:sig-envelope`** exchange in which the server signs the bytes it received and the client checks
+that signature against the key the dial named. As Endo writes it, `ws://` has **no TLS** and the
+*client* proves nothing, so this transport adds interop breadth and not security — reach for `noise`.
+The reference also sets **no size limit and no timeout anywhere**; the bounds in the module are this
+port's additions and say so.
 
 ### Unix domain sockets as the inner hop
 
