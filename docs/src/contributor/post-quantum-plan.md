@@ -399,7 +399,7 @@ sunset, M4 left as research.
 | **P0′. Opt-in PQ vaults (§15)** | `PQVault.rho` (hash-based one-time signatures in Rholang), client signer, phlo measurements, audit; deployed as an ordinary contract | **No** | nothing; can start immediately |
 | **P0. Groundwork** | ML-DSA (and SLH-DSA) in `crypto` behind a feature, **not** in `from_algorithm`; NIST KAT tests on host and wasm32; benchmarks; size budget measured on a real block; fix the `var_size` panic path into a typed error; `ValidatorId` type introduced internally | No | — |
 | **P1. Node-local and transport** | rustls `aws-lc-rs` provider with hybrid ML-KEM; hybrid ML-KEM in the OCapN Noise handshake; application-level ML-DSA node handshake; deploy-status by content ID alongside signature; wallet/client libraries (`rnode` CLI, JS client) able to produce ML-DSA deploys against a dev net | No | P0 |
-| **P2. Fork 1: block version 2** | `from_algorithm` gains `ml-dsa-44`/`ml-dsa-65` for v2 blocks; key IDs in `sender`, `bonds`, seed, `deployerId`; key registry; content-hash deploy IDs; new address version; phlo pricing for signature bytes; `mlDsa44Verify` system process; finality "never revert below LFS" rule | **Yes, coordinated** | P0, P1, issue #83 fixed (epoch rebond) |
+| **P2. Fork 1: block version 2** | `from_algorithm` gains `ml-dsa-44`/`ml-dsa-65` for v2 blocks; key IDs in `sender`, `bonds`, seed, `deployerId`; key registry; content-hash deploy IDs; new address version; phlo pricing for signature bytes; `mlDsa44Verify` system process; finality "never revert below LFS" rule | **Yes, coordinated**; a testnet restart today, so land it now (§14.2) | P0, P1; issue #83 fixed before validators rebond |
 | **P3. Transition window** | Validators rebond with PQ keys at epoch boundaries (D3-a); users move funds (M1) or commit (M3); monitor the share of value still on revealed secp256k1 keys | No new fork | P2 |
 | **P4. Fork 2: sunset** | v3 blocks reject secp256k1 deploys and validator signatures; freeze unmigrated revealed-key vaults (M5); M3 reveals accepted | **Yes, coordinated** | P3 metrics |
 | **Emergency** | A pre-reviewed P4 branch kept rebased on `dev`, so a credible quantum break can be answered with a fork in days rather than months | Yes | P2 deployed |
@@ -460,7 +460,8 @@ transition as code that is already present and only waiting to be switched on.
 **Recommendation.** Fold P2 and P4 into one "agility fork" that carries H1, H3, H4 and H5, with the sunset height
 set conservatively far out and **H2 as the only way to move it earlier**. Pulling the sunset forward is then a
 governance vote, not an emergency release, which is exactly what the emergency playbook in §11 needed. Start
-H6 now, since it needs no fork.
+H6 now, since it needs no fork. **Land the agility fork now, not when a trigger fires** (§14.2): today a hard fork
+costs only a testnet restart.
 
 What still forces a future fork: a break in ML-DSA itself that requires a scheme *not* compiled into the binary,
 or a change to the block format beyond the headroom in H4. H3's dormant SLH-DSA is the hedge for the first.
@@ -468,8 +469,9 @@ or a change to the block format beyond the headroom in H4. H3's dormant SLH-DSA 
 
 ### 14.1 Triggers: what evidence moves each step
 
-H2 makes it possible to pull the sunset forward with a governance vote. These triggers say what evidence should
-prompt that vote, so the decision is made against criteria agreed in advance rather than under pressure. They
+The agility fork itself is not trigger-gated: it lands now (§14.2). What the triggers govern is the **sunset of
+classical cryptography**, which the fork ships dormant. H2 makes it possible to pull the sunset forward with a
+governance vote. These triggers say what evidence should prompt that vote, so the decision is made against criteria agreed in advance rather than under pressure. They
 are cumulative, and each is a public, checkable event. The idea and the first two thresholds come from DarkWow's
 [quantum threat model](https://github.com/PatrickMockridge/DarkWow/blob/linear-master/doc/src/arch/quantum-threat.md);
 the actions are this plan's.
@@ -477,12 +479,49 @@ the actions are this plan's.
 | # | Trigger | Observable signal | Action here |
 |---|---|---|---|
 | T0 | None: the state today | — | P0′, P0″, P0 and P1 proceed; the agility fork is built and tested |
-| T1 | ≥ 1,500 error-corrected logical qubits demonstrated, two-qubit gate fidelity above 99.9% | Peer-reviewed result, or a NIST/NSA/NCSC advisory | Activate the agility fork if it is not live; open the dual-format window; validators rebond with PQ keys; wallets start prompting exposed high-value accounts; set a deadline for M3 commitments |
+| T1 | ≥ 1,500 error-corrected logical qubits demonstrated, two-qubit gate fidelity above 99.9% | Peer-reviewed result, or a NIST/NSA/NCSC advisory | Open the dual-format window if it is not already open (the agility fork itself is already live, §14.2); validators rebond with PQ keys; wallets start prompting exposed high-value accounts; set a deadline for M3 commitments |
 | T2 | A quantum break of a small ECDLP instance (≥ 112-bit, e.g. secp112r1) | Published cryptanalysis | Governance moves the sunset to a short fixed horizon; no new secp256k1 validator bonds |
 | T3 | Standards bodies deprecate ECDSA/EdDSA for new systems | A NIST IR or FIPS publication (NIST IR 8547 sets a deprecation timeline; check its current dates) | Sunset height no later than the date those algorithms are disallowed |
 | T4 | A cryptographically relevant quantum computer is demonstrated (256-bit ECDLP, or RSA-2048 factored) | Published result | Emergency: activate the sunset now through H2; freeze unmigrated revealed-key vaults (M5); accept only PQ deploys; exclude validators without PQ keys at the next epoch |
 
 The evidence for any trigger is recorded on the tracking issue before the governance deploy that acts on it.
+
+
+### 14.2 Timing: land the agility fork now
+
+There are no external validators yet. A **hard fork** — one that needs a new genesis — therefore costs a testnet
+restart and nothing else, and every month that passes makes the same change dearer. So the agility fork is
+recommended **now**, rather than gated on trigger T1. Once it has landed, every later post-quantum change it
+anticipated (activating a dormant scheme, moving the sunset, accepting native ML-DSA in `PQVault`) is a table
+activation or, at most, an R-node binary swap, not another genesis.
+
+Two kinds of fork, in the sense this project uses the words:
+
+| | **Soft fork** | **Hard fork** |
+|---|---|---|
+| What changes | The `rnode` binary; the chain continues from its current state | The genesis; the testnet restarts |
+| Example | The deployer index (#277); activating a row the agility fork shipped dormant | The agility fork itself: block version 2, key IDs, content-hash deploy IDs, the seed version byte |
+| When it can happen | Any time **until external validators exist**, since every validator is ours to upgrade | Now cheaply; after external validators join, only with their coordination and a migration of their state |
+| What it costs | A coordinated binary replacement | A restart, plus the state-preservation step below |
+
+Once external validators join, a binary change that alters what is valid becomes a coordinated upgrade too.
+That is the deadline this section is racing.
+
+### 14.3 State preservation across a hard fork
+
+A hard fork restarts the testnet, so before it runs there has to be a documented export-and-replay step, so that
+no prior information is lost. Three options, from cheapest to most complete:
+
+| Option | What carries over | What is lost | Cost |
+|---|---|---|---|
+| **S1. Balances and bonds into the new genesis** | REV balances per address into `wallets.txt`, and stake per validator into `bonds.txt`, read at the last finalized state (LFS) | Contract state, registry entries, unforgeable names, history | Small: a read of the vault and PoS state at LFS, and a script that writes the two genesis files |
+| **S2. Archive the old chain read-only** | Full history, served by one node that keeps the old block store and API | Nothing is deleted, but the old chain is no longer extended | Small, and composes with S1 or S3 |
+| **S3. A state-carrying genesis** | All RSpace state: the new genesis starts from the old LFS post-state root, exported as the trie the node already transfers to joining nodes (the LFS sync path; `casper/tests/fringe_restore.rs` exercises the restore side) | Block history, unless S2 is also done | Medium: genesis has to accept an imported state root instead of building one. Names already in state are just values and survive; only **new** names use the v2 seed |
+
+**Recommendation: S1 + S2 now, S3 if the testnet holds contract state anyone needs.** The checklist before
+pulling the trigger: freeze deploys at a named block; record the LFS block hash and state root; export balances and
+bonds (and the state trie, for S3); publish the hashes of every export, so the new genesis can be checked against
+them; keep the archive node running.
 
 ---
 
