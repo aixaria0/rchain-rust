@@ -89,8 +89,12 @@ booked under is returned so `forget` takes the same key. Both rows are **fixed h
 that can prove a name** — over `websocket` the accepted side has nothing to prove (D2), so the
 assertion is all there is, and that is the transport's protocol rather than a gap this code leaves.
 
-**Tier 2 — registered, not done**: `bind_tls` being unreachable (E13), and the dialed-session count
-not drawn from the session ceiling (C241).
+**Tier 2 — the two rows this study left registered, both now closed.** The dialed-session count is
+drawn from the **same** ceiling: `MAX_DIALED_SESSIONS` is reserved out of `MAX_SESSIONS` and the accept
+paths split the remainder, so the node's whole session surface is the ceiling whichever way a session
+was made (C241 — the study had only bounded the dials, at a second number beside the ceiling, which is
+not what the row asked for). `bind_tls` stays unreachable, with the module doc corrected so it no
+longer advertises `wss://` (E13).
 
 **Tier 3 — corrected in the docs and comments**: five stale claims (F1, F3, F4, F6, F8) and the
 `listen_tcp` designator comment.
@@ -128,10 +132,10 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **A11** | N1 | Late | the responder writes its SYNACK before verifying the initiator's payload | read | S4 | L-B | **saves** (XX binds the initiator's static only in message 3 — the order is forced) | **refuted** |
 | **B1/C1/E3** | N2/N4 | As well as | the ws accept runs TLS+upgrade+challenge inside the accept loop, holding it up to 40 s | read | S2 | L-A | **partly** — the loop-hold is **measured false**; a ws-**only** node still holds one establish | **registered** (the doc's residual claim corrected; the ws-only case stands) |
 | **B2** | N4 | Other than | the non-`biased` `select!` drops a pending ws accept when another arm fires, **silently resetting an honest peer mid-challenge** (`H5`) | measured | S3 | L-D | **partly** (self-healing; a `biased` select would be worse) | **fixed here** — one accept task per transport, and the falsifier parks a websocket upgrade while a connection lands on `tcp` |
-| **B3/C2, C3/E4** | N7/N4 | No | no idle or lifetime bound on an established session: 64 post-handshake silent peers hold every permit, and the refusal is transport-blind (`H3`) | measured | S2 | L-A | **saves** (deliberate; the prior study declined a steady-state timeout) | **fixed here, for the half that is a defect** — each transport now holds its own share of the ceiling and the shares sum to it, so the unauthenticated path cannot take the whole surface; the *lifetime* half stays a decision, now stated as one rather than left implicit |
+| **B3/C2, C3/E4** | N7/N4 | No | no idle or lifetime bound on an established session: 64 post-handshake silent peers hold every permit, and the refusal is transport-blind (`H3`) | measured | S2 | L-A | **saves** (deliberate; the prior study declined a steady-state timeout) | **fixed here, for the half that is a defect** — each transport now holds its own share of the ceiling and the shares sum to the ceiling less the dial reserve, so the unauthenticated path cannot take the whole surface; the *lifetime* half stays a decision, now stated as one rather than left implicit |
 | **B4** | N7 | Other than | the enlivener and greeter await a dial-and-fetch inside `handle_deliver`, on the session loop | read | S3 | L-B | **saves** (fixtures are per-session: a peer stalls only itself) | **closed by decision** — inconsistent with Law 61, blast radius one self-inflicted session |
 | **B5** | N6 | As well as | `DialPolicy` calls a **blocking** `to_socket_addrs` on the async dial path | read | S3 | L-B | **partly** (bounded; only for a name target) | **fixed here** — the dial path judges a name through `permits_from_async`, which resolves it on a blocking thread; literals are judged inline as before |
-| **B6/C8** | N6/N7 | No | dialed sessions are not counted against `MAX_SESSIONS` | read | S3 | L-B | **partly** (bounded by `MAX_PEERS = 256`, not unbounded) | **registered** |
+| **B6/C8** | N6/N7 | No | dialed sessions are not counted against `MAX_SESSIONS` | read | S3 | L-B | **partly** (bounded by `MAX_PEERS = 256`, not unbounded) | **fixed here** (C241) — the reserve is carved out of the ceiling, so accepts split `MAX_SESSIONS` less `MAX_DIALED_SESSIONS` and the node's surface is the ceiling however a session was made |
 | **B7** | N7 | More | each `Reply::Deferred` spawns a waiter task polling the global gift store 10 ms for 10 s; the cap bounds landed answers, not waiters | read | S2 | L-B | **partly** (each is O(1) and short-lived; the "absent gift" behaviour is correct) | **fixed here** — live waiters are capped per session (`MAX_DEFERRED_WAITERS`) and the delivery past the cap is refused with a `break` |
 | **B8/E15** | N8 | Reverse | shutdown drains the listener but not its detached session tasks | read | S4 | L-B | **partly** (the deploy is submitted before the reply wait; only the peer's answer is cut) | **fixed here** — the operator's stop word ends a session too, so a drain drains the sessions it started |
 | **B9** | N4 | Late | the ceiling is consulted after establishment | read | S4 | L-B | **saves** (the conn does not exist before that; checking earlier would block *all* accepts) | **refuted** |
@@ -217,8 +221,9 @@ TOP  one transport's whole share held by one unauthenticated peer; honest sessio
 
   AMPLIFIER, now severed: the ceiling was ONE transport-blind semaphore, so the unauthenticated
   `websocket` path could starve the authenticated `noise` path. **Fixed here** — every transport
-  holds its own share of the ceiling, and the shares sum to it rather than nesting under it, so the
-  amplifier is gone and the top event is one transport's share rather than the node's surface.
+  holds its own share of the ceiling, and the shares sum to the ceiling less the dial reserve rather
+  than nesting under it, so the amplifier is gone and the top event is one transport's share rather
+  than the node's surface.
 
   NOT BARRIERS, named: the share is the bound whose exhaustion IS the top event (of that transport);
   the ceiling warn+drop observes the fault rather than preventing it, and names no peer — it now

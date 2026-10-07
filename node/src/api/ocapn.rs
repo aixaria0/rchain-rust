@@ -51,6 +51,7 @@ use rchain_casper::shard_invoke::{
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::rholang::RhoType::RhoString;
+use rchain_ocapn::capacity::MAX_DIALED_SESSIONS;
 use rchain_ocapn::captp::{
     Desc, EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
     IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
@@ -825,9 +826,10 @@ pub async fn serve_ocapn(
     // idle connections (+41 MB, RSS never returned), so the count is bounded; but a *transport-blind*
     // bound also let the transport that authenticates **nobody** (`tcp-testing-only`, `websocket`)
     // take every permit and starve `noise`, the one that authenticates both ends. Each transport now
-    // holds its own share, and the shares sum to `MAX_SESSIONS` rather than nesting under it — so a
-    // node listening on one transport still has the whole ceiling. Taken before the spawn, so a
-    // refused connection costs nothing but the socket, which `accept_transport` drops.
+    // holds its own share, and the shares sum to the ceiling **less the dial reserve** rather than
+    // nesting under it — so a node listening on one transport still has all of the ceiling that is
+    // not held back for its own dials. Taken before the spawn, so a refused connection costs nothing
+    // but the socket, which `accept_transport` drops.
     //
     // **What the share does not do, said here rather than implied:** a peer that establishes a session
     // and then says nothing still holds its permit for as long as it likes. An idle session is
@@ -839,7 +841,15 @@ pub async fn serve_ocapn(
         .iter()
         .filter(|listener| listener.inner.is_some())
         .count();
-    let share = (MAX_SESSIONS / configured.max(1)).max(1);
+    // **And the dials come out of the same ceiling** (HAZOP row C241). A dialed session holds its
+    // permit for its whole life just as an accepted one does, so it has to be *counted* against
+    // `MAX_SESSIONS` rather than against a second budget beside it — otherwise a peer that makes the
+    // node dial holds sessions past the ceiling the operator was told, and the two numbers have to be
+    // added up by hand to know the node's real surface. `MAX_DIALED_SESSIONS` is reserved for the
+    // sessions the node *starts* (the admin route, and every fixture that dials); the accept paths
+    // split what is left, and the two together are exactly the ceiling.
+    let accept_total = MAX_SESSIONS.saturating_sub(MAX_DIALED_SESSIONS).max(1);
+    let share = (accept_total / configured.max(1)).max(1);
     let factory = SessionFactory {
         chain: Arc::new(chain),
         dialer,
@@ -873,6 +883,7 @@ pub async fn serve_ocapn(
             factory.clone(),
             Arc::new(tokio::sync::Semaphore::new(share)),
             share,
+            accept_total,
             source,
         ));
     }
@@ -926,6 +937,9 @@ async fn accept_transport(
     factory: SessionFactory,
     sessions: Arc<tokio::sync::Semaphore>,
     share: usize,
+    // The ceiling less the dial reserve — the number every transport's share is a fraction of, and
+    // what a refusal names so an operator can tell a full transport from a full node.
+    accept_total: usize,
     source: rchain_shared::log::LogSource,
 ) {
     loop {
@@ -939,8 +953,8 @@ async fn accept_transport(
             factory.log.warn(
                 source,
                 &format!(
-                    "at {transport}'s session share ({share} of {MAX_SESSIONS}); refusing a new \
-                     connection"
+                    "at {transport}'s session share ({share} of {accept_total} accepts, of a ceiling \
+                     of {MAX_SESSIONS}); refusing a new connection"
                 ),
             );
             drop(connection);
@@ -2193,8 +2207,10 @@ mod tests {
     /// The ceiling used to be one transport-blind semaphore, so the transport that authenticates
     /// *nobody* — `tcp-testing-only`, or `websocket`, whose handshake has only the server prove itself
     /// — could take every permit and starve `noise`, the one that authenticates both ends. Each
-    /// transport now holds its own share of the ceiling, and the shares **sum** to `MAX_SESSIONS`
-    /// rather than nesting under it, so a single-transport node still has the whole ceiling.
+    /// transport now holds its own share, and the shares **sum** to the ceiling less the dial reserve
+    /// rather than nesting under it, so a single-transport node still has everything its own dials do
+    /// not hold back — the two sums are exactly `MAX_SESSIONS`, which is what **C241** is about: a
+    /// session the node *starts* is counted against the ceiling the operator was told, not beside it.
     ///
     /// The permit is taken at accept, **before any handshake**, so raw sockets are enough to fill a
     /// share — which is also why this is the cheapest possible proof that a share exists: the number
@@ -2239,8 +2255,11 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         };
 
-        // Two transports are configured, so the share is half the ceiling.
-        let share = MAX_SESSIONS / 2;
+        // Two transports are configured, so a share is half of the ceiling **less the dial reserve**
+        // — and asserting the number is the whole point, because it is the only thing that fails if a
+        // dialed session starts being counted outside `MAX_SESSIONS` again.
+        let accept_total = MAX_SESSIONS - MAX_DIALED_SESSIONS;
+        let share = accept_total / 2;
         assert!(share > 1, "the share has to be a number worth asserting");
 
         // Fill `tcp`'s share. Each socket is held open and says nothing — the permit is taken at
@@ -2265,7 +2284,7 @@ mod tests {
             let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
             if said.iter().any(|line| {
                 line.contains("tcp-testing-only's session share")
-                    && line.contains(&format!("({share} of {MAX_SESSIONS})"))
+                    && line.contains(&format!("({share} of {accept_total} accepts,"))
             }) {
                 refused = true;
                 break;
