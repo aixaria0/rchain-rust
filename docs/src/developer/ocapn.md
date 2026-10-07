@@ -168,7 +168,9 @@ Also note:
   a delivery is refused with a reason naming the bound.
 - **The node is the on-chain caller.** Every bridged deploy is signed by the node's deployer key, so
   the chain sees the node, not you. There is no session-to-deployer binding yet.
-- **The listener serves a fixed number of sessions** (64). Past that, new connections are closed.
+- **The node serves a fixed number of sessions** (64) — 48 to the connections it accepts, shared between
+  whatever transports are listening, and 16 reserved for the sessions it dials itself. Past that a new
+  connection is closed, and a dial past the reserve is refused with a reason naming the reserve.
 
 ## 6. Putting a shard in front of the peers
 
