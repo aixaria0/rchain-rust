@@ -7567,10 +7567,25 @@ is — that is that transport's protocol, not a hole this code leaves, and it is
 residual. The law is **63a**, the same home as C221: what the node gains is that a session's origin is
 attributable to something the peer had to prove.
 
-**The rows that remain open.** C227–C241 register what this pass did not fix, each `todo` with what
-would close it — among them **C229** (the ceiling's total lockout: one transport-blind semaphore, so
-the unauthenticated path can starve the authenticated one) and **C239** (the cross-transport cancel
-above), the two the adjudication promoted from "a lens's row" to "the study's own finding".
+**The cross-transport cancel, also closed here (C239).** The accept loop was one `tokio::select!` over
+an arm per transport, and `select!` is not `biased`: when any arm completes Tokio **drops** the other
+branches' futures, so a websocket peer that was mid-upgrade had its already-accepted socket reset the
+moment a connection landed on `tcp`, `unix` or `noise` — and nothing was logged, because a dropped
+future is not an `Err`. The fix is the one the steelman's own objection pointed at: **not** `biased`
+(one silent arm would then starve the others) but **one accept task per transport**, each looping on
+its own `accept_recovering`, so nothing outside a transport's own task can end its pending accept. The
+falsifier is
+`node/src/api/ocapn.rs:a_peers_establishment_is_not_cancelled_by_another_transports_traffic`: it parks
+a websocket upgrade — a socket that connects and says nothing, so the node's accept is inside its read
+of the HTTP request — makes a connection on `tcp`, and then finishes the upgrade on the parked socket.
+Against the single-`select!` loop the read came back empty, because the socket was already gone; with
+the fix the upgrade completes. The ceiling the tasks share is still node-wide and transport-blind,
+which is C229's question and not this one's.
+
+**The rows that remain open.** C227–C238 and C240–C241 register what this pass did not fix, each
+`todo` with what would close it — **C229** first among them (the ceiling's total lockout: one
+transport-blind semaphore, so the unauthenticated path can starve the authenticated one), the finding
+the adjudication promoted from "a lens's row" to "the study's own".
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

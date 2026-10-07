@@ -705,106 +705,169 @@ pub async fn serve_ocapn(
             location,
         });
     }
-    // **The accept loop is bounded, and the permit is taken before the task exists** (HAZOP row B1).
-    // An unbounded accept loop let one peer hold 3 000 idle connections (+41 MB, RSS never returned)
-    // and one task each; the handshake bound now stops a *silent* connection from holding its task,
-    // and this stops there being arbitrarily many. Taken before the spawn, so a refused connection
-    // costs nothing but the socket — which is dropped here.
+    // **The session ceiling is one node-wide semaphore, and the permit is taken before the task
+    // exists** (HAZOP row B1). An unbounded accept loop let one peer hold 3 000 idle connections
+    // (+41 MB, RSS never returned) and one task each; the handshake bound stops a *silent* connection
+    // from holding its task, and this stops there being arbitrarily many. Taken before the spawn, so a
+    // refused connection costs nothing but the socket — which `accept_transport` drops.
     let sessions = Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS));
+    let factory = SessionFactory {
+        chain: Arc::new(chain),
+        dialer,
+        registry,
+        handoffs,
+        log,
+    };
+    // **One accept task per transport** (HAZOP row C239) — see `accept_transport` for the cancellation
+    // a single `select!` caused, and why a `biased` select is not the fix. A transport the node does
+    // not listen on still gets a task: it waits for ever on a `pending()` accept, which keeps the
+    // shape uniform and is also what keeps a **dial-only** node's task alive.
+    let mut accepts = tokio::task::JoinSet::new();
+    for listener in [tcp, unix, noise, websocket] {
+        accepts.spawn(accept_transport(
+            listener,
+            factory.clone(),
+            sessions.clone(),
+            source,
+        ));
+    }
+    // **The stop word ends the accept tasks, not just this function.** Aborting them drops each
+    // listener's accept future with its socket; returning while they ran on would leave the node's
+    // ports bound with nothing draining the sessions that arrive.
+    let _ = stop_requested(stop.clone()).await;
+    accepts.abort_all();
+    Ok(())
+}
 
+/// The node's shared surfaces, cloned into each accept task and then into each session task.
+#[derive(Clone)]
+struct SessionFactory {
+    /// The chain-backed capabilities to publish on each session's bootstrap. Shared across sessions
+    /// because they hold no per-session state.
+    chain: Arc<Vec<(Vec<u8>, Arc<dyn Export>)>>,
+    dialer: Arc<dyn Netlayer>,
+    registry: Arc<rchain_ocapn::owner::SessionRegistry>,
+    handoffs: Arc<rchain_ocapn::handoff::Handoffs>,
+    log: Arc<dyn rchain_shared::log::Log>,
+}
+
+/// **One accept task per transport** (HAZOP row C239).
+///
+/// The accept loop used to be one `tokio::select!` over an arm per transport, and `select!` is not
+/// `biased`: when any arm completes, Tokio **drops** the other branches' futures. So a websocket peer
+/// that was mid-establishment — its accept future `Pending` inside the TLS/WebSocket upgrade or the
+/// in-band challenge — had its already-accepted socket dropped, resetting the connection the moment a
+/// connection arrived on `tcp`, `unix` or `noise`. The peer did nothing wrong and nothing was logged,
+/// because a dropped future is not an `Err`. The red team measured it. A `biased` select is **not**
+/// the fix: it would let one silent arm starve the others.
+///
+/// A task per transport removes the cancellation outright — nothing outside a transport's own task can
+/// end its pending accept. What it does *not* change is the ceiling: the semaphore is still node-wide
+/// and transport-blind, which is a separate question with its own row (HAZOP row C229).
+async fn accept_transport(
+    listener: Listener,
+    factory: SessionFactory,
+    sessions: Arc<tokio::sync::Semaphore>,
+    source: rchain_shared::log::LogSource,
+) {
     loop {
-        // **One arm per transport.** A transport the node does not listen on is `pending()`, so its
-        // arm never fires — and with no transport at all the loop waits on the stop word alone, which
-        // is what keeps a dial-only node's task alive.
-        let (connection, location) = tokio::select! {
-            // The operator's word, and a dropped coordinator, both land here.
-            _ = stop_requested(stop.clone()) => return Ok(()),
-            accepted = tcp.accept_recovering(&log, source) => accepted,
-            accepted = unix.accept_recovering(&log, source) => accepted,
-            accepted = noise.accept_recovering(&log, source) => accepted,
-            accepted = websocket.accept_recovering(&log, source) => accepted,
-        };
+        let (connection, location) = listener.accept_recovering(&factory.log, source).await;
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
             // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
             // gets refusals, not a growing backlog, and the operator's own sessions keep working.
             // Said out loud, at `warn`: a node whose sessions are all held is either under attack or
             // has a stuck peer, and the operator cannot tell either from silence.
-            log.warn(
+            factory.log.warn(
                 source,
                 &format!("at the session ceiling ({MAX_SESSIONS}); refusing a new connection"),
             );
             drop(connection);
             continue;
         };
-        let chain = chain.clone();
-        let netlayer = dialer.clone();
-        let registry = registry.clone();
-        let handoffs = handoffs.clone();
-        let log = log.clone();
+        let factory = factory.clone();
         tokio::spawn(async move {
-            // Held for the session's life and released when this task ends: the task's own lifetime
-            // *is* the session's, so the permit needs no name beyond this binding.
-            let _permit = permit;
-            // A fresh session key per session, as OCapN requires.
-            let Ok(identity) = Identity::fresh(location.clone()) else {
-                return;
-            };
-            // The per-session objects that dial find their session through this slot, which is
-            // filled in once the session exists — `accept` needs the bootstrap before that.
-            let slot = rchain_ocapn::owner::session_slot();
-            // The fixtures are rebuilt per session (they hold per-session promise state); the
-            // chain-backed capability is shared, because it does not.
-            let mut bootstrap =
-                fixtures::conformance_bootstrap_with(handoffs, slot.clone(), registry.clone());
-            for (swiss, capability) in chain {
-                bootstrap.publish(swiss, capability);
-            }
-            fixtures::publish_dialing_fixtures(
-                &mut bootstrap,
-                netlayer,
-                location,
-                registry.clone(),
-                slot.clone(),
-            );
-            // **Book, then answer** — see `owner::accept_and_book`: a session has to be in the
-            // registry before the peer can act on it, or a delivery that arrives on the first round
-            // trip after our start-session (a handoff, a fetch) reaches an object that cannot find
-            // the session it belongs to.
-            // The fourth element is the locator the session was **booked** under, which is the peer's
-            // own advertised location whenever the peer is who it says it is, and the key the
-            // handshake proved otherwise (HAZOP row C243) — and it is what `forget` must be given, or
-            // an entry the peer cannot be found by would never be removed.
-            let (handle, loop_, context, booked) = match rchain_ocapn::owner::accept_and_book(
-                connection,
-                &identity,
-                Arc::new(bootstrap),
-                &registry,
-            )
-            .await
-            {
-                Ok(parts) => parts,
-                Err(reason) => {
-                    // A refused handshake, and a session that lost its crossing, have both already
-                    // been answered with `op:abort` where one was owed. Logged at **debug**, not
-                    // warn: a crossing is a legitimate outcome of the protocol, and a peer-driven
-                    // stream of them would make a warning meaningless (the log-flood the
-                    // operations lens warned about).
-                    log.debug(source, &format!("session not served: {reason}"));
-                    return;
-                }
-            };
-            *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
-            // One session per connection; its end is this task's end.
-            // **The loop's outcome was discarded**, so a session that ended with an error was
-            // indistinguishable from one that ended cleanly — the node said nothing either way, and
-            // it took an instrumented run to see that a session had ended at all. Said at `debug`,
-            // because a peer closing its session is ordinary and a `warn` would be meaningless; but
-            // said, which it was not. (Found by this study's RCA.)
-            if let Err(e) = loop_.run().await {
-                log.debug(source, &format!("session loop ended: {e}"));
-            }
-            registry.forget(&booked, &handle.own_pi, handle.dialed);
+            factory.serve(connection, location, permit, source).await;
         });
+    }
+}
+
+impl SessionFactory {
+    /// Serve one accepted connection to its end.
+    ///
+    /// The permit is held for the session's life and released when this task ends: the task's own
+    /// lifetime *is* the session's, so it needs no name beyond this binding.
+    async fn serve(
+        self,
+        connection: Box<dyn NetConn>,
+        location: PeerLocator,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        source: rchain_shared::log::LogSource,
+    ) {
+        let _permit = permit;
+        let SessionFactory {
+            chain,
+            dialer,
+            registry,
+            handoffs,
+            log,
+        } = self;
+        // A fresh session key per session, as OCapN requires.
+        let Ok(identity) = Identity::fresh(location.clone()) else {
+            return;
+        };
+        // The per-session objects that dial find their session through this slot, which is filled in
+        // once the session exists — `accept` needs the bootstrap before that.
+        let slot = rchain_ocapn::owner::session_slot();
+        // The fixtures are rebuilt per session (they hold per-session promise state); the chain-backed
+        // capability is shared, because it does not.
+        let mut bootstrap =
+            fixtures::conformance_bootstrap_with(handoffs, slot.clone(), registry.clone());
+        for (swiss, capability) in chain.iter() {
+            bootstrap.publish(swiss.clone(), capability.clone());
+        }
+        fixtures::publish_dialing_fixtures(
+            &mut bootstrap,
+            dialer,
+            location,
+            registry.clone(),
+            slot.clone(),
+        );
+        // **Book, then answer** — see `owner::accept_and_book`: a session has to be in the registry
+        // before the peer can act on it, or a delivery that arrives on the first round trip after our
+        // start-session (a handoff, a fetch) reaches an object that cannot find the session it belongs
+        // to. The fourth element is the locator the session was **booked** under — the peer's own
+        // advertised location whenever the peer is who it says it is, and the key the handshake proved
+        // otherwise (HAZOP row C243) — and it is what `forget` must be given, or an entry the peer
+        // cannot be found by would never be removed.
+        let (handle, loop_, context, booked) = match rchain_ocapn::owner::accept_and_book(
+            connection,
+            &identity,
+            Arc::new(bootstrap),
+            &registry,
+        )
+        .await
+        {
+            Ok(parts) => parts,
+            Err(reason) => {
+                // A refused handshake, and a session that lost its crossing, have both already been
+                // answered with `op:abort` where one was owed. Logged at **debug**, not warn: a
+                // crossing is a legitimate outcome of the protocol, and a peer-driven stream of them
+                // would make a warning meaningless (the log-flood the operations lens warned about).
+                log.debug(source, &format!("session not served: {reason}"));
+                return;
+            }
+        };
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        // One session per connection; its end is this task's end.
+        // **The loop's outcome was discarded**, so a session that ended with an error was
+        // indistinguishable from one that ended cleanly — the node said nothing either way, and it
+        // took an instrumented run to see that a session had ended at all. Said at `debug`, because a
+        // peer closing its session is ordinary and a `warn` would be meaningless; but said, which it
+        // was not. (Found by this study's RCA.)
+        if let Err(e) = loop_.run().await {
+            log.debug(source, &format!("session loop ended: {e}"));
+        }
+        registry.forget(&booked, &handle.own_pi, handle.dialed);
     }
 }
 
@@ -1565,5 +1628,97 @@ mod tests {
             .await
             .expect("the task ends cleanly")
             .expect("and without error");
+    }
+
+    /// **An honest peer's establishment is not cancelled by another transport's traffic** (HAZOP row
+    /// C239).
+    ///
+    /// The accept loop was one `tokio::select!` over an arm per transport, and a completing arm drops
+    /// the other branches' futures: a websocket peer that was mid-upgrade had its already-accepted
+    /// socket **dropped** the moment a connection landed on `tcp`, `unix` or `noise` — and nothing was
+    /// logged, because a dropped future is not an `Err`. A `biased` select is not the fix; per-transport
+    /// accept tasks are, and this is the observable.
+    ///
+    /// The test parks an upgrade — a socket connected to the websocket port that has sent nothing, so
+    /// the node's accept is pending inside its read of the HTTP request — makes a connection on `tcp`,
+    /// and then *finishes* the upgrade on the parked socket. Under the old loop that socket was already
+    /// gone by then.
+    #[tokio::test]
+    async fn a_peers_establishment_is_not_cancelled_by_another_transports_traffic() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                unix: None,
+                noise: None,
+                websocket: Some("127.0.0.1:0".to_string()),
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+            Some(rchain_ocapn::noise::NoiseIdentity::generate().expect("a fresh identity")),
+            log.clone(),
+            stop_rx,
+        ));
+
+        // Both ports are `:0`, so the listener lines are the only place the chosen ones appear.
+        let port_after = |said: &[String], marker: &str| -> Option<u16> {
+            said.iter()
+                .find_map(|line| line.split(marker).nth(1))
+                .and_then(|rest| rest.split([' ', '(']).next())
+                .and_then(|port| port.parse().ok())
+        };
+        let (tcp_port, ws_port) = loop {
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let tcp = port_after(&said, "tcp-testing-only on 127.0.0.1:");
+            let ws = port_after(&said, "websocket on 127.0.0.1:");
+            if let (Some(tcp), Some(ws)) = (tcp, ws) {
+                break (tcp, ws);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        // 1. Park an upgrade: connect and say nothing, so the node is waiting for the HTTP request.
+        let mut parked = tokio::net::TcpStream::connect(("127.0.0.1", ws_port))
+            .await
+            .expect("connect to the websocket listener");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 2. Make traffic land on another transport — this is what used to drop the future above.
+        let on_tcp = tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+            .await
+            .expect("connect to the tcp listener");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 3. Finish the upgrade on the parked socket. If the accept had been cancelled, the socket
+        //    would be reset: the write fails, or the read comes back empty.
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{ws_port}\r\nUpgrade: websocket\r\nConnection: \
+             Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: \
+             13\r\n\r\n"
+        );
+        parked
+            .write_all(request.as_bytes())
+            .await
+            .expect("the parked socket is still open");
+        let mut answer = [0u8; 128];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), parked.read(&mut answer))
+            .await
+            .expect("the parked upgrade is answered, not left hanging")
+            .expect("the parked socket still reads");
+        let response = String::from_utf8_lossy(&answer[..n]);
+        assert!(
+            response.starts_with("HTTP/1.1 101"),
+            "the transport another connection's traffic landed on still completes its upgrade: \
+             {response:?}"
+        );
+
+        drop(on_tcp);
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
     }
 }

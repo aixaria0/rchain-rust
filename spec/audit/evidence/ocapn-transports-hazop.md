@@ -89,8 +89,8 @@ booked under is returned so `forget` takes the same key. Both rows are **fixed h
 that can prove a name** — over `websocket` the accepted side has nothing to prove (D2), so the
 assertion is all there is, and that is the transport's protocol rather than a gap this code leaves.
 
-**Tier 2 — registered, not done**: the cross-transport cancellation
-(B2), the ceiling's total-lockout consequence (B3/C2/C3/E4), the deferred-answer waiter count (B7),
+**Tier 2 — registered, not done**: the ceiling's total-lockout consequence (B3/C2/C3/E4), the
+deferred-answer waiter count (B7),
 shutdown's detached sessions (B8/E15), the `0.0.0.0` advertised back-address (E9), `bind_tls` being
 unreachable (E13), the fixed-window limiter's 2× boundary (C9), the O(n²) reassembly (C11), the
 unauditable admission (D9/E1), and the name-depends-on-config consequence (D8).
@@ -129,7 +129,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **A10** | N7 | More | `Value::Int` is arbitrary precision | reasoned | S4 | L-B | **partly** (the resource is capped at 4 MiB; a 4 MiB int is *smaller* than its input) | **refuted** |
 | **A11** | N1 | Late | the responder writes its SYNACK before verifying the initiator's payload | read | S4 | L-B | **saves** (XX binds the initiator's static only in message 3 — the order is forced) | **refuted** |
 | **B1/C1/E3** | N2/N4 | As well as | the ws accept runs TLS+upgrade+challenge inside the accept loop, holding it up to 40 s | read | S2 | L-A | **partly** — the loop-hold is **measured false**; a ws-**only** node still holds one establish | **registered** (the doc's residual claim corrected; the ws-only case stands) |
-| **B2** | N4 | Other than | the non-`biased` `select!` drops a pending ws accept when another arm fires, **silently resetting an honest peer mid-challenge** (`H5`) | measured | S3 | L-D | **partly** (self-healing; a `biased` select would be worse) | **registered**, should-fix — the fix is per-transport accept tasks, not `biased` |
+| **B2** | N4 | Other than | the non-`biased` `select!` drops a pending ws accept when another arm fires, **silently resetting an honest peer mid-challenge** (`H5`) | measured | S3 | L-D | **partly** (self-healing; a `biased` select would be worse) | **fixed here** — one accept task per transport, and the falsifier parks a websocket upgrade while a connection lands on `tcp` |
 | **B3/C2, C3/E4** | N7/N4 | No | no idle or lifetime bound on an established session: 64 post-handshake silent peers hold every permit, and the refusal is transport-blind (`H3`) | measured | S2 | L-A | **saves** (deliberate; the prior study declined a steady-state timeout) | **registered** — the residue is accepted; its *consequence* (total lockout, unauthenticated path can starve the authenticated one) was not stated before |
 | **B4** | N7 | Other than | the enlivener and greeter await a dial-and-fetch inside `handle_deliver`, on the session loop | read | S3 | L-B | **saves** (fixtures are per-session: a peer stalls only itself) | **closed by decision** — inconsistent with Law 61, blast radius one self-inflicted session |
 | **B5** | N6 | As well as | `DialPolicy` calls a **blocking** `to_socket_addrs` on the async dial path | read | S3 | L-B | **partly** (bounded; only for a name target) | **registered** |
@@ -222,7 +222,7 @@ TOP  all 64 permits held by one unauthenticated peer; honest sessions refused.
   SIBLING TOP EVENTS, named and not folded (each is a different asset):
    · H1 the noise short-frame task-kill            [fixed here]
    · H4 the websocket dial-policy SSRF              [fixed here]  — authority, no permit
-   · H5 the cross-transport ws cancel               [B2]          — one connection
+   · H5 the cross-transport ws cancel               [fixed here]  — one connection
    · D6 a peer evicting an honest peer's session     [fixed here]  — a different peer's session
                                                      (over `noise`; unchanged over `websocket`)
 ```
@@ -236,7 +236,7 @@ most useful output, because each side is right about a different thing; the verd
 |---|---|---|---|---|
 | **D1** | must fix | saves (no binding is defined by the spec or the reference) | **fixed here** | The steelman was right that no *protocol* binding exists to violate, and the adjudicator was right that the material is now in hand: *keeping* the key is a patch, not a binding, and D1 as stated — the key is discarded — is what the patch removes. It is Law 63a's work and the input D6 needs. |
 | **D6** | must fix | **fails** (a stranger who knows the public name can force an eviction) | **fixed here** over `noise`, **unchanged over `websocket`** | Both agreed it is real; the steelman's own verdict was `fails`. Keying by the proved name *is* the design change that was called for, and it is bounded to the transport that proves one: a websocket accepted session has no proved name to key on (D2), so there the assertion remains all there is — a weakness of that transport's protocol, recorded as such rather than left as a hole here. The key went into the `verify` hint rather than over the designator, so a peer that has an identity keeps exactly the name it had. |
-| **B2** | must fix | partly (self-healing; `biased` would be worse) | **registered, should-fix** | The steelman's objection is to the *proposed* fix, not the defect. The measured reset is real; per-transport accept tasks fix it without `biased`. |
+| **B2** | must fix | partly (self-healing; `biased` would be worse) | **fixed here** | The steelman's objection was to the *proposed* fix, not the defect, and it stands: `biased` would let one silent arm starve the others. Per-transport accept tasks remove the cancellation without it, which is what landed. |
 | **B4** | should fix | **saves** (per-session blast radius) | **closed by decision** | The steelman is right: the fixtures are rebuilt per session, so a peer stalls only itself. It stays inconsistent with Law 61 and is recorded as such. |
 | **B9** | should fix | **saves** (checking earlier would block all accepts) | **refuted** | The steelman's ordering argument is decisive; the permit cannot precede the connection's existence. |
 | **C9** | register | **saves** (fairness is declined with Law 63a) | **registered, minor** | Only the fixed window's 2× boundary is a defect; the global-vs-per-peer half is the declined decision. |
