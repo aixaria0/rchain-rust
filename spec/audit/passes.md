@@ -7645,8 +7645,26 @@ everything after the drained range down on *every* iteration — a body at the 4
 no test counts bytes copied, and the correctness guard passes with either implementation, so it is not
 a falsifier. That is said on the row rather than rounded up.
 
-**The rows that remain open.** C227, C230–C236 and C238, C240–C241 register what this pass did not fix,
-each `todo` with what would close it.
+**Three more, closed by reading or by saying it plainly (C234, C235, C238).** C238 was a setting that
+did nothing: `api-server.ocapn-identity-key` with no listener to consume it was ignored, so a key of
+the wrong length, a loose mode, an all-zero key or a path that cannot be created were all
+indistinguishable from a correct one. `ocapn_identity_for` — one seam, so the rules are testable
+without assembling a node — now reads and validates the key **whenever it is set**, and still does not
+adopt it (the designator does not move, which the row's `owes` allows). The falsifier asserts all four
+cases and was **measured failing against the ignoring arm**, which answered `Ok(None)` for a malformed
+key.
+
+C234 and C235 are closed by **documenting the consequence**, which is the first close each row's `owes`
+offers, because the alternative is not implementable: a file can be copied, so two processes holding a
+copy are indistinguishable from one process on two hosts; and pinning the name would mean deriving it
+from something that cannot move, while the deployer key — the only other candidate — cannot sign the
+handshake that opens with the node's name. So, in `docs/src/node/ocapn.md`, `defaults.conf` and the
+config field itself: **one file is one peer**, and there is no rotation (replacing the key renames the
+node, which is the loss case over again); and **the node's name is a function of configuration**, so
+adding a listener that consumes the key renames a node that has already handed out locations.
+
+**The rows that remain open.** C227, C230–C233, C236, C240 and C241 register what this pass did not
+fix, each `todo` with what would close it.
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

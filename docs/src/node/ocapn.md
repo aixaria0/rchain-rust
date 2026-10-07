@@ -71,6 +71,19 @@ responder refuses a handshake naming another node before doing any cryptography.
 against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`). **Keep the identity file**:
 a node that loses it comes back under a new name, and peers holding the old one cannot find it.
 
+**One file is one peer, and the name cannot be rotated** (HAZOP row C234). The designator *is* the
+Ed25519 key in that file, so two nodes sharing it are **one peer** to everyone else: the crossed-hello
+rule compares sessions by that name, so their sessions evict each other and a sturdyref to one resolves
+at the other. And there is no rotation — replacing the key, or deleting the file and letting the node
+regenerate one, renames the node, which is the same breakage as losing it.
+
+**The node's name is a function of configuration** (HAZOP row C235). Without an identity it derives
+from the deployer key; with one it *is* the Ed25519 key. So adding `api-server.ocapn-listen-noise` or
+`ocapn-listen-websocket` to a running node — or adding `ocapn-identity-key` — **renames it**, and every
+location handed out under the old name stops resolving. Decide the name before peers hold it. (This
+also means a key file with no listener does not change the name: the node reads and validates it, and
+still does not adopt it.)
+
 `websocket` uses the same identity, and is the transport `@endo/ocapn` speaks — but as the reference
 writes it, `ws://` carries no TLS and only the server proves itself, so `noise` is the one to reach
 for.

@@ -192,6 +192,44 @@ impl OcapnListeners {
     }
 }
 
+/// **The node's OCapN identity, or why it has none** (HAZOP row C238) — one place, so the rules can be
+/// tested without assembling a node.
+///
+/// Three cases, and each is a decision rather than an inference:
+///
+/// * a listener that authenticates with the key **needs** it — `noise` names the node by it and
+///   `websocket` signs a challenge with it — so a missing `api-server.ocapn-identity-key` is refused
+///   with the key to set, not a node that comes up nameless;
+/// * **a key file with no such listener is read and validated, and still not used.** It is not an
+///   error — it is what a node that will be dialled rather than dialling looks like — but *silently
+///   ignoring* it was: an operator who set the key because the page says to got a node that never
+///   opened the file, so a file of the wrong length, a loose mode, an all-zero key or a path in a
+///   directory that does not exist were all indistinguishable from a correct one. Reading it here is
+///   what makes that configuration report its own mistakes; the node's designator still does not
+///   move, because nothing consumes the key. (An absent file is created — that is how a node gets a
+///   stable name at all — and is the one case that is not a mistake.);
+/// * neither set is a node with no identity, and the designator falls back to the derivation that
+///   predates Noise (C224 item 2).
+pub fn ocapn_identity_for(
+    listeners: &OcapnListeners,
+    key_path: Option<&str>,
+) -> Result<Option<NoiseIdentity>, String> {
+    match (listeners.needs_identity(), key_path) {
+        (true, Some(path)) => Ok(Some(load_or_create_noise_identity(path)?)),
+        (true, None) => Err(
+            "api-server.ocapn-listen-noise and api-server.ocapn-listen-websocket need \
+             api-server.ocapn-identity-key: both name this node by an Ed25519 key it must hold, \
+             and a node with no key file cannot hold one across restarts"
+                .to_string(),
+        ),
+        (false, Some(path)) => {
+            load_or_create_noise_identity(path)?;
+            Ok(None)
+        }
+        (false, None) => Ok(None),
+    }
+}
+
 /// The node's **Noise identity**, loaded from the configured key file: an Ed25519 seed and an X25519
 /// static, both stable across restarts.
 ///
@@ -1710,6 +1748,87 @@ mod tests {
             .await
             .expect("the task ends cleanly")
             .expect("and without error");
+    }
+
+    /// **A configured identity key is read even when nothing consumes it** (HAZOP row C238).
+    ///
+    /// The three cases of [`ocapn_identity_for`], each asserted rather than inferred: a listener that
+    /// authenticates with the key cannot do without one; a key with no such listener is validated —
+    /// so a path that does not exist is a startup error instead of a silently ignored setting — and
+    /// still does not become the node's identity; and neither set is a node with no identity at all.
+    #[tokio::test]
+    async fn an_identity_key_with_no_listener_is_still_read_and_validated() {
+        let dir = std::env::temp_dir().join(format!("ocapn-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let good = dir.join("ocapn.key");
+        let truncated = dir.join("truncated.key");
+
+        let listener = |noise: bool| OcapnListeners {
+            tcp: None,
+            unix: None,
+            noise: noise.then(|| "127.0.0.1:0".to_string()),
+            websocket: None,
+        };
+
+        // A listener that authenticates with the key needs one, and the refusal names the key to set.
+        let refused = ocapn_identity_for(&listener(true), None)
+            .err()
+            .expect("a Noise listener without a key is a configuration the node cannot honour");
+        assert!(
+            refused.contains("api-server.ocapn-identity-key"),
+            "the refusal names the key that fixes it: {refused}"
+        );
+
+        // With a path, the node gets an identity and the file is written for next time.
+        assert!(
+            ocapn_identity_for(&listener(true), Some(good.to_str().expect("utf-8")))
+                .expect("a fresh identity is generated")
+                .is_some(),
+            "a Noise listener with a key is a node with a name"
+        );
+        assert!(
+            good.exists(),
+            "and the key is kept, so the name survives a restart"
+        );
+
+        // **No listener, and a key that is present but wrong: refused.** This is the row's subject —
+        // the setting used to be ignored, so a malformed key was indistinguishable from a correct
+        // one. (An absent path is not an error on either path: the file is *created* on first use,
+        // which is how a node gets a stable name at all.)
+        std::fs::write(&truncated, [7u8; 10]).expect("a key file of the wrong length");
+        let err = ocapn_identity_for(&listener(false), Some(truncated.to_str().expect("utf-8")))
+            .err()
+            .expect("a configured key that cannot be read is a mistake, not a no-op");
+        assert!(
+            err.contains("64"),
+            "and the reason says what a key file has to be: {err}"
+        );
+
+        // An *absent* file is not a mistake on either path — it is created, directory and all, which
+        // is how a node gets a stable name at all. Asserted so the two cases stay distinguished.
+        let fresh = dir.join("elsewhere").join("ocapn.key");
+        assert!(
+            ocapn_identity_for(&listener(false), Some(fresh.to_str().expect("utf-8")))
+                .expect("an absent key is generated, not refused")
+                .is_none(),
+            "and it is still not adopted, because nothing consumes it"
+        );
+
+        // No listener and a key that *does* exist: validated, and still not this node's identity —
+        // the designator does not move (the decision the row's `owes` allows).
+        assert!(
+            ocapn_identity_for(&listener(false), Some(good.to_str().expect("utf-8")))
+                .expect("a valid key is not an error")
+                .is_none(),
+            "a key nothing consumes is validated and not adopted"
+        );
+
+        // Neither: a node with no identity, whose designator falls back to the pre-Noise derivation.
+        assert!(ocapn_identity_for(&listener(false), None)
+            .expect("no key is not an error")
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **A listener bound to every address advertises a host a peer can actually dial** (HAZOP row

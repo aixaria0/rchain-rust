@@ -91,8 +91,8 @@ assertion is all there is, and that is the transport's protocol rather than a ga
 
 **Tier 2 — registered, not done**: the deferred-answer waiter count (B7),
 shutdown's detached sessions (B8/E15), `bind_tls` being
-unreachable (E13), the fixed-window limiter's 2× boundary (C9), the
-unauditable admission (D9/E1), and the name-depends-on-config consequence (D8).
+unreachable (E13), the fixed-window limiter's 2× boundary (C9), and the
+unauditable admission (D9/E1).
 
 **Tier 3 — corrected in the docs and comments**: five stale claims (F1, F3, F4, F6, F8) and the
 `listen_tcp` designator comment.
@@ -144,7 +144,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **C12/D3/E5/E6/F7** | N3 | Late/Early | the identity file's mode was set **after** the write and **never checked on read** | read | S2 | L-C | fails | **fixed here** (`create_new` + `mode(0o600)`; the read refuses a loosened file) |
 | **D1** | N1 | Other than | the transport-verified Ed25519 key is discarded (`let _…`) and never bound to the peer identity | read | S3 | L-B | **saves** (no binding is defined by the spec or the reference; it is Law 63a's work) | **fixed here** — `NetConn::verified_peer` keeps the handshake's proved key, `Session::verified_peer_key` exposes it, `peer_key` reads it in preference to the asserted designator, and `forget` takes the key the session was booked under |
 | **D2** | N2 | No | the websocket handshake authenticates only the server | measured | S2 | L-A | **saves** (the reference's own shape, documented, off by default) | **closed by decision** |
-| **D4** | N3 | As well as | the identity file *is* the name, so two processes sharing it are one peer; no rotation | read | S2 | L-C | **partly** (operator error; rotation would rename the node) | **registered** |
+| **D4** | N3 | As well as | the identity file *is* the name, so two processes sharing it are one peer; no rotation | read | S2 | L-C | **partly** (operator error; rotation would rename the node) | **fixed here** — stated in the page, `defaults.conf` and the config field: one file is one peer, and the name cannot be rotated without it moving |
 | **D5** | N3 | Less | a 64-byte all-zero file passed as a valid identity | read | S2 | L-C | fails | **fixed here** |
 | **D6** | N1/N2/N6 | Other than | the registry keys on the peer's **self-asserted** designator, so a peer knowing an honest peer's public name can, by the crossing rule, evict that peer's accepted session | read | S3 | L-B | fails | **fixed here, for the transport that can prove a name** — the registry is keyed by the proved key where there is one, so over `noise` a peer naming itself another's name is filed under its own and cannot collide; **over `websocket` it remains, by the protocol rather than by this code** (D2: only the server proves itself) |
 | **D7** | N4/N8 | More | the chain capabilities are published to every admitted session regardless of transport | read | S2 | L-A | **saves, reframed** (no transport grants differential authority — it restates A2/D1) | **refuted** as a distinct row |
@@ -154,7 +154,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **E9** | N8 | Other than | `ocapn-listen-noise = 0.0.0.0:<port>` advertises host `0.0.0.0` — a location a *remote* peer cannot dial back | read | S3 | L-C | **fails unless the peer is on the same host** | **fixed here** — `api-server.ocapn-advertised-host` names the host peers are told, and an unspecified bind without one is refused at startup; the design page's own example, which used `0.0.0.0`, is corrected |
 | **E10** | N6 | No | the dial policy never judged a websocket target (it reads `host`; a ws locator carries `url`) — **a measured SSRF** (`H4`) | measured | S2 | L-B | fails | **fixed here** (`host_of` parses the authority, including bracketed IPv6; `a_websocket_target_is_judged_by_its_url`) |
 | **E11** | N6 | Less | `DialPolicy::allow` is unreachable from configuration | read | S4 | L-C | **saves** (harden-by-default; the seam exists for tests) | **closed by decision** |
-| **E12** | N8 | No | `ocapn-identity-key` with no listener is silently ignored | read | S4 | L-C | **partly** (nothing consumes it) | **registered** |
+| **E12** | N8 | No | `ocapn-identity-key` with no listener is silently ignored | read | S4 | L-C | **partly** (nothing consumes it) | **fixed here** — read and validated whenever it is set, and still not adopted; a malformed key is now a startup error |
 | **E13** | N8 | No | `bind_tls` has no caller and no config key; the module doc advertises `wss://` | read | S4 | L-C | **partly** (the node never advertises `wss://`, so nothing advertised is unreachable — the *doc* overstates) | **fixed here** (the doc) |
 | **E16** | N8 | No | the dial route's request doc names only the pre-existing transports | read | S4 | L-C | **saves** as an enumeration; the example is stale | **fixed here** (the doc) |
 | **E17/F1** | N8 | No | the noise harness's source doc asserts a reverse-direction run that `run.sh` does not make | measured | S3 | L-C | fails | **fixed here** (the comment) |

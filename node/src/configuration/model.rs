@@ -142,6 +142,15 @@ pub struct ApiServer {
     /// mode `0600`. Generated and written on first use when the file is absent, so a node's name is
     /// stable across restarts — an identity that changed on every start would be one no peer could
     /// hold in advance, which is the whole point of it.
+    ///
+    /// **One file is one peer** (HAZOP row C234): the designator *is* this key, so two nodes sharing
+    /// the file are one peer to everyone else — the crossed-hello rule compares sessions by that name,
+    /// so their sessions evict each other — and replacing the key renames the node, which is the same
+    /// breakage as losing it. **And the name is a function of configuration** (HAZOP row C235): adding
+    /// a listener that consumes this key, or setting the key, moves the designator off the
+    /// deployer-key derivation it would otherwise use, so a node that already handed out locations
+    /// stops being reachable at them. A key with no listener to consume it is read and validated and
+    /// does *not* move the name (`ocapn_identity_for`).
     pub ocapn_identity_key: Option<String>,
     /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4; off by default
     /// because the conformance suite and the ERTP transcript both dial loopback).
