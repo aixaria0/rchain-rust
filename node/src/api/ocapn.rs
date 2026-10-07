@@ -757,12 +757,26 @@ pub async fn serve_ocapn(
             location,
         });
     }
-    // **The session ceiling is one node-wide semaphore, and the permit is taken before the task
-    // exists** (HAZOP row B1). An unbounded accept loop let one peer hold 3 000 idle connections
-    // (+41 MB, RSS never returned) and one task each; the handshake bound stops a *silent* connection
-    // from holding its task, and this stops there being arbitrarily many. Taken before the spawn, so a
-    // refused connection costs nothing but the socket — which `accept_transport` drops.
-    let sessions = Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS));
+    // **The session ceiling: every transport gets an equal share of it, and the permit is taken
+    // before the task exists** (HAZOP rows B1 and C229). One node-wide semaphore let a peer hold 3 000
+    // idle connections (+41 MB, RSS never returned), so the count is bounded; but a *transport-blind*
+    // bound also let the transport that authenticates **nobody** (`tcp-testing-only`, `websocket`)
+    // take every permit and starve `noise`, the one that authenticates both ends. Each transport now
+    // holds its own share, and the shares sum to `MAX_SESSIONS` rather than nesting under it — so a
+    // node listening on one transport still has the whole ceiling. Taken before the spawn, so a
+    // refused connection costs nothing but the socket, which `accept_transport` drops.
+    //
+    // **What the share does not do, said here rather than implied:** a peer that establishes a session
+    // and then says nothing still holds its permit for as long as it likes. An idle session is
+    // legitimate — `HANDSHAKE_TIMEOUT`'s note records why the steady-state read is deliberately *not*
+    // bounded, and the conformance suite needs a silent leg — so the share bounds the *blast radius*:
+    // the whole surface is never one transport's to take, and never a peer's to take with one
+    // identity.
+    let configured = [&tcp, &unix, &noise, &websocket]
+        .iter()
+        .filter(|listener| listener.inner.is_some())
+        .count();
+    let share = (MAX_SESSIONS / configured.max(1)).max(1);
     let factory = SessionFactory {
         chain: Arc::new(chain),
         dialer,
@@ -775,11 +789,18 @@ pub async fn serve_ocapn(
     // not listen on still gets a task: it waits for ever on a `pending()` accept, which keeps the
     // shape uniform and is also what keeps a **dial-only** node's task alive.
     let mut accepts = tokio::task::JoinSet::new();
-    for listener in [tcp, unix, noise, websocket] {
+    for (transport, listener) in [
+        ("tcp-testing-only", tcp),
+        ("unix", unix),
+        ("noise", noise),
+        ("websocket", websocket),
+    ] {
         accepts.spawn(accept_transport(
+            transport,
             listener,
             factory.clone(),
-            sessions.clone(),
+            Arc::new(tokio::sync::Semaphore::new(share)),
+            share,
             source,
         ));
     }
@@ -814,24 +835,30 @@ struct SessionFactory {
 /// the fix: it would let one silent arm starve the others.
 ///
 /// A task per transport removes the cancellation outright — nothing outside a transport's own task can
-/// end its pending accept. What it does *not* change is the ceiling: the semaphore is still node-wide
-/// and transport-blind, which is a separate question with its own row (HAZOP row C229).
+/// end its pending accept. The ceiling is per transport too (`share`, HAZOP row C229), so no transport
+/// — in particular not one that authenticates nobody — can take the node's whole session surface.
 async fn accept_transport(
+    transport: &'static str,
     listener: Listener,
     factory: SessionFactory,
     sessions: Arc<tokio::sync::Semaphore>,
+    share: usize,
     source: rchain_shared::log::LogSource,
 ) {
     loop {
         let (connection, location) = listener.accept_recovering(&factory.log, source).await;
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
-            // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
-            // gets refusals, not a growing backlog, and the operator's own sessions keep working.
-            // Said out loud, at `warn`: a node whose sessions are all held is either under attack or
-            // has a stuck peer, and the operator cannot tell either from silence.
+            // At this transport's share: close the socket rather than queue it. A peer that keeps
+            // connecting gets refusals, not a growing backlog, and the node's *other* transports keep
+            // serving. Said out loud, at `warn`, and naming the transport and the number: a node whose
+            // sessions are all held is either under attack or has a stuck peer, and the operator cannot
+            // tell either from silence — nor which transport is full.
             factory.log.warn(
                 source,
-                &format!("at the session ceiling ({MAX_SESSIONS}); refusing a new connection"),
+                &format!(
+                    "at {transport}'s session share ({share} of {MAX_SESSIONS}); refusing a new \
+                     connection"
+                ),
             );
             drop(connection);
             continue;
@@ -1844,6 +1871,117 @@ mod tests {
         );
 
         drop(on_tcp);
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
+    }
+
+    /// **One transport cannot take the node's whole session surface** (HAZOP row C229).
+    ///
+    /// The ceiling used to be one transport-blind semaphore, so the transport that authenticates
+    /// *nobody* — `tcp-testing-only`, or `websocket`, whose handshake has only the server prove itself
+    /// — could take every permit and starve `noise`, the one that authenticates both ends. Each
+    /// transport now holds its own share of the ceiling, and the shares **sum** to `MAX_SESSIONS`
+    /// rather than nesting under it, so a single-transport node still has the whole ceiling.
+    ///
+    /// The permit is taken at accept, **before any handshake**, so raw sockets are enough to fill a
+    /// share — which is also why this is the cheapest possible proof that a share exists: the number
+    /// the node refuses at is the share, and a *different* transport is still served at a moment when
+    /// this one is full.
+    #[tokio::test]
+    async fn one_transport_cannot_take_the_nodes_whole_session_surface() {
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let socket =
+            std::env::temp_dir().join(format!("rnode-ocapn-share-{}.sock", std::process::id()));
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                unix: Some(socket.display().to_string()),
+                noise: None,
+                websocket: None,
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
+            log.clone(),
+            stop_rx,
+        ));
+
+        let port_of = |marker: &str| -> Option<u16> {
+            log.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .find_map(|line| line.split(marker).nth(1))
+                .and_then(|rest| rest.split([' ', '(']).next())
+                .and_then(|port| port.parse().ok())
+        };
+        let tcp_port = loop {
+            if let Some(port) = port_of("tcp-testing-only on 127.0.0.1:") {
+                break port;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        // Two transports are configured, so the share is half the ceiling.
+        let share = MAX_SESSIONS / 2;
+        assert!(share > 1, "the share has to be a number worth asserting");
+
+        // Fill `tcp`'s share. Each socket is held open and says nothing — the permit is taken at
+        // accept, so it costs a file descriptor and nothing else.
+        let mut held = Vec::new();
+        for _ in 0..share {
+            held.push(
+                tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+                    .await
+                    .expect("connect"),
+            );
+        }
+        // The next connections are refused, and the warn names the *share*, not the whole ceiling.
+        // A few extra sockets are sent because the accept task may still be working through the
+        // first batch; the assertion is that the refusal lands, not on which attempt.
+        let mut refused = false;
+        for _ in 0..share {
+            let _extra = tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+                .await
+                .expect("connect");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if said.iter().any(|line| {
+                line.contains("tcp-testing-only's session share")
+                    && line.contains(&format!("({share} of {MAX_SESSIONS})"))
+            }) {
+                refused = true;
+                break;
+            }
+        }
+        assert!(
+            refused,
+            "a full transport must refuse at its own share and say which: {:?}",
+            log.0.lock().unwrap_or_else(|p| p.into_inner())
+        );
+
+        // **And the other transport is untouched.** `tcp-testing-only` is holding its whole share at
+        // this moment; a connection on `unix` is still accepted, which is the property that was
+        // missing when the semaphore was node-wide.
+        let before = log.0.lock().unwrap_or_else(|p| p.into_inner()).len();
+        let unix = tokio::net::UnixStream::connect(&socket).await;
+        assert!(
+            unix.is_ok(),
+            "unix must still accept while tcp is at its share: {unix:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let after = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            before,
+            after.len(),
+            "and nothing on unix was refused: {after:?}"
+        );
+
+        drop(held);
         stop_tx.send(true).expect("ask the listener to stop");
         let _ = serving.await;
     }

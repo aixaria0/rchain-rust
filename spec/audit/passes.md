@@ -7596,10 +7596,29 @@ is always the bound one, so `:0` still works. The falsifier is
 drives `listen_tcp` three ways — refused without a host, advertised with one, and a specific bind as
 its own answer — and the design page's example is corrected.
 
-**The rows that remain open.** C227–C236 and C238, C240–C241 register what this pass did not fix, each
-`todo` with what would close it — **C229** first among them (the ceiling's total lockout: one
-transport-blind semaphore, so the unauthenticated path can starve the authenticated one), the finding
-the adjudication promoted from "a lens's row" to "the study's own".
+**The ceiling's fairness, also closed here (C229) — the study's own finding.** The session ceiling was
+**one transport-blind semaphore**, so the transport that authenticates *nobody* could take every permit
+and starve `noise`, the one that authenticates both ends; and 64 peers who establish a session and then
+say nothing hold all of them. Each transport now holds **its own share** (`MAX_SESSIONS / n`, where `n`
+is how many are configured), and the shares **sum** to the ceiling rather than nesting under it — a
+single-transport node still has all 64, and a four-transport node has 16 each. The amplifier in the
+fault tree is gone and the top event is one transport's share rather than the node's surface. The
+falsifier is `node/src/api/ocapn.rs:one_transport_cannot_take_the_nodes_whole_session_surface`: it
+fills `tcp-testing-only`'s share with sockets that say nothing — the permit is taken at accept, before
+any handshake, so raw sockets are enough — asserts the refusal lands at the *share*, and asserts a
+`unix` connection is still accepted at that moment. Measured **failing** against the node-wide
+semaphore, where no refusal happened at all.
+
+**What that does not close, said here rather than implied.** A peer that has *established* a session
+and then says nothing still holds its permit for as long as it likes. That is the half the register's
+`owes` offered to close with "a lifetime or idle bound on an established session", and it was **not
+taken**: an idle session is legitimate, and the crate's own note on `HANDSHAKE_TIMEOUT` records the
+decision — the conformance suite needs a silent leg, so the steady-state read is deliberately not
+bounded. What the share buys is that the denial is bounded to one transport's share instead of the
+whole surface; the lifetime question stays where it was decided, now stated rather than left implicit.
+
+**The rows that remain open.** C227–C228, C230–C236 and C238, C240–C241 register what this pass did not
+fix, each `todo` with what would close it.
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

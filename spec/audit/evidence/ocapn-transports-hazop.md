@@ -89,8 +89,7 @@ booked under is returned so `forget` takes the same key. Both rows are **fixed h
 that can prove a name** — over `websocket` the accepted side has nothing to prove (D2), so the
 assertion is all there is, and that is the transport's protocol rather than a gap this code leaves.
 
-**Tier 2 — registered, not done**: the ceiling's total-lockout consequence (B3/C2/C3/E4), the
-deferred-answer waiter count (B7),
+**Tier 2 — registered, not done**: the deferred-answer waiter count (B7),
 shutdown's detached sessions (B8/E15), `bind_tls` being
 unreachable (E13), the fixed-window limiter's 2× boundary (C9), the O(n²) reassembly (C11), the
 unauditable admission (D9/E1), and the name-depends-on-config consequence (D8).
@@ -99,9 +98,10 @@ unauditable admission (D9/E1), and the name-depends-on-config consequence (D8).
 `listen_tcp` designator comment.
 
 **Not proposed, deliberately.** No steady-state read timeout on an established session: the prior study
-declined it for the same reason it holds now — three suite tests need a silent leg — so B3/C2 is
-dispositioned as an accepted residue whose *consequence* this study states, not as a defect to fix by
-breaking the suite.
+declined it for the same reason it holds now — three suite tests need a silent leg — so B3/C2's
+*lifetime* half is an accepted residue whose *consequence* this study states, not a defect to fix by
+breaking the suite. The other half — that the refusal was transport-blind — is a defect and was fixed:
+each transport holds its own share of the ceiling (see Table A row B3/C2, and §69).
 
 ## §4 The worksheet
 
@@ -130,7 +130,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **A11** | N1 | Late | the responder writes its SYNACK before verifying the initiator's payload | read | S4 | L-B | **saves** (XX binds the initiator's static only in message 3 — the order is forced) | **refuted** |
 | **B1/C1/E3** | N2/N4 | As well as | the ws accept runs TLS+upgrade+challenge inside the accept loop, holding it up to 40 s | read | S2 | L-A | **partly** — the loop-hold is **measured false**; a ws-**only** node still holds one establish | **registered** (the doc's residual claim corrected; the ws-only case stands) |
 | **B2** | N4 | Other than | the non-`biased` `select!` drops a pending ws accept when another arm fires, **silently resetting an honest peer mid-challenge** (`H5`) | measured | S3 | L-D | **partly** (self-healing; a `biased` select would be worse) | **fixed here** — one accept task per transport, and the falsifier parks a websocket upgrade while a connection lands on `tcp` |
-| **B3/C2, C3/E4** | N7/N4 | No | no idle or lifetime bound on an established session: 64 post-handshake silent peers hold every permit, and the refusal is transport-blind (`H3`) | measured | S2 | L-A | **saves** (deliberate; the prior study declined a steady-state timeout) | **registered** — the residue is accepted; its *consequence* (total lockout, unauthenticated path can starve the authenticated one) was not stated before |
+| **B3/C2, C3/E4** | N7/N4 | No | no idle or lifetime bound on an established session: 64 post-handshake silent peers hold every permit, and the refusal is transport-blind (`H3`) | measured | S2 | L-A | **saves** (deliberate; the prior study declined a steady-state timeout) | **fixed here, for the half that is a defect** — each transport now holds its own share of the ceiling and the shares sum to it, so the unauthenticated path cannot take the whole surface; the *lifetime* half stays a decision, now stated as one rather than left implicit |
 | **B4** | N7 | Other than | the enlivener and greeter await a dial-and-fetch inside `handle_deliver`, on the session loop | read | S3 | L-B | **saves** (fixtures are per-session: a peer stalls only itself) | **closed by decision** — inconsistent with Law 61, blast radius one self-inflicted session |
 | **B5** | N6 | As well as | `DialPolicy` calls a **blocking** `to_socket_addrs` on the async dial path | read | S3 | L-B | **partly** (bounded; only for a name target) | **registered** |
 | **B6/C8** | N6/N7 | No | dialed sessions are not counted against `MAX_SESSIONS` | read | S3 | L-B | **partly** (bounded by `MAX_PEERS = 256`, not unbounded) | **registered** |
@@ -195,29 +195,36 @@ threat, and it is recorded here as such rather than counted as a defence.
 connection is refused on every transport* (S2, **measured**: 64 bare TCP connections, zero bytes each).
 
 ```
-TOP  all 64 permits held by one unauthenticated peer; honest sessions refused.
-     [api/ocapn.rs Semaphore::new(64), try_acquire_owned, warn+drop]
+TOP  one transport's whole share held by one unauthenticated peer; honest sessions on *that*
+     transport refused — the node's other transports keep their own shares.
+     [api/ocapn.rs Semaphore::new(share), try_acquire_owned, warn+drop, one per transport]
 
   OR
   ├─ A1  hold an ESTABLISHED session and go silent.        [B3/C2]  ← reaches TOP, NO barrier
   │      the permit is bound to the session task and released only when it ends; the loop awaits
   │      `conn.recv()` with no timeout. The handshake bound stops strictly BEFORE this line.
-  │      Permanent, not renewable — this is what makes the denial sticky.
+  │      Permanent, not renewable — this is what makes the denial sticky. **Bounded to one
+  │      transport's share and left as a decision**: an idle session is legitimate, and
+  │      `HANDSHAKE_TIMEOUT`'s note records why the steady-state read is not bounded.
   │
-  ├─ A2  hold 64 UNESTABLISHED sessions and renew.          [C3/E4]  ← barrier PARTIAL
+  ├─ A2  hold a share of UNESTABLISHED sessions and renew.  [C3/E4]  ← barrier PARTIAL
   │      HANDSHAKE_TIMEOUT 30 s / AUTH_TIMEOUT 30 s are real anchors, but the permit is taken
-  │      BEFORE the handshake and the bound is per-peer: 64 silent sockets take 64 slots for 30 s,
-  │      renewable at 64 sockets per cycle. The per-peer bound does not compose into a node bound
-  │      because the ceiling IS 64.
+  │      BEFORE the handshake and the bound is per-peer: a share's worth of silent sockets takes
+  │      the share for 30 s, renewable at that many sockets per cycle. The per-peer bound does not
+  │      compose into a node bound, and what makes it a *bounded* problem rather than the whole
+  │      surface is the share.
   │
   └─ A3  churn connections faster than tasks end.        [red team]  ← SEVERED
          RAII permit release + ACCEPT_BACKOFF. Independent of the threat; measured holding.
 
-  AMPLIFIER: the ceiling is ONE transport-blind semaphore, so the unauthenticated `websocket` path
-  can starve the authenticated `noise` path. There is no fairness barrier to fold in.
+  AMPLIFIER, now severed: the ceiling was ONE transport-blind semaphore, so the unauthenticated
+  `websocket` path could starve the authenticated `noise` path. **Fixed here** — every transport
+  holds its own share of the ceiling, and the shares sum to it rather than nesting under it, so the
+  amplifier is gone and the top event is one transport's share rather than the node's surface.
 
-  NOT BARRIERS, named: MAX_SESSIONS is the bound whose exhaustion IS the top event; the ceiling
-  warn+drop observes the fault rather than preventing it, and names no peer.
+  NOT BARRIERS, named: the share is the bound whose exhaustion IS the top event (of that transport);
+  the ceiling warn+drop observes the fault rather than preventing it, and names no peer — it now
+  names the transport, which is what tells an operator *where* to look.
 
   SIBLING TOP EVENTS, named and not folded (each is a different asset):
    · H1 the noise short-frame task-kill            [fixed here]
