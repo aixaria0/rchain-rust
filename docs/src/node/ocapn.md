@@ -52,7 +52,7 @@ Ed25519 key the Noise handshake names it by.
 A node that binds **none** has no transport at all: it does not listen, and the dial route answers
 **503** rather than dialing into "this node speaks nothing".
 
-**`noise` is the transport to reach for, and it is the only one of the three that is both reachable
+**`noise` is the transport to reach for, and it is the only one of the four that is both reachable
 and authenticated.** The handshake is Noise `XX` with X25519, ChaCha20Poly1305 and BLAKE2s; each side
 proves it holds an Ed25519 key by signing its own X25519 static public key, and the node's name *is*
 that Ed25519 key — a dialler must know it in advance, because the SYN is prefixed with it and a
@@ -157,7 +157,7 @@ port had to choose. They matter to anyone integrating a new peer.
 | `syrup.rs`, `netstring.rs` | the Syrup codec and the length-prefixed framing |
 | `locator.rs`, `peer.rs` | the URI and in-band locator forms |
 | `session.rs`, `session_id.rs` | `op:start-session`, Public Identifier, Session ID, `op:abort` |
-| `netlayer.rs`, `tcp_testing_only.rs`, `unix.rs` | the netlayer trait and the two transports |
+| `netlayer.rs`, `framed.rs`, `tcp_testing_only.rs`, `unix.rs`, `noise.rs`, `websocket.rs` | the netlayer trait, the shared framing, and the four transports |
 | `multi.rs` | the dialing dispatcher: a locator's transport name picks the layer |
 | `captp.rs`, `conn.rs` | the import/export and answer tables, `op:deliver`, `op:listen`, GC |
 | `bootstrap.rs`, `fixtures.rs` | the bootstrap object and the conformance fixtures |

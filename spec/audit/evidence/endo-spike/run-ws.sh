@@ -39,8 +39,10 @@ echo "starting the node on websocket :$PORT, identity $IDENTITY"
   > "$DATA/node.log" 2>&1 &
 NODE_PID=$!
 
-# Wait for the identity file — the node writes it as it binds, so its existence is the listener being
-# up, and the dialler needs it before it can name the node.
+# Wait for the identity file. **It is not a liveness signal**: `load_or_create_noise_identity` runs in
+# `setup_node_program`, a *config* phase, strictly before `serve_ocapn` binds — so the file can appear
+# before the listener exists. It is a *precondition* (the dialler needs it to name the node) and the
+# sleep below is what actually covers the gap.
 for _ in $(seq 1 600); do
   [[ -f "$IDENTITY" ]] && break
   sleep 0.1
@@ -50,7 +52,7 @@ if [[ ! -f "$IDENTITY" ]]; then
   tail -20 "$DATA/node.log" >&2
   exit 1
 fi
-# And a moment for the accept loop, which binds just before writing the file.
+# And a moment for the accept loop, which is the part the identity file's existence does NOT prove.
 sleep 1
 
 # `@endo/ocapn` is installed under `target/endo-spike` (README.md's recipe, and the same install

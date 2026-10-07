@@ -363,7 +363,9 @@ fn dialer_or_not_found(state: &AdminState) -> Result<crate::api::ocapn::OcapnDia
 pub struct OcapnDialRequest {
     /// The peer's designator — the name it advertises, and half of its OCapN identity.
     pub designator: String,
-    /// The transport to reach it on: `tcp-testing-only` or `unix`.
+    /// The transport to reach it on: `tcp-testing-only`, `unix`, `noise` or `websocket`. It is passed
+    /// through to the dialing dispatcher verbatim, which refuses an unknown name by listing the ones
+    /// this node speaks.
     pub transport: String,
     /// The transport's hints — `host` and `port` for tcp, `path` for unix.
     #[serde(default)]

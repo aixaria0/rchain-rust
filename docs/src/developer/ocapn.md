@@ -140,8 +140,10 @@ Two behaviours to expect:
   block carrying it is produced, so a call takes a block interval, not a round trip. The node pays the
   phlo. On a node with autopropose off, you must cause a block.
 - **Capabilities cross as references, values cross as data.** The kit's members and the purse above
-  are remote references — the underlying Rholang names never leave the node. A `(true, 0)` reply comes
-  back as the list `[true, 0]`.
+  are remote references — the underlying Rholang names never leave the node. A `(true, 0)` reply crosses
+  as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [true 0]>`, and comes back a tuple — Law 59
+  (AUDIT C226). It crossed as a bare list once, and a list does not match a contract's
+  `(brand, value)` pattern; that is why §5's round trip is possible at all.
 
 ## 5. What works today
 

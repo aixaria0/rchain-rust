@@ -444,8 +444,14 @@ async fn listen_tcp(
     // **The designator is this node's, not a shared constant** (C224 item 2). Peer identity *is*
     // `(designator, transport)` (`owner::peer_key`), so with every node calling itself `"rnode"` two
     // nodes were one peer: a sturdyref to one resolved at the other, and the crossed-hello registry
-    // conflated their sessions. Derived from the node's key (or its node id when there is no key) in
-    // `node_designator`, so it is stable across restarts and distinct per node.
+    // conflated their sessions.
+    //
+    // **Where it comes from depends on configuration, and this comment used to name only one case.**
+    // `node_runtime` derives it: the **Ed25519 verifying key** when a `noise` or `websocket` listener
+    // gave the node an identity — because that is the name the handshake actually checks — and
+    // `node_designator`'s deployer-key hash otherwise. Both are stable across restarts and distinct
+    // per node; they are not the same *shape*, so a node the operator later gives an identity changes
+    // name (HAZOP row D8).
     let location = PeerLocator {
         designator: designator.to_string(),
         transport: "tcp-testing-only".to_string(),

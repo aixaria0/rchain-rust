@@ -26,11 +26,14 @@
 #  * **A tuple pattern is exact.** `for (@(_, root) <- cap)` matches a 2-tuple and nothing else, and
 #    an ERTP kit's reply is `(brand, mint, issuer)` — so the deploy fell through the pattern and
 #    answered *nothing at all*. The pattern is now built from the shape the reply actually had.
-#  * **A tuple crosses CapTP as a Syrup list, not a record.** Syrup records are labelled, and the
+#  * **A tuple does not cross as a bare record.** Syrup records are labelled, and the
 #    label must be a symbol, string or byte string; `(true, 0)` encoded to a record labelled `true`,
 #    which Endo refused outright:
 #    `Unexpected type "boolean", Syrup record labels must be strings, selectors, or bytestrings`.
 #    The Python suite never sent such a tuple, so only the second oracle could find this.
+#    **Superseded 2026-10-06 by Law 59 (AUDIT C226):** the intermediate form this run then used, a
+#    bare Syrup *list*, is also wrong — a list does not match a contract's `(brand, value)` pattern.
+#    A tuple crosses as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [fields…]>`.
 #
 # --- transcript ----------------------------------------------------------------------------------
 

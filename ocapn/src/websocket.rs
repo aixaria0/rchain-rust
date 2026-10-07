@@ -7,8 +7,9 @@
 //! proves nothing. What it has instead is a peer that exists today — `@endo/ocapn` 1.1.1 is on npm and
 //! already interoperates with this repository (`spec/audit/evidence/endo-spike/`) — so it is the
 //! transport to test *against*, and the one to reach a deployment that speaks nothing else. `wss://`
-//! is supported for an operator who wants the channel protected; that half's reference is Goblins
-//! rather than Endo, since Endo has no TLS at all.
+//! is **implemented but not reachable from the node's configuration** — `bind_tls` has no caller and
+//! no config key selects it — so the node today advertises `ws://` and nothing else. That half's
+//! reference is Goblins rather than Endo, since Endo has no TLS at all.
 //!
 //! **The framing is one WebSocket frame per CapTP message, with nothing inside it.** Endo's
 //! `socketOps.write(bytes)` goes straight to `ws.send(bytes, { binary: true })` and its reader takes a

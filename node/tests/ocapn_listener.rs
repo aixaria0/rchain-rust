@@ -342,8 +342,13 @@ fn a_peer_dials_the_node_over_noise_and_reaches_its_ertp_capability() {
 }
 
 /// **The node serves a peer over `websocket`** — the transport `@endo/ocapn` speaks, and so the one a
-/// published Agoric peer can reach. Weaker than `noise` (no TLS, and only the server proves itself),
-/// but it is the transport with a live peer to interoperate with.
+/// published Agoric peer *could* reach. Weaker than `noise` (no TLS, and only the server proves
+/// itself).
+///
+/// **It dials with this repository's own client**, so it asserts self-consistency and not agreement
+/// with a foreign peer — which is exactly the class of defect the interop run found and this test
+/// could not (the gcrypt `desc:sig-envelope` encoding). The live peer is `endo-spike/run-3.txt`, and
+/// that run stops at the handshake; the test's earlier doc claimed otherwise.
 ///
 /// The dialler has to name the node by its Ed25519 key, exactly as over `noise`: the in-band
 /// challenge is a signature the dialler checks against that key, and a node that could not produce it

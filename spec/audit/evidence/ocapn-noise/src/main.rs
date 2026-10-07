@@ -6,9 +6,10 @@
 //! wire: the reference's own Rust core, fetched by `run.sh` at a pinned commit and inlined below,
 //! handshaking with our `NoiseNetlayer`.
 //!
-//! **The reference is the RESPONDER here**, and our node is the initiator. The reverse direction is
-//! `run.sh`'s second invocation (see the README), because the two paths are different code on both
-//! sides and a run of one says nothing about the other.
+//! **The reference is the RESPONDER here**, and our node is the initiator. **The reverse direction is
+//! NOT run** — `run.sh` invokes this harness once — so `respond()`'s half, including the
+//! intended-responder prefix check, is unverified against the reference's initiator: the two paths are
+//! different code, and a run of one says nothing about the other.
 //!
 //! What this proves: the handshake completes across implementations, and transport messages decrypt
 //! in both directions. What it **cannot** prove, and the transcript says so: the *record framing*.
