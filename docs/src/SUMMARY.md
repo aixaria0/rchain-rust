@@ -64,6 +64,7 @@
 - [The laws → Rust code](contributor/laws-to-rust.md)
 - [On-chain validation phases (Laws 23–25)](contributor/onchain-validation-phases.md)
 - [Formal specification & audit](contributor/spec.md)
+- [Plan: post-quantum migration](contributor/post-quantum-plan.md)
 
 # Part VI — QuCalc: native AI & governance
 
