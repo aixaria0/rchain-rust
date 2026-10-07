@@ -91,7 +91,7 @@ assertion is all there is, and that is the transport's protocol rather than a ga
 
 **Tier 2 — registered, not done**: the deferred-answer waiter count (B7),
 shutdown's detached sessions (B8/E15), `bind_tls` being
-unreachable (E13), the fixed-window limiter's 2× boundary (C9), the O(n²) reassembly (C11), the
+unreachable (E13), the fixed-window limiter's 2× boundary (C9), the
 unauditable admission (D9/E1), and the name-depends-on-config consequence (D8).
 
 **Tier 3 — corrected in the docs and comments**: five stale claims (F1, F3, F4, F6, F8) and the
@@ -125,7 +125,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **A6** | N5 | Late | the 4 MiB check ran *after* `into_data`, so tungstenite's 64 MiB default was the operative allocation bound | measured | S2 | L-B | fails | **fixed here** (`ws_config`) |
 | **A7** | N2 | Less | the responder signed an `init:peer-auth` of any length and did not pin the record's arity | read | S4→**S2** | L-B | fails | **fixed here** (arity 2, payload exactly `CHALLENGE_LEN`) — **S2 and not S4**: with A5 it was the signing half of `H2` |
 | **A8** | N1 | Other than | the Noise chunk boundary is private and unnegotiated; multi-chunk interop is unverified | read | S3 | L-B | **saves** (no counterpart exists to negotiate with) | **registered** |
-| **A9** | N1 | Less | a 1..3-byte truncated length header is reported as a clean end of stream — diverging from `framed`'s own rule | read | S4 | L-D | **partly** (cannot lose a message; breaks the crate's stated discipline) | **registered** |
+| **A9** | N1 | Less | a 1..3-byte truncated length header is reported as a clean end of stream — diverging from `framed`'s own rule | read | S4 | L-D | **partly** (cannot lose a message; breaks the crate's stated discipline) | **fixed here** — the header is read by a loop that separates a close *at* a boundary from a close inside one, as `framed` does |
 | **A10** | N7 | More | `Value::Int` is arbitrary precision | reasoned | S4 | L-B | **partly** (the resource is capped at 4 MiB; a 4 MiB int is *smaller* than its input) | **refuted** |
 | **A11** | N1 | Late | the responder writes its SYNACK before verifying the initiator's payload | read | S4 | L-B | **saves** (XX binds the initiator's static only in message 3 — the order is forced) | **refuted** |
 | **B1/C1/E3** | N2/N4 | As well as | the ws accept runs TLS+upgrade+challenge inside the accept loop, holding it up to 40 s | read | S2 | L-A | **partly** — the loop-hold is **measured false**; a ws-**only** node still holds one establish | **registered** (the doc's residual claim corrected; the ws-only case stands) |
@@ -140,7 +140,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **C7/E14** | N4/N8 | More | one WARN per refused accept | read | S4 | L-B | **partly** (bounded at ~10/s by the backoff) | **closed by decision** — it is the operator's signal |
 | **C9** | N7 | More | one node-global 4/s deploy limiter; the fixed window admits ~2× across a boundary | read | S2 | L-B | **saves** (fairness is declined with Law 63a) | **registered** (the boundary imprecision only) |
 | **C10** | N7 | More | bridged deliveries poll the chain API ~480×/s node-wide | reasoned | S4 | L-B | **saves** (a product of two shipped bounds) | **refuted** |
-| **C11** | N1 | More | `open` reassembles with `drain(..take)` per chunk — O(n²) | reasoned | S3 | L-B | **partly** (bounded to ~128 MiB of copy at the cap; no amplification) | **registered** |
+| **C11** | N1 | More | `open` reassembles with `drain(..take)` per chunk — O(n²) | reasoned | S3 | L-B | **partly** (bounded to ~128 MiB of copy at the cap; no amplification) | **fixed here** — the body is walked by offset rather than drained; the complexity change itself is reasoned, not measured |
 | **C12/D3/E5/E6/F7** | N3 | Late/Early | the identity file's mode was set **after** the write and **never checked on read** | read | S2 | L-C | fails | **fixed here** (`create_new` + `mode(0o600)`; the read refuses a loosened file) |
 | **D1** | N1 | Other than | the transport-verified Ed25519 key is discarded (`let _…`) and never bound to the peer identity | read | S3 | L-B | **saves** (no binding is defined by the spec or the reference; it is Law 63a's work) | **fixed here** — `NetConn::verified_peer` keeps the handshake's proved key, `Session::verified_peer_key` exposes it, `peer_key` reads it in preference to the asserted designator, and `forget` takes the key the session was booked under |
 | **D2** | N2 | No | the websocket handshake authenticates only the server | measured | S2 | L-A | **saves** (the reference's own shape, documented, off by default) | **closed by decision** |

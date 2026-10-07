@@ -7628,8 +7628,25 @@ untrue. `common::start` now takes a process-wide lock held in the returned `Test
 so a test that starts a node runs alone from setup to teardown. Measured: the nine pass in parallel
 (`ocapn_listener`, 41 s) where they failed before, and `deploy_block` and `gateway` are unchanged.
 
-**The rows that remain open.** C227–C228, C230–C236 and C238, C240–C241 register what this pass did not
-fix, each `todo` with what would close it.
+**Two more from the Noise framing, closed here (C228, C233).** The length header was read with
+`read_exact`, which reports `UnexpectedEof` both when a peer closes *at* a boundary and when it closes
+two bytes into a four-byte header — and the match arm turned both into `Ok(None)`, "the peer said
+goodbye". The 1..3 lost bytes cannot hold a message, so nothing is dropped; what is lost is the
+distinction, and a session that ended inside a header reads exactly like one that ended cleanly. It is
+now read by a loop that separates the two cases, which is the rule `framed` already pins. The falsifier
+is `ocapn/src/noise.rs:a_stream_that_ends_inside_a_length_header_is_not_a_clean_end` — a real
+handshake, two bytes of a header, then the peer goes away — **measured failing against the `read_exact`
+version**, which answered `Ok(None)`; its companion pins the other half, that a close with nothing in
+flight still reads as the end of the stream.
+
+And `open` reassembled a multi-chunk body with `ciphertext.drain(..take)` once per chunk, which shifts
+everything after the drained range down on *every* iteration — a body at the 4 MiB cap is 64 chunks, so
+~128 MiB of `memmove` for one message. It walks an offset now. **This one is reasoned, not measured:**
+no test counts bytes copied, and the correctness guard passes with either implementation, so it is not
+a falsifier. That is said on the row rather than rounded up.
+
+**The rows that remain open.** C227, C230–C236 and C238, C240–C241 register what this pass did not fix,
+each `todo` with what would close it.
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

@@ -565,20 +565,28 @@ impl NoiseConn {
         let mut plain = Vec::with_capacity(ciphertext.len());
         // Chunks are `MAX_CHUNK_PLAINTEXT + TAG_LEN` bytes each, except the last — and the last is
         // where a peer can aim the remainder, so it is checked too.
-        while !ciphertext.is_empty() {
-            let take = ciphertext.len().min(MAX_CHUNK_PLAINTEXT + TAG_LEN);
-            let mut chunk: Vec<u8> = ciphertext.drain(..take).collect();
-            let chunk_len = chunk.len();
-            if chunk_len < TAG_LEN {
-                return Err(frames_a_message(chunk_len));
+        //
+        // **Consumed by index, not by draining.** `ciphertext.drain(..take)` shifts every byte after
+        // the chunk down on *each* iteration, which is quadratic in the chunk count: a body at the
+        // 4 MiB cap is 64 chunks, so ~128 MiB of `memmove` for one message (HAZOP row C233). Walking
+        // an offset is the same work without the shifting, and `decrypt_in_place` writes in place at
+        // the offset it is given.
+        let mut offset = 0;
+        while offset < ciphertext.len() {
+            let take = (ciphertext.len() - offset).min(MAX_CHUNK_PLAINTEXT + TAG_LEN);
+            if take < TAG_LEN {
+                return Err(frames_a_message(take));
             }
-            let written = recv.decrypt_in_place(&mut chunk, chunk_len).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a Noise transport message did not authenticate",
-                )
-            })?;
-            plain.extend_from_slice(&chunk[..written]);
+            let written = recv
+                .decrypt_in_place(&mut ciphertext[offset..offset + take], take)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a Noise transport message did not authenticate",
+                    )
+                })?;
+            plain.extend_from_slice(&ciphertext[offset..offset + written]);
+            offset += take;
         }
         Ok(plain)
     }
@@ -623,11 +631,27 @@ impl NetConn for NoiseConn {
 
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
         self.ensure_ready().await?;
+        // **A clean boundary is not a short read** (HAZOP row C228). `read_exact` reports
+        // `UnexpectedEof` for both, so reading the header with it would take a peer that closes two
+        // bytes into a four-byte length and call it "the peer said goodbye" — the message is lost and
+        // the session ends as though the peer had meant to. `framed` pins the same rule for
+        // netstrings: `Ok(None)` only when the stream ends *at* a boundary, `UnexpectedEof` when it
+        // ends inside one.
         let mut header = [0u8; 4];
-        match self.stream.read_exact(&mut header).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(e),
+        let mut filled = 0;
+        while filled < header.len() {
+            match self.stream.read(&mut header[filled..]).await {
+                Ok(0) if filled == 0 => return Ok(None),
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the peer closed inside a Noise transport length header",
+                    ))
+                }
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
         }
         let len = u32::from_be_bytes(header) as usize;
         if len > MAX_CIPHERTEXT_BYTES {
@@ -812,6 +836,87 @@ mod tests {
                 .to_string()
                 .contains("shorter than one AEAD tag"),
             "and the refusal says which rule it broke"
+        );
+    }
+
+    /// **A stream that ends inside a length header is not a clean end of stream** (HAZOP row C228).
+    ///
+    /// The header used to be read with `read_exact`, which reports `UnexpectedEof` both when the peer
+    /// closes *at* a boundary and when it closes two bytes into a four-byte length — and the match
+    /// arm turned both into `Ok(None)`, "the peer said goodbye". So a truncated header silently
+    /// dropped a message and ended the session as though nothing were wrong. `framed` distinguishes
+    /// the two for netstrings; this is the same rule for this transport's own framing.
+    #[tokio::test]
+    async fn a_stream_that_ends_inside_a_length_header_is_not_a_clean_end() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server_identity = NoiseIdentity::generate().expect("a fresh identity");
+        let client_identity = NoiseIdentity::generate().expect("a fresh identity");
+        let peer_key = server_identity.verifying_key();
+
+        let accepting = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut conn = NoiseConn::accepted(tcp, server_identity);
+            conn.ensure_ready().await.expect("the server handshake");
+            conn
+        });
+        let mut client = NoiseConn::dialing(
+            TcpStream::connect(addr).await.expect("connect"),
+            client_identity,
+            peer_key,
+        );
+        client.ensure_ready().await.expect("the client handshake");
+        let mut server = accepting.await.expect("join");
+
+        // Two bytes of a four-byte length, then the peer goes away.
+        client.stream.write_all(&[0u8, 0u8]).await.expect("write");
+        client.stream.flush().await.expect("flush");
+        drop(client);
+
+        let ended = server.recv().await;
+        let error = ended.expect_err("a partial header is an error, not a clean end of stream");
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof,
+            "and it says the stream ended inside a message: {error}"
+        );
+    }
+
+    /// **A clean close at a message boundary *is* a clean end of stream** — the other half of the
+    /// rule above, and the reason the distinction has to be made at all: the conformance peers and
+    /// every ordinary peer close this way, and reporting an error for it would turn a normal goodbye
+    /// into a protocol failure.
+    #[tokio::test]
+    async fn a_close_at_a_message_boundary_is_a_clean_end() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server_identity = NoiseIdentity::generate().expect("a fresh identity");
+        let client_identity = NoiseIdentity::generate().expect("a fresh identity");
+        let peer_key = server_identity.verifying_key();
+
+        let accepting = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let mut conn = NoiseConn::accepted(tcp, server_identity);
+            conn.ensure_ready().await.expect("the server handshake");
+            conn
+        });
+        let mut client = NoiseConn::dialing(
+            TcpStream::connect(addr).await.expect("connect"),
+            client_identity,
+            peer_key,
+        );
+        client.ensure_ready().await.expect("the client handshake");
+        let mut server = accepting.await.expect("join");
+
+        // Away with nothing in flight: no header, no body.
+        drop(client);
+        assert!(
+            server
+                .recv()
+                .await
+                .expect("a close at a boundary is not an error")
+                .is_none(),
+            "and it reads as the end of the stream"
         );
     }
 }
