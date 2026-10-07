@@ -7770,3 +7770,42 @@ C229 (the lockout consequence the prior study had not stated) and E9 (the `0.0.0
 steelman found was in the design page's own example config). A study that had shipped the first pass —
 or skipped the steelman because the adjudicator had already ruled — would have carried eight rows as
 settled that nobody had argued against.
+
+
+## 71. A1.5's unfinalised tail is a fixed band, and the flicker is the slack (C246)
+
+**What the page said, and what the measurement says.** `docs/src/spec/testnet-acceptance.md` §3.1 called
+A1.5's residual **intermittent** — three runs left 2 of 3, 0 of 3 and 1 of 3 arms with their sixth
+deploy unfinalised — and left the fix-versus-restate question to a maintainer. Reading all **twelve
+arms of four runs**, including a fresh three-arm run on `9f52d84d3`, it is not intermittent at all.
+
+**The band.** A quiet chain's greatest `finalized` is **`tip − 4`** in eleven arms and `tip − 5` in one;
+every arm sat frozen at that reading for 37 to 110 one-second samples, and the two arms that were short
+carry the `finalized` stall lines and `round gate escaped` lines that rule out a truncated read. The
+last few heights of an idle chain are simply never finalised.
+
+**The flicker is one number.** A deploy finalises iff production ran **at least 4 heights past it**. The
+runs that were all green left their sixth deploy 4, 6 or 10 heights below the tip; every short arm left
+it **3**. The 2/3, 0/3, 1/3, 0/3 spread is how much slack the chain had after its last deploy, not a
+race in the node.
+
+**Why the band exists, read from the code rather than inferred.** The finalizer's fringe requires a
+candidate whose parents reach **beyond** the next layer (`block-storage/src/dag/finalizer.rs`), so the
+last layer's messages can only be finalised by messages that do not exist yet; and on a quiet net
+nothing mints them, because the round gate's escape is only evaluated when something *asks* the node to
+propose (`casper/src/blocks/proposer/proposer.rs`) and with `--no-autoproose` nothing does.
+
+**And the band is a lag, not a loss.** `n214-tail-lag-run.sh` goes quiet, reads the wall, then deploys
+once more: in every arm the block sitting at the wall's tip — unfinalised while the chain was idle — was
+finalised as soon as the chain produced again (55→finalised, 35→finalised, 29→finalised). What is **not**
+yet captured is a single transcript holding a *deploy* in the band and rescuing it; the stored arms show
+deploys land there and the lag arms show it is covered, which gives the conclusion by composition and
+not in one run. The rigs built here produced slack 4 in every arm — the chain mints about as many heights
+after a deploy as the band is wide, which is precisely why the stored runs sat on the knife edge.
+
+**So the criterion's own wording is what fails.** "Every consecutive deploy on a quiet net is finalised"
+measures the net *while it is idle*, and by construction nothing can improve during an idle period. The
+property that matters — no deploy is silently lost — is met, and is exactly what the lag runs measure.
+**Restating A1.5 to that property is a maintainer's call** and is proposed, not taken, here; the evidence
+for it is `spec/audit/evidence/n214-rotation-results.md`'s 2026-10-07 section, and the rig that measures
+it is `n214-tail-lag-run.sh` with `n214-tail-lag-summarise.py`.

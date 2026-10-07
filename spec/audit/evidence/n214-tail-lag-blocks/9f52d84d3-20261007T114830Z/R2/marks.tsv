@@ -1,0 +1,8 @@
+arm	R2
+t0	1791374077
+first_deploy	1791374137
+last_deploy	1791374209
+quiet_end	1791374299
+seventh_deploy	1791374299
+end	1791374389
+targets	- 1 2 - 1 2 1

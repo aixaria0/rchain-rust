@@ -123,3 +123,76 @@ still climbing when the window closed. The gate's own reason lines name partitio
 One attempt per arm, one tree, one host, N=3 — the same limits the earlier sections carry. A single arm
 differing between two runs is one sample, not a rate: what the two runs together say is that the residual
 is real and its *frequency* moved from two arms to one.
+
+
+# 2026-10-07 (tree `9f52d84d3`) — the tail is a fixed band, and the flicker is the slack
+
+**What this adds.** The three earlier samples disagreed (2/3, 0/3, 1/3 arms short) and the page called
+the residual **intermittent**. It is not. Re-reading all twelve arms of all four runs — including a
+fresh three-arm run on `9f52d84d3` — the unfinalised tail is a **fixed band**, and whether a given
+deploy is caught in it is decided entirely by how much production ran after it.
+
+## The band
+
+| run | arm | tip at rest | finality reached | tip − finality | sixth deploy's block | tip − block | verdict |
+|---|---|---|---|---|---|---|---|
+| `07af032ad` | R1 | 28 | 24 | **4** | 24 | 4 | OK |
+| `07af032ad` | R2 | 27 | 23 | **4** | 24 | **3** | SHORT |
+| `07af032ad` | R3 | 27 | 23 | **4** | 24 | **3** | SHORT |
+| `513e2192b` | R1 | 36 | 32 | **4** | 31 | 5 | OK |
+| `513e2192b` | R2 | 35 | 31 | **4** | 29 | 6 | OK |
+| `513e2192b` | R3 | 22 | 17 | **5** | 19 | **3** | SHORT |
+| `f1ca009` | R1 | 55 | 51 | **4** | 45 | 10 | OK |
+| `f1ca009` | R2 | 35 | 31 | **4** | 29 | 6 | OK |
+| `f1ca009` | R3 | 29 | 25 | **4** | 25 | 4 | OK |
+| `9f52d84d3` | R1 | 55 | 51 | **4** | 45 | 10 | OK |
+| `9f52d84d3` | R2 | 35 | 31 | **4** | 29 | 6 | OK |
+| `9f52d84d3` | R3 | 29 | 25 | **4** | 25 | 4 | OK |
+
+**The one rule that accounts for every arm**: a deploy finalises iff production ran **at least 4
+heights past it**. `tip − finalized` is **4** in eleven arms and **5** in one; every run that was "all
+green" left its sixth deploy 4, 6 or 10 heights below the tip, and every run with a short arm left it
+**3**. The 2/3, 0/3, 1/3, 0/3 spread is the slack varying, not the node.
+
+**And these are walls, not truncated reads.** Each arm sat frozen at its final reading for 37 to 110
+one-second samples. The `513e2192b` R2/R3 arms' `stall-lines.txt` name partitions of `100 of 250` and
+`50 of 250`, and their `escape-lines.txt` three `round gate escaped` lines — the signatures
+`n214-rotation-results.md` already used to rule out a truncated read.
+
+## Why the band exists, and why it is a lag rather than a loss
+
+Read from the code, not inferred: the finalizer's fringe requires a candidate whose parents reach
+**beyond** the next layer (`block-storage/src/dag/finalizer.rs`), so the messages of the last layer can
+only be finalised by messages that do not yet exist; and on a quiet net nothing mints them, because the
+round gate's escape (`casper/src/blocks/proposer/proposer.rs`) is only evaluated when something *asks*
+the node to propose, and with `--no-autopropose` nothing does. So the last `LIVENESS_WINDOW`-ish heights
+of an idle chain are unfinalisable **by construction**, and a deploy of which that is true is waiting,
+not lost.
+
+`n214-tail-lag-run.sh` measures which. In every arm it ran, the block sitting at the wall's tip — the
+greatest height, unfinalised when the chain was quiet — was **finalised as soon as the chain produced
+again**:
+
+| arm | at the wall (tip / finalized) | after one more deploy (tip / finalized) | the block at the wall's tip |
+|---|---|---|---|
+| R1 (bootstrap shape) | 55 / 51 | 59 / 55 | 55 → finalised |
+| R2 (rotating) | 35 / 31 | 39 / 35 | 35 → finalised |
+| R3 (validator-1) | 29 / 25 | 35 / 31 | 29 → finalised |
+
+**What is not yet captured, said rather than implied.** No run has yet held a *deploy* in the band and
+then rescued it in the same transcript. The stored arms show deploys do land there (`07af032ad` R2/R3,
+`513e2192b` R3); the lag arms show the band is covered once the chain produces; the two together give the
+conclusion, but the single-run demonstration needs a run whose slack is **3**, and the rigs built here
+produced slack 4 in all three arms — the chain mints about as many heights after a deploy as the band
+is wide, which is exactly why the stored runs sat on the knife edge. A rig that catches it needs the
+probe to run repeatedly until one arm lands at 3, or a way to stop production sooner after the last
+deploy.
+
+## Limits
+
+- **One host, 3 validators, 8 GiB cap, one tree.** The band was measured at N=3; whether it is 4 at
+  N=5 or N=8 is unmeasured, and `LIVENESS_WINDOW` is 5 in the code regardless.
+- **The lag arms are a different rig from the rotation arms** (`n214-tail-lag-run.sh`, committed with
+  this section). Their configuration is identical apart from the probe deploy.
+- **Not a rate.** Four runs, twelve arms, three of them fresh. It is enough to say the spread is slack
+  and not randomness; it is not enough to put a distribution on the slack.

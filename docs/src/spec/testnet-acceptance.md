@@ -1915,6 +1915,25 @@ before/after pair and §3.5 for the cause.
 > kill/restart rig, so the cite named a file whose rig no longer produces its shape; the six-deploy rig is
 > `n214-rotation-run.sh`, and A1.5 now cites both its runs' artefacts.
 
+> **Correction, 2026-10-07 (C246) — "intermittent" was the wrong word.** Re-reading all **twelve arms of
+> four runs**, including a fresh three-arm run on `9f52d84d3`, the tail is not a race: a quiet chain's
+> greatest `finalized` is **`tip − 4`** in eleven arms and `tip − 5` in one, frozen for 37 to 110
+> one-second samples. **A deploy finalises iff production ran at least 4 heights past it** — the green
+> runs left their sixth deploy 4, 6 or 10 heights below the tip, and every short arm left it **3**. The
+> 2/3, 0/3, 1/3, 0/3 spread is the slack, not the node.
+>
+> **And the band is a lag rather than a loss.** `n214-tail-lag-run.sh` reads the wall, deploys once more,
+> and in every arm the block at the wall's tip — unfinalised while the chain was idle — was finalised as
+> soon as the chain produced again. The mechanism is `block-storage/src/dag/finalizer.rs`'s fringe, which
+> needs a candidate whose parents reach *beyond* the next layer, and `proposer.rs`'s round gate, whose
+> escape is evaluated only when something *asks* the node to propose.
+>
+> **So what fails is the criterion's own wording.** "Every consecutive deploy on a quiet net is finalised"
+> measures the net *while it is idle*, and nothing can improve during an idle period. The property that
+> matters — no deploy is silently lost — is met. Restating A1.5 to say so is **proposed and not taken**:
+> it is a maintainer's call, and the full account is `spec/audit/evidence/n214-rotation-results.md` plus
+> pass 71.
+
 ## 3.2 Criterion 2 — Validators can be dropped and joined without risk
 
 > **§3.2 — 5 ✅ · 0 ❌ · 0 ⬜.** A2.1, A2.3, A2.4 and A2.5 pass, and **A2.2 passes on the live testnet**:
@@ -2087,6 +2106,14 @@ not the code's (see §0.9).
 
 **Limits.** One tree, one host, N=3 only — where a reading is single-attempt, the row says so. A1.2 (N=5)
 and A1.3 (N=8) are untested. A single attempt is not a rate.
+
+> **Correction, 2026-10-07 — the untested arms are a *budget*, not a capacity.** A1.2 and A1.3 read as
+> though N=5 and N=8 could not be run here. They can: `tools/devnet.sh` takes up to **eight** validators
+> (`MAX_VALIDATORS = 8`), at a default 4 GiB ceiling each, and N=2/3/5/8 have been run on this host
+> before (the #149 attestation sweep — `n149-sweep-run.sh` carries `NS="2 3 5 8"`). The arms were left
+> ⬜ by a **sweep-budget** decision, in the pre-registration's own words: *"the sweep budget is not a
+> sweep"*. The other blocker this page once named, #153's parent bound, **closed on 2026-10-01**. So
+> these two rows are runnable here and want deciding on, not provisioning for.
 
 ## 3.5 The cause of the stall, and its correction
 
