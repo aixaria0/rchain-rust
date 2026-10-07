@@ -281,7 +281,7 @@ lookup-by-ID route and keeps the signature route for v1 deploys.
 
 | Hash | Used for | Quantum strength | Action |
 |---|---|---|---|
-| Blake2b-256 | block hash, RSpace trie, signed-payload hash, checksums | ~2^128 preimage (Grover); collision ~2^128 classically, quantum collision algorithms need impractical memory | **No change** |
+| Blake2b-256 | block hash, RSpace trie, signed-payload hash, checksums | ~2^128 preimage (Grover); collision 2^128 classically and ~2^85 by the quantum BHT algorithm, which also needs ~2^85 of quantum memory, so it is costlier in practice than parallel classical search (Bernstein, *Cost analysis of hash collisions*, 2009) | **No change** |
 | Blake2b-512 PRNG | unforgeable names | as above | No change |
 | Keccak-256 | addresses, `:eth` signatures | as Blake2b-256 | No change |
 | SHA-256 | `rho:crypto:sha256Hash` | as above | No change |
@@ -464,6 +464,25 @@ H6 now, since it needs no fork.
 
 What still forces a future fork: a break in ML-DSA itself that requires a scheme *not* compiled into the binary,
 or a change to the block format beyond the headroom in H4. H3's dormant SLH-DSA is the hedge for the first.
+
+
+### 14.1 Triggers: what evidence moves each step
+
+H2 makes it possible to pull the sunset forward with a governance vote. These triggers say what evidence should
+prompt that vote, so the decision is made against criteria agreed in advance rather than under pressure. They
+are cumulative, and each is a public, checkable event. The idea and the first two thresholds come from DarkWow's
+[quantum threat model](https://github.com/PatrickMockridge/DarkWow/blob/linear-master/doc/src/arch/quantum-threat.md);
+the actions are this plan's.
+
+| # | Trigger | Observable signal | Action here |
+|---|---|---|---|
+| T0 | None: the state today | — | P0′, P0″, P0 and P1 proceed; the agility fork is built and tested |
+| T1 | ≥ 1,500 error-corrected logical qubits demonstrated, two-qubit gate fidelity above 99.9% | Peer-reviewed result, or a NIST/NSA/NCSC advisory | Activate the agility fork if it is not live; open the dual-format window; validators rebond with PQ keys; wallets start prompting exposed high-value accounts; set a deadline for M3 commitments |
+| T2 | A quantum break of a small ECDLP instance (≥ 112-bit, e.g. secp112r1) | Published cryptanalysis | Governance moves the sunset to a short fixed horizon; no new secp256k1 validator bonds |
+| T3 | Standards bodies deprecate ECDSA/EdDSA for new systems | A NIST IR or FIPS publication (NIST IR 8547 sets a deprecation timeline; check its current dates) | Sunset height no later than the date those algorithms are disallowed |
+| T4 | A cryptographically relevant quantum computer is demonstrated (256-bit ECDLP, or RSA-2048 factored) | Published result | Emergency: activate the sunset now through H2; freeze unmigrated revealed-key vaults (M5); accept only PQ deploys; exclude validators without PQ keys at the next epoch |
+
+The evidence for any trigger is recorded on the tracking issue before the governance deploy that acts on it.
 
 ---
 
