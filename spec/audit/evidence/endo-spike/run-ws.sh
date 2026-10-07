@@ -3,7 +3,11 @@
 # run-ws.sh — reproduce the websocket interop run.
 #
 # Starts a node with a `websocket` listener, waits for it to come up, dials it with **Agoric's**
-# `@endo/ocapn` over its websocket netlayer, and writes the transcript to `run-3.txt`.
+# `@endo/ocapn` over its websocket netlayer, and writes the transcript to `run-4.txt`.
+#
+# **`run-3.txt` is kept as it was**: the recorded *hang*, where the client established the session and
+# then sent nothing. C245 is the finding that it was this node's advertised location rather than the
+# peer's client, and `run-4.txt` is the same harness after the fix — `FETCHED`, then `CALL REPLY`.
 #
 # **The peer is a published package.** `@endo/ocapn` 1.1.1 from npm — the same one `run-1`/`run-2` used
 # — installed under `target/endo-spike` by the recipe in README.md. Nothing here is this repository's
@@ -69,7 +73,7 @@ echo "dialling with @endo/ocapn"
 # **Bounded**, so a dial that stalls is a named failure rather than a job that sits here: a harness
 # that can hang for half an hour and print nothing is worse than one that says it timed out.
 (cd "$ROOT/target/endo-spike" && timeout 120 node ./ws-round-trip.mjs "$IDENTITY" "$PORT") 2>&1 \
-  | tee "$HERE/run-3.txt"
+  | tee "$HERE/run-4.txt"
 if [[ "${PIPESTATUS[0]}" == "124" ]]; then
   echo "the dial did not finish within 120s" >&2
   exit 1

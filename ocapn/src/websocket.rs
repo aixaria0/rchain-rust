@@ -136,15 +136,30 @@ impl WebsocketNetlayer {
         self.listener.local_addr()
     }
 
-    /// The location to advertise: the `url` hint Endo reads, in the scheme this listener speaks, plus
-    /// this node's verifying key so a dialler can check the challenge response.
+    /// The location to advertise: **the designator Endo derives and the `url` hint it reads, and
+    /// nothing else.**
+    ///
+    /// **Two rules, and the transport owns both (AUDIT C245).** Endo identifies a location by
+    /// `ocapn://<designator>.<transport>?<sorted hints>` — *every* hint is part of the key it resolves
+    /// a session under (`@endo/ocapn/src/client/util.js`), and the designator it *decodes* as base32.
+    /// The session is stored under the location the peer advertised and looked up under the one the
+    /// peer dialled, so an advertised location that differs from the dialled one in **either** field
+    /// means the pending promise never resolves and the fetch that would follow it is never sent.
+    /// That is what recorded the websocket transport as a hanging one, and it was this function's
+    /// shape rather than the peer's client.
+    ///
+    /// So the designator is `base32(Ed25519 verifying key)` — the peer's own convention, which it
+    /// derives independently — and the key is **not** repeated as a `verify` hint, because a hint is
+    /// part of the identity and an extra one makes this location a different location. A dialler still
+    /// has to know this key to prefix its challenge, and it has to learn it out of band either way:
+    /// the hint was a convenience, never a source.
     ///
     /// **`host` is the host a *peer* should dial, when the operator has named one** (HAZOP row C237).
     /// The bound address is the default and is right for a specific one — but a bind to `0.0.0.0` or
     /// `::` yields a URL no other host can use, so the node's caller passes the advertised host
     /// instead of deriving it from `local_addr()`. The port is always the bound one: `:0` is legal, and
     /// the chosen port is the only useful thing to advertise.
-    pub fn location(&self, designator: &str, host: Option<&str>) -> io::Result<PeerLocator> {
+    pub fn location(&self, host: Option<&str>) -> io::Result<PeerLocator> {
         let local = self.local_addr()?;
         let scheme = if self.tls.is_some() { "wss" } else { "ws" };
         let host = host.unwrap_or_else(|| "").to_string();
@@ -154,18 +169,12 @@ impl WebsocketNetlayer {
             host
         };
         Ok(PeerLocator {
-            designator: designator.to_string(),
+            designator: rchain_shared::base32::encode(&self.identity.verifying_key()),
             transport: "websocket".to_string(),
-            hints: std::collections::BTreeMap::from([
-                (
-                    URL_HINT.to_string(),
-                    format!("{scheme}://{host}:{}", local.port()),
-                ),
-                (
-                    "verify".to_string(),
-                    rchain_shared::base16::encode(&self.identity.verifying_key()),
-                ),
-            ]),
+            hints: std::collections::BTreeMap::from([(
+                URL_HINT.to_string(),
+                format!("{scheme}://{host}:{}", local.port()),
+            )]),
         })
     }
 }
@@ -528,12 +537,17 @@ mod tests {
 
     /// A listener and the locator a client dials it by — which names it by the key its
     /// challenge/response is checked against.
+    ///
+    /// **The dialler adds the `verify` hint itself**, which is the whole shape of C245: the advertised
+    /// location carries the key only as its `designator` (base32, the peer's convention), and the
+    /// hint a dialler needs to prefix its challenge is learnt out of band rather than read off the
+    /// advertisement.
     async fn listening() -> (WebsocketNetlayer, PeerLocator) {
         let server_identity = identity();
         let server = WebsocketNetlayer::bind("127.0.0.1:0", server_identity.clone())
             .await
             .expect("bind");
-        let mut location = server.location("server", None).expect("location");
+        let mut location = server.location(None).expect("location");
         location.hints.insert(
             "verify".to_string(),
             rchain_shared::base16::encode(&server_identity.verifying_key()),

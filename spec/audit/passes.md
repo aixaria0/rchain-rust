@@ -7748,6 +7748,7 @@ should be able to find the account of any one of them. Every row below is `done`
 | **C242** | the handshake's proved key is kept and used as the session's registry key | `a_peer_is_keyed_by_the_key_its_transport_proved`, plus the session-level test below |
 | **C243** | `owner::peer_key` reads the `verify` hint, and `accept_and_book` writes the proved key there; `forget` takes the key it booked under | `a_session_is_booked_under_the_name_its_transport_proved` — reachable by the proved key, not by the assertion |
 | **C244** | the node test fixture starts one heavyweight node at a time | the nine OCapN listener tests pass in parallel where CI failed four runs in a row |
+| **C245** | the `websocket` location names the node `base32(Ed25519 key)` and carries no `verify` hint, so the location a peer dials is the location it resolves | `spec/audit/evidence/endo-spike/run-4.txt` — the published `@endo/ocapn` 1.1.1 reaches `FETCHED` and `CALL REPLY`, where `run-3.txt` recorded the same client establishing the session and then sending nothing. Also `rchain_shared::base32` against RFC 4648 §10's vectors |
 
 **What is *not* in the table, said here rather than left to be noticed:** C233's complexity claim is
 the only one that is reasoned rather than measured, and its row says so. Everything else in the table

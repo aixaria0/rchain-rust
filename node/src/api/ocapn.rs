@@ -634,7 +634,6 @@ async fn listen_noise(
 async fn listen_websocket(
     address: &str,
     policy: DialPolicy,
-    designator: &str,
     chain: usize,
     identity: NoiseIdentity,
     advertised: Option<&str>,
@@ -654,9 +653,9 @@ async fn listen_websocket(
     // **The advertised host, not the bound one** (HAZOP row C237): `advertised_host` refuses an
     // unspecified bind the operator has not named, and otherwise returns the bound address.
     let host = advertised_host(local, advertised, "websocket")?;
-    let location = bound
-        .location(designator, Some(&host))
-        .map_err(|e| e.to_string())?;
+    // **No designator argument**: this transport names itself, and the convention is Endo's rather
+    // than the operator's (AUDIT C245) — see `WebsocketNetlayer::location`.
+    let location = bound.location(Some(&host)).map_err(|e| e.to_string())?;
     Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
 }
 
@@ -748,7 +747,6 @@ pub async fn serve_ocapn(
             listen_websocket(
                 address,
                 policy.clone(),
-                &designator,
                 chain.len(),
                 identity.clone(),
                 advertised_host.as_deref(),

@@ -114,3 +114,45 @@ comment where it happened:
 | an empty reply where a purse was expected | the term bound the member with `for (@(_, root) <- cap)`, and a tuple pattern is **exact**: an ERTP kit's reply is `(brand, mint, issuer)`, so the 2-element pattern fell straight through and the deploy answered nothing | the pattern is built from the value's real shape |
 | `Unexpected type "boolean", Syrup record labels must be strings, selectors, or bytestrings` | `par_value` mapped `ETuple` to a Syrup **record**; records are labelled, and `(true, 0)` made the label a boolean | a tuple crosses as a Syrup **list** |
 
+
+
+## The websocket transport: `run-3` is the hang, `run-4` is the fix (C245)
+
+`run-ws.sh` starts a node with a `websocket` listener and dials it with the same published client,
+over `@endo/ocapn`'s websocket netlayer. For a long time this was the transport's standing weakness:
+**the client established a session and then sent nothing**, so `enlivenSturdyRef` never resolved and
+there was no `FETCHED` line. The HAZOP's RCA read that as the peer stalling in its own client, on the
+evidence of a trace comparison — *"confirmed by comparison, not by inspection of Endo's code"*, in its
+own words.
+
+**Reading that code settles it the other way, and the defect was ours.** Endo:
+
+- identifies a location by `ocapn://<designator>.<transport>?<sorted hints>` — *every* hint is part of
+  the key (`@endo/ocapn/src/client/util.js`, `locationToLocationId`);
+- **stores** the establishing session under the location the peer *advertised*
+  (`client/handshake.js`, `resolveSession(locationId, …)`);
+- **looks it up** under the location it *dialled* (`client/index.js`, `provideInternalSession`).
+
+This node advertised `ocapn://<base16 key>.websocket?url=…&verify=<base16 key>` while the peer dialled
+`ocapn://<base32 key>.websocket?url=…`. Two differences, either one fatal — and the peer's decoder will
+not even read a hex designator (`Invalid base32 character: 9`). The pending promise never resolved, so
+the `fetch` that `enlivenSturdyRef` ends with was never sent. The socket stayed open and silent until
+the harness's own 120 s bound killed it, which is exactly what `run-3.txt` records.
+
+The fix is `WebsocketNetlayer::location`: the designator is `base32(Ed25519 verifying key)` — the
+convention that transport's peers derive themselves — and **no `verify` hint**, because a hint is part
+of the identity. A dialler has to know the key in advance either way: it is the SYN's cleartext prefix,
+and no location can be its source. `rchain_shared::base32` is new, and is checked against RFC 4648
+§10's vectors.
+
+`run-4.txt` is the same harness after the fix:
+
+```
+FETCHED object Object [Alleged: Remote Object 1] {}
+CALL REPLY [ Symbol(echo), 'foo', 1n, false ]
+```
+
+**`noise` is unaffected.** Its location carries a `verify` hint too, but nothing on the reference side
+resolves a session by location string — the interop run drives the reference's core directly — and the
+hint is how this port's own diallers name a noise peer. Whether the same divergence bites a future
+noise peer that *does* resolve by location is open, and is C227's ground.

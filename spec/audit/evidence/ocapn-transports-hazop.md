@@ -61,7 +61,7 @@ reversed the reading.
 | **R1** | the node fails to answer a delivery on the websocket transport | instrument `WsConn::recv`/`send` and look for a delivery that arrives | **refuted.** 54 B in (challenge), 176 B out (envelope), 333 B in, 420 B out, then **silence**. No delivery ever arrived. |
 | **R2** | the peer sent a delivery and we dropped it | the same trace would show bytes after the handshake | **refuted by R1's measurement.** |
 | **R3** | the connection was reset by the peer | a reset after `session established` with no close frame | **refuted.** The reset is `run-ws.sh`'s own 120 s `timeout` killing the client. |
-| **R4** | the peer stalls in its own client after `session established` | the same client over `tcp-testing-only` reaches `applyMethod … fetch` one line after `session established`; over websocket it never does | **confirmed by comparison**, not by inspection of Endo's code. |
+| **R4** | the peer stalls in its own client after `session established` | the same client over `tcp-testing-only` reaches `applyMethod … fetch` one line after `session established`; over websocket it never does | **refuted — C245, and the refutation is the study's worst error.** The comparison was sound and the inference from it was backwards. Endo's client keys a location by `ocapn://<designator>.<transport>?<sorted hints>`, *every* hint, stores the establishing session under the location the **peer advertised** and looks it up under the one it **dialled** (`client/util.js`, `client/handshake.js`, `client/index.js`). This node advertised a base16 designator — which that client refuses to even decode, `Invalid base32 character` — and an extra `verify` hint it never dialled with. The two locations differed, the pending promise never resolved, and the fetch was never sent: **the client stalled because of what we told it we were**, not because of anything in its own client. Reading the code that had been assumed was the missing step. Fixed, and `endo-spike/run-4.txt` reaches `FETCHED` and `CALL REPLY`. |
 | **R5** | the node's session loop died silently, hiding the answer | the loop's `Result` was discarded; reading it would show an error | **confirmed as a defect, not as the cause** — the loop ended only when the harness killed the client. **Fixed here** (logged at `debug`). |
 | **R6** | our responder path is verified against the reference | the harness's own doc asserts a reverse run | **refuted** — `run.sh` invokes the harness once (row F1). |
 
@@ -278,6 +278,17 @@ residual — "a peer that connects and then stays silent holds that loop" — th
 false in a multi-transport node, while the *real* hazard in the same mechanism (B2, an honest peer
 silently reset by unrelated traffic) went unnamed. **A stated residual that is wrong is worse than no
 residual**, because it ends the search.
+
+**And a second indictment, added after this study closed (C245).** The RCA named the hanging fetch as
+the peer stalling in *its own* client, on the evidence of a **comparison of two traces** rather than a
+reading of that client. Reading it refutes the verdict: Endo identifies a location by every one of its
+hints and by a designator it decodes as base32, this node advertised a base16 designator with an extra
+`verify` hint, and a session stored under one location is looked up under the other — so the fetch was
+never sent. **The defect was this node's advertisement, and the study had called it the peer's.** The
+fix is `WebsocketNetlayer::location` and a new `base32`; the published peer now completes the round trip
+(`endo-spike/run-4.txt`). This is the paragraph above with the sides swapped: a residual attributed to
+the other party ends the search exactly as a wrong one does, and *"confirmed by comparison"* is not a
+reading. The RCA was right about what it measured and wrong about what it meant.
 
 **The process verdict.** Ten agents; two were blocked and re-run; the re-run produced eight
 disagreements and one measurement that refuted the code's own comment. Had the study shipped the first

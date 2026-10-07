@@ -311,6 +311,14 @@ that signature against the key the dial named. As Endo writes it, `ws://` has **
 The reference also sets **no size limit and no timeout anywhere**; the bounds in the module are this
 port's additions and say so.
 
+**Name this node the way that peer does** (AUDIT C245). Endo identifies a location by
+`ocapn://<designator>.<transport>?<sorted hints>` — every hint included — and resolves a session under
+the location it dialled, so its `designator` for this node is `base32(Ed25519 verifying key)`, which is
+what this node advertises and what a client must dial. A hex designator, or one carrying a hint the
+client did not send, is a *different* location: the client completes the handshake, stores the session
+under your advertisement, looks it up under its own, and then sends nothing at all. The round trip is
+`spec/audit/evidence/endo-spike/run-4.txt`.
+
 ### Unix domain sockets as the inner hop
 
 **Implemented** as `ocapn/src/unix.rs`, bound with `api-server.ocapn-listen-unix`. It is the smallest
