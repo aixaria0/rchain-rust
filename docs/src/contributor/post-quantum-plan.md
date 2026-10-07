@@ -4,7 +4,7 @@
 > book at the owner's request, as an exception to the quarantine rule in `AGENTS.md`; every claim about
 > *existing* code cites the file it describes, and every other statement is a proposal.
 
-*Status: plan. Nothing here is implemented. Grounded in `rchain-rust` at `f9f8ca3` (2026-10-07). Sizes and
+*Status: plan. Nothing here is implemented. Grounded in `rchain-rust` at `a22b7c2` (`dev`, 2026-10-07). Sizes and
 speeds are order-of-magnitude figures from the published parameter sets and common benchmarks; re-measure
 on the node's own hardware before fixing any budget.*
 
@@ -61,7 +61,7 @@ gated by a hash-based one-time signature checked in plain Rholang, using only `r
 | Algorithm registry | secp256k1, secp256k1:eth | `crypto/src/signatures/signatures_alg.rs:34` | The single dispatch point for every on-chain verify. **This is the crypto-agility hook**: a new scheme is one match arm. |
 | Signed-payload hash | Blake2b-256 (Keccak-256 + Ethereum prefix for `:eth`) | `crypto/src/signatures/signed.rs:62` | Deploys are signed over `blake2b256(serialized DeployData)`. |
 | Deploy signature | per `sig_algorithm` field | `models/src/casper/protocol/casper_message.rs:160` (`SignedDeployData`), `:189` (`verify_signature`); API ingress `node/src/api/conversion.rs:292` | Authenticates the deployer. Every deploy in a block is re-verified on receipt (`casper/src/validate.rs:606`). |
-| **Deploy identity** | the signature bytes | `casper/src/validate.rs:447` (`repeat_deploy`), `BlockMessage.rejected_deploys` (`casper_message.rs:780`), `/api/v1/deploy-status/{deploy_signature}` (`node/src/web/http.rs:1203`) | The signature *is* the deploy ID, normalized to low-S (`signatures_alg.rs:122`) to defeat ECDSA malleability. |
+| **Deploy identity** | the signature bytes | `casper/src/validate.rs:447` (`repeat_deploy`), `BlockMessage.rejected_deploys` (`casper_message.rs:780`), `/api/v1/deploy-status/{deploy_signature}` (`node/src/web/http.rs:1205`) | The signature *is* the deploy ID, normalized to low-S (`signatures_alg.rs:122`) to defeat ECDSA malleability. |
 | Deployer authority | the public key itself | `GDeployerId { public_key }` (`models/src/ast.rs:455`), `normalizer_env.rs:42` | `rho:rchain:deployerId` is the capability vaults and the registry check. |
 | REV address | Keccak-256 of the key → 20-byte ETH address → Keccak-256 + Blake2b checksum | `rholang/src/util/rev_address.rs:58` | Requires a 65-byte key (`key_length == VALIDATOR_LENGTH`). |
 | Block signature | hard-coded `"secp256k1"` | `casper/src/proto_util.rs:99`, `casper/src/validator_identity.rs:29,45`; verify `casper/src/validate.rs:40` | Signs the 32-byte `hash_block` (`proto_util.rs:63`). |
@@ -70,8 +70,8 @@ gated by a hash-based one-time signature checked in plain Rholang, using only `r
 | Unforgeable-name seed | Blake2b-512 PRNG over (shard, block number, **sender key**, pre-state hash) | `casper/src/block_random_seed.rs:95`, `:174` (`var_size`) | Per-deploy names split by index (`split_byte`, max 255 per block, `proposer.rs:622`). |
 | Rholang crypto | secp256k1, Ed25519 | `rholang/src/system_processes.rs:793,825`; `rho:registry:insertSigned:secp256k1` at `:758` | Contracts verifying signatures themselves; the genesis `Registry.rho` uses `secp256k1Verify`. |
 | P2P transport | TLS (rustls with the `ring` provider) + P-256 self-signed certs | `comm/Cargo.toml:22`, `crypto/src/util/certificate_helper.rs:163` | Node ID = last 20 bytes of `keccak256(cert public key)` (`certificate_helper.rs:34`). |
-| OCapN | Ed25519 | `ocapn/src/conn.rs:222`, `ocapn/src/handoff.rs:110` | Session identity and handoff certificates (off-chain, live). |
-| Encryption | Curve25519 `crypto_box` | `crypto/src/encryption/curve25519.rs` | No caller outside the crypto crate today. |
+| OCapN | Ed25519; X25519 for the Noise `XX` netlayer | `ocapn/src/conn.rs:222`, `ocapn/src/handoff.rs:110`; `ocapn/src/noise.rs` over `crypto/src/encryption/x25519.rs` | Session identity and handoff certificates (off-chain, live); Noise key agreement that encrypts CapTP traffic. |
+| Encryption | Curve25519 `crypto_box` | `crypto/src/encryption/curve25519.rs` | No caller outside the crypto crate today. (The raw X25519 primitive beside it serves the OCapN Noise netlayer, row above.) |
 | Formal model | abstract `sign`/`verify`/`sign_verify_roundtrip` axioms | `spec/laws.tsv`, Law 19 | Algorithm-agnostic, so the model needs no change for a new scheme (§9). |
 
 Two constraints shape every library decision below. The workspace targets **wasm32** for the crypto crate
@@ -90,6 +90,7 @@ The question that sets urgency is not "when is Q-day" but "what can an attacker 
 | Forge blocks as a bonded validator | At attack time | All bonded validators |
 | Long-range attack with old, unbonded validator keys | Any time in the future | Every key that was ever bonded, forever |
 | Decrypt recorded P2P traffic | Any time in the future | Low value: block and deploy content is public anyway |
+| Decrypt recorded OCapN Noise sessions | Any time in the future | Higher: CapTP messages between peers are not public, and X25519 key agreement is broken by Shor, so traffic recorded today can be read later |
 | Break an address whose key was never revealed | At attack time; Grover only, ~2^80 for the 160-bit ETH-address step | Small |
 
 **Alternatives for the overall posture:**
@@ -320,7 +321,7 @@ A hash migration is **not needed**. D5-b is recommended because it is the same k
 | Block gossip size | KB-scale | grows per §5.3; the transport already streams large blobs in chunks with a 256 MiB per-stream ceiling (`comm/src/transport/grpc_transport_receiver.rs`) | No limit change needed; measure gossip latency on the two-host testnet |
 | TLS key exchange | ECDHE via rustls `ring` provider | (a) switch rustls to the `aws-lc-rs` provider, which offers hybrid X25519+ML-KEM-768; (b) leave as is | (a) is a dependency change only, no consensus impact. Lower priority: the traffic is public data |
 | TLS peer authentication | P-256 self-signed certs, node ID = keccak(cert key) | (a) PQ X.509 certs (ML-DSA in TLS is not broadly supported by rustls yet); (b) keep TLS for the channel and add an application-level handshake where the node signs the TLS channel binding with an ML-DSA node key; (c) bind node ID to the validator key ID | (b) now, (c) for validator nodes. Peer spoofing affects routing, not consensus validity, since blocks are signed independently |
-| OCapN sessions | Ed25519 | add ML-DSA as a session-identity algorithm alongside Ed25519; handoff certificates likewise | Follow the OCapN spec community; off-chain and not consensus-critical |
+| OCapN sessions | Ed25519 identity; Noise `XX` with X25519 | (a) add ML-DSA as a session-identity algorithm and for handoff certificates; (b) add an ML-KEM-768 encapsulation to the Noise handshake (hybrid, as PQNoise-style patterns do), keeping X25519 so interop with today's peers still works; (c) leave both until the OCapN spec settles | (b) first: the Noise traffic is the one place here where "record now, decrypt later" exposes non-public data. (a) follows the OCapN spec community; neither is consensus-critical |
 
 ### 8.3 Storage
 
@@ -397,13 +398,13 @@ sunset, M4 left as research.
 | **P0″. Wallet hygiene (§16)** | Wallet keeps high-value funds at never-revealed addresses, sweeps whole balances, flags exposed accounts, manages one-time keys and M3 commitments | **No** | nothing; a wallet release |
 | **P0′. Opt-in PQ vaults (§15)** | `PQVault.rho` (hash-based one-time signatures in Rholang), client signer, phlo measurements, audit; deployed as an ordinary contract | **No** | nothing; can start immediately |
 | **P0. Groundwork** | ML-DSA (and SLH-DSA) in `crypto` behind a feature, **not** in `from_algorithm`; NIST KAT tests on host and wasm32; benchmarks; size budget measured on a real block; fix the `var_size` panic path into a typed error; `ValidatorId` type introduced internally | No | — |
-| **P1. Node-local and transport** | rustls `aws-lc-rs` provider with hybrid ML-KEM; application-level ML-DSA node handshake; deploy-status by content ID alongside signature; wallet/client libraries (`rnode` CLI, JS client) able to produce ML-DSA deploys against a dev net | No | P0 |
+| **P1. Node-local and transport** | rustls `aws-lc-rs` provider with hybrid ML-KEM; hybrid ML-KEM in the OCapN Noise handshake; application-level ML-DSA node handshake; deploy-status by content ID alongside signature; wallet/client libraries (`rnode` CLI, JS client) able to produce ML-DSA deploys against a dev net | No | P0 |
 | **P2. Fork 1: block version 2** | `from_algorithm` gains `ml-dsa-44`/`ml-dsa-65` for v2 blocks; key IDs in `sender`, `bonds`, seed, `deployerId`; key registry; content-hash deploy IDs; new address version; phlo pricing for signature bytes; `mlDsa44Verify` system process; finality "never revert below LFS" rule | **Yes, coordinated** | P0, P1, issue #83 fixed (epoch rebond) |
 | **P3. Transition window** | Validators rebond with PQ keys at epoch boundaries (D3-a); users move funds (M1) or commit (M3); monitor the share of value still on revealed secp256k1 keys | No new fork | P2 |
 | **P4. Fork 2: sunset** | v3 blocks reject secp256k1 deploys and validator signatures; freeze unmigrated revealed-key vaults (M5); M3 reveals accepted | **Yes, coordinated** | P3 metrics |
 | **Emergency** | A pre-reviewed P4 branch kept rebased on `dev`, so a credible quantum break can be answered with a fork in days rather than months | Yes | P2 deployed |
 
-What each phase can be done without: P0 and P1 can merge to `dev` any time and ship in normal releases. P2 and
+§14 recommends folding P2 and P4 into a single agility fork, so the table's two coordinated forks become one. What each phase can be done without: P0 and P1 can merge to `dev` any time and ship in normal releases. P2 and
 P4 need every validator to upgrade at a set block height. P3 is operational.
 
 ---
