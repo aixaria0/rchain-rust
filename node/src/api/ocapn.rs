@@ -130,6 +130,16 @@ const CHAIN_REPLY_INTERVAL: Duration = Duration::from_millis(250);
 /// How far back to look for the reply datum, in blocks. Matches the socket-level callers.
 const CHAIN_REPLY_DEPTH: i32 = 50;
 
+/// **How many session-admission and session-end lines the node writes per second** (HAZOP row C236).
+///
+/// The two lines are the node's only record of *who* it is serving — without them an operator sees
+/// the listener come up and nothing else, and cannot tell that an unauthenticated `websocket` peer was
+/// admitted, over which transport, or under which name. They are worth the default level; the *rate*
+/// is the peer's to choose, so they go through a limiter rather than being either silent or a flood.
+/// Above it the line is written at `debug`, so a suppressed audit is still recoverable with the level
+/// turned up.
+const SESSION_AUDIT_PER_SEC: u64 = 20;
+
 /// How many OCapN sessions the node serves at once.
 ///
 /// Every session is a task, a socket, and its own export/answer tables, and the tables' size is the
@@ -821,6 +831,14 @@ pub async fn serve_ocapn(
         registry,
         handoffs,
         log,
+        // **The same word that ends the listeners ends their sessions** (HAZOP row C231). Each
+        // session task is spawned and detached, so returning from this function on the stop word left
+        // every live session running: the sockets closed but the sessions the operator was shutting
+        // down carried on until the process died, and nothing said so.
+        stop: stop.clone(),
+        audit: Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
+            SESSION_AUDIT_PER_SEC,
+        )),
     };
     // **One accept task per transport** (HAZOP row C239) — see `accept_transport` for the cancellation
     // a single `select!` caused, and why a `biased` select is not the fix. A transport the node does
@@ -860,6 +878,14 @@ struct SessionFactory {
     registry: Arc<rchain_ocapn::owner::SessionRegistry>,
     handoffs: Arc<rchain_ocapn::handoff::Handoffs>,
     log: Arc<dyn rchain_shared::log::Log>,
+    /// The operator's stop word, so a session ends with the node rather than outliving it (HAZOP row
+    /// C231).
+    stop: watch::Receiver<bool>,
+    /// **The audit trail's rate bound** (HAZOP row C236). Admission and a session's end are written at
+    /// `info` — the default level — because an operator's only other view is "the listener was up";
+    /// the *rate* is the peer's to choose, so those lines go through this limiter rather than being
+    /// either silent or a flood.
+    audit: Arc<rchain_shared::rate_limiter::RateLimiter>,
 }
 
 /// **One accept task per transport** (HAZOP row C239).
@@ -927,6 +953,8 @@ impl SessionFactory {
             registry,
             handoffs,
             log,
+            stop,
+            audit,
         } = self;
         // A fresh session key per session, as OCapN requires.
         let Ok(identity) = Identity::fresh(location.clone()) else {
@@ -975,14 +1003,53 @@ impl SessionFactory {
             }
         };
         *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        // **Admission is auditable** (HAZOP row C236). The name is the peer's own assertion where the
+        // transport authenticates nobody, and the key the handshake *proved* where it does — both,
+        // because "who said they were calling" and "who the transport says it is" are different
+        // facts and an operator needs to see which is which.
+        let who = match booked.hints.get(rchain_ocapn::owner::VERIFY_HINT) {
+            Some(proved) => format!(
+                "{} (proved {proved}) over {}",
+                booked.designator, booked.transport
+            ),
+            None => format!("{} over {}", booked.designator, booked.transport),
+        };
+        if audit.allow() {
+            log.info(source, &format!("session admitted: {who}"));
+        } else {
+            log.debug(
+                source,
+                &format!("session admitted (audit suppressed): {who}"),
+            );
+        }
         // One session per connection; its end is this task's end.
         // **The loop's outcome was discarded**, so a session that ended with an error was
         // indistinguishable from one that ended cleanly — the node said nothing either way, and it
         // took an instrumented run to see that a session had ended at all. Said at `debug`, because a
         // peer closing its session is ordinary and a `warn` would be meaningless; but said, which it
         // was not. (Found by this study's RCA.)
-        if let Err(e) = loop_.run().await {
-            log.debug(source, &format!("session loop ended: {e}"));
+        //
+        // **And the operator's stop ends the session too** (HAZOP row C231). The session tasks are
+        // spawned and detached, so the listener returning on the stop word left every live session
+        // running: the listeners' sockets closed and the sessions carried on until the process died,
+        // which is a drain that drains the wrong half. Cancelling `run` here drops the session's
+        // socket, which is what the peer sees either way.
+        tokio::select! {
+            outcome = loop_.run() => {
+                if let Err(e) = outcome {
+                    log.debug(source, &format!("session loop ended: {e}"));
+                }
+            }
+            _ = stop_requested(stop) => {
+                if audit.allow() {
+                    log.info(source, &format!("session ended: {who} (the node is stopping)"));
+                }
+            }
+        }
+        // The end of what was admitted, at the same level and through the same limiter (HAZOP row
+        // C236): an admission nobody can pair with an end is a leak an operator cannot see.
+        if audit.allow() {
+            log.info(source, &format!("session ended: {who}"));
         }
         registry.forget(&booked, &handle.own_pi, handle.dialed);
     }
@@ -1748,6 +1815,112 @@ mod tests {
             .await
             .expect("the task ends cleanly")
             .expect("and without error");
+    }
+
+    /// **Admission and a session's end are visible at the default level** (HAZOP row C236).
+    ///
+    /// The node logged that its listener was up and nothing else: not which peer was admitted, over
+    /// which transport, under which name — so an operator could not tell that an unauthenticated
+    /// `tcp-testing-only` (or `websocket`) peer had been admitted at all. Both lines are at `info`
+    /// now, naming the peer, and the end is the admission's pair: an admission nobody can match with
+    /// an end is a leak nobody can see. This drives a real CapTP dial, because a line that only
+    /// appears for a connection no peer could have made is not an audit trail.
+    #[tokio::test]
+    async fn an_operators_log_names_the_peer_that_was_admitted_and_when_it_left() {
+        use rchain_ocapn::bootstrap::Bootstrap;
+        use rchain_ocapn::conn::{Identity, Session};
+        use rchain_ocapn::locator::PeerLocator;
+        use rchain_ocapn::netlayer::Netlayer;
+        use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
+
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                ..OcapnListeners::default()
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
+            log.clone(),
+            stop_rx,
+        ));
+
+        let port: u16 = loop {
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(port) = said
+                .iter()
+                .find_map(|line| line.split("tcp-testing-only on 127.0.0.1:").nth(1))
+                .and_then(|rest| rest.split([' ', '(']).next())
+                .and_then(|port| port.parse().ok())
+            {
+                break port;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        // A peer that names itself, over the transport that authenticates nobody: the name is the
+        // peer's own assertion, which is exactly what an operator has to be able to see.
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let node = PeerLocator {
+            designator: "rnode-test".to_string(),
+            transport: "tcp-testing-only".to_string(),
+            hints: BTreeMap::from([
+                ("host".to_string(), "127.0.0.1".to_string()),
+                ("port".to_string(), port.to_string()),
+            ]),
+        };
+        let ours = PeerLocator {
+            designator: "caller".to_string(),
+            transport: "tcp-testing-only".to_string(),
+            hints: BTreeMap::new(),
+        };
+        let connection = dialer
+            .new_outgoing_connection(&node)
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(ours).expect("a session key");
+        let client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node completes the handshake");
+        assert!(
+            log.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .any(|line| line.contains("session admitted: caller over tcp-testing-only")),
+            "the operator must see who was admitted, over which transport: {:?}",
+            log.0.lock().unwrap_or_else(|p| p.into_inner())
+        );
+
+        // The peer goes away, and the end is recorded with the same name.
+        drop(client);
+        let mut ended = false;
+        for _ in 0..100 {
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if said
+                .iter()
+                .any(|line| line.contains("session ended: caller over tcp-testing-only"))
+            {
+                ended = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            ended,
+            "and when the peer left: {:?}",
+            log.0.lock().unwrap_or_else(|p| p.into_inner())
+        );
+
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
     }
 
     /// **A configured identity key is read even when nothing consumes it** (HAZOP row C238).

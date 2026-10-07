@@ -172,6 +172,73 @@ fn a_peer_dials_the_node_and_fetches_a_fixture() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A live session does not outlive a node that is asked to stop** (HAZOP row C231).
+///
+/// The session tasks are spawned and detached, so `serve_ocapn` returning on the stop word used to
+/// leave every live session running: the listeners' sockets closed and the sessions the operator was
+/// shutting down carried on until the process died. A drain that drains the wrong half is worse than
+/// none, because it reports success. The peer's side is the observable — a dropped session's socket
+/// reads as a clean close — and the fetch before the stop is the control: a session that had already
+/// ended would make the assertion below pass for the wrong reason.
+#[test]
+fn a_live_session_ends_when_the_node_is_asked_to_stop() {
+    let dir = common::temp_dir("ocapn-shutdown-session");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let connection = dialer
+            .new_outgoing_connection(&locator(ports[5]))
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(locator(0)).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the handshake");
+
+        // The control: the session is live and answering.
+        let fetch = Deliver {
+            to: Desc::Export(0u64.into()),
+            args: vec![
+                Value::Symbol("fetch".into()),
+                Value::Bytes(ECHO_SWISS.to_vec()),
+            ],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+        };
+        client
+            .send_message(&fetch.to_syrup())
+            .await
+            .expect("send the fetch");
+        client
+            .recv_message()
+            .await
+            .expect("read the reply")
+            .expect("the session answers while the node is serving");
+
+        // The operator stops the node, and the session ends with it rather than outliving it.
+        node.request_stop();
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(30), client.recv_message())
+            .await
+            .expect("the session must end when the node is asked to stop, not hang")
+            .expect("a close is not an error");
+        assert!(
+            ended.is_none(),
+            "the peer sees the connection closed, not another message: {ended:?}"
+        );
+
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **The node serves a peer over `unix`** (issue #249): the transport that is *not* a testing one,
 /// authenticated by the socket's file mode rather than by a network address.
 ///

@@ -7663,8 +7663,26 @@ config field itself: **one file is one peer**, and there is no rotation (replaci
 node, which is the loss case over again); and **the node's name is a function of configuration**, so
 adding a listener that consumes the key renames a node that has already handed out locations.
 
-**The rows that remain open.** C227, C230–C233, C236, C240 and C241 register what this pass did not
-fix, each `todo` with what would close it.
+**The lifecycle and the audit trail, closed here (C231, C236).** The session tasks are spawned and
+detached, so `serve_ocapn` returning on the stop word left every live session running: the listeners'
+sockets closed and the sessions the operator was shutting down carried on until the process died. That
+is a drain that drains the wrong half, and it reported success. `SessionFactory` now carries the same
+stop receiver and the session's loop selects on it, so a session ends with the node. The falsifier is
+`node/tests/ocapn_listener.rs:a_live_session_ends_when_the_node_is_asked_to_stop` — a peer dials,
+fetches once as the control, the node is asked to stop, and the peer's next read is a clean close —
+**measured failing against the detached version**, where it hung for the full 30 s. One consequence
+stated because it is a behaviour change: a delivery in flight when the operator stops is now cut.
+
+And the audit trail the operations lens asked for: the node logged that its listener was up and nothing
+else, so an operator could not tell that an unauthenticated peer had been admitted, over which
+transport, or under which name. Admission and a session's end are both `info` now — naming the
+designator the peer *asserted* and, where the transport proved one, the key it *proved*, which are
+different facts — and both go through a rate limiter, because the rate is the peer's to choose.
+`node/src/api/ocapn.rs:an_operators_log_names_the_peer_that_was_admitted_and_when_it_left` drives a
+real CapTP dial and asserts both lines.
+
+**The rows that remain open.** C227, C230, C232, C240 and C241 register what this pass did not fix, each
+`todo` with what would close it.
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

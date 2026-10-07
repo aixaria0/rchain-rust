@@ -90,9 +90,7 @@ that can prove a name** — over `websocket` the accepted side has nothing to pr
 assertion is all there is, and that is the transport's protocol rather than a gap this code leaves.
 
 **Tier 2 — registered, not done**: the deferred-answer waiter count (B7),
-shutdown's detached sessions (B8/E15), `bind_tls` being
-unreachable (E13), the fixed-window limiter's 2× boundary (C9), and the
-unauditable admission (D9/E1).
+`bind_tls` being unreachable (E13), and the fixed-window limiter's 2× boundary (C9).
 
 **Tier 3 — corrected in the docs and comments**: five stale claims (F1, F3, F4, F6, F8) and the
 `listen_tcp` designator comment.
@@ -135,7 +133,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **B5** | N6 | As well as | `DialPolicy` calls a **blocking** `to_socket_addrs` on the async dial path | read | S3 | L-B | **partly** (bounded; only for a name target) | **registered** |
 | **B6/C8** | N6/N7 | No | dialed sessions are not counted against `MAX_SESSIONS` | read | S3 | L-B | **partly** (bounded by `MAX_PEERS = 256`, not unbounded) | **registered** |
 | **B7** | N7 | More | each `Reply::Deferred` spawns a waiter task polling the global gift store 10 ms for 10 s; the cap bounds landed answers, not waiters | read | S2 | L-B | **partly** (each is O(1) and short-lived; the "absent gift" behaviour is correct) | **registered** |
-| **B8/E15** | N8 | Reverse | shutdown drains the listener but not its detached session tasks | read | S4 | L-B | **partly** (the deploy is submitted before the reply wait; only the peer's answer is cut) | **registered** |
+| **B8/E15** | N8 | Reverse | shutdown drains the listener but not its detached session tasks | read | S4 | L-B | **partly** (the deploy is submitted before the reply wait; only the peer's answer is cut) | **fixed here** — the operator's stop word ends a session too, so a drain drains the sessions it started |
 | **B9** | N4 | Late | the ceiling is consulted after establishment | read | S4 | L-B | **saves** (the conn does not exist before that; checking earlier would block *all* accepts) | **refuted** |
 | **C7/E14** | N4/N8 | More | one WARN per refused accept | read | S4 | L-B | **partly** (bounded at ~10/s by the backoff) | **closed by decision** — it is the operator's signal |
 | **C9** | N7 | More | one node-global 4/s deploy limiter; the fixed window admits ~2× across a boundary | read | S2 | L-B | **saves** (fairness is declined with Law 63a) | **registered** (the boundary imprecision only) |
@@ -149,7 +147,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **D6** | N1/N2/N6 | Other than | the registry keys on the peer's **self-asserted** designator, so a peer knowing an honest peer's public name can, by the crossing rule, evict that peer's accepted session | read | S3 | L-B | fails | **fixed here, for the transport that can prove a name** — the registry is keyed by the proved key where there is one, so over `noise` a peer naming itself another's name is filed under its own and cannot collide; **over `websocket` it remains, by the protocol rather than by this code** (D2: only the server proves itself) |
 | **D7** | N4/N8 | More | the chain capabilities are published to every admitted session regardless of transport | read | S2 | L-A | **saves, reframed** (no transport grants differential authority — it restates A2/D1) | **refuted** as a distinct row |
 | **D8/F10** | N3/N8 | Other than | the name is a function of configuration, not of the node; the `listen_tcp` comment still attributes it to `node_designator` | read | S3 | L-C | **partly** (the behaviour is required — the name must be the key the handshake checks) | **fixed here** (the stale comment; the consequence is documented) |
-| **D9/E1** | N8 | No | admission is unauditable; a session's end is `debug` | read | S4 | L-A | **partly** (some visibility exists; the omission is deliberate, against log flood) | **registered** |
+| **D9/E1** | N8 | No | admission is unauditable; a session's end is `debug` | read | S4 | L-A | **partly** (some visibility exists; the omission is deliberate, against log flood) | **fixed here** — both lines are `info`, naming the peer and the transport, through a rate limiter rather than either silent or a flood |
 | **E7** | N3 | No | a truncated identity file bricks startup with no regeneration path | read | S2 | L-D | **saves** (regenerating would rename the node and orphan peers) | **closed by decision** |
 | **E9** | N8 | Other than | `ocapn-listen-noise = 0.0.0.0:<port>` advertises host `0.0.0.0` — a location a *remote* peer cannot dial back | read | S3 | L-C | **fails unless the peer is on the same host** | **fixed here** — `api-server.ocapn-advertised-host` names the host peers are told, and an unspecified bind without one is refused at startup; the design page's own example, which used `0.0.0.0`, is corrected |
 | **E10** | N6 | No | the dial policy never judged a websocket target (it reads `host`; a ws locator carries `url`) — **a measured SSRF** (`H4`) | measured | S2 | L-B | fails | **fixed here** (`host_of` parses the authority, including bracketed IPv6; `a_websocket_target_is_judged_by_its_url`) |
