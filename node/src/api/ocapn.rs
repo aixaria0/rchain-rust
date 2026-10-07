@@ -359,6 +359,11 @@ pub struct OcapnDialer {
     /// The location this node advertises in a dial's `op:start-session` — one of the transports it
     /// listens on, so the peer can dial back.
     location: PeerLocator,
+    /// **The ceiling a dialed session draws from** (HAZOP row C241), shared with every fixture that
+    /// dials. The accept path has its own per-transport shares; this is the budget for the sessions
+    /// the node *starts*, and without it a dialer could hold `MAX_PEERS` sessions against a ceiling
+    /// of `MAX_SESSIONS`.
+    dials: Arc<tokio::sync::Semaphore>,
 }
 
 impl OcapnDialer {
@@ -368,11 +373,13 @@ impl OcapnDialer {
         netlayer: Arc<dyn Netlayer>,
         registry: Arc<rchain_ocapn::owner::SessionRegistry>,
         location: PeerLocator,
+        dials: Arc<tokio::sync::Semaphore>,
     ) -> OcapnDialer {
         OcapnDialer {
             netlayer,
             registry,
             location,
+            dials,
         }
     }
 
@@ -390,11 +397,12 @@ impl OcapnDialer {
     ) -> Result<(rchain_ocapn::owner::SessionHandle, Desc, Value), String> {
         // An empty slot, so `session_origin` is `None` — see the doc above. The dial is deferred and
         // its loop runs in its own task, so the fetch below does not block on the handshake.
-        let enlivener = rchain_ocapn::enliven::Enlivener::new(
+        let enlivener = rchain_ocapn::enliven::Enlivener::with_dial_budget(
             self.netlayer.clone(),
             self.location.clone(),
             self.registry.clone(),
             rchain_ocapn::owner::session_slot(),
+            Some(self.dials.clone()),
         );
         enlivener.dial_and_fetch(peer, swiss).await
     }
@@ -798,11 +806,18 @@ pub async fn serve_ocapn(
     // **Publish the dialer** for the admin route that starts a dial of the node's own. A node with no
     // transport does not publish one: there is no layer to dial with, and the route says so rather
     // than dialing into "this node speaks nothing".
+    // **One dial budget for the node's own sessions** (HAZOP row C241): the admin route and every
+    // fixture that dials draw from it, so the sessions the node *starts* are bounded like the ones it
+    // accepts. A dialed session holds its permit for its whole life.
+    let dials = Arc::new(tokio::sync::Semaphore::new(
+        rchain_ocapn::capacity::MAX_DIALED_SESSIONS,
+    ));
     if let Some(location) = outward {
         let _ = dial_slot.set(OcapnDialer {
             netlayer: dialer.clone(),
             registry: registry.clone(),
             location,
+            dials: dials.clone(),
         });
     }
     // **The session ceiling: every transport gets an equal share of it, and the permit is taken
@@ -830,6 +845,7 @@ pub async fn serve_ocapn(
         dialer,
         registry,
         handoffs,
+        dials: dials.clone(),
         log,
         // **The same word that ends the listeners ends their sessions** (HAZOP row C231). Each
         // session task is spawned and detached, so returning from this function on the stop word left
@@ -877,6 +893,9 @@ struct SessionFactory {
     dialer: Arc<dyn Netlayer>,
     registry: Arc<rchain_ocapn::owner::SessionRegistry>,
     handoffs: Arc<rchain_ocapn::handoff::Handoffs>,
+    /// The node's dial ceiling, handed to every session's fixtures so a fixture that dials draws from
+    /// the same budget as the admin route (HAZOP row C241).
+    dials: Arc<tokio::sync::Semaphore>,
     log: Arc<dyn rchain_shared::log::Log>,
     /// The operator's stop word, so a session ends with the node rather than outliving it (HAZOP row
     /// C231).
@@ -952,6 +971,7 @@ impl SessionFactory {
             dialer,
             registry,
             handoffs,
+            dials,
             log,
             stop,
             audit,
@@ -970,12 +990,13 @@ impl SessionFactory {
         for (swiss, capability) in chain.iter() {
             bootstrap.publish(swiss.clone(), capability.clone());
         }
-        fixtures::publish_dialing_fixtures(
+        fixtures::publish_dialing_fixtures_with_budget(
             &mut bootstrap,
             dialer,
             location,
             registry.clone(),
             slot.clone(),
+            Some(dials),
         );
         // **Book, then answer** — see `owner::accept_and_book`: a session has to be in the registry
         // before the peer can act on it, or a delivery that arrives on the first round trip after our

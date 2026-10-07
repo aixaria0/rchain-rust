@@ -72,6 +72,20 @@ pub fn publish_dialing_fixtures(
     registry: Arc<crate::owner::SessionRegistry>,
     session: crate::owner::SessionSlot,
 ) {
+    publish_dialing_fixtures_with_budget(bootstrap, netlayer, location, registry, session, None);
+}
+
+/// [`publish_dialing_fixtures`] with the **dial ceiling** the node shares with the admin route
+/// (HAZOP row C241), so a fixture that dials draws from the same budget as a dial the operator
+/// starts.
+pub fn publish_dialing_fixtures_with_budget(
+    bootstrap: &mut Bootstrap,
+    netlayer: Arc<dyn crate::netlayer::Netlayer>,
+    location: crate::locator::PeerLocator,
+    registry: Arc<crate::owner::SessionRegistry>,
+    session: crate::owner::SessionSlot,
+    dials: Option<Arc<tokio::sync::Semaphore>>,
+) {
     bootstrap.publish(
         GREETER,
         Arc::new(Greeter {
@@ -83,8 +97,8 @@ pub fn publish_dialing_fixtures(
     );
     bootstrap.publish(
         STURDYREF_ENLIVENER,
-        Arc::new(crate::enliven::Enlivener::new(
-            netlayer, location, registry, session,
+        Arc::new(crate::enliven::Enlivener::with_dial_budget(
+            netlayer, location, registry, session, dials,
         )),
     );
 }

@@ -278,3 +278,16 @@ residual**, because it ends the search.
 disagreements and one measurement that refuted the code's own comment. Had the study shipped the first
 pass — or had it skipped the steelman because the adjudicator had already ruled — it would have
 recorded eight rows as settled that nobody had argued against.
+
+**The disposition, taken rather than implied: both transports ship, and the weaker one ships with its
+weakness recorded.** `websocket`'s accepted-side defect — no mutual authentication, so an accepted
+session's name is the peer's assertion and nothing more (D2 → C243) — is *the reference's protocol*,
+not this implementation's, and withdrawing the transport would withdraw the only one a **published**
+Agoric peer (`@endo/ocapn` 1.1.1) speaks. What makes shipping it defensible is that it is not on by
+default, that the node page and this study both say plainly what it does not provide, and that the
+stronger transport exists for a deployment that wants the property: the alternative to a documented
+weak transport is not a strong one, it is a peer that cannot connect at all. `noise` ships without
+reservation — its cryptography is verified against the implementation it was modelled on and its
+falsifiers are the interop run and the tests this pass added. So the row's own alternative —
+withdraw — is declined with that reason, and C243's residual on the `websocket` row is the record of
+what was declined rather than a hole nobody noticed.

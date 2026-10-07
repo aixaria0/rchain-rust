@@ -177,6 +177,14 @@ pub const MAX_LISTENERS: usize = 256;
 /// *keys* finite; `forget` removes emptied entries, so a well-behaved peer is not what fills it.
 pub const MAX_PEERS: usize = 256;
 
+/// **Sessions the node is made to *dial*, as a share of the same budget** (HAZOP row C241). The
+/// session ceiling is taken by the accept path — one share per transport — and nothing took it for a
+/// dial, while a dialed session stays in the registry for its life: the node could be made to hold
+/// `MAX_PEERS` of them, four times the ceiling it thinks it has. This is that share, and it is
+/// deliberately a *quarter* of the ceiling: a dialed session is one this node started, so the number
+/// an operator's own tooling needs is small, and the transports' capacity is not what pays for it.
+pub const MAX_DIALED_SESSIONS: usize = 16;
+
 /// Longest gift id accepted, in bytes. A gift id is a peer's own name for a handoff; 64 bytes is past
 /// every real one and far below the 4 MiB message cap that would otherwise be the key's size.
 pub const MAX_GIFT_ID: usize = 64;

@@ -2556,6 +2556,9 @@ mod tests {
                 transport: "tcp-testing-only".to_string(),
                 hints: Default::default(),
             },
+            Arc::new(tokio::sync::Semaphore::new(
+                rchain_ocapn::capacity::MAX_DIALED_SESSIONS,
+            )),
         ));
         assert!(published.is_ok(), "the slot starts empty");
         assert_eq!(
