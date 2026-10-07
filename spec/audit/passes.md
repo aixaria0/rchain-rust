@@ -7617,6 +7617,17 @@ decision — the conformance suite needs a silent leg, so the steady-state read 
 bounded. What the share buys is that the denial is bounded to one transport's share instead of the
 whole surface; the lifetime question stays where it was decided, now stated rather than left implicit.
 
+**The fixture that could not run the branch's own tests (C244).** Closing the rows above meant asking
+CI, and CI came back red on `ocapn/noise` while `dev`'s same job passed — with the failure in the
+*tests of this branch*: `open LMDB environment reporting: Cannot allocate memory` at `common/mod.rs`'s
+node setup. Every `common::start` builds a full node and `cargo test` runs one binary's tests on
+parallel threads, so the OCapN listener's nine started nine nodes at once; `free_ports` releases the
+ports it probed, so two of them could also be handed the same port (`Kademlia RPC server failed:
+Address already in use`). Neither is a defect in the node, and both make a red build say something
+untrue. `common::start` now takes a process-wide lock held in the returned `TestNode` until it drops,
+so a test that starts a node runs alone from setup to teardown. Measured: the nine pass in parallel
+(`ocapn_listener`, 41 s) where they failed before, and `deploy_block` and `gateway` are unchanged.
+
 **The rows that remain open.** C227–C228, C230–C236 and C238, C240–C241 register what this pass did not
 fix, each `todo` with what would close it.
 
