@@ -64,5 +64,40 @@ fi
 # What was actually inlined, so a later reader can tell whether the pin still resolves to this text.
 sha256sum "$REF/lib.rs" | tee "$REF/lib.rs.sha256"
 
+# **The caveats are part of the transcript, not annotations around it.** They used to be a header
+# written by hand into `run-1.txt`, which a re-run silently discarded — leaving a green result with
+# nothing saying what it does not cover, which is the failure this directory exists to avoid. The
+# header is emitted here instead, so every run carries its own limits.
 cd "$HERE"
-cargo run --quiet 2>&1 | tee "$HERE/run-1.txt"
+{
+  cat <<'HEADER'
+# The Noise interop run: Agoric's implementation against this repository's netlayer.
+#
+# inlined:   spec/audit/evidence/ocapn-noise/ref/lib.rs, after two mechanical edits (README.md):
+#            `#![no_std]` dropped, and the `unsafe extern "C" { fn buffer_callback(..); }`
+#            declaration dropped because the harness supplies that symbol (else E0428). The
+#            reference's *calls* to it are untouched and resolve to the harness's definition.
+#
+# What this run establishes: the handshake completes ACROSS IMPLEMENTATIONS — the reference, in the
+# responder role, accepted the frame this repository's `ocapn/src/noise.rs` produced (the SYN behind
+# its 32-byte intended-responder prefix, and the ACK), and the signature checks on both sides hold —
+# and transport messages decrypt in both directions.
+#
+# What it does NOT establish, said here so a green result is not read as more than it is:
+#   * THE RECORD FRAMING. The reference binds `encrypt`/`decrypt` over one record of at most 65535
+#     bytes and leaves the record *boundaries* to a netlayer, and up to and including 2026-10-07 it
+#     ships none — so the length prefix and chunking in `ocapn/src/noise.rs` still have no counterpart
+#     to be tested against. See the README's section on C227 for what was read and when.
+#   * A LIVE PEER. This drives the reference's core from a harness — which is what the reference is
+#     built to be driven by, its own JS binding doing the same — not a shipped implementation.
+#   * THE DESIGNATOR CONVENTION. This harness passes the responder's Ed25519 verifying key in the
+#     locator's `verify` hint (base16), because the locator convention is not pinned by anything
+#     reachable — though the reference's own netlayer, where one exists, does use hex.
+HEADER
+  echo "# reference: endojs/endo rust/ocapn_noise at commit $COMMIT"
+  echo "# digest:    $(cut -d' ' -f1 "$REF/lib.rs.sha256")  ref/lib.rs"
+  echo "# tree:      $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "# command:   bash spec/audit/evidence/ocapn-noise/run.sh"
+  echo "#"
+} > "$HERE/run-1.txt"
+cargo run --quiet 2>&1 | tee -a "$HERE/run-1.txt"
