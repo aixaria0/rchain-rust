@@ -7481,3 +7481,75 @@ node's reach under a peer is inside that peer's own reach, proved for every conf
 ingredients, with the origin-blind rule modelled beside it as the rule it replaces. The cheap alternative —
 refusing local targets outright — is ruled out by `denying_local_targets_outright_would_refuse_a_local_peer`:
 it would break the loopback demo the conformance suite is.
+
+## 69. The OCapN transports: what a peer can do to a node that authenticates (C227–C243, #249)
+
+**The pass.** Two transports landed on `ocapn/noise` — `noise` (TCP under a Noise `XX` handshake) and
+`websocket` (the transport `@endo/ocapn` speaks) — with a new X25519 primitive, an identity file, a
+designator that moved, and a change to the accept loop. The prior HAZOP (§68) examined a surface that
+was `tcp-testing-only` and `unix`; this one asks the same question of a node that now authenticates.
+The study is `spec/audit/evidence/ocapn-transports-hazop.md`; its instrument is §68's, reused.
+
+**The root cause, and it reversed the reading it started from.** `endo-spike/run-3.txt` recorded that a
+websocket delivery did not complete, and the first reading of it — that the node might be failing to
+answer — was wrong. A probe on the transport's `recv`/`send` showed the handshake completing in both
+directions (54 B in, 176 B out, 333 B in, 420 B out) and then **nothing**: the peer never sends the
+fetch, and the "connection reset" the transcript reported was the harness's own 120 s `timeout`. The
+lesson is §68's, applied: *the cheapest decisive measurement comes before any mechanism work.* What the
+same instrumentation **did** find was a real defect of this node's — `serve_ocapn` discarded
+`loop_.run()`'s `Result`, so a session that ended with an error was indistinguishable from one that
+ended cleanly (**C231**'s family; fixed here at `debug`).
+
+**What was fixed here, each with the test that would have caught it.** A framed body whose final chunk
+was 1..=15 bytes reached `CipherState::decrypt_in_place`, which **asserts** `ciphertext_len >= 16`
+rather than returning — so a peer that completed the handshake **panicked the session task**
+(`a_body_shorter_than_a_tag_is_refused_rather_than_panicking` drives a real handshake and then a raw
+five-byte body). The Noise `send` had no plaintext bound at all while its `recv` bounded *ciphertext*
+in the wrong unit. The websocket `recv` treated a **text frame's payload and a close frame's reason
+bytes** as CapTP messages — and the handshake read would *sign* whatever a peer put in a close, which
+is what the record wrapper exists to prevent. That read had **no size bound** on a path that signs, and
+the data path's 4 MiB check ran *after* tungstenite had allocated the message, so the operative bound
+was tungstenite's 64 MiB (`ws_config` now refuses before the buffer). The challenge's length and arity
+went unchecked. And the **identity file**: its mode was set *after* the write and **never checked on
+read**, an all-zero file passed as a valid identity, and creation was not exclusive — so a blanked or
+loosely-permissioned key yielded a node whose name and session keys anyone could compute or read.
+
+**And the one that was a live security hole.** `DialPolicy` keyed on the `host` hint and a websocket
+locator carries only `url`, so **no websocket target was ever judged**: the link-local and metadata
+refusals and Law 62's origin rule were skipped entirely. The red team measured it — with
+`ocapn-deny-local-dial = true` the node refused a loopback target over `tcp-testing-only` and
+**connected** to one over websocket, and attempted `169.254.169.254` rather than refusing it. Reachable
+from a peer, since a sturdyref's locator flows to the policy. `DialPolicy::host_of` now reads the
+authority out of a `url` hint, including a bracketed IPv6 literal.
+
+**What the study refuted, and why that is the pass's other half.** Six row groups came back refuted
+rather than registered: `Value::Int` needs no magnitude bound because every ingress is already capped
+and a 4 MiB integer is *smaller* than its input; the responder writes its SYNACK before checking the
+initiator because `XX` binds the initiator's static only in message 3, so the order is forced; a
+per-WARN rate is bounded by the accept backoff and is the operator's signal; ~480 chain-API polls/s is
+a product of two shipped bounds; the ceiling cannot be consulted before the connection exists; and the
+interop transcripts **disclaim** what they do not prove. Two of the rows the lenses wrote were the
+study's own accepted residues restated.
+
+**The stated residual that was wrong.** `ocapn/src/websocket.rs` carried a comment saying a silent peer
+holds the accept loop for `ESTABLISH_TIMEOUT`. The red team measured it **false** — `tokio::select!`
+drops the pending accept future when another arm completes — while the **real** hazard in the same
+mechanism went unnamed: that cancellation silently **resets an honest websocket peer mid-challenge**
+the instant unrelated traffic lands on another transport, and logs nothing, because a dropped future is
+not an `Err` (**C239**). *A stated residual that is false is worse than no residual, because it ends
+the search.*
+
+**The rows that remain open.** C227–C243 register what this pass did not fix, each `todo` with what
+would close it. C242/C243 are the pair worth naming: both transports verify a peer's key and **discard
+it**, while `owner::admit` keys the registry by the peer's **self-asserted** designator — so a
+stranger who knows a public name can, by the crossing rule, evict that peer's session. It is a
+pre-existing `owner.rs` defect that *this branch makes actionable*, because the transports now supply
+exactly the verified key the older code throws away.
+
+**The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
+adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each
+other on eight row groups**. Adjudicating that disagreement rather than averaging it is what produced
+C229 (the lockout consequence the prior study had not stated) and E9 (the `0.0.0.0` trap, which the
+steelman found was in the design page's own example config). A study that had shipped the first pass —
+or skipped the steelman because the adjudicator had already ruled — would have carried eight rows as
+settled that nobody had argued against.
