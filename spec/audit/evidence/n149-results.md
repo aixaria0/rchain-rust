@@ -196,3 +196,51 @@ exactly one parent. The merge's width is not the justification count, and the co
   likely the pre-#126 round rule, which no one has measured against the current one with one instrument.
 - Four validator counts, three attempts, one machine. This is the measurement the issue asked for before
   its claim was written down, not a proof of a bound.
+
+
+# 2026-10-07 (tree `bbabc39e8`) — A1.2 and A1.3 re-run **after** the guard fixes
+
+**Why re-run.** The 2026-10-01 sweep above was taken on `cf3945045`, *before* C209/C210 fixed the
+attestation guard, and it read `--no-autopropose` as **"nothing finalised at all"** at N ≥ 3. That
+reading is therefore a *pre-fix* one, and criterion 1's two unrun arms — A1.2 (N=5) and A1.3 (N=8) —
+have not been measured since. This is that re-run: the same rig, the same protocol, six primary
+attempts, **0 void**.
+
+| arm | attempts | blocks after the deploy | senders | max parents | time to finality |
+|---|---|---|---|---|---|
+| **N=5**, `--no-autopropose` | 3 | 25 · 25 · 25 | 5 · 5 · 5 | 5 · 5 · 5 | **6 s · 5 s · 6 s** |
+| **N=8**, `--no-autopropose` | 3 | 112 · 112 · 120 | 8 · 8 · 8 | 8 · 8 · 8 | **never · never · never** |
+| N=3, autopropose (control) | 1 | 576 deploy-bearing | 3 | 3 | 3 s |
+
+## A1.2 (N=5) — **passes**
+
+The deploy's block is block **1** in all three attempts, and the chain finalises to **2** within five to
+six seconds. One deploy mints a bounded number of blocks (one per bonded validator, the N=3 shape
+scaled) and **its block finalises**. The pre-fix reading — nothing finalised at N ≥ 3 — no longer
+reproduces.
+
+## A1.3 (N=8) — **fails, and the reason is named**
+
+The chain produces a *richer* DAG than at N=5 — 112 to 120 blocks, all eight validators sending, every
+block's parent count reaching 8 — and **finality never advances at all**, in any of the three attempts.
+The refusal is not a stall:
+
+    finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority —
+    400 of 800 (4 full partition(s) among 4 candidate(s))
+
+and over one attempt's 57 refusals the supporting stake is **0 of 800 in 24 of them**, 100 in 21, 200 in
+11, 300 in 1. A supermajority at eight validators of 100 stake each needs 534.
+
+**So the N=8 defect is not the one C209/C210 fixed.** Production is fine — better than at N=5 — and the
+fringe still cannot gather a supermajority partition.
+
+## Limits
+
+- **The configuration is the rig's, not A1.1's.** This sweep uses `tools/devnet.sh`'s default **equal
+  stakes (100 each)** and the **default epoch length**; A1.1's arm is `--stakes 100,100,50
+  --epoch-length 10`. The N=8 result is therefore "at N=8 with equal stakes", which is the closest
+  measurement that exists and **not** A1.1's configuration scaled — restating it as A1.3's verdict
+  needs that arm run with eight stakes and epoch 10.
+- **One host, one tree, 4 GiB cap.** N=8 at the default 4 GiB is 32 GiB across eight containers.
+- **Three attempts per arm.** Not a rate; enough that the N=5 pass and the N=8 failure are both
+  reproducible across all attempts.

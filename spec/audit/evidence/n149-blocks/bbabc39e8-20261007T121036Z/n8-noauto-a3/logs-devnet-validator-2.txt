@@ -1,0 +1,129 @@
+2026-10-07T12:40:16.851Z WARN  [casper.interpreter.validate] finality did not advance at tip 0: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 0 candidate(s))
+2026-10-07T12:40:19.363Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:20.343Z WARN  [casper.interpreter.validate] finality did not advance at tip 1: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 0 candidate(s))
+2026-10-07T12:40:21.201Z WARN  [casper.blocks.Proposer] round gate escaped after 6 attempt(s) and 2355 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:21.254Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:21.299Z WARN  [casper.interpreter.validate] finality did not advance at tip 1: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 0 candidate(s))
+2026-10-07T12:40:21.384Z WARN  [casper.blocks.Proposer] round gate escaped after 7 attempt(s) and 2538 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:21.452Z WARN  [casper.interpreter.validate] finality did not advance at tip 3: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:21.497Z WARN  [casper.interpreter.validate] finality did not advance at tip 1: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 0 candidate(s))
+2026-10-07T12:40:21.687Z WARN  [casper.interpreter.validate] finality did not advance at tip 4: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:21.848Z WARN  [casper.interpreter.validate] finality did not advance at tip 3: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:22.052Z WARN  [casper.interpreter.validate] merge search: 17 merges · widest scope 0 chains / 0 conflict pairs / 0 asymmetric · most states expanded on one merge 0 · width buckets [17, 0, 0, 0, 0] · cost buckets [17, 0, 0, 0, 0]
+2026-10-07T12:40:23.114Z WARN  [casper.blocks.Proposer] round gate escaped after 6 attempt(s) and 1183 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:23.167Z WARN  [casper.interpreter.validate] finality did not advance at tip 5: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:23.405Z WARN  [casper.interpreter.validate] finality did not advance at tip 6: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:23.480Z WARN  [casper.blocks.Proposer] round gate escaped after 7 attempt(s) and 1549 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:23.548Z WARN  [casper.interpreter.validate] finality did not advance at tip 6: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:24.972Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:25.037Z WARN  [casper.blocks.Proposer] round gate escaped after 8 attempt(s) and 3106 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:25.115Z WARN  [casper.interpreter.validate] finality did not advance at tip 7: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:25.390Z WARN  [casper.interpreter.validate] finality did not advance at tip 7: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:25.446Z WARN  [casper.blocks.Proposer] round gate escaped after 9 attempt(s) and 3515 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:25.515Z WARN  [casper.interpreter.validate] finality did not advance at tip 8: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:25.661Z WARN  [casper.interpreter.validate] finality did not advance at tip 3: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:25.997Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:27.452Z WARN  [casper.interpreter.validate] merge search: 40 merges · widest scope 0 chains / 0 conflict pairs / 0 asymmetric · most states expanded on one merge 0 · width buckets [40, 0, 0, 0, 0] · cost buckets [40, 0, 0, 0, 0]
+2026-10-07T12:40:27.452Z WARN  [casper.interpreter.validate] finality did not advance at tip 9: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:27.632Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:27.768Z WARN  [casper.interpreter.validate] finality did not advance at tip 3: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:27.857Z WARN  [casper.interpreter.validate] finality did not advance at tip 8: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:29.164Z WARN  [casper.interpreter.validate] finality did not advance at tip 3: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:29.262Z WARN  [casper.interpreter.validate] finality did not advance at tip 3: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:29.800Z WARN  [casper.blocks.Proposer] round gate escaped after 6 attempt(s) and 1293 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:29.931Z WARN  [casper.blocks.Proposer] round gate escaped after 7 attempt(s) and 1424 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:30.039Z WARN  [casper.blocks.Proposer] round gate escaped after 8 attempt(s) and 1532 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:30.133Z WARN  [casper.blocks.Proposer] round gate escaped after 9 attempt(s) and 1626 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:30.590Z WARN  [casper.interpreter.validate] finality did not advance at tip 4: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:30.627Z WARN  [casper.interpreter.validate] finality did not advance at tip 9: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:31.322Z WARN  [casper.blocks.Proposer] round gate escaped after 10 attempt(s) and 2815 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:31.398Z WARN  [casper.blocks.Proposer] round gate escaped after 11 attempt(s) and 2891 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:31.511Z WARN  [casper.blocks.Proposer] round gate escaped after 12 attempt(s) and 3004 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:31.894Z WARN  [casper.interpreter.validate] finality did not advance at tip 10: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:32.646Z WARN  [casper.blocks.Proposer] round gate escaped after 13 attempt(s) and 4139 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:32.841Z WARN  [casper.interpreter.validate] merge search: 65 merges · widest scope 0 chains / 0 conflict pairs / 0 asymmetric · most states expanded on one merge 0 · width buckets [65, 0, 0, 0, 0] · cost buckets [65, 0, 0, 0, 0]
+2026-10-07T12:40:32.841Z WARN  [casper.interpreter.validate] finality did not advance at tip 6: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:33.089Z WARN  [casper.interpreter.validate] finality did not advance at tip 4: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:33.130Z WARN  [casper.interpreter.validate] finality did not advance at tip 10: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:33.489Z WARN  [casper.blocks.Proposer] round gate escaped after 14 attempt(s) and 4982 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:34.061Z WARN  [casper.blocks.Proposer] round gate escaped after 15 attempt(s) and 5554 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:34.150Z WARN  [casper.blocks.Proposer] round gate escaped after 16 attempt(s) and 5643 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:34.233Z WARN  [casper.blocks.Proposer] round gate escaped after 17 attempt(s) and 5726 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:34.323Z WARN  [casper.blocks.Proposer] round gate escaped after 18 attempt(s) and 5816 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:34.389Z WARN  [casper.blocks.Proposer] round gate escaped after 19 attempt(s) and 5882 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:34.551Z WARN  [casper.interpreter.validate] finality did not advance at tip 11: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:34.730Z WARN  [casper.interpreter.validate] finality did not advance at tip 6: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:34.770Z WARN  [casper.interpreter.validate] finality did not advance at tip 5: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:34.863Z WARN  [casper.interpreter.validate] finality did not advance at tip 11: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:34.998Z WARN  [casper.blocks.Proposer] round gate escaped after 20 attempt(s) and 6491 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:35.349Z WARN  [casper.blocks.Proposer] round gate escaped after 21 attempt(s) and 6842 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:35.439Z WARN  [casper.blocks.Proposer] round gate escaped after 22 attempt(s) and 6932 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:35.511Z WARN  [casper.blocks.Proposer] round gate escaped after 23 attempt(s) and 7004 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:35.589Z WARN  [casper.blocks.Proposer] round gate escaped after 24 attempt(s) and 7082 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:35.745Z WARN  [casper.blocks.Proposer] round gate escaped after 25 attempt(s) and 7238 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:36.676Z WARN  [casper.interpreter.validate] finality did not advance at tip 7: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:36.882Z WARN  [casper.interpreter.validate] finality did not advance at tip 6: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:37.781Z WARN  [casper.blocks.Proposer] round gate escaped after 26 attempt(s) and 9274 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:37.962Z WARN  [casper.interpreter.validate] merge search: 89 merges · widest scope 0 chains / 0 conflict pairs / 0 asymmetric · most states expanded on one merge 0 · width buckets [89, 0, 0, 0, 0] · cost buckets [89, 0, 0, 0, 0]
+2026-10-07T12:40:37.962Z WARN  [casper.interpreter.validate] finality did not advance at tip 12: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:38.232Z WARN  [casper.interpreter.validate] finality did not advance at tip 7: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:38.259Z WARN  [casper.interpreter.validate] finality did not advance at tip 7: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 5 candidate(s))
+2026-10-07T12:40:38.346Z WARN  [casper.interpreter.validate] finality did not advance at tip 8: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 4 candidate(s))
+2026-10-07T12:40:38.419Z WARN  [casper.interpreter.validate] finality did not advance at tip 12: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:38.922Z WARN  [casper.blocks.Proposer] round gate escaped after 27 attempt(s) and 10415 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:39.295Z WARN  [casper.blocks.Proposer] round gate escaped after 28 attempt(s) and 10788 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:39.430Z WARN  [casper.blocks.Proposer] round gate escaped after 29 attempt(s) and 10923 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:39.738Z WARN  [casper.blocks.Proposer] round gate escaped after 30 attempt(s) and 11231 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:39.926Z WARN  [casper.interpreter.validate] finality did not advance at tip 13: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:40.256Z WARN  [casper.blocks.Proposer] round gate escaped after 31 attempt(s) and 11749 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:40.289Z WARN  [casper.interpreter.validate] finality did not advance at tip 13: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:40.359Z WARN  [casper.interpreter.validate] finality did not advance at tip 9: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:40.595Z WARN  [casper.interpreter.validate] finality did not advance at tip 8: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:40.646Z WARN  [casper.interpreter.validate] finality did not advance at tip 8: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:40.722Z WARN  [casper.interpreter.validate] finality did not advance at tip 8: a layer exists but its supporting stake is not a supermajority — 0 of 800 (0 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:40.986Z WARN  [casper.blocks.Proposer] round gate escaped after 32 attempt(s) and 12479 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:41.292Z WARN  [casper.blocks.Proposer] round gate escaped after 33 attempt(s) and 12785 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:41.411Z WARN  [casper.blocks.Proposer] round gate escaped after 34 attempt(s) and 12904 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:41.572Z WARN  [casper.blocks.Proposer] round gate escaped after 35 attempt(s) and 13065 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:41.827Z WARN  [casper.interpreter.validate] finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:42.174Z WARN  [casper.interpreter.validate] finality did not advance at tip 9: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:42.637Z WARN  [casper.interpreter.validate] finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:43.663Z WARN  [casper.interpreter.validate] merge search: 125 merges · widest scope 3 chains / 6 conflict pairs / 0 asymmetric · most states expanded on one merge 4 · width buckets [125, 0, 0, 0, 0] · cost buckets [125, 0, 0, 0, 0]
+2026-10-07T12:40:43.663Z WARN  [casper.interpreter.validate] finality did not advance at tip 15: a layer exists but its supporting stake is not a supermajority — 300 of 800 (3 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:44.238Z WARN  [casper.interpreter.validate] finality did not advance at tip 9: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:45.182Z WARN  [casper.interpreter.validate] finality did not advance at tip 10: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:45.294Z WARN  [casper.interpreter.validate] finality did not advance at tip 10: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:45.333Z WARN  [casper.interpreter.validate] finality did not advance at tip 10: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:45.383Z WARN  [casper.interpreter.validate] finality did not advance at tip 11: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:47.768Z WARN  [casper.blocks.Proposer] round gate escaped after 6 attempt(s) and 3675 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:48.526Z WARN  [casper.interpreter.validate] finality did not advance at tip 10: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:48.553Z WARN  [casper.interpreter.validate] finality did not advance at tip 11: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:48.623Z WARN  [casper.interpreter.validate] finality did not advance at tip 11: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:48.638Z WARN  [casper.interpreter.validate] finality did not advance at tip 11: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:49.909Z WARN  [casper.blocks.Proposer] round gate escaped after 7 attempt(s) and 5816 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:50.195Z WARN  [casper.blocks.Proposer] round gate escaped after 8 attempt(s) and 6102 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:50.517Z WARN  [casper.blocks.Proposer] round gate escaped after 9 attempt(s) and 6424 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:51.688Z WARN  [casper.interpreter.validate] merge search: 148 merges · widest scope 3 chains / 6 conflict pairs / 0 asymmetric · most states expanded on one merge 4 · width buckets [148, 0, 0, 0, 0] · cost buckets [148, 0, 0, 0, 0]
+2026-10-07T12:40:51.688Z WARN  [casper.interpreter.validate] finality did not advance at tip 12: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:51.937Z WARN  [casper.interpreter.validate] finality did not advance at tip 12: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:52.926Z WARN  [casper.blocks.Proposer] round gate escaped after 10 attempt(s) and 8833 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:53.133Z WARN  [casper.blocks.Proposer] round gate escaped after 11 attempt(s) and 9040 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:53.349Z WARN  [casper.blocks.Proposer] round gate escaped after 12 attempt(s) and 9256 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:53.651Z WARN  [casper.interpreter.validate] finality did not advance at tip 12: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:53.799Z WARN  [casper.interpreter.validate] finality did not advance at tip 12: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:54.815Z WARN  [casper.interpreter.validate] finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:54.980Z WARN  [casper.blocks.Proposer] round gate escaped after 13 attempt(s) and 10887 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:55.048Z WARN  [casper.blocks.Proposer] round gate escaped after 14 attempt(s) and 10955 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:55.173Z WARN  [casper.interpreter.validate] finality did not advance at tip 13: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:55.198Z WARN  [casper.interpreter.validate] finality did not advance at tip 13: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:55.294Z WARN  [casper.interpreter.validate] finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:55.476Z WARN  [casper.blocks.Proposer] round gate escaped after 15 attempt(s) and 11383 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:55.768Z WARN  [casper.interpreter.validate] finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:55.799Z WARN  [casper.interpreter.validate] finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority — 200 of 800 (2 full partition(s) among 2 candidate(s))
+2026-10-07T12:40:56.063Z WARN  [casper.blocks.Proposer] round gate escaped after 16 attempt(s) and 11970 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:56.141Z WARN  [casper.blocks.Proposer] round gate escaped after 17 attempt(s) and 12048 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:56.249Z WARN  [casper.interpreter.validate] finality did not advance at tip 15: a layer exists but its supporting stake is not a supermajority — 300 of 800 (3 full partition(s) among 3 candidate(s))
+2026-10-07T12:40:56.314Z WARN  [casper.blocks.Proposer] round gate escaped after 18 attempt(s) and 12221 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:40:56.437Z WARN  [casper.interpreter.validate] finality did not advance at tip 15: a layer exists but its supporting stake is not a supermajority — 100 of 800 (1 full partition(s) among 1 candidate(s))
+2026-10-07T12:40:56.572Z WARN  [casper.blocks.Proposer] round gate escaped after 19 attempt(s) and 12479 ms blocked — the round is not closing (AUDIT #213).
+2026-10-07T12:41:00.095Z WARN  [casper.blocks.Proposer] round gate escaped after 20 attempt(s) and 16002 ms blocked — the round is not closing (AUDIT #213).
