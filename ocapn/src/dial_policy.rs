@@ -109,7 +109,7 @@ impl DialPolicy {
             // another way.
             return Ok(());
         };
-        if self.allow.iter().any(|a| *a == host) {
+        if self.allow.contains(&host) {
             return Ok(());
         }
         let address = match host.parse::<std::net::IpAddr>() {
@@ -159,7 +159,7 @@ impl DialPolicy {
         let Some(host) = Self::host_of(locator) else {
             return Ok(());
         };
-        if self.allow.iter().any(|a| *a == host) {
+        if self.allow.contains(&host) {
             return Ok(());
         }
         if origin.ip().is_loopback() {

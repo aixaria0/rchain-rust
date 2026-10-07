@@ -7539,12 +7539,29 @@ the instant unrelated traffic lands on another transport, and logs nothing, beca
 not an `Err` (**C239**). *A stated residual that is false is worse than no residual, because it ends
 the search.*
 
-**The rows that remain open.** C227–C243 register what this pass did not fix, each `todo` with what
-would close it. C242/C243 are the pair worth naming: both transports verify a peer's key and **discard
-it**, while `owner::admit` keys the registry by the peer's **self-asserted** designator — so a
-stranger who knows a public name can, by the crossing rule, evict that peer's session. It is a
+**The must-fix pair, closed in this branch (C242, C243).** Both transports verify a peer's key and
+**discard** it, while `owner::admit` keyed the registry by the peer's **self-asserted** designator —
+so a stranger who knows a public name could, by the crossing rule, evict that peer's session. It was a
 pre-existing `owner.rs` defect that *this branch makes actionable*, because the transports now supply
-exactly the verified key the older code throws away.
+exactly the verified key the older code threw away. The fix is small because the material was already
+in hand: `NetConn::verified_peer` (a provided method defaulting to `None`, implemented by `noise`,
+which authenticates; left at `None` by the transports that authenticate nobody) keeps the key the
+handshake proved, `Session::verified_peer_key` exposes it, and `accept_and_book` **books the session
+under it** while still answering the peer's own advertised location — the advertised location is where
+the peer can be dialled back, so it is not the key. The falsifier is
+`ocapn/tests/session_owner.rs:a_session_is_booked_under_the_name_its_transport_proved`, whose far end
+dials naming itself `"peer"` and is booked under the key its `NetConn` reports instead. **How far it
+reaches, stated rather than implied:** the fix closes D6 for the transport that can *prove* a name. The
+`websocket` handshake has the **server** prove itself (D2), so an accepted websocket session has no
+name its peer had to prove and the assertion is all there is — that is that transport's protocol, not
+a hole this code leaves, and it is on the row as the residual. The law is **63a**, the same home as
+C221: what the node gains is that a session's origin is attributable to something the peer had to
+prove.
+
+**The rows that remain open.** C227–C241 register what this pass did not fix, each `todo` with what
+would close it — among them **C229** (the ceiling's total lockout: one transport-blind semaphore, so
+the unauthenticated path can starve the authenticated one) and **C239** (the cross-transport cancel
+above), the two the adjudication promoted from "a lens's row" to "the study's own finding".
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

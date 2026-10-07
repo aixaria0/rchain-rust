@@ -30,7 +30,7 @@ use rchain_ocapn::bootstrap::Bootstrap;
 use rchain_ocapn::captp::{Deliver, Desc};
 use rchain_ocapn::conn::{Act, ConnectionError, Export, Identity, Session};
 use rchain_ocapn::locator::PeerLocator;
-use rchain_ocapn::netlayer::Netlayer;
+use rchain_ocapn::netlayer::{NetConn, Netlayer};
 use rchain_ocapn::owner::{accept_and_book, HandOff, SessionRegistry};
 use rchain_ocapn::proxy::catcher;
 use rchain_ocapn::session_id::{crossed_hello, CrossedHello};
@@ -789,5 +789,94 @@ async fn a_claim_that_waits_does_not_stall_its_session() {
     );
 
     drop(client);
+    far_end.abort();
+}
+
+/// A connection whose transport **proved** a key — what `noise` does at its handshake, and what
+/// `tcp-testing-only` cannot. Everything else is delegated.
+struct ProvingConn {
+    inner: Box<dyn NetConn>,
+    key: [u8; 32],
+}
+
+#[async_trait]
+impl NetConn for ProvingConn {
+    async fn send(&mut self, message: &[u8]) -> std::io::Result<()> {
+        self.inner.send(message).await
+    }
+    async fn recv(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        self.inner.recv().await
+    }
+    fn verified_peer(&self) -> Option<[u8; 32]> {
+        Some(self.key)
+    }
+}
+
+/// **A session is booked under the name its transport *proved*, not the one the peer asserted**
+/// (HAZOP rows C242/C243).
+///
+/// The peer names itself `"peer"` in its `op:start-session` — the designator every fixture uses, and a
+/// public string: it is the cleartext prefix of every Noise SYN and it is advertised in every location
+/// this node hands out. Booking under it lets a stranger who knows that name collide with the peer's
+/// session and, by the crossing rule, have it aborted. Here the transport proved a key, so the session
+/// is held under the key, and naming itself bought nothing.
+#[tokio::test]
+async fn a_session_is_booked_under_the_name_its_transport_proved() {
+    let ours = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let our_port = ours.local_addr().unwrap().port();
+    let theirs = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let their_port = theirs.local_addr().unwrap().port();
+
+    // The far end dials us and **speaks first**, naming itself `"peer"` in the start-session that
+    // carries its `acceptable-location` — which is the whole point: the designator is asserted.
+    let their_out = theirs
+        .new_outgoing_connection(&locator(our_port))
+        .await
+        .unwrap();
+    let peer_identity = Identity::from_seed([21u8; 32], locator(their_port)).unwrap();
+    let mut peer_side =
+        Session::dial_deferred(their_out, &peer_identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the peer speaks first and does not wait");
+    let far_end = tokio::spawn(async move {
+        let _ = peer_side.run().await;
+    });
+
+    let proving = [7u8; 32];
+    let accepted_conn = ours.accept_incoming_connection().await.unwrap();
+    let identity = Identity::from_seed([22u8; 32], locator(our_port)).unwrap();
+    let registry = SessionRegistry::default();
+
+    let (_handle, loop_, _context, advertised) = accept_and_book(
+        Box::new(ProvingConn {
+            inner: accepted_conn,
+            key: proving,
+        }),
+        &identity,
+        Arc::new(Bootstrap::default()),
+        &registry,
+    )
+    .await
+    .expect("the session is admitted");
+
+    // The *advertised* location is still the peer's own: it is where the peer can be dialled back, and
+    // proving who you are does not rename where you live.
+    assert_eq!(advertised.designator, "peer");
+    assert!(
+        registry.live(&advertised).is_none(),
+        "the designator the peer asserted for itself must not be what holds the session"
+    );
+    let proved = PeerLocator {
+        designator: rchain_shared::base16::encode(&proving),
+        ..advertised
+    };
+    assert!(
+        registry.live(&proved).is_some(),
+        "the proven key is the name that holds the session"
+    );
+
+    // Drop the loop rather than running it: `run` owns the socket and returns only when the session
+    // ends, and the assertions above are about the registry, which is already booked.
+    drop(loop_);
     far_end.abort();
 }

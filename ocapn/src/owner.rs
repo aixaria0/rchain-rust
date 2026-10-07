@@ -259,8 +259,26 @@ pub async fn accept_and_book(
         .peer()
         .map(|p| p.acceptable_location.clone())
         .ok_or_else(|| "an accepted session arrived with no peer start-session".to_string())?;
+    // **A session is booked under the name its transport *proved*, when it proved one** (HAZOP rows
+    // C242/C243). The peer's `acceptable-location` designator is a self-assertion: it is public — it
+    // is the cleartext prefix of every Noise SYN and it is advertised in every location the node hands
+    // out — and its signature covers only the peer's own ephemeral session key. Booking under it lets
+    // a stranger who knows an honest peer's name collide with that peer's session and, by the crossing
+    // rule, have it aborted. A transport that verified a key gives the session a name the peer cannot
+    // forge; `noise` does and `websocket` cannot (its handshake has only the *server* prove itself),
+    // so the two are treated differently on purpose rather than assumed equal.
+    //
+    // **The advertised location stays the peer's own**, because it is where the peer can be dialled
+    // back — the proof names the session, it does not replace where the peer says it lives.
+    let book_key = match session.verified_peer_key() {
+        Some(key) => PeerLocator {
+            designator: rchain_shared::base16::encode(&key),
+            ..peer.clone()
+        },
+        None => peer.clone(),
+    };
     let (handle, mut loop_, context) = session.split();
-    match registry.admit(&peer, &handle) {
+    match registry.admit(&book_key, &handle) {
         Ok(losers) => {
             for loser in losers {
                 loser.abort().await;
@@ -269,13 +287,13 @@ pub async fn accept_and_book(
         Err(reason) => {
             handle.abort().await;
             let _ = loop_.run().await;
-            registry.forget(&peer, &handle.own_pi, handle.dialed);
+            registry.forget(&book_key, &handle.own_pi, handle.dialed);
             return Err(reason);
         }
     }
     // Booked: the peer may now speak, so it may now be answered.
     if let Err(e) = loop_.announce().await {
-        registry.forget(&peer, &handle.own_pi, handle.dialed);
+        registry.forget(&book_key, &handle.own_pi, handle.dialed);
         return Err(e.to_string());
     }
     Ok((handle, loop_, context, peer))

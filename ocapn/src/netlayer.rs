@@ -50,6 +50,20 @@ pub trait NetConn: Send {
     /// Read one CapTP message. `Ok(None)` is a clean end of stream *at a message boundary*; a
     /// stream that ends in the middle of a message is an error, never a silently dropped message.
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>>;
+
+    /// **The peer's Ed25519 key, when the transport proved one** (HAZOP rows C242/C243).
+    ///
+    /// `None` is the honest answer for a transport that authenticates nobody — `tcp-testing-only`
+    /// verifies no key, `unix` admits by the socket's file mode, and `websocket`'s handshake has only
+    /// the *server* prove itself. A transport that did verify a key returns it here, so a session can
+    /// be **named by the thing that was proved** rather than by the name the peer asserted for
+    /// itself — which is public, and signed by nothing but the peer's own ephemeral session key.
+    ///
+    /// Read after the transport's handshake has run, which is what `accept_deferred`'s read of the
+    /// peer's start-session guarantees.
+    fn verified_peer(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 /// How a peer is dialled, and how it accepts dials — the two functions the netlayer standard

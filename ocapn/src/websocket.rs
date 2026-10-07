@@ -281,6 +281,9 @@ where
         ));
     }
     conn.authenticated = true;
+    // The key we dialled *by* is the key the peer proved — a dialler names the peer it expects, so a
+    // successful check is that name being confirmed (HAZOP row C242).
+    conn.verified = Some(*peer);
     Ok(())
 }
 
@@ -381,6 +384,13 @@ struct WsConn<S> {
     /// traffic — the reference's rule, enforced here by **refusing** rather than by buffering (the
     /// reference's `pendingWrites` grows without bound until auth succeeds).
     authenticated: bool,
+    /// The key this connection *proved*, if it proved one — the server's, when this node dialled
+    /// (HAZOP rows C242/C243). **`None` on the accepting side, and that is the protocol's shape rather
+    /// than a gap in this port**: the reference's handshake has only the server prove itself, so a
+    /// session this node *accepted* over `websocket` has no name its peer had to prove, and is booked
+    /// under the designator the peer asserted. A transport that can name its peer does; this one
+    /// cannot, and says so.
+    verified: Option<[u8; 32]>,
 }
 
 impl<S> WsConn<S> {
@@ -389,6 +399,7 @@ impl<S> WsConn<S> {
             stream,
             peer,
             authenticated: false,
+            verified: None,
         }
     }
 }
@@ -454,6 +465,10 @@ where
 
     fn peer_address(&self) -> Option<SocketAddr> {
         self.peer
+    }
+
+    fn verified_peer(&self) -> Option<[u8; 32]> {
+        self.verified
     }
 
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {

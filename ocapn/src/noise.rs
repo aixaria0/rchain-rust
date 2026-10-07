@@ -320,7 +320,7 @@ async fn initiate(
     stream: &mut TcpStream,
     identity: &NoiseIdentity,
     peer_verifying: [u8; VERIFYING_KEY_LEN],
-) -> io::Result<(NoiseCipher, NoiseCipher)> {
+) -> io::Result<(NoiseCipher, NoiseCipher, [u8; VERIFYING_KEY_LEN])> {
     let mut handshake = NoiseHandshake::new(
         noise_xx(),
         true,   // initiator
@@ -359,8 +359,9 @@ async fn initiate(
             "the SYNACK carried no static key",
         )
     })?;
-    // The responder proves it holds the signing key for the static key it just offered.
-    let _responder_verifying = check_payload(&payload, &responder_static, "responder")?;
+    // The responder proves it holds the signing key for the static key it just offered. **Kept, not
+    // discarded** (HAZOP row C242): it is the name this session can be held to.
+    let responder_verifying = check_payload(&payload, &responder_static, "responder")?;
 
     let mut ack = vec![0u8; ACK_LEN];
     handshake
@@ -369,14 +370,15 @@ async fn initiate(
     stream.write_all(&ack).await?;
     stream.flush().await?;
 
-    Ok(handshake.get_ciphers())
+    let (send, recv) = handshake.get_ciphers();
+    Ok((send, recv, responder_verifying))
 }
 
 /// The responder's half: read SYN, answer SYNACK, then read and verify the ACK.
 async fn respond(
     stream: &mut TcpStream,
     identity: &NoiseIdentity,
-) -> io::Result<(NoiseCipher, NoiseCipher)> {
+) -> io::Result<(NoiseCipher, NoiseCipher, [u8; VERIFYING_KEY_LEN])> {
     let mut prefixed = vec![0u8; PREFIXED_SYN_LEN];
     stream.read_exact(&mut prefixed).await?;
     let (intended, syn) = prefixed.split_at(VERIFYING_KEY_LEN);
@@ -423,12 +425,14 @@ async fn respond(
         io::Error::new(io::ErrorKind::InvalidData, "the ACK carried no static key")
     })?;
     // The initiator proves it holds the signing key for the static key it offered in the SYN.
-    let _initiator_verifying = check_payload(&initiator_payload, &initiator_static, "initiator")?;
+    // **Kept, not discarded** (HAZOP row C242) — and for an *accepted* session this is the only name
+    // that was proved, since the peer's `op:start-session` designator is asserted and public.
+    let initiator_verifying = check_payload(&initiator_payload, &initiator_static, "initiator")?;
 
     // The responder's cipher order is the mirror of the initiator's: what it receives with is the
     // first the handshake yields, and what it sends with is the second.
     let (recv, send) = handshake.get_ciphers();
-    Ok((send, recv))
+    Ok((send, recv, initiator_verifying))
 }
 
 /// Which half of the handshake this connection is due to run.
@@ -457,6 +461,10 @@ struct NoiseConn {
     pending: Option<Half>,
     /// `(send, recv)` once the handshake has completed.
     ciphers: Option<(NoiseCipher, NoiseCipher)>,
+    /// **The peer's Ed25519 key, which the handshake verified** — the whole point of the payload
+    /// signature. It used to be bound to `_` and dropped (HAZOP row C242), which left the session
+    /// named by the peer's own assertion; it is kept now so the name can be the one that was proved.
+    verified: Option<[u8; VERIFYING_KEY_LEN]>,
 }
 
 impl NoiseConn {
@@ -471,6 +479,7 @@ impl NoiseConn {
             identity,
             pending: Some(Half::Initiator { peer_verifying }),
             ciphers: None,
+            verified: None,
         }
     }
 
@@ -481,6 +490,7 @@ impl NoiseConn {
             identity,
             pending: Some(Half::Responder),
             ciphers: None,
+            verified: None,
         }
     }
 
@@ -509,7 +519,9 @@ impl NoiseConn {
                 )
             })?
         };
-        self.ciphers = Some(finished?);
+        let (send, recv, verified) = finished?;
+        self.verified = Some(verified);
+        self.ciphers = Some((send, recv));
         Ok(())
     }
 
@@ -599,6 +611,14 @@ impl NetConn for NoiseConn {
         // **Reported, unlike `unix`**: this is TCP underneath, so the dial policy can judge the peer
         // and Law 62's origin rule applies. See the module doc.
         self.stream.peer_addr().ok()
+    }
+
+    fn verified_peer(&self) -> Option<[u8; VERIFYING_KEY_LEN]> {
+        // **This transport proves a name and is the only one that does.** The handshake's payload is
+        // an Ed25519 key plus that key's signature over the sender's X25519 static, so the key is
+        // bound to the session — unlike the peer's `op:start-session` designator, which is public and
+        // signed by nothing but the peer's own ephemeral session key (HAZOP rows C242/C243).
+        self.verified
     }
 
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {

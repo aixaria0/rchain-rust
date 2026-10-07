@@ -556,6 +556,19 @@ impl Session {
         self.peer.as_ref()
     }
 
+    /// **The peer's key as its transport *proved* it**, if it proved one (HAZOP rows C242/C243).
+    ///
+    /// The counterpart to [`Session::peer`]: that is what the peer *said* about itself, this is what
+    /// the transport *established*. Where it exists a session can be named by the second — which the
+    /// peer cannot forge — instead of by the first, which is public (it is the cleartext prefix of
+    /// every Noise SYN) and is signed by nothing but the peer's own ephemeral session key.
+    ///
+    /// Read only after the handshake has run; `accept_deferred` reads the peer's start-session, and
+    /// that read is what drives a transport's deferred handshake.
+    pub fn verified_peer_key(&self) -> Option<[u8; 32]> {
+        self.conn.verified_peer()
+    }
+
     /// The loop: read a message, act on it. Returns when the peer aborts or closes cleanly.
     pub async fn run(&mut self) -> Result<(), ConnectionError> {
         loop {

@@ -79,7 +79,15 @@ websocket handshake size bound and the post-buffer check; the challenge arity/le
 file's create-mode, read-mode, all-zero and exclusive-creation checks; the session loop's discarded
 `Result`; the websocket dial-policy blindness.
 
-**Tier 2 — registered, not done**: the unverified peer name (D6), the cross-transport cancellation
+**Tier 1, closed after the study — the must-fix pair (D1 and D6), which the register had left open.**
+The verified key the handshake produced is no longer discarded: `NetConn::verified_peer` keeps it,
+`Session::verified_peer_key` exposes it, and `accept_and_book` books the session under it while still
+answering the peer's own advertised location (that is where the peer can be dialled back). Both rows
+are **fixed here for the transport that can prove a name** — over `websocket` the accepted side has
+nothing to prove (D2), so the assertion is all there is, and that is the transport's protocol rather
+than a gap this code leaves.
+
+**Tier 2 — registered, not done**: the cross-transport cancellation
 (B2), the ceiling's total-lockout consequence (B3/C2/C3/E4), the deferred-answer waiter count (B7),
 shutdown's detached sessions (B8/E15), the `0.0.0.0` advertised back-address (E9), `bind_tls` being
 unreachable (E13), the fixed-window limiter's 2× boundary (C9), the O(n²) reassembly (C11), the
@@ -132,11 +140,11 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **C10** | N7 | More | bridged deliveries poll the chain API ~480×/s node-wide | reasoned | S4 | L-B | **saves** (a product of two shipped bounds) | **refuted** |
 | **C11** | N1 | More | `open` reassembles with `drain(..take)` per chunk — O(n²) | reasoned | S3 | L-B | **partly** (bounded to ~128 MiB of copy at the cap; no amplification) | **registered** |
 | **C12/D3/E5/E6/F7** | N3 | Late/Early | the identity file's mode was set **after** the write and **never checked on read** | read | S2 | L-C | fails | **fixed here** (`create_new` + `mode(0o600)`; the read refuses a loosened file) |
-| **D1** | N1 | Other than | the transport-verified Ed25519 key is discarded (`let _…`) and never bound to the peer identity | read | S3 | L-B | **saves** (no binding is defined by the spec or the reference; it is Law 63a's work) | **registered** — the material exists; using it for *admission* is a design change, and it is what would close D6 |
+| **D1** | N1 | Other than | the transport-verified Ed25519 key is discarded (`let _…`) and never bound to the peer identity | read | S3 | L-B | **saves** (no binding is defined by the spec or the reference; it is Law 63a's work) | **fixed here** — `NetConn::verified_peer` keeps the handshake's proved key, `Session::verified_peer_key` exposes it, and `accept_and_book` books the session under it |
 | **D2** | N2 | No | the websocket handshake authenticates only the server | measured | S2 | L-A | **saves** (the reference's own shape, documented, off by default) | **closed by decision** |
 | **D4** | N3 | As well as | the identity file *is* the name, so two processes sharing it are one peer; no rotation | read | S2 | L-C | **partly** (operator error; rotation would rename the node) | **registered** |
 | **D5** | N3 | Less | a 64-byte all-zero file passed as a valid identity | read | S2 | L-C | fails | **fixed here** |
-| **D6** | N1/N2/N6 | Other than | the registry keys on the peer's **self-asserted** designator, so a peer knowing an honest peer's public name can, by the crossing rule, evict that peer's accepted session | read | S3 | L-B | fails | **registered**, must-fix class — and **this branch makes it actionable**, since the transports now supply exactly the verified key `owner.rs` discards |
+| **D6** | N1/N2/N6 | Other than | the registry keys on the peer's **self-asserted** designator, so a peer knowing an honest peer's public name can, by the crossing rule, evict that peer's accepted session | read | S3 | L-B | fails | **fixed here, for the transport that can prove a name** — the registry is keyed by the proved key where there is one, so over `noise` a peer naming itself another's name is booked under its own; **over `websocket` it remains, by the protocol rather than by this code** (D2: only the server proves itself) |
 | **D7** | N4/N8 | More | the chain capabilities are published to every admitted session regardless of transport | read | S2 | L-A | **saves, reframed** (no transport grants differential authority — it restates A2/D1) | **refuted** as a distinct row |
 | **D8/F10** | N3/N8 | Other than | the name is a function of configuration, not of the node; the `listen_tcp` comment still attributes it to `node_designator` | read | S3 | L-C | **partly** (the behaviour is required — the name must be the key the handshake checks) | **fixed here** (the stale comment; the consequence is documented) |
 | **D9/E1** | N8 | No | admission is unauditable; a session's end is `debug` | read | S4 | L-A | **partly** (some visibility exists; the omission is deliberate, against log flood) | **registered** |
@@ -213,7 +221,8 @@ TOP  all 64 permits held by one unauthenticated peer; honest sessions refused.
    · H1 the noise short-frame task-kill            [fixed here]
    · H4 the websocket dial-policy SSRF              [fixed here]  — authority, no permit
    · H5 the cross-transport ws cancel               [B2]          — one connection
-   · D6 a peer evicting an honest peer's session     [registered] — a different peer's session
+   · D6 a peer evicting an honest peer's session     [fixed here]  — a different peer's session
+                                                     (over `noise`; unchanged over `websocket`)
 ```
 
 ## §6 The RCA, adjudicated — including where the two adjudicators disagreed
@@ -223,8 +232,8 @@ most useful output, because each side is right about a different thing; the verd
 
 | rows | adjudicator | steelman | **adjudicated** | why |
 |---|---|---|---|---|
-| **D1** | must fix | saves (no binding is defined by the spec or the reference) | **registered** | The steelman is right that no *protocol* binding exists to violate. The adjudicator is right that the material is now in hand. It is Law 63a's work, and it is the input D6 needs. |
-| **D6** | must fix | **fails** (a stranger who knows the public name can force an eviction) | **registered, must-fix class** | Both agree it is real; the steelman's own verdict is `fails`. A design change, not a patch. |
+| **D1** | must fix | saves (no binding is defined by the spec or the reference) | **fixed here** | The steelman was right that no *protocol* binding exists to violate, and the adjudicator was right that the material is now in hand: *keeping* the key is a patch, not a binding, and D1 as stated — the key is discarded — is what the patch removes. It is Law 63a's work and the input D6 needs. |
+| **D6** | must fix | **fails** (a stranger who knows the public name can force an eviction) | **fixed here** over `noise`, **unchanged over `websocket`** | Both agreed it is real; the steelman's own verdict was `fails`. Keying by the proved name *is* the design change that was called for, and it is bounded to the transport that proves one: a websocket accepted session has no proved name to key on (D2), so there the assertion remains all there is — a weakness of that transport's protocol, recorded as such rather than left as a hole here. |
 | **B2** | must fix | partly (self-healing; `biased` would be worse) | **registered, should-fix** | The steelman's objection is to the *proposed* fix, not the defect. The measured reset is real; per-transport accept tasks fix it without `biased`. |
 | **B4** | should fix | **saves** (per-session blast radius) | **closed by decision** | The steelman is right: the fixtures are rebuilt per session, so a peer stalls only itself. It stays inconsistent with Law 61 and is recorded as such. |
 | **B9** | should fix | **saves** (checking earlier would block all accepts) | **refuted** | The steelman's ordering argument is decisive; the permit cannot precede the connection's existence. |
