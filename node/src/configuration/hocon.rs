@@ -250,6 +250,10 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         // And the `websocket` one.
         ocapn_listen_websocket: to_optional_string(h, "ocapn-listen-websocket")?
             .filter(|s| !s.is_empty()),
+        // The host peers are told to dial. Needed only by a listener bound to `0.0.0.0`/`::`, which
+        // the startup check refuses without it (HAZOP row C237).
+        ocapn_advertised_host: to_optional_string(h, "ocapn-advertised-host")?
+            .filter(|s| !s.is_empty()),
         // Where the node's Noise identity lives; absent means "generate one in memory", which is only
         // usable with no `noise` listener.
         ocapn_identity_key: to_optional_string(h, "ocapn-identity-key")?.filter(|s| !s.is_empty()),

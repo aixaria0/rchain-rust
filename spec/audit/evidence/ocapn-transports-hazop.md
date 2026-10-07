@@ -91,7 +91,7 @@ assertion is all there is, and that is the transport's protocol rather than a ga
 
 **Tier 2 — registered, not done**: the ceiling's total-lockout consequence (B3/C2/C3/E4), the
 deferred-answer waiter count (B7),
-shutdown's detached sessions (B8/E15), the `0.0.0.0` advertised back-address (E9), `bind_tls` being
+shutdown's detached sessions (B8/E15), `bind_tls` being
 unreachable (E13), the fixed-window limiter's 2× boundary (C9), the O(n²) reassembly (C11), the
 unauditable admission (D9/E1), and the name-depends-on-config consequence (D8).
 
@@ -151,7 +151,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **D8/F10** | N3/N8 | Other than | the name is a function of configuration, not of the node; the `listen_tcp` comment still attributes it to `node_designator` | read | S3 | L-C | **partly** (the behaviour is required — the name must be the key the handshake checks) | **fixed here** (the stale comment; the consequence is documented) |
 | **D9/E1** | N8 | No | admission is unauditable; a session's end is `debug` | read | S4 | L-A | **partly** (some visibility exists; the omission is deliberate, against log flood) | **registered** |
 | **E7** | N3 | No | a truncated identity file bricks startup with no regeneration path | read | S2 | L-D | **saves** (regenerating would rename the node and orphan peers) | **closed by decision** |
-| **E9** | N8 | Other than | `ocapn-listen-noise = 0.0.0.0:<port>` advertises host `0.0.0.0` — a location a *remote* peer cannot dial back | read | S3 | L-C | **fails unless the peer is on the same host** | **registered** — and the design page's own example config uses `0.0.0.0`, so the trap is in the docs |
+| **E9** | N8 | Other than | `ocapn-listen-noise = 0.0.0.0:<port>` advertises host `0.0.0.0` — a location a *remote* peer cannot dial back | read | S3 | L-C | **fails unless the peer is on the same host** | **fixed here** — `api-server.ocapn-advertised-host` names the host peers are told, and an unspecified bind without one is refused at startup; the design page's own example, which used `0.0.0.0`, is corrected |
 | **E10** | N6 | No | the dial policy never judged a websocket target (it reads `host`; a ws locator carries `url`) — **a measured SSRF** (`H4`) | measured | S2 | L-B | fails | **fixed here** (`host_of` parses the authority, including bracketed IPv6; `a_websocket_target_is_judged_by_its_url`) |
 | **E11** | N6 | Less | `DialPolicy::allow` is unreachable from configuration | read | S4 | L-C | **saves** (harden-by-default; the seam exists for tests) | **closed by decision** |
 | **E12** | N8 | No | `ocapn-identity-key` with no listener is silently ignored | read | S4 | L-C | **partly** (nothing consumes it) | **registered** |
@@ -243,9 +243,10 @@ most useful output, because each side is right about a different thing; the verd
 | **D7** | should fix | **saves, reframed** (no transport grants differential authority) | **refuted** as a distinct row | It restates A2/D1: closing websocket would change nothing, because none of the transports binds a deployer identity. |
 | **E11, E16** | register | **saves** | **E11 closed by decision; E16 fixed here** | E11 is harden-by-default with a test-only seam. E16's JSON is an example rather than an enumeration — but the example *is* stale, so the doc is corrected. |
 
-**And the steelman found what the adjudicator missed**: `E9`'s `0.0.0.0` trap is not only in the code
+**And the steelman found what the adjudicator missed**: `E9`'s `0.0.0.0` trap was not only in the code
 but in the **design page's own example config** — a remote peer dialling that back-address reaches
-itself.
+itself. Both halves are fixed: `api-server.ocapn-advertised-host` names the host peers are told, an
+unspecified bind without one is refused at startup, and the example now carries the key.
 
 **What would have caught all of this earlier, cheaply.** Two things, both of which now exist:
 instrumenting the websocket connection (the RCA's trace), and **running a foreign peer** — the

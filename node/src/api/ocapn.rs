@@ -417,12 +417,41 @@ impl Listener {
     }
 }
 
+/// **The host a peer is told to dial for a listener bound at `bound`** (HAZOP row C237).
+///
+/// `local_addr()` is what the socket is bound to, and it is the right answer for a specific address —
+/// but a bind to `0.0.0.0` or `::` means *every* address on this host, and **that is not an address
+/// another host can dial**: a remote peer that follows it reaches itself, so every sturdyref and
+/// handoff to this node is unusable off-host. Same-host dialling happens to work, which is why no
+/// test — and no run against a peer — had measured it.
+///
+/// So an unspecified bind **needs** the operator to say what to advertise. It is refused here rather
+/// than advertised, and the error names the key to set: a node that starts and hands out unusable
+/// locations is worse than one that does not start.
+fn advertised_host(
+    bound: std::net::SocketAddr,
+    configured: Option<&str>,
+    transport: &str,
+) -> Result<String, String> {
+    match configured {
+        Some(host) => Ok(host.to_string()),
+        None if bound.ip().is_unspecified() => Err(format!(
+            "the {transport} OCapN listener is bound to {bound}, which is every address on this \
+             host and not one a peer can dial back — a remote peer that follows it reaches itself, \
+             so every location this node hands out would be unusable off-host. Set \
+             api-server.ocapn-advertised-host to the name or address peers should dial"
+        )),
+        None => Ok(bound.ip().to_string()),
+    }
+}
+
 /// Bind the `tcp-testing-only` listener and build the location a peer reaches it at.
 async fn listen_tcp(
     address: &str,
     policy: DialPolicy,
     designator: &str,
     chain: usize,
+    advertised: Option<&str>,
     log: &Arc<dyn rchain_shared::log::Log>,
     source: rchain_shared::log::LogSource,
 ) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
@@ -456,7 +485,10 @@ async fn listen_tcp(
         designator: designator.to_string(),
         transport: "tcp-testing-only".to_string(),
         hints: BTreeMap::from([
-            ("host".to_string(), local.ip().to_string()),
+            (
+                "host".to_string(),
+                advertised_host(local, advertised, "tcp-testing-only")?,
+            ),
             ("port".to_string(), local.port().to_string()),
         ]),
     };
@@ -492,6 +524,10 @@ async fn listen_unix(
 
 /// Bind the `noise` listener and build the location a peer reaches it at.
 ///
+/// **The `host` hint is the *advertised* one, not the bound address** (HAZOP row C237): see
+/// [`advertised_host`]. A node bound to `0.0.0.0` without `api-server.ocapn-advertised-host` is
+/// refused here rather than handing out a location no peer can dial.
+///
 /// **The location carries this node's Ed25519 verifying key**, in the `verify` hint, because that is
 /// what a dialler must put in the SYN's cleartext prefix — the handshake is where the name is checked,
 /// so the name has to travel with the address. This is the one advertised location that says *who*
@@ -502,6 +538,7 @@ async fn listen_noise(
     designator: &str,
     chain: usize,
     identity: NoiseIdentity,
+    advertised: Option<&str>,
     log: &Arc<dyn rchain_shared::log::Log>,
     source: rchain_shared::log::LogSource,
 ) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
@@ -518,7 +555,10 @@ async fn listen_noise(
         designator: designator.to_string(),
         transport: "noise".to_string(),
         hints: BTreeMap::from([
-            ("host".to_string(), local.ip().to_string()),
+            (
+                "host".to_string(),
+                advertised_host(local, advertised, "noise")?,
+            ),
             ("port".to_string(), local.port().to_string()),
             (
                 "verify".to_string(),
@@ -540,6 +580,7 @@ async fn listen_websocket(
     designator: &str,
     chain: usize,
     identity: NoiseIdentity,
+    advertised: Option<&str>,
     log: &Arc<dyn rchain_shared::log::Log>,
     source: rchain_shared::log::LogSource,
 ) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
@@ -553,7 +594,12 @@ async fn listen_websocket(
             "OCapN listener serving websocket on {local} ({chain} chain-backed capability/ies)"
         ),
     );
-    let location = bound.location(designator).map_err(|e| e.to_string())?;
+    // **The advertised host, not the bound one** (HAZOP row C237): `advertised_host` refuses an
+    // unspecified bind the operator has not named, and otherwise returns the bound address.
+    let host = advertised_host(local, advertised, "websocket")?;
+    let location = bound
+        .location(designator, Some(&host))
+        .map_err(|e| e.to_string())?;
     Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
 }
 
@@ -574,6 +620,9 @@ pub async fn serve_ocapn(
     dial_slot: OcapnDialSlot,
     // The node's Noise identity, required exactly when `listeners.noise` is set.
     noise_identity: Option<NoiseIdentity>,
+    // The host peers are told to dial. Required exactly when a listener is bound to an address no
+    // peer can reach (`0.0.0.0`/`::`) — see `advertised_host`.
+    advertised_host: Option<String>,
     log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -596,6 +645,7 @@ pub async fn serve_ocapn(
                 policy.clone(),
                 &designator,
                 chain.len(),
+                advertised_host.as_deref(),
                 &log,
                 source,
             )
@@ -619,6 +669,7 @@ pub async fn serve_ocapn(
                 &designator,
                 chain.len(),
                 identity.clone(),
+                advertised_host.as_deref(),
                 &log,
                 source,
             )
@@ -643,6 +694,7 @@ pub async fn serve_ocapn(
                 &designator,
                 chain.len(),
                 identity.clone(),
+                advertised_host.as_deref(),
                 &log,
                 source,
             )
@@ -1525,6 +1577,7 @@ mod tests {
             false,
             Arc::new(std::sync::OnceLock::new()),
             None,
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1572,6 +1625,7 @@ mod tests {
             false,
             Arc::new(std::sync::OnceLock::new()),
             None,
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1610,6 +1664,7 @@ mod tests {
             false,
             Arc::new(std::sync::OnceLock::new()),
             None,
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1628,6 +1683,76 @@ mod tests {
             .await
             .expect("the task ends cleanly")
             .expect("and without error");
+    }
+
+    /// **A listener bound to every address advertises a host a peer can actually dial** (HAZOP row
+    /// C237).
+    ///
+    /// `local_addr()` is right for a specific bind and useless for `0.0.0.0`/`::`: a remote peer that
+    /// follows `0.0.0.0` reaches *itself*, so every sturdyref and handoff to this node is unusable
+    /// off-host. Same-host dialling happens to work, which is why nothing had measured it. The rule is
+    /// the operator names the host, and a node with no name to advertise **does not start** rather
+    /// than handing out locations nobody can use.
+    #[tokio::test]
+    async fn a_listener_bound_to_every_address_advertises_the_host_the_operator_named() {
+        let log: Arc<dyn rchain_shared::log::Log> = Arc::new(RecordingLog::default());
+        let source = rchain_shared::log::LogSource::new("coop.rchain.node.api.ocapn");
+        let policy = DialPolicy {
+            deny_local: false,
+            allow: Vec::new(),
+        };
+
+        // Unnamed: refused, and the message says which key to set.
+        let refused = match listen_tcp(
+            "0.0.0.0:0",
+            policy.clone(),
+            "rnode-test",
+            0,
+            None,
+            &log,
+            source,
+        )
+        .await
+        {
+            Err(reason) => reason,
+            Ok(_) => panic!("a bind to every address with nothing to advertise must be refused"),
+        };
+        assert!(
+            refused.contains("api-server.ocapn-advertised-host"),
+            "the refusal names the key that fixes it: {refused}"
+        );
+
+        // Named: advertised, and the port is the one actually chosen.
+        let (_, location) = listen_tcp(
+            "0.0.0.0:0",
+            policy.clone(),
+            "rnode-test",
+            0,
+            Some("node.example"),
+            &log,
+            source,
+        )
+        .await
+        .expect("a bind to every address with a host to advertise is bound");
+        assert_eq!(
+            location.hints.get("host").map(String::as_str),
+            Some("node.example"),
+            "the `host` hint is the operator's, not the bound address"
+        );
+        assert_ne!(
+            location.hints.get("port").map(String::as_str),
+            Some("0"),
+            "and the port is the chosen one, not the configured `:0`"
+        );
+
+        // A specific bind needs no help: it is its own answer.
+        let (_, specific) = listen_tcp("127.0.0.1:0", policy, "rnode-test", 0, None, &log, source)
+            .await
+            .expect("a specific bind is bound");
+        assert_eq!(
+            specific.hints.get("host").map(String::as_str),
+            Some("127.0.0.1")
+        );
     }
 
     /// **An honest peer's establishment is not cancelled by another transport's traffic** (HAZOP row
@@ -1661,6 +1786,7 @@ mod tests {
             false,
             Arc::new(std::sync::OnceLock::new()),
             Some(rchain_ocapn::noise::NoiseIdentity::generate().expect("a fresh identity")),
+            None,
             log.clone(),
             stop_rx,
         ));

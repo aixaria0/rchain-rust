@@ -128,6 +128,16 @@ pub struct ApiServer {
     /// and it is **weaker than `noise`**: as the reference writes it, `ws://` carries no TLS and
     /// authenticates only the server. Reach for `noise` unless the peer speaks nothing else.
     pub ocapn_listen_websocket: Option<String>,
+    /// **The host peers should dial this node at**, when the bound address is not one they can reach
+    /// (HAZOP row C237). `local_addr()` is what a listener is bound to, and a bind to `0.0.0.0` or
+    /// `::` means "every address on this host" — which is not an address *another* host can dial: a
+    /// remote peer that follows it reaches itself, so every sturdyref and handoff to this node is
+    /// unusable off-host. Same-host dialling happens to work, which is why nothing measured it.
+    ///
+    /// Set this to a name or address a peer can resolve and reach. A listener bound to an
+    /// unspecified address with no value here is **refused at startup** rather than advertising
+    /// something undialable.
+    pub ocapn_advertised_host: Option<String>,
     /// Where the node's **Noise identity** is kept: an Ed25519 seed then an X25519 static, 64 bytes,
     /// mode `0600`. Generated and written on first use when the file is absent, so a node's name is
     /// stable across restarts — an identity that changed on every start would be one no peer could

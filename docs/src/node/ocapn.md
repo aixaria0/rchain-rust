@@ -24,6 +24,7 @@ The listener is **off unless `api-server.ocapn-listen` names an address**.
 | `api-server.ocapn-listen-noise` | `--ocapn-listen-noise` | `host:port` to bind for `noise`. Unset: no Noise listener. |
 | `api-server.ocapn-listen-websocket` | `--ocapn-listen-websocket` | `host:port` to bind for `websocket`. Unset: no WebSocket listener. |
 | `api-server.ocapn-identity-key` | `--ocapn-identity-key` | Where this node's OCapN identity is kept; created on first use. Required by the two keys above. |
+| `api-server.ocapn-advertised-host` | — | The host peers should dial this node at, when the bind address is not one they can reach. **Required** by a listener bound to `0.0.0.0` or `::`. |
 | `api-server.ocapn-deny-local-dial` | — | Refuse to dial loopback and private addresses a peer names. Off by default. |
 | `api-server.enable-ocapn-dial` | — | Mount `POST /api/v1/ocapn/dial` on the admin server. Off by default. |
 
@@ -40,8 +41,18 @@ api-server {
   ocapn-listen-noise = "0.0.0.0:22046"        # noise
   ocapn-listen-websocket = "0.0.0.0:22047"    # websocket
   ocapn-identity-key = "/var/lib/rnode/ocapn-identity.key"
+  ocapn-advertised-host = "node.example"      # what peers are told to dial
 }
 ```
+
+**A bind address is not the same as an address a peer can dial** (HAZOP row C237), and `0.0.0.0` is
+the case that catches people: it means *every* address on this host, so a node that advertises it hands
+out locations where the peer dials **itself**. Same-host dialling happens to work, which makes the
+mistake invisible until a peer somewhere else tries to follow a sturdyref or accept a handoff. So a
+listener bound to `0.0.0.0` or `::` **must** be told what to advertise, with
+`api-server.ocapn-advertised-host`, and the node refuses to start without it rather than handing out
+locations nobody can use. The port is always the bound one — `:0` is legal, and the chosen port is the
+only useful thing to advertise. The key is a no-op for a listener bound to a specific address.
 
 **`websocket` is the transport `@endo/ocapn` speaks**, so it is the one a published Agoric peer can be
 pointed at — and it is **weaker than `noise`**: as the reference writes it, `ws://` carries no TLS and

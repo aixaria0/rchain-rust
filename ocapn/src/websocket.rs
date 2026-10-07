@@ -138,16 +138,28 @@ impl WebsocketNetlayer {
 
     /// The location to advertise: the `url` hint Endo reads, in the scheme this listener speaks, plus
     /// this node's verifying key so a dialler can check the challenge response.
-    pub fn location(&self, designator: &str) -> io::Result<PeerLocator> {
+    ///
+    /// **`host` is the host a *peer* should dial, when the operator has named one** (HAZOP row C237).
+    /// The bound address is the default and is right for a specific one — but a bind to `0.0.0.0` or
+    /// `::` yields a URL no other host can use, so the node's caller passes the advertised host
+    /// instead of deriving it from `local_addr()`. The port is always the bound one: `:0` is legal, and
+    /// the chosen port is the only useful thing to advertise.
+    pub fn location(&self, designator: &str, host: Option<&str>) -> io::Result<PeerLocator> {
         let local = self.local_addr()?;
         let scheme = if self.tls.is_some() { "wss" } else { "ws" };
+        let host = host.unwrap_or_else(|| "").to_string();
+        let host = if host.is_empty() {
+            local.ip().to_string()
+        } else {
+            host
+        };
         Ok(PeerLocator {
             designator: designator.to_string(),
             transport: "websocket".to_string(),
             hints: std::collections::BTreeMap::from([
                 (
                     URL_HINT.to_string(),
-                    format!("{scheme}://{}:{}", local.ip(), local.port()),
+                    format!("{scheme}://{host}:{}", local.port()),
                 ),
                 (
                     "verify".to_string(),
@@ -521,7 +533,7 @@ mod tests {
         let server = WebsocketNetlayer::bind("127.0.0.1:0", server_identity.clone())
             .await
             .expect("bind");
-        let mut location = server.location("server").expect("location");
+        let mut location = server.location("server", None).expect("location");
         location.hints.insert(
             "verify".to_string(),
             rchain_shared::base16::encode(&server_identity.verifying_key()),

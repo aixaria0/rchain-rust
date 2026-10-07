@@ -7582,7 +7582,21 @@ Against the single-`select!` loop the read came back empty, because the socket w
 the fix the upgrade completes. The ceiling the tasks share is still node-wide and transport-blind,
 which is C229's question and not this one's.
 
-**The rows that remain open.** C227–C238 and C240–C241 register what this pass did not fix, each
+**The advertised back-address, also closed here (C237).** `listen_tcp`, `listen_noise` and
+`listen_websocket` built the location they advertise from `local_addr()`, and
+`ocapn-listen-noise = 0.0.0.0:22046` — the natural production config, and the one **this repository's
+own design page used as its example** — advertises host `0.0.0.0`. A same-host dialer links to loopback
+and works; a remote peer dialling it back **reaches itself**, so every sturdyref and handoff to the
+node is unusable off-host, and nothing had measured it because no node test binds `0.0.0.0`. The fix
+is `api-server.ocapn-advertised-host`: the `host` hint (and the `url` hint's host for `websocket`) is
+the operator's value when set, and a listener bound to an unspecified address with none set is
+**refused at startup**, naming the key, rather than handed out as a location nobody can dial. The port
+is always the bound one, so `:0` still works. The falsifier is
+`node/src/api/ocapn.rs:a_listener_bound_to_every_address_advertises_the_host_the_operator_named`, which
+drives `listen_tcp` three ways — refused without a host, advertised with one, and a specific bind as
+its own answer — and the design page's example is corrected.
+
+**The rows that remain open.** C227–C236 and C238, C240–C241 register what this pass did not fix, each
 `todo` with what would close it — **C229** first among them (the ceiling's total lockout: one
 transport-blind semaphore, so the unauthenticated path can starve the authenticated one), the finding
 the adjudication promoted from "a lens's row" to "the study's own".

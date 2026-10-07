@@ -477,6 +477,9 @@ pub struct NodeProgram {
     ocapn_deny_local_dial: bool,
     /// The name this node advertises in every session (C224 item 2).
     ocapn_designator: String,
+    /// The host peers are told to dial, when the bound address is not one they can reach (HAZOP row
+    /// C237). `None` means "the bound address", which `serve_ocapn` refuses for `0.0.0.0`/`::`.
+    ocapn_advertised_host: Option<String>,
     /// The node's log, for the one surface that had none: the OCapN listener served, refused and
     /// spent in silence, so an operator could not tell "nobody is calling" from "calls are failing"
     /// (HAZOP row E6).
@@ -522,6 +525,7 @@ impl NodeProgram {
             enable_ocapn_dial,
             ocapn_deny_local_dial,
             ocapn_designator,
+            ocapn_advertised_host,
             log,
             ocapn_chain,
             protocol_server,
@@ -631,6 +635,7 @@ impl NodeProgram {
             ocapn_deny_local_dial,
             ocapn_dial,
             ocapn_identity,
+            ocapn_advertised_host,
             log.clone(),
             stop.clone(),
         ));
@@ -1320,6 +1325,11 @@ pub async fn setup_node_program(
         Some(identity) => rchain_shared::base16::encode(&identity.verifying_key()),
         None => crate::api::ocapn::node_designator(faucet_deployer_key.as_ref(), id),
     };
+    // **The host a peer is told to dial** (HAZOP row C237). `local_addr()` is what a listener binds,
+    // and `0.0.0.0`/`::` is not an address another host can reach — a remote peer following it reaches
+    // itself — so the operator says what to advertise, and `serve_ocapn` refuses a listener bound to
+    // an unspecified address that has not been told.
+    let ocapn_advertised_host = conf.api_server.ocapn_advertised_host.clone();
     // Where the listener publishes the dialer it builds once its transports are bound; the admin
     // route reads it to start a dial of the node's own (issue #249).
     let ocapn_dial: OcapnDialSlot = Arc::new(std::sync::OnceLock::new());
@@ -1425,6 +1435,7 @@ pub async fn setup_node_program(
         enable_ocapn_dial: conf.api_server.enable_ocapn_dial,
         ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,
         ocapn_designator,
+        ocapn_advertised_host,
         log: log.clone(),
         ocapn_chain,
         protocol_server: Some(build_protocol_server(
