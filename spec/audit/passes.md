@@ -7753,6 +7753,15 @@ should be able to find the account of any one of them. Every row below is `done`
 the only one that is reasoned rather than measured, and its row says so. Everything else in the table
 was run against the code it replaces and observed to fail first.
 
+**And what was run *after* the table, on a net rather than in a test.** Everything in the table above
+is a unit or node-level falsifier; the transports' own acceptance — two nodes reaching each other over
+`noise` — is `spec/audit/evidence/ocapn-devnet/` (`run.sh` → `run-1.txt`), a 2-validator devnet where
+`devnet-validator-1` dials the bootstrap through its own admin route and comes away holding an object
+the bootstrap published (`{"fetched":"Export(1)","peer":"devnet-bootstrap.noise"}`), with the
+bootstrap's own record naming the peer it **proved**. That is the shape issue #249 was opened for. Its
+two-node in-process counterpart is `node/tests/ocapn_two_nodes.rs`. **Neither is public-testnet
+readiness**, which is #214's bar and not this pass's — see the note at the top of that study.
+
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each
 other on eight row groups**. Adjudicating that disagreement rather than averaging it is what produced
