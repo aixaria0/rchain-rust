@@ -770,26 +770,29 @@ pub async fn serve_ocapn(
             // registry before the peer can act on it, or a delivery that arrives on the first round
             // trip after our start-session (a handoff, a fetch) reaches an object that cannot find
             // the session it belongs to.
-            let (handle, loop_, context, peer_location) =
-                match rchain_ocapn::owner::accept_and_book(
-                    connection,
-                    &identity,
-                    Arc::new(bootstrap),
-                    &registry,
-                )
-                .await
-                {
-                    Ok(parts) => parts,
-                    Err(reason) => {
-                        // A refused handshake, and a session that lost its crossing, have both already
-                        // been answered with `op:abort` where one was owed. Logged at **debug**, not
-                        // warn: a crossing is a legitimate outcome of the protocol, and a peer-driven
-                        // stream of them would make a warning meaningless (the log-flood the
-                        // operations lens warned about).
-                        log.debug(source, &format!("session not served: {reason}"));
-                        return;
-                    }
-                };
+            // The fourth element is the locator the session was **booked** under, which is the peer's
+            // own advertised location whenever the peer is who it says it is, and the key the
+            // handshake proved otherwise (HAZOP row C243) — and it is what `forget` must be given, or
+            // an entry the peer cannot be found by would never be removed.
+            let (handle, loop_, context, booked) = match rchain_ocapn::owner::accept_and_book(
+                connection,
+                &identity,
+                Arc::new(bootstrap),
+                &registry,
+            )
+            .await
+            {
+                Ok(parts) => parts,
+                Err(reason) => {
+                    // A refused handshake, and a session that lost its crossing, have both already
+                    // been answered with `op:abort` where one was owed. Logged at **debug**, not
+                    // warn: a crossing is a legitimate outcome of the protocol, and a peer-driven
+                    // stream of them would make a warning meaningless (the log-flood the
+                    // operations lens warned about).
+                    log.debug(source, &format!("session not served: {reason}"));
+                    return;
+                }
+            };
             *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
             // One session per connection; its end is this task's end.
             // **The loop's outcome was discarded**, so a session that ended with an error was
@@ -800,7 +803,7 @@ pub async fn serve_ocapn(
             if let Err(e) = loop_.run().await {
                 log.debug(source, &format!("session loop ended: {e}"));
             }
-            registry.forget(&peer_location, &handle.own_pi, handle.dialed);
+            registry.forget(&booked, &handle.own_pi, handle.dialed);
         });
     }
 }

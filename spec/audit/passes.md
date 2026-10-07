@@ -7546,17 +7546,26 @@ pre-existing `owner.rs` defect that *this branch makes actionable*, because the 
 exactly the verified key the older code threw away. The fix is small because the material was already
 in hand: `NetConn::verified_peer` (a provided method defaulting to `None`, implemented by `noise`,
 which authenticates; left at `None` by the transports that authenticate nobody) keeps the key the
-handshake proved, `Session::verified_peer_key` exposes it, and `accept_and_book` **books the session
-under it** while still answering the peer's own advertised location — the advertised location is where
-the peer can be dialled back, so it is not the key. The falsifier is
+handshake proved, and `Session::verified_peer_key` exposes it. **Where it is used is the part that had
+to be got right twice.** The first version replaced the designator outright and booked the session
+under `base16(key)`; that is a *new* naming space, so the two legs of one peer — the one we dial, named
+by the locator we dialled, and the one we accept — stopped agreeing, and `forget`, which is given the
+peer's advertised locator, removed nothing. The landed version puts the proved key in the locator's
+**`verify` hint**, the field a transport *checks* (`noise` enforces it in the SYN's cleartext prefix,
+`websocket` in the challenge response), and has `owner::peer_key` read that hint in preference to the
+designator — so a dialed leg (whose hint the handshake enforced) and an accepted leg (whose hint is the
+key that was proved) are filed under one name, and every peer with an identity keeps exactly the name it
+had, because a node's OCapN designator *is* its verifying key in base16. `accept_and_book` returns the
+locator it booked under, so `forget` takes the same key. The falsifier is
 `ocapn/tests/session_owner.rs:a_session_is_booked_under_the_name_its_transport_proved`, whose far end
-dials naming itself `"peer"` and is booked under the key its `NetConn` reports instead. **How far it
-reaches, stated rather than implied:** the fix closes D6 for the transport that can *prove* a name. The
-`websocket` handshake has the **server** prove itself (D2), so an accepted websocket session has no
-name its peer had to prove and the assertion is all there is — that is that transport's protocol, not
-a hole this code leaves, and it is on the row as the residual. The law is **63a**, the same home as
-C221: what the node gains is that a session's origin is attributable to something the peer had to
-prove.
+dials naming itself `"peer"` and whose session is reachable by the proved key and **not** by the
+assertion the peer wrote for itself; it also asserts that forgetting by the assertion frees nothing and
+by the proved key frees the entry. **How far it reaches, stated rather than implied:** the fix closes D6
+for the transport that can *prove* a name. The `websocket` handshake has the **server** prove itself
+(D2), so an accepted websocket session has no name its peer had to prove and the assertion is all there
+is — that is that transport's protocol, not a hole this code leaves, and it is on the row as the
+residual. The law is **63a**, the same home as C221: what the node gains is that a session's origin is
+attributable to something the peer had to prove.
 
 **The rows that remain open.** C227–C241 register what this pass did not fix, each `todo` with what
 would close it — among them **C229** (the ceiling's total lockout: one transport-blind semaphore, so

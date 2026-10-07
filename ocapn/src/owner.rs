@@ -244,6 +244,11 @@ pub(crate) fn split(mut session: Session) -> (SessionHandle, SessionLoop, Sessio
 /// abort already written by that call), or this session was the crossing's loser — in which case the
 /// abort has been written and the loop run once for it, because **the abort is a message on the
 /// socket and the loop is what owns the socket**.
+///
+/// The locator it returns is the one the session was **registered under** — the key
+/// [`SessionRegistry::forget`] needs, which is the peer's own advertised location whenever the peer is
+/// who it says it is. Callers that only want to dial the peer back can use it for that too; see the
+/// note on `book_key` below for the case where the two come apart.
 pub async fn accept_and_book(
     conn: Box<dyn NetConn>,
     identity: &crate::conn::Identity,
@@ -268,13 +273,20 @@ pub async fn accept_and_book(
     // forge; `noise` does and `websocket` cannot (its handshake has only the *server* prove itself),
     // so the two are treated differently on purpose rather than assumed equal.
     //
-    // **The advertised location stays the peer's own**, because it is where the peer can be dialled
-    // back — the proof names the session, it does not replace where the peer says it lives.
+    // **The name is written into the `verify` hint, which is the field [`peer_key`] reads**, rather
+    // than replacing the designator. The two agree for every peer that has an identity — a node's
+    // OCapN designator *is* its verifying key in base16 — so this changes no honest peer's name. What
+    // it changes is the liar's: the designator it asserted is not the name it is registered under,
+    // and it cannot collide with the peer whose name it used. The peer's own hints are left alone,
+    // because they are how it is dialled back.
     let book_key = match session.verified_peer_key() {
-        Some(key) => PeerLocator {
-            designator: rchain_shared::base16::encode(&key),
-            ..peer.clone()
-        },
+        Some(key) => {
+            let mut booked = peer.clone();
+            booked
+                .hints
+                .insert(VERIFY_HINT.to_string(), rchain_shared::base16::encode(&key));
+            booked
+        }
         None => peer.clone(),
     };
     let (handle, mut loop_, context) = session.split();
@@ -296,7 +308,7 @@ pub async fn accept_and_book(
         registry.forget(&book_key, &handle.own_pi, handle.dialed);
         return Err(e.to_string());
     }
-    Ok((handle, loop_, context, peer))
+    Ok((handle, loop_, context, book_key))
 }
 
 /// What the registry knows about one peer it has sessions with.
@@ -311,9 +323,10 @@ struct PeerSessions {
 /// The live sessions this peer has with others, so a second connection between the same two peers
 /// can be resolved by the crossed-hello rule.
 pub struct SessionRegistry {
-    /// Keyed by *peer*, in the sense `PeerLocator::same_peer` uses: designator and transport, not
-    /// hints. Two locators that differ only in hints are the same peer, and a crossing between them
-    /// is a crossing.
+    /// Keyed by *peer* — see [`peer_key`]: the designator and transport `PeerLocator::same_peer`
+    /// compares, except where a transport's handshake supplies a key the peer had to prove, which
+    /// takes the designator's place. Two locators that differ only in the *other* hints are the same
+    /// peer, and a crossing between them is a crossing.
     ///
     /// **Bounded** (AUDIT C223), and bounded twice over: the key is the peer's own designator, so
     /// [`check_peer_sized`](crate::capacity::check_peer_sized) refuses a locator whose fields are past
@@ -503,10 +516,34 @@ impl SessionRegistry {
     }
 }
 
-/// The key a peer is registered under: designator and transport, the two fields
-/// `PeerLocator::same_peer` compares. Hints are how to *reach* the peer, not which peer it is.
+/// The hint a locator carries the peer's Ed25519 verifying key in — the field [`peer_key`] reads in
+/// preference to the designator (HAZOP rows C242/C243).
+pub const VERIFY_HINT: &str = "verify";
+
+/// The key a peer is registered under.
+///
+/// Designator and transport are the two fields `PeerLocator::same_peer` compares, and hints are
+/// normally how to *reach* a peer rather than which peer it is — with one exception, and it is the
+/// point of the exercise: **the `verify` hint** (HAZOP rows C242/C243).
+///
+/// **Why the hint is the exception.** A peer's designator is a self-assertion, signed by nothing but
+/// the peer's own ephemeral session key, and it is public. The `verify` hint, by contrast, is a key
+/// the transport *checks*: `noise` puts it in the SYN's cleartext prefix and refuses a session that
+/// cannot prove it, and `websocket` checks the server's challenge response against it. So on a
+/// *dialed* leg it is the key the handshake enforced, and on an *accepted* leg
+/// [`accept_and_book`] writes the key the handshake **proved** into the same field. That is what
+/// makes both legs of one peer agree on a name the peer cannot forge — the crossing rule compares the
+/// two legs by this key, and would not if one were named by an assertion and the other by a proof.
+///
+/// A locator with no such hint — `tcp-testing-only`, `unix`, and every fixture — is keyed exactly as
+/// it was before.
 fn peer_key(peer: &PeerLocator) -> (String, String) {
-    (peer.designator.clone(), peer.transport.clone())
+    let designator = peer
+        .hints
+        .get(VERIFY_HINT)
+        .cloned()
+        .unwrap_or_else(|| peer.designator.clone());
+    (designator, peer.transport.clone())
 }
 
 /// What an object that serves *one session* needs from it: the handle to send on, and the session
@@ -542,4 +579,49 @@ pub fn session_origin(session: &SessionSlot) -> Option<std::net::SocketAddr> {
 /// A slot, empty until its session exists.
 pub fn session_slot() -> SessionSlot {
     Arc::new(Mutex::new(None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locator(designator: &str, verify: Option<&str>) -> PeerLocator {
+        let mut hints = std::collections::BTreeMap::new();
+        if let Some(key) = verify {
+            hints.insert(VERIFY_HINT.to_string(), key.to_string());
+        }
+        PeerLocator {
+            designator: designator.to_string(),
+            transport: "noise".to_string(),
+            hints,
+        }
+    }
+
+    /// **A peer is keyed by the key its transport proved, not by the name it asserted** (HAZOP rows
+    /// C242/C243).
+    ///
+    /// This is what makes the two legs of one peer agree — the leg we dial is keyed by the `verify`
+    /// hint the handshake enforced, and the leg we accept by the key `accept_and_book` wrote there
+    /// after proving it — so the crossing rule compares like with like. Without it, a peer that
+    /// asserted another peer's public name would be filed under that name and could evict it.
+    #[test]
+    fn a_peer_is_keyed_by_the_key_its_transport_proved() {
+        // The same peer reached two ways: the second locator spells the designator differently,
+        // because hints (and designators) are how a peer is *reached* rather than which peer it is.
+        let named = locator("base16-key", Some("base16-key"));
+        let reached = locator("some-other-name", Some("base16-key"));
+        assert_eq!(peer_key(&named), peer_key(&reached));
+
+        // And a peer that writes the honest one's name into its designator, with a key of its own, is
+        // a different peer — it is filed under the key it proved, so it cannot collide with the
+        // session it named.
+        let liar = locator("base16-key", Some("a-different-key"));
+        assert_ne!(peer_key(&named), peer_key(&liar));
+
+        // A locator that carries no key at all is keyed exactly as it was before this change:
+        // `tcp-testing-only`, `unix`, and every fixture. (A peer cannot use the fallback to evade the
+        // rule on a transport that *does* check a key: `noise` and `websocket` both refuse to dial a
+        // locator with no `verify` hint, so such a leg never reaches the registry.)
+        assert_eq!(peer_key(&locator("rnode-ocapn", None)).0, "rnode-ocapn");
+    }
 }

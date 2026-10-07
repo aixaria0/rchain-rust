@@ -86,26 +86,25 @@ async fn main() -> std::io::Result<()> {
             // session (deciding any crossing) and only then writes ours. Answering first is a race
             // the handoff fixture caught — the peer speaks as soon as it reads our start-session, and
             // a receiver handed a sturdyref to this very peer would not find the session to reuse.
-            let (handle, loop_, context, peer_location) =
-                match rchain_ocapn::owner::accept_and_book(
-                    conn,
-                    &identity,
-                    Arc::new(bootstrap),
-                    &registry,
-                )
-                .await
-                {
-                    Ok(parts) => parts,
-                    Err(reason) => {
-                        eprintln!("session not served: {reason}");
-                        return;
-                    }
-                };
+            let (handle, loop_, context, booked) = match rchain_ocapn::owner::accept_and_book(
+                conn,
+                &identity,
+                Arc::new(bootstrap),
+                &registry,
+            )
+            .await
+            {
+                Ok(parts) => parts,
+                Err(reason) => {
+                    eprintln!("session not served: {reason}");
+                    return;
+                }
+            };
             *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
             if let Err(e) = loop_.run().await {
                 eprintln!("session ended: {e}");
             }
-            registry.forget(&peer_location, &handle.own_pi, handle.dialed);
+            registry.forget(&booked, &handle.own_pi, handle.dialed);
         });
     }
 }

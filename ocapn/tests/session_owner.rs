@@ -820,6 +820,10 @@ impl NetConn for ProvingConn {
 /// this node hands out. Booking under it lets a stranger who knows that name collide with the peer's
 /// session and, by the crossing rule, have it aborted. Here the transport proved a key, so the session
 /// is held under the key, and naming itself bought nothing.
+///
+/// **The key is also what `forget` needs**, which is why the call returns the locator the session was
+/// booked under rather than the peer's assertion: freeing a session by a name it was never filed
+/// under frees nothing, and an entry nothing can remove is a peer slot a liar accumulates for ever.
 #[tokio::test]
 async fn a_session_is_booked_under_the_name_its_transport_proved() {
     let ours = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
@@ -843,11 +847,12 @@ async fn a_session_is_booked_under_the_name_its_transport_proved() {
     });
 
     let proving = [7u8; 32];
+    let proved_hex = rchain_shared::base16::encode(&proving);
     let accepted_conn = ours.accept_incoming_connection().await.unwrap();
     let identity = Identity::from_seed([22u8; 32], locator(our_port)).unwrap();
     let registry = SessionRegistry::default();
 
-    let (_handle, loop_, _context, advertised) = accept_and_book(
+    let (handle, loop_, _context, booked) = accept_and_book(
         Box::new(ProvingConn {
             inner: accepted_conn,
             key: proving,
@@ -859,24 +864,43 @@ async fn a_session_is_booked_under_the_name_its_transport_proved() {
     .await
     .expect("the session is admitted");
 
-    // The *advertised* location is still the peer's own: it is where the peer can be dialled back, and
-    // proving who you are does not rename where you live.
-    assert_eq!(advertised.designator, "peer");
+    // The peer's own assertion is left alone — it is where the peer says it lives — and the key the
+    // handshake proved goes beside it, in the field the registry reads.
+    assert_eq!(booked.designator, "peer");
+    assert_eq!(
+        booked.hints.get("verify").map(String::as_str),
+        Some(proved_hex.as_str()),
+        "the name that holds the session is the proved key"
+    );
     assert!(
-        registry.live(&advertised).is_none(),
+        registry.live(&booked).is_some(),
+        "a locator naming the proved key reaches the session"
+    );
+
+    // What the peer asserted, with nothing behind it, is **not** a name anything is filed under — so
+    // a stranger naming itself `"peer"` cannot reach this session, let alone evict it.
+    let mut asserted = booked.clone();
+    asserted.hints.remove("verify");
+    assert!(
+        registry.live(&asserted).is_none(),
         "the designator the peer asserted for itself must not be what holds the session"
     );
-    let proved = PeerLocator {
-        designator: rchain_shared::base16::encode(&proving),
-        ..advertised
-    };
+
+    // **And the booked locator is the one `forget` takes.** Freeing it by the peer's assertion is a
+    // no-op, which is exactly how an entry would survive its session for the life of the process.
+    registry.forget(&asserted, &handle.own_pi, handle.dialed);
     assert!(
-        registry.live(&proved).is_some(),
-        "the proven key is the name that holds the session"
+        registry.live(&booked).is_some(),
+        "forgetting by a name the session is not filed under forgets nothing"
+    );
+    registry.forget(&booked, &handle.own_pi, handle.dialed);
+    assert!(
+        registry.live(&booked).is_none(),
+        "the entry goes when it is forgotten by the name it is under"
     );
 
     // Drop the loop rather than running it: `run` owns the socket and returns only when the session
-    // ends, and the assertions above are about the registry, which is already booked.
+    // ends, and the assertions above are about the registry.
     drop(loop_);
     far_end.abort();
 }
