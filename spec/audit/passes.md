@@ -7696,8 +7696,61 @@ existing tests pass against both, which is exactly why they were not enough. The
 one node-global limiter rather than one per peer — is untouched: that is the decision declined with
 Law 63a rather than a defect.
 
-**The rows that remain open.** C227, C230, C240 and C241 register what this pass did not fix, each
-`todo` with what would close it.
+**And the waiters behind the answers (C230).** `MAX_DEFERRED_ANSWERS` bounds the *queue* a landed
+answer travels on; the tasks that produce them were the peer's to count. A claim for a gift nobody
+deposited withdraws nothing, so it must not count against the replay guard and may be repeated freely —
+and each repetition spawned another waiter polling the node-global gift store every 10 ms for ten
+seconds, holding that store's mutex each time. `MAX_DEFERRED_WAITERS = 16` now caps the **live waiter
+count on one session**, with the slot released when the waiter ends whichever way it ended; past the
+cap the delivery is refused with the same `<break>` a failed claim produces, checked *before* the
+answer is recorded, because a refused delivery owes the peer nothing to resolve later. The falsifier is
+`ocapn/tests/session_owner.rs:the_claim_waiters_on_one_session_are_bounded`, which fills the allowance,
+sends one more, and asserts the over-cap claim is refused at once — **measured failing against the
+unbounded version**, where the read timed out because a seventeenth waiter had been started.
+
+**And the blocking resolver on the dial path (C240).** `DialPolicy` called `to_socket_addrs` — a
+blocking syscall — on the host a *peer* chose, so a name nothing answers cost the resolver's own
+timeout of a runtime worker, per dial. `permits_from_async` runs the judgment on a **blocking thread**
+when the target is a name and inline when it is a literal (nothing to resolve, and a thread hop for
+nothing is its own cost); the async dial path a peer's sturdyref reaches calls it. The falsifier is
+`ocapn/src/dial_policy.rs:judging_a_name_off_this_thread_leaves_the_runtime_free`, whose differential
+is inside one test on a current-thread runtime: a task is spawned and the name judged with **no await**
+between them for the control, so the control cannot pass by luck — no DNS answer, fast or slow, creates
+a yield.
+
+**The rows that remain open.** C227 (interop is unproven until a peer that speaks a chunking this port
+does not is available), C241 (the dialed-session count is not drawn from the session ceiling), and
+C215 (a pre-existing merge finding, unrelated to the transports). Each carries what would close it.
+
+## 70. The OCapN transports: what this pass changed, in one place (C227–C244, #249)
+
+**The pass.** §69 is the study and its worksheet; this is the index of what was *done* to the tree,
+because the branch now carries seventeen findings' worth of change and a reader arriving at the diff
+should be able to find the account of any one of them. Every row below is `done` in
+`spec/findings.tsv`, its `section` is 69, and the study names the row it came from.
+
+| finding | what changed | the falsifier, and what it measured against |
+|---|---|---|
+| **C228** | `NoiseConn::recv` reads the length header so a short read is `UnexpectedEof`, not a goodbye | `a_stream_that_ends_inside_a_length_header_is_not_a_clean_end` — measured failing against `read_exact`, which answered `Ok(None)` |
+| **C229** | each transport holds its own share of the session ceiling; shares sum rather than nest | `one_transport_cannot_take_the_nodes_whole_session_surface` — measured failing against the node-wide semaphore, where 32 sockets refused nothing |
+| **C230** | `MAX_DEFERRED_WAITERS` caps live claim waiters per session; the over-cap delivery is refused with a `break` | `the_claim_waiters_on_one_session_are_bounded` — measured failing against the unbounded version, where the read timed out |
+| **C231** | the operator's stop word ends a session, not only the listener | `a_live_session_ends_when_the_node_is_asked_to_stop` — measured failing against the detached version, where it hung 30 s |
+| **C232** | `RateLimiter` is a token bucket; the fixed window's 2× boundary is gone | `the_allowance_is_never_granted_twice` — measured failing against the fixed window, which refused at half a period |
+| **C233** | `NoiseConn::open` walks the body by offset instead of draining it per chunk | reasoned, not measured — said so on the row |
+| **C234** | one file is one peer, and the name cannot be rotated: stated in the page, `defaults.conf` and the config field | documented close, the row's own first option |
+| **C235** | the name is a function of configuration: stated where the identity key is described | documented close, the row's own first option |
+| **C236** | admission and a session's end are `info`, naming the peer and its transport, rate-limited | `an_operators_log_names_the_peer_that_was_admitted_and_when_it_left` — a real CapTP dial |
+| **C237** | `api-server.ocapn-advertised-host`, and an unspecified bind without it is refused at startup | `a_listener_bound_to_every_address_advertises_the_host_the_operator_named` |
+| **C238** | a configured identity key is read and validated whenever it is set, and still not adopted | `an_identity_key_with_no_listener_is_still_read_and_validated` — measured failing against the ignoring arm, which answered `Ok(None)` for a malformed key |
+| **C239** | one accept task per transport, so no transport's pending accept is cancelled by another's traffic | `a_peers_establishment_is_not_cancelled_by_another_transports_traffic` — measured failing against the single `select!`, where the parked upgrade came back empty |
+| **C240** | `permits_from_async` judges a peer-chosen name on a blocking thread | `judging_a_name_off_this_thread_leaves_the_runtime_free` — the differential is in one test, with no await between the spawn and the sync judge |
+| **C242** | the handshake's proved key is kept and used as the session's registry key | `a_peer_is_keyed_by_the_key_its_transport_proved`, plus the session-level test below |
+| **C243** | `owner::peer_key` reads the `verify` hint, and `accept_and_book` writes the proved key there; `forget` takes the key it booked under | `a_session_is_booked_under_the_name_its_transport_proved` — reachable by the proved key, not by the assertion |
+| **C244** | the node test fixture starts one heavyweight node at a time | the nine OCapN listener tests pass in parallel where CI failed four runs in a row |
+
+**What is *not* in the table, said here rather than left to be noticed:** C233's complexity claim is
+the only one that is reasoned rather than measured, and its row says so. Everything else in the table
+was run against the code it replaces and observed to fail first.
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
 adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each

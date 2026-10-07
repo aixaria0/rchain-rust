@@ -339,6 +339,11 @@ pub struct Session {
     /// The receiving half of the above, taken once by [`crate::owner::split`] and owned by the loop
     /// from then on. `None` after the take; the session never reads it itself.
     deferred_rx: Option<tokio::sync::mpsc::Receiver<(Deliver, Result<Act, String>)>>,
+    /// **Live waiters on this session** (HAZOP row C230), shared with the tasks that hold them so a
+    /// waiter's end releases its slot even after the loop has moved on. Bounded by
+    /// [`crate::capacity::MAX_DEFERRED_WAITERS`]; see that constant for why the *task* count is the
+    /// thing to cap and the answer channel's depth is not.
+    deferred_live: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Session {
@@ -542,6 +547,7 @@ impl Session {
             pending_start: None,
             deferred: deferred_tx,
             deferred_rx: Some(deferred_rx),
+            deferred_live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         if let Some(peer) = peer {
             // A construction-time peer is one whose start-session was already read (`accept`), so a
@@ -779,6 +785,30 @@ impl Session {
             for outgoing in act.out {
                 self.send_outgoing(outgoing).await?;
             }
+            // **The waiters are bounded, not only the queue they land in** (HAZOP row C230). The
+            // channel caps how many *answers* wait; the tasks that produce them were the peer's to
+            // count, and a claim for a gift nobody deposited may be repeated freely — it withdraws
+            // nothing, so it must not count against the replay guard — so each delivery spawned
+            // another waiter polling the node-global gift store every 10 ms for ten seconds.
+            // Past the cap the delivery is **refused with the break a failed claim produces**, which
+            // is an answer rather than a silence; the check happens before the answer is recorded,
+            // because a refused delivery owes the peer nothing to resolve later.
+            let live = self
+                .deferred_live
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if live >= crate::capacity::MAX_DEFERRED_WAITERS {
+                self.deferred_live
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                self.break_answer(
+                    &deliver,
+                    format!(
+                        "this session already has {} answers outstanding",
+                        crate::capacity::MAX_DEFERRED_WAITERS
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
             // Checked now — an abort must be the first thing the peer sees — and recorded with **no**
             // object yet: a pipelined delivery to this position breaks rather than resolving, which is
             // the honest answer while the answer itself is unknown. Re-recording it when the waiter
@@ -787,11 +817,15 @@ impl Session {
             self.record_answer(&deliver, None);
             let tx = self.deferred_sender();
             let deliver = deliver.clone();
+            let live = self.deferred_live.clone();
             tokio::spawn(async move {
                 let act = fut.await;
                 // A full queue loses the answer rather than the session (see
                 // `MAX_DEFERRED_ANSWERS`): the claim times out exactly as it did before the deferral.
                 let _ = tx.send((deliver, act)).await;
+                // The slot is released when the waiter ends, whichever way it ended — a task that
+                // never released it would close the session to claims one waiter at a time.
+                live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             });
             return Ok(());
         }

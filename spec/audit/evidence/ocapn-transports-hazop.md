@@ -89,8 +89,8 @@ booked under is returned so `forget` takes the same key. Both rows are **fixed h
 that can prove a name** — over `websocket` the accepted side has nothing to prove (D2), so the
 assertion is all there is, and that is the transport's protocol rather than a gap this code leaves.
 
-**Tier 2 — registered, not done**: the deferred-answer waiter count (B7) and `bind_tls` being
-unreachable (E13).
+**Tier 2 — registered, not done**: `bind_tls` being unreachable (E13), and the dialed-session count
+not drawn from the session ceiling (C241).
 
 **Tier 3 — corrected in the docs and comments**: five stale claims (F1, F3, F4, F6, F8) and the
 `listen_tcp` designator comment.
@@ -130,9 +130,9 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **B2** | N4 | Other than | the non-`biased` `select!` drops a pending ws accept when another arm fires, **silently resetting an honest peer mid-challenge** (`H5`) | measured | S3 | L-D | **partly** (self-healing; a `biased` select would be worse) | **fixed here** — one accept task per transport, and the falsifier parks a websocket upgrade while a connection lands on `tcp` |
 | **B3/C2, C3/E4** | N7/N4 | No | no idle or lifetime bound on an established session: 64 post-handshake silent peers hold every permit, and the refusal is transport-blind (`H3`) | measured | S2 | L-A | **saves** (deliberate; the prior study declined a steady-state timeout) | **fixed here, for the half that is a defect** — each transport now holds its own share of the ceiling and the shares sum to it, so the unauthenticated path cannot take the whole surface; the *lifetime* half stays a decision, now stated as one rather than left implicit |
 | **B4** | N7 | Other than | the enlivener and greeter await a dial-and-fetch inside `handle_deliver`, on the session loop | read | S3 | L-B | **saves** (fixtures are per-session: a peer stalls only itself) | **closed by decision** — inconsistent with Law 61, blast radius one self-inflicted session |
-| **B5** | N6 | As well as | `DialPolicy` calls a **blocking** `to_socket_addrs` on the async dial path | read | S3 | L-B | **partly** (bounded; only for a name target) | **registered** |
+| **B5** | N6 | As well as | `DialPolicy` calls a **blocking** `to_socket_addrs` on the async dial path | read | S3 | L-B | **partly** (bounded; only for a name target) | **fixed here** — the dial path judges a name through `permits_from_async`, which resolves it on a blocking thread; literals are judged inline as before |
 | **B6/C8** | N6/N7 | No | dialed sessions are not counted against `MAX_SESSIONS` | read | S3 | L-B | **partly** (bounded by `MAX_PEERS = 256`, not unbounded) | **registered** |
-| **B7** | N7 | More | each `Reply::Deferred` spawns a waiter task polling the global gift store 10 ms for 10 s; the cap bounds landed answers, not waiters | read | S2 | L-B | **partly** (each is O(1) and short-lived; the "absent gift" behaviour is correct) | **registered** |
+| **B7** | N7 | More | each `Reply::Deferred` spawns a waiter task polling the global gift store 10 ms for 10 s; the cap bounds landed answers, not waiters | read | S2 | L-B | **partly** (each is O(1) and short-lived; the "absent gift" behaviour is correct) | **fixed here** — live waiters are capped per session (`MAX_DEFERRED_WAITERS`) and the delivery past the cap is refused with a `break` |
 | **B8/E15** | N8 | Reverse | shutdown drains the listener but not its detached session tasks | read | S4 | L-B | **partly** (the deploy is submitted before the reply wait; only the peer's answer is cut) | **fixed here** — the operator's stop word ends a session too, so a drain drains the sessions it started |
 | **B9** | N4 | Late | the ceiling is consulted after establishment | read | S4 | L-B | **saves** (the conn does not exist before that; checking earlier would block *all* accepts) | **refuted** |
 | **C7/E14** | N4/N8 | More | one WARN per refused accept | read | S4 | L-B | **partly** (bounded at ~10/s by the backoff) | **closed by decision** — it is the operator's signal |

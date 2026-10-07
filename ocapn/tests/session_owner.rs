@@ -792,6 +792,123 @@ async fn a_claim_that_waits_does_not_stall_its_session() {
     far_end.abort();
 }
 
+/// **The claim waiters on one session are bounded, not only the answers they land in** (HAZOP row
+/// C230).
+///
+/// `MAX_DEFERRED_ANSWERS` caps the *queue* a landed answer travels on. The tasks that produce them
+/// were the peer's to count: a claim for a gift nobody deposited withdraws nothing, so it must not
+/// count against the replay guard and may be repeated freely — and each repetition spawned another
+/// waiter polling the node-global gift store every 10 ms for ten seconds, holding that store's mutex
+/// each time. Past `MAX_DEFERRED_WAITERS` the delivery is now **refused**, with the same `<break>` a
+/// failed claim produces.
+///
+/// **The observable is the refusal and its promptness.** The first `MAX_DEFERRED_WAITERS` claims are
+/// silent for ten seconds — no deposit is coming — so what a reader sees next is the over-cap claim's
+/// break, addressed to the resolve-me the over-cap claim asked for, and it must arrive at once rather
+/// than after a wait. Falsified by the unbounded version, where that read times out because the
+/// session had quietly started a seventeenth waiter instead.
+#[tokio::test]
+async fn the_claim_waiters_on_one_session_are_bounded() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
+    let slot = rchain_ocapn::owner::session_slot();
+    let registry = Arc::new(SessionRegistry::default());
+    let directory = BTreeMap::from([(b"swiss".to_vec(), Arc::new(Pong) as Arc<dyn Export>)]);
+    let bootstrap = Arc::new(Bootstrap::with_handoffs(
+        directory,
+        handoffs,
+        slot.clone(),
+        registry.clone(),
+    ));
+
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([91u8; 32], locator(port)).unwrap();
+        let (handle, loop_, context, _peer) =
+            accept_and_book(conn, &identity, bootstrap, &registry)
+                .await
+                .expect("the session is booked");
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        let _ = handle;
+        let _ = loop_.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([92u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    let session_id = client
+        .id
+        .as_ref()
+        .expect("the session id is known once the peer has spoken")
+        .to_vec();
+    let give = rchain_ocapn::handoff::HandoffGive {
+        receiver_key: rchain_ocapn::session::public_key_syrup(
+            &rchain_crypto::signatures::ed25519::Ed25519::to_public_bytes(&[93u8; 32]).unwrap(),
+        ),
+        exporter_location: locator(port),
+        session: session_id.clone(),
+        gifter_side: vec![2u8; 32],
+        gift_id: b"never-deposited".to_vec(),
+    };
+    let envelope = rchain_ocapn::handoff::Envelope::sign(give.to_syrup(), &[94u8; 32]).unwrap();
+    let receive = rchain_ocapn::handoff::HandoffReceive {
+        receiving_session: session_id,
+        receiving_side: vec![4u8; 32],
+        handoff_count: 0,
+        signed_give: envelope,
+    };
+    let claim = rchain_ocapn::handoff::Envelope::sign(receive.to_syrup(), &[93u8; 32]).unwrap();
+
+    // Fill the session's waiter allowance, then ask for one more.
+    let claim_at = |resolve: u64| Deliver {
+        to: Desc::Export(0u64.into()),
+        args: vec![Value::Symbol("withdraw-gift".to_string()), claim.to_syrup()],
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(resolve.into())),
+    };
+    for i in 0..rchain_ocapn::capacity::MAX_DEFERRED_WAITERS {
+        client
+            .send_message(&claim_at(10 + i as u64).to_syrup())
+            .await
+            .expect("send a claim inside the allowance");
+    }
+    client
+        .send_message(&claim_at(99).to_syrup())
+        .await
+        .expect("send the claim past the allowance");
+
+    // The over-cap claim is answered, and answered *now*: a waiter left behind would have sat silent
+    // for its ten seconds like the others, and this read would time out.
+    let reply = tokio::time::timeout(Duration::from_secs(3), client.recv_message())
+        .await
+        .expect("the claim past the allowance is refused rather than left waiting")
+        .expect("a message")
+        .expect("a session");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    assert_eq!(
+        delivered.to,
+        Desc::Export(99u64.into()),
+        "the refusal is the over-cap claim's answer: {delivered:?}"
+    );
+    assert_eq!(
+        delivered.args.first(),
+        Some(&Value::Symbol("break".into())),
+        "and it is a break, not a fulfilment: {delivered:?}"
+    );
+
+    drop(client);
+    far_end.abort();
+}
+
 /// A connection whose transport **proved** a key — what `noise` does at its handshake, and what
 /// `tcp-testing-only` cannot. Everything else is delegated.
 struct ProvingConn {

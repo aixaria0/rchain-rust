@@ -101,6 +101,32 @@ impl DialPolicy {
         (!host.is_empty()).then_some(host)
     }
 
+    /// **[`DialPolicy::permits_from`] for an async caller, with the name resolution off this thread**
+    /// (HAZOP row C240).
+    ///
+    /// `to_socket_addrs` is a **blocking** syscall, and the host it is handed is the peer's to choose.
+    /// A peer that names a hostname nothing answers makes the resolver wait out its own timeout — up
+    /// to seconds — and on an async caller that is a runtime worker spent waiting, per dial. So the
+    /// name is resolved on a blocking thread. A literal address is judged here as before: there is
+    /// nothing to resolve, and a thread hop for nothing is its own cost.
+    pub async fn permits_from_async(
+        &self,
+        locator: &PeerLocator,
+        origin: Option<std::net::SocketAddr>,
+    ) -> Result<(), String> {
+        let literal = Self::host_of(locator)
+            .map(|host| host.parse::<std::net::IpAddr>().is_ok())
+            .unwrap_or(true);
+        if literal {
+            return self.permits_from(locator, origin);
+        }
+        let policy = self.clone();
+        let locator = locator.clone();
+        tokio::task::spawn_blocking(move || policy.permits_from(&locator, origin))
+            .await
+            .map_err(|e| format!("the dial policy's name resolution did not finish: {e}"))?
+    }
+
     /// Whether a dial to `locator` is permitted, or why it is not.
     pub fn permits(&self, locator: &PeerLocator) -> Result<(), String> {
         let Some(host) = Self::host_of(locator) else {
@@ -272,8 +298,10 @@ impl<N: Netlayer> Netlayer for PolicyNetlayer<N> {
     ) -> std::io::Result<Box<dyn NetConn>> {
         // **Refused before the connect, not after.** The point is to not make the connection: a
         // policy that dials and hangs up has already told the peer whether something is listening.
+        // And judged **without blocking this worker** on a peer-chosen name (HAZOP row C240).
         self.policy
-            .permits_from(locator, origin)
+            .permits_from_async(locator, origin)
+            .await
             .map_err(|reason| std::io::Error::new(std::io::ErrorKind::PermissionDenied, reason))?;
         self.inner.new_outgoing_connection(locator).await
     }
@@ -471,5 +499,55 @@ mod tests {
             hints: BTreeMap::from([("path".to_string(), "/run/peer.sock".to_string())]),
         };
         assert!(policy.permits(&unix).is_ok());
+    }
+
+    /// **Judging a peer-chosen name does not block the runtime** (HAZOP row C240).
+    ///
+    /// `to_socket_addrs` is a blocking syscall and the host comes from the peer, so a name nothing
+    /// answers costs the resolver's own timeout — seconds — of a runtime worker, per dial. The
+    /// differential is inside one test: a task is spawned and the name judged, **with no await**
+    /// between them for the control. Judging on this thread means the spawned task cannot run at all
+    /// (`permits_from` is sync, so there is no yield point); judging on a blocking thread means the
+    /// `.await` is the yield point that lets it run. Deterministic — the control cannot pass by luck,
+    /// because no DNS answer, fast or slow, creates a yield.
+    #[tokio::test(flavor = "current_thread")]
+    async fn judging_a_name_off_this_thread_leaves_the_runtime_free() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let policy = DialPolicy::permit_all();
+        let named = locator("a-name-that-does-not-resolve.invalid");
+
+        // The control, and it is the shape this replaced: judged inline, on the caller's thread.
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        tokio::spawn(async move {
+            flag.store(true, Ordering::SeqCst);
+        });
+        let _ = policy.permits_from(&named, None);
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a sync judge on this thread leaves the runtime nothing to run — which is the defect"
+        );
+
+        // And the fix: the same judgement, and the runtime is free while it happens.
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        tokio::spawn(async move {
+            flag.store(true, Ordering::SeqCst);
+        });
+        let _ = policy.permits_from_async(&named, None).await;
+        assert!(
+            ran.load(Ordering::SeqCst),
+            "the name is judged on a blocking thread, so this one keeps running tasks"
+        );
+
+        // A literal needs no thread hop and is judged as before — the same answer both ways.
+        let literal = locator("203.0.113.10");
+        assert_eq!(
+            policy.permits_from(&literal, None).is_ok(),
+            policy.permits_from_async(&literal, None).await.is_ok(),
+            "a literal address is judged identically on both paths"
+        );
     }
 }
