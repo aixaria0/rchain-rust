@@ -654,6 +654,16 @@ async fn api_find_deploy(
     json_result(state.web_api.find_deploy(&deploy_id).await)
 }
 
+/// `GET /api/v1/deployer/{pubkey}` — has this key signed a deploy in a block, i.e. is it public?
+/// Serves the wallet's quantum key-hygiene check (rchain-rust post-quantum plan §16.1) in one
+/// lookup instead of a scan of every block.
+async fn api_find_deployer(
+    State(state): State<HttpState>,
+    Path(public_key): Path<String>,
+) -> Response {
+    json_result(state.web_api.find_deployer(&public_key).await)
+}
+
 async fn api_is_finalized(State(state): State<HttpState>, Path(hash): Path<String>) -> Response {
     json_result(state.web_api.is_finalized(&hash).await)
 }
@@ -1199,6 +1209,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/pos", get(api_pos_status))
         .route("/api/v1/pos/delegations", get(api_pos_delegations))
+        .route("/api/v1/deployer/{public_key}", get(api_find_deployer))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route(

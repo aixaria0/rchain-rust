@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use rchain_casper::api::block_api::BlockApi;
+use rchain_casper::api::block_api::{BlockApi, DeployerInfo};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
@@ -679,6 +679,23 @@ impl WebApi for WebApiImpl {
         let id = base16::decode(deploy_id).ok_or_else(invalid_deploy_id)?;
         self.block_api
             .find_deploy(&id)
+            .await
+            .map_err(BlockApiException)
+    }
+
+    async fn find_deployer(&self, public_key: &str) -> Result<DeployerInfo, BlockApiException> {
+        // A malformed key is refused rather than answered: "not seen" for a mistyped key would tell
+        // a wallet the wrong thing about the key it meant.
+        let key = base16::decode(public_key)
+            .filter(|k| k.len() == 65)
+            .ok_or_else(|| {
+                BlockApiException(
+                    "Public key must be a hex-encoded 65-byte uncompressed secp256k1 key."
+                        .to_string(),
+                )
+            })?;
+        self.block_api
+            .find_deployer(&key)
             .await
             .map_err(BlockApiException)
     }

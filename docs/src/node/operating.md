@@ -331,6 +331,31 @@ this page's, but the short form is: your principal sits inside the operator's bo
 slash tier as the operator's own stake, and the operator's participation scales the reward your share is
 drawn from.
 
+
+---
+
+## Has a key signed a deploy? The deployer index
+
+**`GET /api/v1/deployer/<65-byte hex public key>`** answers whether the key has signed a deploy that
+is in a block. Once it has, the key is public, which is what a wallet's quantum key-hygiene check needs
+to know (the [post-quantum plan](../contributor/post-quantum-plan.md) §16.1):
+
+```sh
+curl -s http://localhost:40403/api/v1/deployer/04f700a4… | jq
+# {"block": {…LightBlockInfo…} | null, "indexedFromHeight": 0}
+```
+
+- `block` is the first block this node inserted that carries a deploy from the key, or `null`.
+- `indexedFromHeight` is the height the index reaches down to. `0` means every stored block is
+  indexed, so `null` is a true "never signed in a block". A node upgraded onto an existing chain
+  starts above `0` and backfills the older blocks once, in the background (`deployer index backfilled
+  from N stored blocks` in the log). Until then a `null` only covers the heights from there up.
+- A malformed key answers `400`.
+
+The index lives in the shard's `deployer-index` store: one entry per distinct signing key (a 32-byte
+hash of the key → a 32-byte block hash) plus a height marker. It can never hold more entries than the
+`deploy-index` store, which has one per deploy. Code: `casper/src/dag.rs` (`with_deployer_index`,
+`backfill_deployer_index`, `lookup_by_deployer`).
 ---
 
 ## The Docker multi-node network (bare topology)

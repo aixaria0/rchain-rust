@@ -21,7 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
-use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities, ProposerHealth};
+use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities, DeployerInfo, ProposerHealth};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
@@ -209,6 +209,12 @@ impl BlockApi for ShardRoutingBlockApi {
             async move { api.find_deploy(&id).await }
         })
         .await
+    }
+
+    /// The primary shard's index: a key is one identity across a node's shards, and a wallet asks
+    /// the shard it deploys to.
+    async fn find_deployer(&self, public_key: &[u8]) -> ApiErr<DeployerInfo> {
+        self.primary_api().find_deployer(public_key).await
     }
 
     async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {
