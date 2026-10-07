@@ -156,6 +156,38 @@ pub struct TestNode {
     /// symptom (every test timing out on a node that answers nothing) would point at everything
     /// except this. Tests that do not stop the node never touch it.
     stop: tokio::sync::watch::Sender<bool>,
+    /// **One heavyweight node program at a time** — held from setup until the node is dropped.
+    ///
+    /// See [`heavy_node_lock`]. It is a field for the same reason `stop` is: the lock has to live
+    /// exactly as long as the node, and a local in `start` would release it while the node ran.
+    ///
+    /// An `Arc` because a test that runs **two** nodes ([`start_pair`]) takes the lock *once* and
+    /// hands the same guard to both, so the pair holds it until the last of them drops.
+    _heavy: Arc<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+/// **One heavyweight node program at a time.**
+///
+/// Every [`start`] builds a full node: an LMDB environment with a large map, a Kademlia gRPC server,
+/// an HTTP API, and the OCapN listener. `cargo test` runs one binary's tests on parallel threads, so
+/// the OCapN listener's nine of them start nine nodes at once — and two things go wrong that are
+/// **not** defects in the node, which is what makes them worth a lock rather than a retry:
+///
+/// * the runner runs out of address space for the maps, and the failure is
+///   `open LMDB environment reporting: Cannot allocate memory` — measured in CI on 2026-10-07, and
+///   locally;
+/// * [`free_ports`] *releases* the ports it probed, so two tests that start at the same moment can be
+///   handed the same one: the second fails with `Kademlia RPC server failed: Address already in use`.
+///
+/// Both make a red build say something untrue. Holding the lock for the node's whole life means a
+/// test that starts a node runs alone from setup to teardown. It serialises within one test binary —
+/// which is where both failures happen, because the binaries themselves run in sequence — and a test
+/// that needs two nodes takes the lock once and shares the guard ([`start_pair`]), so there is
+/// nothing for it to deadlock against.
+fn heavy_node_lock() -> Arc<tokio::sync::Mutex<()>> {
+    static LOCK: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 impl TestNode {
@@ -174,7 +206,40 @@ impl TestNode {
 }
 
 /// Initialize the environment, assemble the node, and start serving it.
+///
+/// **Taken one at a time** — see [`heavy_node_lock`], which is acquired first and held until the
+/// returned node is dropped.
 pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode {
+    let heavy = Arc::new(heavy_node_lock().lock_owned().await);
+    build(conf, grpc_port, http_port, heavy).await
+}
+
+/// **Two nodes at once**, for the tests that need one node to *reach* another rather than a test
+/// client to reach one.
+///
+/// [`start`] takes the heavy lock for the node's whole life, so calling it twice in one test would
+/// wait for ever on the first node. This takes the lock once and shares the guard between the pair,
+/// which is the same serialisation against every other test with neither node waiting on the other.
+///
+/// The two nodes must be given **disjoint** ports and data directories — `free_ports` and
+/// `temp_dir` twice, not once.
+pub async fn start_pair(
+    first: (&NodeConf, u16, u16),
+    second: (&NodeConf, u16, u16),
+) -> (TestNode, TestNode) {
+    let heavy = Arc::new(heavy_node_lock().lock_owned().await);
+    let a = build(first.0, first.1, first.2, heavy.clone()).await;
+    let b = build(second.0, second.1, second.2, heavy).await;
+    (a, b)
+}
+
+/// The body of [`start`], with the heavy guard already in hand so a pair can share it.
+async fn build(
+    conf: &NodeConf,
+    grpc_port: u16,
+    http_port: u16,
+    heavy: Arc<tokio::sync::OwnedMutexGuard<()>>,
+) -> TestNode {
     let id = node_environment::create(conf).expect("node environment");
     let program: NodeProgram = setup_node_program(conf, &id, Arc::new(StderrLog::default()))
         .await
@@ -188,6 +253,7 @@ pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode 
         http_port,
         admin_port: conf.api_server.port_admin_http as u16,
         stop,
+        _heavy: heavy,
     }
 }
 

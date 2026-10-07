@@ -25,3 +25,21 @@ tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", 
 # Fresh per-session Ed25519 seeds for the conformance peer. Already in `Cargo.lock`; the workspace
 # draws its OS-seeded randomness through the same `rand::rng()` (see `rchain-crypto`).
 rand = "0.10"
+# The `noise` netlayer. **`noise-protocol` is the crate Agoric's `rust/ocapn_noise` uses**, so the
+# handshake is produced by the same code rather than by a lookalike that has to be argued equivalent —
+# which is the whole basis on which this transport can be called interoperable at all.
+# `noise-rust-crypto` supplies the X25519 / ChaCha20Poly1305 / Blake2s the reference pins. Both are
+# Unlicense, which `deny.toml` already allows.
+noise-protocol = "0.2"
+noise-rust-crypto = { version = "0.6.2", features = ["x25519", "use-chacha20poly1305", "use-blake2"] }
+# The `websocket` netlayer — the transport `@endo/ocapn` 1.1.1 (published) speaks, so it is the one
+# there is a live interop target for. MIT / Apache-2.0. The `rustls` half is for `wss://`, which Endo
+# does not do but the other reference implementation does; `rustls` and `tokio-rustls` are already in
+# the lock file through `rchain-comm`, so this adds the WebSocket layer and nothing below it.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# `WebSocketStream` implements `Stream`/`Sink`, and the extension traits that let one be driven are
+# here. Already in the lock file through `tonic`; named explicitly because `ocapn` now uses it.
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# `wss://` on the accepting side. Same version and features `rchain-comm` already builds, so this
+# names a dependency the tree has rather than adding one.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }

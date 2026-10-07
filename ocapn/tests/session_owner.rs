@@ -30,7 +30,7 @@ use rchain_ocapn::bootstrap::Bootstrap;
 use rchain_ocapn::captp::{Deliver, Desc};
 use rchain_ocapn::conn::{Act, ConnectionError, Export, Identity, Session};
 use rchain_ocapn::locator::PeerLocator;
-use rchain_ocapn::netlayer::Netlayer;
+use rchain_ocapn::netlayer::{NetConn, Netlayer};
 use rchain_ocapn::owner::{accept_and_book, HandOff, SessionRegistry};
 use rchain_ocapn::proxy::catcher;
 use rchain_ocapn::session_id::{crossed_hello, CrossedHello};
@@ -789,5 +789,235 @@ async fn a_claim_that_waits_does_not_stall_its_session() {
     );
 
     drop(client);
+    far_end.abort();
+}
+
+/// **The claim waiters on one session are bounded, not only the answers they land in** (HAZOP row
+/// C230).
+///
+/// `MAX_DEFERRED_ANSWERS` caps the *queue* a landed answer travels on. The tasks that produce them
+/// were the peer's to count: a claim for a gift nobody deposited withdraws nothing, so it must not
+/// count against the replay guard and may be repeated freely — and each repetition spawned another
+/// waiter polling the node-global gift store every 10 ms for ten seconds, holding that store's mutex
+/// each time. Past `MAX_DEFERRED_WAITERS` the delivery is now **refused**, with the same `<break>` a
+/// failed claim produces.
+///
+/// **The observable is the refusal and its promptness.** The first `MAX_DEFERRED_WAITERS` claims are
+/// silent for ten seconds — no deposit is coming — so what a reader sees next is the over-cap claim's
+/// break, addressed to the resolve-me the over-cap claim asked for, and it must arrive at once rather
+/// than after a wait. Falsified by the unbounded version, where that read times out because the
+/// session had quietly started a seventeenth waiter instead.
+#[tokio::test]
+async fn the_claim_waiters_on_one_session_are_bounded() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
+    let slot = rchain_ocapn::owner::session_slot();
+    let registry = Arc::new(SessionRegistry::default());
+    let directory = BTreeMap::from([(b"swiss".to_vec(), Arc::new(Pong) as Arc<dyn Export>)]);
+    let bootstrap = Arc::new(Bootstrap::with_handoffs(
+        directory,
+        handoffs,
+        slot.clone(),
+        registry.clone(),
+    ));
+
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([91u8; 32], locator(port)).unwrap();
+        let (handle, loop_, context, _peer) =
+            accept_and_book(conn, &identity, bootstrap, &registry)
+                .await
+                .expect("the session is booked");
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        let _ = handle;
+        let _ = loop_.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([92u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    let session_id = client
+        .id
+        .as_ref()
+        .expect("the session id is known once the peer has spoken")
+        .to_vec();
+    let give = rchain_ocapn::handoff::HandoffGive {
+        receiver_key: rchain_ocapn::session::public_key_syrup(
+            &rchain_crypto::signatures::ed25519::Ed25519::to_public_bytes(&[93u8; 32]).unwrap(),
+        ),
+        exporter_location: locator(port),
+        session: session_id.clone(),
+        gifter_side: vec![2u8; 32],
+        gift_id: b"never-deposited".to_vec(),
+    };
+    let envelope = rchain_ocapn::handoff::Envelope::sign(give.to_syrup(), &[94u8; 32]).unwrap();
+    let receive = rchain_ocapn::handoff::HandoffReceive {
+        receiving_session: session_id,
+        receiving_side: vec![4u8; 32],
+        handoff_count: 0,
+        signed_give: envelope,
+    };
+    let claim = rchain_ocapn::handoff::Envelope::sign(receive.to_syrup(), &[93u8; 32]).unwrap();
+
+    // Fill the session's waiter allowance, then ask for one more.
+    let claim_at = |resolve: u64| Deliver {
+        to: Desc::Export(0u64.into()),
+        args: vec![Value::Symbol("withdraw-gift".to_string()), claim.to_syrup()],
+        answer_pos: None,
+        resolve_me_desc: Some(Desc::ImportObject(resolve.into())),
+    };
+    for i in 0..rchain_ocapn::capacity::MAX_DEFERRED_WAITERS {
+        client
+            .send_message(&claim_at(10 + i as u64).to_syrup())
+            .await
+            .expect("send a claim inside the allowance");
+    }
+    client
+        .send_message(&claim_at(99).to_syrup())
+        .await
+        .expect("send the claim past the allowance");
+
+    // The over-cap claim is answered, and answered *now*: a waiter left behind would have sat silent
+    // for its ten seconds like the others, and this read would time out.
+    let reply = tokio::time::timeout(Duration::from_secs(3), client.recv_message())
+        .await
+        .expect("the claim past the allowance is refused rather than left waiting")
+        .expect("a message")
+        .expect("a session");
+    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    assert_eq!(
+        delivered.to,
+        Desc::Export(99u64.into()),
+        "the refusal is the over-cap claim's answer: {delivered:?}"
+    );
+    assert_eq!(
+        delivered.args.first(),
+        Some(&Value::Symbol("break".into())),
+        "and it is a break, not a fulfilment: {delivered:?}"
+    );
+
+    drop(client);
+    far_end.abort();
+}
+
+/// A connection whose transport **proved** a key — what `noise` does at its handshake, and what
+/// `tcp-testing-only` cannot. Everything else is delegated.
+struct ProvingConn {
+    inner: Box<dyn NetConn>,
+    key: [u8; 32],
+}
+
+#[async_trait]
+impl NetConn for ProvingConn {
+    async fn send(&mut self, message: &[u8]) -> std::io::Result<()> {
+        self.inner.send(message).await
+    }
+    async fn recv(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        self.inner.recv().await
+    }
+    fn verified_peer(&self) -> Option<[u8; 32]> {
+        Some(self.key)
+    }
+}
+
+/// **A session is booked under the name its transport *proved*, not the one the peer asserted**
+/// (HAZOP rows C242/C243).
+///
+/// The peer names itself `"peer"` in its `op:start-session` — the designator every fixture uses, and a
+/// public string: it is the cleartext prefix of every Noise SYN and it is advertised in every location
+/// this node hands out. Booking under it lets a stranger who knows that name collide with the peer's
+/// session and, by the crossing rule, have it aborted. Here the transport proved a key, so the session
+/// is held under the key, and naming itself bought nothing.
+///
+/// **The key is also what `forget` needs**, which is why the call returns the locator the session was
+/// booked under rather than the peer's assertion: freeing a session by a name it was never filed
+/// under frees nothing, and an entry nothing can remove is a peer slot a liar accumulates for ever.
+#[tokio::test]
+async fn a_session_is_booked_under_the_name_its_transport_proved() {
+    let ours = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let our_port = ours.local_addr().unwrap().port();
+    let theirs = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let their_port = theirs.local_addr().unwrap().port();
+
+    // The far end dials us and **speaks first**, naming itself `"peer"` in the start-session that
+    // carries its `acceptable-location` — which is the whole point: the designator is asserted.
+    let their_out = theirs
+        .new_outgoing_connection(&locator(our_port))
+        .await
+        .unwrap();
+    let peer_identity = Identity::from_seed([21u8; 32], locator(their_port)).unwrap();
+    let mut peer_side =
+        Session::dial_deferred(their_out, &peer_identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the peer speaks first and does not wait");
+    let far_end = tokio::spawn(async move {
+        let _ = peer_side.run().await;
+    });
+
+    let proving = [7u8; 32];
+    let proved_hex = rchain_shared::base16::encode(&proving);
+    let accepted_conn = ours.accept_incoming_connection().await.unwrap();
+    let identity = Identity::from_seed([22u8; 32], locator(our_port)).unwrap();
+    let registry = SessionRegistry::default();
+
+    let (handle, loop_, _context, booked) = accept_and_book(
+        Box::new(ProvingConn {
+            inner: accepted_conn,
+            key: proving,
+        }),
+        &identity,
+        Arc::new(Bootstrap::default()),
+        &registry,
+    )
+    .await
+    .expect("the session is admitted");
+
+    // The peer's own assertion is left alone — it is where the peer says it lives — and the key the
+    // handshake proved goes beside it, in the field the registry reads.
+    assert_eq!(booked.designator, "peer");
+    assert_eq!(
+        booked.hints.get("verify").map(String::as_str),
+        Some(proved_hex.as_str()),
+        "the name that holds the session is the proved key"
+    );
+    assert!(
+        registry.live(&booked).is_some(),
+        "a locator naming the proved key reaches the session"
+    );
+
+    // What the peer asserted, with nothing behind it, is **not** a name anything is filed under — so
+    // a stranger naming itself `"peer"` cannot reach this session, let alone evict it.
+    let mut asserted = booked.clone();
+    asserted.hints.remove("verify");
+    assert!(
+        registry.live(&asserted).is_none(),
+        "the designator the peer asserted for itself must not be what holds the session"
+    );
+
+    // **And the booked locator is the one `forget` takes.** Freeing it by the peer's assertion is a
+    // no-op, which is exactly how an entry would survive its session for the life of the process.
+    registry.forget(&asserted, &handle.own_pi, handle.dialed);
+    assert!(
+        registry.live(&booked).is_some(),
+        "forgetting by a name the session is not filed under forgets nothing"
+    );
+    registry.forget(&booked, &handle.own_pi, handle.dialed);
+    assert!(
+        registry.live(&booked).is_none(),
+        "the entry goes when it is forgotten by the name it is under"
+    );
+
+    // Drop the loop rather than running it: `run` owns the socket and returns only when the session
+    // ends, and the assertions above are about the registry.
+    drop(loop_);
     far_end.abort();
 }

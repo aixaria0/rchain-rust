@@ -7,20 +7,24 @@
 //! protocol above sees only a queue of messages.
 //!
 //! A message on the channel is one CapTP operation, carried as one Syrup value. The netlayers
-//! implemented here are [`crate::tcp_testing_only`] — the conformance suite's transport — and
-//! [`crate::unix`], a domain socket authenticated by the socket's file mode, with [`crate::multi`]
-//! dispatching a dial by the locator's transport name.
+//! implemented here are [`crate::tcp_testing_only`] — the conformance suite's transport —
+//! [`crate::unix`], a domain socket authenticated by the socket's file mode but local to the host, and
+//! [`crate::noise`], which is the one a remote peer can use, with [`crate::multi`] dispatching a dial
+//! by the locator's transport name.
 //!
-//! **A Noise transport is deliberately not built.** Noise is the one OCapN names for a real
-//! deployment, and a third layer is cheap (unit 2's dispatcher exists to make it so) — but OCapN is
-//! still pre-specification and **neither reference implementation in reach speaks Noise**: the
-//! conformance suite at `31f0b80` offers `testing_only_tcp` and `onion`, and the Endo version vendored
-//! for the spike (`1.1.1`) offers `tcp-test-only` and `websocket`. A Noise layer here would therefore
-//! talk only to itself — it could not be interop-tested, and its parameters (the pattern, the
-//! prologue, and how the static key relates to the Ed25519 session identity) would be guesses rather
-//! than a specification. **The gate that unblocks it is a reference that speaks it.** Until then the
-//! transport to add is the one the peers you care about actually speak, and a production netlayer
-//! (Tor, libp2p, IBC) implements the same two functions with nothing above the seam moving.
+//! **Noise was once deliberately not built, and the reason it is now is worth keeping.** It is the
+//! transport OCapN names for a real deployment, and a layer that only this repository speaks would
+//! talk to itself — so it waited on **a reference that speaks it**. Agoric's endo repository now
+//! carries one (`rust/ocapn_noise` and `packages/ocapn-noise`), which pins the parameters that would
+//! otherwise be guesses and gives something to test against: `spec/audit/evidence/ocapn-noise/` drives
+//! it, at a pinned commit, and the handshake completes. **That is the shape to keep for the next
+//! transport** — the gate is a reachable reference, and a layer written before one exists is
+//! un-verifiable whatever its arguments look like.
+//!
+//! What is still not built is `onion` (Tor), the only concrete transport in the OCapN draft: it needs
+//! a `tor` daemon on the node, and the draft that fixes it says it is "likely to undergo significant
+//! change". Any further netlayer (libp2p, IBC) implements the same two functions with nothing above
+//! the seam moving.
 
 use std::io;
 
@@ -46,6 +50,20 @@ pub trait NetConn: Send {
     /// Read one CapTP message. `Ok(None)` is a clean end of stream *at a message boundary*; a
     /// stream that ends in the middle of a message is an error, never a silently dropped message.
     async fn recv(&mut self) -> io::Result<Option<Vec<u8>>>;
+
+    /// **The peer's Ed25519 key, when the transport proved one** (HAZOP rows C242/C243).
+    ///
+    /// `None` is the honest answer for a transport that authenticates nobody — `tcp-testing-only`
+    /// verifies no key, `unix` admits by the socket's file mode, and `websocket`'s handshake has only
+    /// the *server* prove itself. A transport that did verify a key returns it here, so a session can
+    /// be **named by the thing that was proved** rather than by the name the peer asserted for
+    /// itself — which is public, and signed by nothing but the peer's own ephemeral session key.
+    ///
+    /// Read after the transport's handshake has run, which is what `accept_deferred`'s read of the
+    /// peer's start-session guarantees.
+    fn verified_peer(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 /// How a peer is dialled, and how it accepts dials — the two functions the netlayer standard

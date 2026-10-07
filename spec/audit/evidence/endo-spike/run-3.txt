@@ -1,0 +1,72 @@
+# The websocket interop run: `@endo/ocapn` 1.1.1 against this repository's node over `websocket`.
+#
+# command: bash spec/audit/evidence/endo-spike/run-ws.sh
+# peer:    @endo/ocapn 1.1.1 on Node v22.22.2, its `websocket` netlayer — a PUBLISHED package
+# node:    target/debug/rnode, ws-node.conf, `ocapn-listen-websocket = 127.0.0.1:22060`
+#
+# **This run establishes the handshake and NOT a delivery**, and the HAZOP's RCA has since said why.
+# Read the two lists; the second is not a defect in this node.
+
+## Established
+
+Agoric's published client, over its own `websocket` netlayer:
+
+- completed the **in-band challenge** — it sent `init:peer-auth`, this node signed the bytes it
+  received, and the client accepted the answer (`>> Server received VALID location signature`);
+- completed the **CapTP handshake**: `handling handshake message of type op:start-session`, then
+  `session established`;
+- imported the node's bootstrap (`imported o-0 Object [Alleged: Remote Bootstrap]`).
+
+## NOT established, and the RCA's answer to why
+
+**The client never sends the fetch.** `enlivenSturdyRef` does not resolve, and there is no `FETCHED`
+line. The first reading of this transcript — that the node might be failing to answer a delivery —
+was **wrong**, and an instrumented run settled it. A probe on the node's websocket connection recorded:
+
+    next_raw: binary=true len=54       <- the client's init:peer-auth
+    send:     binary=true len=176      <- our desc:sig-envelope
+    recv:     binary=true len=333      <- the client's op:start-session
+    send:     binary=true len=420      <- ours
+    recv: error ... Connection reset without closing handshake
+    session loop ended with: ocapn transport: ... Connection reset without closing handshake
+
+So the node answered the challenge, completed the handshake in both directions, and then **waited**.
+Nothing further arrived for the full 120 s, and the **"connection reset" is this harness's own
+`timeout` killing the client** — not a decision the peer made. Read against the same client's trace
+over `tcp-testing-only`, where the line after `session established` is `applyMethod … fetch`, the
+conclusion is that **the peer never reaches its own send**, and the node had nothing to answer.
+
+That is a narrower and much less alarming fact than "this transport does not deliver". It is also
+**not closed**: the cause of the client's stall is not known, and the falsifier that would settle
+whether it is ours is named in the study — have the client send a `fetch` explicitly on the
+established session, or swap roles so this repository's client dials Endo's websocket server.
+
+## A defect this run did find, and it is this repository's
+
+The first attempt failed with:
+
+    Error#1: InitPeerAuthSigEnvelope: read failed at index 0
+      Error#2: OcapnSignature: read failed at index 75
+        Error#3: Unexpected character "6", expected "[" at index 75
+
+`desc:sig-envelope`'s signature is the gcrypt s-expression `['sig-val ['edsa ['r …] ['s …]]]`, not raw
+bytes. Fixed in `ocapn/src/websocket.rs` via `session::signature_syrup`/`signature_bytes`. The module's
+own tests could not have caught it: they agreed with themselves.
+
+---
+node's Ed25519 verifying key: 4e3cada8cd711e37261ffa2067e2924ed2b4709440e91775cce8fbf2b6ea60f2
+dialling jy6k3kgnoepdojq77iqgpyusj3jli4euiduro5om5d57fnxkmdza over websocket at ws://127.0.0.1:22060
+ws-interop [1791325774991]: provideInternalSession connecting and establishing new session
+ws-interop [1791325774992]: Connecting to websocket { wsUrl: 'ws://127.0.0.1:22060' }
+ws-interop [1791325775032]: handleMessageData called
+ws-interop [1791325775034]: handling handshake message of type op:start-session
+ws-interop [1791325775037]: >> Server received VALID location signature
+ws-interop [1791325775042]: exported o+0 Object [Alleged: ws-interop:bootstrap] {
+  fetch: [Function: fetch],
+  'deposit-gift': [Function: deposit-gift],
+  'withdraw-gift': [Function: withdraw-gift]
+}
+ws-interop [1791325775043]: makeRemoteObject { position: 0n, label: 'Remote Bootstrap' }
+ws-interop [1791325775043]: imported o-0 Object [Alleged: Remote Bootstrap] {}
+ws-interop [1791325775044]: session established for ocapn://4e3cada8cd711e37261ffa2067e2924ed2b4709440e91775cce8fbf2b6ea60f2.websocket?url=ws%3A%2F%2F127.0.0.1%3A22060&verify=4e3cada8cd711e37261ffa2067e2924ed2b4709440e91775cce8fbf2b6ea60f2
+[silence from here: the client sends nothing further; stopped by the harness's own 120 s bound]

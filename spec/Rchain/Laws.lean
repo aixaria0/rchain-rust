@@ -1446,7 +1446,10 @@ def laws : List Law := [
       "crypto/src/hash/blake2b512_random.rs:merge_is_order_sensitive",
       "crypto/src/signatures/secp256k1.rs:creates_known_ecdsa_signature",
       "crypto/src/signatures/secp256k1.rs:verifies_known_signature",
-      "crypto/src/encryption/curve25519.rs:decrypts"],
+      "crypto/src/encryption/curve25519.rs:decrypts",
+      "crypto/src/encryption/x25519.rs:rfc7748_section_5_2_first_vector",
+      "crypto/src/encryption/x25519.rs:rfc7748_section_5_2_second_vector",
+      "crypto/src/encryption/x25519.rs:rfc7748_section_6_1_diffie_hellman_agrees_both_ways"],
     statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is n-ary \
       and **order-sensitive**; signatures verify what they sign; Curve25519 round-trips",
     status := .axiomByDesign,
@@ -1480,9 +1483,11 @@ def laws : List Law := [
       assumptions any proof leaned on; the register now says which is which instead of leaving nine \
       axioms looking equally exercised. **The tie is a witness the gate runs** (`rustWitness`): the \
       known-answer vectors — the RNG's fixed empty-input stream and its two merge cases, a known ECDSA \
-      signature and its verification, and the `Curve25519` **sealed-box** round-trip \
-      (`crypto/src/encryption/curve25519.rs:decrypts`, a `crypto_box` vector rather than an RFC 7748 \
-      X25519 one, which this repository does not carry) — because they are what catches a wrong \
+      signature and its verification, the `Curve25519` **sealed-box** round-trip \
+      (`crypto/src/encryption/curve25519.rs:decrypts`, a `crypto_box` vector), and — since the OCapN \
+      Noise transport needed the raw primitive rather than a box — RFC 7748's own `X25519` vectors, \
+      §5.2's two and §6.1's Diffie-Hellman example (`crypto/src/encryption/x25519.rs`) — because they \
+      are what catches a wrong \
       primitive. No test \
       can witness the idealization itself: `blake2b256_collision_free` states collision-*resistance* as \
       injectivity, which the pigeonhole refutes as a fact about the real function \

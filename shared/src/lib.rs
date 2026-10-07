@@ -7,6 +7,7 @@
 //! cats-contrib monad shims, `StreamT`, metrics, and fs2/grpc/monix interop are deferred.
 
 pub mod base16;
+pub mod base32;
 pub mod dag;
 pub mod debug;
 pub mod key_value_cache;

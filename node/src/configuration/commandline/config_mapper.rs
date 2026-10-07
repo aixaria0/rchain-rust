@@ -345,6 +345,21 @@ pub fn from_options(options: &Options) -> Hocon {
             "api-server.ocapn-listen-unix",
             &run.ocapn_listen_unix,
         );
+        opt_str(
+            &mut e,
+            "api-server.ocapn-listen-noise",
+            &run.ocapn_listen_noise,
+        );
+        opt_str(
+            &mut e,
+            "api-server.ocapn-listen-websocket",
+            &run.ocapn_listen_websocket,
+        );
+        opt_str(
+            &mut e,
+            "api-server.ocapn-identity-key",
+            &run.ocapn_identity_key,
+        );
         opt_i32(&mut e, "api-server.port-http", run.api_port_http);
         opt_i32(
             &mut e,

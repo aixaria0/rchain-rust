@@ -5,14 +5,23 @@
 //! the node's end of that — a listener that serves a fresh session per connection — and the
 //! **bridge**: a chain-backed capability whose deliveries become signed deploys.
 //!
-//! **A node may listen on either of two transports, both, or (dial-only) neither.**
+//! **A node may listen on any of four transports, several, or (dial-only) none.**
 //! `tcp-testing-only` is the OCapN project's own, which its README flags as "HIGHLY INSECURE — DO NOT
 //! USE IN PRODUCTION": plain TCP, no encryption, no authentication, so it is off unless
 //! `api-server.ocapn-listen` names an address and a node reachable from anywhere it does not control
 //! should leave it unset. `unix` (`api-server.ocapn-listen-unix`) takes a socket path and
-//! authenticates by the socket's file mode — what admitted a peer is the filesystem's permission,
-//! which is what makes it more than a testing transport. **A Noise netlayer is deliberately not
-//! offered**: it is not built, because it would talk only to itself (see `ocapn/src/netlayer.rs`).
+//! authenticates by the socket's file mode, but is reachable only from this host. **`noise`
+//! (`api-server.ocapn-listen-noise`) is the one a remote peer should use**: the handshake authenticates
+//! both ends and encrypts everything above it, with no certificate authority and no daemon, and it is
+//! checked against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`).
+//! `websocket` (`api-server.ocapn-listen-websocket`) is the transport `@endo/ocapn` speaks, so it is
+//! the one a *published* peer can be pointed at — and it is **weaker**: as the reference writes it,
+//! `ws://` carries no TLS and its handshake has only the server prove itself.
+//!
+//! **The last two need `api-server.ocapn-identity-key`**, because both name this node by an Ed25519
+//! key it must hold: `noise` puts it in the SYN's cleartext prefix and `websocket` signs a challenge
+//! with it. That key is also what makes the node's designator a name a peer can *check* rather than a
+//! hash of the deployer key.
 //!
 //! **The bridge reuses Layer 1 rather than re-implementing it.** `docs/src/node/shard-invoke.md`
 //! established that a cross-shard call *is* a caller-signed deploy whose reply arrives on
@@ -42,6 +51,7 @@ use rchain_casper::shard_invoke::{
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::rholang::RhoType::RhoString;
+use rchain_ocapn::capacity::MAX_DIALED_SESSIONS;
 use rchain_ocapn::captp::{
     Desc, EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
     IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
@@ -52,10 +62,12 @@ use rchain_ocapn::fixtures;
 use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::multi::MultiNetlayer;
 use rchain_ocapn::netlayer::{NetConn, Netlayer};
+use rchain_ocapn::noise::{NoiseIdentity, NoiseNetlayer};
 use rchain_ocapn::par_value;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
 use rchain_ocapn::unix::UnixNetlayer;
+use rchain_ocapn::websocket::WebsocketNetlayer;
 use rchain_rholang::pretty_printer::PrettyPrinter;
 use rchain_shared::base16;
 use tokio::sync::watch;
@@ -119,6 +131,16 @@ const CHAIN_REPLY_INTERVAL: Duration = Duration::from_millis(250);
 /// How far back to look for the reply datum, in blocks. Matches the socket-level callers.
 const CHAIN_REPLY_DEPTH: i32 = 50;
 
+/// **How many session-admission and session-end lines the node writes per second** (HAZOP row C236).
+///
+/// The two lines are the node's only record of *who* it is serving — without them an operator sees
+/// the listener come up and nothing else, and cannot tell that an unauthenticated `websocket` peer was
+/// admitted, over which transport, or under which name. They are worth the default level; the *rate*
+/// is the peer's to choose, so they go through a limiter rather than being either silent or a flood.
+/// Above it the line is written at `debug`, so a suppressed audit is still recoverable with the level
+/// turned up.
+const SESSION_AUDIT_PER_SEC: u64 = 20;
+
 /// How many OCapN sessions the node serves at once.
 ///
 /// Every session is a task, a socket, and its own export/answer tables, and the tables' size is the
@@ -126,6 +148,13 @@ const CHAIN_REPLY_DEPTH: i32 = 50;
 /// ~10× the conformance suite's heaviest case (it opens about six, serially) and far below any file
 /// descriptor ceiling; the parameter that matters for an operator is that it is *finite*.
 const MAX_SESSIONS: usize = 64;
+
+/// How long the accept loop waits before trying again after a connection it could not establish.
+///
+/// Small, because an honest peer establishes in milliseconds and the retry exists only to keep a
+/// listener that has genuinely broken from spinning a core; large enough that a peer which can only
+/// fail holds the loop for a fraction of the time rather than all of it.
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Where the node listens for OCapN peers (issue #249).
 ///
@@ -135,22 +164,185 @@ const MAX_SESSIONS: usize = 64;
 /// configured is not an error — it is a **dial-only** node, and the task still runs so the surfaces
 /// that dial out have somewhere to live.
 ///
-/// **`noise` is deliberately absent.** The Noise netlayer is not built (see `ocapn/src/netlayer.rs`
-/// for the gate that would unblock it), so a key naming it would configure a transport this node
-/// cannot construct.
+/// **`noise` is the one a remote peer can reach.** `tcp-testing-only` is plaintext and
+/// unauthenticated and `unix` is local by construction, so this is the transport that makes the node
+/// a peer on a network rather than a service on the host that runs it. Its handshake is verified
+/// against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`).
+///
+/// **`onion` is absent.** It is the only concrete transport in the OCapN draft, and it is not built:
+/// it needs a `tor` daemon on the node and the draft it is pinned by says it is "likely to undergo
+/// significant change". A key naming it would configure a transport this node cannot construct.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OcapnListeners {
     /// `host:port` for the `tcp-testing-only` transport.
     pub tcp: Option<String>,
     /// A socket path for the `unix` transport, whose authentication is the socket's file mode.
     pub unix: Option<String>,
+    /// `host:port` for the `noise` transport, which authenticates both ends and encrypts the channel.
+    pub noise: Option<String>,
+    /// `host:port` for the `websocket` transport — the one `@endo/ocapn` speaks, and so the one a
+    /// published peer can be pointed at. **Weaker than `noise`**: as the reference writes it, `ws://`
+    /// carries no TLS and authenticates only the server. Reach for `noise` unless the peer speaks
+    /// nothing else.
+    pub websocket: Option<String>,
 }
 
 impl OcapnListeners {
     /// Whether the node listens on any transport. A node that listens on none is dial-only.
     pub fn any(&self) -> bool {
-        self.tcp.is_some() || self.unix.is_some()
+        self.tcp.is_some()
+            || self.unix.is_some()
+            || self.noise.is_some()
+            || self.websocket.is_some()
     }
+
+    /// Whether any configured transport needs the node's own key material — which is the two that
+    /// authenticate with it, as opposed to the two that do not.
+    pub fn needs_identity(&self) -> bool {
+        self.noise.is_some() || self.websocket.is_some()
+    }
+}
+
+/// **The node's OCapN identity, or why it has none** (HAZOP row C238) — one place, so the rules can be
+/// tested without assembling a node.
+///
+/// Three cases, and each is a decision rather than an inference:
+///
+/// * a listener that authenticates with the key **needs** it — `noise` names the node by it and
+///   `websocket` signs a challenge with it — so a missing `api-server.ocapn-identity-key` is refused
+///   with the key to set, not a node that comes up nameless;
+/// * **a key file with no such listener is read and validated, and still not used.** It is not an
+///   error — it is what a node that will be dialled rather than dialling looks like — but *silently
+///   ignoring* it was: an operator who set the key because the page says to got a node that never
+///   opened the file, so a file of the wrong length, a loose mode, an all-zero key or a path in a
+///   directory that does not exist were all indistinguishable from a correct one. Reading it here is
+///   what makes that configuration report its own mistakes; the node's designator still does not
+///   move, because nothing consumes the key. (An absent file is created — that is how a node gets a
+///   stable name at all — and is the one case that is not a mistake.);
+/// * neither set is a node with no identity, and the designator falls back to the derivation that
+///   predates Noise (C224 item 2).
+pub fn ocapn_identity_for(
+    listeners: &OcapnListeners,
+    key_path: Option<&str>,
+) -> Result<Option<NoiseIdentity>, String> {
+    match (listeners.needs_identity(), key_path) {
+        (true, Some(path)) => Ok(Some(load_or_create_noise_identity(path)?)),
+        (true, None) => Err(
+            "api-server.ocapn-listen-noise and api-server.ocapn-listen-websocket need \
+             api-server.ocapn-identity-key: both name this node by an Ed25519 key it must hold, \
+             and a node with no key file cannot hold one across restarts"
+                .to_string(),
+        ),
+        (false, Some(path)) => {
+            load_or_create_noise_identity(path)?;
+            Ok(None)
+        }
+        (false, None) => Ok(None),
+    }
+}
+
+/// The node's **Noise identity**, loaded from the configured key file: an Ed25519 seed and an X25519
+/// static, both stable across restarts.
+///
+/// **Why the node needs one and did not have one.** CapTP's own session identity is Ed25519, but it is
+/// *ephemeral* — fresh per session — so it cannot name the node to anyone. The Noise handshake needs
+/// the opposite: a key a peer can hold in advance and check, and the SYN it sends carries the peer's
+/// Ed25519 verifying key in cleartext precisely so the responder can refuse a handshake meant for
+/// someone else. `node_designator` is a *hash* of the deployer key and cannot sign, so a node that
+/// wants to be reachable over Noise needs its own key material.
+///
+/// **The file is 64 bytes**: the Ed25519 seed, then the X25519 static, mode `0600`. Generated on
+/// first use and persisted, because an identity that changes on restart is one no peer can name.
+pub fn load_or_create_noise_identity(
+    path: &str,
+) -> Result<rchain_ocapn::noise::NoiseIdentity, String> {
+    let path = std::path::Path::new(path);
+    let found = |n: usize| {
+        format!(
+            "{} is not a Noise identity: expected 64 bytes (an Ed25519 seed then an X25519 static), \
+             found {n}",
+            path.display()
+        )
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // **Generated, then written before it is used**, so a node that fails right after still
+            // has the identity it advertised rather than a new one on the next start.
+            let identity = rchain_ocapn::noise::NoiseIdentity::generate()?;
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            // **Created with the mode, not chmodded after, and created exclusively.** Writing first
+            // and restricting second left the node's identity — the key that names it on both
+            // transports — readable at the process umask for as long as the two calls took, and a
+            // plain write let two concurrent starts both generate and both overwrite, so a node could
+            // run on a key the file no longer held (HAZOP rows C12, D3, E6, E8).
+            write_new_private(path, &identity.to_persisted_bytes())?;
+            return Ok(identity);
+        }
+        Err(e) => return Err(format!("reading {}: {e}", path.display())),
+    };
+    // **The mode is checked on the read side too.** It was enforced only when this node created the
+    // file, so a world-readable identity — a copy, a restore from a backup, a file another tool made
+    // — was read and trusted silently, and any other uid could then impersonate the node (HAZOP rows
+    // E5, D3, F7). Refused rather than repaired: an operator who sees this has a key they should
+    // re-issue, and quietly tightening the mode would hide that it was exposed.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "{} is mode {:03o}: a node identity must not be readable or writable by another uid \
+                 — re-issue it rather than widening who can impersonate this node",
+                path.display(),
+                mode & 0o777
+            ));
+        }
+    }
+    if bytes.len() != 64 {
+        return Err(found(bytes.len()));
+    }
+    let seed: [u8; 32] = bytes[..32].try_into().map_err(|_| found(bytes.len()))?;
+    let stat: [u8; 32] = bytes[32..].try_into().map_err(|_| found(bytes.len()))?;
+    // **An all-zero key is refused.** `NoiseIdentity::new` re-derives the verifying key and the
+    // X25519 public from whatever it is given, and for a zeroed file both are publicly computable —
+    // so a truncated or blanked identity yielded a node whose name and session keys anyone could
+    // derive, while every length check passed (HAZOP row D5). Only the *length* used to be validated.
+    if seed == [0u8; 32] || stat == [0u8; 32] {
+        return Err(format!(
+            "{} is an all-zero key: this node's name and session keys would be publicly computable",
+            path.display()
+        ));
+    }
+    rchain_ocapn::noise::NoiseIdentity::new(seed, stat)
+}
+
+/// Create the identity file at `path` with mode `0600`, failing rather than overwriting if it already
+/// exists — the exclusive half of [`load_or_create_noise_identity`].
+#[cfg(unix)]
+fn write_new_private(path: &std::path::Path, bytes: &[u8; 64]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("creating {}: {e}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+/// The same, where there is no mode to set — the file is created exclusively and the platform's own
+/// permissions decide who can read it.
+#[cfg(not(unix))]
+fn write_new_private(path: &std::path::Path, bytes: &[u8; 64]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 /// The node's **outbound** OCapN surface (issue #249): what a dial this node starts itself needs.
@@ -168,6 +360,11 @@ pub struct OcapnDialer {
     /// The location this node advertises in a dial's `op:start-session` — one of the transports it
     /// listens on, so the peer can dial back.
     location: PeerLocator,
+    /// **The ceiling a dialed session draws from** (HAZOP row C241), shared with every fixture that
+    /// dials. The accept path has its own per-transport shares; this is the budget for the sessions
+    /// the node *starts*, and without it a dialer could hold `MAX_PEERS` sessions against a ceiling
+    /// of `MAX_SESSIONS`.
+    dials: Arc<tokio::sync::Semaphore>,
 }
 
 impl OcapnDialer {
@@ -177,11 +374,13 @@ impl OcapnDialer {
         netlayer: Arc<dyn Netlayer>,
         registry: Arc<rchain_ocapn::owner::SessionRegistry>,
         location: PeerLocator,
+        dials: Arc<tokio::sync::Semaphore>,
     ) -> OcapnDialer {
         OcapnDialer {
             netlayer,
             registry,
             location,
+            dials,
         }
     }
 
@@ -199,11 +398,12 @@ impl OcapnDialer {
     ) -> Result<(rchain_ocapn::owner::SessionHandle, Desc, Value), String> {
         // An empty slot, so `session_origin` is `None` — see the doc above. The dial is deferred and
         // its loop runs in its own task, so the fetch below does not block on the handshake.
-        let enlivener = rchain_ocapn::enliven::Enlivener::new(
+        let enlivener = rchain_ocapn::enliven::Enlivener::with_dial_budget(
             self.netlayer.clone(),
             self.location.clone(),
             self.registry.clone(),
             rchain_ocapn::owner::session_slot(),
+            Some(self.dials.clone()),
         );
         enlivener.dial_and_fetch(peer, swiss).await
     }
@@ -244,6 +444,62 @@ impl Listener {
             None => std::future::pending().await,
         }
     }
+
+    /// Accept one connection, **retrying a failure rather than letting it end the listener**.
+    ///
+    /// **The two establishing transports fail their accept for reasons a peer chooses.** `noise` runs
+    /// a handshake inside accept and `websocket` an upgrade and an in-band challenge, so a peer that
+    /// connects and then abandons one fails the accept — and a listener that ended there would let a
+    /// port scan take the node's whole OCapN surface down with a connection it did not even have to
+    /// finish. `tcp-testing-only` and `unix` fail only for real listener trouble, which is retried
+    /// here too and said out loud at `warn`: the delay is what keeps a listener that has genuinely
+    /// broken from spinning a core while it complains, and a burst of warnings is a signal an operator
+    /// can act on where a silent death is not.
+    ///
+    /// Never returns for a transport the node does not listen on — `accept` is `pending()` there.
+    async fn accept_recovering(
+        &self,
+        log: &Arc<dyn rchain_shared::log::Log>,
+        source: rchain_shared::log::LogSource,
+    ) -> (Box<dyn NetConn>, PeerLocator) {
+        loop {
+            match self.accept().await {
+                Ok(accepted) => return accepted,
+                Err(e) => {
+                    log.warn(source, &format!("an OCapN connection was refused: {e}"));
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                }
+            }
+        }
+    }
+}
+
+/// **The host a peer is told to dial for a listener bound at `bound`** (HAZOP row C237).
+///
+/// `local_addr()` is what the socket is bound to, and it is the right answer for a specific address —
+/// but a bind to `0.0.0.0` or `::` means *every* address on this host, and **that is not an address
+/// another host can dial**: a remote peer that follows it reaches itself, so every sturdyref and
+/// handoff to this node is unusable off-host. Same-host dialling happens to work, which is why no
+/// test — and no run against a peer — had measured it.
+///
+/// So an unspecified bind **needs** the operator to say what to advertise. It is refused here rather
+/// than advertised, and the error names the key to set: a node that starts and hands out unusable
+/// locations is worse than one that does not start.
+fn advertised_host(
+    bound: std::net::SocketAddr,
+    configured: Option<&str>,
+    transport: &str,
+) -> Result<String, String> {
+    match configured {
+        Some(host) => Ok(host.to_string()),
+        None if bound.ip().is_unspecified() => Err(format!(
+            "the {transport} OCapN listener is bound to {bound}, which is every address on this \
+             host and not one a peer can dial back — a remote peer that follows it reaches itself, \
+             so every location this node hands out would be unusable off-host. Set \
+             api-server.ocapn-advertised-host to the name or address peers should dial"
+        )),
+        None => Ok(bound.ip().to_string()),
+    }
 }
 
 /// Bind the `tcp-testing-only` listener and build the location a peer reaches it at.
@@ -252,6 +508,7 @@ async fn listen_tcp(
     policy: DialPolicy,
     designator: &str,
     chain: usize,
+    advertised: Option<&str>,
     log: &Arc<dyn rchain_shared::log::Log>,
     source: rchain_shared::log::LogSource,
 ) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
@@ -273,13 +530,22 @@ async fn listen_tcp(
     // **The designator is this node's, not a shared constant** (C224 item 2). Peer identity *is*
     // `(designator, transport)` (`owner::peer_key`), so with every node calling itself `"rnode"` two
     // nodes were one peer: a sturdyref to one resolved at the other, and the crossed-hello registry
-    // conflated their sessions. Derived from the node's key (or its node id when there is no key) in
-    // `node_designator`, so it is stable across restarts and distinct per node.
+    // conflated their sessions.
+    //
+    // **Where it comes from depends on configuration, and this comment used to name only one case.**
+    // `node_runtime` derives it: the **Ed25519 verifying key** when a `noise` or `websocket` listener
+    // gave the node an identity — because that is the name the handshake actually checks — and
+    // `node_designator`'s deployer-key hash otherwise. Both are stable across restarts and distinct
+    // per node; they are not the same *shape*, so a node the operator later gives an identity changes
+    // name (HAZOP row D8).
     let location = PeerLocator {
         designator: designator.to_string(),
         transport: "tcp-testing-only".to_string(),
         hints: BTreeMap::from([
-            ("host".to_string(), local.ip().to_string()),
+            (
+                "host".to_string(),
+                advertised_host(local, advertised, "tcp-testing-only")?,
+            ),
             ("port".to_string(), local.port().to_string()),
         ]),
     };
@@ -313,6 +579,86 @@ async fn listen_unix(
     Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
 }
 
+/// Bind the `noise` listener and build the location a peer reaches it at.
+///
+/// **The `host` hint is the *advertised* one, not the bound address** (HAZOP row C237): see
+/// [`advertised_host`]. A node bound to `0.0.0.0` without `api-server.ocapn-advertised-host` is
+/// refused here rather than handing out a location no peer can dial.
+///
+/// **The location carries this node's Ed25519 verifying key**, in the `verify` hint, because that is
+/// what a dialler must put in the SYN's cleartext prefix — the handshake is where the name is checked,
+/// so the name has to travel with the address. This is the one advertised location that says *who*
+/// the node is and not only where it is.
+async fn listen_noise(
+    address: &str,
+    policy: DialPolicy,
+    designator: &str,
+    chain: usize,
+    identity: NoiseIdentity,
+    advertised: Option<&str>,
+    log: &Arc<dyn rchain_shared::log::Log>,
+    source: rchain_shared::log::LogSource,
+) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
+    let verifying = identity.verifying_key();
+    let bound = NoiseNetlayer::bind(address, identity)
+        .await
+        .map_err(|e| e.to_string())?;
+    let local = bound.local_addr().map_err(|e| e.to_string())?;
+    log.info(
+        source,
+        &format!("OCapN listener serving noise on {local} ({chain} chain-backed capability/ies)"),
+    );
+    let location = PeerLocator {
+        designator: designator.to_string(),
+        transport: "noise".to_string(),
+        hints: BTreeMap::from([
+            (
+                "host".to_string(),
+                advertised_host(local, advertised, "noise")?,
+            ),
+            ("port".to_string(), local.port().to_string()),
+            (
+                "verify".to_string(),
+                rchain_shared::base16::encode(&verifying),
+            ),
+        ]),
+    };
+    Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
+}
+
+/// Bind the `websocket` listener and build the location a peer reaches it at.
+///
+/// The location carries the `url` hint the reference reads — it appends no path and no query, so the
+/// whole address is the hint — and this node's Ed25519 verifying key, which the peer checks the
+/// challenge response against.
+async fn listen_websocket(
+    address: &str,
+    policy: DialPolicy,
+    chain: usize,
+    identity: NoiseIdentity,
+    advertised: Option<&str>,
+    log: &Arc<dyn rchain_shared::log::Log>,
+    source: rchain_shared::log::LogSource,
+) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
+    let bound = WebsocketNetlayer::bind(address, identity)
+        .await
+        .map_err(|e| e.to_string())?;
+    let local = bound.local_addr().map_err(|e| e.to_string())?;
+    log.info(
+        source,
+        &format!(
+            "OCapN listener serving websocket on {local} ({chain} chain-backed capability/ies)"
+        ),
+    );
+    // **The advertised host, not the bound one** (HAZOP row C237): `advertised_host` refuses an
+    // unspecified bind the operator has not named, and otherwise returns the bound address.
+    let host = advertised_host(local, advertised, "websocket")?;
+    // **No designator argument**: this transport names itself, and the convention is Endo's rather
+    // than the operator's (AUDIT C245) — see `WebsocketNetlayer::location`.
+    let location = bound.location(Some(&host)).map_err(|e| e.to_string())?;
+    Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
+}
+
 /// Serve OCapN on every configured transport until the node is asked to stop.
 ///
 /// The task is spawned whether or not any transport is configured — a node that listens on none is
@@ -328,6 +674,11 @@ pub async fn serve_ocapn(
     designator: String,
     deny_local_dial: bool,
     dial_slot: OcapnDialSlot,
+    // The node's Noise identity, required exactly when `listeners.noise` is set.
+    noise_identity: Option<NoiseIdentity>,
+    // The host peers are told to dial. Required exactly when a listener is bound to an address no
+    // peer can reach (`0.0.0.0`/`::`) — see `advertised_host`.
+    advertised_host: Option<String>,
     log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -350,6 +701,7 @@ pub async fn serve_ocapn(
                 policy.clone(),
                 &designator,
                 chain.len(),
+                advertised_host.as_deref(),
                 &log,
                 source,
             )
@@ -363,6 +715,55 @@ pub async fn serve_ocapn(
         }
         None => None,
     };
+    // **A `noise` address without an identity is a configuration the node cannot honour**, and it says
+    // so rather than binding a listener whose name would be thirty-two zero bytes.
+    let noise = match (listeners.noise.as_deref(), noise_identity.as_ref()) {
+        (Some(address), Some(identity)) => Some(
+            listen_noise(
+                address,
+                policy.clone(),
+                &designator,
+                chain.len(),
+                identity.clone(),
+                advertised_host.as_deref(),
+                &log,
+                source,
+            )
+            .await?,
+        ),
+        (Some(_), None) => {
+            return Err(
+                "api-server.ocapn-listen-noise is set but the node has no identity; set \
+                 api-server.ocapn-identity-key so the node has a name a peer can check"
+                    .to_string(),
+            )
+        }
+        (None, _) => None,
+    };
+    // The same shape, and the same requirement: the challenge response is signed with the node's key,
+    // so a websocket listener without one could not answer it.
+    let websocket = match (listeners.websocket.as_deref(), noise_identity.as_ref()) {
+        (Some(address), Some(identity)) => Some(
+            listen_websocket(
+                address,
+                policy.clone(),
+                chain.len(),
+                identity.clone(),
+                advertised_host.as_deref(),
+                &log,
+                source,
+            )
+            .await?,
+        ),
+        (Some(_), None) => {
+            return Err(
+                "api-server.ocapn-listen-websocket is set but the node has no identity; set \
+                 api-server.ocapn-identity-key so the node has a key to answer the challenge with"
+                    .to_string(),
+            )
+        }
+        (None, _) => None,
+    };
     // **The dialing netlayer is the dispatcher over every transport the node has**: a fixture that
     // dials `ocapn://peer.unix?path=…` reaches the unix layer and one that names `tcp-testing-only`
     // reaches the TCP layer. Accepting stays per listener below, because a session has to advertise
@@ -374,16 +775,28 @@ pub async fn serve_ocapn(
     if let Some((layer, _)) = &unix {
         dialer = dialer.with("unix", layer.clone());
     }
+    if let Some((layer, _)) = &noise {
+        dialer = dialer.with("noise", layer.clone());
+    }
+    if let Some((layer, _)) = &websocket {
+        dialer = dialer.with("websocket", layer.clone());
+    }
     let dialer: Arc<dyn Netlayer> = Arc::new(dialer);
-    // The location this node advertises in a dial it starts itself: the first configured transport in
-    // a fixed order (tcp, then unix). A node listening on both still has one location to put in a
-    // start-session, and it must be one a peer can dial back.
-    let outward = tcp
+    // The location this node advertises in a dial it starts itself. **`noise` first, then the order
+    // that predates it (tcp, then unix)**: a peer that is handed this location has to be able to dial
+    // it back, and `noise` is both reachable and authenticated while `tcp-testing-only` is reachable
+    // and not and `unix` is authenticated and not. Putting `noise` first does not change what the two
+    // transports that existed before advertise between themselves.
+    let outward = noise
         .as_ref()
+        .or(tcp.as_ref())
         .or(unix.as_ref())
+        .or(websocket.as_ref())
         .map(|(_, location)| location.clone());
     let tcp = Listener::new(tcp);
     let unix = Listener::new(unix);
+    let noise = Listener::new(noise);
+    let websocket = Listener::new(websocket);
     // One registry and one gift store for the node's whole OCapN surface: the crossed-hello rule
     // compares the sessions *this node* has with a peer, and a handoff is deposited on one session
     // and withdrawn on another.
@@ -392,101 +805,286 @@ pub async fn serve_ocapn(
     // **Publish the dialer** for the admin route that starts a dial of the node's own. A node with no
     // transport does not publish one: there is no layer to dial with, and the route says so rather
     // than dialing into "this node speaks nothing".
+    // **One dial budget for the node's own sessions** (HAZOP row C241): the admin route and every
+    // fixture that dials draw from it, so the sessions the node *starts* are bounded like the ones it
+    // accepts. A dialed session holds its permit for its whole life.
+    let dials = Arc::new(tokio::sync::Semaphore::new(
+        rchain_ocapn::capacity::MAX_DIALED_SESSIONS,
+    ));
     if let Some(location) = outward {
         let _ = dial_slot.set(OcapnDialer {
             netlayer: dialer.clone(),
             registry: registry.clone(),
             location,
+            dials: dials.clone(),
         });
     }
-    // **The accept loop is bounded, and the permit is taken before the task exists** (HAZOP row B1).
-    // An unbounded accept loop let one peer hold 3 000 idle connections (+41 MB, RSS never returned)
-    // and one task each; the handshake bound now stops a *silent* connection from holding its task,
-    // and this stops there being arbitrarily many. Taken before the spawn, so a refused connection
-    // costs nothing but the socket — which is dropped here.
-    let sessions = Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS));
+    // **The session ceiling: every transport gets an equal share of it, and the permit is taken
+    // before the task exists** (HAZOP rows B1 and C229). One node-wide semaphore let a peer hold 3 000
+    // idle connections (+41 MB, RSS never returned), so the count is bounded; but a *transport-blind*
+    // bound also let the transport that authenticates **nobody** (`tcp-testing-only`, `websocket`)
+    // take every permit and starve `noise`, the one that authenticates both ends. Each transport now
+    // holds its own share, and the shares sum to the ceiling **less the dial reserve** rather than
+    // nesting under it — so a node listening on one transport still has all of the ceiling that is
+    // not held back for its own dials. Taken before the spawn, so a refused connection costs nothing
+    // but the socket, which `accept_transport` drops.
+    //
+    // **What the share does not do, said here rather than implied:** a peer that establishes a session
+    // and then says nothing still holds its permit for as long as it likes. An idle session is
+    // legitimate — `HANDSHAKE_TIMEOUT`'s note records why the steady-state read is deliberately *not*
+    // bounded, and the conformance suite needs a silent leg — so the share bounds the *blast radius*:
+    // the whole surface is never one transport's to take, and never a peer's to take with one
+    // identity.
+    let configured = [&tcp, &unix, &noise, &websocket]
+        .iter()
+        .filter(|listener| listener.inner.is_some())
+        .count();
+    // **And the dials come out of the same ceiling** (HAZOP row C241). A dialed session holds its
+    // permit for its whole life just as an accepted one does, so it has to be *counted* against
+    // `MAX_SESSIONS` rather than against a second budget beside it — otherwise a peer that makes the
+    // node dial holds sessions past the ceiling the operator was told, and the two numbers have to be
+    // added up by hand to know the node's real surface. `MAX_DIALED_SESSIONS` is reserved for the
+    // sessions the node *starts* (the admin route, and every fixture that dials); the accept paths
+    // split what is left, and the two together are exactly the ceiling.
+    let accept_total = MAX_SESSIONS.saturating_sub(MAX_DIALED_SESSIONS).max(1);
+    let share = (accept_total / configured.max(1)).max(1);
+    let factory = SessionFactory {
+        chain: Arc::new(chain),
+        dialer,
+        registry,
+        handoffs,
+        dials: dials.clone(),
+        log,
+        // **The same word that ends the listeners ends their sessions** (HAZOP row C231). Each
+        // session task is spawned and detached, so returning from this function on the stop word left
+        // every live session running: the sockets closed but the sessions the operator was shutting
+        // down carried on until the process died, and nothing said so.
+        stop: stop.clone(),
+        audit: Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
+            SESSION_AUDIT_PER_SEC,
+        )),
+    };
+    // **One accept task per transport** (HAZOP row C239) — see `accept_transport` for the cancellation
+    // a single `select!` caused, and why a `biased` select is not the fix. A transport the node does
+    // not listen on still gets a task: it waits for ever on a `pending()` accept, which keeps the
+    // shape uniform and is also what keeps a **dial-only** node's task alive.
+    let mut accepts = tokio::task::JoinSet::new();
+    for (transport, listener) in [
+        ("tcp-testing-only", tcp),
+        ("unix", unix),
+        ("noise", noise),
+        ("websocket", websocket),
+    ] {
+        accepts.spawn(accept_transport(
+            transport,
+            listener,
+            factory.clone(),
+            Arc::new(tokio::sync::Semaphore::new(share)),
+            share,
+            accept_total,
+            source,
+        ));
+    }
+    // **The stop word ends the accept tasks, not just this function.** Aborting them drops each
+    // listener's accept future with its socket; returning while they ran on would leave the node's
+    // ports bound with nothing draining the sessions that arrive.
+    let _ = stop_requested(stop.clone()).await;
+    accepts.abort_all();
+    Ok(())
+}
 
+/// The node's shared surfaces, cloned into each accept task and then into each session task.
+#[derive(Clone)]
+struct SessionFactory {
+    /// The chain-backed capabilities to publish on each session's bootstrap. Shared across sessions
+    /// because they hold no per-session state.
+    chain: Arc<Vec<(Vec<u8>, Arc<dyn Export>)>>,
+    dialer: Arc<dyn Netlayer>,
+    registry: Arc<rchain_ocapn::owner::SessionRegistry>,
+    handoffs: Arc<rchain_ocapn::handoff::Handoffs>,
+    /// The node's dial ceiling, handed to every session's fixtures so a fixture that dials draws from
+    /// the same budget as the admin route (HAZOP row C241).
+    dials: Arc<tokio::sync::Semaphore>,
+    log: Arc<dyn rchain_shared::log::Log>,
+    /// The operator's stop word, so a session ends with the node rather than outliving it (HAZOP row
+    /// C231).
+    stop: watch::Receiver<bool>,
+    /// **The audit trail's rate bound** (HAZOP row C236). Admission and a session's end are written at
+    /// `info` — the default level — because an operator's only other view is "the listener was up";
+    /// the *rate* is the peer's to choose, so those lines go through this limiter rather than being
+    /// either silent or a flood.
+    audit: Arc<rchain_shared::rate_limiter::RateLimiter>,
+}
+
+/// **One accept task per transport** (HAZOP row C239).
+///
+/// The accept loop used to be one `tokio::select!` over an arm per transport, and `select!` is not
+/// `biased`: when any arm completes, Tokio **drops** the other branches' futures. So a websocket peer
+/// that was mid-establishment — its accept future `Pending` inside the TLS/WebSocket upgrade or the
+/// in-band challenge — had its already-accepted socket dropped, resetting the connection the moment a
+/// connection arrived on `tcp`, `unix` or `noise`. The peer did nothing wrong and nothing was logged,
+/// because a dropped future is not an `Err`. The red team measured it. A `biased` select is **not**
+/// the fix: it would let one silent arm starve the others.
+///
+/// A task per transport removes the cancellation outright — nothing outside a transport's own task can
+/// end its pending accept. The ceiling is per transport too (`share`, HAZOP row C229), so no transport
+/// — in particular not one that authenticates nobody — can take the node's whole session surface.
+async fn accept_transport(
+    transport: &'static str,
+    listener: Listener,
+    factory: SessionFactory,
+    sessions: Arc<tokio::sync::Semaphore>,
+    share: usize,
+    // The ceiling less the dial reserve — the number every transport's share is a fraction of, and
+    // what a refusal names so an operator can tell a full transport from a full node.
+    accept_total: usize,
+    source: rchain_shared::log::LogSource,
+) {
     loop {
-        // **One arm per transport.** A transport the node does not listen on is `pending()`, so its
-        // arm never fires — and with no transport at all the loop waits on the stop word alone, which
-        // is what keeps a dial-only node's task alive.
-        let (connection, location) = tokio::select! {
-            // The operator's word, and a dropped coordinator, both land here.
-            _ = stop_requested(stop.clone()) => return Ok(()),
-            accepted = tcp.accept() => accepted.map_err(|e| e.to_string())?,
-            accepted = unix.accept() => accepted.map_err(|e| e.to_string())?,
-        };
+        let (connection, location) = listener.accept_recovering(&factory.log, source).await;
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
-            // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
-            // gets refusals, not a growing backlog, and the operator's own sessions keep working.
-            // Said out loud, at `warn`: a node whose sessions are all held is either under attack or
-            // has a stuck peer, and the operator cannot tell either from silence.
-            log.warn(
+            // At this transport's share: close the socket rather than queue it. A peer that keeps
+            // connecting gets refusals, not a growing backlog, and the node's *other* transports keep
+            // serving. Said out loud, at `warn`, and naming the transport and the number: a node whose
+            // sessions are all held is either under attack or has a stuck peer, and the operator cannot
+            // tell either from silence — nor which transport is full.
+            factory.log.warn(
                 source,
-                &format!("at the session ceiling ({MAX_SESSIONS}); refusing a new connection"),
+                &format!(
+                    "at {transport}'s session share ({share} of {accept_total} accepts, of a ceiling \
+                     of {MAX_SESSIONS}); refusing a new connection"
+                ),
             );
             drop(connection);
             continue;
         };
-        let chain = chain.clone();
-        let netlayer = dialer.clone();
-        let registry = registry.clone();
-        let handoffs = handoffs.clone();
-        let log = log.clone();
+        let factory = factory.clone();
         tokio::spawn(async move {
-            // Held for the session's life and released when this task ends: the task's own lifetime
-            // *is* the session's, so the permit needs no name beyond this binding.
-            let _permit = permit;
-            // A fresh session key per session, as OCapN requires.
-            let Ok(identity) = Identity::fresh(location.clone()) else {
-                return;
-            };
-            // The per-session objects that dial find their session through this slot, which is
-            // filled in once the session exists — `accept` needs the bootstrap before that.
-            let slot = rchain_ocapn::owner::session_slot();
-            // The fixtures are rebuilt per session (they hold per-session promise state); the
-            // chain-backed capability is shared, because it does not.
-            let mut bootstrap =
-                fixtures::conformance_bootstrap_with(handoffs, slot.clone(), registry.clone());
-            for (swiss, capability) in chain {
-                bootstrap.publish(swiss, capability);
-            }
-            fixtures::publish_dialing_fixtures(
-                &mut bootstrap,
-                netlayer,
-                location,
-                registry.clone(),
-                slot.clone(),
-            );
-            // **Book, then answer** — see `owner::accept_and_book`: a session has to be in the
-            // registry before the peer can act on it, or a delivery that arrives on the first round
-            // trip after our start-session (a handoff, a fetch) reaches an object that cannot find
-            // the session it belongs to.
-            let (handle, loop_, context, peer_location) =
-                match rchain_ocapn::owner::accept_and_book(
-                    connection,
-                    &identity,
-                    Arc::new(bootstrap),
-                    &registry,
-                )
-                .await
-                {
-                    Ok(parts) => parts,
-                    Err(reason) => {
-                        // A refused handshake, and a session that lost its crossing, have both already
-                        // been answered with `op:abort` where one was owed. Logged at **debug**, not
-                        // warn: a crossing is a legitimate outcome of the protocol, and a peer-driven
-                        // stream of them would make a warning meaningless (the log-flood the
-                        // operations lens warned about).
-                        log.debug(source, &format!("session not served: {reason}"));
-                        return;
-                    }
-                };
-            *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
-            // One session per connection; its end is this task's end.
-            let _ = loop_.run().await;
-            registry.forget(&peer_location, &handle.own_pi, handle.dialed);
+            factory.serve(connection, location, permit, source).await;
         });
+    }
+}
+
+impl SessionFactory {
+    /// Serve one accepted connection to its end.
+    ///
+    /// The permit is held for the session's life and released when this task ends: the task's own
+    /// lifetime *is* the session's, so it needs no name beyond this binding.
+    async fn serve(
+        self,
+        connection: Box<dyn NetConn>,
+        location: PeerLocator,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        source: rchain_shared::log::LogSource,
+    ) {
+        let _permit = permit;
+        let SessionFactory {
+            chain,
+            dialer,
+            registry,
+            handoffs,
+            dials,
+            log,
+            stop,
+            audit,
+        } = self;
+        // A fresh session key per session, as OCapN requires.
+        let Ok(identity) = Identity::fresh(location.clone()) else {
+            return;
+        };
+        // The per-session objects that dial find their session through this slot, which is filled in
+        // once the session exists — `accept` needs the bootstrap before that.
+        let slot = rchain_ocapn::owner::session_slot();
+        // The fixtures are rebuilt per session (they hold per-session promise state); the chain-backed
+        // capability is shared, because it does not.
+        let mut bootstrap =
+            fixtures::conformance_bootstrap_with(handoffs, slot.clone(), registry.clone());
+        for (swiss, capability) in chain.iter() {
+            bootstrap.publish(swiss.clone(), capability.clone());
+        }
+        fixtures::publish_dialing_fixtures_with_budget(
+            &mut bootstrap,
+            dialer,
+            location,
+            registry.clone(),
+            slot.clone(),
+            Some(dials),
+        );
+        // **Book, then answer** — see `owner::accept_and_book`: a session has to be in the registry
+        // before the peer can act on it, or a delivery that arrives on the first round trip after our
+        // start-session (a handoff, a fetch) reaches an object that cannot find the session it belongs
+        // to. The fourth element is the locator the session was **booked** under — the peer's own
+        // advertised location whenever the peer is who it says it is, and the key the handshake proved
+        // otherwise (HAZOP row C243) — and it is what `forget` must be given, or an entry the peer
+        // cannot be found by would never be removed.
+        let (handle, loop_, context, booked) = match rchain_ocapn::owner::accept_and_book(
+            connection,
+            &identity,
+            Arc::new(bootstrap),
+            &registry,
+        )
+        .await
+        {
+            Ok(parts) => parts,
+            Err(reason) => {
+                // A refused handshake, and a session that lost its crossing, have both already been
+                // answered with `op:abort` where one was owed. Logged at **debug**, not warn: a
+                // crossing is a legitimate outcome of the protocol, and a peer-driven stream of them
+                // would make a warning meaningless (the log-flood the operations lens warned about).
+                log.debug(source, &format!("session not served: {reason}"));
+                return;
+            }
+        };
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        // **Admission is auditable** (HAZOP row C236). The name is the peer's own assertion where the
+        // transport authenticates nobody, and the key the handshake *proved* where it does — both,
+        // because "who said they were calling" and "who the transport says it is" are different
+        // facts and an operator needs to see which is which.
+        let who = match booked.hints.get(rchain_ocapn::owner::VERIFY_HINT) {
+            Some(proved) => format!(
+                "{} (proved {proved}) over {}",
+                booked.designator, booked.transport
+            ),
+            None => format!("{} over {}", booked.designator, booked.transport),
+        };
+        if audit.allow() {
+            log.info(source, &format!("session admitted: {who}"));
+        } else {
+            log.debug(
+                source,
+                &format!("session admitted (audit suppressed): {who}"),
+            );
+        }
+        // One session per connection; its end is this task's end.
+        // **The loop's outcome was discarded**, so a session that ended with an error was
+        // indistinguishable from one that ended cleanly — the node said nothing either way, and it
+        // took an instrumented run to see that a session had ended at all. Said at `debug`, because a
+        // peer closing its session is ordinary and a `warn` would be meaningless; but said, which it
+        // was not. (Found by this study's RCA.)
+        //
+        // **And the operator's stop ends the session too** (HAZOP row C231). The session tasks are
+        // spawned and detached, so the listener returning on the stop word left every live session
+        // running: the listeners' sockets closed and the sessions carried on until the process died,
+        // which is a drain that drains the wrong half. Cancelling `run` here drops the session's
+        // socket, which is what the peer sees either way.
+        tokio::select! {
+            outcome = loop_.run() => {
+                if let Err(e) = outcome {
+                    log.debug(source, &format!("session loop ended: {e}"));
+                }
+            }
+            _ = stop_requested(stop) => {
+                if audit.allow() {
+                    log.info(source, &format!("session ended: {who} (the node is stopping)"));
+                }
+            }
+        }
+        // The end of what was admitted, at the same level and through the same limiter (HAZOP row
+        // C236): an admission nobody can pair with an end is a leak an operator cannot see.
+        if audit.allow() {
+            log.info(source, &format!("session ended: {who}"));
+        }
+        registry.forget(&booked, &handle.own_pi, handle.dialed);
     }
 }
 
@@ -1136,11 +1734,15 @@ mod tests {
             OcapnListeners {
                 tcp: Some("127.0.0.1:0".to_string()),
                 unix: None,
+                noise: None,
+                websocket: None,
             },
             Vec::new(),
             "rnode-test".to_string(),
             false,
             Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1180,11 +1782,15 @@ mod tests {
             OcapnListeners {
                 tcp: None,
                 unix: Some(path.display().to_string()),
+                noise: None,
+                websocket: None,
             },
             Vec::new(),
             "rnode-test".to_string(),
             false,
             Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1222,6 +1828,8 @@ mod tests {
             "rnode-test".to_string(),
             false,
             Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
             log.clone(),
             stop_rx,
         ));
@@ -1240,5 +1848,471 @@ mod tests {
             .await
             .expect("the task ends cleanly")
             .expect("and without error");
+    }
+
+    /// **Admission and a session's end are visible at the default level** (HAZOP row C236).
+    ///
+    /// The node logged that its listener was up and nothing else: not which peer was admitted, over
+    /// which transport, under which name — so an operator could not tell that an unauthenticated
+    /// `tcp-testing-only` (or `websocket`) peer had been admitted at all. Both lines are at `info`
+    /// now, naming the peer, and the end is the admission's pair: an admission nobody can match with
+    /// an end is a leak nobody can see. This drives a real CapTP dial, because a line that only
+    /// appears for a connection no peer could have made is not an audit trail.
+    #[tokio::test]
+    async fn an_operators_log_names_the_peer_that_was_admitted_and_when_it_left() {
+        use rchain_ocapn::bootstrap::Bootstrap;
+        use rchain_ocapn::conn::{Identity, Session};
+        use rchain_ocapn::locator::PeerLocator;
+        use rchain_ocapn::netlayer::Netlayer;
+        use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
+
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                ..OcapnListeners::default()
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
+            log.clone(),
+            stop_rx,
+        ));
+
+        let port: u16 = loop {
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(port) = said
+                .iter()
+                .find_map(|line| line.split("tcp-testing-only on 127.0.0.1:").nth(1))
+                .and_then(|rest| rest.split([' ', '(']).next())
+                .and_then(|port| port.parse().ok())
+            {
+                break port;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        // A peer that names itself, over the transport that authenticates nobody: the name is the
+        // peer's own assertion, which is exactly what an operator has to be able to see.
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+            .await
+            .expect("bind the dialing side");
+        let node = PeerLocator {
+            designator: "rnode-test".to_string(),
+            transport: "tcp-testing-only".to_string(),
+            hints: BTreeMap::from([
+                ("host".to_string(), "127.0.0.1".to_string()),
+                ("port".to_string(), port.to_string()),
+            ]),
+        };
+        let ours = PeerLocator {
+            designator: "caller".to_string(),
+            transport: "tcp-testing-only".to_string(),
+            hints: BTreeMap::new(),
+        };
+        let connection = dialer
+            .new_outgoing_connection(&node)
+            .await
+            .expect("dial the node");
+        let identity = Identity::fresh(ours).expect("a session key");
+        let client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node completes the handshake");
+        assert!(
+            log.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .any(|line| line.contains("session admitted: caller over tcp-testing-only")),
+            "the operator must see who was admitted, over which transport: {:?}",
+            log.0.lock().unwrap_or_else(|p| p.into_inner())
+        );
+
+        // The peer goes away, and the end is recorded with the same name.
+        drop(client);
+        let mut ended = false;
+        for _ in 0..100 {
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if said
+                .iter()
+                .any(|line| line.contains("session ended: caller over tcp-testing-only"))
+            {
+                ended = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            ended,
+            "and when the peer left: {:?}",
+            log.0.lock().unwrap_or_else(|p| p.into_inner())
+        );
+
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
+    }
+
+    /// **A configured identity key is read even when nothing consumes it** (HAZOP row C238).
+    ///
+    /// The three cases of [`ocapn_identity_for`], each asserted rather than inferred: a listener that
+    /// authenticates with the key cannot do without one; a key with no such listener is validated —
+    /// so a path that does not exist is a startup error instead of a silently ignored setting — and
+    /// still does not become the node's identity; and neither set is a node with no identity at all.
+    #[tokio::test]
+    async fn an_identity_key_with_no_listener_is_still_read_and_validated() {
+        let dir = std::env::temp_dir().join(format!("ocapn-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let good = dir.join("ocapn.key");
+        let truncated = dir.join("truncated.key");
+
+        let listener = |noise: bool| OcapnListeners {
+            tcp: None,
+            unix: None,
+            noise: noise.then(|| "127.0.0.1:0".to_string()),
+            websocket: None,
+        };
+
+        // A listener that authenticates with the key needs one, and the refusal names the key to set.
+        let refused = ocapn_identity_for(&listener(true), None)
+            .err()
+            .expect("a Noise listener without a key is a configuration the node cannot honour");
+        assert!(
+            refused.contains("api-server.ocapn-identity-key"),
+            "the refusal names the key that fixes it: {refused}"
+        );
+
+        // With a path, the node gets an identity and the file is written for next time.
+        assert!(
+            ocapn_identity_for(&listener(true), Some(good.to_str().expect("utf-8")))
+                .expect("a fresh identity is generated")
+                .is_some(),
+            "a Noise listener with a key is a node with a name"
+        );
+        assert!(
+            good.exists(),
+            "and the key is kept, so the name survives a restart"
+        );
+
+        // **No listener, and a key that is present but wrong: refused.** This is the row's subject —
+        // the setting used to be ignored, so a malformed key was indistinguishable from a correct
+        // one. (An absent path is not an error on either path: the file is *created* on first use,
+        // which is how a node gets a stable name at all.)
+        std::fs::write(&truncated, [7u8; 10]).expect("a key file of the wrong length");
+        let err = ocapn_identity_for(&listener(false), Some(truncated.to_str().expect("utf-8")))
+            .err()
+            .expect("a configured key that cannot be read is a mistake, not a no-op");
+        assert!(
+            err.contains("64"),
+            "and the reason says what a key file has to be: {err}"
+        );
+
+        // An *absent* file is not a mistake on either path — it is created, directory and all, which
+        // is how a node gets a stable name at all. Asserted so the two cases stay distinguished.
+        let fresh = dir.join("elsewhere").join("ocapn.key");
+        assert!(
+            ocapn_identity_for(&listener(false), Some(fresh.to_str().expect("utf-8")))
+                .expect("an absent key is generated, not refused")
+                .is_none(),
+            "and it is still not adopted, because nothing consumes it"
+        );
+
+        // No listener and a key that *does* exist: validated, and still not this node's identity —
+        // the designator does not move (the decision the row's `owes` allows).
+        assert!(
+            ocapn_identity_for(&listener(false), Some(good.to_str().expect("utf-8")))
+                .expect("a valid key is not an error")
+                .is_none(),
+            "a key nothing consumes is validated and not adopted"
+        );
+
+        // Neither: a node with no identity, whose designator falls back to the pre-Noise derivation.
+        assert!(ocapn_identity_for(&listener(false), None)
+            .expect("no key is not an error")
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A listener bound to every address advertises a host a peer can actually dial** (HAZOP row
+    /// C237).
+    ///
+    /// `local_addr()` is right for a specific bind and useless for `0.0.0.0`/`::`: a remote peer that
+    /// follows `0.0.0.0` reaches *itself*, so every sturdyref and handoff to this node is unusable
+    /// off-host. Same-host dialling happens to work, which is why nothing had measured it. The rule is
+    /// the operator names the host, and a node with no name to advertise **does not start** rather
+    /// than handing out locations nobody can use.
+    #[tokio::test]
+    async fn a_listener_bound_to_every_address_advertises_the_host_the_operator_named() {
+        let log: Arc<dyn rchain_shared::log::Log> = Arc::new(RecordingLog::default());
+        let source = rchain_shared::log::LogSource::new("coop.rchain.node.api.ocapn");
+        let policy = DialPolicy {
+            deny_local: false,
+            allow: Vec::new(),
+        };
+
+        // Unnamed: refused, and the message says which key to set.
+        let refused = match listen_tcp(
+            "0.0.0.0:0",
+            policy.clone(),
+            "rnode-test",
+            0,
+            None,
+            &log,
+            source,
+        )
+        .await
+        {
+            Err(reason) => reason,
+            Ok(_) => panic!("a bind to every address with nothing to advertise must be refused"),
+        };
+        assert!(
+            refused.contains("api-server.ocapn-advertised-host"),
+            "the refusal names the key that fixes it: {refused}"
+        );
+
+        // Named: advertised, and the port is the one actually chosen.
+        let (_, location) = listen_tcp(
+            "0.0.0.0:0",
+            policy.clone(),
+            "rnode-test",
+            0,
+            Some("node.example"),
+            &log,
+            source,
+        )
+        .await
+        .expect("a bind to every address with a host to advertise is bound");
+        assert_eq!(
+            location.hints.get("host").map(String::as_str),
+            Some("node.example"),
+            "the `host` hint is the operator's, not the bound address"
+        );
+        assert_ne!(
+            location.hints.get("port").map(String::as_str),
+            Some("0"),
+            "and the port is the chosen one, not the configured `:0`"
+        );
+
+        // A specific bind needs no help: it is its own answer.
+        let (_, specific) = listen_tcp("127.0.0.1:0", policy, "rnode-test", 0, None, &log, source)
+            .await
+            .expect("a specific bind is bound");
+        assert_eq!(
+            specific.hints.get("host").map(String::as_str),
+            Some("127.0.0.1")
+        );
+    }
+
+    /// **An honest peer's establishment is not cancelled by another transport's traffic** (HAZOP row
+    /// C239).
+    ///
+    /// The accept loop was one `tokio::select!` over an arm per transport, and a completing arm drops
+    /// the other branches' futures: a websocket peer that was mid-upgrade had its already-accepted
+    /// socket **dropped** the moment a connection landed on `tcp`, `unix` or `noise` — and nothing was
+    /// logged, because a dropped future is not an `Err`. A `biased` select is not the fix; per-transport
+    /// accept tasks are, and this is the observable.
+    ///
+    /// The test parks an upgrade — a socket connected to the websocket port that has sent nothing, so
+    /// the node's accept is pending inside its read of the HTTP request — makes a connection on `tcp`,
+    /// and then *finishes* the upgrade on the parked socket. Under the old loop that socket was already
+    /// gone by then.
+    #[tokio::test]
+    async fn a_peers_establishment_is_not_cancelled_by_another_transports_traffic() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                unix: None,
+                noise: None,
+                websocket: Some("127.0.0.1:0".to_string()),
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+            Some(rchain_ocapn::noise::NoiseIdentity::generate().expect("a fresh identity")),
+            None,
+            log.clone(),
+            stop_rx,
+        ));
+
+        // Both ports are `:0`, so the listener lines are the only place the chosen ones appear.
+        let port_after = |said: &[String], marker: &str| -> Option<u16> {
+            said.iter()
+                .find_map(|line| line.split(marker).nth(1))
+                .and_then(|rest| rest.split([' ', '(']).next())
+                .and_then(|port| port.parse().ok())
+        };
+        let (tcp_port, ws_port) = loop {
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let tcp = port_after(&said, "tcp-testing-only on 127.0.0.1:");
+            let ws = port_after(&said, "websocket on 127.0.0.1:");
+            if let (Some(tcp), Some(ws)) = (tcp, ws) {
+                break (tcp, ws);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        // 1. Park an upgrade: connect and say nothing, so the node is waiting for the HTTP request.
+        let mut parked = tokio::net::TcpStream::connect(("127.0.0.1", ws_port))
+            .await
+            .expect("connect to the websocket listener");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 2. Make traffic land on another transport — this is what used to drop the future above.
+        let on_tcp = tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+            .await
+            .expect("connect to the tcp listener");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 3. Finish the upgrade on the parked socket. If the accept had been cancelled, the socket
+        //    would be reset: the write fails, or the read comes back empty.
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{ws_port}\r\nUpgrade: websocket\r\nConnection: \
+             Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: \
+             13\r\n\r\n"
+        );
+        parked
+            .write_all(request.as_bytes())
+            .await
+            .expect("the parked socket is still open");
+        let mut answer = [0u8; 128];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), parked.read(&mut answer))
+            .await
+            .expect("the parked upgrade is answered, not left hanging")
+            .expect("the parked socket still reads");
+        let response = String::from_utf8_lossy(&answer[..n]);
+        assert!(
+            response.starts_with("HTTP/1.1 101"),
+            "the transport another connection's traffic landed on still completes its upgrade: \
+             {response:?}"
+        );
+
+        drop(on_tcp);
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
+    }
+
+    /// **One transport cannot take the node's whole session surface** (HAZOP row C229).
+    ///
+    /// The ceiling used to be one transport-blind semaphore, so the transport that authenticates
+    /// *nobody* — `tcp-testing-only`, or `websocket`, whose handshake has only the server prove itself
+    /// — could take every permit and starve `noise`, the one that authenticates both ends. Each
+    /// transport now holds its own share, and the shares **sum** to the ceiling less the dial reserve
+    /// rather than nesting under it, so a single-transport node still has everything its own dials do
+    /// not hold back — the two sums are exactly `MAX_SESSIONS`, which is what **C241** is about: a
+    /// session the node *starts* is counted against the ceiling the operator was told, not beside it.
+    ///
+    /// The permit is taken at accept, **before any handshake**, so raw sockets are enough to fill a
+    /// share — which is also why this is the cheapest possible proof that a share exists: the number
+    /// the node refuses at is the share, and a *different* transport is still served at a moment when
+    /// this one is full.
+    #[tokio::test]
+    async fn one_transport_cannot_take_the_nodes_whole_session_surface() {
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let socket =
+            std::env::temp_dir().join(format!("rnode-ocapn-share-{}.sock", std::process::id()));
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                unix: Some(socket.display().to_string()),
+                noise: None,
+                websocket: None,
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+            None,
+            None,
+            log.clone(),
+            stop_rx,
+        ));
+
+        let port_of = |marker: &str| -> Option<u16> {
+            log.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .find_map(|line| line.split(marker).nth(1))
+                .and_then(|rest| rest.split([' ', '(']).next())
+                .and_then(|port| port.parse().ok())
+        };
+        let tcp_port = loop {
+            if let Some(port) = port_of("tcp-testing-only on 127.0.0.1:") {
+                break port;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        // Two transports are configured, so a share is half of the ceiling **less the dial reserve**
+        // — and asserting the number is the whole point, because it is the only thing that fails if a
+        // dialed session starts being counted outside `MAX_SESSIONS` again.
+        let accept_total = MAX_SESSIONS - MAX_DIALED_SESSIONS;
+        let share = accept_total / 2;
+        assert!(share > 1, "the share has to be a number worth asserting");
+
+        // Fill `tcp`'s share. Each socket is held open and says nothing — the permit is taken at
+        // accept, so it costs a file descriptor and nothing else.
+        let mut held = Vec::new();
+        for _ in 0..share {
+            held.push(
+                tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+                    .await
+                    .expect("connect"),
+            );
+        }
+        // The next connections are refused, and the warn names the *share*, not the whole ceiling.
+        // A few extra sockets are sent because the accept task may still be working through the
+        // first batch; the assertion is that the refusal lands, not on which attempt.
+        let mut refused = false;
+        for _ in 0..share {
+            let _extra = tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+                .await
+                .expect("connect");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if said.iter().any(|line| {
+                line.contains("tcp-testing-only's session share")
+                    && line.contains(&format!("({share} of {accept_total} accepts,"))
+            }) {
+                refused = true;
+                break;
+            }
+        }
+        assert!(
+            refused,
+            "a full transport must refuse at its own share and say which: {:?}",
+            log.0.lock().unwrap_or_else(|p| p.into_inner())
+        );
+
+        // **And the other transport is untouched.** `tcp-testing-only` is holding its whole share at
+        // this moment; a connection on `unix` is still accepted, which is the property that was
+        // missing when the semaphore was node-wide.
+        let before = log.0.lock().unwrap_or_else(|p| p.into_inner()).len();
+        let unix = tokio::net::UnixStream::connect(&socket).await;
+        assert!(
+            unix.is_ok(),
+            "unix must still accept while tcp is at its share: {unix:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let after = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            before,
+            after.len(),
+            "and nothing on unix was refused: {after:?}"
+        );
+
+        drop(held);
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
     }
 }

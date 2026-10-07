@@ -1084,6 +1084,7 @@ scan_ctor_escapes() {
 # reason it is not a refinement — and an exemption that matches nothing derived is a hard failure.
 REFINEMENT_EXEMPT=(
   'crypto/src/public_key.rs;;PublicKey;;G1;;a wrapper, not a refinement: `PublicKey::new(bytes: Vec<u8>)` accepts any bytes, so there is no domain a validator could establish. Recorded as a finding rather than fixed — `crypto/` is another writer'"'"'s lane, and a 65-byte key would make this a refinement with a validator'
+  'crypto/src/encryption/x25519.rs;;StaticKey;;G1;;a wrapper, not a refinement, for the same reason `PrivateKey` is one: `StaticKey::from_bytes([u8; 32])` accepts any 32 bytes, so there is no domain for a validator to reject anything from. What the newtype buys is a redacting `Debug` and zeroing on drop — the `PrivateKey` pair and its stated limits — not an invariant'
   'rspace/src/scheduled_space.rs;;ReleaseToken;;G1;;a marker: the field is `()`, so there is no wider domain for a validator to reject anything from'
   'casper/src/protocol/casper_message_protocol.rs;;BlockMessageSerde;;G1b:impl_serde;;`impl_serde!` expands to `pub struct $serde;` — a unit struct, not a newtype; a false positive of the macro net'
   'casper/src/protocol/casper_message_protocol.rs;;BlockRequestSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'

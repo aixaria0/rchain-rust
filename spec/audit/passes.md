@@ -7481,3 +7481,331 @@ node's reach under a peer is inside that peer's own reach, proved for every conf
 ingredients, with the origin-blind rule modelled beside it as the rule it replaces. The cheap alternative —
 refusing local targets outright — is ruled out by `denying_local_targets_outright_would_refuse_a_local_peer`:
 it would break the loopback demo the conformance suite is.
+
+## 69. The OCapN transports: what a peer can do to a node that authenticates (C227–C243, #249)
+
+**The pass.** Two transports landed on `ocapn/noise` — `noise` (TCP under a Noise `XX` handshake) and
+`websocket` (the transport `@endo/ocapn` speaks) — with a new X25519 primitive, an identity file, a
+designator that moved, and a change to the accept loop. The prior HAZOP (§68) examined a surface that
+was `tcp-testing-only` and `unix`; this one asks the same question of a node that now authenticates.
+The study is `spec/audit/evidence/ocapn-transports-hazop.md`; its instrument is §68's, reused.
+
+**The root cause, and it reversed the reading it started from.** `endo-spike/run-3.txt` recorded that a
+websocket delivery did not complete, and the first reading of it — that the node might be failing to
+answer — was wrong. A probe on the transport's `recv`/`send` showed the handshake completing in both
+directions (54 B in, 176 B out, 333 B in, 420 B out) and then **nothing**: the peer never sends the
+fetch, and the "connection reset" the transcript reported was the harness's own 120 s `timeout`. The
+lesson is §68's, applied: *the cheapest decisive measurement comes before any mechanism work.* What the
+same instrumentation **did** find was a real defect of this node's — `serve_ocapn` discarded
+`loop_.run()`'s `Result`, so a session that ended with an error was indistinguishable from one that
+ended cleanly (**C231**'s family; fixed here at `debug`).
+
+**What was fixed here, each with the test that would have caught it.** A framed body whose final chunk
+was 1..=15 bytes reached `CipherState::decrypt_in_place`, which **asserts** `ciphertext_len >= 16`
+rather than returning — so a peer that completed the handshake **panicked the session task**
+(`a_body_shorter_than_a_tag_is_refused_rather_than_panicking` drives a real handshake and then a raw
+five-byte body). The Noise `send` had no plaintext bound at all while its `recv` bounded *ciphertext*
+in the wrong unit. The websocket `recv` treated a **text frame's payload and a close frame's reason
+bytes** as CapTP messages — and the handshake read would *sign* whatever a peer put in a close, which
+is what the record wrapper exists to prevent. That read had **no size bound** on a path that signs, and
+the data path's 4 MiB check ran *after* tungstenite had allocated the message, so the operative bound
+was tungstenite's 64 MiB (`ws_config` now refuses before the buffer). The challenge's length and arity
+went unchecked. And the **identity file**: its mode was set *after* the write and **never checked on
+read**, an all-zero file passed as a valid identity, and creation was not exclusive — so a blanked or
+loosely-permissioned key yielded a node whose name and session keys anyone could compute or read.
+
+**And the one that was a live security hole.** `DialPolicy` keyed on the `host` hint and a websocket
+locator carries only `url`, so **no websocket target was ever judged**: the link-local and metadata
+refusals and Law 62's origin rule were skipped entirely. The red team measured it — with
+`ocapn-deny-local-dial = true` the node refused a loopback target over `tcp-testing-only` and
+**connected** to one over websocket, and attempted `169.254.169.254` rather than refusing it. Reachable
+from a peer, since a sturdyref's locator flows to the policy. `DialPolicy::host_of` now reads the
+authority out of a `url` hint, including a bracketed IPv6 literal.
+
+**What the study refuted, and why that is the pass's other half.** Six row groups came back refuted
+rather than registered: `Value::Int` needs no magnitude bound because every ingress is already capped
+and a 4 MiB integer is *smaller* than its input; the responder writes its SYNACK before checking the
+initiator because `XX` binds the initiator's static only in message 3, so the order is forced; a
+per-WARN rate is bounded by the accept backoff and is the operator's signal; ~480 chain-API polls/s is
+a product of two shipped bounds; the ceiling cannot be consulted before the connection exists; and the
+interop transcripts **disclaim** what they do not prove. Two of the rows the lenses wrote were the
+study's own accepted residues restated.
+
+**The stated residual that was wrong.** `ocapn/src/websocket.rs` carried a comment saying a silent peer
+holds the accept loop for `ESTABLISH_TIMEOUT`. The red team measured it **false** — `tokio::select!`
+drops the pending accept future when another arm completes — while the **real** hazard in the same
+mechanism went unnamed: that cancellation silently **resets an honest websocket peer mid-challenge**
+the instant unrelated traffic lands on another transport, and logs nothing, because a dropped future is
+not an `Err` (**C239**). *A stated residual that is false is worse than no residual, because it ends
+the search.*
+
+**The must-fix pair, closed in this branch (C242, C243).** Both transports verify a peer's key and
+**discard** it, while `owner::admit` keyed the registry by the peer's **self-asserted** designator —
+so a stranger who knows a public name could, by the crossing rule, evict that peer's session. It was a
+pre-existing `owner.rs` defect that *this branch makes actionable*, because the transports now supply
+exactly the verified key the older code threw away. The fix is small because the material was already
+in hand: `NetConn::verified_peer` (a provided method defaulting to `None`, implemented by `noise`,
+which authenticates; left at `None` by the transports that authenticate nobody) keeps the key the
+handshake proved, and `Session::verified_peer_key` exposes it. **Where it is used is the part that had
+to be got right twice.** The first version replaced the designator outright and booked the session
+under `base16(key)`; that is a *new* naming space, so the two legs of one peer — the one we dial, named
+by the locator we dialled, and the one we accept — stopped agreeing, and `forget`, which is given the
+peer's advertised locator, removed nothing. The landed version puts the proved key in the locator's
+**`verify` hint**, the field a transport *checks* (`noise` enforces it in the SYN's cleartext prefix,
+`websocket` in the challenge response), and has `owner::peer_key` read that hint in preference to the
+designator — so a dialed leg (whose hint the handshake enforced) and an accepted leg (whose hint is the
+key that was proved) are filed under one name, and every peer with an identity keeps exactly the name it
+had, because a node's OCapN designator *is* its verifying key in base16. `accept_and_book` returns the
+locator it booked under, so `forget` takes the same key. The falsifier is
+`ocapn/tests/session_owner.rs:a_session_is_booked_under_the_name_its_transport_proved`, whose far end
+dials naming itself `"peer"` and whose session is reachable by the proved key and **not** by the
+assertion the peer wrote for itself; it also asserts that forgetting by the assertion frees nothing and
+by the proved key frees the entry. **How far it reaches, stated rather than implied:** the fix closes D6
+for the transport that can *prove* a name. The `websocket` handshake has the **server** prove itself
+(D2), so an accepted websocket session has no name its peer had to prove and the assertion is all there
+is — that is that transport's protocol, not a hole this code leaves, and it is on the row as the
+residual. The law is **63a**, the same home as C221: what the node gains is that a session's origin is
+attributable to something the peer had to prove.
+
+**The cross-transport cancel, also closed here (C239).** The accept loop was one `tokio::select!` over
+an arm per transport, and `select!` is not `biased`: when any arm completes Tokio **drops** the other
+branches' futures, so a websocket peer that was mid-upgrade had its already-accepted socket reset the
+moment a connection landed on `tcp`, `unix` or `noise` — and nothing was logged, because a dropped
+future is not an `Err`. The fix is the one the steelman's own objection pointed at: **not** `biased`
+(one silent arm would then starve the others) but **one accept task per transport**, each looping on
+its own `accept_recovering`, so nothing outside a transport's own task can end its pending accept. The
+falsifier is
+`node/src/api/ocapn.rs:a_peers_establishment_is_not_cancelled_by_another_transports_traffic`: it parks
+a websocket upgrade — a socket that connects and says nothing, so the node's accept is inside its read
+of the HTTP request — makes a connection on `tcp`, and then finishes the upgrade on the parked socket.
+Against the single-`select!` loop the read came back empty, because the socket was already gone; with
+the fix the upgrade completes. The ceiling the tasks share is still node-wide and transport-blind,
+which is C229's question and not this one's.
+
+**The advertised back-address, also closed here (C237).** `listen_tcp`, `listen_noise` and
+`listen_websocket` built the location they advertise from `local_addr()`, and
+`ocapn-listen-noise = 0.0.0.0:22046` — the natural production config, and the one **this repository's
+own design page used as its example** — advertises host `0.0.0.0`. A same-host dialer links to loopback
+and works; a remote peer dialling it back **reaches itself**, so every sturdyref and handoff to the
+node is unusable off-host, and nothing had measured it because no node test binds `0.0.0.0`. The fix
+is `api-server.ocapn-advertised-host`: the `host` hint (and the `url` hint's host for `websocket`) is
+the operator's value when set, and a listener bound to an unspecified address with none set is
+**refused at startup**, naming the key, rather than handed out as a location nobody can dial. The port
+is always the bound one, so `:0` still works. The falsifier is
+`node/src/api/ocapn.rs:a_listener_bound_to_every_address_advertises_the_host_the_operator_named`, which
+drives `listen_tcp` three ways — refused without a host, advertised with one, and a specific bind as
+its own answer — and the design page's example is corrected.
+
+**The ceiling's fairness, also closed here (C229) — the study's own finding.** The session ceiling was
+**one transport-blind semaphore**, so the transport that authenticates *nobody* could take every permit
+and starve `noise`, the one that authenticates both ends; and 64 peers who establish a session and then
+say nothing hold all of them. Each transport now holds **its own share** (`MAX_SESSIONS / n`, where `n`
+is how many are configured), and the shares **sum** to the ceiling rather than nesting under it — a
+single-transport node still has all 64, and a four-transport node has 16 each. The amplifier in the
+fault tree is gone and the top event is one transport's share rather than the node's surface. The
+falsifier is `node/src/api/ocapn.rs:one_transport_cannot_take_the_nodes_whole_session_surface`: it
+fills `tcp-testing-only`'s share with sockets that say nothing — the permit is taken at accept, before
+any handshake, so raw sockets are enough — asserts the refusal lands at the *share*, and asserts a
+`unix` connection is still accepted at that moment. Measured **failing** against the node-wide
+semaphore, where no refusal happened at all.
+
+**What that does not close, said here rather than implied.** A peer that has *established* a session
+and then says nothing still holds its permit for as long as it likes. That is the half the register's
+`owes` offered to close with "a lifetime or idle bound on an established session", and it was **not
+taken**: an idle session is legitimate, and the crate's own note on `HANDSHAKE_TIMEOUT` records the
+decision — the conformance suite needs a silent leg, so the steady-state read is deliberately not
+bounded. What the share buys is that the denial is bounded to one transport's share instead of the
+whole surface; the lifetime question stays where it was decided, now stated rather than left implicit.
+
+**The fixture that could not run the branch's own tests (C244).** Closing the rows above meant asking
+CI, and CI came back red on `ocapn/noise` while `dev`'s same job passed — with the failure in the
+*tests of this branch*: `open LMDB environment reporting: Cannot allocate memory` at `common/mod.rs`'s
+node setup. Every `common::start` builds a full node and `cargo test` runs one binary's tests on
+parallel threads, so the OCapN listener's nine started nine nodes at once; `free_ports` releases the
+ports it probed, so two of them could also be handed the same port (`Kademlia RPC server failed:
+Address already in use`). Neither is a defect in the node, and both make a red build say something
+untrue. `common::start` now takes a process-wide lock held in the returned `TestNode` until it drops,
+so a test that starts a node runs alone from setup to teardown. Measured: the nine pass in parallel
+(`ocapn_listener`, 41 s) where they failed before, and `deploy_block` and `gateway` are unchanged.
+
+**Two more from the Noise framing, closed here (C228, C233).** The length header was read with
+`read_exact`, which reports `UnexpectedEof` both when a peer closes *at* a boundary and when it closes
+two bytes into a four-byte header — and the match arm turned both into `Ok(None)`, "the peer said
+goodbye". The 1..3 lost bytes cannot hold a message, so nothing is dropped; what is lost is the
+distinction, and a session that ended inside a header reads exactly like one that ended cleanly. It is
+now read by a loop that separates the two cases, which is the rule `framed` already pins. The falsifier
+is `ocapn/src/noise.rs:a_stream_that_ends_inside_a_length_header_is_not_a_clean_end` — a real
+handshake, two bytes of a header, then the peer goes away — **measured failing against the `read_exact`
+version**, which answered `Ok(None)`; its companion pins the other half, that a close with nothing in
+flight still reads as the end of the stream.
+
+And `open` reassembled a multi-chunk body with `ciphertext.drain(..take)` once per chunk, which shifts
+everything after the drained range down on *every* iteration — a body at the 4 MiB cap is 64 chunks, so
+~128 MiB of `memmove` for one message. It walks an offset now. **This one is reasoned, not measured:**
+no test counts bytes copied, and the correctness guard passes with either implementation, so it is not
+a falsifier. That is said on the row rather than rounded up.
+
+**Three more, closed by reading or by saying it plainly (C234, C235, C238).** C238 was a setting that
+did nothing: `api-server.ocapn-identity-key` with no listener to consume it was ignored, so a key of
+the wrong length, a loose mode, an all-zero key or a path that cannot be created were all
+indistinguishable from a correct one. `ocapn_identity_for` — one seam, so the rules are testable
+without assembling a node — now reads and validates the key **whenever it is set**, and still does not
+adopt it (the designator does not move, which the row's `owes` allows). The falsifier asserts all four
+cases and was **measured failing against the ignoring arm**, which answered `Ok(None)` for a malformed
+key.
+
+C234 and C235 are closed by **documenting the consequence**, which is the first close each row's `owes`
+offers, because the alternative is not implementable: a file can be copied, so two processes holding a
+copy are indistinguishable from one process on two hosts; and pinning the name would mean deriving it
+from something that cannot move, while the deployer key — the only other candidate — cannot sign the
+handshake that opens with the node's name. So, in `docs/src/node/ocapn.md`, `defaults.conf` and the
+config field itself: **one file is one peer**, and there is no rotation (replacing the key renames the
+node, which is the loss case over again); and **the node's name is a function of configuration**, so
+adding a listener that consumes the key renames a node that has already handed out locations.
+
+**The lifecycle and the audit trail, closed here (C231, C236).** The session tasks are spawned and
+detached, so `serve_ocapn` returning on the stop word left every live session running: the listeners'
+sockets closed and the sessions the operator was shutting down carried on until the process died. That
+is a drain that drains the wrong half, and it reported success. `SessionFactory` now carries the same
+stop receiver and the session's loop selects on it, so a session ends with the node. The falsifier is
+`node/tests/ocapn_listener.rs:a_live_session_ends_when_the_node_is_asked_to_stop` — a peer dials,
+fetches once as the control, the node is asked to stop, and the peer's next read is a clean close —
+**measured failing against the detached version**, where it hung for the full 30 s. One consequence
+stated because it is a behaviour change: a delivery in flight when the operator stops is now cut.
+
+And the audit trail the operations lens asked for: the node logged that its listener was up and nothing
+else, so an operator could not tell that an unauthenticated peer had been admitted, over which
+transport, or under which name. Admission and a session's end are both `info` now — naming the
+designator the peer *asserted* and, where the transport proved one, the key it *proved*, which are
+different facts — and both go through a rate limiter, because the rate is the peer's to choose.
+`node/src/api/ocapn.rs:an_operators_log_names_the_peer_that_was_admitted_and_when_it_left` drives a
+real CapTP dial and asserts both lines.
+
+**And the limiter itself (C232), which was wider than the row that found it.** `RateLimiter` was a
+fixed window: it admits its whole allowance at once and resets on the wall clock, so a client that
+keeps asking is handed a fresh allowance at every boundary — up to **twice** the configured rate over
+a sliding second, indefinitely. The OCapN bridge found it, but the same type bounds the
+unauthenticated deploy servers and the Kademlia discovery RPC, so this was not a transport defect
+wearing a limiter: it was the limiter. It is a **token bucket** now, refilling only what was spent and
+capped at one second's allowance, and it starts **full** — which preserves the burst a quiet surface
+was granted, so a limiter sized for an interactive caller still answers the first call at once. The
+falsifier is `shared/src/rate_limiter.rs:the_allowance_is_never_granted_twice`: spend the allowance,
+wait half a period, and exactly one token has refilled. **Measured failing against the fixed window**,
+which refused at half a second because nothing refills until the boundary — and the limiter's three
+existing tests pass against both, which is exactly why they were not enough. The row's *other* half —
+one node-global limiter rather than one per peer — is untouched: that is the decision declined with
+Law 63a rather than a defect.
+
+**And the waiters behind the answers (C230).** `MAX_DEFERRED_ANSWERS` bounds the *queue* a landed
+answer travels on; the tasks that produce them were the peer's to count. A claim for a gift nobody
+deposited withdraws nothing, so it must not count against the replay guard and may be repeated freely —
+and each repetition spawned another waiter polling the node-global gift store every 10 ms for ten
+seconds, holding that store's mutex each time. `MAX_DEFERRED_WAITERS = 16` now caps the **live waiter
+count on one session**, with the slot released when the waiter ends whichever way it ended; past the
+cap the delivery is refused with the same `<break>` a failed claim produces, checked *before* the
+answer is recorded, because a refused delivery owes the peer nothing to resolve later. The falsifier is
+`ocapn/tests/session_owner.rs:the_claim_waiters_on_one_session_are_bounded`, which fills the allowance,
+sends one more, and asserts the over-cap claim is refused at once — **measured failing against the
+unbounded version**, where the read timed out because a seventeenth waiter had been started.
+
+**And the blocking resolver on the dial path (C240).** `DialPolicy` called `to_socket_addrs` — a
+blocking syscall — on the host a *peer* chose, so a name nothing answers cost the resolver's own
+timeout of a runtime worker, per dial. `permits_from_async` runs the judgment on a **blocking thread**
+when the target is a name and inline when it is a literal (nothing to resolve, and a thread hop for
+nothing is its own cost); the async dial path a peer's sturdyref reaches calls it. The falsifier is
+`ocapn/src/dial_policy.rs:judging_a_name_off_this_thread_leaves_the_runtime_free`, whose differential
+is inside one test on a current-thread runtime: a task is spawned and the name judged with **no await**
+between them for the control, so the control cannot pass by luck — no DNS answer, fast or slow, creates
+a yield.
+
+**The rows that remain open.** C227 (interop is unproven until a peer that speaks a chunking this port
+does not is available), C241 (the dialed-session count is not drawn from the session ceiling), and
+C215 (a pre-existing merge finding, unrelated to the transports). Each carries what would close it.
+
+## 70. The OCapN transports: what this pass changed, in one place (C227–C244, #249)
+
+**The pass.** §69 is the study and its worksheet; this is the index of what was *done* to the tree,
+because the branch now carries seventeen findings' worth of change and a reader arriving at the diff
+should be able to find the account of any one of them. Every row below is `done` in
+`spec/findings.tsv`, its `section` is 69, and the study names the row it came from.
+
+| finding | what changed | the falsifier, and what it measured against |
+|---|---|---|
+| **C228** | `NoiseConn::recv` reads the length header so a short read is `UnexpectedEof`, not a goodbye | `a_stream_that_ends_inside_a_length_header_is_not_a_clean_end` — measured failing against `read_exact`, which answered `Ok(None)` |
+| **C229** | each transport holds its own share of the session ceiling; shares sum rather than nest | `one_transport_cannot_take_the_nodes_whole_session_surface` — measured failing against the node-wide semaphore, where 32 sockets refused nothing |
+| **C230** | `MAX_DEFERRED_WAITERS` caps live claim waiters per session; the over-cap delivery is refused with a `break` | `the_claim_waiters_on_one_session_are_bounded` — measured failing against the unbounded version, where the read timed out |
+| **C231** | the operator's stop word ends a session, not only the listener | `a_live_session_ends_when_the_node_is_asked_to_stop` — measured failing against the detached version, where it hung 30 s |
+| **C232** | `RateLimiter` is a token bucket; the fixed window's 2× boundary is gone | `the_allowance_is_never_granted_twice` — measured failing against the fixed window, which refused at half a period |
+| **C233** | `NoiseConn::open` walks the body by offset instead of draining it per chunk | reasoned, not measured — said so on the row |
+| **C234** | one file is one peer, and the name cannot be rotated: stated in the page, `defaults.conf` and the config field | documented close, the row's own first option |
+| **C235** | the name is a function of configuration: stated where the identity key is described | documented close, the row's own first option |
+| **C236** | admission and a session's end are `info`, naming the peer and its transport, rate-limited | `an_operators_log_names_the_peer_that_was_admitted_and_when_it_left` — a real CapTP dial |
+| **C237** | `api-server.ocapn-advertised-host`, and an unspecified bind without it is refused at startup | `a_listener_bound_to_every_address_advertises_the_host_the_operator_named` |
+| **C238** | a configured identity key is read and validated whenever it is set, and still not adopted | `an_identity_key_with_no_listener_is_still_read_and_validated` — measured failing against the ignoring arm, which answered `Ok(None)` for a malformed key |
+| **C239** | one accept task per transport, so no transport's pending accept is cancelled by another's traffic | `a_peers_establishment_is_not_cancelled_by_another_transports_traffic` — measured failing against the single `select!`, where the parked upgrade came back empty |
+| **C240** | `permits_from_async` judges a peer-chosen name on a blocking thread | `judging_a_name_off_this_thread_leaves_the_runtime_free` — the differential is in one test, with no await between the spawn and the sync judge |
+| **C241** | the dial reserve is carved out of `MAX_SESSIONS`, so the node's session surface is the ceiling however a session was made | `one_transport_cannot_take_the_nodes_whole_session_surface` — the refusal now names `24 of 48 accepts, of a ceiling of 64`, which fails against the version that counted dials beside the ceiling, where the same line read `32 of 64` |
+| **C242** | the handshake's proved key is kept and used as the session's registry key | `a_peer_is_keyed_by_the_key_its_transport_proved`, plus the session-level test below |
+| **C243** | `owner::peer_key` reads the `verify` hint, and `accept_and_book` writes the proved key there; `forget` takes the key it booked under | `a_session_is_booked_under_the_name_its_transport_proved` — reachable by the proved key, not by the assertion |
+| **C244** | the node test fixture starts one heavyweight node at a time | the nine OCapN listener tests pass in parallel where CI failed four runs in a row |
+| **C245** | the `websocket` location names the node `base32(Ed25519 key)` and carries no `verify` hint, so the location a peer dials is the location it resolves | `spec/audit/evidence/endo-spike/run-4.txt` — the published `@endo/ocapn` 1.1.1 reaches `FETCHED` and `CALL REPLY`, where `run-3.txt` recorded the same client establishing the session and then sending nothing. Also `rchain_shared::base32` against RFC 4648 §10's vectors |
+
+**What is *not* in the table, said here rather than left to be noticed:** C233's complexity claim is
+the only one that is reasoned rather than measured, and its row says so. Everything else in the table
+was run against the code it replaces and observed to fail first.
+
+**And what was run *after* the table, on a net rather than in a test.** Everything in the table above
+is a unit or node-level falsifier; the transports' own acceptance — two nodes reaching each other over
+`noise` — is `spec/audit/evidence/ocapn-devnet/` (`run.sh` → `run-1.txt`), a 2-validator devnet where
+`devnet-validator-1` dials the bootstrap through its own admin route and comes away holding an object
+the bootstrap published (`{"fetched":"Export(1)","peer":"devnet-bootstrap.noise"}`), with the
+bootstrap's own record naming the peer it **proved**. That is the shape issue #249 was opened for. Its
+two-node in-process counterpart is `node/tests/ocapn_two_nodes.rs`. **Neither is public-testnet
+readiness**, which is #214's bar and not this pass's — see the note at the top of that study.
+
+**The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one
+adjudicator were **blocked by a safety classifier**, re-run singly, and then **disagreed with each
+other on eight row groups**. Adjudicating that disagreement rather than averaging it is what produced
+C229 (the lockout consequence the prior study had not stated) and E9 (the `0.0.0.0` trap, which the
+steelman found was in the design page's own example config). A study that had shipped the first pass —
+or skipped the steelman because the adjudicator had already ruled — would have carried eight rows as
+settled that nobody had argued against.
+
+
+## 71. A1.5's unfinalised tail is a fixed band, and the flicker is the slack (C246)
+
+**What the page said, and what the measurement says.** `docs/src/spec/testnet-acceptance.md` §3.1 called
+A1.5's residual **intermittent** — three runs left 2 of 3, 0 of 3 and 1 of 3 arms with their sixth
+deploy unfinalised — and left the fix-versus-restate question to a maintainer. Reading all **twelve
+arms of four runs**, including a fresh three-arm run on `9f52d84d3`, it is not intermittent at all.
+
+**The band.** A quiet chain's greatest `finalized` is **`tip − 4`** in eleven arms and `tip − 5` in one;
+every arm sat frozen at that reading for 37 to 110 one-second samples, and the two arms that were short
+carry the `finalized` stall lines and `round gate escaped` lines that rule out a truncated read. The
+last few heights of an idle chain are simply never finalised.
+
+**The flicker is one number.** A deploy finalises iff production ran **at least 4 heights past it**. The
+runs that were all green left their sixth deploy 4, 6 or 10 heights below the tip; every short arm left
+it **3**. The 2/3, 0/3, 1/3, 0/3 spread is how much slack the chain had after its last deploy, not a
+race in the node.
+
+**Why the band exists, read from the code rather than inferred.** The finalizer's fringe requires a
+candidate whose parents reach **beyond** the next layer (`block-storage/src/dag/finalizer.rs`), so the
+last layer's messages can only be finalised by messages that do not exist yet; and on a quiet net
+nothing mints them, because the round gate's escape is only evaluated when something *asks* the node to
+propose (`casper/src/blocks/proposer/proposer.rs`) and with `--no-autoproose` nothing does.
+
+**And the band is a lag, not a loss.** `n214-tail-lag-run.sh` goes quiet, reads the wall, then deploys
+once more: in every arm the block sitting at the wall's tip — unfinalised while the chain was idle — was
+finalised as soon as the chain produced again (55→finalised, 35→finalised, 29→finalised). What is **not**
+yet captured is a single transcript holding a *deploy* in the band and rescuing it; the stored arms show
+deploys land there and the lag arms show it is covered, which gives the conclusion by composition and
+not in one run. The rigs built here produced slack 4 in every arm — the chain mints about as many heights
+after a deploy as the band is wide, which is precisely why the stored runs sat on the knife edge.
+
+**So the criterion's own wording is what fails.** "Every consecutive deploy on a quiet net is finalised"
+measures the net *while it is idle*, and by construction nothing can improve during an idle period. The
+property that matters — no deploy is silently lost — is met, and is exactly what the lag runs measure.
+**Restating A1.5 to that property is a maintainer's call** and is proposed, not taken, here; the evidence
+for it is `spec/audit/evidence/n214-rotation-results.md`'s 2026-10-07 section, and the rig that measures
+it is `n214-tail-lag-run.sh` with `n214-tail-lag-summarise.py`.

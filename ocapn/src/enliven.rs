@@ -50,6 +50,11 @@ pub struct Enlivener {
     /// The session this object is serving. A Gifter has to name that session's peer in the give's
     /// `receiver-key` and sign the give with its secret, and neither is knowable otherwise.
     session: crate::owner::SessionSlot,
+    /// **The ceiling a dial draws from** (HAZOP row C241), or `None` for a caller with no budget to
+    /// share — the conformance fixtures, whose dials happen inside a session that already holds an
+    /// accept permit. A held permit travels with the dialed session's loop task, so the slot is
+    /// released when the session ends and not before.
+    dials: Option<Arc<tokio::sync::Semaphore>>,
     timeout: Duration,
 }
 
@@ -60,11 +65,23 @@ impl Enlivener {
         registry: Arc<SessionRegistry>,
         session: crate::owner::SessionSlot,
     ) -> Enlivener {
+        Enlivener::with_dial_budget(netlayer, location, registry, session, None)
+    }
+
+    /// [`Enlivener::new`] with the dial ceiling spelled out — see the `dials` field.
+    pub fn with_dial_budget(
+        netlayer: Arc<dyn Netlayer>,
+        location: PeerLocator,
+        registry: Arc<SessionRegistry>,
+        session: crate::owner::SessionSlot,
+        dials: Option<Arc<tokio::sync::Semaphore>>,
+    ) -> Enlivener {
         Enlivener {
             netlayer,
             location,
             registry,
             session,
+            dials,
             timeout: ENLIVEN_TIMEOUT,
         }
     }
@@ -144,6 +161,24 @@ impl Enlivener {
         let handle = match self.registry.live(peer) {
             Some(existing) => existing,
             None => {
+                // **A dialed session draws from the ceiling too** (HAZOP row C231's neighbour, C241).
+                // Taken before the connect — a dial that cannot be afforded must not open a socket —
+                // and held by the loop task below, so the slot lasts exactly as long as the session
+                // and a peer that closes releases it. Without this the node's *own* dials were
+                // bounded by nothing: a dialer could hold `MAX_PEERS` sessions against a ceiling of
+                // 64, which is the number its operator was told.
+                let permit = match &self.dials {
+                    Some(dials) => match dials.clone().try_acquire_owned() {
+                        Ok(permit) => Some(permit),
+                        Err(_) => {
+                            return Err(format!(
+                                "this node already holds as many dialed sessions as it may ({})",
+                                crate::capacity::MAX_DIALED_SESSIONS
+                            ))
+                        }
+                    },
+                    None => None,
+                };
                 let connection = self
                     .netlayer
                     .new_outgoing_connection_from(peer, crate::owner::session_origin(&self.session))
@@ -178,6 +213,9 @@ impl Enlivener {
                 // and the session must be able to serve meanwhile (a *later* start-session from the
                 // peer completes the handshake right there in the loop).
                 tokio::spawn(async move {
+                    // The permit lives exactly as long as the session: held for the loop's whole run,
+                    // released when this task ends, whichever way it ends.
+                    let _permit = permit;
                     let _ = loop_.run().await;
                 });
                 handle

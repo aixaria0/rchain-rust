@@ -1,0 +1,103 @@
+node's Ed25519 verifying key: a4fc7f61e036140ca585c156b139c1715ebdc4d2b4ad28b694fa6ee9d81aad38
+dialling ut6h6ypagykazjmfyfllcoobofpl3rgswswsrnuu7jxotwa2vu4a over websocket at ws://127.0.0.1:22060
+ws-interop [1791369863706]: provideInternalSession called with {
+  location: {
+    type: 'ocapn-peer',
+    designator: 'ut6h6ypagykazjmfyfllcoobofpl3rgswswsrnuu7jxotwa2vu4a',
+    transport: 'websocket',
+    hints: { url: 'ws://127.0.0.1:22060' }
+  }
+}
+ws-interop [1791369863707]: provideInternalSession connecting and establishing new session
+ws-interop [1791369863708]: Connecting to websocket { wsUrl: 'ws://127.0.0.1:22060' }
+ws-interop [1791369863765]: handleMessageData called
+ws-interop [1791369863766]: handling handshake message of type op:start-session
+ws-interop [1791369863770]: >> Server received VALID location signature
+ws-interop [1791369863776]: exported o+0 Object [Alleged: ws-interop:bootstrap] {
+  fetch: [Function: fetch],
+  'deposit-gift': [Function: deposit-gift],
+  'withdraw-gift': [Function: withdraw-gift]
+}
+ws-interop [1791369863777]: makeRemoteObject { position: 0n, label: 'Remote Bootstrap' }
+ws-interop [1791369863777]: imported o-0 Object [Alleged: Remote Bootstrap] {}
+ws-interop [1791369863778]: session established for ocapn://ut6h6ypagykazjmfyfllcoobofpl3rgswswsrnuu7jxotwa2vu4a.websocket?url=ws%3A%2F%2F127.0.0.1%3A22060
+ws-interop [1791369863779]: applyMethod Object [Alleged: Remote Bootstrap] {} fetch [ 'IO58l1laTyhcrgDKbEzFOO32MDd6zE5w' ]
+ws-interop [1791369863780]: imported a-0 Promise { <pending> }
+ws-interop [1791369863781]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Bootstrap] {},
+  args: [ Symbol(fetch), 'IO58l1laTyhcrgDKbEzFOO32MDd6zE5w' ],
+  answerPosition: 0n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+ws-interop [1791369863782]: exported o+1 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+ws-interop [1791369863782]: handleMessageData called
+ws-interop [1791369863783]: makeRemoteObject { position: 1n, label: 'Remote Object 1' }
+ws-interop [1791369863783]: imported o-1 Object [Alleged: Remote Object 1] {}
+ws-interop [1791369863783]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 1] {} ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+ws-interop [1791369863784]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 1] {} ],
+  answerPosition: false
+}
+ws-interop [1791369863784]: ocapnResolver fulfill a-0 Object [Alleged: Remote Object 1] {}
+ws-interop [1791369863784]: settler resolve Object [Alleged: Remote Object 1] {}
+FETCHED object Object [Alleged: Remote Object 1] {}
+ws-interop [1791369863785]: applyMethod Object [Alleged: Remote Object 1] {} echo [ 'foo', 1n, false ]
+ws-interop [1791369863785]: imported a-1 Promise { <pending> }
+ws-interop [1791369863785]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Object 1] {},
+  args: [ Symbol(echo), 'foo', 1n, false ],
+  answerPosition: 1n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+ws-interop [1791369863785]: exported o+2 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+ws-interop [1791369863786]: handleMessageData called
+ws-interop [1791369863786]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), [ Symbol(echo), 'foo', 1n, false ] ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+ws-interop [1791369863786]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), [ Symbol(echo), 'foo', 1n, false ] ],
+  answerPosition: false
+}
+ws-interop [1791369863786]: ocapnResolver fulfill a-1 [ Symbol(echo), 'foo', 1n, false ]
+ws-interop [1791369863786]: settler resolve [ Symbol(echo), 'foo', 1n, false ]
+CALL REPLY [ Symbol(echo), 'foo', 1n, false ]

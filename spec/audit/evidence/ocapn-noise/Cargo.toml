@@ -1,0 +1,22 @@
+# The interop harness: Agoric's Noise core, driven against our netlayer.
+#
+# **Deliberately not a workspace member.** It is evidence tooling, like `endo-spike/` — it needs a
+# network build of the reference fetched at a pinned commit, which CI must not depend on. The empty
+# `[workspace]` table is what detaches it from the repository's workspace, so `cargo build` here does
+# not try to join it.
+[package]
+name = "ocapn-noise-interop"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+rchain-ocapn = { path = "../../../../ocapn" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util"] }
+# The reference's own dependency set, verbatim, so the included source compiles as it does upstream.
+noise-protocol = "0.2"
+noise-rust-crypto = { version = "0.6.2", features = ["x25519", "use-chacha20poly1305", "use-blake2"] }
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+rand_core = "0.6.4"
+getrandom = { version = "0.2", features = ["custom"] }

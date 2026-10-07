@@ -21,24 +21,72 @@ The listener is **off unless `api-server.ocapn-listen` names an address**.
 |---|---|---|
 | `api-server.ocapn-listen` | `--ocapn-listen` | `host:port` to bind for `tcp-testing-only`. Unset: no TCP listener. |
 | `api-server.ocapn-listen-unix` | `--ocapn-listen-unix` | Socket path to bind for `unix`. Unset: no UDS listener. |
+| `api-server.ocapn-listen-noise` | `--ocapn-listen-noise` | `host:port` to bind for `noise`. Unset: no Noise listener. |
+| `api-server.ocapn-listen-websocket` | `--ocapn-listen-websocket` | `host:port` to bind for `websocket`. Unset: no WebSocket listener. |
+| `api-server.ocapn-identity-key` | `--ocapn-identity-key` | Where this node's OCapN identity is kept; created on first use. Required by the two keys above. |
+| `api-server.ocapn-advertised-host` | — | The host peers should dial this node at, when the bind address is not one they can reach. **Required** by a listener bound to `0.0.0.0` or `::`. |
 | `api-server.ocapn-deny-local-dial` | — | Refuse to dial loopback and private addresses a peer names. Off by default. |
 | `api-server.enable-ocapn-dial` | — | Mount `POST /api/v1/ocapn/dial` on the admin server. Off by default. |
 
 The netlayers implemented are the OCapN project's `tcp-testing-only` — plain TCP, **no encryption and
 no authentication**, which the project's own README flags "HIGHLY INSECURE — DO NOT USE IN
-PRODUCTION" — and `unix`, a Unix domain socket whose authentication is the socket's file mode
-(`0600`). Either or both may be bound, on separate keys:
+PRODUCTION" — `unix`, a Unix domain socket whose authentication is the socket's file mode (`0600`),
+and `noise`, which is **the one a peer not on this host can use**: an authenticated, encrypted
+handshake with no certificate authority and no daemon. Any of them may be bound, on separate keys:
 
 ```hocon
 api-server {
   ocapn-listen = "127.0.0.1:22045"            # tcp-testing-only
   ocapn-listen-unix = "/run/rnode/ocapn.sock" # unix
+  ocapn-listen-noise = "0.0.0.0:22046"        # noise
+  ocapn-listen-websocket = "0.0.0.0:22047"    # websocket
+  ocapn-identity-key = "/var/lib/rnode/ocapn-identity.key"
+  ocapn-advertised-host = "node.example"      # what peers are told to dial
 }
 ```
 
-A node that binds **neither** has no transport at all: it does not listen, and the dial route answers
-**503** rather than dialing into "this node speaks nothing". **Noise is not implemented** — until a
-reference implementation speaks it, a Noise netlayer here would talk only to itself.
+**A bind address is not the same as an address a peer can dial** (HAZOP row C237), and `0.0.0.0` is
+the case that catches people: it means *every* address on this host, so a node that advertises it hands
+out locations where the peer dials **itself**. Same-host dialling happens to work, which makes the
+mistake invisible until a peer somewhere else tries to follow a sturdyref or accept a handoff. So a
+listener bound to `0.0.0.0` or `::` **must** be told what to advertise, with
+`api-server.ocapn-advertised-host`, and the node refuses to start without it rather than handing out
+locations nobody can use. The port is always the bound one — `:0` is legal, and the chosen port is the
+only useful thing to advertise. The key is a no-op for a listener bound to a specific address.
+
+**`websocket` is the transport `@endo/ocapn` speaks**, so it is the one a published Agoric peer can be
+pointed at — and it is **weaker than `noise`**: as the reference writes it, `ws://` carries no TLS and
+its in-band handshake has only the *server* prove its identity. Reach for `noise` unless the peer
+speaks nothing else. It shares the identity file with `noise`: the node signs a challenge with the same
+Ed25519 key the Noise handshake names it by.
+
+A node that binds **none** has no transport at all: it does not listen, and the dial route answers
+**503** rather than dialing into "this node speaks nothing".
+
+**`noise` is the transport to reach for, and it is the only one of the four that is both reachable
+and authenticated.** The handshake is Noise `XX` with X25519, ChaCha20Poly1305 and BLAKE2s; each side
+proves it holds an Ed25519 key by signing its own X25519 static public key, and the node's name *is*
+that Ed25519 key — a dialler must know it in advance, because the SYN is prefixed with it and a
+responder refuses a handshake naming another node before doing any cryptography. It is verified
+against Agoric's own implementation (`spec/audit/evidence/ocapn-noise/`). **Keep the identity file**:
+a node that loses it comes back under a new name, and peers holding the old one cannot find it.
+
+**One file is one peer, and the name cannot be rotated** (HAZOP row C234). The designator *is* the
+Ed25519 key in that file, so two nodes sharing it are **one peer** to everyone else: the crossed-hello
+rule compares sessions by that name, so their sessions evict each other and a sturdyref to one resolves
+at the other. And there is no rotation — replacing the key, or deleting the file and letting the node
+regenerate one, renames the node, which is the same breakage as losing it.
+
+**The node's name is a function of configuration** (HAZOP row C235). Without an identity it derives
+from the deployer key; with one it *is* the Ed25519 key. So adding `api-server.ocapn-listen-noise` or
+`ocapn-listen-websocket` to a running node — or adding `ocapn-identity-key` — **renames it**, and every
+location handed out under the old name stops resolving. Decide the name before peers hold it. (This
+also means a key file with no listener does not change the name: the node reads and validates it, and
+still does not adopt it.)
+
+`websocket` uses the same identity, and is the transport `@endo/ocapn` speaks — but as the reference
+writes it, `ws://` carries no TLS and only the server proves itself, so `noise` is the one to reach
+for.
 
 **The node can also start a session of its own.** With `enable-ocapn-dial = true`, `POST
 /api/v1/ocapn/dial` on the admin server makes it dial a peer the request names and fetch the object at
@@ -133,7 +181,7 @@ port had to choose. They matter to anyone integrating a new peer.
 | `syrup.rs`, `netstring.rs` | the Syrup codec and the length-prefixed framing |
 | `locator.rs`, `peer.rs` | the URI and in-band locator forms |
 | `session.rs`, `session_id.rs` | `op:start-session`, Public Identifier, Session ID, `op:abort` |
-| `netlayer.rs`, `tcp_testing_only.rs`, `unix.rs` | the netlayer trait and the two transports |
+| `netlayer.rs`, `framed.rs`, `tcp_testing_only.rs`, `unix.rs`, `noise.rs`, `websocket.rs` | the netlayer trait, the shared framing, and the four transports |
 | `multi.rs` | the dialing dispatcher: a locator's transport name picks the layer |
 | `captp.rs`, `conn.rs` | the import/export and answer tables, `op:deliver`, `op:listen`, GC |
 | `bootstrap.rs`, `fixtures.rs` | the bootstrap object and the conformance fixtures |
@@ -151,10 +199,14 @@ itself differently from a peer passes every local test and fails every handshake
 
 ## Limits
 
-- **The transports are `tcp-testing-only` and `unix`.** `tcp-testing-only` is the OCapN project's own
-  test transport, unauthenticated by design; `unix` authenticates by the socket's file mode. **Noise is
-  not built** (it would talk only to itself until a reference speaks it), and a production netlayer
-  (Tor, libp2p, IBC) implements the same two-function trait; nothing above it changes.
+- **The transports are `tcp-testing-only`, `unix`, `noise` and `websocket`.** `tcp-testing-only` is
+  the OCapN project's own test transport, unauthenticated by design; `unix` authenticates by the
+  socket's file mode but is local to the host; `noise` is the one a remote peer should use, and its
+  handshake is verified against Agoric's implementation; `websocket` is the transport `@endo/ocapn`
+  speaks, and is the weaker of the two networked ones — `ws://` has no TLS and only the server
+  authenticates. **`onion` (Tor) is not built** — it is the only concrete transport in the OCapN draft,
+  and it needs a `tor` daemon on the node — and any other netlayer (libp2p, IBC) implements the same
+  two-function trait; nothing above it changes.
 - **A bridged call's reply is written to the permanent registry**, because a Rholang value returned to
   a peer has no source literal and must be registered to be reachable. Nothing deletes those entries.
 - **The node cannot yet name the peer on chain.** Until a session is bound to a deployer key, binding

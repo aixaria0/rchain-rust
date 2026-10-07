@@ -140,8 +140,10 @@ Two behaviours to expect:
   block carrying it is produced, so a call takes a block interval, not a round trip. The node pays the
   phlo. On a node with autopropose off, you must cause a block.
 - **Capabilities cross as references, values cross as data.** The kit's members and the purse above
-  are remote references — the underlying Rholang names never leave the node. A `(true, 0)` reply comes
-  back as the list `[true, 0]`.
+  are remote references — the underlying Rholang names never leave the node. A `(true, 0)` reply crosses
+  as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [true 0]>`, and comes back a tuple — Law 59
+  (AUDIT C226). It crossed as a bare list once, and a list does not match a contract's
+  `(brand, value)` pattern; that is why §5's round trip is possible at all.
 
 ## 5. What works today
 
@@ -166,7 +168,9 @@ Also note:
   a delivery is refused with a reason naming the bound.
 - **The node is the on-chain caller.** Every bridged deploy is signed by the node's deployer key, so
   the chain sees the node, not you. There is no session-to-deployer binding yet.
-- **The listener serves a fixed number of sessions** (64). Past that, new connections are closed.
+- **The node serves a fixed number of sessions** (64) — 48 to the connections it accepts, shared between
+  whatever transports are listening, and 16 reserved for the sessions it dials itself. Past that a new
+  connection is closed, and a dial past the reserve is refused with a reason naming the reserve.
 
 ## 6. Putting a shard in front of the peers
 
@@ -249,10 +253,12 @@ bind, and a rate limit — which is why that route is off by default.
 
 ## 7. Writing a transport
 
-The node speaks two: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
-encryption, no authentication, which is why the listener is off unless you name an address — and
-`unix`, a domain socket authenticated by its file mode (`0600`). A third is small, because the seam is
-two functions (`ocapn/src/netlayer.rs`):
+The node speaks four: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
+encryption, no authentication, which is why the listener is off unless you name an address — `unix`, a
+domain socket authenticated by its file mode (`0600`) but reachable only from this host; `noise`, which
+is the one a remote peer should use; and `websocket`, which is the one `@endo/ocapn` speaks and the
+weaker of the two networked ones. A fifth is small, because the seam is two functions
+(`ocapn/src/netlayer.rs`):
 
 ```rust
 async fn new_outgoing_connection(&self, locator: &PeerLocator) -> io::Result<Box<dyn NetConn>>;
@@ -282,14 +288,46 @@ Endo version vendored for the spike (`1.1.1`) has `tcp-test-only` and `websocket
 write is the one the peers you care about actually speak — and whatever it is, it is the two functions
 above with the channel underneath it, and nothing above the seam moves.
 
-**Noise is the one to write if any is, and it is not built.** It is the transport the OCapN project
-names for a real deployment, and the reason to stop at "not built" is **interop**: neither
-implementation this repository tests against speaks it (see the list above), so a layer written here
-would talk only to itself — and its parameters (the pattern, the prologue, and how the Noise static key
-relates to the Ed25519 session identity) would be guesses rather than a specification to check against.
-The gate that changes this is a reference that speaks Noise; until one is reachable, the layer would be
-un-verifiable, which is the one thing this repository does not ship. `ocapn/src/netlayer.rs` records the
-same decision where a reader of the code will find it.
+**Noise is built, and it is the one a deployment should use.** `ocapn/src/noise.rs`, bound with
+`api-server.ocapn-listen-noise`; it needs `api-server.ocapn-identity-key`, because the handshake names
+the node by an Ed25519 key it must hold. **The gate that held it back was interop, and it is now
+measured rather than argued:** Agoric's endo repository carries `rust/ocapn_noise` and
+`packages/ocapn-noise`, pinning the pattern (`XX`), the primitives (X25519, ChaCha20Poly1305,
+BLAKE2s), the empty prologue, the message sizes, and — the part that is application protocol — the
+payload of a verifying key and a signature over the sender's X25519 static, behind a 32-byte cleartext
+prefix naming the intended responder. `spec/audit/evidence/ocapn-noise/` drives that reference, at a
+pinned commit, against this module, and the handshake completes. **Read that transcript before changing
+anything in the handshake**: it also says what the run does *not* cover — the record framing, for which
+the reference ships no counterpart.
+
+**And that is still true of the reference today** (AUDIT C227). Upstream `packages/ocapn-noise/src/`
+contains its WASM bindings and **no netlayer**, so the session framing is this port's own: a `u32`
+ciphertext length, with a message larger than one cipher message split into chunks at a private
+boundary. It is the only OCapN TCP transport that does not netstring — the Python suite, Endo's
+`tcp-test-only`, and the one netlayer that has ever been written for this transport all do. The
+alignment is named and **triggered** rather than made speculatively: when a netlayer lands upstream,
+this module frames with `crate::framed::Framed` and a message is bounded at ~65 KB, which is a
+capability reduction on this transport and the reason for the wait. `spec/audit/evidence/ocapn-noise/`
+carries the three facts and the branch they came from.
+
+**`websocket` is built too, and is the weaker of the two** (`ocapn/src/websocket.rs`,
+`api-server.ocapn-listen-websocket`). Its reason to exist is that `@endo/ocapn` 1.1.1 — a *published*
+peer — speaks it. What the reference actually defines, read rather than assumed: framing is **one
+WebSocket frame per CapTP message with nothing inside it**; the URL is a single `url` hint used
+verbatim, with no path or query; and before any CapTP byte there is an in-band **`init:peer-auth` /
+`desc:sig-envelope`** exchange in which the server signs the bytes it received and the client checks
+that signature against the key the dial named. As Endo writes it, `ws://` has **no TLS** and the
+*client* proves nothing, so this transport adds interop breadth and not security — reach for `noise`.
+The reference also sets **no size limit and no timeout anywhere**; the bounds in the module are this
+port's additions and say so.
+
+**Name this node the way that peer does** (AUDIT C245). Endo identifies a location by
+`ocapn://<designator>.<transport>?<sorted hints>` — every hint included — and resolves a session under
+the location it dialled, so its `designator` for this node is `base32(Ed25519 verifying key)`, which is
+what this node advertises and what a client must dial. A hex designator, or one carrying a hint the
+client did not send, is a *different* location: the client completes the handshake, stores the session
+under your advertisement, looks it up under its own, and then sends nothing at all. The round trip is
+`spec/audit/evidence/endo-spike/run-4.txt`.
 
 ### Unix domain sockets as the inner hop
 

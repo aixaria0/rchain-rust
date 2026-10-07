@@ -147,6 +147,20 @@ pub const MAX_ANSWERS: usize = 1024;
 /// deferral existed. 64 is the hand-off queue's depth, which bounds the same shape one layer up.
 pub const MAX_DEFERRED_ANSWERS: usize = 64;
 
+/// **Live deferred-answer waiters on one session** (HAZOP row C230). [`MAX_DEFERRED_ANSWERS`] bounds
+/// the *channel* a landed answer travels on, not the tasks that produce them: each `Reply::Deferred`
+/// spawns one, and each polls the node-global gift store every 10 ms for up to ten seconds while
+/// holding that store's mutex for each look. A peer that repeats a claim for a gift nobody deposited
+/// spawns one per delivery — and may repeat it freely, because a claim that withdraws nothing must
+/// not count against the replay guard — so the count was the peer's to choose, per session, with no
+/// ceiling at all. Past this many the delivery is refused with the same `<break>` a failed claim
+/// produces, which is an answer rather than a silence.
+///
+/// Much smaller than [`MAX_DEFERRED_ANSWERS`] on purpose: sixteen waiters polling once per 10 ms is
+/// already ~1 600 mutex acquisitions a second from one session, and the number worth bounding is the
+/// task count, not the answer queue. A conforming peer needs one or two.
+pub const MAX_DEFERRED_WAITERS: usize = 16;
+
 /// Gifts the node's store may hold, across all sessions (the store is per peer, not per session).
 /// With a bounded gift id this is a bounded number of bytes; without one it was the 4 GiB table.
 pub const MAX_GIFTS: usize = 256;
@@ -162,6 +176,14 @@ pub const MAX_LISTENERS: usize = 256;
 /// Peers the registry tracks. Keyed by the peer's own designator, so this is the cap that makes the
 /// *keys* finite; `forget` removes emptied entries, so a well-behaved peer is not what fills it.
 pub const MAX_PEERS: usize = 256;
+
+/// **Sessions the node is made to *dial*, as a share of the same budget** (HAZOP row C241). The
+/// session ceiling is taken by the accept path — one share per transport — and nothing took it for a
+/// dial, while a dialed session stays in the registry for its life: the node could be made to hold
+/// `MAX_PEERS` of them, four times the ceiling it thinks it has. This is that share, and it is
+/// deliberately a *quarter* of the ceiling: a dialed session is one this node started, so the number
+/// an operator's own tooling needs is small, and the transports' capacity is not what pays for it.
+pub const MAX_DIALED_SESSIONS: usize = 16;
 
 /// Longest gift id accepted, in bytes. A gift id is a peer's own name for a handoff; 64 bytes is past
 /// every real one and far below the 4 MiB message cap that would otherwise be the key's size.
