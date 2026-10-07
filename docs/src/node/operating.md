@@ -57,11 +57,14 @@ Notes for operators:
 - `GET /api/v1/shards` lists the memberships, primary first, each with its own chain height. The
   membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
   parses on its own.
-- **There is one more listener, and it is off unless you ask for it**: `api-server.ocapn-listen` binds
-  the OCapN port (issue #249), where a foreign peer — an Agoric vat, say — can hold live references to
-  objects on this node. It is **not** part of the API above, it speaks the OCapN project's
-  explicitly-insecure plaintext transport, and when `dev.deployer-private-key` is set a peer that
-  reaches it can make this node **submit deploys signed with that key** and cause it to **dial any
+- **There is a fourth kind of listener, and every one of them is off unless you ask for one.** The
+  OCapN listeners (issue #249) are where a foreign peer — an Agoric vat, say — can hold live references
+  to objects on this node: `api-server.ocapn-listen` is the conformance suite's plaintext
+  `tcp-testing-only` port, `ocapn-listen-unix` a domain socket authenticated by its `0600` mode,
+  `ocapn-listen-noise` the one a remote peer should use (authenticated *and* encrypted), and
+  `ocapn-listen-websocket` the one `@endo/ocapn` speaks and the weakest of the networked two. They are
+  **not** part of the API above, and when `dev.deployer-private-key` is set a peer that
+  reaches one can make this node **submit deploys signed with that key** and cause it to **dial any
   address the peer names**. Read [](ocapn.md) before enabling it; the short version is that binding it
   publishes the node's own authority, so bind loopback unless every peer that can reach the address is
   one you trust.

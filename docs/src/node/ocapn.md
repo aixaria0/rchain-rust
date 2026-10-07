@@ -15,7 +15,11 @@ node-local; the only thing that reaches consensus is the signed deploy the bridg
 
 ## Turning it on
 
-The listener is **off unless `api-server.ocapn-listen` names an address**.
+The node binds **no OCapN listener unless one is configured**. There are four, one key each —
+`api-server.ocapn-listen` (the `tcp-testing-only` transport), `ocapn-listen-unix`, `ocapn-listen-noise`
+and `ocapn-listen-websocket` — and each is off until it names a bind address. They are independent: a
+node may listen on any subset, and a node listening on none is a dial-only node (its dial route says so
+rather than dialling into "this node speaks nothing").
 
 | Config key | CLI flag | Meaning |
 |---|---|---|
@@ -52,7 +56,9 @@ mistake invisible until a peer somewhere else tries to follow a sturdyref or acc
 listener bound to `0.0.0.0` or `::` **must** be told what to advertise, with
 `api-server.ocapn-advertised-host`, and the node refuses to start without it rather than handing out
 locations nobody can use. The port is always the bound one — `:0` is legal, and the chosen port is the
-only useful thing to advertise. The key is a no-op for a listener bound to a specific address.
+only useful thing to advertise. For a listener bound to a specific address the key is not *needed* —
+that address is its own answer — but **setting it still wins**: a set `ocapn-advertised-host` is
+returned whatever the bind, so it overrides a specific address rather than complementing it.
 
 **`websocket` is the transport `@endo/ocapn` speaks**, so it is the one a published Agoric peer can be
 pointed at — and it is **weaker than `noise`**: as the reference writes it, `ws://` carries no TLS and
@@ -123,7 +129,7 @@ A peer dials, the two sides handshake, and the peer is given the node's **bootst
 
 | Swiss number | Object |
 |---|---|
-| `rho:rchain:revVault/getBalance` | the REV vault balance capability, read from the deployer's own address |
+| `rho:rchain:revVault/getBalance` | the REV vault balance capability. **The address is an argument the peer supplies**, not the node's own: the deliverable takes one REV address and answers its balance |
 | `rho:rchain:ertp` | the ERTP object API — `makeIssuerKit` and `getRevIssuer` |
 | the OCapN conformance fixtures | the test suite's objects: echo, the car factory, the promise resolver, the greeter, the sturdyref enlivener |
 

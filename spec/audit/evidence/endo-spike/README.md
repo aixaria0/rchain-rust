@@ -112,7 +112,7 @@ comment where it happened:
 |---|---|---|
 | `preCharge: insufficient funds (0 < 1000000)` | the bridge registered a returned capability with `insertSigned`, whose URI comes from the *deployer* key — so a fresh key per object meant a deploy with no REV | `rho:registry:insertArbitrary`, which mints a fresh URI with no key, so the node's funded key signs |
 | an empty reply where a purse was expected | the term bound the member with `for (@(_, root) <- cap)`, and a tuple pattern is **exact**: an ERTP kit's reply is `(brand, mint, issuer)`, so the 2-element pattern fell straight through and the deploy answered nothing | the pattern is built from the value's real shape |
-| `Unexpected type "boolean", Syrup record labels must be strings, selectors, or bytestrings` | `par_value` mapped `ETuple` to a Syrup **record**; records are labelled, and `(true, 0)` made the label a boolean | a tuple crosses as a Syrup **list** |
+| `Unexpected type "boolean", Syrup record labels must be strings, selectors, or bytestrings` | `par_value` mapped `ETuple` to a Syrup **record**; records are labelled, and `(true, 0)` made the label a boolean | first a Syrup **list**, and since C226 (law 59) OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [fields…]>` — a bare list does not match a contract's `(brand, value)` pattern |
 
 
 

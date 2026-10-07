@@ -7809,3 +7809,36 @@ property that matters — no deploy is silently lost — is met, and is exactly 
 **Restating A1.5 to that property is a maintainer's call** and is proposed, not taken, here; the evidence
 for it is `spec/audit/evidence/n214-rotation-results.md`'s 2026-10-07 section, and the rig that measures
 it is `n214-tail-lag-run.sh` with `n214-tail-lag-summarise.py`.
+
+
+## 72. The guard fix reaches N=3 and N=5 but not N=8 (C247)
+
+**What was re-run, and why.** The #149 sweep's 2026-10-01 reading — "nothing finalised at all at
+N ≥ 3" under `--no-autopropose` — was taken on `cf3945045`, **before** C209/C210 fixed the attestation
+guard. Criterion 1's two unrun arms, A1.2 (N=5) and A1.3 (N=8), had therefore never been measured since.
+The same rig, the same protocol, six primary attempts, **0 void**, on `bbabc39e8`:
+
+| arm | attempts | blocks after the deploy | senders | time to finality |
+|---|---|---|---|---|
+| N=5, no autopropose | 3 | 25 · 25 · 25 | 5 · 5 · 5 | **6 s · 5 s · 6 s** |
+| N=8, no autopropose | 3 | 112 · 112 · 120 | 8 · 8 · 8 | **never · never · never** |
+
+**A1.2 passes.** The deploy's block is block 1 in every attempt and the chain finalises to 2 within five
+to six seconds. The pre-fix reading does not reproduce at N=5.
+
+**A1.3 fails, and it is not the defect C209/C210 fixed.** At N=8 production is *better* — a richer DAG
+than N=5's, all eight validators sending — and finality never advances once, in any attempt. The
+refusal is named rather than silent:
+
+    finality did not advance at tip 14: a layer exists but its supporting stake is not a supermajority —
+    400 of 800 (4 full partition(s) among 4 candidate(s))
+
+and across one attempt's 57 refusals the supporting stake is **0 of 800 in 24 of them**, 100 in 21, 200
+in 11, 300 in 1. A supermajority at eight equal-stake validators needs 534. **The guard's inputs are
+fixed; what remains is a fringe that cannot gather supermajority support at eight.**
+
+**Limits, stated because the verdict depends on them.** This sweep runs the rig's configuration —
+`tools/devnet.sh`'s default **equal** stakes and **default epoch length** — and *not* A1.1's `--stakes
+100,100,50 --epoch-length 10` with eight stakes. So the reading is "N=8 with equal stakes", which is the
+closest measurement that exists; promoting it to A1.3's verdict wants that arm run at its own
+configuration. One host, one tree, 4 GiB per container, three attempts per arm.

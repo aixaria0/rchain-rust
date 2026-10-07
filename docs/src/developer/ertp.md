@@ -71,7 +71,7 @@ brand's purse.
 | mint | `mintPayment(amount)` |
 | amountMath | `make(brand, value)`, `add`, `subtract`, `getValue`, `getBrand`, `isEqual`, `isEmpty` |
 | purse | `deposit(payment)`, `withdraw(amount)`, `getCurrentAmount`, `getDepositFacet` |
-| payment | `getAllegedBrand` |
+| payment | `getAllegedBrand`, `getLedgerToken` — the token is handed to whoever holds the payment, because **holding it is the authority to deposit it**: the token alone does nothing without a purse |
 | REV purse | the purse arms, plus `revFund(funder, amount)` and `revRedeem(amount, to)` |
 
 Reply shapes worth pinning:
