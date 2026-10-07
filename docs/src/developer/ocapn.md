@@ -301,14 +301,19 @@ anything in the handshake**: it also says what the run does *not* cover — the 
 the reference ships no counterpart.
 
 **And that is still true of the reference today** (AUDIT C227). Upstream `packages/ocapn-noise/src/`
-contains its WASM bindings and **no netlayer**, so the session framing is this port's own: a `u32`
-ciphertext length, with a message larger than one cipher message split into chunks at a private
-boundary. It is the only OCapN TCP transport that does not netstring — the Python suite, Endo's
-`tcp-test-only`, and the one netlayer that has ever been written for this transport all do. The
-alignment is named and **triggered** rather than made speculatively: when a netlayer lands upstream,
-this module frames with `crate::framed::Framed` and a message is bounded at ~65 KB, which is a
-capability reduction on this transport and the reason for the wait. `spec/audit/evidence/ocapn-noise/`
-carries the three facts and the branch they came from.
+contains `bindings.js` **and no netlayer**, so the session framing is this port's own: a `u32` ciphertext
+length, with a message larger than one cipher message split into chunks at a private boundary. It is the
+only OCapN TCP transport that does not netstring — the Python suite, Endo's `tcp-test-only`, and the one
+netlayer that has ever been written for this transport all do.
+
+The alignment is named and **triggered** rather than made speculatively, and it costs something worth
+stating exactly: this transport carries messages up to **4 MiB** today (`MAX_MESSAGE_BYTES`), and one
+Noise cipher message holds a little under 64 KiB — which is why the port chunks at all. Framing with
+`crate::framed::Framed` and one cipher message per frame would drop the bound to what a frame carries
+(roughly 65 KB, the reference's own `SIZE = 65535`), so **the alignment is a capability reduction on
+this transport**, not a like-for-like swap. That is the reason for the wait, and it is why the change
+belongs behind the netlayer landing rather than ahead of it. `spec/audit/evidence/ocapn-noise/` carries
+the three facts and the branch they came from.
 
 **`websocket` is built too, and is the weaker of the two** (`ocapn/src/websocket.rs`,
 `api-server.ocapn-listen-websocket`). Its reason to exist is that `@endo/ocapn` 1.1.1 — a *published*

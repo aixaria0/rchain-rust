@@ -21,7 +21,8 @@ consumed exactly once"* is an invariant of consensus, not of an interpreter's ev
 spend rule belongs in the ledger.
 
 - **`rho:rchain:ertp:ledger`** — the native ledger. Operations: `makeKit`, `makePurse`, `balance`,
-  `mint`, `withdraw`, `deposit`, and the four REV operations below.
+  `mint`, `withdraw`, `deposit`, and the four REV operations below (`revBrand`, `revFund`, `revRedeem`,
+  `revWithdraw`).
 - **`rho:rchain:ertp`** — the object API, installed at genesis from
   `casper/src/genesis/resources/ERTP.rho`. It turns ledger operations into objects with arms.
 
@@ -33,7 +34,9 @@ hardcodes holds the object API, and the longer urn stays bound to the native cha
 The ledger holds two kinds of leaf, told apart by a tag byte in the value:
 
 - a **brand** leaf: `blake2b256(brand) → the bytes of the name that may mint it`;
-- a **holding** leaf: `blake2b256(len(brand) ‖ brand ‖ holder) → brand ‖ amount ‖ live`.
+- a **holding** leaf: `blake2b256(len(brand) ‖ brand ‖ holder)` →
+  `tag ‖ u32_le(len(brand)) ‖ brand ‖ i64_le(amount) ‖ live` — the value carries its own brand length,
+  because a brand is variable-width and a total over the prefix has to know where it ends.
 
 The brand is in the value as well as the key, which is not redundant — the key is a hash, so a REV
 total over the prefix could not be taken without it, and that total is what the supply-conservation
@@ -71,12 +74,15 @@ The brand, the authority and the reserve address are all derived from named stri
 (`blake2b256("rchain:rev:brand")`, `…:authority`, `…:ertp-reserve`), so anyone can recompute them. A
 REV amount is a claim on a reserve that vault REV backs:
 
+- `revBrand(ret)` registers the brand and answers with its **bytes, never the authority** — a caller who
+  learned the authority could mint REV, which is the one thing this brand has no arm for;
 - `revFund(funder, amount)` moves REV **from the funder's own vault** — derived from the presented
   `deployerId`, never a supplied address — into the reserve, then credits the purse;
 - `revRedeem(amount, to)` checks the holding, pays the address out of the reserve, then debits;
 - `revWithdraw(amount)` mints a payment out of a purse, so a REV purse is not a one-way door.
 
-**The authority is a Rust constant that is never replied on any channel.** No Rholang term can
+**The authority is derived in Rust** (`rev_authority()` = `blake2b256("rchain:rev:authority")`) **and is
+never replied on any channel.** No Rholang term can
 construct a `GPrivate`, so the authority can never be presented; a byte array of exactly its bytes is
 not a name. The reserve address is derived from a name nobody can construct, so no deploy can spend
 it. `REV_SUPPLY_IS_CONSERVED` is the instrument over both halves: the vault total is invariant, and the
