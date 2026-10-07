@@ -7681,7 +7681,22 @@ different facts — and both go through a rate limiter, because the rate is the 
 `node/src/api/ocapn.rs:an_operators_log_names_the_peer_that_was_admitted_and_when_it_left` drives a
 real CapTP dial and asserts both lines.
 
-**The rows that remain open.** C227, C230, C232, C240 and C241 register what this pass did not fix, each
+**And the limiter itself (C232), which was wider than the row that found it.** `RateLimiter` was a
+fixed window: it admits its whole allowance at once and resets on the wall clock, so a client that
+keeps asking is handed a fresh allowance at every boundary — up to **twice** the configured rate over
+a sliding second, indefinitely. The OCapN bridge found it, but the same type bounds the
+unauthenticated deploy servers and the Kademlia discovery RPC, so this was not a transport defect
+wearing a limiter: it was the limiter. It is a **token bucket** now, refilling only what was spent and
+capped at one second's allowance, and it starts **full** — which preserves the burst a quiet surface
+was granted, so a limiter sized for an interactive caller still answers the first call at once. The
+falsifier is `shared/src/rate_limiter.rs:the_allowance_is_never_granted_twice`: spend the allowance,
+wait half a period, and exactly one token has refilled. **Measured failing against the fixed window**,
+which refused at half a second because nothing refills until the boundary — and the limiter's three
+existing tests pass against both, which is exactly why they were not enough. The row's *other* half —
+one node-global limiter rather than one per peer — is untouched: that is the decision declined with
+Law 63a rather than a defect.
+
+**The rows that remain open.** C227, C230, C240 and C241 register what this pass did not fix, each
 `todo` with what would close it.
 
 **The process, recorded because it is the transferable part.** Ten agents ran; the steelman and one

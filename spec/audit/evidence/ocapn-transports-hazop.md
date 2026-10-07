@@ -89,8 +89,8 @@ booked under is returned so `forget` takes the same key. Both rows are **fixed h
 that can prove a name** — over `websocket` the accepted side has nothing to prove (D2), so the
 assertion is all there is, and that is the transport's protocol rather than a gap this code leaves.
 
-**Tier 2 — registered, not done**: the deferred-answer waiter count (B7),
-`bind_tls` being unreachable (E13), and the fixed-window limiter's 2× boundary (C9).
+**Tier 2 — registered, not done**: the deferred-answer waiter count (B7) and `bind_tls` being
+unreachable (E13).
 
 **Tier 3 — corrected in the docs and comments**: five stale claims (F1, F3, F4, F6, F8) and the
 `listen_tcp` designator comment.
@@ -136,7 +136,7 @@ Rows carry the **adjudicated** disposition (see §6 where the steelman and the a
 | **B8/E15** | N8 | Reverse | shutdown drains the listener but not its detached session tasks | read | S4 | L-B | **partly** (the deploy is submitted before the reply wait; only the peer's answer is cut) | **fixed here** — the operator's stop word ends a session too, so a drain drains the sessions it started |
 | **B9** | N4 | Late | the ceiling is consulted after establishment | read | S4 | L-B | **saves** (the conn does not exist before that; checking earlier would block *all* accepts) | **refuted** |
 | **C7/E14** | N4/N8 | More | one WARN per refused accept | read | S4 | L-B | **partly** (bounded at ~10/s by the backoff) | **closed by decision** — it is the operator's signal |
-| **C9** | N7 | More | one node-global 4/s deploy limiter; the fixed window admits ~2× across a boundary | read | S2 | L-B | **saves** (fairness is declined with Law 63a) | **registered** (the boundary imprecision only) |
+| **C9** | N7 | More | one node-global 4/s deploy limiter; the fixed window admits ~2× across a boundary | read | S2 | L-B | **saves** (fairness is declined with Law 63a) | **fixed here** — `RateLimiter` is a token bucket, so a client that keeps asking is held to the rate rather than re-granted a whole allowance at each boundary |
 | **C10** | N7 | More | bridged deliveries poll the chain API ~480×/s node-wide | reasoned | S4 | L-B | **saves** (a product of two shipped bounds) | **refuted** |
 | **C11** | N1 | More | `open` reassembles with `drain(..take)` per chunk — O(n²) | reasoned | S3 | L-B | **partly** (bounded to ~128 MiB of copy at the cap; no amplification) | **fixed here** — the body is walked by offset rather than drained; the complexity change itself is reasoned, not measured |
 | **C12/D3/E5/E6/F7** | N3 | Late/Early | the identity file's mode was set **after** the write and **never checked on read** | read | S2 | L-C | fails | **fixed here** (`create_new` + `mode(0o600)`; the read refuses a loosened file) |
@@ -244,7 +244,7 @@ most useful output, because each side is right about a different thing; the verd
 | **B2** | must fix | partly (self-healing; `biased` would be worse) | **fixed here** | The steelman's objection was to the *proposed* fix, not the defect, and it stands: `biased` would let one silent arm starve the others. Per-transport accept tasks remove the cancellation without it, which is what landed. |
 | **B4** | should fix | **saves** (per-session blast radius) | **closed by decision** | The steelman is right: the fixtures are rebuilt per session, so a peer stalls only itself. It stays inconsistent with Law 61 and is recorded as such. |
 | **B9** | should fix | **saves** (checking earlier would block all accepts) | **refuted** | The steelman's ordering argument is decisive; the permit cannot precede the connection's existence. |
-| **C9** | register | **saves** (fairness is declined with Law 63a) | **registered, minor** | Only the fixed window's 2× boundary is a defect; the global-vs-per-peer half is the declined decision. |
+| **C9** | register | **saves** (fairness is declined with Law 63a) | **fixed here** | Only the fixed window's 2× boundary was a defect, and it is one now closed in the limiter itself; the global-vs-per-peer half is the declined decision and stays declined. |
 | **D7** | should fix | **saves, reframed** (no transport grants differential authority) | **refuted** as a distinct row | It restates A2/D1: closing websocket would change nothing, because none of the transports binds a deployer identity. |
 | **E11, E16** | register | **saves** | **E11 closed by decision; E16 fixed here** | E11 is harden-by-default with a test-only seam. E16's JSON is an example rather than an enumeration — but the example *is* stale, so the doc is corrected. |
 
