@@ -446,8 +446,9 @@ async fn index_deployers(
 }
 
 /// The index is keyed by `blake2b256(public key)` rather than the 65-byte key: a third smaller, and
-/// the lookup hashes the key it is asked about the same way.
-fn deployer_index_key(deployer: &[u8]) -> Vec<u8> {
+/// it lets a lookup ask by the hash, so checking a key that has never signed does not hand that key
+/// to the node (`lookup_by_deployer` takes this hash).
+pub fn deployer_index_key(deployer: &[u8]) -> Vec<u8> {
     Blake2b256Hash::create(deployer).as_bytes().to_vec()
 }
 
@@ -745,7 +746,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         Ok(vals.into_iter().next().flatten())
     }
 
-    async fn lookup_by_deployer(&self, deployer: &[u8]) -> Result<DeployerLookup, String> {
+    async fn lookup_by_deployer(&self, deployer_hash: &[u8]) -> Result<DeployerLookup, String> {
         let Some(index) = &self.deployer_index else {
             return Err("this node keeps no deployer index".to_string());
         };
@@ -768,7 +769,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             .load(Ordering::SeqCst)
             .max(lowest_held);
         let block = match index
-            .get(&[deployer_index_key(deployer)])
+            .get(&[deployer_hash.to_vec()])
             .await?
             .into_iter()
             .next()
@@ -1125,7 +1126,10 @@ mod tests {
             .await
             .unwrap();
         // An empty chain: the index is complete from genesis.
-        let unseen = storage.lookup_by_deployer(&[7u8; 65]).await.unwrap();
+        let unseen = storage
+            .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+            .await
+            .unwrap();
         assert_eq!(
             unseen,
             DeployerLookup {
@@ -1145,16 +1149,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            storage.lookup_by_deployer(&[7u8; 65]).await.unwrap().block,
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap()
+                .block,
             Some(h1),
             "the first block a key signed in is kept, not overwritten by a later one"
         );
         assert_eq!(
-            storage.lookup_by_deployer(&[8u8; 65]).await.unwrap().block,
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[8u8; 65]))
+                .await
+                .unwrap()
+                .block,
             Some(h1)
         );
         assert_eq!(
-            storage.lookup_by_deployer(&[9u8; 65]).await.unwrap().block,
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[9u8; 65]))
+                .await
+                .unwrap()
+                .block,
             None,
             "a key that never signed is not in the index"
         );
@@ -1164,7 +1180,10 @@ mod tests {
     async fn deployer_index_is_refused_when_not_attached() {
         let storage = build_storage().await;
         assert!(
-            storage.lookup_by_deployer(&[7u8; 65]).await.is_err(),
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .is_err(),
             "a storage without the index must not answer \"not seen\""
         );
     }
@@ -1206,7 +1225,10 @@ mod tests {
             .with_deployer_index(index.clone())
             .await
             .unwrap();
-        let before = upgraded.lookup_by_deployer(&[7u8; 65]).await.unwrap();
+        let before = upgraded
+            .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+            .await
+            .unwrap();
         assert_eq!(
             before,
             DeployerLookup {
@@ -1224,18 +1246,29 @@ mod tests {
             3
         );
         assert_eq!(
-            upgraded.lookup_by_deployer(&[7u8; 65]).await.unwrap(),
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap(),
             DeployerLookup {
                 block: Some(h1),
                 indexed_from: 0
             }
         );
         assert_eq!(
-            upgraded.lookup_by_deployer(&[8u8; 65]).await.unwrap().block,
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[8u8; 65]))
+                .await
+                .unwrap()
+                .block,
             Some(h2)
         );
         assert_eq!(
-            upgraded.lookup_by_deployer(&[9u8; 65]).await.unwrap().block,
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[9u8; 65]))
+                .await
+                .unwrap()
+                .block,
             Some(h3),
             "a validation-failed block's deployer is backfilled, as a live insert would index it"
         );
@@ -1247,7 +1280,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            restarted.lookup_by_deployer(&[7u8; 65]).await.unwrap(),
+            restarted
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap(),
             DeployerLookup {
                 block: Some(h1),
                 indexed_from: 0
@@ -1310,7 +1346,7 @@ mod tests {
             .is_err());
         assert_eq!(
             interrupted
-                .lookup_by_deployer(&[7u8; 65])
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
                 .await
                 .unwrap()
                 .block,
@@ -1329,7 +1365,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            restarted.lookup_by_deployer(&[7u8; 65]).await.unwrap(),
+            restarted
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap(),
             DeployerLookup {
                 block: Some(h1),
                 indexed_from: 0
@@ -1352,7 +1391,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            storage.lookup_by_deployer(&[9u8; 65]).await.unwrap(),
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[9u8; 65]))
+                .await
+                .unwrap(),
             DeployerLookup {
                 block: None,
                 indexed_from: 40

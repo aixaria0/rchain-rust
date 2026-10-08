@@ -336,18 +336,26 @@ drawn from.
 
 ## Has a key signed a deploy? The deployer index
 
-**`GET /api/v1/deployer/<65-byte hex public key>`** answers whether the key has signed a deploy that
-is in a block. Once it has, the key is public, which is what a wallet's quantum key-hygiene check needs
-to know (the [post-quantum plan](../contributor/post-quantum-plan.md) §16.1):
+**`GET /api/v1/deployer/<key>`** answers whether a key has signed a deploy that is in a block. Once
+it has, the key is public, which is what a wallet's quantum key-hygiene check needs to know (the
+[post-quantum plan](../contributor/post-quantum-plan.md) §16.1). `<key>` is the hex `blake2b256` hash
+of the 65-byte uncompressed public key, or the key itself. **A wallet should send the hash**: asking
+about a key that has never signed by sending the key would hand it to the node (and its logs), which
+is the exposure the check exists to avoid. The hash does not reveal the key, and it is not the REV
+address either, so it cannot be computed from an address.
 
 ```sh
-curl -s http://localhost:40403/api/v1/deployer/04f700a4… | jq
+curl -s http://localhost:40403/api/v1/deployer/<64 hex chars> | jq
 # {"block": {…LightBlockInfo…} | null, "indexedFromHeight": 0}
 ```
 
+The answer is about **this node's blocks**: a `null` says no block it holds and has indexed carries a
+deploy from the key, not that the key was never shown to anyone (a deploy sent elsewhere and never
+included, or a signature made off-chain, is outside what any node can see).
+
 - `block` is the first block this node inserted that carries a deploy from the key, or `null`.
 - `indexedFromHeight` is the height the index reaches down to. `0` means every stored block is
-  indexed, so `null` is a true "never signed in a block". A node upgraded onto an existing chain
+  indexed, so `null` means "in no block this node holds". A node upgraded onto an existing chain
   starts above `0` and backfills the older blocks once, in the background (`deployer index backfilled
   from N stored blocks` in the log). Until then a `null` only covers the heights from there up.
   A node that joined by last-finalized-state sync never stored the blocks below the fringe, so it
@@ -358,7 +366,7 @@ curl -s http://localhost:40403/api/v1/deployer/04f700a4… | jq
   "complete on every shard".
 - Every block is indexed, including blocks that failed validation: a deploy in one still published
   the key.
-- A malformed key answers `400`.
+- Anything other than 32 or 65 hex-encoded bytes answers `400`.
 
 The index lives in the shard's `deployer-index` store: one entry per distinct signing key (a 32-byte
 hash of the key → a 32-byte block hash) plus a height marker. It can never hold more entries than the

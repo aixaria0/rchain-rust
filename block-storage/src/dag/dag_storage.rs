@@ -97,12 +97,13 @@ pub trait BlockDagStorage: Send + Sync {
     /// Look up a block hash by the deploy id included in the DAG.
     async fn lookup_by_deploy_id(&self, deploy_id: &DeployId) -> Result<Option<BlockHash>, String>;
 
-    /// A block containing a deploy signed by `deployer` (the 65-byte public key), from the deployer
-    /// index — the first such block this node inserted. No Scala counterpart: it serves the wallet's
+    /// A block containing a deploy signed by the key whose `blake2b256` hash is `deployer_hash`, from
+    /// the deployer index — the first such block this node inserted. It takes the hash, not the key,
+    /// so a wallet checking a key that has never signed need not reveal that key to the node. No Scala counterpart: it serves the wallet's
     /// "has this key been revealed?" check (quantum key hygiene), which otherwise has to scan every
     /// block. The default refuses rather than answering `None`: a backend without the index cannot say
     /// a key is unseen.
-    async fn lookup_by_deployer(&self, _deployer: &[u8]) -> Result<DeployerLookup, String> {
+    async fn lookup_by_deployer(&self, _deployer_hash: &[u8]) -> Result<DeployerLookup, String> {
         Err("this DAG storage keeps no deployer index".to_string())
     }
 

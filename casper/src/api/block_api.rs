@@ -186,9 +186,9 @@ pub trait BlockApi: Send + Sync {
 
     async fn find_deploy(&self, id: &DeployId) -> ApiErr<LightBlockInfo>;
 
-    /// Whether `public_key` has signed a deploy in a block (the deployer index). The default refuses:
-    /// a surface without the index cannot say a key is unseen.
-    async fn find_deployer(&self, _public_key: &[u8]) -> ApiErr<DeployerInfo> {
+    /// Whether the key whose `blake2b256` hash is `deployer_hash` has signed a deploy in a block (the
+    /// deployer index). The default refuses: a surface without the index cannot say a key is unseen.
+    async fn find_deployer(&self, _deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
         Err("this node keeps no deployer index".to_string())
     }
 

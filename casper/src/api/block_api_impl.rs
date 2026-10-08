@@ -680,8 +680,8 @@ impl BlockApi for BlockApiImpl {
         }
     }
 
-    async fn find_deployer(&self, public_key: &[u8]) -> ApiErr<DeployerInfo> {
-        let lookup = self.dag.lookup_by_deployer(public_key).await?;
+    async fn find_deployer(&self, deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
+        let lookup = self.dag.lookup_by_deployer(deployer_hash).await?;
         let block = match lookup.block {
             Some(h) => Some(get_light_block_info(&self.get_block_unsafe(&h).await?)),
             None => None,

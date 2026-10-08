@@ -216,14 +216,14 @@ impl BlockApi for ShardRoutingBlockApi {
     /// "Not seen" holds only when every member says so, and its coverage is the *least* complete of
     /// theirs (the highest `indexed_from_height`). A member that cannot answer fails the whole
     /// lookup — it cannot vouch for its shard, and a `null` without it would read as "never signed".
-    async fn find_deployer(&self, public_key: &[u8]) -> ApiErr<DeployerInfo> {
+    async fn find_deployer(&self, deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
         let mut members: Vec<(&ShardId, &Arc<dyn BlockApi>)> =
             vec![(&self.primary.0, self.primary_api())];
         members.extend(self.shards.iter().filter(|(id, _)| **id != self.primary.0));
         let mut indexed_from_height = 0;
         for (id, api) in members {
             let info = api
-                .find_deployer(public_key)
+                .find_deployer(deployer_hash)
                 .await
                 .map_err(|e| format!("shard {id}: {e}"))?;
             if info.block.is_some() {
@@ -880,7 +880,7 @@ mod tests {
             block: Some(child.marked_block()),
             indexed_from_height: 0,
         }));
-        let found = api.find_deployer(&[4u8; 65]).await.unwrap();
+        let found = api.find_deployer(&[4u8; 32]).await.unwrap();
         assert_eq!(
             found.block.map(|b| b.shard_id),
             Some("/root/child".to_string()),
@@ -891,7 +891,7 @@ mod tests {
         *primary.deployer.lock().unwrap() = Some(unseen(0));
         *child.deployer.lock().unwrap() = Some(unseen(40));
         assert_eq!(
-            api.find_deployer(&[4u8; 65]).await.unwrap(),
+            api.find_deployer(&[4u8; 32]).await.unwrap(),
             DeployerInfo {
                 block: None,
                 indexed_from_height: 40
@@ -901,7 +901,7 @@ mod tests {
 
         let (api, primary, _child) = router();
         *primary.deployer.lock().unwrap() = Some(unseen(0));
-        let err = api.find_deployer(&[4u8; 65]).await.unwrap_err();
+        let err = api.find_deployer(&[4u8; 32]).await.unwrap_err();
         assert!(
             err.contains("/root/child"),
             "a member that cannot answer fails the lookup rather than reading as unseen: {err}"
