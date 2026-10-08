@@ -211,10 +211,30 @@ impl BlockApi for ShardRoutingBlockApi {
         .await
     }
 
-    /// The primary shard's index: a key is one identity across a node's shards, and a wallet asks
-    /// the shard it deploys to.
+    /// **Every member shard, not only the primary.** A key is one identity across the node's shards,
+    /// so it is public once it has signed on any of them: a block on any member answers at once.
+    /// "Not seen" holds only when every member says so, and its coverage is the *least* complete of
+    /// theirs (the highest `indexed_from_height`). A member that cannot answer fails the whole
+    /// lookup — it cannot vouch for its shard, and a `null` without it would read as "never signed".
     async fn find_deployer(&self, public_key: &[u8]) -> ApiErr<DeployerInfo> {
-        self.primary_api().find_deployer(public_key).await
+        let mut members: Vec<(&ShardId, &Arc<dyn BlockApi>)> =
+            vec![(&self.primary.0, self.primary_api())];
+        members.extend(self.shards.iter().filter(|(id, _)| **id != self.primary.0));
+        let mut indexed_from_height = 0;
+        for (id, api) in members {
+            let info = api
+                .find_deployer(public_key)
+                .await
+                .map_err(|e| format!("shard {id}: {e}"))?;
+            if info.block.is_some() {
+                return Ok(info);
+            }
+            indexed_from_height = indexed_from_height.max(info.indexed_from_height);
+        }
+        Ok(DeployerInfo {
+            block: None,
+            indexed_from_height,
+        })
     }
 
     async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {
@@ -317,6 +337,8 @@ mod tests {
         shard_id: String,
         deployed: Mutex<Vec<String>>,
         calls: Mutex<Vec<&'static str>>,
+        /// What `find_deployer` answers; `None` is the trait default (no index).
+        deployer: Mutex<Option<ApiErr<DeployerInfo>>>,
     }
 
     impl StubApi {
@@ -325,6 +347,7 @@ mod tests {
                 shard_id: shard_id.to_string(),
                 deployed: Mutex::new(Vec::new()),
                 calls: Mutex::new(Vec::new()),
+                deployer: Mutex::new(None),
             }
         }
 
@@ -507,6 +530,14 @@ mod tests {
         async fn deploy_status(&self, _: &DeployId) -> ApiErr<DeployExecStatus> {
             self.record("deploy_status");
             Err(format!("{} has no such deploy", self.shard_id))
+        }
+        async fn find_deployer(&self, _: &[u8]) -> ApiErr<DeployerInfo> {
+            self.record("find_deployer");
+            self.deployer
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| Err(format!("{} keeps no deployer index", self.shard_id)))
         }
         async fn find_deploy(&self, _: &DeployId) -> ApiErr<LightBlockInfo> {
             self.record("find_deploy");
@@ -829,5 +860,51 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("not among"), "{err}");
+    }
+
+    /// Review of #277: a key used only on a secondary shard is public, so a negative answer from the
+    /// primary must not end the search; and "not seen" is only as complete as the least complete
+    /// member, and only when every member can answer.
+    #[tokio::test]
+    async fn find_deployer_searches_every_member_shard() {
+        let unseen = |from| {
+            Ok(DeployerInfo {
+                block: None,
+                indexed_from_height: from,
+            })
+        };
+
+        let (api, primary, child) = router();
+        *primary.deployer.lock().unwrap() = Some(unseen(0));
+        *child.deployer.lock().unwrap() = Some(Ok(DeployerInfo {
+            block: Some(child.marked_block()),
+            indexed_from_height: 0,
+        }));
+        let found = api.find_deployer(&[4u8; 65]).await.unwrap();
+        assert_eq!(
+            found.block.map(|b| b.shard_id),
+            Some("/root/child".to_string()),
+            "a key seen only on the secondary shard is found there"
+        );
+
+        let (api, primary, child) = router();
+        *primary.deployer.lock().unwrap() = Some(unseen(0));
+        *child.deployer.lock().unwrap() = Some(unseen(40));
+        assert_eq!(
+            api.find_deployer(&[4u8; 65]).await.unwrap(),
+            DeployerInfo {
+                block: None,
+                indexed_from_height: 40
+            },
+            "coverage is the least complete member's"
+        );
+
+        let (api, primary, _child) = router();
+        *primary.deployer.lock().unwrap() = Some(unseen(0));
+        let err = api.find_deployer(&[4u8; 65]).await.unwrap_err();
+        assert!(
+            err.contains("/root/child"),
+            "a member that cannot answer fails the lookup rather than reading as unseen: {err}"
+        );
     }
 }

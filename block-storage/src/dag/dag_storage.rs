@@ -21,9 +21,11 @@ pub type DeployId = Vec<u8>;
 /// from which that knowledge is complete.
 ///
 /// `indexed_from` is the lowest height at and above which **every** block this node has inserted was
-/// indexed. A node that started indexing on an existing chain has not read the blocks below it, so
-/// `block: None` with `indexed_from > 0` means "not in any block from `indexed_from` up" — never "this
-/// key has never signed". A node that has indexed from genesis reports `0`.
+/// indexed. It is never below the lowest block the node holds: a node that started indexing on an
+/// existing chain has not read the blocks below its marker, and a node that joined by last-finalized-
+/// state sync never stored the blocks below the fringe. So `block: None` with `indexed_from > 0` means
+/// "not in any block from `indexed_from` up" — never "this key has never signed". A node that holds
+/// and has indexed every block from genesis reports `0`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeployerLookup {
     pub block: Option<BlockHash>,

@@ -210,9 +210,9 @@ impl BlockDagKeyValueStorage {
         Ok(self)
     }
 
-    /// Index the stored blocks below `indexed_from`, then record the index as complete (`0`). Run
-    /// once in the background after an upgrade; a no-op when the index is already complete or not
-    /// attached. Takes the insert lock one block at a time, so the node keeps inserting meanwhile.
+    /// Index every block already in the DAG, then record the index as complete (`0`). Run once in
+    /// the background after an upgrade; a no-op when the index is already complete or not attached.
+    /// A crash part-way leaves the marker where it was, so the next start runs it again. Takes the insert lock one block at a time, so the node keeps inserting meanwhile.
     /// Returns the number of blocks read.
     pub async fn backfill_deployer_index(
         &self,
@@ -225,13 +225,12 @@ impl BlockDagKeyValueStorage {
         if upto <= 0 {
             return Ok(0);
         }
+        // Every block in the DAG, not the height map: the height map leaves out validation-failed
+        // blocks, and `insert` indexes those too, so walking it would leave an upgraded node short of
+        // a fresh one (review of #277). Blocks already indexed cost a read and write nothing.
         let hashes: Vec<BlockHash> = {
             let repr = self.get_representation().await;
-            repr.height_map
-                .iter()
-                .filter(|(h, _)| i64::from(**h) < upto)
-                .flat_map(|(_, hs)| hs.iter().copied())
-                .collect()
+            repr.dag_set.iter().copied().collect()
         };
         for hash in &hashes {
             let block = block_store
@@ -590,6 +589,17 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             .put(&[(fringe_hash, fringe_data.clone())])
             .await?;
 
+        // The deployer index is data too, so it is written **before** the block becomes known (review
+        // of #277). In the other order a crash between the two writes left the block known — and
+        // `insert` returns early for a known block, so nothing would ever index it again — while the
+        // index reported itself complete. This way a crash leaves at worst an entry for a block that
+        // is not in the DAG yet; the block is in the block store (the receiver stores it before it
+        // inserts), so that entry is still a true "this key signed in a block this node holds", and
+        // the re-insert finds it already present.
+        if let Some(index) = &self.deployer_index {
+            index_deployers(index.as_ref(), &block).await?;
+        }
+
         // Only now make the block known. Everything above this line is data the block *refers to*;
         // this is the pointer, and the crash window it opens is the one described at the top of this
         // function — an orphan fringe record rather than a block with no fringe.
@@ -612,9 +622,6 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 .collect();
             self.deploy_index.put(&pairs).await?;
             self.deploy_store.delete(&deploy_hashes).await?;
-        }
-        if let Some(index) = &self.deployer_index {
-            index_deployers(index.as_ref(), &block).await?;
         }
 
         // Mark the newly-finalized blocks' metadata with their member fringe.
@@ -742,9 +749,24 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         let Some(index) = &self.deployer_index else {
             return Err("this node keeps no deployer index".to_string());
         };
-        // Read the height first: a backfill that completes between the two reads can only make the
+        // Read the coverage first: a backfill that completes between the two reads can only make the
         // answer more complete than the height it is reported with, never less.
-        let indexed_from = self.deployer_indexed_from.load(Ordering::SeqCst);
+        //
+        // **Coverage is also bounded by what this node holds.** A node that joined by syncing from a
+        // finalized fringe inserts only the blocks above it, so its index — complete for everything
+        // it has — knows nothing of the chain below its lowest block. Reporting 0 there would turn
+        // "not in my blocks" into "never signed".
+        let lowest_held = self
+            .get_representation()
+            .await
+            .height_map
+            .keys()
+            .next()
+            .map_or(0, |h| i64::from(*h));
+        let indexed_from = self
+            .deployer_indexed_from
+            .load(Ordering::SeqCst)
+            .max(lowest_held);
         let block = match index
             .get(&[deployer_index_key(deployer)])
             .await?
@@ -1114,11 +1136,11 @@ mod tests {
 
         let (h1, h2) = (hash(1), hash(2));
         storage
-            .insert(meta_seq(h1, &[], 1), block_signed_by(h1, &[7, 8]))
+            .insert(meta_seq(h1, &[], 0), block_signed_by(h1, &[7, 8]))
             .await
             .unwrap();
         storage
-            .insert(meta_seq(h2, &[h1], 2), block_signed_by(h2, &[7]))
+            .insert(meta_seq(h2, &[h1], 1), block_signed_by(h2, &[7]))
             .await
             .unwrap();
 
@@ -1158,16 +1180,23 @@ mod tests {
                 Arc::new(BlockHashCodec),
                 Arc::new(rchain_block_storage::dag::codecs::BlockMessageCodec),
             ));
-        let (h1, h2) = (hash(1), hash(2));
+        let (h1, h2, h3) = (hash(1), hash(2), hash(3));
         {
-            // The old node: no index.
+            // The old node: no index. `h3` failed validation, so the height map leaves it out —
+            // but `insert` indexes a failed block's deployers, so the backfill must too.
             let old = build_storage_over(metadata_store.clone()).await;
-            for (h, parents, height, keys) in
-                [(h1, vec![], 1, vec![7u8]), (h2, vec![h1], 2, vec![8u8])]
-            {
+            for (h, parents, height, keys, failed) in [
+                (h1, vec![], 0, vec![7u8], false),
+                (h2, vec![h1], 1, vec![8u8], false),
+                (h3, vec![h2], 2, vec![9u8], true),
+            ] {
                 let b = block_signed_by(h, &keys);
                 block_store.put(&[(h, b.clone())]).await.unwrap();
-                old.insert(meta_seq(h, &parents, height), b).await.unwrap();
+                let m = BlockMetadata {
+                    validation_failed: failed,
+                    ..meta_seq(h, &parents, height)
+                };
+                old.insert(m, b).await.unwrap();
             }
         }
 
@@ -1182,9 +1211,9 @@ mod tests {
             before,
             DeployerLookup {
                 block: None,
-                indexed_from: 3
+                indexed_from: 2
             },
-            "before the backfill the answer says the heights below 3 are unread"
+            "before the backfill the answer says the heights below 2 are unread"
         );
 
         assert_eq!(
@@ -1192,7 +1221,7 @@ mod tests {
                 .backfill_deployer_index(&block_store)
                 .await
                 .unwrap(),
-            2
+            3
         );
         assert_eq!(
             upgraded.lookup_by_deployer(&[7u8; 65]).await.unwrap(),
@@ -1204,6 +1233,11 @@ mod tests {
         assert_eq!(
             upgraded.lookup_by_deployer(&[8u8; 65]).await.unwrap().block,
             Some(h2)
+        );
+        assert_eq!(
+            upgraded.lookup_by_deployer(&[9u8; 65]).await.unwrap().block,
+            Some(h3),
+            "a validation-failed block's deployer is backfilled, as a live insert would index it"
         );
 
         // Persisted: a restart over the same index store is complete without another backfill.
@@ -1225,6 +1259,104 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    /// A metadata store whose writes fail: what `insert` leaves behind when it is interrupted at
+    /// the point that makes a block known.
+    struct FailingPutStore(InMemoryKeyValueStore);
+
+    impl KeyValueStore for FailingPutStore {
+        fn get(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            self.0.get(keys)
+        }
+        fn put(&mut self, _pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+            Err("interrupted".to_string())
+        }
+        fn delete(&mut self, keys: &[Vec<u8>]) -> Result<usize, String> {
+            self.0.delete(keys)
+        }
+        fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+            self.0.entries()
+        }
+    }
+
+    /// Review of #277: the index is written before the block becomes known, so an insert interrupted
+    /// there leaves no known block with a missing signer, and the retry after a restart completes it.
+    #[tokio::test]
+    async fn deployer_index_survives_an_insert_interrupted_before_the_block_is_known() {
+        let failing: Shared = Arc::new(tokio::sync::Mutex::new(Box::new(FailingPutStore(
+            InMemoryKeyValueStore::default(),
+        ))));
+        let failing_metadata = Arc::new(
+            BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+                failing,
+                Arc::new(BlockHashCodec),
+                Arc::new(BlockMetadataCodec),
+            )))
+            .await
+            .unwrap(),
+        );
+        let index = deployer_index_store();
+        let h1 = hash(1);
+        let interrupted = build_storage_over_unshared(failing_metadata)
+            .await
+            .with_deployer_index(index.clone())
+            .await
+            .unwrap();
+        assert!(interrupted
+            .insert(meta_seq(h1, &[], 0), block_signed_by(h1, &[7]))
+            .await
+            .is_err());
+        assert_eq!(
+            interrupted
+                .lookup_by_deployer(&[7u8; 65])
+                .await
+                .unwrap()
+                .block,
+            Some(h1),
+            "the signer was indexed before the write that makes the block known"
+        );
+
+        // Restart over a healthy store: the block is not known, so its re-insert runs in full.
+        let restarted = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deployer_index(index)
+            .await
+            .unwrap();
+        restarted
+            .insert(meta_seq(h1, &[], 0), block_signed_by(h1, &[7]))
+            .await
+            .unwrap();
+        assert_eq!(
+            restarted.lookup_by_deployer(&[7u8; 65]).await.unwrap(),
+            DeployerLookup {
+                block: Some(h1),
+                indexed_from: 0
+            }
+        );
+    }
+
+    /// A node that joined by syncing from a fringe holds no blocks below it, so its coverage starts
+    /// at its lowest block — never 0 — however complete its index is for the blocks it has.
+    #[tokio::test]
+    async fn deployer_index_coverage_starts_at_the_lowest_block_held() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deployer_index(deployer_index_store())
+            .await
+            .unwrap();
+        let h = hash(5);
+        storage
+            .insert(meta_seq(h, &[], 40), block_signed_by(h, &[7]))
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.lookup_by_deployer(&[9u8; 65]).await.unwrap(),
+            DeployerLookup {
+                block: None,
+                indexed_from: 40
+            }
         );
     }
 

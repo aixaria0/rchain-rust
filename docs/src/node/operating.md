@@ -350,6 +350,14 @@ curl -s http://localhost:40403/api/v1/deployer/04f700a4… | jq
   indexed, so `null` is a true "never signed in a block". A node upgraded onto an existing chain
   starts above `0` and backfills the older blocks once, in the background (`deployer index backfilled
   from N stored blocks` in the log). Until then a `null` only covers the heights from there up.
+  A node that joined by last-finalized-state sync never stored the blocks below the fringe, so it
+  reports the lowest height it holds and stays above `0`; ask a node that has the whole chain for a
+  full answer.
+- On a multi-shard node the lookup searches every member shard. `block` is the first hit (the primary
+  shard first), and `indexedFromHeight` is the highest of the members' values, so `0` still means
+  "complete on every shard".
+- Every block is indexed, including blocks that failed validation: a deploy in one still published
+  the key.
 - A malformed key answers `400`.
 
 The index lives in the shard's `deployer-index` store: one entry per distinct signing key (a 32-byte

@@ -27,7 +27,9 @@ pub type ApiErr<A> = Result<A, String>;
 /// What the node knows about one deployer key (`GET /api/v1/deployer/{pubkey}`): a block that
 /// includes a deploy it signed — which means the key is public — and how far down the index reaches.
 /// `block: None` is "not in any block" only when `indexed_from_height` is 0; above 0 the node is
-/// still backfilling the blocks below that height after an upgrade.
+/// still backfilling the blocks below that height after an upgrade, or (after last-finalized-state
+/// sync) does not hold them at all. A multi-shard node searches every member shard and reports the
+/// highest member's `indexed_from_height`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeployerInfo {
