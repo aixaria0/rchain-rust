@@ -4314,6 +4314,7 @@ mod tests {
     #[test]
     fn shift_left_is_charged_on_the_results_size() {
         for x in [
+            0,
             1_i64,
             0x7f,
             0x80,
@@ -4335,6 +4336,8 @@ mod tests {
         }
         assert_eq!(Costs::shift_left_result_size(7, 1), 2);
         assert_eq!(Costs::shift_left_result_size(7, 0), 1);
+        assert_eq!(Costs::shift_left_result_size(0, 8), 1);
+        assert_eq!(Costs::shift_left_result_size(0, u64::MAX), 1);
 
         // At the call site: a `BigInt` operand takes the charged path, and is charged exactly the
         // result's size.
@@ -4351,6 +4354,8 @@ mod tests {
             (cost.total_charged() - before, Costs::big_int_size(r))
         };
         for (x, n) in [
+            ("0", 8),
+            ("0", 1_000_000),
             ("127", 1),
             ("127", 9),
             ("255", 1),

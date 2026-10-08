@@ -290,6 +290,10 @@ impl Costs {
     /// (`x`'s remaining bits and the shift can cross a byte boundary together, which summing
     /// `big_int_size(x)` and `n / 8` misses).
     pub fn shift_left_result_size(x_bits: u64, n: u64) -> i64 {
+        // Zero shifted is still zero: no width is added.
+        if x_bits == 0 {
+            return 1;
+        }
         i64::try_from(x_bits.saturating_add(n) / 8 + 1).unwrap_or(i64::MAX)
     }
     pub fn to_list_cost(size: i64) -> Cost {
