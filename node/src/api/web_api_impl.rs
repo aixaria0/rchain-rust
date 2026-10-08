@@ -329,6 +329,11 @@ mod tests {
         assert_eq!(by_hash.indexed_from_height, 0xab);
 
         let key = [4u8; 65];
+        // The same vector r-wallet's unit tests pin for `deployer_key_hash`: the two must agree.
+        assert_eq!(
+            base16::encode(&deployer_index_key(&key)),
+            "b0ec3ad69aacbdc6499f533d58abd768331f5977fb42d302c3cf7f8a401e75f1"
+        );
         let by_key = web.find_deployer(&base16::encode(&key)).await.unwrap();
         assert_eq!(
             by_key.indexed_from_height,
