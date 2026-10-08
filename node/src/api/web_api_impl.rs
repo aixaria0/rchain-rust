@@ -1,6 +1,6 @@
 //! Web API implementation (port of `WebApi.WebApiImpl`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +44,7 @@ pub struct WebApiImpl {
     /// Faucet accounting is one lock so concurrent requests cannot pass separate address/total checks.
     faucet_ledger: Arc<Mutex<FaucetLedger>>,
     faucet_ledger_path: Option<PathBuf>,
+    recovering_faucet_drips: Mutex<HashSet<String>>,
 }
 
 impl WebApiImpl {
@@ -60,6 +61,7 @@ impl WebApiImpl {
             shard_id,
             faucet_ledger: Arc::new(Mutex::new(FaucetLedger::default())),
             faucet_ledger_path: None,
+            recovering_faucet_drips: Mutex::new(HashSet::new()),
         }
     }
 
@@ -85,6 +87,12 @@ impl WebApiImpl {
                 path.display()
             ));
         }
+        let mut recovering = self
+            .recovering_faucet_drips
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        recovering.extend(ledger.pending.keys().cloned());
+        drop(recovering);
         self.faucet_ledger = Arc::new(Mutex::new(ledger));
         self.faucet_ledger_path = Some(path);
         Ok(self)
@@ -152,11 +160,10 @@ impl WebApiImpl {
         refund: bool,
     ) -> Result<(), BlockApiException> {
         let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
-        let matches = match (ledger.pending.get(address), expected) {
-            (Some(None), None) => true,
-            (Some(Some(actual)), Some(expected)) => actual.as_slice() == expected,
-            _ => false,
-        };
+        let matches = ledger
+            .pending
+            .get(address)
+            .is_some_and(|pending| expected.is_some_and(|sig| pending.sig.as_slice() == sig));
         if matches {
             let mut next = ledger.clone();
             next.pending.remove(address);
@@ -165,16 +172,26 @@ impl WebApiImpl {
             }
             self.save_faucet_ledger(&next)?;
             *ledger = next;
+            self.recovering_faucet_drips
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(address);
         }
         Ok(())
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct PendingFaucetDeploy {
+    sig: Vec<u8>,
+    /// Exact signed wire payload; resubmitting it after a crash preserves the deploy ID.
+    signed: Vec<u8>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct FaucetLedger {
-    /// The deploy signature is persisted before submission. After a crash, an unknown
-    /// outcome stays reserved until the chain reports a definitive result.
-    pending: HashMap<String, Option<Vec<u8>>>,
+    /// Persist before submission so a crash cannot make an unknown drip eligible again.
+    pending: HashMap<String, PendingFaucetDeploy>,
     spent: i64,
 }
 
@@ -673,7 +690,7 @@ mod tests {
         let first = api(stub, Some(sk.clone()))
             .with_persistent_faucet_ledger(path.clone())
             .expect("open ledger");
-        first.faucet(&address).await.expect("first submission");
+        let first_response = first.faucet(&address).await.expect("first submission");
         drop(first);
 
         let restarted = api(
@@ -690,12 +707,20 @@ mod tests {
             restarted.capabilities().await.unwrap().faucet_remaining,
             FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
         );
+        let recovered = restarted
+            .faucet(&address)
+            .await
+            .expect("resubmit identical deploy");
+        assert_eq!(recovered.deploy_id, first_response.deploy_id);
+        assert_eq!(deployed.lock().unwrap().len(), 2);
+        let submissions = deployed.lock().unwrap();
+        assert_eq!(submissions[0], submissions[1]);
+        drop(submissions);
         let blocked = restarted
             .faucet(&address)
             .await
-            .expect_err("pending survives restart");
+            .expect_err("pending remains reserved");
         assert!(blocked.0.contains("still pending"));
-        assert_eq!(deployed.lock().unwrap().len(), 1);
 
         *status.lock().unwrap() = Ok(DomainExecStatus::ProcessedWithError {
             deploy_error: "preCharge: insufficient funds".to_string(),
@@ -705,7 +730,7 @@ mod tests {
             .faucet(&address)
             .await
             .expect("failed replay permits retry");
-        assert_eq!(deployed.lock().unwrap().len(), 2);
+        assert_eq!(deployed.lock().unwrap().len(), 3);
         assert_eq!(
             restarted.capabilities().await.unwrap().faucet_remaining,
             FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
@@ -714,6 +739,44 @@ mod tests {
         let bytes = std::fs::read(&path).expect("durable ledger");
         let persisted: FaucetLedger = serde_json::from_slice(&bytes).expect("valid ledger");
         assert_eq!(persisted.spent, faucet::FAUCET_AMOUNT);
+        std::fs::remove_dir_all(&dir).expect("clean test directory");
+    }
+
+    #[tokio::test]
+    async fn crash_between_reservation_and_submit_resends_the_same_deploy() {
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
+        let dir = std::env::temp_dir().join(format!(
+            "faucet-before-submit-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = dir.join("faucet.json");
+        let signed = faucet::sign_faucet_deploy(&sk, &address, faucet::FAUCET_AMOUNT, "root", 0)
+            .expect("sign drip");
+        let mut ledger = FaucetLedger::default();
+        ledger.pending.insert(
+            address.clone(),
+            PendingFaucetDeploy {
+                sig: signed.sig.clone(),
+                signed: signed.to_bytes(),
+            },
+        );
+        ledger.spent = faucet::FAUCET_AMOUNT;
+        WebApiImpl::write_faucet_ledger(&path, &ledger).expect("durably reserve");
+
+        let stub = StubBlockApi::default();
+        let deployed = stub.deployed.clone();
+        let web = api(stub, Some(sk))
+            .with_persistent_faucet_ledger(path.clone())
+            .expect("reload");
+        let recovered = web.faucet(&address).await.expect("resubmit after crash");
+        assert_eq!(recovered.deploy_id, base16::encode(&signed.sig));
+        assert_eq!(deployed.lock().unwrap().as_slice(), &[signed]);
+        assert_eq!(
+            web.capabilities().await.unwrap().faucet_remaining,
+            FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
+        );
         std::fs::remove_dir_all(&dir).expect("clean test directory");
     }
 
@@ -1014,14 +1077,7 @@ impl WebApi for WebApiImpl {
             ledger.pending.get(address).cloned()
         };
         if let Some(pending) = pending {
-            let deploy_id = match pending {
-                None => {
-                    return Err(BlockApiException(format!(
-                        "faucet: address {address} already has a drip submission in progress"
-                    )))
-                }
-                Some(deploy_id) => deploy_id,
-            };
+            let deploy_id = pending.sig;
 
             match self
                 .block_api
@@ -1033,9 +1089,38 @@ impl WebApi for WebApiImpl {
                     self.clear_faucet_reservation(address, Some(&deploy_id), true)?;
                 }
                 CasperDeployExecStatus::NotProcessed { status } => {
+                    // A crash may have happened after the reservation was made but before
+                    // submission. Re-submit the *same signed deploy*, never a new drip ID.
+                    let recovering = self
+                        .recovering_faucet_drips
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .contains(address);
+                    if recovering {
+                        let signed = SignedDeployData::from_bytes(&pending.signed)
+                            .map_err(|e| BlockApiException(format!("faucet recovery: {e}")))?;
+                        if signed.sig != deploy_id || !signed.verify_signature() {
+                            return Err(BlockApiException(
+                                "faucet recovery: invalid signed deploy".to_string(),
+                            ));
+                        }
+                        self.block_api
+                            .deploy(&signed)
+                            .await
+                            .map_err(BlockApiException)?;
+                        self.recovering_faucet_drips
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(address);
+                        return Ok(FaucetResponse {
+                            deploy_id: base16::encode(&deploy_id),
+                            amount: faucet::FAUCET_AMOUNT,
+                            to: address.to_string(),
+                        });
+                    }
                     return Err(BlockApiException(format!(
                         "faucet: previous drip for {address} is still pending ({status})"
-                    )))
+                    )));
                 }
                 CasperDeployExecStatus::ProcessedWithSuccess { block, .. } => {
                     let finalized = self

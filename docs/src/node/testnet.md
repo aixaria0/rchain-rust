@@ -106,8 +106,9 @@ needs to fund a fresh address. It is a **dev-mode** endpoint: the node must be s
 the route is not mounted at all, so a keyless node answers `404`**, and it reports `faucet: false` in
 its capability list. Once #246 lands, `faucetRemaining` reports the remaining allocation in drops;
 a dry faucet reports `faucet: false`. The 10,000 REV allocation and unresolved deploy reservations
-are stored in the node's data directory so ordinary process restarts preserve both. A deploy whose
-outcome is still unknown remains reserved until the node can reconcile its status.
+are stored in the node's data directory so ordinary process restarts preserve both. After a crash,
+an unresolved drip is retried with its original signed deploy and deploy ID; the reservation remains
+until its chain outcome can be reconciled.
 
 | node | faucet |
 |---|---|
