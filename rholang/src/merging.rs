@@ -639,6 +639,74 @@ mod tests {
 mod codec_tests {
     use super::*;
 
+    fn action(prefix: u8, seed: u8, value: Vec<u8>) -> NativeStoreAction {
+        NativeStoreAction::Put {
+            prefix,
+            key: Blake2b256Hash::from_bytes([seed; 32]),
+            value,
+        }
+    }
+
+    /// **A record written before attribution existed decodes as unattributed, and never as empty**
+    /// (#280).
+    ///
+    /// The three states have to stay three. Collapsing `LegacyUnattributed(nonempty)` into
+    /// `Attributed(..)` is how a block's effects get filed under the block — the representation the
+    /// defect lived in — and collapsing it into "empty" is how they vanish without a trace.
+    #[test]
+    fn a_legacy_sidecar_decodes_as_unattributed_and_not_as_empty() {
+        let legacy = encode_native_store_actions(&[action(0x04, 1, vec![9])]);
+        let record = decode_sidecar(&legacy).expect("a legacy record still decodes");
+        match record {
+            SidecarRecord::LegacyUnattributed(actions) => {
+                assert_eq!(actions.len(), 1, "with its actions, not dropped");
+            }
+            other => panic!("a legacy record must not read as attributed: {other:?}"),
+        }
+        // And the empty case is a *different* variant from the attributed-empty one.
+        let empty = decode_sidecar(&encode_native_store_actions(&[])).expect("an empty record");
+        assert!(
+            matches!(empty, SidecarRecord::LegacyUnattributed(ref a) if a.is_empty()),
+            "an empty legacy record is empty-legacy, not attributed-empty: {empty:?}"
+        );
+        assert!(
+            empty.usable().is_ok(),
+            "and it is usable — there is no effect to mis-attribute"
+        );
+    }
+
+    /// **The attributed form round-trips, and a damaged one is an error rather than an empty record**
+    /// (#280).
+    #[test]
+    fn an_attributed_sidecar_round_trips_and_a_damaged_one_is_not_read_as_empty() {
+        let effects = BlockNativeEffects::from_map(BTreeMap::from([
+            (0u32, vec![action(0x04, 2, vec![1, 2])]),
+            (3u32, vec![action(0x05, 4, vec![3])]),
+        ]));
+        let encoded = encode_sidecar(&SidecarRecord::Attributed(effects.clone()));
+        let decoded = decode_sidecar(&encoded).expect("a round trip");
+        assert_eq!(
+            decoded,
+            SidecarRecord::Attributed(effects),
+            "the encoding is its own inverse"
+        );
+
+        // Truncated: an `Err`, never an empty record — a decoder that answered "nothing" here would
+        // silently drop a block's native state.
+        let truncated = &encoded[..encoded.len() - 1];
+        assert!(
+            decode_sidecar(truncated).is_err(),
+            "a truncated record is an error, not an empty one"
+        );
+        // And a record whose tail is not part of any write the writer could have made.
+        let mut extra = encoded.clone();
+        extra.push(0);
+        assert!(
+            decode_sidecar(&extra).is_err(),
+            "trailing bytes mean the record is not one this writer makes: {extra:?}"
+        );
+    }
+
     /// The mergeable key and channel data are a **scodec wire format** shared with the Scala node's
     /// mergeable store, so the encodings are pinned byte-for-byte: a change here would make the Rust
     /// node's mergeable keys unreadable (or silently *different*) from a Scala-produced one.

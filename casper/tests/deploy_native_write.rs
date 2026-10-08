@@ -30,7 +30,6 @@ use rchain_rholang::native_state::NativeSystemState;
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::system_processes::BlockData;
 use rchain_rholang::util::rev_address::RevAddress;
-use rchain_rspace::native_store::NativeStoreAction;
 use rchain_shared::refined::NonNegI64;
 
 use common::{build_runtime_manager_with_mode, fringe_state};
@@ -409,13 +408,16 @@ async fn a_merged_block_reproduces_its_own_post_state() {
         .map(|u| u.mergeable.clone())
         .chain(system.iter().map(|s| s.mergeable.clone()))
         .collect();
-    let sidecar: Vec<NativeStoreAction> = match rm
+    // **The attributed record, unflattened** (#280): `BlockIndex::apply` places each deploy's actions
+    // on the chain that carries it, so the flattened list an earlier revision built here is neither
+    // what the index takes nor a shape in which a write is attributable at all.
+    let sidecar = match rm
         .load_native_changes(post_state.as_bytes(), &sender, 0)
         .await
         .expect("the sidecar read is not a store error")
         .expect("compute_state must have saved a sidecar for the block it just played")
     {
-        SidecarRecord::Attributed(effects) => effects.into_map().into_values().flatten().collect(),
+        SidecarRecord::Attributed(effects) => effects,
         other => panic!("a played block's sidecar must be attributed; got {other:?}"),
     };
     let executor = RevAddress::from_public_key(&PublicKey::new(sender.clone()))
@@ -450,7 +452,7 @@ async fn a_merged_block_reproduces_its_own_post_state() {
         conflict_scope: BTreeSet::from([BlockHash::new(*post_state.as_bytes())]),
         ancestry: BTreeMap::new(),
     };
-    let (merged, rejected) = MergeScope::merge(
+    let outcome = MergeScope::merge(
         &scope,
         start,
         &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -460,6 +462,7 @@ async fn a_merged_block_reproduces_its_own_post_state() {
     )
     .await
     .expect("a lone block merges");
+    let (merged, rejected) = (outcome.state, outcome.rejected_deploys);
     assert!(rejected.is_empty(), "nothing to conflict with");
 
     assert_eq!(

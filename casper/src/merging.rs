@@ -259,6 +259,129 @@ impl DeployIndex {
     }
 }
 
+/// **What a merge did, in the terms an operator needs** (#280).
+///
+/// `MergeScope::merge` has no log handle — the `search_census` module says why — so it *returns* what
+/// it did and the caller that holds a logger reports it. The precedent is
+/// [`ParentsMergedState::finality_stall`], which exists for exactly this reason.
+///
+/// **Why the incident needed it.** A merge on the live net rejected a boundary chain and, with it, a
+/// user deploy that had ridden in on that block. The rejected deploy's id went into the block's
+/// `rejectedDeploys`, the deploy's own status stayed `ProcessedWithSuccess`, and **no counter and no
+/// line anywhere moved** — `reject_whole_blocks` had no log handle, and `search_census::record` ran
+/// before it, so even the merge-work gauges never saw it. This is that missing ledger.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeReport {
+    /// Chains in the conflict scope, and how they resolved.
+    pub conflict_chains: usize,
+    pub kept_chains: usize,
+    pub rejected_chains: usize,
+    /// The native slots the **rejected** chains would have written, with the host that wrote each:
+    /// the effects of a rejection, named. They had no name before this.
+    pub dropped_native_slots: Vec<(Blake2b256Hash, (u8, Blake2b256Hash))>,
+    /// Rejected chains that carried cost-accounting moves — **the #280 class**, where a deploy's own
+    /// economics die with a contention it had no part in. A count, because the ids are in the merge's
+    /// `rejected_deploys` beside it.
+    pub rejected_cost_accounted_chains: usize,
+    /// **I1 — every rejected chain conflicts with a kept chain, or depends on a rejected one.** A
+    /// rejection with neither is a chain dropped for no reason of its own, which is precisely what
+    /// the block-level rule did; this is the checkable form of that complaint, and it must be empty.
+    pub rejections_without_a_conflict: Vec<Vec<u8>>,
+    /// **I2 — every slot a kept chain wrote has its action in the merged batch.** A violation is a
+    /// kept chain's write silently disappearing: the other half of the same injury. Must be empty.
+    pub unapplied_kept_writes: Vec<(u8, Blake2b256Hash)>,
+    /// Who won each slot in the merged state. The map the incident had no way to read.
+    pub native_writer_of_slot: BTreeMap<(u8, Blake2b256Hash), Blake2b256Hash>,
+}
+
+impl MergeReport {
+    /// Whether there is anything here an operator should see.
+    pub fn is_quiet(&self) -> bool {
+        self.rejected_chains == 0
+            && self.rejections_without_a_conflict.is_empty()
+            && self.unapplied_kept_writes.is_empty()
+    }
+
+    /// One line for the caller's log. The lists are capped: this is a per-merge `warn`, and a
+    /// peer-sized list of ids on one line is a line nobody reads.
+    pub fn describe(&self) -> String {
+        let mut line = format!(
+            "merge: {} chains in scope ({} kept, {} rejected; {} rejected a cost-accounted chain)",
+            self.conflict_chains,
+            self.kept_chains,
+            self.rejected_chains,
+            self.rejected_cost_accounted_chains
+        );
+        if !self.dropped_native_slots.is_empty() {
+            line.push_str(&format!(
+                "; {} native slot(s) went unwritten ({})",
+                self.dropped_native_slots.len(),
+                describe_slots(self.dropped_native_slots.iter().map(|(h, s)| (*h, *s)))
+            ));
+        }
+        if !self.rejections_without_a_conflict.is_empty() {
+            line.push_str(&format!(
+                "; **I1 VIOLATED**: {} chain(s) rejected without a conflict or a rejected dependency \
+                 ({})",
+                self.rejections_without_a_conflict.len(),
+                describe_ids(
+                    &self
+                        .rejections_without_a_conflict
+                        .iter()
+                        .map(|id| rchain_shared::base16::encode(id))
+                        .collect::<Vec<_>>()
+                )
+            ));
+        }
+        if !self.unapplied_kept_writes.is_empty() {
+            line.push_str(&format!(
+                "; **I2 VIOLATED**: {} kept chain write(s) absent from the merged batch ({})",
+                self.unapplied_kept_writes.len(),
+                describe_plain_slots(&self.unapplied_kept_writes)
+            ));
+        }
+        line
+    }
+}
+
+/// **What a merge produced**: the state, the deploys it rejected, and what it did.
+///
+/// A struct rather than the `(state, rejected)` tuple it used to be, because the third element is the
+/// point: the report is how a merge that drops something becomes visible, and a tuple has nowhere to
+/// put it (#280).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeOutcome {
+    pub state: Blake2b256Hash,
+    pub rejected_deploys: BTreeSet<Vec<u8>>,
+    pub report: MergeReport,
+}
+
+/// A list of `(prefix, key)` slots, first four then a count.
+fn describe_plain_slots(slots: &[(u8, Blake2b256Hash)]) -> String {
+    let rendered: Vec<String> = slots
+        .iter()
+        .map(|(prefix, key)| format!("{prefix:02x}/{}", key.to_hex()))
+        .collect();
+    describe_ids(&rendered)
+}
+
+/// The first four slots of a list, then a count — the id lists on this path are peer-sized.
+fn describe_slots(items: impl Iterator<Item = (Blake2b256Hash, (u8, Blake2b256Hash))>) -> String {
+    let all: Vec<String> = items
+        .map(|(host, (prefix, key))| format!("{}:{:02x}/{}", host.to_hex(), prefix, key.to_hex()))
+        .collect();
+    describe_ids(&all)
+}
+
+/// The first four entries of a list of rendered ids, then a count of the rest.
+fn describe_ids(items: &[String]) -> String {
+    if items.len() <= 4 {
+        items.join(", ")
+    } else {
+        format!("{}, +{} more", items[..4].join(", "), items.len() - 4)
+    }
+}
+
 /// The merged state seen by a block's parents (port of `ParentsMergedState`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParentsMergedState {
@@ -266,6 +389,9 @@ pub struct ParentsMergedState {
     /// (`NoAdvance`), carried here so the caller that holds a logger can report it. `None` means the
     /// fringe advanced or the walk had nothing to publish from the start.
     pub finality_stall: Option<NoAdvance<Validator>>,
+    /// **What the merge that produced this pre-state did** (#280), carried for the same reason
+    /// `finality_stall` is: `MergeScope::merge` has no log handle, and the caller does.
+    pub merge_report: MergeReport,
     pub justifications: Vec<BlockMetadata>,
     pub max_block_num: i64,
     pub max_seq_nums: BTreeMap<Validator, i64>,
@@ -315,6 +441,26 @@ pub struct DeployChainIndex {
     /// signed sender**, which is what `pay_executor` reads on both play and replay. Outside the
     /// chain's identity, for the same reason as `cost_moves`.
     pub executor: String,
+    /// **The native writes of this chain's own deploys, and of no other chain's** (#280).
+    ///
+    /// This is the field the fix is made of. A block's native effects used to live on the block
+    /// alone, which left the merge no relation to key a conflict on but the *host* — so a chain that
+    /// wrote nothing contended was still a conflict partner, and `reject_whole_blocks` dropped it
+    /// with its host. Here the relation reads the chain's own slots, and a chain with none cannot
+    /// conflict. Outside the chain's identity, for the same reason as `cost_moves`: `PartialEq`/`Hash`
+    /// are over `deploys_with_cost` and `Ord` over `(host_block, post_state_hash)`, so this field
+    /// cannot move law 17a's rejection-option key.
+    pub native_effects: Vec<NativeStoreAction>,
+    /// **Where this chain sits in its block's deploy order** — the smallest ordinal among the deploys
+    /// it carries, where the ordinal is the position in `state.deploys` followed by
+    /// `state.system_deploys`.
+    ///
+    /// Load-bearing in exactly one place, and it is new with the chain-level relation: two chains of
+    /// one block that wrote a common slot are not concurrent, so the native relation does not order
+    /// them — but the merge applies absolute values, and the later chain's value was computed on top
+    /// of the earlier one's. Without this, resolution could keep the later and drop the earlier and
+    /// apply a value built on a write the state does not hold.
+    pub first_deploy_ordinal: u32,
 }
 
 // Equality/hash are over `deploysWithCost` only (the Scala override), to speed up rejection-option
@@ -348,6 +494,17 @@ impl Ord for DeployChainIndex {
 }
 
 impl DeployChainIndex {
+    /// The native slots this chain wrote — the domain of the native relation (#280).
+    ///
+    /// Computed rather than stored: the chain's `native_effects` are the authority, and a second
+    /// field holding the same thing in another shape is a second thing to keep in step.
+    pub fn native_slots(&self) -> BTreeSet<(u8, Blake2b256Hash)> {
+        self.native_effects
+            .iter()
+            .map(NativeStoreAction::slot)
+            .collect()
+    }
+
     /// The total cost of the deploy chain (port of `deployChainCost`).
     pub fn deploy_chain_cost(r: &DeployChainIndex) -> i64 {
         r.deploys_with_cost.iter().map(|d| d.cost).sum()
@@ -403,6 +560,8 @@ impl DeployChainIndex {
         pre_state_hash: Blake2b256Hash,
         post_state_hash: Blake2b256Hash,
         history_repository: &HistoryRepository<C, P, A, K>,
+        native_effects: Vec<NativeStoreAction>,
+        first_deploy_ordinal: u32,
     ) -> Result<DeployChainIndex, String>
     where
         C: Serialize<C> + Send + Sync + 'static,
@@ -439,6 +598,8 @@ impl DeployChainIndex {
             state_changes,
             cost_moves,
             executor,
+            native_effects,
+            first_deploy_ordinal,
         })
     }
 }
@@ -462,13 +623,6 @@ pub struct BlockIndex {
     /// preserved: `Ord` delegates to the inner `(host_block, post_state_hash)`, and `Eq`/`Hash` to
     /// the inner `deploys_with_cost`, exactly as they do for the owned value.
     pub deploy_chains: Vec<Arc<DeployChainIndex>>,
-    /// The native state mutations this block folded into its post-state (PoS pool/active/trusted/
-    /// params, vault balances, registry, the HTTP oracle). Block-level because a hard checkpoint drains
-    /// them per deploy-set, not per deploy. Carried so [`MergeScope::merge`] can re-apply them: the
-    /// tuple-space `StateChange`s below reconstruct branch state from deploy effects, and native state
-    /// has no such effect log, so without this a merge silently reverts every native write in the
-    /// merged branches (issue #74).
-    pub native_changes: Vec<NativeStoreAction>,
 }
 
 impl BlockIndex {
@@ -544,7 +698,7 @@ impl BlockIndex {
         post_state_hash: Blake2b256Hash,
         history_repository: &HistoryRepository<C, P, A, K>,
         mergeable_chan_data: &[NumberChannelsDiff],
-        native_changes: Vec<NativeStoreAction>,
+        effects: BlockNativeEffects,
         executor: String,
     ) -> Result<BlockIndex, String>
     where
@@ -565,12 +719,23 @@ impl BlockIndex {
         let (usr_mergeable, sys_mergeable) = mergeable_chan_data.split_at(usr_count);
 
         let mut deploy_indices: BTreeSet<DeployIndex> = BTreeSet::new();
+        // **Where each indexed deploy sits in the block's list** (#280): its position in
+        // `state.deploys` followed by `state.system_deploys`. The native sidecar is keyed by it, so
+        // this is what lets a slot's write be placed on the chain that carries its deploy.
+        let mut ordinal_of: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
 
         // User deploy indices (failed deploys are skipped).
-        for (d, merge_chs) in usr_processed_deploys.iter().zip(usr_mergeable.iter()) {
+        for (i, (d, merge_chs)) in usr_processed_deploys
+            .iter()
+            .zip(usr_mergeable.iter())
+            .enumerate()
+        {
             if d.is_failed {
                 continue;
             }
+            let ordinal = u32::try_from(i)
+                .map_err(|_| "more deploys than a u32 ordinal can name".to_string())?;
+            ordinal_of.insert(d.deploy.sig.clone(), ordinal);
             let event_log_index = Self::create_event_log_index(
                 &d.deploy_log,
                 history_repository,
@@ -622,7 +787,13 @@ impl BlockIndex {
         }
 
         // System deploy indices (only `Succeeded` blocks contribute).
-        for (sd, merge_chs) in sys_processed_deploys.iter().zip(sys_mergeable.iter()) {
+        for (i, (sd, merge_chs)) in sys_processed_deploys
+            .iter()
+            .zip(sys_mergeable.iter())
+            .enumerate()
+        {
+            let sys_ordinal = u32::try_from(usr_count + i)
+                .map_err(|_| "more deploys than a u32 ordinal can name".to_string())?;
             let (id, log) = match sd {
                 ProcessedSystemDeploy::Succeeded {
                     event_list,
@@ -650,6 +821,7 @@ impl BlockIndex {
                 merge_chs.clone(),
             )
             .await?;
+            ordinal_of.insert(id.clone(), sys_ordinal);
             deploy_indices.insert(DeployIndex {
                 deploy_id: id,
                 cost: 0,
@@ -666,6 +838,7 @@ impl BlockIndex {
 
         let host_block = Blake2b256Hash::from_bytes(*block_hash.as_bytes());
         let mut chains = Vec::new();
+        let mut placed: BTreeSet<u32> = BTreeSet::new();
         for chain in &deploy_chains {
             // Each chain carries the moves of **its own** deploys, so a rejected chain's cost
             // accounting is dropped with it rather than applied by another chain's acceptance.
@@ -677,6 +850,22 @@ impl BlockIndex {
                         .map(|m| (d.deploy_id.clone(), m.clone()))
                 })
                 .collect();
+            // **And its own native writes** (#280). Every deploy of this chain contributes the
+            // actions recorded under its ordinal, in that order, so a chain's native set is exactly
+            // what its deploys wrote and nothing else.
+            let mut native_effects: Vec<NativeStoreAction> = Vec::new();
+            for d in chain {
+                let Some(ordinal) = ordinal_of.get(&d.deploy_id) else {
+                    continue;
+                };
+                placed.insert(*ordinal);
+                native_effects.extend(effects.of_deploy(*ordinal).iter().cloned());
+            }
+            let first_deploy_ordinal = chain
+                .iter()
+                .filter_map(|d| ordinal_of.get(&d.deploy_id).copied())
+                .min()
+                .ok_or_else(|| "a deploy chain with no indexed deploy".to_string())?;
             chains.push(Arc::new(
                 DeployChainIndex::apply(
                     host_block,
@@ -686,15 +875,32 @@ impl BlockIndex {
                     pre_state_hash,
                     post_state_hash,
                     history_repository,
+                    native_effects,
+                    first_deploy_ordinal,
                 )
                 .await?,
+            ));
+        }
+
+        // **Every attributed effect is placed, or the index is refused** (#280). "Attributed to a
+        // deploy that has no chain" is not a state this build can carry: the alternative — filing it
+        // under the block — is the representation the defect lived in. The case is expected
+        // unreachable (a failed deploy's effects are reverted before the drain, and a failed deploy
+        // gets no index), and it is an `Err` rather than a silent omission precisely because
+        // "expected unreachable" is a claim and not a proof.
+        let unplaced: Vec<u32> = effects.ordinals().filter(|o| !placed.contains(o)).collect();
+        if !unplaced.is_empty() {
+            return Err(format!(
+                "the sidecar of block {} attributes native effects to deploy ordinal(s) {unplaced:?}, \
+                 which carry no chain — they cannot be placed, and filing them under the block is the \
+                 representation #280 removed",
+                block_hash.to_hex()
             ));
         }
 
         Ok(BlockIndex {
             block_hash,
             deploy_chains: chains,
-            native_changes,
         })
     }
 }
@@ -917,16 +1123,9 @@ impl BlockIndex {
                         block.block_hash.to_hex()
                     )
                 })?;
-        // **The index still takes the flat set in this commit** — `BlockNativeEffects` is flattened
-        // here, by deploy ordinal, and `BlockIndex::apply` places it as one block-level set exactly as
-        // before. The attribution exists, travels in the sidecar and is checked at every boundary; the
-        // merge is the last consumer to be moved onto it, in the next commit. Flattening is why this
-        // step changes no behaviour.
-        let native_changes: Vec<NativeStoreAction> = native_effects
-            .into_map()
-            .into_values()
-            .flat_map(|actions| actions.into_iter())
-            .collect();
+        // **The attributed set goes to the index as it is** (#280): `BlockIndex::apply` places every
+        // deploy's actions on the chain that carries it and refuses anything it cannot place, so the
+        // block-level set the index used to hold is not a value that reaches the merge any more.
         let index = BlockIndex::apply(
             block.block_hash,
             &block.state.deploys,
@@ -935,7 +1134,7 @@ impl BlockIndex {
             post_state_hash,
             runtime.get_history_repo(),
             &mergeable_chs,
-            native_changes,
+            native_effects,
             executor,
         )
         .await?;
@@ -1274,34 +1473,37 @@ fn rejections_for<'a>(
         .collect()
 }
 
-/// How native writes relate the deploy chains of a merge (issue #83).
+/// **How native writes relate the deploy chains of a merge — on the chain, not on the block** (#280).
 ///
 /// A native write is an **absolute value** computed from its block's own pre-state, not an effect
 /// that composes: an epoch boundary's `close_block` writes the whole bond pool, a phlo charge writes
-/// the staking vault's new balance. So two blocks writing one key can be merged only when one has
+/// the staking vault's new balance. So two chains writing one slot can be merged only when one has
 /// seen the other, and then the descendant's value is the merged one. Two *concurrent* writers of a
-/// key cannot both be kept - concatenating them handed radix history the same key twice and
-/// panicked every node at the first boundary with two sibling blocks, and keeping either value
-/// silently discards the other's transition (two sibling phlo charges of equal size write equal
-/// vault balances, and keeping one destroys the other's REV). Equal values are therefore not a
-/// licence to merge: the relation is on keys, not values.
+/// slot cannot both be kept — concatenating them hands radix history the same key twice — and keeping
+/// either value silently discards the other's transition, which is why equal values are not a licence
+/// to merge: the relation is on slots, not on values.
 ///
-/// - **conflict**: chains of two different blocks that wrote a common key and neither of which has
-///   seen the other. Resolution then rejects one side, as for a tuple-space conflict.
-/// - **dependency**: a chain of a block that wrote a common key with a block it has seen depends on
-///   that block's chains, so rejecting the ancestor rejects the value built on it.
+/// What changed, and why it had to. The relation used to read the **host block's** slot set — the
+/// union of every chain that rode in on it — so at an epoch boundary, where every block runs
+/// `close_block` and every block's union holds the epoch's slots, **every** pair of concurrent blocks
+/// conflicted, including the pairs whose user chain wrote no contended slot at all. The rejection was
+/// then closed over the whole block (`reject_whole_blocks`), so those chains died with their host: the
+/// live capture is `spec/audit/evidence/n280-merge-loses-a-write-results.md`, where a user deploy's
+/// write is present at heights 100, 101 and 102 and gone from 103 on every node at once.
 ///
-/// A native-writing block is then accepted or rejected **whole**, and that is enforced after
-/// resolution by host block (`reject_whole_blocks`) rather than by an edge between its own chains.
-/// The chains of one block are equal under `DeployChainIndex`'s `Ord` (host block, post-state)
-/// while unequal under its `Eq` (deploy ids), so resolution's `BTreeSet`s hold them as one class
-/// for lookups but as separate members for iteration: `difference` removes only the member it
-/// meets, and a two-chain block survives with one chain (`a_rejected_native_block_loses_every_chain`).
-/// A same-block edge is worse - under that `Ord` it is a self-loop, and `sdk`'s `traverse_tree`
-/// walks the dependency map without a visited set, so the merge never returns
-/// (`a_native_block_with_two_chains_merges`).
+/// Now the relation reads the chain's **own** slots, and a chain that wrote nothing contended is not
+/// a conflict partner at all. `reject_whole_blocks` is deleted rather than narrowed: there is nothing
+/// left for it to close over, because the operation it performed — reject every chain of a block
+/// because of a write the block made — is no longer expressible.
+///
+/// - **conflict**: two chains of different blocks that wrote a common slot, neither having seen the
+///   other. Resolution then rejects one side, as for a tuple-space conflict.
+/// - **dependency**: a chain whose slot a block it has *seen* also wrote depends on that block's
+///   chain, so rejecting the ancestor rejects the value built on it — **and a chain of one block
+///   depends on its own block's earlier chains**, because a later chain's absolute value was computed
+///   on top of theirs. That second arm is new with the chain-level relation: the whole-block rule
+///   never applied two chains of one block separately, so it never needed it.
 struct NativeRelations<'a> {
-    keys: &'a BTreeMap<Blake2b256Hash, BTreeSet<(u8, Blake2b256Hash)>>,
     ancestry: &'a BTreeMap<BlockHash, BTreeSet<BlockHash>>,
 }
 
@@ -1312,141 +1514,89 @@ impl NativeRelations<'_> {
             .is_some_and(|seen| seen.contains(&BlockHash::new(*b.as_bytes())))
     }
 
-    fn overlap(&self, a: &Blake2b256Hash, b: &Blake2b256Hash) -> bool {
-        match (self.keys.get(a), self.keys.get(b)) {
-            (Some(ka), Some(kb)) => !ka.is_disjoint(kb),
-            _ => false,
-        }
+    /// Whether two chains wrote a common slot — the whole of the native overlap, and per chain.
+    fn overlap(&self, a: &DeployChainIndex, b: &DeployChainIndex) -> bool {
+        !a.native_slots().is_disjoint(&b.native_slots())
     }
 
     fn conflicting(&self, a: &DeployChainIndex, b: &DeployChainIndex) -> bool {
         let (ha, hb) = (&a.host_block, &b.host_block);
-        ha != hb && self.overlap(ha, hb) && !self.sees(ha, hb) && !self.sees(hb, ha)
+        ha != hb && self.overlap(a, b) && !self.sees(ha, hb) && !self.sees(hb, ha)
     }
 
-    /// Whether `a` depends on `b`.
+    /// Whether `a` depends on `b` — see the type's comment for both arms.
     fn depends(&self, a: &DeployChainIndex, b: &DeployChainIndex) -> bool {
-        let (ha, hb) = (&a.host_block, &b.host_block);
-        ha != hb && self.overlap(ha, hb) && self.sees(ha, hb)
+        if a.host_block == b.host_block {
+            // One block's own chains: the deploy order decided it, and a later chain's value already
+            // includes every earlier chain's write to a shared slot.
+            return a.first_deploy_ordinal > b.first_deploy_ordinal && self.overlap(a, b);
+        }
+        self.overlap(a, b) && self.sees(&a.host_block, &b.host_block)
     }
 
-    /// Close resolution's result over whole native-writing blocks. A block with any rejected chain
-    /// loses all of them - its native writes are block-level and were computed with every chain's
-    /// effects - and so does every block that depends on a rejected block: natively (it wrote a
-    /// common key on top of it) or through the event logs (a dependency-map edge). The fixpoint is
-    /// taken by host block, so it does not rest on the chains' `Ord`; see the type's comment.
-    fn reject_whole_blocks(
-        &self,
-        conflict_set: &BTreeSet<Arc<DeployChainIndex>>,
-        to_merge: BTreeSet<Arc<DeployChainIndex>>,
-        rejected: BTreeSet<Arc<DeployChainIndex>>,
-        dependency_map: &BTreeMap<Arc<DeployChainIndex>, BTreeSet<Arc<DeployChainIndex>>>,
-    ) -> (
-        BTreeSet<Arc<DeployChainIndex>>,
-        BTreeSet<Arc<DeployChainIndex>>,
-    ) {
-        let scope_hosts: BTreeSet<Blake2b256Hash> =
-            conflict_set.iter().map(|c| c.host_block).collect();
-        let mut rejected_hosts: BTreeSet<Blake2b256Hash> = rejected
-            .iter()
-            .map(|c| c.host_block)
-            .filter(|h| self.keys.contains_key(h))
-            .collect();
-        loop {
-            let before = rejected_hosts.len();
-            let natively_dependent: Vec<Blake2b256Hash> = scope_hosts
-                .iter()
-                .filter(|h| {
-                    !rejected_hosts.contains(*h)
-                        && rejected_hosts
-                            .iter()
-                            .any(|r| self.overlap(h, r) && self.sees(h, r))
-                })
-                .copied()
-                .collect();
-            rejected_hosts.extend(natively_dependent);
-            let dependent: Vec<Blake2b256Hash> = conflict_set
-                .iter()
-                .filter(|c| rejected_hosts.contains(&c.host_block))
-                .filter_map(|c| dependency_map.get(c))
-                .flatten()
-                .map(|d| d.host_block)
-                .filter(|h| scope_hosts.contains(h))
-                .collect();
-            rejected_hosts.extend(dependent);
-            if rejected_hosts.len() == before {
-                break;
-            }
-        }
-        if rejected_hosts.is_empty() {
-            return (to_merge, rejected);
-        }
-        let to_merge = to_merge
-            .into_iter()
-            .filter(|c| !rejected_hosts.contains(&c.host_block))
-            .collect();
-        let rejected = rejected
-            .into_iter()
-            .chain(
-                conflict_set
-                    .iter()
-                    .filter(|c| rejected_hosts.contains(&c.host_block))
-                    .cloned(),
-            )
-            .collect();
-        (to_merge, rejected)
-    }
-
-    /// The accepted blocks' native writes as one action per key: writers in ancestry order, so a
-    /// descendant's value replaces its ancestor's. Two accepted writers of a key that are not so
-    /// ordered would mean resolution kept a conflict, and that is refused rather than decided by
-    /// iteration order.
+    /// The accepted chains' native writes as one action per slot.
+    ///
+    /// Writers are applied in ancestry order — a descendant's value replaces its ancestor's — and a
+    /// block's own chains in **deploy order**, for the reason the dependency arm gives. The
+    /// `seen_count` key puts every ancestor before its descendants (a block has seen strictly more
+    /// in-scope blocks than any ancestor of it); the hash and the ordinal only make the order total.
+    ///
+    /// Two accepted writers of a slot that are neither in that order nor seen would mean resolution
+    /// kept a conflict, and that is refused rather than decided by iteration order. After the
+    /// chain-level relation that refusal is unreachable on any state resolution can produce —
+    /// `the_resolution_leaves_the_fold_nothing_to_refuse` in `spec/Rchain/Merging.lean` — so it is a
+    /// fail-closed backstop rather than a judgement call.
     ///
     /// **The writer is returned with its action** (AUDIT C207), because the merge's cost-accounting
-    /// pass needs to know *which* block's absolute value landed on a slot: a value computed after
-    /// that block's own cost accounting already contains it, and the moves of every block that block
-    /// had seen are in it too. The map's key is the slot; the tuple is `(host, action)` and the host
-    /// is the **last writer in ancestry order**, i.e. the deepest one — the value that survives.
+    /// pass needs to know *which* block's absolute value landed on a slot: a value computed after that
+    /// block's own cost accounting already contains it, and the moves of every block that block had
+    /// seen are in it too. The map's key is the slot; the tuple is `(host, action)` and the host is
+    /// the **last writer in that order**, i.e. the deepest one — the value that survives.
     #[allow(clippy::type_complexity)]
     fn fold(
         &self,
-        accepted: &BTreeSet<Blake2b256Hash>,
-        native_by_block: &BTreeMap<Blake2b256Hash, &[NativeStoreAction]>,
+        accepted: &BTreeSet<Arc<DeployChainIndex>>,
     ) -> Result<BTreeMap<(u8, Blake2b256Hash), (Blake2b256Hash, NativeStoreAction)>, String> {
-        // A block has seen strictly more in-scope blocks than any ancestor of it, so this order
-        // puts every ancestor before its descendants; the hash only makes the order total.
-        let mut writers: Vec<&Blake2b256Hash> = accepted
-            .iter()
-            .filter(|h| native_by_block.get(*h).is_some_and(|a| !a.is_empty()))
-            .collect();
         let seen_count = |h: &Blake2b256Hash| {
             self.ancestry
                 .get(&BlockHash::new(*h.as_bytes()))
                 .map_or(0, BTreeSet::len)
         };
-        writers.sort_by_key(|h| (seen_count(h), **h));
+        let mut writers: Vec<&Arc<DeployChainIndex>> = accepted
+            .iter()
+            .filter(|c| !c.native_effects.is_empty())
+            .collect();
+        writers.sort_by_key(|c| {
+            (
+                seen_count(&c.host_block),
+                c.host_block,
+                c.first_deploy_ordinal,
+            )
+        });
 
-        let mut by_key: BTreeMap<(u8, Blake2b256Hash), (Blake2b256Hash, NativeStoreAction)> =
+        let mut by_slot: BTreeMap<(u8, Blake2b256Hash), (Blake2b256Hash, NativeStoreAction)> =
             BTreeMap::new();
-        for host in writers {
-            for action in native_by_block.get(host).copied().unwrap_or_default() {
-                let key = action.slot();
-                if let Some((previous, _)) = by_key.get(&key) {
-                    if !self.sees(host, previous) {
+        for chain in writers {
+            for action in &chain.native_effects {
+                let slot = action.slot();
+                if let Some((previous, _)) = by_slot.get(&slot) {
+                    // A writer of the *same* block is ordered by the sort above (deploy order); a
+                    // writer of another block must have been seen, or resolution kept a conflict.
+                    if *previous != chain.host_block && !self.sees(&chain.host_block, previous) {
                         return Err(format!(
-                            "blocks {} and {} both write native key {:02x}/{} and neither has seen \
+                            "blocks {} and {} both write native slot {:02x}/{} and neither has seen \
                              the other; conflict resolution must reject one",
                             previous.to_hex(),
-                            host.to_hex(),
-                            key.0,
-                            key.1.to_hex()
+                            chain.host_block.to_hex(),
+                            slot.0,
+                            slot.1.to_hex()
                         ));
                     }
                 }
-                by_key.insert(key, (*host, action.clone()));
+                by_slot.insert(slot, (chain.host_block, action.clone()));
             }
         }
-        Ok(by_key)
+        Ok(by_slot)
     }
 }
 
@@ -1550,7 +1700,7 @@ impl MergeScope {
         history_repository: &RhoHistoryRepository,
         block_index: &F,
         rejection_cost: impl Fn(&DeployChainIndex) -> i64,
-    ) -> Result<(Blake2b256Hash, BTreeSet<Vec<u8>>), String>
+    ) -> Result<MergeOutcome, String>
     where
         F: Fn(BlockHash) -> Fut,
         Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
@@ -1570,39 +1720,12 @@ impl MergeScope {
             v
         };
 
-        // Native effects are block-level, so index them by host block here. The final scope's blocks
-        // are ancestors of the base state (their effects are already in it); the conflict scope's are
-        // what this merge applies, and the map below keeps only the ones with an accepted chain.
-        // Borrowed, not cloned: the actions live in the `BlockIndex` this scope already holds behind
-        // an `Arc`, so the map only needs a view of them (#117 — the merge path copied these per
-        // conflict block per merge).
-        let native_by_block: BTreeMap<Blake2b256Hash, &[NativeStoreAction]> = conflict_indices
-            .iter()
-            .map(|b| {
-                (
-                    Blake2b256Hash::from_bytes(*b.block_hash.as_bytes()),
-                    b.native_changes.as_slice(),
-                )
-            })
-            .collect();
-        // The native keys each block of either scope wrote, for the relations below. The final
-        // scope's are needed too: a conflict-scope block that wrote a key concurrently with a
-        // finalised writer of it is incompatible with the final state.
-        let native_keys: BTreeMap<Blake2b256Hash, BTreeSet<(u8, Blake2b256Hash)>> =
-            conflict_indices
-                .iter()
-                .chain(final_indices.iter())
-                .filter(|b| !b.native_changes.is_empty())
-                .map(|b| {
-                    (
-                        Blake2b256Hash::from_bytes(*b.block_hash.as_bytes()),
-                        b.native_changes
-                            .iter()
-                            .map(NativeStoreAction::slot)
-                            .collect(),
-                    )
-                })
-                .collect();
+        // **No block-level native index any more** (#280). The relation reads each chain's own slots
+        // (`DeployChainIndex::native_effects`), so there is nothing here to key by host: a chain that
+        // wrote nothing contended cannot be a conflict partner, and the per-block maps that used to
+        // make it one — and to make its rejection total — are gone with the rule they served. The
+        // final scope's chains still take part in the relation, through `final_set` below, which is
+        // what keeps a conflict-scope writer of a finalised writer's slot incompatible.
         let conflict_set: BTreeSet<Arc<DeployChainIndex>> = conflict_indices
             .iter()
             .flat_map(|b| b.deploy_chains.iter().cloned())
@@ -1659,10 +1782,9 @@ impl MergeScope {
         let init_mergeable_values =
             read_mergeable_values(history_repository, base_state, &all_channel_hashes).await?;
 
-        // A chain relation is its event-log relation, widened by its host block's native writes
-        // (issue #83): see `NativeRelations`.
+        // A chain relation is its event-log relation, widened by the chain's **own** native writes
+        // (issue #83, #280): see `NativeRelations`.
         let native = NativeRelations {
-            keys: &native_keys,
             ancestry: &merge_scope.ancestry,
         };
         let (conflicts_map, dependency_map) = compute_relation_map_for_merge_set(
@@ -1703,23 +1825,24 @@ impl MergeScope {
         })?;
         // #117's instrument: what this merge handed the search. See `search_census`.
         search_census::record(&search);
-        let (to_merge, rejected) =
-            native.reject_whole_blocks(&conflict_set, to_merge, rejected, &dependency_map);
+        // **`reject_whole_blocks` used to run here**, closing resolution over whole native-writing
+        // blocks. It is deleted rather than narrowed (#280): the relation is on the chain, so a chain
+        // is rejected for a slot it wrote or not at all, and "reject every chain of a block because of
+        // a write the block made" is no longer an expressible operation. Its second loop — the cascade
+        // to blocks that depend on a rejected one — is already implied by the resolution's own
+        // `with_dependencies` closure.
 
-        // The native effects of the blocks whose chains survive conflict resolution. A block
-        // contributes its native changes iff at least one of its chains is accepted - native effects
-        // are per block, not per chain - and the relations above make that all-or-nothing for a block
-        // that wrote anything native. Two accepted blocks writing one key are therefore ancestor and
-        // descendant (concurrent writers conflict), and the descendant's value already includes the
-        // ancestor's, so writers are applied ancestors first and the last write of a key wins.
+        // The native effects of the chains that survive resolution, one action per slot. A chain that
+        // wrote nothing contributes nothing, and — the point of the fix — cannot be dropped for a
+        // write it did not make. Two accepted writers of one slot are ancestor and descendant, or
+        // chains of one block in deploy order, and the last write of a slot wins; see
+        // `NativeRelations::fold`.
         //
-        // This replaces the first #83 fix (b5e024d), which kept one write per slot by taking the last
-        // accepted host in hash order. That restored liveness, but it decided a disagreement by hash:
-        // two concurrent blocks' absolute values are two transitions, and keeping either discards the
-        // other's (see `NativeRelations`).
-        let accepted_hosts: BTreeSet<Blake2b256Hash> =
-            to_merge.iter().map(|c| c.host_block).collect();
-        let folded = native.fold(&accepted_hosts, &native_by_block)?;
+        // This replaced the first #83 fix (b5e024d), which kept one write per slot by taking the last
+        // accepted host in hash order: that restored liveness but decided a disagreement by hash, and
+        // two concurrent blocks' absolute values are two transitions, so keeping either discards the
+        // other's.
+        let folded = native.fold(&to_merge)?;
         let winners: BTreeMap<(u8, Blake2b256Hash), Blake2b256Hash> = folded
             .iter()
             .map(|(slot, (host, _))| (*slot, *host))
@@ -1754,7 +1877,59 @@ impl MergeScope {
             .iter()
             .flat_map(|d| d.deploys_with_cost.iter().map(|x| x.id.clone()))
             .collect();
-        Ok((new_state, rejected_ids))
+        // **What this merge did, for the caller that holds a logger** (#280). Computed here rather
+        // than logged here: `merge` has no log handle by design, and the two invariants are worth
+        // stating where the maps that decide them are still in hand.
+        let report = MergeReport {
+            conflict_chains: conflict_set.len(),
+            kept_chains: to_merge.len(),
+            rejected_chains: rejected.len(),
+            dropped_native_slots: rejected
+                .iter()
+                .flat_map(|c| {
+                    c.native_effects
+                        .iter()
+                        .map(|a| (c.host_block, a.slot()))
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+            rejected_cost_accounted_chains: rejected
+                .iter()
+                .filter(|c| !c.cost_moves.is_empty())
+                .count(),
+            // I1: a rejected chain must have a reason — a conflict with a kept chain, or a dependency
+            // on another rejected one. Chains the final scope forced out are exempt: they were never
+            // in the resolution's hands.
+            rejections_without_a_conflict: rejected
+                .iter()
+                .filter(|c| conflict_set.contains(*c))
+                .filter(|c| {
+                    let conflicts = |a: &Arc<DeployChainIndex>, b: &Arc<DeployChainIndex>| {
+                        conflicts_map.get(a).is_some_and(|s| s.contains(b))
+                            || conflicts_map.get(b).is_some_and(|s| s.contains(a))
+                    };
+                    !to_merge.iter().any(|k| conflicts(c, k))
+                        && !rejected
+                            .iter()
+                            .any(|r| !Arc::ptr_eq(r, c) && conflicts(c, r))
+                })
+                .flat_map(|c| c.deploys_with_cost.iter().map(|d| d.id.clone()))
+                .collect(),
+            // I2: every slot a kept chain wrote is in the batch. `fold` builds the batch from exactly
+            // those chains' actions, so a violation means the fold dropped one — which is the injury
+            // this whole change is about, and why it is checked rather than assumed.
+            unapplied_kept_writes: to_merge
+                .iter()
+                .flat_map(|c| c.native_slots())
+                .filter(|slot| !native_changes.iter().any(|a| a.slot() == *slot))
+                .collect(),
+            native_writer_of_slot: winners.clone(),
+        };
+        Ok(MergeOutcome {
+            state: new_state,
+            rejected_deploys: rejected_ids,
+            report,
+        })
     }
 
     /// Merge a set of deploy chains into the base state and produce the new state hash (port of
@@ -1901,6 +2076,8 @@ mod tests {
 
     fn chain(id: u8, cost: i64) -> DeployChainIndex {
         DeployChainIndex {
+            native_effects: Vec::new(),
+            first_deploy_ordinal: 0,
             host_block: Blake2b256Hash::from_bytes([id; 32]),
             deploys_with_cost: BTreeSet::from([DeployIdWithCost { id: vec![id], cost }]),
             pre_state_hash: Blake2b256Hash::from_bytes([0u8; 32]),
@@ -2162,7 +2339,6 @@ mod tests {
         let first = Arc::new(BlockIndex {
             block_hash: first_hash,
             deploy_chains: Vec::new(),
-            native_changes: Vec::new(),
         });
         let mut cache = BlockIndexCache::default();
         assert_eq!(cache.insert(first_hash, Arc::clone(&first)), 0);
@@ -2173,7 +2349,6 @@ mod tests {
             last = Arc::new(BlockIndex {
                 block_hash: hash,
                 deploy_chains: Vec::new(),
-                native_changes: Vec::new(),
             });
             cache.insert(hash, Arc::clone(&last));
         }
@@ -2207,7 +2382,6 @@ mod tests {
                 Arc::new(BlockIndex {
                     block_hash: hash,
                     deploy_chains: Vec::new(),
-                    native_changes: Vec::new(),
                 }),
             );
         }
@@ -2224,7 +2398,6 @@ mod tests {
             Arc::new(BlockIndex {
                 block_hash: newcomer,
                 deploy_chains: Vec::new(),
-                native_changes: Vec::new(),
             }),
         );
 
@@ -2252,7 +2425,6 @@ mod tests {
                 Arc::new(BlockIndex {
                     block_hash: hash,
                     deploy_chains: Vec::new(),
-                    native_changes: Vec::new(),
                 }),
             );
         }
@@ -2357,6 +2529,8 @@ mod merge_relation_tests {
 
     fn chain(host: u8, post: u8, deploys: &[(u8, i64, u8)]) -> DeployChainIndex {
         DeployChainIndex {
+            native_effects: Vec::new(),
+            first_deploy_ordinal: 0,
             host_block: hash(host),
             deploys_with_cost: deploys
                 .iter()
@@ -2463,6 +2637,8 @@ mod merge_relation_tests {
         // their event logs, not through their ids — the second half of the relation.
         let produced = RProduce::apply(&"shared".to_string(), &"datum".to_string(), false);
         let destroys = |id: u8, host: u8, produced: RProduce| DeployChainIndex {
+            native_effects: Vec::new(),
+            first_deploy_ordinal: 0,
             host_block: hash(host),
             deploys_with_cost: [deploy_id(id, 0)].into_iter().collect(),
             pre_state_hash: hash(0),
@@ -2516,6 +2692,8 @@ mod merge_relation_tests {
     fn chain_dependency_follows_the_event_logs() {
         let produce = RProduce::apply(&"chan".to_string(), &"datum".to_string(), false);
         let source = DeployChainIndex {
+            native_effects: Vec::new(),
+            first_deploy_ordinal: 0,
             host_block: hash(1),
             deploys_with_cost: [deploy_id(1, 0)].into_iter().collect(),
             pre_state_hash: hash(0),
@@ -2530,6 +2708,8 @@ mod merge_relation_tests {
         };
         // The target consumed the same produce.
         let target = DeployChainIndex {
+            native_effects: Vec::new(),
+            first_deploy_ordinal: 0,
             host_block: hash(2),
             deploys_with_cost: [deploy_id(2, 0)].into_iter().collect(),
             pre_state_hash: hash(1),
@@ -2622,6 +2802,7 @@ mod native_merge_tests {
         let branch_index = BlockIndex {
             block_hash: child,
             deploy_chains: vec![Arc::new(DeployChainIndex {
+                first_deploy_ordinal: 0,
                 host_block: key(3),
                 deploys_with_cost: BTreeSet::from([DeployIdWithCost {
                     id: vec![42],
@@ -2633,12 +2814,14 @@ mod native_merge_tests {
                 state_changes: StateChange::empty(),
                 cost_moves: BTreeMap::new(),
                 executor: String::new(),
+                // **The write rides on the chain, not on the block** (#280) — which is what the
+                // merge now reads, and the only shape in which a write can be attributed at all.
+                native_effects: vec![NativeStoreAction::Put {
+                    prefix: PREFIX_POS,
+                    key: branch_key,
+                    value: vec![7],
+                }],
             })],
-            native_changes: vec![NativeStoreAction::Put {
-                prefix: PREFIX_POS,
-                key: branch_key,
-                value: vec![7],
-            }],
         };
         let block_index = move |_h: BlockHash| {
             let index = branch_index.clone();
@@ -2651,7 +2834,7 @@ mod native_merge_tests {
             conflict_scope: BTreeSet::from([child]),
             ancestry: BTreeMap::new(),
         };
-        let (merged, _rejected) = MergeScope::merge(
+        let outcome = MergeScope::merge(
             &scope,
             base_state,
             &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -2661,6 +2844,7 @@ mod native_merge_tests {
         )
         .await
         .expect("the merge");
+        let (merged, _rejected) = (outcome.state, outcome.rejected_deploys);
 
         let reader = base_repo.get_history_reader(merged).await;
         assert!(
@@ -2683,10 +2867,10 @@ mod native_merge_tests {
 
     /// **The reproduction for #83, at the granularity the defect lives at.**
     ///
-    /// `merge` concatenates the native effects of every accepted host block (`native_by_block` ->
-    /// `extend`). Each *block's* own list is duplicate-free by construction —
-    /// `InMemNativeStore::drain_changes` maps a `BTreeMap<(prefix, key), _>`, one action per slot,
-    /// and clears the overlay — but **two blocks at the same height can write the same slot**, and
+    /// `merge` derives one action per slot from the accepted chains' own effects (`NativeRelations::
+    /// fold`). Each *chain's* own list is duplicate-free by construction —
+    /// `InMemNativeStore::drain_native` maps a `BTreeMap<(prefix, key), _>`, one action per slot, and
+    /// clears the overlay — but **two blocks at the same height can write the same slot**, and
     /// at an epoch boundary that is not a rare race: *every* proposer runs `close_block`, which
     /// writes the same five `PREFIX_POS` leaves (`bonds`, `active`, `withdrawers`,
     /// `pending_withdrawers`, `committed_rewards`) from the same pre-state. Two of those blocks both
@@ -2712,6 +2896,7 @@ mod native_merge_tests {
         let branch = |host: u8, value: u8| BlockIndex {
             block_hash: BlockHash::new([host; 32]),
             deploy_chains: vec![Arc::new(DeployChainIndex {
+                first_deploy_ordinal: 0,
                 host_block: key(host),
                 deploys_with_cost: BTreeSet::from([DeployIdWithCost {
                     id: vec![host],
@@ -2723,12 +2908,13 @@ mod native_merge_tests {
                 state_changes: StateChange::empty(),
                 cost_moves: BTreeMap::new(),
                 executor: String::new(),
+                // **The write rides on the chain** (#280) — see `branch_index` above.
+                native_effects: vec![NativeStoreAction::Put {
+                    prefix: PREFIX_POS,
+                    key: shared,
+                    value: vec![value],
+                }],
             })],
-            native_changes: vec![NativeStoreAction::Put {
-                prefix: PREFIX_POS,
-                key: shared,
-                value: vec![value],
-            }],
         };
         let hosts = [BlockHash::new([1u8; 32]), BlockHash::new([2u8; 32])];
         let mut rejected_hosts = Vec::new();
@@ -2754,7 +2940,7 @@ mod native_merge_tests {
                 ancestry: BTreeMap::new(),
             };
 
-            let (merged, rejected) = MergeScope::merge(
+            let outcome = MergeScope::merge(
                 &scope,
                 base_state,
                 &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -2767,6 +2953,7 @@ mod native_merge_tests {
                 "two accepted blocks writing one native slot must merge rather than panic (#83): \
                  an epoch boundary puts several `close_block`s at one height by construction",
             );
+            let (merged, rejected) = (outcome.state, outcome.rejected_deploys);
 
             assert_eq!(rejected.len(), 1, "the two concurrent writers conflict");
             let rejected_host = rejected.iter().next().expect("one rejected host")[0];
@@ -2976,10 +3163,16 @@ mod boundary_merge_tests {
     }
 
     /// A block index with one (close-block) chain, as every block has.
+    ///
+    /// **The block's own writes ride on that chain** (#280) — that is the whole representation
+    /// change: a block has no native set of its own any more, and a chain carries what its own deploys
+    /// wrote.
     fn index(n: u8, pre_state: Blake2b256Hash, played: Played) -> BlockIndex {
         BlockIndex {
             block_hash: block_hash(n),
             deploy_chains: vec![Arc::new(DeployChainIndex {
+                first_deploy_ordinal: 0,
+                native_effects: played.own.clone(),
                 host_block: Blake2b256Hash::from_bytes([n; 32]),
                 deploys_with_cost: BTreeSet::from([DeployIdWithCost {
                     id: vec![n],
@@ -2992,7 +3185,77 @@ mod boundary_merge_tests {
                 cost_moves: played.moves,
                 executor: payer(1).1,
             })],
-            native_changes: played.own,
+        }
+    }
+
+    /// The same merge, with the outcome rather than the tuple — for the tests that assert on what the
+    /// merge *did* (#280).
+    async fn merge_with_report(
+        repo: &RhoHistoryRepository,
+        base: Blake2b256Hash,
+        blocks: Vec<BlockIndex>,
+    ) -> Result<MergeOutcome, String> {
+        let scope = MergeScope {
+            final_scope: BTreeSet::new(),
+            conflict_scope: blocks.iter().map(|b| b.block_hash).collect(),
+            ancestry: BTreeMap::new(),
+        };
+        let lookup = move |h: BlockHash| {
+            let found = blocks.iter().find(|b| b.block_hash == h).cloned();
+            async move {
+                found
+                    .map(Arc::new)
+                    .ok_or_else(|| format!("no index for {h:?}"))
+            }
+        };
+        MergeScope::merge(
+            &scope,
+            base,
+            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            repo,
+            &lookup,
+            DeployChainIndex::deploy_chain_cost,
+        )
+        .await
+    }
+
+    /// A second chain for `block`, as a block that carried a deploy has: **the deploy's own chain**,
+    /// which wrote **nothing native** (#280).
+    ///
+    /// That emptiness is the point of the fixture and it is why this is a function rather than a
+    /// clone at each call site: a clone would inherit the first chain's native effects, and a chain
+    /// that "carries" its host's boundary writes is exactly the shape the old rule assumed and this
+    /// one removes. The ordinal is 1 — the deploy runs before the block's `close_block`.
+    fn user_chain(block: &BlockIndex, id: u8) -> Arc<DeployChainIndex> {
+        let mut second = (*block.deploy_chains[0]).clone();
+        second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
+            id: vec![id],
+            cost: 0,
+        }]);
+        second.native_effects = Vec::new();
+        second.first_deploy_ordinal = 1;
+        Arc::new(second)
+    }
+
+    /// A boundary round's **deploying** block, as the incident's was: its `close_block` chain and,
+    /// beside it, the chain of the deploy it carried — the charge on the deploy's chain (which is
+    /// where the runtime puts `cost_moves`, keyed by deploy id) and the boundary's writes on the
+    /// boundary's, since those are what each deploy actually wrote (#280).
+    fn index_with_deploy(n: u8, pre_state: Blake2b256Hash, played: Played, id: u8) -> BlockIndex {
+        let block = index(n, pre_state, played.clone());
+        let mut boundary = (*block.deploy_chains[0]).clone();
+        boundary.cost_moves = BTreeMap::new();
+        let mut deploy = (*block.deploy_chains[0]).clone();
+        deploy.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
+            id: vec![id],
+            cost: 500,
+        }]);
+        deploy.native_effects = Vec::new();
+        deploy.first_deploy_ordinal = 1;
+        deploy.cost_moves = played.moves;
+        BlockIndex {
+            block_hash: block.block_hash,
+            deploy_chains: vec![Arc::new(boundary), Arc::new(deploy)],
         }
     }
 
@@ -3024,6 +3287,7 @@ mod boundary_merge_tests {
             |_| 0,
         )
         .await
+        .map(|o| (o.state, o.rejected_deploys))
     }
 
     /// Every native value the writes of `actions` leave behind, read back from `state`.
@@ -3237,13 +3501,7 @@ mod boundary_merge_tests {
     async fn a_native_block_with_two_chains_merges() {
         let (repo, base) = genesis().await;
         let x = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
-        let mut block = index(0xa0, base, x);
-        let mut second = (*block.deploy_chains[0]).clone();
-        second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
-            id: vec![0xa1],
-            cost: 0,
-        }]);
-        block.deploy_chains.push(Arc::new(second));
+        let block = index_with_deploy(0xa0, base, x, 0xa1);
         let merged = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             merge(&repo, base, vec![block], BTreeMap::new()),
@@ -3257,17 +3515,12 @@ mod boundary_merge_tests {
     /// A rejected native block loses every chain, including a second one: its user deploy's
     /// effects go with the boundary it rode in on.
     #[tokio::test]
-    async fn a_rejected_native_block_loses_every_chain() {
+    async fn a_rejected_boundary_chain_does_not_take_its_blocks_other_chains() {
         let (repo, base) = genesis().await;
         let a = play(&repo, base, EPOCH, 1, Body::Nothing).await;
         let b = play(&repo, base, EPOCH, 2, Body::Nothing).await;
         let with_second_chain = |mut block: BlockIndex, id: u8| {
-            let mut second = (*block.deploy_chains[0]).clone();
-            second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
-                id: vec![id],
-                cost: 0,
-            }]);
-            block.deploy_chains.push(Arc::new(second));
+            block.deploy_chains.push(user_chain(&block, id));
             block
         };
         let (_, rejected) = merge(
@@ -3281,11 +3534,24 @@ mod boundary_merge_tests {
         )
         .await
         .expect("sibling boundary blocks with two chains each merge");
-        let a_ids = BTreeSet::from([vec![0xa0], vec![0xa1]]);
-        let b_ids = BTreeSet::from([vec![0xb0], vec![0xb1]]);
+        // **This test used to assert the opposite, and the inversion is the fix** (#280). It read
+        // "a rejected native block loses every chain, including a second one: its user deploy's
+        // effects go with the boundary it rode in on" — the defect written down as intent, which is
+        // why nothing caught it: the boundary chains are the ones that contend, and the user chains
+        // wrote nothing contested, so they cannot be conflict partners at all now.
+        assert_eq!(
+            rejected.len(),
+            1,
+            "exactly one **boundary** chain is rejected: {rejected:?}"
+        );
         assert!(
-            rejected == a_ids || rejected == b_ids,
-            "exactly one block is rejected, with every chain it carried: {rejected:?}"
+            rejected.contains(&vec![0xa0]) || rejected.contains(&vec![0xb0]),
+            "and it is a boundary chain: {rejected:?}"
+        );
+        assert!(
+            !rejected.contains(&vec![0xa1]) && !rejected.contains(&vec![0xb1]),
+            "while neither block's user chain is rejected — it wrote no contended slot, so it has no \
+             business in the rejection set: {rejected:?}"
         );
     }
 
@@ -3482,6 +3748,74 @@ mod boundary_merge_tests {
             DeployChainIndex::deploy_chain_cost,
         )
         .await
+        .map(|o| (o.state, o.rejected_deploys))
+    }
+
+    /// **The merge's report is the ledger the live incident lacked** (#280).
+    ///
+    /// On the net, a merge rejected a boundary chain and with it a user deploy; the deploy's id went
+    /// into the block's `rejectedDeploys`, its own status stayed `ProcessedWithSuccess`, and **nothing
+    /// anywhere said what the rejection cost** — no counter, no line, no record of the effects that
+    /// went unwritten. So this asserts the report against a rejection that really happens: which slots
+    /// were dropped and who wrote them, that a rejected cost-accounted chain is counted, that the
+    /// winner of each surviving slot is named, and — the two that must never fire — that every
+    /// rejection has a reason (I1) and that every kept chain's write reached the batch (I2).
+    #[tokio::test]
+    async fn the_merge_report_names_every_dropped_native_write() {
+        let (repo, base) = genesis().await;
+        let a = play(&repo, base, EPOCH, 1, Body::Nothing).await;
+        let b = play(&repo, base, EPOCH, 2, Body::Nothing).await;
+        let a_slots = a.own.len();
+        let report = merge_with_report(
+            &repo,
+            base,
+            vec![index(0xa0, base, a), index(0xb0, base, b)],
+        )
+        .await
+        .expect("sibling boundary blocks merge")
+        .report;
+
+        assert!(!report.is_quiet(), "a rejection is never quiet: {report:?}");
+        assert_eq!(report.conflict_chains, 2, "two chains were in scope");
+        assert_eq!(report.kept_chains, 1, "one survived");
+        assert_eq!(report.rejected_chains, 1, "and one was rejected");
+        assert_eq!(
+            report.dropped_native_slots.len(),
+            a_slots,
+            "**every** native slot the rejected chain would have written is named, with its host — \
+             this is the list the incident could not produce: {report:?}"
+        );
+        let in_scope = [
+            Blake2b256Hash::from_bytes([0xa0; 32]),
+            Blake2b256Hash::from_bytes([0xb0; 32]),
+        ];
+        assert!(
+            !report.native_writer_of_slot.is_empty(),
+            "a boundary round writes slots, so the survivors are named: {report:?}"
+        );
+        assert!(
+            report
+                .native_writer_of_slot
+                .values()
+                .all(|h| in_scope.contains(h)),
+            "every surviving slot names **one of the blocks in scope** as its writer — the map the \
+             incident had no way to read: {:?}",
+            report.native_writer_of_slot
+        );
+        assert!(
+            report.rejections_without_a_conflict.is_empty(),
+            "**I1**: every rejected chain conflicts with a kept chain or depends on a rejected one — \
+             a rejection with neither is a chain dropped for no reason of its own: {report:?}"
+        );
+        assert!(
+            report.unapplied_kept_writes.is_empty(),
+            "**I2**: every slot a kept chain wrote has its action in the merged batch: {report:?}"
+        );
+        assert!(
+            report.describe().contains("chains in scope"),
+            "and the line an operator gets names them: {}",
+            report.describe()
+        );
     }
 
     /// **#280: an epoch-boundary round loses the deploy that rode in on a contending block.**
@@ -3511,8 +3845,6 @@ mod boundary_merge_tests {
     /// and whichever of the four blocks carried the deploy (which host the DAG keeps is hash-determined
     /// rather than value-determined, so one ordering could pass by luck).
     #[tokio::test]
-    #[ignore = "red until the chain-level native relation lands: this is #280's falsifier, and it is \
-                committed with the fix that turns it green rather than before it"]
     async fn a_boundary_round_does_not_lose_a_contained_deploys_charge() {
         let (repo, base) = genesis().await;
         let balance = |state: Blake2b256Hash| {
@@ -3536,18 +3868,16 @@ mod boundary_merge_tests {
                 } else {
                     Body::Nothing
                 };
-                let mut block = index(n, base, play(&repo, base, EPOCH, 1, body).await);
-                if n == deploying {
-                    // The user deploy's own chain, beside the boundary's: a real block has one per
-                    // deploy, and it is the chain that carries no contended slot.
-                    let mut user = (*block.deploy_chains[0]).clone();
-                    user.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
-                        id: vec![n + 1],
-                        cost: 500,
-                    }]);
-                    block.deploy_chains.push(Arc::new(user));
-                }
-                blocks.push(block);
+                let played = play(&repo, base, EPOCH, 1, body).await;
+                blocks.push(if n == deploying {
+                    // The deploy's own chain, beside the boundary's: a real block has one per deploy,
+                    // and **it is the chain that carries no contended slot** — which is the whole of
+                    // why the fix works and why the fixture has to get it right rather than clone the
+                    // boundary chain.
+                    index_with_deploy(n, base, played, n + 1)
+                } else {
+                    index(n, base, played)
+                });
             }
 
             let (merged, rejected) = merge_by_cost(&repo, base, blocks)

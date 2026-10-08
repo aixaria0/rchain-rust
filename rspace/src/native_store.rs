@@ -581,6 +581,95 @@ mod tests {
         );
     }
 
+    /// **A drained write names the deploy that made it, and cost accounting does not take it away**
+    /// (#280).
+    ///
+    /// This is the provenance the merge's native relation is built on, and the one thing the flat
+    /// sidecar this replaced could not say. The second half is the C207 rule — cost accounting writes
+    /// `pos:vault` from every deploy, and if a later charge took ownership of a slot the deploy had
+    /// written, the deploy's own write would travel as cost accounting's and never reach a sidecar.
+    #[tokio::test]
+    async fn a_drained_write_names_the_deploy_that_made_it() {
+        let store = InMemNativeStore::empty();
+        let key = Blake2b256Hash::from_bytes([11u8; 32]);
+        store.begin_writer(NativeWriter::Deploy(3));
+        store.put(PREFIX_POS, key, vec![1]);
+        store.end_writer();
+        // A later charge on the same slot: the slot stays the deploy's.
+        store.begin_writer(NativeWriter::CostAccounting);
+        store.put(PREFIX_POS, key, vec![2]);
+        store.end_writer();
+
+        let drain = store.drain_native();
+        assert_eq!(
+            drain.by_deploy.get(&3).map(Vec::len),
+            Some(1),
+            "the slot is attributed to deploy 3: {drain:?}"
+        );
+        assert!(
+            drain.cost.is_empty(),
+            "and **not** to the charge that came after it — the C207 rule, which used to be a bool: \
+             {drain:?}"
+        );
+        assert!(
+            drain.unattributed.is_empty(),
+            "and it is not lost: {drain:?}"
+        );
+        assert_eq!(
+            drain.all().len(),
+            1,
+            "the checkpoint folds it exactly once, whatever its writer: {drain:?}"
+        );
+    }
+
+    /// **A write outside any window is separated, and cannot be filed under the block** (#280).
+    ///
+    /// The arm exists for genesis installation and for direct store use, and the block path refuses it:
+    /// "the block's own native set" is the representation the defect lived in, so the type has no way
+    /// to hold one. The refusal is asserted here at the store's own boundary — the drain keeps it
+    /// apart, and `BlockNativeEffects::from_drain` is what turns it into an error.
+    #[tokio::test]
+    async fn a_write_outside_any_window_is_not_attributed_to_a_block() {
+        let store = InMemNativeStore::empty();
+        store.put(PREFIX_POS, Blake2b256Hash::from_bytes([12u8; 32]), vec![1]);
+        let drain = store.drain_native();
+        assert!(
+            drain.by_deploy.is_empty(),
+            "no deploy made it, so no deploy's map holds it: {drain:?}"
+        );
+        assert_eq!(drain.unattributed.len(), 1, "it is kept apart: {drain:?}");
+        assert!(
+            BlockNativeEffects::from_drain(&drain).is_err(),
+            "and a block cannot carry it — filing it under the block is the defect: {drain:?}"
+        );
+    }
+
+    /// The genesis installation is a **named** writer rather than an unattributed one, and it does not
+    /// travel in a sidecar (`NativeWriter::Genesis` says why): a merge never asks block 0 for its
+    /// native set, because block 0 is the merge's base and not one of its conflict blocks.
+    #[tokio::test]
+    async fn a_genesis_write_is_named_and_does_not_travel_in_a_sidecar() {
+        let store = InMemNativeStore::empty();
+        store.begin_writer(NativeWriter::Genesis);
+        store.put(PREFIX_POS, Blake2b256Hash::from_bytes([13u8; 32]), vec![1]);
+        store.end_writer();
+        let drain = store.drain_native();
+        assert_eq!(drain.genesis.len(), 1, "named, not unattributed: {drain:?}");
+        assert!(drain.unattributed.is_empty(), "{drain:?}");
+        assert_eq!(
+            drain.all().len(),
+            1,
+            "and the checkpoint still folds it: {drain:?}"
+        );
+        let effects = BlockNativeEffects::from_drain(&drain).expect("genesis is not refused");
+        assert!(
+            effects.is_empty(),
+            "and it does **not** travel in a sidecar: what it writes is the block-0 configuration, \
+             already in the state every node holds, and a merge asks the genesis for its *state* (it \
+             is the base) rather than for its native set"
+        );
+    }
+
     #[tokio::test]
     async fn snapshot_and_revert_restore_overlay() {
         let store = InMemNativeStore::empty();
