@@ -2776,6 +2776,110 @@ mod native_merge_tests {
         .expect("an in-memory history repository")
     }
 
+    /// **The two intra-block obligations, which the block-level rule never had** (#280).
+    ///
+    /// They are the half through which a chain-level relation could fix the incident and introduce a
+    /// *different* lost write, which is why they are asserted rather than left to the implementation:
+    ///
+    /// - **order** — two chains of one block that write one slot are applied in **deploy order**, so
+    ///   the slot holds the later chain's value. (The `(seen_count, host)` key the fold used before
+    ///   cannot express this: two chains of one block tie on both, so their order was the `BTreeSet`'s.)
+    /// - **dependency** — the later chain *depends* on the earlier one and not the reverse, because its
+    ///   absolute value was computed on top of the earlier's. Without the edge, resolution could keep
+    ///   the later chain and reject the earlier, applying a value built on a write the state does not
+    ///   hold.
+    #[tokio::test]
+    async fn a_blocks_own_chains_are_ordered_and_dependent() {
+        let base_repo = empty_repo().await;
+        let base_state = base_repo.root();
+        let shared = key(21);
+        let host = BlockHash::new([0xa0; 32]);
+
+        let chain = |ordinal: u32, id: u8, value: u8| DeployChainIndex {
+            host_block: Blake2b256Hash::from_bytes(*host.as_bytes()),
+            deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                id: vec![id],
+                cost: 0,
+            }]),
+            pre_state_hash: base_state,
+            post_state_hash: base_state,
+            event_log_index: EventLogIndex::empty(),
+            state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
+            native_effects: vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: shared,
+                value: vec![value],
+            }],
+            first_deploy_ordinal: ordinal,
+        };
+        let earlier = chain(0, 1, 1);
+        let later = chain(1, 2, 2);
+
+        // **Dependency**: later → earlier, and never the reverse.
+        let rel = NativeRelations {
+            ancestry: &BTreeMap::new(),
+        };
+        assert!(
+            rel.depends(&later, &earlier),
+            "the later chain's value was computed on top of the earlier's, so it depends on it"
+        );
+        assert!(
+            !rel.depends(&earlier, &later),
+            "and not the reverse — the earlier chain's value cannot contain the later's"
+        );
+        assert!(
+            !rel.conflicting(&earlier, &later),
+            "they are one block's own chains, so the native relation does not call them concurrent: \
+             the deploy order decides, which is the obligation above"
+        );
+
+        // **Order**: merged alone, the slot holds the **later** chain's value.
+        let block = BlockIndex {
+            block_hash: host,
+            deploy_chains: vec![Arc::new(earlier), Arc::new(later)],
+        };
+        let scope = MergeScope {
+            final_scope: BTreeSet::new(),
+            conflict_scope: BTreeSet::from([host]),
+            ancestry: BTreeMap::new(),
+        };
+        let lookup = move |h: BlockHash| {
+            let found = (block.block_hash == h).then(|| block.clone());
+            async move {
+                found
+                    .map(Arc::new)
+                    .ok_or_else(|| format!("no index for {h:?}"))
+            }
+        };
+        let outcome = MergeScope::merge(
+            &scope,
+            base_state,
+            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &base_repo,
+            &lookup,
+            DeployChainIndex::deploy_chain_cost,
+        )
+        .await
+        .expect("a block with two chains on one slot merges");
+        assert!(
+            outcome.rejected_deploys.is_empty(),
+            "nothing to conflict with: {:?}",
+            outcome.rejected_deploys
+        );
+        let reader = base_repo.get_history_reader(outcome.state).await;
+        assert_eq!(
+            reader
+                .get_native(PREFIX_POS, shared)
+                .await
+                .expect("a readable native slot"),
+            Some(vec![2]),
+            "the slot holds the **later** chain's value: the deploy order is applied, which is the \
+             obligation the `(seen_count, host)` key could not express"
+        );
+    }
+
     #[tokio::test]
     async fn a_merge_carries_the_native_writes_of_the_branches_it_merges() {
         // A base state that already holds a native leaf, so the test also shows the merge keeps the
