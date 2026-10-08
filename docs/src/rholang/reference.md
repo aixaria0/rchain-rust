@@ -55,18 +55,19 @@ Parenthesize when in doubt — `( … )` always wins.
 
 | Kind | Literals | Operators / methods |
 |---|---|---|
-| Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=`; **exact** — overflow promotes to BigInt (never wraps) |
+| Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=`; **exact** — overflow promotes to BigInt (never wraps); `bitAnd`, `bitOr`, `bitXor`, `bitNot`, `shiftLeft`, `shiftRight`, `shiftRightUnsigned` |
 | Big integer | arbitrary precision | same |
 | Boolean | `true` `false` | `and`, `or`, `not` |
 | String | `"…"` | `++`, `${…}` interpolation, `length`, `slice`, `substring`, `indexOf`, `contains`, `startsWith`, `endsWith`, `toLowerCase`, `toUpperCase`, `capitalize`, `reverse`, `trim`, `isEmpty`, `nonEmpty`, `replace`, `split`, `format`, `toString`, `toUtf8Bytes`, `hexToBytes` |
 | URI | `` `rho:…` `` | — |
-| Byte array | `"…".hexToBytes()` | `length`, `nth`, `slice`, `toUtf8Bytes` |
+| Byte array | `"…".hexToBytes()` | `length`, `nth`, `slice`, `toUtf8Bytes`, `bitAnd`, `bitOr`, `bitXor`, `bitNot` (equal lengths) |
 
 Numbers are **exact**: integer arithmetic never wraps — an `Int` whose result leaves the machine range
 promotes to `BigInt`, mixed `Int`/`BigInt` operands interoperate, and `2 == 2n` (RCHIP #51; recorded in
 [`spec/AUDIT.md`](../../../spec/AUDIT.md) §6). String methods index and count by **character**
 (Unicode scalar values), and `toString` on an `Int`/`BigInt`/`Bool`/`Uri` gives its string form
-(so `42.toString() ++ " units"` works).
+(so `42.toString() ++ " units"` works). The bit operations (RCHIP #12) are methods too, since `|` and
+`~` already belong to the grammar — see [Data structures](data-structures.md#bit-operations).
 
 ## Collections
 

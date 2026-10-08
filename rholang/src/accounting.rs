@@ -276,6 +276,15 @@ impl Costs {
     pub fn to_string_cost(len: i64) -> Cost {
         Cost::new(len, "toString")
     }
+    /// Cost of a bitwise method (RCHIP #12) on an `Int`: a word operation, priced as `+`.
+    pub fn bitwise_int_cost(what: &str) -> Cost {
+        Cost::new(3, what)
+    }
+    /// Cost of a bitwise method on a `BigInt` or `ByteArray`: the bytes walked (the larger operand,
+    /// or for a left shift the result's size), never less than one.
+    pub fn bitwise_cost(bytes: i64, what: &str) -> Cost {
+        Cost::new(bytes.max(1), what)
+    }
     pub fn to_list_cost(size: i64) -> Cost {
         Cost::new(size, "toList")
     }
