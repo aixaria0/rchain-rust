@@ -1935,7 +1935,7 @@ fn eval_method(
             }
             // Charged on the result's size *before* it is built, so an absurd count runs out of
             // phlo rather than allocating.
-            let bytes = Costs::big_int_size(&x).saturating_add((n / 8) as i64);
+            let bytes = Costs::shift_left_result_size(x.magnitude().bits(), n);
             cost.charge(Costs::bitwise_cost(bytes, "shiftLeft"))?;
             let shift = usize::try_from(n).map_err(|_| {
                 RholangError::ReduceError(format!("Error: shiftLeft count out of range: {n}"))
@@ -4305,6 +4305,61 @@ mod tests {
                 assert_eq!(set.ps[0], from_expr(Expr::GInt(1)));
             }
             _ => panic!("expected a set"),
+        }
+    }
+
+    /// **`shiftLeft` is charged on the full width of the integer it builds**, including when the
+    /// operand's top bits and the shift cross a byte boundary together: `0x7f << 1` is 8 bits, two
+    /// bytes by `big_int_size`, where `big_int_size(0x7f) + 1 / 8` said one.
+    #[test]
+    fn shift_left_is_charged_on_the_results_size() {
+        for x in [
+            1_i64,
+            0x7f,
+            0x80,
+            0xff,
+            0x7fff,
+            -1,
+            -0x80,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            let big = BigInt::from(x);
+            for n in 0..=70_u64 {
+                assert_eq!(
+                    Costs::shift_left_result_size(big.magnitude().bits(), n),
+                    Costs::big_int_size(&(big.clone() << n as usize)),
+                    "x = {x}, n = {n}"
+                );
+            }
+        }
+        assert_eq!(Costs::shift_left_result_size(7, 1), 2);
+        assert_eq!(Costs::shift_left_result_size(7, 0), 1);
+
+        // At the call site: a `BigInt` operand takes the charged path, and is charged exactly the
+        // result's size.
+        let e = Env::new();
+        let charged = |x: &str, n: i64| {
+            let cost = CostAccounting::from_initial(Costs::unsafe_max());
+            let before = cost.total_charged();
+            let target = from_expr(Expr::GBigInt(x.parse::<BigInt>().unwrap()));
+            let out = eval_method("shiftLeft", &target, &[from_expr(Expr::GInt(n))], &e, &cost)
+                .expect("shiftLeft");
+            let Some(Expr::GBigInt(r)) = single_expr(&out) else {
+                panic!("expected a BigInt")
+            };
+            (cost.total_charged() - before, Costs::big_int_size(r))
+        };
+        for (x, n) in [
+            ("127", 1),
+            ("127", 9),
+            ("255", 1),
+            ("1", 7),
+            ("1", 8),
+            ("-128", 1),
+        ] {
+            let (paid, size) = charged(x, n);
+            assert_eq!(paid, size, "{x}.shiftLeft({n})");
         }
     }
 

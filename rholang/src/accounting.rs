@@ -285,6 +285,13 @@ impl Costs {
     pub fn bitwise_cost(bytes: i64, what: &str) -> Cost {
         Cost::new(bytes.max(1), what)
     }
+    /// [`Self::big_int_size`] of `x << n`, computed from `x`'s magnitude bit width without building
+    /// the result: the shift adds exactly `n` bits, so the size is taken over the *total* width
+    /// (`x`'s remaining bits and the shift can cross a byte boundary together, which summing
+    /// `big_int_size(x)` and `n / 8` misses).
+    pub fn shift_left_result_size(x_bits: u64, n: u64) -> i64 {
+        i64::try_from(x_bits.saturating_add(n) / 8 + 1).unwrap_or(i64::MAX)
+    }
     pub fn to_list_cost(size: i64) -> Cost {
         Cost::new(size, "toList")
     }
