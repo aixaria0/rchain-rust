@@ -24,6 +24,7 @@ use rchain_models::fringe_data::FringeData;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::validator::Validator;
+use rchain_rholang::merging::SidecarRecord;
 use rchain_rholang::merging::{calculate_number_channel_merge, read_mergeable_values};
 use rchain_rholang::native_state::{
     pos_vault_key, pos_vault_put_action, vault_key, vault_put_action, NativeSystemState,
@@ -37,7 +38,7 @@ use rchain_rspace::merger::event_log_index::{EventLogIndex, NumberChannelsDiff};
 use rchain_rspace::merger::event_log_merging_logic::{are_conflicting, depends};
 use rchain_rspace::merger::state_change::StateChange;
 use rchain_rspace::merger::state_change_merger::compute_trie_actions;
-use rchain_rspace::native_store::{InMemNativeStore, NativeStoreAction};
+use rchain_rspace::native_store::{BlockNativeEffects, InMemNativeStore, NativeStoreAction};
 use rchain_rspace::trace::event::{Event as REvent, Produce};
 use rchain_sdk::dag::merging::{
     compute_dependency_map, compute_greedy_non_intersecting_branches,
@@ -837,7 +838,7 @@ impl BlockIndex {
         // an LFS-restored or deep-replayed block, or a block indexed before the native sidecar
         // existed - replay the block once to reproduce both, and persist them so the next lookup is
         // a read. A store error on the mergeable read is still a store error.
-        let (mergeable_chs, native_changes) = match mergeable_result {
+        let (mergeable_chs, native_record) = match mergeable_result {
             Ok(channels) => match native_recorded {
                 Some(native) => (channels, native),
                 None => {
@@ -867,6 +868,42 @@ impl BlockIndex {
             }
             Err(err) => return Err(err),
         };
+        // **A record written before attribution existed is a re-index, not a value** (#280). Its
+        // effects belong to the block as a whole, so attaching them to the deploys that made them is
+        // impossible — reading it as though they could be attached is the representation this fix
+        // removes. A *nonempty* legacy record is therefore regenerated (the replay writes an attributed
+        // one) and counted, so the migration is visible rather than silent; an *empty* one is accepted,
+        // because there is no effect to mis-attribute.
+        let (mergeable_chs, native_effects) = match native_record {
+            SidecarRecord::Attributed(effects) => (mergeable_chs, effects),
+            SidecarRecord::LegacyUnattributed(actions) if actions.is_empty() => {
+                (mergeable_chs, BlockNativeEffects::empty())
+            }
+            SidecarRecord::LegacyUnattributed(actions) => {
+                LEGACY_SIDECARS_REGENERATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let (channels, record) = regenerate_sidecars(
+                    runtime,
+                    dag,
+                    &block,
+                    &sender,
+                    pre_state_hash,
+                    post_state_hash,
+                    fringe_state_hash,
+                )
+                .await?;
+                match record {
+                    SidecarRecord::Attributed(effects) => (channels, effects),
+                    other => {
+                        return Err(format!(
+                            "the sidecar regenerated for block {} is still not attributed ({other:?}), \
+                             and its {} action(s) cannot be placed",
+                            block.block_hash.to_hex(),
+                            actions.len()
+                        ))
+                    }
+                }
+            }
+        };
 
         // The producer's share is paid to the **block's own signed sender** — `pay_executor` reads it
         // off the runtime's block data on both paths, so the index carries the same address rather
@@ -880,6 +917,16 @@ impl BlockIndex {
                         block.block_hash.to_hex()
                     )
                 })?;
+        // **The index still takes the flat set in this commit** — `BlockNativeEffects` is flattened
+        // here, by deploy ordinal, and `BlockIndex::apply` places it as one block-level set exactly as
+        // before. The attribution exists, travels in the sidecar and is checked at every boundary; the
+        // merge is the last consumer to be moved onto it, in the next commit. Flattening is why this
+        // step changes no behaviour.
+        let native_changes: Vec<NativeStoreAction> = native_effects
+            .into_map()
+            .into_values()
+            .flat_map(|actions| actions.into_iter())
+            .collect();
         let index = BlockIndex::apply(
             block.block_hash,
             &block.state.deploys,
@@ -944,7 +991,7 @@ async fn regenerate_sidecars(
     pre_state_hash: Blake2b256Hash,
     post_state_hash: Blake2b256Hash,
     fringe_state_hash: Blake2b256Hash,
-) -> Result<(Vec<NumberChannelsDiff>, Vec<NativeStoreAction>), String> {
+) -> Result<(Vec<NumberChannelsDiff>, SidecarRecord), String> {
     let seq_num = i64::from(block.seq_num);
     if block.justifications.is_empty()
         && block.state.deploys.is_empty()
@@ -957,13 +1004,21 @@ async fn regenerate_sidecars(
             .await
             .is_err()
             || runtime
-                .save_native_changes(post_state_hash, sender, seq_num, &[])
+                .save_native_changes(
+                    post_state_hash,
+                    sender,
+                    seq_num,
+                    &BlockNativeEffects::empty(),
+                )
                 .await
                 .is_err()
         {
             INDEX_REPLAY_SAVE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((
+            Vec::new(),
+            SidecarRecord::Attributed(BlockNativeEffects::empty()),
+        ));
     }
     // The expensive path in #60: a full replay of the block from its own pre-state, taken whenever a
     // sidecar is absent (a block that arrived by LFS restore or was deep-replayed, rather than
@@ -1026,12 +1081,14 @@ async fn regenerate_sidecars(
     // The sidecar's half — the block's own writes; cost accounting is re-derived by the merge (AUDIT
     // C207), so a regenerated sidecar must omit it exactly as a played one does, or the two would
     // disagree about what a block's effects are.
-    let native_changes = forked.last_own_native_changes();
+    // **The sidecar's half, now attributed** (#280): `from_drain` refuses a write with no deploy to
+    // key it by, so a replay that produced one reports it rather than filing it under the block.
+    let native_effects = BlockNativeEffects::from_drain(&forked.last_native_drain())?;
     INDEX_REPLAY_MILLIS.fetch_add(
         replay_started.elapsed().as_millis() as u64,
         std::sync::atomic::Ordering::Relaxed,
     );
-    Ok((channels, native_changes))
+    Ok((channels, SidecarRecord::Attributed(native_effects)))
 }
 
 /// **The cost-accounting moves of the accepted deploys, composed into absolute vault writes** (AUDIT
@@ -1779,6 +1836,14 @@ impl MergeScope {
 static INDEX_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static INDEX_REPLAY_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static INDEX_REPLAY_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How many blocks had to be **re-indexed** because their sidecar was written before native effects
+/// carried the deploy that made them (#280).
+///
+/// A migration that happens silently is a migration nobody can tell from "nothing happened", which is
+/// this repository's recurring failure: the counter is what makes the transition observable, and it must
+/// fall to zero and stay there once every block in the store has been replayed.
+static LEGACY_SIDECARS_REGENERATED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 static INDEX_REPLAY_SAVE_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static INDEX_CACHE_PRUNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2744,7 +2809,7 @@ mod boundary_merge_tests {
     use rchain_rholang::native_state::{NativeSystemState, PosGenesis, PosParams};
     use rchain_rholang::util::rev_address::RevAddress;
     use rchain_rspace::factory::create_history_repository;
-    use rchain_rspace::native_store::{InMemNativeStore, PREFIX_POS};
+    use rchain_rspace::native_store::{InMemNativeStore, NativeWriter, PREFIX_POS};
     use rchain_shared::store_manager::InMemoryStoreManager;
 
     const EPOCH: i64 = 10;
@@ -2846,6 +2911,15 @@ mod boundary_merge_tests {
         ));
         let native = NativeSystemState::new(store.clone());
         let mut moves: BTreeMap<Vec<u8>, CostMoves> = BTreeMap::new();
+        // **The block's deploy list, in the order the ordinal names** (#280): the user deploy (when
+        // there is one) first, then the block-level system deploy — `close_block` — whose window is
+        // opened below. Without these windows a write belongs to no deploy and `from_drain` refuses
+        // it, which is the type doing its job rather than a fixture inconvenience.
+        let user_ordinal = match body {
+            Body::Nothing | Body::Withdraw => None,
+            Body::Deploy(_) => Some(0u32),
+        };
+        let sys_ordinal = if user_ordinal.is_some() { 1u32 } else { 0u32 };
         match body {
             Body::Nothing => {}
             Body::Withdraw => native
@@ -2856,14 +2930,17 @@ mod boundary_merge_tests {
             Body::Deploy(byte) => {
                 // The window `play_deploy_with_cost_accounting_once` opens around `pre_charge`,
                 // `refund` and `pay_executor`. Here only the charge runs, so the deploy is charged
-                // its whole 500 and refunded nothing — which is what the moves below say.
-                store.begin_cost_accounting();
+                // its whole 500 and refunded nothing — which is what the moves below say. The cost
+                // window nests inside the deploy's own, exactly as the runtime opens them.
+                store.begin_writer(NativeWriter::Deploy(user_ordinal.unwrap()));
+                store.begin_writer(NativeWriter::CostAccounting);
                 native
                     .pre_charge(&payer(byte).0, nn(500))
                     .await
                     .unwrap()
                     .unwrap();
-                store.end_cost_accounting();
+                store.end_writer();
+                store.end_writer();
                 moves.insert(
                     vec![number as u8],
                     CostMoves {
@@ -2875,12 +2952,20 @@ mod boundary_merge_tests {
                 );
             }
         }
+        store.begin_writer(NativeWriter::Deploy(sys_ordinal));
         native
             .close_block(number, Blake2b256Hash::create(&[fringe]), &BTreeMap::new())
             .await
             .unwrap()
             .unwrap();
-        let (own, cost) = store.drain_changes_split();
+        store.end_writer();
+        let drain = store.drain_native();
+        let own: Vec<NativeStoreAction> = drain
+            .by_deploy
+            .values()
+            .flat_map(|actions| actions.iter().cloned())
+            .collect();
+        let cost = drain.cost;
         let mut full = own.clone();
         full.extend(cost);
         Played { own, moves, full }
@@ -3358,6 +3443,123 @@ mod boundary_merge_tests {
                 "and the vault holds the **sum** of the two charges: keeping both blocks must not \
                  become paying the vault once for two debits, which is the REV this whole path is \
                  answerable for"
+            );
+        }
+    }
+
+    /// `merge`, but with the rejection key the **production** path uses.
+    ///
+    /// `merge` above passes `|_| 0`, which is law 17a's cost component discarded: every option costs
+    /// the same, so the resolution is decided by size and then by the sorted chain set alone. That is
+    /// right for the sibling-boundary tests, which are about *values*, and it is exactly wrong for
+    /// #280, where the whole question is whether the option that keeps a user chain loses to the one
+    /// that keeps three zero-cost boundary chains. Production passes
+    /// `DeployChainIndex::deploy_chain_cost` (`casper/src/multi_parent_casper.rs`), and so does this.
+    async fn merge_by_cost(
+        repo: &RhoHistoryRepository,
+        base: Blake2b256Hash,
+        blocks: Vec<BlockIndex>,
+    ) -> Result<(Blake2b256Hash, BTreeSet<Vec<u8>>), String> {
+        let scope = MergeScope {
+            final_scope: BTreeSet::new(),
+            conflict_scope: blocks.iter().map(|b| b.block_hash).collect(),
+            ancestry: BTreeMap::new(),
+        };
+        let lookup = move |h: BlockHash| {
+            let found = blocks.iter().find(|b| b.block_hash == h).cloned();
+            async move {
+                found
+                    .map(Arc::new)
+                    .ok_or_else(|| format!("no index for {h:?}"))
+            }
+        };
+        MergeScope::merge(
+            &scope,
+            base,
+            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            repo,
+            &lookup,
+            DeployChainIndex::deploy_chain_cost,
+        )
+        .await
+    }
+
+    /// **#280: an epoch-boundary round loses the deploy that rode in on a contending block.**
+    ///
+    /// C207 removed the conflict that was *universal* — cost accounting left the block's native set,
+    /// so a user-deploy block stopped overlapping every concurrent sibling on `pos:vault`. What it
+    /// did not remove is the conflict C207's own note calls safe, in as many words: *"a boundary
+    /// writes no `pos:vault`, and two sibling boundaries compute identical values from one pre-state,
+    /// so rejecting one leaves the other's equal write in place while the epoch machinery keeps
+    /// working."* At an **epoch boundary every** block runs `close_block`, so every block's native set
+    /// holds the PoS slots the boundary writes and **all of them contend**. Two things then compose
+    /// badly: the conflict relation is over the **host block** rather than the chain
+    /// (`NativeRelations::conflicting` compares host key-sets), and the rejection rule is over the host
+    /// block too (`reject_whole_blocks`) — so resolving the contention rejects a block *whole*, and a
+    /// user deploy that rode in on it loses everything, including effects that touched no contended
+    /// slot at all.
+    ///
+    /// **The fixture is the incident's shape, not a hand-written overlap**: four blocks at the boundary
+    /// height, three of them empty and one carrying a user deploy, which is exactly the round the live
+    /// chain ran at height 100 (`spec/audit/evidence/n280-merge-loses-a-write-results.md`). The block
+    /// that carries the deploy gets a **second chain** for it, the way a real block does, and the
+    /// question is whether that chain survives a contention it took no part in.
+    ///
+    /// **The assertion is the deploy's own effect, not a chain id**, because a chain id is the fix's
+    /// vocabulary and an effect is the protocol's: `pre_charge` moves 500 out of the payer's vault, so
+    /// at the merged root the payer is out exactly 500 — however the boundary contention was resolved,
+    /// and whichever of the four blocks carried the deploy (which host the DAG keeps is hash-determined
+    /// rather than value-determined, so one ordering could pass by luck).
+    #[tokio::test]
+    #[ignore = "red until the chain-level native relation lands: this is #280's falsifier, and it is \
+                committed with the fix that turns it green rather than before it"]
+    async fn a_boundary_round_does_not_lose_a_contained_deploys_charge() {
+        let (repo, base) = genesis().await;
+        let balance = |state: Blake2b256Hash| {
+            let address = payer(8).1.clone();
+            let repo = &repo;
+            async move {
+                let native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
+                    repo.get_native_reader(state).await,
+                )));
+                i64::from(native.vault_balance(&address).await.unwrap().unwrap())
+            }
+        };
+        let base_balance = balance(base).await;
+        assert_eq!(base_balance, 1000, "the fixture funds the payer");
+
+        for deploying in [0xa0u8, 0xb0, 0xc0, 0xd0] {
+            let mut blocks = Vec::new();
+            for n in [0xa0u8, 0xb0, 0xc0, 0xd0] {
+                let body = if n == deploying {
+                    Body::Deploy(8)
+                } else {
+                    Body::Nothing
+                };
+                let mut block = index(n, base, play(&repo, base, EPOCH, 1, body).await);
+                if n == deploying {
+                    // The user deploy's own chain, beside the boundary's: a real block has one per
+                    // deploy, and it is the chain that carries no contended slot.
+                    let mut user = (*block.deploy_chains[0]).clone();
+                    user.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
+                        id: vec![n + 1],
+                        cost: 500,
+                    }]);
+                    block.deploy_chains.push(Arc::new(user));
+                }
+                blocks.push(block);
+            }
+
+            let (merged, rejected) = merge_by_cost(&repo, base, blocks)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("the boundary round merges (deploy on {deploying:#x}): {e}")
+                });
+            assert_eq!(
+                balance(merged).await,
+                base_balance - 500,
+                "the deploy's charge must be applied at the merged root whichever block carried it \
+                 (deploy on {deploying:#x}; the merge rejected {rejected:?})"
             );
         }
     }

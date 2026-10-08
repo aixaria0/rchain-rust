@@ -19,7 +19,7 @@ use crate::internal::{
     ConsumeCandidate, Datum, Install, ProduceCandidate, Row, WaitingContinuation,
 };
 use crate::match_::Match;
-use crate::native_store::{InMemNativeStore, NativeStoreAction, NativeStoreState};
+use crate::native_store::{InMemNativeStore, NativeDrain, NativeStoreAction, NativeStoreState};
 use crate::replay_rspace::ReplayRSpace;
 use crate::scheduled_space::{PendingProduce, ScheduledConsume, ScheduledProduce};
 use crate::space_matcher::{extract_data_candidates, extract_first_match};
@@ -51,9 +51,9 @@ pub struct RSpace<C, P, A, K> {
     /// from branch effects and has no way to recover a native leaf from the state alone. This is the
     /// per-checkpoint record a caller reads to carry native effects into the merge (issue #74).
     last_native_changes: RwLock<Vec<NativeStoreAction>>,
-    /// The most recent drain **minus cost accounting's writes** — see
-    /// [`RSpace::last_own_native_changes`].
-    last_own_native_changes: RwLock<Vec<NativeStoreAction>>,
+    /// The most recent drain, **attributed by the deploy that wrote each slot** — see
+    /// [`RSpace::last_native_drain`].
+    last_native_drain: RwLock<NativeDrain>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -78,7 +78,7 @@ where
             matcher,
             native_store: Arc::new(InMemNativeStore::empty()),
             last_native_changes: RwLock::new(Vec::new()),
-            last_own_native_changes: RwLock::new(Vec::new()),
+            last_native_drain: RwLock::new(NativeDrain::default()),
         }
     }
 
@@ -128,15 +128,18 @@ where
         crate::lock::rlock(&self.last_native_changes).clone()
     }
 
-    /// The same drain **without cost accounting's writes** — what a block's *sidecar* carries.
+    /// The same drain, **grouped by the deploy that wrote each slot** (#280).
     ///
-    /// Cost accounting writes `pos:vault` from every user deploy, so carrying it in the sidecar makes
-    /// every user-deploy block overlap every concurrent sibling on that slot, and the merge resolves
-    /// an overlap by rejecting a whole block — which took the deploy's own writes with it (AUDIT
-    /// C207). The merge re-derives these from the accepted deploys instead, so they do not need to
-    /// travel; everything else does, unchanged.
-    pub fn last_own_native_changes(&self) -> Vec<NativeStoreAction> {
-        crate::lock::rlock(&self.last_own_native_changes).clone()
+    /// What a block's *sidecar* is built from, and the reason it is grouped rather than flat. Cost
+    /// accounting writes `pos:vault` from every user deploy, and the merge re-derives those from the
+    /// accepted deploys instead of carrying them (AUDIT C207), so they are separated out; a write made
+    /// outside any deploy's window is separated out too, because a block **cannot attribute it** and
+    /// the block path refuses it rather than filing it under the block.
+    ///
+    /// Replacement, not accumulation: a caller that needs a whole block merges this across the block's
+    /// per-deploy checkpoints (`BlockNativeEffects::merge`).
+    pub fn last_native_drain(&self) -> NativeDrain {
+        crate::lock::rlock(&self.last_native_drain).clone()
     }
 
     pub(crate) fn current_store(&self) -> Arc<dyn HotStore<C, P, A, K>> {
@@ -599,16 +602,17 @@ where
 {
     async fn create_checkpoint(&self) -> std::result::Result<Checkpoint, String> {
         let changes = self.current_store().changes().await;
-        let (own_changes, cost_changes) = self.native_store.drain_changes_split();
+        let drain = self.native_store.drain_native();
         // Keep the drained mutations for the caller (the block path folds them into the block index so
         // the merge can re-apply them; issue #74). Replacement, not accumulation: a caller that needs a
-        // whole block accumulates across this and the block's system-deploy checkpoints.
-        let mut native_changes = own_changes.clone();
-        native_changes.extend(cost_changes);
+        // whole block accumulates across this and the block's checkpoints.
+        let native_changes = drain.all();
         *crate::lock::wlock(&self.last_native_changes) = native_changes.clone();
-        // **And the sidecar's half**, which is the same drain minus cost accounting's writes (AUDIT
-        // C207). The checkpoint above folds *both*; only this one travels in the block's sidecar.
-        *crate::lock::wlock(&self.last_own_native_changes) = own_changes;
+        // **And the same drain, attributed** (#280), which is what the block's sidecar is built from.
+        // The checkpoint folds every action; only the by-deploy view travels in the sidecar, because
+        // cost accounting's writes are re-derived by the merge (AUDIT C207) and a write outside any
+        // deploy's window has no deploy to travel under.
+        *crate::lock::wlock(&self.last_native_drain) = drain;
         let next_history = {
             let history = self.current_history();
             history

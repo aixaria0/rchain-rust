@@ -39,6 +39,7 @@ use rchain_models::casper::protocol::casper_message::{
 };
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
+use rchain_rholang::merging::SidecarRecord;
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::refined::NonNegI64;
@@ -352,14 +353,21 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
             i64::from(block.seq_num),
         )
         .await
-        .expect("a readable native sidecar");
-    assert_eq!(
-        recorded.as_deref(),
-        Some(&[][..]),
-        "a block whose only native effect is cost accounting saves an empty sidecar: the merge \
-         re-derives that effect from the accepted deploys (AUDIT C207), and carrying it here is what \
-         used to make every user-deploy block overlap every concurrent sibling on `pos:vault`"
-    );
+        .expect("a readable native sidecar")
+        .expect("a played block records a sidecar");
+    // **An empty *attributed* record, and the difference is the point** (#280). A record that is
+    // empty because it attributes nothing is not the same value as one written before attribution
+    // existed — the second would be a block-level set, which is what the loader refuses. Asserting
+    // only "empty" would pass for either.
+    match recorded {
+        SidecarRecord::Attributed(effects) => assert!(
+            effects.is_empty(),
+            "a block whose only native effect is cost accounting saves an empty sidecar: the merge \
+             re-derives that effect from the accepted deploys (AUDIT C207), and carrying it here is \
+             what used to make every user-deploy block overlap every concurrent sibling on `pos:vault`"
+        ),
+        other => panic!("a played block's sidecar must be attributed; got {other:?}"),
+    }
 
     let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
         {

@@ -118,9 +118,10 @@ where
         self.space.last_native_changes()
     }
 
-    /// The same, minus cost accounting's writes — what a block's sidecar carries (AUDIT C207).
-    pub fn last_own_native_changes(&self) -> Vec<crate::native_store::NativeStoreAction> {
-        self.space.last_own_native_changes()
+    /// The same drain, grouped by the deploy that wrote each slot — what a block's sidecar is built
+    /// from (#280).
+    pub fn last_native_drain(&self) -> crate::native_store::NativeDrain {
+        self.space.last_native_drain()
     }
 
     /// Build the replay data table from a log (port of `IReplaySpace.rig`). Only IO events that
