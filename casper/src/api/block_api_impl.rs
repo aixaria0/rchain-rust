@@ -30,8 +30,8 @@ use rchain_rspace::trace::event::Event as REvent;
 use rchain_shared::base16;
 
 use crate::api::block_api::{
-    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, ProposeHealth,
-    ProposerHealth,
+    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, DeployerInfo,
+    ProposeHealth, ProposerHealth,
 };
 use crate::api::graph_generator::{dag_as_cluster, ValidatorBlock};
 use crate::api::machine_verifiable_dag::machine_verifiable_dag;
@@ -678,6 +678,18 @@ impl BlockApi for BlockApiImpl {
                 base16::encode(id)
             )),
         }
+    }
+
+    async fn find_deployer(&self, deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
+        let lookup = self.dag.lookup_by_deployer(deployer_hash).await?;
+        let block = match lookup.block {
+            Some(h) => Some(get_light_block_info(&self.get_block_unsafe(&h).await?)),
+            None => None,
+        };
+        Ok(DeployerInfo {
+            block,
+            indexed_from_height: lookup.indexed_from,
+        })
     }
 
     async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {

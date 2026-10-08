@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use rchain_casper::api::block_api::BlockApi;
+use rchain_casper::api::block_api::{BlockApi, DeployerInfo};
+use rchain_casper::dag::deployer_index_key;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
@@ -205,6 +206,18 @@ mod tests {
         async fn find_deploy(&self, _: &DeployId) -> ApiErr<LightBlockInfo> {
             unreachable!("not exercised here")
         }
+        /// Echoes the first byte of the hash it was asked about, so a test can tell which hash arrived.
+        async fn find_deployer(&self, deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
+            assert_eq!(
+                deployer_hash.len(),
+                32,
+                "the block API is always asked by hash"
+            );
+            Ok(DeployerInfo {
+                block: None,
+                indexed_from_height: i64::from(deployer_hash[0]),
+            })
+        }
         async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
             unreachable!("not exercised here")
         }
@@ -302,6 +315,33 @@ mod tests {
                 caps.faucet, expected,
                 "dev_mode = {dev_mode}, key = {has_key}"
             );
+        }
+    }
+
+    /// The deployer lookup takes the key's hash as is (so a wallet need not reveal an unused key) or
+    /// the 65-byte key, which it hashes the way the index does; anything else is refused.
+    #[tokio::test]
+    async fn the_deployer_lookup_takes_a_key_hash_or_a_key() {
+        let web = api(StubBlockApi::default(), None);
+
+        let hash = [0xabu8; 32];
+        let by_hash = web.find_deployer(&base16::encode(&hash)).await.unwrap();
+        assert_eq!(by_hash.indexed_from_height, 0xab);
+
+        let key = [4u8; 65];
+        // The same vector r-wallet's unit tests pin for `deployer_key_hash`: the two must agree.
+        assert_eq!(
+            base16::encode(&deployer_index_key(&key)),
+            "b0ec3ad69aacbdc6499f533d58abd768331f5977fb42d302c3cf7f8a401e75f1"
+        );
+        let by_key = web.find_deployer(&base16::encode(&key)).await.unwrap();
+        assert_eq!(
+            by_key.indexed_from_height,
+            i64::from(deployer_index_key(&key)[0])
+        );
+
+        for bad in ["zz", "04", &base16::encode(&[4u8; 33])] {
+            assert!(web.find_deployer(bad).await.is_err(), "{bad} was accepted");
         }
     }
 
@@ -679,6 +719,28 @@ impl WebApi for WebApiImpl {
         let id = base16::decode(deploy_id).ok_or_else(invalid_deploy_id)?;
         self.block_api
             .find_deploy(&id)
+            .await
+            .map_err(BlockApiException)
+    }
+
+    async fn find_deployer(&self, key: &str) -> Result<DeployerInfo, BlockApiException> {
+        // Either the 32-byte `blake2b256` hash of the key (what a wallet checking a key that has
+        // never signed should send: the hash does not reveal the key) or, for convenience, the
+        // 65-byte key itself, hashed here. Anything else is refused rather than answered: "not seen"
+        // for a mistyped key would tell a wallet the wrong thing about the key it meant.
+        let hash = match base16::decode(key) {
+            Some(h) if h.len() == 32 => h,
+            Some(k) if k.len() == 65 => deployer_index_key(&k),
+            _ => {
+                return Err(BlockApiException(
+                    "Expected the hex blake2b256 hash of a public key (32 bytes) or a 65-byte \
+                     uncompressed secp256k1 public key."
+                        .to_string(),
+                ))
+            }
+        };
+        self.block_api
+            .find_deployer(&hash)
             .await
             .map_err(BlockApiException)
     }

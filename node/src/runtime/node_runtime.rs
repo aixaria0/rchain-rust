@@ -2042,7 +2042,17 @@ pub async fn setup_shard(
         )
         .await?,
     );
-    let block_dag_storage: Arc<dyn BlockDagStorage> = Arc::new(
+    // Deployer key (hashed) → a block it signed in, for `GET /api/v1/deployer/{pubkey}`.
+    let deployer_index: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>> = Arc::new(
+        database(
+            &store_manager,
+            "deployer-index",
+            Arc::new(BytesCodec),
+            Arc::new(BytesCodec),
+        )
+        .await?,
+    );
+    let dag_kv = Arc::new(
         BlockDagKeyValueStorage::create(
             block_metadata_store,
             fringe_data_store,
@@ -2052,8 +2062,11 @@ pub async fn setup_shard(
         .await
         .map_err(|e| e.to_string())?
         // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
-        .with_metrics(metrics),
+        .with_metrics(metrics)
+        .with_deployer_index(deployer_index)
+        .await?,
     );
+    let block_dag_storage: Arc<dyn BlockDagStorage> = dag_kv.clone();
 
     // Runtime manager (play + replay runtimes + mergeable store). The configured effect-scheduler
     // mode (Laws 20–22) applies to the play runtime and is recorded on the manager for the
@@ -2250,6 +2263,29 @@ pub async fn setup_shard(
     // Claim this shard's data directory before anything else touches it: a directory that belonged
     // to a different shard must fail startup, not read as an empty chain.
     check_shard_data_dir(&data_dir, spec, block_dag_storage.as_ref(), &block_store).await?;
+
+    // A node upgraded onto an existing chain indexes the blocks it already holds, once, in the
+    // background; until it finishes, `GET /api/v1/deployer` reports the height it has reached.
+    {
+        let dag_kv = dag_kv.clone();
+        let block_store = block_store.clone();
+        let shard_id = spec.shard_id.to_string();
+        tokio::spawn(async move {
+            let log = rchain_shared::log::StderrLog::default();
+            let source = LogSource::new("coop.rchain.node.runtime.DeployerIndex");
+            match dag_kv.backfill_deployer_index(&block_store).await {
+                Ok(0) => {}
+                Ok(n) => log.info(
+                    source,
+                    &format!("{shard_id}: deployer index backfilled from {n} stored blocks"),
+                ),
+                Err(e) => log.warn(
+                    source,
+                    &format!("{shard_id}: deployer index backfill failed: {e}"),
+                ),
+            }
+        });
+    }
 
     Ok(ShardParts {
         spec: spec.clone(),

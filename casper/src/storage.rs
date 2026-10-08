@@ -61,6 +61,11 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
             Db::new("deploy-index"),
             LmdbEnvConfig::new("dagstorage", 100 * GB),
         ),
+        // Deployer key (hashed) → a block it signed in (`GET /api/v1/deployer`)
+        (
+            Db::new("deployer-index"),
+            LmdbEnvConfig::new("dagstorage", 100 * GB),
+        ),
         // Runtime mergeable store (cache of mergeable channels for block-merge)
         (
             Db::new("mergeable-channel-cache"),
@@ -169,6 +174,7 @@ mod tests {
         assert!(ids.contains(&"blocks"));
         assert!(ids.contains(&"rspace-history"));
         assert!(ids.contains(&"mergeable-channel-cache"));
+        assert!(ids.contains(&"deployer-index"));
         // The gateway's coordinator ledger is node-local and in its own environment, so opening it
         // writes one extra directory rather than sharing a shard's.
         assert!(ids.contains(&GATEWAY_TXN_DB));
