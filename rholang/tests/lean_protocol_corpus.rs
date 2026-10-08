@@ -24,7 +24,7 @@ use common::build_runtime_pair;
 use rchain_models::ast::Par;
 
 /// The catalog's declared size (`Rchain/Protocol.lean`'s `replyCaseCount`).
-const PROTOCOL_CASES: usize = 9;
+const PROTOCOL_CASES: usize = 10;
 
 #[tokio::test]
 async fn every_urn_replies_in_the_shape_the_lean_catalog_says() {
@@ -71,11 +71,23 @@ async fn every_urn_replies_in_the_shape_the_lean_catalog_says() {
             .unwrap_or_else(|e| panic!("{urn}: the arity column is not a number: {e}"));
         let kind = columns.next().expect("the reply-kind column");
         let slots = columns.next().expect("the slots column");
+        // **The dispatch column.** A row that is a method-dispatch contract (`arity: 1, remainder:
+        // true`) spells its *method* where an ordinary row spells its arguments, so the call it
+        // builds is `c!("makeKit", *ret)` — one datum more than the arity — and the arity tie lives in
+        // `system_processes.rs`'s `every_catalog_urn_arity_matches_the_definition_the_node_installs`,
+        // which is where the node's own `Definition` is available to compare.
+        let remainder = columns.next().expect("the dispatch column");
+        assert!(
+            matches!(remainder, "true" | "false"),
+            "corpus line {}: the dispatch column is {remainder:?}",
+            i + 1
+        );
         assert!(
             columns.next().is_none(),
             "corpus line {}: trailing columns",
             i + 1
         );
+        let _ = remainder;
         let slot_tags: Vec<&str> = if slots == "-" {
             Vec::new()
         } else {
@@ -143,8 +155,23 @@ async fn every_urn_replies_in_the_shape_the_lean_catalog_says() {
                 .unwrap_or_else(|| panic!("{urn}: the probe is not a send: {call}"));
             send.data.len()
         };
+        // **The dispatch convention is where the declaration and the call stop agreeing — on purpose.**
+        // A row with `remainder: true` describes a definition installed `arity: 1, remainder: true`
+        // (`revVault`, `pos`, `rho:rchain:ertp:ledger`): its one fixed argument *is* the method, and
+        // the rest of the message is the remainder. The row spells that method where an ordinary row
+        // spells its arguments, so the probe's call carries the method (the declared arity) **plus the
+        // reply channel** — while the Lean `decide` deliberately ties the declared arity to the
+        // definition's `1` rather than to the spelled arguments. Both halves of the tie are real: this
+        // is the corpus side, and `system_processes.rs`'s
+        // `every_catalog_urn_arity_matches_the_definition_the_node_installs` is the node side, where
+        // `Definition.arity` *and* `Definition.remainder` are available to compare.
+        let expected_arity = if remainder == "true" {
+            declared_arity + usize::from(kind != "none")
+        } else {
+            declared_arity
+        };
         assert_eq!(
-            built_arity, declared_arity,
+            built_arity, expected_arity,
             "{urn}: the catalog declares an arity of {declared_arity} and this probe calls with \
              {built_arity} — the declaration and the corpus have drifted apart"
         );
@@ -235,6 +262,10 @@ fn classify(p: &Par) -> &'static str {
         "set"
     } else if RhoList::unapply(p).is_some() {
         "list"
+    } else if RhoName::unapply(p).is_some() {
+        // A capability: an unforgeable name. The ERTP ledger's `makeKit` replies two of these, which
+        // is the single most important thing about it — an issuer's identity is a name, not data.
+        "name"
     } else {
         "other"
     }

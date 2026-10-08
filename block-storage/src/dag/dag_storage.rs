@@ -17,6 +17,21 @@ use super::representation::DagRepresentation;
 /// A deploy id (the Scala `BlockDagStorage.DeployId = ByteString`).
 pub type DeployId = Vec<u8>;
 
+/// What a node knows about one deployer key: a block that includes a deploy it signed, and the height
+/// from which that knowledge is complete.
+///
+/// `indexed_from` is the lowest height at and above which **every** block this node has inserted was
+/// indexed. It is never below the lowest block the node holds: a node that started indexing on an
+/// existing chain has not read the blocks below its marker, and a node that joined by last-finalized-
+/// state sync never stored the blocks below the fringe. So `block: None` with `indexed_from > 0` means
+/// "not in any block from `indexed_from` up" — never "this key has never signed". A node that holds
+/// and has indexed every block from genesis reports `0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeployerLookup {
+    pub block: Option<BlockHash>,
+    pub indexed_from: i64,
+}
+
 /// The block DAG storage interface (port of `BlockDagStorage[F]`). The concrete implementation is
 /// the `casper` crate's `BlockDagKeyValueStorage`.
 #[async_trait]
@@ -81,6 +96,16 @@ pub trait BlockDagStorage: Send + Sync {
 
     /// Look up a block hash by the deploy id included in the DAG.
     async fn lookup_by_deploy_id(&self, deploy_id: &DeployId) -> Result<Option<BlockHash>, String>;
+
+    /// A block containing a deploy signed by the key whose `blake2b256` hash is `deployer_hash`, from
+    /// the deployer index — the first such block this node inserted. It takes the hash, not the key,
+    /// so a wallet checking a key that has never signed need not reveal that key to the node. No Scala counterpart: it serves the wallet's
+    /// "has this key been revealed?" check (quantum key hygiene), which otherwise has to scan every
+    /// block. The default refuses rather than answering `None`: a backend without the index cannot say
+    /// a key is unseen.
+    async fn lookup_by_deployer(&self, _deployer_hash: &[u8]) -> Result<DeployerLookup, String> {
+        Err("this DAG storage keeps no deployer index".to_string())
+    }
 
     /// Add a deploy to the (unprocessed) deploy pool.
     async fn add_deploy(&self, deploy: SignedDeployData) -> Result<(), String>;

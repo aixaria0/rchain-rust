@@ -1,0 +1,6 @@
+# The reference is fetched at a pinned commit by `run.sh`, not vendored: its digest is what is
+# committed (see `run-1.txt`), so the transcript says which text was run without the tree carrying
+# another project's source.
+/ref/
+# The harness's own build directory, detached from the workspace.
+/target/

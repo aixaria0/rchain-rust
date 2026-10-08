@@ -384,6 +384,34 @@ pub struct Run {
     #[arg(long = "api-host")]
     pub api_host: Option<String>,
 
+    /// Bind an OCapN listener on `host:port` (e.g. `127.0.0.1:22045`); off when unset. The only
+    /// netlayer implemented is the OCapN project's `tcp-testing-only` — plain TCP, no encryption and
+    /// no authentication (issue #249).
+    #[arg(long = "ocapn-listen")]
+    pub ocapn_listen: Option<String>,
+
+    /// Bind the OCapN **`unix`** listener at this socket path; off when unset. Unlike
+    /// `--ocapn-listen`, this transport authenticates by the socket's file mode (`0600`) rather than
+    /// by a network address (issue #249).
+    #[arg(long = "ocapn-listen-unix")]
+    pub ocapn_listen_unix: Option<String>,
+
+    /// Bind the OCapN **`noise`** listener on this `host:port`; off when unset. The transport a peer
+    /// not on this host can reach: an authenticated, encrypted handshake with no certificate
+    /// authority. Needs `--ocapn-identity-key` (issue #249).
+    #[arg(long = "ocapn-listen-noise")]
+    pub ocapn_listen_noise: Option<String>,
+
+    /// Bind the OCapN **`websocket`** listener on this `host:port`; off when unset. The transport
+    /// `@endo/ocapn` speaks, and weaker than `--ocapn-listen-noise`. Needs `--ocapn-identity-key`.
+    #[arg(long = "ocapn-listen-websocket")]
+    pub ocapn_listen_websocket: Option<String>,
+
+    /// Where this node's OCapN identity is kept (64 bytes, mode `0600`); created on first use. Required
+    /// by the `noise` and `websocket` listeners, which authenticate with it.
+    #[arg(long = "ocapn-identity-key")]
+    pub ocapn_identity_key: Option<String>,
+
     /// Port for external gRPC API.
     #[arg(short = 'e', long = "api-port-grpc-external")]
     pub api_port_grpc_external: Option<i32>,

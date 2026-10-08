@@ -1,0 +1,260 @@
+# The ERTP round trip against a **node** — issue #249, clause 4, met.
+#
+# command: node ertp-round-trip.mjs 22050          (script: ertp-round-trip.mjs, in this directory)
+# node:    target/debug/rnode run --data-dir <dir>, configured by `node.conf` in this directory
+#          (dev-mode, a bonded validator, propose-on-deploy, an OCapN listener on 127.0.0.1:22050)
+# peer:    @endo/ocapn 1.1.1 on Node v22.22.2, framing 'syrup'
+#
+# The clause reads "a peer implementation fetches an RChain issuer over OCapN and the round trip is
+# demonstrated". The earlier spike (`run-1.txt`) dialled the standalone fixture binary and fetched
+# the *echo* fixture, so nothing ERTP ever crossed and the clause was **not** met; this run is what
+# meets it. What the script does, in order:
+#
+#   fetch the ERTP contract → makeIssuerKit → hold the brand/mint/issuer → makeEmptyPurse on the
+#   issuer → read that purse's balance
+#
+# and the last line is the answer of a *live ERTP purse on chain*: `[ true, 0n ]`, the Rholang pair
+# `(true, 0)` as a Syrup list, after a deploy, a block, and a registry lookup on the way back.
+#
+# Three things this run found, all now fixed (they are the reason the transcript is kept rather than
+# summarised):
+#
+#  * **`insertSigned` cannot register a returned capability.** It derives the URI from the *deployer*
+#    key, so registering under a fresh key per object means the deploy cannot pay for itself:
+#    `preCharge: insufficient funds (0 < 1000000)`. `rho:registry:insertArbitrary` mints a fresh URI
+#    with no key, so the node's own funded key signs.
+#  * **A tuple pattern is exact.** `for (@(_, root) <- cap)` matches a 2-tuple and nothing else, and
+#    an ERTP kit's reply is `(brand, mint, issuer)` — so the deploy fell through the pattern and
+#    answered *nothing at all*. The pattern is now built from the shape the reply actually had.
+#  * **A tuple does not cross as a bare record.** Syrup records are labelled, and the
+#    label must be a symbol, string or byte string; `(true, 0)` encoded to a record labelled `true`,
+#    which Endo refused outright:
+#    `Unexpected type "boolean", Syrup record labels must be strings, selectors, or bytestrings`.
+#    The Python suite never sent such a tuple, so only the second oracle could find this.
+#    **Superseded 2026-10-06 by Law 59 (AUDIT C226):** the intermediate form this run then used, a
+#    bare Syrup *list*, is also wrong — a list does not match a contract's `(brand, value)` pattern.
+#    A tuple crosses as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [fields…]>`.
+#
+# --- transcript ----------------------------------------------------------------------------------
+
+ertp [1791221693609]: Server listening on 127.0.0.1:42907
+dialling rnode.tcp-testing-only on 22050
+ertp [1791221693610]: provideInternalSession called with {
+  location: {
+    type: 'ocapn-peer',
+    designator: 'rnode',
+    transport: 'tcp-testing-only',
+    hints: { host: '127.0.0.1', port: '22050' }
+  }
+}
+ertp [1791221693611]: provideInternalSession connecting and establishing new session
+ertp [1791221693611]: lookupOrConnect creating new connection
+ertp [1791221693611]: Connecting to {
+  type: 'ocapn-peer',
+  designator: 'rnode',
+  transport: 'tcp-testing-only',
+  hints: { host: '127.0.0.1', port: '22050' }
+}
+ertp [1791221693713]: handleMessageData called
+ertp [1791221693715]: handling handshake message of type op:start-session
+ertp [1791221693720]: >> Server received VALID location signature
+ertp [1791221693724]: exported o+0 Object [Alleged: ertp:bootstrap] {
+  fetch: [Function: fetch],
+  'deposit-gift': [Function: deposit-gift],
+  'withdraw-gift': [Function: withdraw-gift]
+}
+ertp [1791221693725]: makeRemoteObject { position: 0n, label: 'Remote Bootstrap' }
+ertp [1791221693725]: imported o-0 Object [Alleged: Remote Bootstrap] {}
+ertp [1791221693726]: session established for ocapn://rnode.tcp-testing-only?host=127.0.0.1&port=22050
+ertp [1791221693727]: applyMethod Object [Alleged: Remote Bootstrap] {} fetch [ 'rho:rchain:ertp' ]
+ertp [1791221693727]: imported a-0 Promise { <pending> }
+ertp [1791221693728]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Bootstrap] {},
+  args: [ Symbol(fetch), 'rho:rchain:ertp' ],
+  answerPosition: 0n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+ertp [1791221693728]: exported o+1 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+ertp [1791221693729]: handleMessageData called
+ertp [1791221693730]: makeRemoteObject { position: 1n, label: 'Remote Object 1' }
+ertp [1791221693730]: imported o-1 Object [Alleged: Remote Object 1] {}
+ertp [1791221693730]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 1] {} ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+ertp [1791221693731]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 1] {} ],
+  answerPosition: false
+}
+ertp [1791221693731]: ocapnResolver fulfill a-0 Object [Alleged: Remote Object 1] {}
+ertp [1791221693731]: settler resolve Object [Alleged: Remote Object 1] {}
+FETCHED the ERTP contract: Object [Alleged: Remote Object 1] {}
+ertp [1791221693731]: applyMethod Object [Alleged: Remote Object 1] {} makeIssuerKit []
+ertp [1791221693732]: imported a-1 Promise { <pending> }
+ertp [1791221693732]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Object 1] {},
+  args: [ Symbol(makeIssuerKit) ],
+  answerPosition: 1n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+ertp [1791221693732]: exported o+2 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+ertp [1791221694857]: handleMessageData called
+ertp [1791221694858]: makeRemoteObject { position: 2n, label: 'Remote Object 2' }
+ertp [1791221694858]: imported o-2 Object [Alleged: Remote Object 2] {}
+ertp [1791221694858]: makeRemoteObject { position: 3n, label: 'Remote Object 3' }
+ertp [1791221694858]: imported o-3 Object [Alleged: Remote Object 3] {}
+ertp [1791221694859]: makeRemoteObject { position: 4n, label: 'Remote Object 4' }
+ertp [1791221694859]: imported o-4 Object [Alleged: Remote Object 4] {}
+ertp [1791221694859]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [
+    Symbol(fulfill),
+    [
+      Object [Alleged: Remote Object 2] {},
+      Object [Alleged: Remote Object 3] {},
+      Object [Alleged: Remote Object 4] {}
+    ]
+  ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+ertp [1791221694859]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [
+    Symbol(fulfill),
+    [
+      Object [Alleged: Remote Object 2] {},
+      Object [Alleged: Remote Object 3] {},
+      Object [Alleged: Remote Object 4] {}
+    ]
+  ],
+  answerPosition: false
+}
+ertp [1791221694859]: ocapnResolver fulfill a-1 [
+  Object [Alleged: Remote Object 2] {},
+  Object [Alleged: Remote Object 3] {},
+  Object [Alleged: Remote Object 4] {}
+]
+ertp [1791221694859]: settler resolve [
+  Object [Alleged: Remote Object 2] {},
+  Object [Alleged: Remote Object 3] {},
+  Object [Alleged: Remote Object 4] {}
+]
+KIT: [
+  Object [Alleged: Remote Object 2] {},
+  Object [Alleged: Remote Object 3] {},
+  Object [Alleged: Remote Object 4] {}
+]
+ertp [1791221694860]: applyMethod Object [Alleged: Remote Object 4] {} makeEmptyPurse []
+ertp [1791221694860]: imported a-2 Promise { <pending> }
+ertp [1791221694860]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Object 4] {},
+  args: [ Symbol(makeEmptyPurse) ],
+  answerPosition: 2n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+ertp [1791221694860]: exported o+3 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+ertp [1791221695654]: handleMessageData called
+ertp [1791221695655]: makeRemoteObject { position: 5n, label: 'Remote Object 5' }
+ertp [1791221695655]: imported o-5 Object [Alleged: Remote Object 5] {}
+ertp [1791221695655]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 5] {} ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+ertp [1791221695655]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 5] {} ],
+  answerPosition: false
+}
+ertp [1791221695655]: ocapnResolver fulfill a-2 Object [Alleged: Remote Object 5] {}
+ertp [1791221695655]: settler resolve Object [Alleged: Remote Object 5] {}
+PURSE: Object [Alleged: Remote Object 5] {}
+ertp [1791221695656]: applyMethod Object [Alleged: Remote Object 5] {} getCurrentAmount []
+ertp [1791221695656]: imported a-3 Promise { <pending> }
+ertp [1791221695656]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Object 5] {},
+  args: [ Symbol(getCurrentAmount) ],
+  answerPosition: 3n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+ertp [1791221695656]: exported o+4 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+ertp [1791221696431]: handleMessageData called
+ertp [1791221696432]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), [ true, 0n ] ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+ertp [1791221696432]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), [ true, 0n ] ],
+  answerPosition: false
+}
+ertp [1791221696433]: ocapnResolver fulfill a-3 [ true, 0n ]
+ertp [1791221696433]: settler resolve [ true, 0n ]
+BALANCE: [ true, 0n ]

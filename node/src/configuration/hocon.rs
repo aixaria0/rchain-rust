@@ -241,6 +241,27 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         max_connection_idle: to_duration(get(h, "max-connection-idle")?)?,
         max_connection_age: to_duration(get(h, "max-connection-age")?)?,
         max_connection_age_grace: to_duration(get(h, "max-connection-age-grace")?)?,
+        // Absent (or empty) means no OCapN listener — see `ApiServer::ocapn_listen`.
+        ocapn_listen: to_optional_string(h, "ocapn-listen")?.filter(|s| !s.is_empty()),
+        // The `unix` transport, same shape: absent or empty means the node does not listen on UDS.
+        ocapn_listen_unix: to_optional_string(h, "ocapn-listen-unix")?.filter(|s| !s.is_empty()),
+        // The `noise` transport, same shape again.
+        ocapn_listen_noise: to_optional_string(h, "ocapn-listen-noise")?.filter(|s| !s.is_empty()),
+        // And the `websocket` one.
+        ocapn_listen_websocket: to_optional_string(h, "ocapn-listen-websocket")?
+            .filter(|s| !s.is_empty()),
+        // The host peers are told to dial. Needed only by a listener bound to `0.0.0.0`/`::`, which
+        // the startup check refuses without it (HAZOP row C237).
+        ocapn_advertised_host: to_optional_string(h, "ocapn-advertised-host")?
+            .filter(|s| !s.is_empty()),
+        // Where the node's Noise identity lives; absent means "generate one in memory", which is only
+        // usable with no `noise` listener.
+        ocapn_identity_key: to_optional_string(h, "ocapn-identity-key")?.filter(|s| !s.is_empty()),
+        // Absent means `false`: a node that has not thought about it keeps today's behaviour, where a
+        // loopback peer works. Link-local and the metadata range are refused whatever this says.
+        ocapn_deny_local_dial: to_bool(get(h, "ocapn-deny-local-dial")?)?,
+        // Absent means `false`: a node-started dial is an egress primitive, so it is opt-in.
+        enable_ocapn_dial: to_bool(get(h, "enable-ocapn-dial")?)?,
     })
 }
 

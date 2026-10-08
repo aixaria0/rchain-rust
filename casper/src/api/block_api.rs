@@ -24,6 +24,19 @@ use crate::runtime_manager::CapturedReply;
 /// A block-api error (the Scala `BlockApi.Error = String`).
 pub type ApiErr<A> = Result<A, String>;
 
+/// What the node knows about one deployer key (`GET /api/v1/deployer/{pubkey}`): a block that
+/// includes a deploy it signed — which means the key is public — and how far down the index reaches.
+/// `block: None` is "not in any block" only when `indexed_from_height` is 0; above 0 the node is
+/// still backfilling the blocks below that height after an upgrade, or (after last-finalized-state
+/// sync) does not hold them at all. A multi-shard node searches every member shard and reports the
+/// highest member's `indexed_from_height`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployerInfo {
+    pub block: Option<LightBlockInfo>,
+    pub indexed_from_height: i64,
+}
+
 /// The node's block-creation mode + deploy-gating capabilities, exposed to apps so a wallet can
 /// decide whether to surface `propose` / the faucet instead of hardcoding a devnet flag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +185,12 @@ pub trait BlockApi: Send + Sync {
     async fn get_blocks(&self, depth: i32) -> ApiErr<Vec<LightBlockInfo>>;
 
     async fn find_deploy(&self, id: &DeployId) -> ApiErr<LightBlockInfo>;
+
+    /// Whether the key whose `blake2b256` hash is `deployer_hash` has signed a deploy in a block (the
+    /// deployer index). The default refuses: a surface without the index cannot say a key is unseen.
+    async fn find_deployer(&self, _deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
+        Err("this node keeps no deployer index".to_string())
+    }
 
     async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo>;
 

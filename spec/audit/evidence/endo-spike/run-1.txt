@@ -1,0 +1,109 @@
+spike [1791202892696]: Server listening on 127.0.0.1:35273
+dialling rnode-ocapn.tcp-testing-only framing=syrup
+spike [1791202892698]: provideInternalSession called with {
+  location: {
+    type: 'ocapn-peer',
+    designator: 'rnode-ocapn',
+    transport: 'tcp-testing-only',
+    hints: { host: '127.0.0.1', port: '22051' }
+  }
+}
+spike [1791202892698]: provideInternalSession connecting and establishing new session
+spike [1791202892698]: lookupOrConnect creating new connection
+spike [1791202892698]: Connecting to {
+  type: 'ocapn-peer',
+  designator: 'rnode-ocapn',
+  transport: 'tcp-testing-only',
+  hints: { host: '127.0.0.1', port: '22051' }
+}
+spike [1791202892779]: handleMessageData called
+spike [1791202892781]: handling handshake message of type op:start-session
+spike [1791202892786]: >> Server received VALID location signature
+spike [1791202892790]: exported o+0 Object [Alleged: spike:bootstrap] {
+  fetch: [Function: fetch],
+  'deposit-gift': [Function: deposit-gift],
+  'withdraw-gift': [Function: withdraw-gift]
+}
+spike [1791202892790]: makeRemoteObject { position: 0n, label: 'Remote Bootstrap' }
+spike [1791202892791]: imported o-0 Object [Alleged: Remote Bootstrap] {}
+spike [1791202892791]: session established for ocapn://rnode-ocapn.tcp-testing-only?host=127.0.0.1&port=22051
+spike [1791202892792]: applyMethod Object [Alleged: Remote Bootstrap] {} fetch [ 'IO58l1laTyhcrgDKbEzFOO32MDd6zE5w' ]
+spike [1791202892793]: imported a-0 Promise { <pending> }
+spike [1791202892793]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Bootstrap] {},
+  args: [ Symbol(fetch), 'IO58l1laTyhcrgDKbEzFOO32MDd6zE5w' ],
+  answerPosition: 0n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+spike [1791202892794]: exported o+1 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+spike [1791202892795]: handleMessageData called
+spike [1791202892796]: makeRemoteObject { position: 1n, label: 'Remote Object 1' }
+spike [1791202892796]: imported o-1 Object [Alleged: Remote Object 1] {}
+spike [1791202892796]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 1] {} ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+spike [1791202892796]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), Object [Alleged: Remote Object 1] {} ],
+  answerPosition: false
+}
+spike [1791202892797]: ocapnResolver fulfill a-0 Object [Alleged: Remote Object 1] {}
+spike [1791202892797]: settler resolve Object [Alleged: Remote Object 1] {}
+FETCHED object Object [Alleged: Remote Object 1] {}
+spike [1791202892797]: applyMethod Object [Alleged: Remote Object 1] {} echo [ 'foo', 1n, false ]
+spike [1791202892797]: imported a-1 Promise { <pending> }
+spike [1791202892797]: Sending message: {
+  type: 'op:deliver',
+  to: Object [Alleged: Remote Object 1] {},
+  args: [ Symbol(echo), 'foo', 1n, false ],
+  answerPosition: 1n,
+  resolveMeDesc: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  }
+}
+spike [1791202892798]: exported o+2 Object [Alleged: OcapnResolver] {
+  fulfill: [Function: fulfill],
+  break: [Function: break]
+}
+spike [1791202892798]: handleMessageData called
+spike [1791202892799]: Dispatching message: {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  args: [ Symbol(fulfill), [ Symbol(echo), 'foo', 1n, false ] ],
+  answerPosition: false,
+  resolveMeDesc: false,
+  type: 'op:deliver'
+}
+spike [1791202892799]: deliver {
+  to: Object [Alleged: OcapnResolver] {
+    fulfill: [Function: fulfill],
+    break: [Function: break]
+  },
+  toType: 'object',
+  args: [ Symbol(fulfill), [ Symbol(echo), 'foo', 1n, false ] ],
+  answerPosition: false
+}
+spike [1791202892799]: ocapnResolver fulfill a-1 [ Symbol(echo), 'foo', 1n, false ]
+spike [1791202892799]: settler resolve [ Symbol(echo), 'foo', 1n, false ]
+CALL REPLY [ Symbol(echo), 'foo', 1n, false ]

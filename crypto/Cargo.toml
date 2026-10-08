@@ -17,6 +17,11 @@ pkcs8 = { version = "0.11", features = ["encryption", "pem"] }
 pkcs5 = { version = "0.8", features = ["alloc", "pbes2"] }
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 crypto_box = "0.9"
+# Raw X25519 (RFC 7748) for the OCapN Noise transport's static key. **The box above is not this**: a
+# `SalsaBox` is a construction with a nonce and a MAC, and a Noise handshake needs the bare scalar
+# multiplication underneath one. BSD-3-Clause, and it pulls `curve25519-dalek` 4.x, which the lock file
+# already holds for `crypto_box`.
+x25519-dalek = "2"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 # `PrivateKey` zeroes its buffer on drop (AUDIT §12). MIT OR Apache-2.0, already in the lock

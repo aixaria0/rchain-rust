@@ -19,6 +19,7 @@ consumers as their own bug (and why the rgov family returned `[]` with no diagno
 | 3 | `MakeMint.rho` (adapted, below) | blessed deploy (`MAKE_MINT_PK`) | `rho:rchain:makeMint` | `rho:id:asysrwfgzf8bf7sxkiowp4b3tcsy4f8ombi3w96ysox4u3qdmn1o` | rgov `src/actions/makeMint.rho:13` and wallet `snippets.ts:751` — `lookup!` then `@(nonce, *MakeMint)` then `MakeMint!(*ch)` |
 | 4 | `AuthKey.rho` (adapted) | blessed deploy (`AUTH_KEY_PK`) | `rho:rchain:authKey` | — | `MultiSigRevVault.rho:35` looks it up before it can install, and every `deployerAuthKey` is made through it |
 | 5 | `MultiSigRevVault.rho` (adapted) | blessed deploy (`MULTI_SIG_REV_VAULT_PK`) | `rho:rchain:multiSigRevVault` | — | multi-signature custody: `lookup!` then `@(_, MultiSigRevVault)` then its `create` / `makeSealerUnsealer` / `deployerAuthKey` methods. **This is AUDIT C114's alternative taken**: the channel used to answer with the single-signer handler and then to refuse, and is now answered by the contract |
+| 6 | `ERTP.rho` (ours) | blessed deploy (`ERTP_PK`) | `rho:rchain:ertp` | `rho:id:75fy4nja3qsq958b5k3rmi3sz1g653fa5c1xfkwdx9awpfwybauo` | the ERTP object API itself (issue #249): `lookup!` then `@(_, ERTP)` then `ERTP!("makeIssuerKit", *ch)`. **The shorthand is deliberately *not* the ledger's urn** — `rho:rchain:ertp:ledger` stays bound to the native system process, so the alias tier holds the object API and the native channel holds the ledger it is written over, and neither name changes meaning |
 
 Note on the URIs: they are this port's own zbase32 encoding of `blake2b256(deployer public key)`
 (`rholang/src/registry.rs:43`), which deliberately does not reproduce the Scala's CRC14+ZBase32 bit
@@ -219,7 +220,7 @@ Genesis installs the set **in one order, and only one of the constraints is shar
 |---|---|---|---|
 | `non_negative_number` → `make_mint` | `MakeMint.rho:27` looks the counter up (`lookup!(\`rho:lang:nonNegativeNumber\`, …)`) **during its own deploy**, and waits on a reply pattern a `Nil` reply cannot match | the deploy still *succeeds*, `MakeMint` never registers, and `lookup!(\`rho:rchain:makeMint\`)` answers `Nil` forever — silently | the genesis ceremony's completeness check (`missing_genesis_aliases`), pinned by `installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check` |
 | `directory`, `inbox` → `roll` | **not a genesis constraint** — `memberIdGovRev` resolves those imports per *call*, not at deploy time, so its position in the list is free (all three are genesis content, so a caller always finds them) | nothing at genesis; a client's `"makeFromURI"` would need them installed, which they are by the time anyone can call | — (a negative test for it is what established this; see `BLESSED_DEPENDENCIES`) |
-| `kudos`, `issue` vs anything | independent: each self-registers and reads nothing at deploy time | — | — |
+| `kudos`, `issue`, `ertp` vs anything | independent: each self-registers and reads nothing at deploy time. `ertp` binds `rho:rchain:ertp:ledger`, which is a **native** system process (present on any chain, whatever genesis installs), not a registry lookup | — | — |
 
 The order itself is pinned twice: `genesis::tests::blessed_terms_are_ordered_by_dependency` asserts
 the dependency table against the returned list *and* the exact sequence (a change there is a genesis
@@ -260,7 +261,7 @@ its source contradicts the port's native design.
 `legacy/casper/src/main/resources/**` (10 — the superseded Scala genesis sources),
 `examples/**` (2), `qucalc/rholang/**` + `qucalc/examples/**` (12), `rspace-bench/benches/resources/**`
 (3). None is embedded by production Rust; each is consumed only by a test, a benchmark, or the legacy
-Scala tree. The only production `include_str!` of rholang is the nine files in
+Scala tree. The only production `include_str!` of rholang is the ten files in
 `casper/src/genesis/resources/`.
 
 ## The one adapted source
@@ -276,8 +277,13 @@ calls `securityCheck`, and the consumer path — `lookup!` → `(nonce, bundle)`
 ## What this changes for a consumer
 
 - **The shorthands resolve.** `rho:rchain:revVault`, `rho:rchain:pos`, `rho:rchain:makeMint`,
-  `rho:lang:listOps` (and `rho:lang:nonNegativeNumber`) answer their lookup with
+  `rho:rchain:ertp`, `rho:lang:listOps` (and `rho:lang:nonNegativeNumber`) answer their lookup with
   `(9223372036854775807, bundle+{dispatcher})`, on a fresh chain, with no bootstrap deploy.
+- **`rho:rchain:ertp` is the ERTP object API, not the ledger.** The native issuer ledger stays at
+  `rho:rchain:ertp:ledger`; a caller that wants `makeIssuerKit` looks the shorthand up
+  (`spec/API-SCHEMA.md` has both rows). `ERTP.rho`'s own key is *derived*
+  (`blake2b256("rnode/genesis/ertp")`) rather than pasted from a vendored header, so anyone can
+  recompute it — `standard_deploys::tests::the_ertp_key_is_derived_from_a_named_string` does.
 - **The `rho:id`s above are constant** for every chain of this port: hardcoding them is safe (and
   means a `down && up` no longer invalidates them for this set). Anything registered *by a deploy*
   still shifts per chain — `rho:registry:insertArbitrary` derives its URI from a random seed
@@ -294,3 +300,20 @@ master directory) live in `rchain-community/rgov`, not in this repository, and a
 this change. Making them genesis content is a separate sourcing decision with its own requirements —
 fixed keys/timestamps, `insertSigned` instead of `insertArbitrary` so their URIs stop shifting per
 chain, and the dependency markers substituted with those constants.
+
+## The vault handle's dispatch id moved (2026-10-06)
+
+**A consensus-visible change, and it is deliberate.** A vault handle minted by `findOrCreate` used to
+carry **two** installed continuations — `balance` at arity 2 and `transfer` at arity 5 — and the space
+keeps one per channel, so the second install replaced the first and `balance` answered nothing at all
+(AUDIT C219). The handle is now **one** continuation at `arity: 1, remainder: true` dispatching on the
+method, which is the shape `rev_vault`, `ertp` and `pos` already use.
+
+The continuation's `body_ref` is `native_body_ref(name, arity)` — a hash of the name *and* the arity —
+so a handle minted under the new rule carries a **different** `body_ref` than the old rule would have
+given it. Nothing in this tree's genesis content changes (the handle is minted by a deploy, not by the
+genesis), and no *existing* state is rewritten: what moves is what a **newly minted** handle's
+post-state carries. Chain state produced before this commit stays valid — the RSpace under a handle is
+whatever it was — and the wire is unchanged: a 5-field `transfer` send matches the new pattern exactly
+as it matched the old one, which `casper/tests/determinism.rs` asserts as a fund *movement* rather
+than a reply.

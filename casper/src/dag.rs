@@ -1,11 +1,12 @@
 //! Block DAG key-value storage (port of `casper/dag/BlockDagKeyValueStorage.scala`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
+use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId, DeployerLookup};
 use rchain_block_storage::dag::finalizer::Message;
 use rchain_block_storage::dag::message_map;
 use rchain_block_storage::dag::message_state::DagMessageState;
@@ -72,7 +73,20 @@ pub struct BlockDagKeyValueStorage {
     /// restart forgets: the *evidence* is what has to be checkable, and it is checked by the receiver
     /// against its own DAG, not against a store this node happens to keep.
     equivocations: tokio::sync::Mutex<BTreeMap<Validator, Vec<u8>>>,
+    /// **Deployer public key (hashed) → a block containing a deploy it signed** (the first one this node
+    /// inserted). Attached by [`Self::with_deployer_index`]; `None` in tests and tools that never
+    /// ask, and then `lookup_by_deployer` refuses. Serves the wallet's quantum key-hygiene check
+    /// ("has this key ever signed?"), which without an index has to read every block of the chain.
+    deployer_index: Option<Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>>,
+    /// The height at and above which every inserted block has been indexed (see
+    /// [`DeployerLookup::indexed_from`]); persisted under [`DEPLOYER_INDEXED_FROM_KEY`].
+    deployer_indexed_from: AtomicI64,
 }
+
+/// The deployer index's one non-key entry: the `indexed_from` height, big-endian `i64`. Deployer
+/// entries are keyed by a 32-byte hash, so this 12-byte key cannot collide with one (and LMDB
+/// refuses an empty key, which is why it is not the empty string).
+pub const DEPLOYER_INDEXED_FROM_KEY: &[u8] = b"indexed-from";
 
 impl BlockDagKeyValueStorage {
     /// Rebuild the in-memory DAG representation from the stores (port of `BlockDagKeyValueStorage.create`).
@@ -159,7 +173,90 @@ impl BlockDagKeyValueStorage {
             deploy_store,
             metrics: Arc::new(MetricsNop),
             equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
+            deployer_index: None,
+            deployer_indexed_from: AtomicI64::new(0),
         })
+    }
+
+    /// Attach the deployer index. From here on every inserted block is indexed. A store that has
+    /// never been used records the current chain height as `indexed_from`: on a fresh node that is
+    /// 0 and the index is complete from genesis; on a node upgraded onto an existing chain the blocks
+    /// below it are filled in by [`Self::backfill_deployer_index`].
+    pub async fn with_deployer_index(
+        mut self,
+        index: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>,
+    ) -> Result<Self, String> {
+        let stored = index
+            .get(&[DEPLOYER_INDEXED_FROM_KEY.to_vec()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten();
+        let from = match stored {
+            Some(bytes) => decode_height(&bytes)?,
+            None => {
+                let from = self.representation.read().await.latest_block_number();
+                index
+                    .put(&[(
+                        DEPLOYER_INDEXED_FROM_KEY.to_vec(),
+                        from.to_be_bytes().to_vec(),
+                    )])
+                    .await?;
+                from
+            }
+        };
+        self.deployer_indexed_from = AtomicI64::new(from);
+        self.deployer_index = Some(index);
+        Ok(self)
+    }
+
+    /// Index every block already in the DAG, then record the index as complete (`0`). Run once in
+    /// the background after an upgrade; a no-op when the index is already complete or not attached.
+    /// A crash part-way leaves the marker where it was, so the next start runs it again. Takes the insert lock one block at a time, so the node keeps inserting meanwhile.
+    /// Returns the number of blocks read.
+    pub async fn backfill_deployer_index(
+        &self,
+        block_store: &Arc<dyn KeyValueTypedStore<BlockHash, BlockMessage>>,
+    ) -> Result<usize, String> {
+        let Some(index) = &self.deployer_index else {
+            return Ok(0);
+        };
+        let upto = self.deployer_indexed_from.load(Ordering::SeqCst);
+        if upto <= 0 {
+            return Ok(0);
+        }
+        // Every block in the DAG, not the height map: the height map leaves out validation-failed
+        // blocks, and `insert` indexes those too, so walking it would leave an upgraded node short of
+        // a fresh one (review of #277). Blocks already indexed cost a read and write nothing.
+        let hashes: Vec<BlockHash> = {
+            let repr = self.get_representation().await;
+            repr.dag_set.iter().copied().collect()
+        };
+        for hash in &hashes {
+            let block = block_store
+                .get(&[*hash])
+                .await?
+                .into_iter()
+                .next()
+                .flatten()
+                .ok_or_else(|| {
+                    format!(
+                        "deployer index backfill: block {} is not in the block store",
+                        hash.to_hex()
+                    )
+                })?;
+            let _guard = self.lock.lock().await;
+            index_deployers(index.as_ref(), &block).await?;
+        }
+        let _guard = self.lock.lock().await;
+        index
+            .put(&[(
+                DEPLOYER_INDEXED_FROM_KEY.to_vec(),
+                0i64.to_be_bytes().to_vec(),
+            )])
+            .await?;
+        self.deployer_indexed_from.store(0, Ordering::SeqCst);
+        Ok(hashes.len())
     }
 
     /// Point the DAG's gauges at a sink (the node's `MetricsRegistry`) and publish what the
@@ -319,6 +416,52 @@ impl BlockDagKeyValueStorage {
 /// just advanced under it. Defined beside the rejections so the string and the check cannot drift.
 pub const EQUIVOCATION_PREFIX: &str = "equivocation detected";
 
+/// Record `block` against each deployer it carries that the index does not have yet. The caller
+/// holds the insert lock, so the read-then-write cannot race another insert.
+async fn index_deployers(
+    index: &dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>,
+    block: &BlockMessage,
+) -> Result<(), String> {
+    let deployers: BTreeSet<Vec<u8>> = block
+        .state
+        .deploys
+        .iter()
+        .map(|d| deployer_index_key(&d.deploy.deployer))
+        .collect();
+    if deployers.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<Vec<u8>> = deployers.into_iter().collect();
+    let existing = index.get(&keys).await?;
+    let fresh: Vec<(Vec<u8>, Vec<u8>)> = keys
+        .into_iter()
+        .zip(existing)
+        .filter(|(_, e)| e.is_none())
+        .map(|(k, _)| (k, block.block_hash.as_bytes().to_vec()))
+        .collect();
+    if !fresh.is_empty() {
+        index.put(&fresh).await?;
+    }
+    Ok(())
+}
+
+/// The index is keyed by `blake2b256(public key)` rather than the 65-byte key: a third smaller, and
+/// it lets a lookup ask by the hash, so checking a key that has never signed does not hand that key
+/// to the node (`lookup_by_deployer` takes this hash).
+pub fn deployer_index_key(deployer: &[u8]) -> Vec<u8> {
+    Blake2b256Hash::create(deployer).as_bytes().to_vec()
+}
+
+fn decode_height(bytes: &[u8]) -> Result<i64, String> {
+    let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+        format!(
+            "deployer index: malformed indexed-from entry ({} bytes)",
+            bytes.len()
+        )
+    })?;
+    Ok(i64::from_be_bytes(arr))
+}
+
 #[async_trait]
 impl BlockDagStorage for BlockDagKeyValueStorage {
     async fn get_representation(&self) -> Arc<DagRepresentation> {
@@ -446,6 +589,17 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         self.fringe_data_store
             .put(&[(fringe_hash, fringe_data.clone())])
             .await?;
+
+        // The deployer index is data too, so it is written **before** the block becomes known (review
+        // of #277). In the other order a crash between the two writes left the block known — and
+        // `insert` returns early for a known block, so nothing would ever index it again — while the
+        // index reported itself complete. This way a crash leaves at worst an entry for a block that
+        // is not in the DAG yet; the block is in the block store (the receiver stores it before it
+        // inserts), so that entry is still a true "this key signed in a block this node holds", and
+        // the re-insert finds it already present.
+        if let Some(index) = &self.deployer_index {
+            index_deployers(index.as_ref(), &block).await?;
+        }
 
         // Only now make the block known. Everything above this line is data the block *refers to*;
         // this is the pointer, and the crash window it opens is the one described at the top of this
@@ -590,6 +744,44 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
     async fn lookup_by_deploy_id(&self, deploy_id: &DeployId) -> Result<Option<BlockHash>, String> {
         let vals = self.deploy_index.get(&[deploy_id.clone()]).await?;
         Ok(vals.into_iter().next().flatten())
+    }
+
+    async fn lookup_by_deployer(&self, deployer_hash: &[u8]) -> Result<DeployerLookup, String> {
+        let Some(index) = &self.deployer_index else {
+            return Err("this node keeps no deployer index".to_string());
+        };
+        // Read the coverage first: a backfill that completes between the two reads can only make the
+        // answer more complete than the height it is reported with, never less.
+        //
+        // **Coverage is also bounded by what this node holds.** A node that joined by syncing from a
+        // finalized fringe inserts only the blocks above it, so its index — complete for everything
+        // it has — knows nothing of the chain below its lowest block. Reporting 0 there would turn
+        // "not in my blocks" into "never signed".
+        let lowest_held = self
+            .get_representation()
+            .await
+            .height_map
+            .keys()
+            .next()
+            .map_or(0, |h| i64::from(*h));
+        let indexed_from = self
+            .deployer_indexed_from
+            .load(Ordering::SeqCst)
+            .max(lowest_held);
+        let block = match index
+            .get(&[deployer_hash.to_vec()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+        {
+            Some(bytes) => Some(BlockHash::try_from(bytes.as_slice()).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        Ok(DeployerLookup {
+            block,
+            indexed_from,
+        })
     }
 
     async fn add_deploy(&self, deploy: SignedDeployData) -> Result<(), String> {
@@ -884,6 +1076,330 @@ mod tests {
         let err = storage.add_deploy(deploy_with_id(MAX_POOLED_DEPLOYS)).await;
         assert!(err.is_err(), "deploy pool must reject once full");
         assert!(err.unwrap_err().contains("full"));
+    }
+
+    // --- Deployer index (`GET /api/v1/deployer/{pubkey}`) ---
+
+    fn deployer_index_store() -> Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>> {
+        Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BytesCodec),
+            Arc::new(BytesCodec),
+        ))
+    }
+
+    /// `meta` with the sequence number following the height, so a chain of blocks by the one test
+    /// sender is not refused as an equivocation.
+    fn meta_seq(hash: BlockHash, parents: &[BlockHash], block_num: i64) -> BlockMetadata {
+        BlockMetadata {
+            seq_num: block_num.try_into().unwrap(),
+            ..meta(hash, parents, block_num)
+        }
+    }
+
+    /// A block carrying one deploy per key in `deployers`.
+    fn block_signed_by(h: BlockHash, deployers: &[u8]) -> BlockMessage {
+        let mut b = block(h);
+        b.state.deploys = deployers
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let mut d = deploy_with_id(1000 * usize::from(h.as_bytes()[0]) + i);
+                d.deployer = vec![*k; 65];
+                rchain_models::casper::protocol::casper_message::ProcessedDeploy {
+                    deploy: d,
+                    cost: rchain_models::casper::protocol::casper_message::PCost { cost: 0 },
+                    deploy_log: vec![],
+                    is_failed: false,
+                    system_deploy_error: None,
+                }
+            })
+            .collect();
+        b
+    }
+
+    #[tokio::test]
+    async fn deployer_index_records_the_first_block_a_key_signed_in() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deployer_index(deployer_index_store())
+            .await
+            .unwrap();
+        // An empty chain: the index is complete from genesis.
+        let unseen = storage
+            .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+            .await
+            .unwrap();
+        assert_eq!(
+            unseen,
+            DeployerLookup {
+                block: None,
+                indexed_from: 0
+            }
+        );
+
+        let (h1, h2) = (hash(1), hash(2));
+        storage
+            .insert(meta_seq(h1, &[], 0), block_signed_by(h1, &[7, 8]))
+            .await
+            .unwrap();
+        storage
+            .insert(meta_seq(h2, &[h1], 1), block_signed_by(h2, &[7]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            Some(h1),
+            "the first block a key signed in is kept, not overwritten by a later one"
+        );
+        assert_eq!(
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[8u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            Some(h1)
+        );
+        assert_eq!(
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[9u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            None,
+            "a key that never signed is not in the index"
+        );
+    }
+
+    #[tokio::test]
+    async fn deployer_index_is_refused_when_not_attached() {
+        let storage = build_storage().await;
+        assert!(
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .is_err(),
+            "a storage without the index must not answer \"not seen\""
+        );
+    }
+
+    /// The upgrade path: a node whose chain predates the index reports how far down it reaches, and
+    /// the backfill reads the stored blocks below that and then reports the index complete.
+    #[tokio::test]
+    async fn deployer_index_backfills_a_chain_that_predates_it() {
+        let metadata_store = empty_metadata_store().await;
+        let block_store: Arc<dyn KeyValueTypedStore<BlockHash, BlockMessage>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BlockHashCodec),
+                Arc::new(rchain_block_storage::dag::codecs::BlockMessageCodec),
+            ));
+        let (h1, h2, h3) = (hash(1), hash(2), hash(3));
+        {
+            // The old node: no index. `h3` failed validation, so the height map leaves it out —
+            // but `insert` indexes a failed block's deployers, so the backfill must too.
+            let old = build_storage_over(metadata_store.clone()).await;
+            for (h, parents, height, keys, failed) in [
+                (h1, vec![], 0, vec![7u8], false),
+                (h2, vec![h1], 1, vec![8u8], false),
+                (h3, vec![h2], 2, vec![9u8], true),
+            ] {
+                let b = block_signed_by(h, &keys);
+                block_store.put(&[(h, b.clone())]).await.unwrap();
+                let m = BlockMetadata {
+                    validation_failed: failed,
+                    ..meta_seq(h, &parents, height)
+                };
+                old.insert(m, b).await.unwrap();
+            }
+        }
+
+        let index = deployer_index_store();
+        let upgraded = build_storage_over_unshared(metadata_store)
+            .await
+            .with_deployer_index(index.clone())
+            .await
+            .unwrap();
+        let before = upgraded
+            .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+            .await
+            .unwrap();
+        assert_eq!(
+            before,
+            DeployerLookup {
+                block: None,
+                indexed_from: 2
+            },
+            "before the backfill the answer says the heights below 2 are unread"
+        );
+
+        assert_eq!(
+            upgraded
+                .backfill_deployer_index(&block_store)
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap(),
+            DeployerLookup {
+                block: Some(h1),
+                indexed_from: 0
+            }
+        );
+        assert_eq!(
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[8u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            Some(h2)
+        );
+        assert_eq!(
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[9u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            Some(h3),
+            "a validation-failed block's deployer is backfilled, as a live insert would index it"
+        );
+
+        // Persisted: a restart over the same index store is complete without another backfill.
+        let restarted = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deployer_index(index)
+            .await
+            .unwrap();
+        assert_eq!(
+            restarted
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap(),
+            DeployerLookup {
+                block: Some(h1),
+                indexed_from: 0
+            }
+        );
+        assert_eq!(
+            restarted
+                .backfill_deployer_index(&block_store)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// A metadata store whose writes fail: what `insert` leaves behind when it is interrupted at
+    /// the point that makes a block known.
+    struct FailingPutStore(InMemoryKeyValueStore);
+
+    impl KeyValueStore for FailingPutStore {
+        fn get(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            self.0.get(keys)
+        }
+        fn put(&mut self, _pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+            Err("interrupted".to_string())
+        }
+        fn delete(&mut self, keys: &[Vec<u8>]) -> Result<usize, String> {
+            self.0.delete(keys)
+        }
+        fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+            self.0.entries()
+        }
+    }
+
+    /// Review of #277: the index is written before the block becomes known, so an insert interrupted
+    /// there leaves no known block with a missing signer, and the retry after a restart completes it.
+    #[tokio::test]
+    async fn deployer_index_survives_an_insert_interrupted_before_the_block_is_known() {
+        let failing: Shared = Arc::new(tokio::sync::Mutex::new(Box::new(FailingPutStore(
+            InMemoryKeyValueStore::default(),
+        ))));
+        let failing_metadata = Arc::new(
+            BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+                failing,
+                Arc::new(BlockHashCodec),
+                Arc::new(BlockMetadataCodec),
+            )))
+            .await
+            .unwrap(),
+        );
+        let index = deployer_index_store();
+        let h1 = hash(1);
+        let interrupted = build_storage_over_unshared(failing_metadata)
+            .await
+            .with_deployer_index(index.clone())
+            .await
+            .unwrap();
+        assert!(interrupted
+            .insert(meta_seq(h1, &[], 0), block_signed_by(h1, &[7]))
+            .await
+            .is_err());
+        assert_eq!(
+            interrupted
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            Some(h1),
+            "the signer was indexed before the write that makes the block known"
+        );
+
+        // Restart over a healthy store: the block is not known, so its re-insert runs in full.
+        let restarted = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deployer_index(index)
+            .await
+            .unwrap();
+        restarted
+            .insert(meta_seq(h1, &[], 0), block_signed_by(h1, &[7]))
+            .await
+            .unwrap();
+        assert_eq!(
+            restarted
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap(),
+            DeployerLookup {
+                block: Some(h1),
+                indexed_from: 0
+            }
+        );
+    }
+
+    /// A node that joined by syncing from a fringe holds no blocks below it, so its coverage starts
+    /// at its lowest block — never 0 — however complete its index is for the blocks it has.
+    #[tokio::test]
+    async fn deployer_index_coverage_starts_at_the_lowest_block_held() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deployer_index(deployer_index_store())
+            .await
+            .unwrap();
+        let h = hash(5);
+        storage
+            .insert(meta_seq(h, &[], 40), block_signed_by(h, &[7]))
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .lookup_by_deployer(&deployer_index_key(&[9u8; 65]))
+                .await
+                .unwrap(),
+            DeployerLookup {
+                block: None,
+                indexed_from: 40
+            }
+        );
     }
 
     fn chain_hash(i: usize) -> BlockHash {

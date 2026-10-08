@@ -3,6 +3,24 @@
 //! The Scala `Coeval` laziness and the `PRETTY_PRINTER_OUTPUT_TRIM_AFTER` cap are dropped; strings
 //! are built eagerly. Variable naming (`rotate`/`increment`) and the de Bruijn level shifts are
 //! preserved faithfully.
+//!
+//! # Printing is not serializing, and the difference is a security boundary
+//!
+//! `build_string` produces **source text**, and two production paths — `shard_invoke`'s term
+//! builders (the OCapN bridge and the cross-shard coordinator) and `txn_coordinator`'s — take that
+//! text and **parse and sign it**. Anything printed into such a term is code, so a value that cannot
+//! be written as a literal is not a cosmetic problem: it is an injection.
+//!
+//! **Rholang's literal grammar has no escape sequences.** `parser.rs` reads a string from `"` to the
+//! next `"` (`:121-137`) and a URI from `` ` `` to the next `` ` `` (`:139-153`); there is no `\"`,
+//! and no primitive rebuilds a string from bytes (`reduce.rs`'s `toString` refuses a `GByteArray`,
+//! `:1081-1090`). So a string **containing a double quote is not representable as a rholang literal
+//! at all** — and printing one produces a term that means something else (AUDIT C220: a peer's
+//! argument became a parallel process in a deploy the node signed as itself).
+//!
+//! [`check_renderable`] is the serializer's guard: call it on every value that will be *parsed*,
+//! never merely displayed. Display callers (the REPL, `storage_printer`) may use `build_string`
+//! directly; they lose nothing, because a quote inside a string still reads as a quote.
 
 use rchain_models::ast::{
     Bundle, Connective, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Send, Sort, Var,
@@ -12,6 +30,82 @@ use rchain_models::sorter::{sort_pairs, sort_pars};
 use rchain_shared::base16;
 
 const INDENT: &str = "  ";
+
+/// **Whether `par` can be written as source that means the same thing.**
+///
+/// Called by every path that *parses* what it prints. It refuses, with a reason naming the value:
+///
+/// * a `GString` containing `"` — no escape exists, so the literal would end early and the rest
+///   would be read as code (C220);
+/// * a `GUri` containing `` ` `` — the same, for the backtick form;
+/// * anything that is not a *value*: a process (sends, receives, `new`, `match`), a bundle, or an
+///   unforgeable name. Those are not renderable as an argument at all, and a term that embedded one
+///   would either fail to parse or — worse — parse as something the caller did not write;
+/// * a free variable, which would make the built term name an unbound channel.
+///
+/// Cheap: it walks the value, and values are bounded by the message cap. An injection guard that is
+/// expensive to call is an injection guard that gets skipped.
+pub fn check_renderable(par: &Par) -> Result<(), String> {
+    if !par.sends.is_empty()
+        || !par.receives.is_empty()
+        || !par.news.is_empty()
+        || !par.matches.is_empty()
+        || !par.bundles.is_empty()
+        || !par.unforgeables.is_empty()
+    {
+        return Err(
+            "a process, a bundle or an unforgeable name cannot be written as an argument: only a \
+             value can be rendered into a term"
+                .to_string(),
+        );
+    }
+    for expr in &par.exprs {
+        check_expr(expr)?;
+    }
+    Ok(())
+}
+
+fn check_expr(expr: &Expr) -> Result<(), String> {
+    match expr {
+        Expr::GString(s) if s.contains('"') => Err(format!(
+            "a string containing a double quote cannot be written as a rholang literal (the grammar \
+             has no escape sequence), so rendering it would end the literal early and read the rest \
+             as code: {s:?}"
+        )),
+        Expr::GUri(u) if u.contains('`') => Err(format!(
+            "a uri containing a backtick cannot be written as a rholang literal: {u:?}"
+        )),
+        // **Two printed forms are not read back as the same term** — the warts the module's own test
+        // documents and `spec/audit/passes.md` §16 records. They are not cosmetic here: a value that
+        // prints as something *else* reaches the far side as that other value, silently.
+        // `(1,)` prints `(1)`, which is the group `1`; `not x` prints `~(x)`, which does not parse.
+        Expr::ETuple(t) if t.ps.is_empty() || t.ps.len() == 1 => Err(format!(
+            "a {}-element tuple has no faithful source form: it prints as `(x)`, which is the group \
+             `x`, not the tuple",
+            t.ps.len()
+        )),
+        Expr::ENot(_) => Err(
+            "a negation has no faithful source form: it prints as `~(x)`, which does not parse"
+                .to_string(),
+        ),
+        Expr::ETuple(t) => t.ps.iter().try_for_each(check_renderable),
+        Expr::EList(l) => l.ps.iter().try_for_each(check_renderable),
+        Expr::ESet(s) => s.ps.iter().try_for_each(check_renderable),
+        Expr::EMap(m) => m.kvs.iter().try_for_each(|(k, v)| {
+            check_renderable(k)?;
+            check_renderable(v)
+        }),
+        Expr::EMethod(m) => {
+            check_renderable(&m.target)?;
+            m.arguments.iter().try_for_each(check_renderable)
+        }
+        Expr::EVar(_) => Err(
+            "a free variable in an argument would name an unbound channel in the built term"
+                .to_string(),
+        ),
+        _ => Ok(()),
+    }
+}
 
 /// Wrap a rendered sub-expression in parentheses unless it is already parenthesised or a bare
 /// integer (port of `StringOps.wrapWithBraces`).
@@ -480,7 +574,12 @@ impl PrettyPrinter {
             Expr::GBigInt(bi) => format!("BigInt({bi})"),
             Expr::GString(s) => format!("\"{s}\""),
             Expr::GUri(u) => format!("`{u}`"),
-            Expr::GByteArray(bs) => base16::encode(bs),
+            // A byte array has a source literal — `"<hex>".hexToBytes()` — and a bare hex token is
+            // **not** one: `ab` lexes as an identifier, so a byte array printed the old way produced a
+            // term naming an unbound variable, which the normalizer refuses (AUDIT C220). This is the
+            // faithful form, and `txn_coordinator::render_arg` had been spelling it by hand at its one
+            // call site — which is how a printer defect survives: the workaround goes in a caller.
+            Expr::GByteArray(bs) => format!("\"{}\".hexToBytes()", base16::encode(bs)),
             Expr::EMethod(m) => {
                 let args = m
                     .arguments
@@ -790,6 +889,55 @@ mod printer_tests {
                 "printing {src:?} produced {printed:?}, which reparses differently"
             );
         }
+    }
+
+    /// **The byte-array arm is part of the round trip too**, and it was not: it printed a bare hex
+    /// token, which is an *identifier*, so a parsed term carrying a byte array printed into something
+    /// that no longer named the same value — or parsed at all (AUDIT C220).
+    #[test]
+    fn a_byte_array_prints_as_a_literal_that_reparses() {
+        let src = "\"abcd\".hexToBytes()";
+        let first: Par = crate::normalizer::source_to_adt(src)
+            .expect("the source parses")
+            .into();
+        let printed = PrettyPrinter::new().build_string(&first);
+        let second: Par = crate::normalizer::source_to_adt(&printed)
+            .unwrap_or_else(|e| panic!("printing a byte array produced {printed:?}: {e}"))
+            .into();
+        assert_eq!(second, first, "printed as {printed:?}");
+    }
+
+    /// **The serializer's guard**: a value with no faithful literal is refused, and an ordinary one
+    /// is not. Rholang's lexer reads a string from `"` to the next `"` (`parser.rs:121-137`) with no
+    /// escape — so a quote inside a string cannot be written down, and a printer that tries produces a
+    /// term meaning something else. Every path that *parses* what it prints must call this first.
+    #[test]
+    fn a_value_with_no_faithful_literal_is_refused() {
+        let ok = crate::normalizer::source_to_adt("\"hello\"")
+            .expect("parses")
+            .into();
+        check_renderable(&ok).expect("an ordinary string is renderable");
+
+        // The trigger is the quote, whatever surrounds it.
+        for src in ["\"a\\\"b\"", "\"\\\"\""] {
+            let parsed: Result<_, _> = crate::normalizer::source_to_adt(src).map(Par::from);
+            // The lexer cannot even *read* these back as one string literal — which is the point.
+            if let Ok(par) = parsed {
+                assert!(
+                    check_renderable(&par).is_err(),
+                    "{src:?} must be refused rather than printed"
+                );
+            }
+        }
+
+        // A process or a free variable in an argument is refused too: neither is a value.
+        let process: Par = crate::normalizer::source_to_adt("@\"c\"!(1)")
+            .expect("parses")
+            .into();
+        assert!(
+            check_renderable(&process).is_err(),
+            "a process is not an argument"
+        );
     }
 
     /// A bound variable is printed with a **generated name**, not its de Bruijn index: the printer

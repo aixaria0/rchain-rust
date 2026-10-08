@@ -6,6 +6,7 @@ pub mod conversion;
 pub mod dto;
 pub mod faucet;
 pub mod grpc;
+pub mod ocapn;
 pub mod rho_expr;
 pub mod shard_routing;
 pub mod web_api;

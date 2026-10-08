@@ -8,11 +8,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use qucalc::{achieves_zfa, dialectical_synthesis, pauli_phase};
+use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::hash::{blake2b256, keccak256, sha256};
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::ed25519::Ed25519;
 use rchain_crypto::signatures::secp256k1::Secp256k1;
-use rchain_models::ast::Par;
+use rchain_models::ast::{GPrivate, Par};
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_models::rholang::RhoType::{
     RhoBoolean, RhoByteArray, RhoDeployerId, RhoList, RhoMap, RhoName, RhoNil, RhoNumber, RhoSet,
@@ -167,6 +168,11 @@ impl FixedChannels {
     pub fn http() -> Par {
         byte_name(31)
     }
+    /// The ERTP issuer ledger (issue #249). Byte 32 is the next free one; byte 9 is left alone
+    /// because it is the oracle's unexplained hole, not a gap to fill.
+    pub fn ertp_ledger() -> Par {
+        byte_name(32)
+    }
 }
 
 /// The dispatch-table ids (port of `SystemProcesses.BodyRefs`).
@@ -203,6 +209,7 @@ impl BodyRefs {
     pub const GOV_TALLY: i64 = 30;
     pub const TXN: i64 = 31;
     pub const HTTP: i64 = 32;
+    pub const ERTP_LEDGER: i64 = 33;
 }
 
 /// Per-block data exposed to the `rho:block:data` contract (port of `SystemProcesses.BlockData`).
@@ -248,8 +255,71 @@ pub struct Definition {
     pub handler: ScalaBodyFn,
 }
 
+/// A name argument's bytes (issue #249).
+///
+/// Recovering them *here* is what keeps the ledger's keys unguessable: the bytes cross into Rust and
+/// are never returned, and no Rholang term can construct a `GPrivate` in the first place — only
+/// `reduce::alloc` and Rust callers of `RhoName::apply_bytes` can. A `GByteArray` of the right bytes
+/// is therefore not a name, which is exactly the gate this function is.
+fn ertp_name(p: &Par) -> Result<Vec<u8>, RholangError> {
+    RhoName::unapply(p)
+        .map(|name| name.id.clone())
+        .ok_or_else(|| illegal_arg("ertp expects an unforgeable name"))
+}
+
+/// An amount argument: an `Int` the ledger can hold. A `BigInt` is refused rather than truncated —
+/// `RhoNumber::unapply` matches `GInt` only, and `NonNegI64` is what `PREFIX_ERTP` stores.
+fn ertp_amount(p: &Par) -> Result<NonNegI64, RholangError> {
+    let n = RhoNumber::unapply(p).ok_or_else(|| illegal_arg("ertp expects an integer amount"))?;
+    NonNegI64::try_from(n).map_err(|_| illegal_arg("ertp amount must be non-negative"))
+}
+
 fn illegal_arg(msg: &str) -> RholangError {
     RholangError::ReduceError(msg.to_string())
+}
+
+// -------------------------------------------------------------------------------------------------
+// REV's ERTP identity (issue #249)
+// -------------------------------------------------------------------------------------------------
+
+/// The REV brand's bytes — `blake2b256("rchain:rev:brand")`.
+///
+/// Derived from a named string rather than picked, so anyone can recompute it (`rgov::contract_key`
+/// is the same idiom), and **constant for every chain**: a brand that moved would make every REV
+/// amount ever issued a different brand. `rev_brand_and_authority_are_derived_from_named_strings`
+/// pins the value.
+pub fn rev_brand() -> Vec<u8> {
+    blake2b256::hash(b"rchain:rev:brand")
+}
+
+/// The name that may mint REV: `blake2b256("rchain:rev:authority")`.
+///
+/// **A hardcoded authority is safe here for a reason that must be tested rather than asserted**: no
+/// Rholang term can construct a `GPrivate`, so this name can never be *presented* to the ledger by a
+/// deploy — only this code, which mints it with `RhoName::apply_bytes`, holds it. It is never
+/// replied on any channel (`revBrand` replies the brand alone), which is what keeps REV unmintable
+/// from Rholang.
+fn rev_authority() -> Vec<u8> {
+    blake2b256::hash(b"rchain:rev:authority")
+}
+
+/// The address where funded REV sits: the REV address of the unforgeable name
+/// `blake2b256("rchain:rev:ertp-reserve")`.
+///
+/// **Derived from a name rather than a key, and that is what makes it unspendable by a deploy.** A
+/// vault's spend authority for a name-derived address lives in the *authority* map, and the only
+/// writer of that map is `revVault!("unforgeableAuthKey", name, ret)` — which requires *presenting*
+/// the name. Nobody can present this one, because nobody can construct a `GPrivate`. (A
+/// `findOrCreate` handle over the reserve address is therefore a handle with no authority: it can
+/// read, and it cannot move anything. `rev_flow.rs` measures exactly that.)
+///
+/// Only the native REV ops move it: `transfer_vault` is the raw move and consults no authority, so
+/// `revFund` pays in and `revRedeem` pays out.
+pub fn rev_reserve() -> String {
+    RevAddress::from_unforgeable(&GPrivate {
+        id: blake2b256::hash(b"rchain:rev:ertp-reserve"),
+    })
+    .to_base58()
 }
 
 /// Parse a rholang list of integers 0..7 into a twist sequence.
@@ -399,17 +469,19 @@ pub struct SystemProcesses {
     native_state: Arc<NativeSystemState>,
 }
 
-/// Install both arities of a **vault handle** on `name_bytes` and return the channel.
+/// Install a **vault handle** on `name_bytes` and return the channel.
 ///
-/// Arity 2 is the oracle's `@"balance", ret` and arity 5 its
-/// `@"transfer", @targetAddress, @amount, authKey, ret` (`RevVault.rho:196-200`). A native handler has
-/// one arity and RSpace matches on arity, so serving that API from Rust means two continuations under
-/// one name — which is why the dispatch id is derived from the name *and* the arity
-/// (`ContractCall::native_body_ref`).
+/// **One continuation, dispatching on the method inside it** (AUDIT C219, Law 60). The oracle's handle
+/// is `@"balance", ret` (arity 2) beside `@"transfer", @targetAddress, @amount, authKey, ret` (arity 5)
+/// — two `contract`s on one name — but this port's space keeps **one** installed continuation per
+/// channel, so installing the two arities separately left only the second matching: `transfer` worked
+/// and `balance` answered nothing at all, with no error (an unmatched receive is silence). The shape
+/// every other multi-method contract here already uses — `rev_vault`, `ertp`, `pos` — is one
+/// continuation at `arity: 1, remainder: true` with the method as the first field, so the handle is
+/// installed that way and the arms are dispatched inside [`vault_handle_handler`].
 ///
-/// The channel is built here rather than taken from `install_native`'s return so both arities are
-/// known to have landed before the caller is handed the capability; a handle that resolves for
-/// `balance` but not `transfer` would be worse than no handle.
+/// The channel is built here rather than taken from `install_native`'s return so the continuation is
+/// known to have landed before the caller is handed the capability.
 async fn install_vault_handle<T, D>(
     cc: ContractCall<T, D>,
     native: Arc<NativeSystemState>,
@@ -420,26 +492,21 @@ where
     T: Tuplespace + Clone + Send + Sync + 'static,
     D: Dispatch + Clone + Send + Sync + 'static,
 {
-    for (arity, handler) in [
-        (
-            2,
-            vault_balance_handler(cc.clone(), native.clone(), address.clone()),
-        ),
-        (
-            5,
-            vault_transfer_handler(cc.clone(), native.clone(), address.clone()),
-        ),
-    ] {
-        cc.install_native(name_bytes.clone(), arity, handler)
-            .await?;
-    }
+    let handler = vault_handle_handler(cc.clone(), native.clone(), address.clone());
+    cc.install_native(name_bytes.clone(), 1, true, handler)
+        .await?;
     Ok(RhoName::apply_bytes(name_bytes))
 }
 
-/// A vault handle's `balance` arm: replies the balance **directly**, as the oracle does
-/// (`revVault(@"balance", ret)` → `purse!("getBalance", *ret)`, and the wallet vector destructures a
-/// bare balance rather than an `Either`).
-fn vault_balance_handler<T, D>(
+/// A vault handle's arms, **dispatched on the first field** (AUDIT C219, Law 60).
+///
+/// The handle is installed once at `arity: 1, remainder: true`, so the method arrives as the first
+/// field of the message rather than as the pattern RSpace matched — the shape `rev_vault`, `ertp` and
+/// `pos` all use. Dispatching here rather than by arity is what makes `balance` reachable at all: the
+/// previous shape installed `balance` at arity 2 and `transfer` at arity 5 as two continuations on one
+/// channel, and the space keeps **one**, so the second install replaced the first and `balance`
+/// answered nothing — with no error, since an unmatched receive is silence.
+fn vault_handle_handler<T, D>(
     cc: ContractCall<T, D>,
     native: Arc<NativeSystemState>,
     address: String,
@@ -456,29 +523,53 @@ where
             let (pars, rand) = cc
                 .unapply(&args)
                 .ok_or_else(|| illegal_arg("a vault handle expects a method and arguments"))?;
-            let [op, ret] = pars.as_slice() else {
-                return Err(illegal_arg("vault balance expects a return channel"));
+            // The remainder binds as a **list**, as `revVault`'s dispatcher unpacks it: the pattern is
+            // `[method, rest...]`, so `pars` is the method and one list of the rest.
+            let [op, rest_par] = pars.as_slice() else {
+                return Err(illegal_arg("a vault handle expects a method and arguments"));
             };
             let op = RhoString::unapply(op)
                 .ok_or_else(|| illegal_arg("a vault method must be a string"))?;
-            // RSpace matched on *arity*, not on the method string, so the method is checked here —
-            // which is what the oracle's `contract v(@"balance", ret)` does in its pattern. A send
-            // that carries the wrong method at the right arity is answered with an error rather than
-            // left pending: a caller who is told is better off than one who waits.
-            if op != "balance" {
-                return Err(illegal_arg(&format!(
-                    "vault handle: {op} is not a method of this arity"
-                )));
+            let rest = RhoList::unapply(rest_par)
+                .ok_or_else(|| illegal_arg("a vault handle's arguments must be a list"))?;
+            match op {
+                "balance" => vault_balance_arm(&cc, &native, &address, rest, &rand, path).await,
+                "transfer" => vault_transfer_arm(&cc, &native, &address, rest, &rand, path).await,
+                // **A caller who is told is better off than one who waits.** An unmatched receive is
+                // silence, so a method this handle does not serve is answered with an error.
+                other => Err(illegal_arg(&format!(
+                    "vault handle: {other} is not a method of this handle"
+                ))),
             }
-            let balance = native
-                .vault_balance(&address)
-                .await
-                .map_err(|e| illegal_arg(&e))?
-                .unwrap_or(NonNegI64::zero());
-            cc.produce(&rand, &[RhoNumber::apply(i64::from(balance))], ret, path)
-                .await
         })
     })
+}
+
+/// A vault handle's `balance` arm: replies the balance **directly**, as the oracle does
+/// (`revVault(@"balance", ret)` → `purse!("getBalance", *ret)`, and the wallet vector destructures a
+/// bare balance rather than an `Either`).
+async fn vault_balance_arm<T, D>(
+    cc: &ContractCall<T, D>,
+    native: &NativeSystemState,
+    address: &str,
+    rest: &[Par],
+    rand: &Blake2b512Random,
+    path: DfsPath,
+) -> Result<(), RholangError>
+where
+    T: Tuplespace + Clone + Send + Sync + 'static,
+    D: Dispatch + Clone + Send + Sync + 'static,
+{
+    let [ret] = rest else {
+        return Err(illegal_arg("vault balance expects a return channel"));
+    };
+    let balance = native
+        .vault_balance(address)
+        .await
+        .map_err(|e| illegal_arg(&e))?
+        .unwrap_or(NonNegI64::zero());
+    cc.produce(rand, &[RhoNumber::apply(i64::from(balance))], ret, path)
+        .await
 }
 
 /// A vault handle's `transfer` arm: `(true, Nil)` on success, `(false, reason)` on a refusal — the
@@ -489,80 +580,64 @@ where
 /// which is the same rule expressed in the encoding this port has. It is deliberately not "the
 /// caller's `deployerId`": a contract holding this handle has no deployer key of its own, which is the
 /// whole point of a capability, and it is what the multi-signature vault needs.
-fn vault_transfer_handler<T, D>(
-    cc: ContractCall<T, D>,
-    native: Arc<NativeSystemState>,
-    address: String,
-) -> ScalaBodyFn
+async fn vault_transfer_arm<T, D>(
+    cc: &ContractCall<T, D>,
+    native: &NativeSystemState,
+    address: &str,
+    rest: &[Par],
+    rand: &Blake2b512Random,
+    path: DfsPath,
+) -> Result<(), RholangError>
 where
     T: Tuplespace + Clone + Send + Sync + 'static,
     D: Dispatch + Clone + Send + Sync + 'static,
 {
-    Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
-        let cc = cc.clone();
-        let native = native.clone();
-        let address = address.clone();
-        Box::pin(async move {
-            let (pars, rand) = cc
-                .unapply(&args)
-                .ok_or_else(|| illegal_arg("a vault handle expects a method and arguments"))?;
-            let [op, to, amount, auth, ret] = pars.as_slice() else {
-                return Err(illegal_arg(
-                    "vault transfer expects a target, an amount, an auth key and a return channel",
-                ));
-            };
-            let op = RhoString::unapply(op)
-                .ok_or_else(|| illegal_arg("a vault method must be a string"))?;
-            if op != "transfer" {
-                return Err(illegal_arg(&format!(
-                    "vault handle: {op} is not a method of this arity"
-                )));
-            }
-            let to = RhoString::unapply(to)
-                .ok_or_else(|| illegal_arg("transfer expects a string to-address"))?;
-            let amount = RhoNumber::unapply(amount)
-                .ok_or_else(|| illegal_arg("transfer expects a number amount"))?;
-            let amount = NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
+    let [to, amount, auth, ret] = rest else {
+        return Err(illegal_arg(
+            "vault transfer expects a target, an amount, an auth key and a return channel",
+        ));
+    };
+    let to = RhoString::unapply(to)
+        .ok_or_else(|| illegal_arg("transfer expects a string to-address"))?;
+    let amount = RhoNumber::unapply(amount)
+        .ok_or_else(|| illegal_arg("transfer expects a number amount"))?;
+    let amount = NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
 
-            // **Two authorities, and a handle is neither.** A `deployerId` authorises the vault at
-            // its own address (the classic rule, reused here rather than re-spelled); a *name*
-            // authorises what `unforgeableAuthKey` recorded for it — the authority map, **not** the
-            // handle map. Reading the handle map here would make `findOrCreate(victim_address)` a
-            // spend right over that vault, which is the hole the two maps exist to keep apart.
-            let authorised = match RhoDeployerId::unapply(auth) {
-                Some(id) => RevAddress::from_deployer_id(id)
-                    .map(|a| a.to_base58())
-                    .is_some_and(|resolved| resolved == address),
-                None => match RhoName::unapply(auth) {
-                    Some(presented) => native
-                        .vault_authority_address(&presented.id)
-                        .await
-                        .map_err(|e| illegal_arg(&e))?
-                        .is_some_and(|resolved| resolved == address),
-                    None => false,
-                },
-            };
-            if !authorised {
-                let out = RhoTupleN::apply(vec![
-                    RhoBoolean::apply(false),
-                    RhoString::apply("Invalid AuthKey".to_string()),
-                ]);
-                return cc.produce(&rand, &[out], ret, path).await;
-            }
-
-            let outcome = native
-                .transfer_vault(&address, to, amount)
+    // **Two authorities, and a handle is neither.** A `deployerId` authorises the vault at its own
+    // address (the classic rule, reused here rather than re-spelled); a *name* authorises what
+    // `unforgeableAuthKey` recorded for it — the authority map, **not** the handle map. Reading the
+    // handle map here would make `findOrCreate(victim_address)` a spend right over that vault, which
+    // is the hole the two maps exist to keep apart.
+    let authorised = match RhoDeployerId::unapply(auth) {
+        Some(id) => RevAddress::from_deployer_id(id)
+            .map(|a| a.to_base58())
+            .is_some_and(|resolved| resolved == address),
+        None => match RhoName::unapply(auth) {
+            Some(presented) => native
+                .vault_authority_address(&presented.id)
                 .await
-                .map_err(|e| illegal_arg(&e))?;
-            let out = match outcome {
-                Ok(()) => RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()]),
-                Err(reason) => {
-                    RhoTupleN::apply(vec![RhoBoolean::apply(false), RhoString::apply(reason)])
-                }
-            };
-            cc.produce(&rand, &[out], ret, path).await
-        })
-    })
+                .map_err(|e| illegal_arg(&e))?
+                .is_some_and(|resolved| resolved == address),
+            None => false,
+        },
+    };
+    if !authorised {
+        let out = RhoTupleN::apply(vec![
+            RhoBoolean::apply(false),
+            RhoString::apply("Invalid AuthKey".to_string()),
+        ]);
+        return cc.produce(rand, &[out], ret, path).await;
+    }
+
+    let outcome = native
+        .transfer_vault(address, to, amount)
+        .await
+        .map_err(|e| illegal_arg(&e))?;
+    let out = match outcome {
+        Ok(()) => RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()]),
+        Err(reason) => RhoTupleN::apply(vec![RhoBoolean::apply(false), RhoString::apply(reason)]),
+    };
+    cc.produce(rand, &[out], ret, path).await
 }
 
 impl SystemProcesses {
@@ -833,6 +908,17 @@ impl SystemProcesses {
                 remainder: true,
                 body_ref: BodyRefs::HTTP,
                 handler: self.http(),
+            },
+            Definition {
+                // The ERTP issuer ledger (issue #249). Its urn is not a registry alias: every
+                // definition's urn is already in `urn_map` as `bundle+{channel}` (`runtime.rs`), so a
+                // contract binds it with `new L(\`rho:rchain:ertp:ledger\`)` and needs no lookup.
+                urn: "rho:rchain:ertp:ledger".to_string(),
+                fixed_channel: FixedChannels::ertp_ledger(),
+                arity: 1,
+                remainder: true,
+                body_ref: BodyRefs::ERTP_LEDGER,
+                handler: self.ertp(),
             },
         ]
     }
@@ -2303,6 +2389,323 @@ impl SystemProcesses {
         })
     }
 
+    /// The ERTP issuer ledger, as Rholang sees it (issue #249).
+    ///
+    /// Every argument that names an object is a **name**, and the handler recovers its bytes with
+    /// `RhoName::unapply`. The bytes cross *into* Rust and are never returned, which is what keeps
+    /// the ledger's keys unguessable — possessing a name's bytes *is* possessing the name, so an op
+    /// that handed them back would unmake the name.
+    ///
+    /// Identities (brands, purses, payments) are minted here from the send's own RNG, so a replay
+    /// mints the same bytes and the same leaves. The reply is produced with the **advanced** rand,
+    /// which is what makes that true (`findOrCreate`'s precedent).
+    ///
+    /// Replies are `(true, value)` / `(false, reason)` — a refusal is a value a caller can branch on.
+    /// `revVault`'s classic `transfer` reports refusals as deploy errors instead, and that shape is
+    /// pinned by wallet vectors; this one is not, so it takes the shape that composes.
+    fn ertp(&self) -> ScalaBodyFn {
+        let cc = self.contract_call.clone();
+        let native = self.native_state.clone();
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
+            let cc = cc.clone();
+            let native = native.clone();
+            Box::pin(async move {
+                let (pars, rand) = cc
+                    .unapply(&args)
+                    .ok_or_else(|| illegal_arg("ertp expects a method and arguments"))?;
+                let [op, rest_par] = pars.as_slice() else {
+                    return Err(illegal_arg("ertp expects a method and arguments"));
+                };
+                let op = RhoString::unapply(op)
+                    .ok_or_else(|| illegal_arg("ertp method must be a string"))?;
+                let rest = RhoList::unapply(rest_par)
+                    .ok_or_else(|| illegal_arg("ertp arguments must be a list"))?;
+                let mut rand = rand;
+                let ok = |value: Par| RhoTupleN::apply(vec![RhoBoolean::apply(true), value]);
+                let no = |reason: &str| {
+                    RhoTupleN::apply(vec![
+                        RhoBoolean::apply(false),
+                        RhoString::apply(reason.to_string()),
+                    ])
+                };
+                match op {
+                    "makeKit" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("ertp makeKit expects a return channel"));
+                        };
+                        // Two names, drawn in order, so a replay draws the same pair.
+                        let brand = rand.next();
+                        let authority = rand.next();
+                        if let Err(reason) = native
+                            .ertp_register_brand(&brand, &authority)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            return Err(illegal_arg(&reason));
+                        }
+                        let kit = RhoTupleN::apply(vec![
+                            RhoName::apply_bytes(brand),
+                            RhoName::apply_bytes(authority),
+                        ]);
+                        cc.produce(&rand, &[kit], ret, path).await
+                    }
+                    "makePurse" => {
+                        let [brand, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp makePurse expects a brand and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let purse = rand.next();
+                        let reply = match native
+                            .ertp_make_purse(&brand, &purse)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(purse)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "balance" => {
+                        let [brand, holder, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp balance expects a brand, a holder and a return channel",
+                            ));
+                        };
+                        let (brand, holder) = (ertp_name(brand)?, ertp_name(holder)?);
+                        let reply = match native
+                            .ertp_holding(&brand, &holder)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Some(holding) => ok(RhoNumber::apply(i64::from(holding.amount))),
+                            // Not `(true, 0)`: an issuer that has never heard of a holder and an
+                            // issuer that says a holder is empty are different answers.
+                            None => no("no such holding"),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "mint" => {
+                        let [brand, auth, amount, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp mint expects a brand, an authority, an amount and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let auth = ertp_name(auth)?;
+                        let amount = ertp_amount(amount)?;
+                        let payment = rand.next();
+                        let reply = match native
+                            .ertp_mint(&brand, &auth, &payment, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(payment)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "withdraw" => {
+                        let [brand, auth, purse, amount, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp withdraw expects a brand, an authority, a purse, an amount and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let auth = ertp_name(auth)?;
+                        let purse = ertp_name(purse)?;
+                        let amount = ertp_amount(amount)?;
+                        let payment = rand.next();
+                        let reply = match native
+                            .ertp_withdraw(&brand, &auth, &purse, &payment, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(payment)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "deposit" => {
+                        let [brand, purse, payment, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp deposit expects a brand, a purse, a payment and a return channel",
+                            ));
+                        };
+                        let brand = ertp_name(brand)?;
+                        let purse = ertp_name(purse)?;
+                        let payment = ertp_name(payment)?;
+                        let reply = match native
+                            .ertp_deposit(&brand, &purse, &payment)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(balance) => ok(RhoNumber::apply(i64::from(balance))),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    // --- REV: a standard brand whose issuer is *here*, not in Rholang ---------
+                    //
+                    // The four arms below are the whole of REV's ERTP identity. They are separate
+                    // ops rather than a branch inside `withdraw`/`mint` on `brand == rev_brand()`
+                    // because **one op name answering with a different handler is the silent
+                    // downgrade AUDIT C114 exists to stop**: the REV authority is a Rust constant
+                    // that must never be presented, so "the same call, but REV" would be a call
+                    // whose authority requirements differ invisibly.
+                    "revBrand" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("ertp revBrand expects a return channel"));
+                        };
+                        // Idempotent, and it **refuses a different authority** for this brand: no
+                        // Rholang term can choose a brand's bytes (`makeKit` mints them from the
+                        // send's RNG), so the only registrant of this brand is this code.
+                        let brand = rev_brand();
+                        if let Err(reason) = native
+                            .ertp_register_brand(&brand, &rev_authority())
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            return Err(illegal_arg(&reason));
+                        }
+                        // The brand, never the authority: a caller who learned the authority could
+                        // mint REV, which is the one thing this brand has no arm for.
+                        let reply = ok(RhoName::apply_bytes(brand));
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "revFund" => {
+                        let [deployer_id, amount, purse, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp revFund expects a deployerId, an amount, a purse and a return channel",
+                            ));
+                        };
+                        let deployer_id = RhoDeployerId::unapply(deployer_id)
+                            .ok_or_else(|| illegal_arg("ertp revFund expects a deployerId"))?;
+                        let from = RevAddress::from_deployer_id(deployer_id)
+                            .ok_or_else(|| illegal_arg("ertp revFund: invalid deployerId"))?
+                            .to_base58();
+                        let amount = ertp_amount(amount)?;
+                        let purse = ertp_name(purse)?;
+                        let brand = rev_brand();
+                        // The brand must be registered before a holding exists under it; a
+                        // registration that *refuses* means some other authority holds this brand,
+                        // which is a state this code cannot have created and must not paper over.
+                        if let Err(reason) = native
+                            .ertp_register_brand(&brand, &rev_authority())
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            return Err(illegal_arg(&reason));
+                        }
+                        // **Refused before anything moves.** A consumed holding cannot be funded
+                        // (`ertp_credit` says why), and finding that out *after* the vault transfer
+                        // would leave the REV in the reserve with nothing to show for it.
+                        if let Some(holding) = native
+                            .ertp_holding(&brand, &purse)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            if !holding.live {
+                                let reply = no("that holding has been consumed");
+                                return cc.produce(&rand, &[reply], ret, path).await;
+                            }
+                        }
+                        // **The REV moves first, and a failed transfer credits nothing.** That
+                        // order is what makes the escrow safe in its safety direction: the reserve
+                        // can only ever hold *more* than the holdings claim, never less.
+                        let reply = match native
+                            .transfer_vault(&from, &rev_reserve(), amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Err(reason) => no(&reason),
+                            Ok(()) => match native
+                                .ertp_credit(&brand, &purse, amount)
+                                .await
+                                .map_err(|e| illegal_arg(&e))?
+                            {
+                                Ok(balance) => ok(RhoNumber::apply(i64::from(balance))),
+                                Err(reason) => no(&reason),
+                            },
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "revRedeem" => {
+                        let [purse, amount, to, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp revRedeem expects a purse, an amount, an address and a return channel",
+                            ));
+                        };
+                        let purse = ertp_name(purse)?;
+                        let amount = ertp_amount(amount)?;
+                        let to = RhoString::unapply(to).ok_or_else(|| {
+                            illegal_arg("ertp revRedeem expects a string address")
+                        })?;
+                        let brand = rev_brand();
+                        // The three conditions `ertp_debit` will re-check, checked **before** the
+                        // reserve pays out: a payout the holdings could not honour would leave the
+                        // reserve short, which is the one direction the escrow must not go.
+                        let reply = match native
+                            .ertp_holding(&brand, &purse)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            None => no("no such holding"),
+                            Some(holding) if !holding.live => no("that holding has been consumed"),
+                            Some(holding) if i64::from(holding.amount) < i64::from(amount) => {
+                                no("insufficient funds")
+                            }
+                            Some(_) => match native
+                                .transfer_vault(&rev_reserve(), to, amount)
+                                .await
+                                .map_err(|e| illegal_arg(&e))?
+                            {
+                                Err(reason) => no(&reason),
+                                // Paying out first, then debiting: the mirrored order of
+                                // `revFund`, and the one that keeps the reserve over-funded if the
+                                // two halves are ever split.
+                                Ok(()) => match native
+                                    .ertp_debit(&brand, &purse, amount)
+                                    .await
+                                    .map_err(|e| illegal_arg(&e))?
+                                {
+                                    Ok(left) => ok(RhoNumber::apply(i64::from(left))),
+                                    Err(reason) => no(&reason),
+                                },
+                            },
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    "revWithdraw" => {
+                        let [purse, amount, ret] = rest else {
+                            return Err(illegal_arg(
+                                "ertp revWithdraw expects a purse, an amount and a return channel",
+                            ));
+                        };
+                        let purse = ertp_name(purse)?;
+                        let amount = ertp_amount(amount)?;
+                        let brand = rev_brand();
+                        let payment = rand.next();
+                        // The authority **is** presented here — by this code, which is the only
+                        // holder of it. Without this arm a REV purse would be a roach motel: fund
+                        // it and never get a payment back out.
+                        let reply = match native
+                            .ertp_withdraw(&brand, &rev_authority(), &purse, &payment, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => ok(RhoName::apply_bytes(payment)),
+                            Err(reason) => no(&reason),
+                        };
+                        cc.produce(&rand, &[reply], ret, path).await
+                    }
+                    other => Err(illegal_arg(&format!("ertp: unknown method {other}"))),
+                }
+            })
+        })
+    }
+
     /// The cross-shard two-phase-commit participant (Laws 26–29): a per-shard REV escrow that a
     /// coordinator drives via `prepare` (lock + vote) → `commit` (apply) / `abort` (compensate).
     fn txn(&self) -> ScalaBodyFn {
@@ -2537,10 +2940,10 @@ mod tests {
         (sp, defs)
     }
 
-    /// The `(urn, callArity)` pairs `spec/conformance/protocol.tsv` declares, read from the emitted
-    /// corpus. The path is relative to this crate, like the one
+    /// The `(urn, callArity, remainder)` triples `spec/conformance/protocol.tsv` declares, read from
+    /// the emitted corpus. The path is relative to this crate, like the one
     /// `rholang/tests/lean_protocol_corpus.rs` reads.
-    fn catalog_arities() -> Vec<(String, i32)> {
+    fn catalog_arities() -> Vec<(String, i32, bool)> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../spec/conformance/protocol.tsv");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -2561,21 +2964,35 @@ mod tests {
                     .expect("callArity")
                     .parse()
                     .unwrap_or_else(|e| panic!("{urn}: callArity: {e}"));
-                (urn, arity)
+                let _kind = c.next().expect("kind");
+                let _slots = c.next().expect("slots");
+                let remainder = match c.next().expect("remainder") {
+                    "true" => true,
+                    "false" => false,
+                    other => panic!("{urn}: remainder is {other:?}"),
+                };
+                (urn, arity, remainder)
             })
             .collect()
     }
 
     /// Which catalog rows disagree with the installed table — the comparison as a *function*, so the
     /// drift it exists to catch can be shown to be caught without breaking the tree.
-    fn arity_mismatches(catalog: &[(String, i32)], defs: &[Definition]) -> Vec<String> {
+    ///
+    /// **Both halves of the `Definition` are compared**, arity *and* `remainder`, because the catalog
+    /// row for a dispatch contract means something an arity alone cannot say: `arity: 1, remainder:
+    /// true` matches a call of any length, so a row that declared a fixed arity would be describing
+    /// the call rather than the installation. (`rho:rchain:ertp:ledger`, `rho:rchain:revVault` and
+    /// `rho:rchain:pos` are all this shape, and the first is in the catalog because it now can be.)
+    fn arity_mismatches(catalog: &[(String, i32, bool)], defs: &[Definition]) -> Vec<String> {
         let mut bad = Vec::new();
-        for (urn, call_arity) in catalog {
+        for (urn, call_arity, remainder) in catalog {
             match defs.iter().find(|d| d.urn == *urn) {
-                Some(d) if d.arity == *call_arity => {}
+                Some(d) if d.arity == *call_arity && d.remainder == *remainder => {}
                 Some(d) => bad.push(format!(
-                    "{urn}: the catalog declares arity {call_arity}, the node installs {}",
-                    d.arity
+                    "{urn}: the catalog declares arity {call_arity} (remainder {remainder}), the \
+                     node installs arity {} (remainder {})",
+                    d.arity, d.remainder
                 )),
                 None => bad.push(format!(
                     "{urn}: in the Lean catalog, but no `Definition` installs it"
@@ -2625,7 +3042,7 @@ mod tests {
         });
         let (_sp, defs) = mock_system_processes(&mock);
 
-        let drifted = vec![("rho:io:stdout".to_string(), 99i32)];
+        let drifted = vec![("rho:io:stdout".to_string(), 99i32, false)];
         let bad = arity_mismatches(&drifted, &defs);
         assert_eq!(bad.len(), 1, "{bad:?}");
         assert!(
@@ -2634,8 +3051,20 @@ mod tests {
             bad[0]
         );
 
+        // **And the dispatch half is compared too**: `rho:rchain:ertp:ledger` is installed
+        // `arity: 1, remainder: true`, so a row that spelled it as a fixed-arity contract is a drift
+        // the arity alone would not show — `1` is right either way.
+        let wrong_dispatch = vec![("rho:rchain:ertp:ledger".to_string(), 1i32, false)];
+        let bad = arity_mismatches(&wrong_dispatch, &defs);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(
+            bad[0].contains("remainder"),
+            "the report names the dispatch difference: {}",
+            bad[0]
+        );
+
         // And a urn the node does not install is reported rather than skipped.
-        let unknown = vec![("rho:not:a:urn".to_string(), 1i32)];
+        let unknown = vec![("rho:not:a:urn".to_string(), 1i32, false)];
         let bad = arity_mismatches(&unknown, &defs);
         assert_eq!(bad.len(), 1, "{bad:?}");
         assert!(bad[0].contains("no `Definition` installs it"), "{}", bad[0]);
@@ -3792,5 +4221,201 @@ mod tests {
             RhoString::unapply(produced[0].1.pars[0].as_par()),
             Some("X")
         );
+    }
+
+    // --- ERTP ledger (issue #249) ------------------------------------------
+
+    /// A call to the ERTP ledger. `L!("op", args…)` reaches an `arity: 1, remainder: true` process
+    /// as `["op", [args…]]`, and the RNG is the send's own carried state — which a fixed seed makes
+    /// replayable, which is the property the minted ids depend on.
+    fn ertp_call(op: &str, args: Vec<Par>, tag: u8) -> ListParWithRandom {
+        ListParWithRandom {
+            pars: vec![
+                SortedProc::new(RhoString::apply(op.to_string())),
+                SortedProc::new(RhoList::apply(args)),
+            ],
+            random_state: Blake2b512Random::from_init(&[tag]),
+        }
+    }
+
+    fn ertp_reply(mock: &Arc<MockSpace>) -> Par {
+        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        produced.last().expect("the handler replied").1.pars[0]
+            .as_par()
+            .clone()
+    }
+
+    /// `(true, x)` / `(false, reason)` — the shape every ERTP op replies in.
+    fn ertp_pair(reply: &Par) -> (bool, Par) {
+        let parts = RhoTupleN::unapply(reply).expect("a pair");
+        let ok = RhoBoolean::unapply(&parts[0]).expect("a bool");
+        (ok, parts[1].clone())
+    }
+
+    fn a_name(tag: u8) -> Par {
+        RhoName::apply_bytes(vec![tag; 32])
+    }
+
+    #[tokio::test]
+    async fn the_ertp_ledger_mints_a_kit_and_consumes_a_payment_exactly_once() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_, defs) = mock_system_processes(&mock);
+        let ledger = defs
+            .iter()
+            .find(|d| d.urn == "rho:rchain:ertp:ledger")
+            .expect("the ERTP ledger is defined");
+
+        // A kit: two names, drawn in order, distinct.
+        (ledger.handler)(
+            vec![ertp_call("makeKit", vec![a_name(9)], 1)],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let kit = ertp_reply(&mock);
+        let names = RhoTupleN::unapply(&kit).expect("a kit pair");
+        assert_eq!(names.len(), 2);
+        let (brand, authority) = (names[0].clone(), names[1].clone());
+        assert_ne!(brand, authority, "a brand and its mint are different names");
+
+        // A purse starts empty, and empty is `(true, 0)` — not the `(false, …)` an unknown holder
+        // gets, because an issuer that has never heard of a holder is a different answer.
+        let purse_ret = a_name(1);
+        (ledger.handler)(
+            vec![ertp_call(
+                "makePurse",
+                vec![brand.clone(), purse_ret.clone()],
+                2,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, purse) = ertp_pair(&ertp_reply(&mock));
+        assert!(ok);
+        (ledger.handler)(
+            vec![ertp_call(
+                "balance",
+                vec![brand.clone(), purse.clone(), a_name(2)],
+                3,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, balance) = ertp_pair(&ertp_reply(&mock));
+        assert!(ok);
+        assert_eq!(RhoNumber::unapply(&balance), Some(0));
+
+        // Only the name that registered the brand may mint it.
+        (ledger.handler)(
+            vec![ertp_call(
+                "mint",
+                vec![brand.clone(), a_name(200), RhoNumber::apply(10), a_name(3)],
+                4,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, reason) = ertp_pair(&ertp_reply(&mock));
+        assert!(!ok, "a forged authority must not mint");
+        assert_eq!(
+            RhoString::unapply(&reason).map(str::to_string),
+            Some("only the name that registered the brand may mint it".to_string())
+        );
+
+        // The real authority does.
+        (ledger.handler)(
+            vec![ertp_call(
+                "mint",
+                vec![
+                    brand.clone(),
+                    authority.clone(),
+                    RhoNumber::apply(10),
+                    a_name(4),
+                ],
+                5,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, payment) = ertp_pair(&ertp_reply(&mock));
+        assert!(
+            ok,
+            "the real authority was refused: {:?}",
+            RhoString::unapply(&payment)
+        );
+
+        // Deposit credits the purse...
+        for expected in [10, 10] {
+            (ledger.handler)(
+                vec![ertp_call(
+                    "deposit",
+                    vec![brand.clone(), purse.clone(), payment.clone(), a_name(5)],
+                    6,
+                )],
+                DfsPath::root(),
+            )
+            .await
+            .unwrap();
+            let (ok, value) = ertp_pair(&ertp_reply(&mock));
+            if expected == 10 && ok {
+                assert_eq!(RhoNumber::unapply(&value), Some(10));
+            } else {
+                // ...and the second deposit is refused rather than double-counted.
+                assert!(!ok, "a payment is consumed by its first deposit");
+                assert_eq!(
+                    RhoString::unapply(&value).map(str::to_string),
+                    Some("that payment has already been deposited".to_string())
+                );
+            }
+        }
+        (ledger.handler)(
+            vec![ertp_call(
+                "balance",
+                vec![brand.clone(), purse.clone(), a_name(6)],
+                7,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        let (ok, balance) = ertp_pair(&ertp_reply(&mock));
+        assert!(ok);
+        assert_eq!(
+            RhoNumber::unapply(&balance),
+            Some(10),
+            "the refused second deposit must not have moved the balance"
+        );
+    }
+
+    /// A byte array of a name's bytes is **not** a name. No Rholang term can construct a
+    /// `GPrivate`, so this refusal is what makes the ledger's keys unforgeable rather than merely
+    /// unguessable — and it is the gate the whole "the authority is a constant" argument rests on.
+    #[tokio::test]
+    async fn the_ertp_ledger_refuses_bytes_where_a_name_is_expected() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_, defs) = mock_system_processes(&mock);
+        let ledger = defs
+            .iter()
+            .find(|d| d.urn == "rho:rchain:ertp:ledger")
+            .expect("the ERTP ledger is defined");
+        let err = (ledger.handler)(
+            vec![ertp_call(
+                "makePurse",
+                vec![RhoByteArray::apply(vec![7u8; 32]), a_name(1)],
+                8,
+            )],
+            DfsPath::root(),
+        )
+        .await
+        .expect_err("bytes are not a name");
+        assert!(format!("{err:?}").contains("unforgeable name"), "{err:?}");
     }
 }

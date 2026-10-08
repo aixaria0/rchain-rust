@@ -46,7 +46,11 @@
 #        (default: all)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CRATES=(sdk shared crypto graphz models block-storage comm rspace rholang casper qucalc node)
+CRATES=(sdk shared crypto graphz models block-storage comm rspace rholang casper qucalc node ocapn)
+
+# Workspace members that are deliberately not scanned, with the reason. `rspace-bench` is benchmarks
+# only — it has no `src/` at all — so there is no production code for this gate to read.
+NOT_SCANNED=(rspace-bench)
 
 # The roster is checked, not trusted. `regex` stood in this array until 2026-09-26 and does not exist
 # — it was skipped silently by the `[ -d "$c/src" ] || continue` guard, so the array claimed a crate
@@ -60,6 +64,23 @@ for _c in "${CRATES[@]}"; do
   fi
 done
 unset _c
+
+# **And every workspace member is either scanned or named above as not-scanned.** The check just above
+# catches an *entry* with no source; this one catches a **source with no entry**, which is the same
+# defect from the other side and is how `qucalc` was missed — and then `ocapn`, which joined the
+# workspace on 2026-10-05 and whose twelve source files were read by nothing for two days. Derived from
+# `Cargo.toml` rather than restated, so the next crate cannot repeat it.
+for _m in $(sed -n 's/^members = \[\(.*\)\]/\1/p' "$ROOT/Cargo.toml" | tr -d '"' | tr ',' ' '); do
+  _listed=0
+  for _c in "${CRATES[@]}" "${NOT_SCANNED[@]}"; do
+    if [ "$_c" = "$_m" ]; then _listed=1; break; fi
+  done
+  if [ "$_listed" = 0 ]; then
+    echo "FAIL: workspace member '$_m' is in no roster — its source would never be scanned. Add it to CRATES, or to NOT_SCANNED with a reason." >&2
+    exit 1
+  fi
+done
+unset _m _c _listed
 
 # ---------------------------------------------------------------------------
 # Brace-depth-aware test-block stripper.
@@ -218,6 +239,7 @@ WHITELIST_PANIC=(
   'rspace/src/history/instances/radix_history.rs;;assert!\( has_no_duplicates\(actions\), "Cannot process duplicate actions on one key\." \);;;Cannot process duplicate actions on one key;;one action per key per commit; duplicates are rejected upstream, and the assert is the boundary'
   'casper/src/block_random_seed.rs;;assert!\( shard_id\.is_ascii\(\), "Shard name should contain only ASCII characters" \);;;Shard name should contain only ASCII characters;;`ShardId` is ASCII by invariant (the refinement), and H2d changed this from a `debug_assert!` to a plain `assert!` so the port'\''s check is live in every profile, as the Scala'\''s `Predef.assert` is — the rename is what staled the previous key, which is this staleness check earning its keep on a real commit rather than on a planted probe'
   'casper/src/block_random_seed.rs;;\.expect\("block random seed components always fit a 1-byte length prefix"\);;;the length prefix cannot overflow;;`random_generator`: `var_size`'\''s inputs are far below 256 bytes — the comment above states the measurement the `expect` documents'
+  'ocapn/src/owner.rs;;receiver is taken exactly once;;let deferred = session;;`owner::split` takes the receiving half of the deferred-answer channel, and it is called exactly once per session — by `accept_and_book`, and by nothing else. The field is an `Option` only because a field cannot be moved out of a `&mut` borrow, so the alternative to this panic is not a total function but `Option::take` returning a *closed* receiver on a second call: the loop would then own a dead channel and answers would be dropped with no error at all. A panic that cannot fire is the better of the two, and this entry is the review that says so (the unit is the deferred-answer one, whose register row is AUDIT C223)'
 )
 
 hard_failures=0
@@ -1062,6 +1084,7 @@ scan_ctor_escapes() {
 # reason it is not a refinement — and an exemption that matches nothing derived is a hard failure.
 REFINEMENT_EXEMPT=(
   'crypto/src/public_key.rs;;PublicKey;;G1;;a wrapper, not a refinement: `PublicKey::new(bytes: Vec<u8>)` accepts any bytes, so there is no domain a validator could establish. Recorded as a finding rather than fixed — `crypto/` is another writer'"'"'s lane, and a 65-byte key would make this a refinement with a validator'
+  'crypto/src/encryption/x25519.rs;;StaticKey;;G1;;a wrapper, not a refinement, for the same reason `PrivateKey` is one: `StaticKey::from_bytes([u8; 32])` accepts any 32 bytes, so there is no domain for a validator to reject anything from. What the newtype buys is a redacting `Debug` and zeroing on drop — the `PrivateKey` pair and its stated limits — not an invariant'
   'rspace/src/scheduled_space.rs;;ReleaseToken;;G1;;a marker: the field is `()`, so there is no wider domain for a validator to reject anything from'
   'casper/src/protocol/casper_message_protocol.rs;;BlockMessageSerde;;G1b:impl_serde;;`impl_serde!` expands to `pub struct $serde;` — a unit struct, not a newtype; a false positive of the macro net'
   'casper/src/protocol/casper_message_protocol.rs;;BlockRequestSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'

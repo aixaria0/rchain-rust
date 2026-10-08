@@ -195,6 +195,12 @@ structure Law where
   /-- A note where the status needs qualifying. -/
   note : String := ""
 
+-- **The budget is raised for this one literal, measured.** The register is a single list of 86 rows,
+-- and elaborating it is a unification problem over the rows' field types rather than a proof: it fits
+-- the default 200 000 heartbeats at 58 laws and not at 59, so the budget is raised here rather than the
+-- register split into chunks an accidental duplicate could hide between.
+set_option maxHeartbeats 1000000
+
 /-- Every law in the catalog, the orphaned ones and the open ones included, because a register
 that lists only the formalized laws cannot notice a law that was dropped.
 
@@ -1440,7 +1446,10 @@ def laws : List Law := [
       "crypto/src/hash/blake2b512_random.rs:merge_is_order_sensitive",
       "crypto/src/signatures/secp256k1.rs:creates_known_ecdsa_signature",
       "crypto/src/signatures/secp256k1.rs:verifies_known_signature",
-      "crypto/src/encryption/curve25519.rs:decrypts"],
+      "crypto/src/encryption/curve25519.rs:decrypts",
+      "crypto/src/encryption/x25519.rs:rfc7748_section_5_2_first_vector",
+      "crypto/src/encryption/x25519.rs:rfc7748_section_5_2_second_vector",
+      "crypto/src/encryption/x25519.rs:rfc7748_section_6_1_diffie_hellman_agrees_both_ways"],
     statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is n-ary \
       and **order-sensitive**; signatures verify what they sign; Curve25519 round-trips",
     status := .axiomByDesign,
@@ -1473,8 +1482,13 @@ def laws : List Law := [
       six are the crypto API stated as the model's boundary, so that laws about it are statable, not \
       assumptions any proof leaned on; the register now says which is which instead of leaving nine \
       axioms looking equally exercised. **The tie is a witness the gate runs** (`rustWitness`): the \
-      known-answer vectors — X25519's RFC 7748 vector, a known ECDSA signature and its verification, \
-      and the RNG's fixed empty-input stream — because they are what catches a wrong primitive. No test \
+      known-answer vectors — the RNG's fixed empty-input stream and its two merge cases, a known ECDSA \
+      signature and its verification, the `Curve25519` **sealed-box** round-trip \
+      (`crypto/src/encryption/curve25519.rs:decrypts`, a `crypto_box` vector), and — since the OCapN \
+      Noise transport needed the raw primitive rather than a box — RFC 7748's own `X25519` vectors, \
+      §5.2's two and §6.1's Diffie-Hellman example (`crypto/src/encryption/x25519.rs`) — because they \
+      are what catches a wrong \
+      primitive. No test \
       can witness the idealization itself: `blake2b256_collision_free` states collision-*resistance* as \
       injectivity, which the pigeonhole refutes as a fact about the real function \
       (`spec/Rchain/Crypto/Spec.lean:41-49`)" },
@@ -3301,6 +3315,340 @@ def laws : List Law := [
       before this row — are consumed here; `StalenessBound` is reached through `stalenessBound_iff`. \
       **What the tie does not reach:** the `3 × LIVENESS_WINDOW` factor, which is measured rather than \
       proved." },
+  { number := 59, clause := "a", layer := "Wire",
+    statement := "**A value the bridge decoded is a value it encodes, and decodes again** — the CapTP \
+      value map round-trips its domain. Stated as Law 42 states the JSON round trip: over the values \
+      `syToPar` answers, so a shape outside the domain carries no claim.",
+    status := .provedTied,
+    declarations := [`Rchain.parToSy, `Rchain.syToPar, `Rchain.wireable, `Rchain.wireableList, `Rchain.syrup_decode_encode, `Rchain.parToSy_decoded, `Rchain.ssToPars_round, `Rchain.kvsSyToPars_round, `Rchain.syToPar_isSome, `Rchain.ssToPars_isSome],
+    axioms := [],
+    corpus := some "syrup",
+    rust := ["ocapn/src/par_value.rs"],
+    rustWitness := ["ocapn/src/par_value.rs:collections_round_trip_and_a_tuple_stays_a_tuple"],
+    witness := [`Rchain.syrup_decode_encode, `Rchain.parToSy_decoded],
+    falsifiable := some "**the tuple, and it was false when the law was written.** `(true, 0)` — every \
+      `(ok, value)` reply in this codebase — crossed as a Syrup `List` and came back an `EList`, so \
+      `syToPar` of what `parToSy` produced was not the tuple: a peer could hold an ERTP purse and not \
+      fund it (AUDIT C226). The URI was the same failure on a leaf (`GUri → Symbol` with `Symbol` \
+      refused back). `syrupCases_decide` pins twelve cases, of which the tuple and the nested tuple are \
+      two, and `node/tests/lean_syrup_corpus.rs` runs every one through the node's own bridge.",
+    note := "**The law decided the wire shape, and two candidates were refuted by the references \
+      rather than by preference.** A Syrup `record` is *labelled* and the label must be a string, \
+      selector or bytestring (`@endo/ocapn`'s `decode.js`), so a bare record would need the label \
+      `true`; and a record is not in Endo's CapTP passable union (`{list, struct, tagged}`) either. A \
+      tuple therefore crosses as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [fields…]>` — the \
+      union's own extension point, whose `value` may be any passable. `Sy.tuple` is that shape named, \
+      so the round trip descends structurally instead of through a label test the equation compiler \
+      cannot see (`taggedRecord` is the same shape spelled as a record). **Two shapes are outside the \
+      domain, named:** a `Float64` (Rholang has no float) and a **small** `GBigInt` — Syrup's integer \
+      is one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form. **What the tie \
+      does not reach:** the refusals' *reason strings* are the node's (`BridgeError`), tied by the \
+      corpus's sources rather than by a theorem." },
+  { number := 59, clause := "b", layer := "Wire",
+    statement := "**Two wireable Syrup values that decode to the same `Par` are the same wire form.** \
+      The decode is injective on the domain, so no two shapes stand for one value.",
+    status := .provedTied,
+    declarations := [`Rchain.syToPar_injective, `Rchain.parToSy_decoded],
+    axioms := [],
+    corpus := some "syrup",
+    rust := ["ocapn/src/par_value.rs"],
+    witness := [`Rchain.syToPar_injective],
+    falsifiable := some "**a rendering rule refutes it, which is what makes the clause load-bearing \
+      rather than decorative.** 'An inbound list argument becomes a tuple' is the cheap fix for C226, \
+      and under it a peer's `[brand, 10]` and a peer's `(brand, 10)` would be one `Par` reached from \
+      two wire forms — `syToPar_injective` is false of it by construction. The corpus's \
+      `[1, 2]` row beside its `(true, 0)` row is the same statement on the wire: the two render \
+      differently, and `node/tests/lean_syrup_corpus.rs` asserts it of the node.",
+    note := "**The clause the bridge had no way to state before.** With only an encode and a decode, \
+      'a list and a tuple are different things' is a fact about two functions that happens to hold; \
+      stated as injectivity it is a property of the map, and it is what makes the *shape* a decision \
+      the law fixes. Both clauses 59a and 59b follow from `parToSy_decoded` — what a value the decoder \
+      answered encodes back to — so the row carries one proof obligation, not two." },
+  { number := 59, clause := "c", layer := "Wire",
+    statement := "**The encoder never emits a shape outside the domain.** A value with no counterpart on \
+      the other side is *refused*, never approximated by one that nearly fits — §1.6's no-silent-\
+      partiality applied to a wire.",
+    status := .provedTied,
+    declarations := [`Rchain.parToSy_wireable, `Rchain.exprToSy_wireable, `Rchain.parsToSy_wireable, `Rchain.kvsToSy_wireable, `Rchain.wireable],
+    axioms := [],
+    corpus := some "syrup",
+    rust := ["ocapn/src/par_value.rs"],
+    witness := [`Rchain.parToSy_wireable],
+    falsifiable := some "**the URI was the violation, and it is why this clause exists.** `GUri → \
+      `Symbol` outbound with `Symbol` refused inbound is a *lossy* map: the encoder emits a shape from \
+      which the value does not come back, which is exactly what this clause forbids. The domain's \
+      `float` and small-`GBigInt` exclusions are the other side of it — shapes the encoder must not \
+      produce and the decoder must not accept. `node/tests/lean_syrup_corpus.rs`'s round trip is the \
+      falsifier on the node: an encoder that emitted a lossy shape fails on the case that carries it.",
+    note := "**This is the clause that turns a documented decision into a checked one.** The bridge's \
+      module doc used to call the `GUri`/`Symbol` asymmetry 'deliberate and worth a second opinion', \
+      and the tuple's image 'the one loss, and it is the loss Syrup forces'. Both were true as prose \
+      about two functions and neither was a property: 59c says the encoder's image lies inside the \
+      domain, so a loss is a violation rather than a note. The leaf is `exprToSy_wireable` over the \
+      expression constructors — every one the encoder refuses is refused by the definition's own \
+      fall-through, so the proof is a case per constructor rather than an argument." },
+  { number := 60, clause := "a", layer := "RSpace",
+    statement := "**An install is total on a channel.** An install that would replace a *different* \
+      installed continuation is **refused**, and an idempotent re-install of the same one changes \
+      nothing — so an install that cannot take effect says so rather than dropping what was there.",
+    status := .provedModel,
+    declarations := [`Rchain.installed, `Rchain.InstallStep, `Rchain.ReplacingStep, `Rchain.a_different_install_has_no_step],
+    axioms := [],
+    rust := ["rspace/src/hot_store.rs", "rholang/src/system_processes.rs"],
+    rustWitness := [ "rspace/src/hot_store.rs:a_second_different_install_on_a_channel_is_refused", "casper/tests/determinism.rs:a_minted_vault_handle_answers_its_balance_arm"],
+    witness := [`Rchain.a_different_install_has_no_step],
+    falsifiable := some "**the defect's shape is a second relation, and the row is the pair.** \
+      `ReplacingStep` is what `installed_continuations.insert` did — the second install replaces the \
+      first — and `the_replacing_rule_does_not_keep_the_first` states that the first is then gone. \
+      `the_vault_handles_balance_arm_was_lost` is the same fact at the size of the finding: install \
+      `transfer` after `balance` on one channel and the channel no longer carries `balance`. On the \
+      port, `rspace`'s test asserts the `Err`, and \
+      `casper/tests/determinism.rs:a_minted_vault_handle_answers_its_balance_arm` reads the arm that \
+      used to answer nothing — a vault seeded with 1_000_000_000, so a handler that replied a \
+      constant fails it.",
+    note := "**The refusal is the clause, and it is why 60a is not the store's own type.** The map \
+      holds one `WaitingContinuation` per channel, so a second `insert` *cannot* fail — the \
+      statement has to be about the operation, not the container: an install that would replace a \
+      different continuation has no step, which is what `install_continuation` now returns. The \
+      idempotent case is load-bearing rather than incidental: play and replay both install the system \
+      contracts over one store, and a rule that refused the *same* install twice would break every \
+      deploy. **What the tie does not reach:** the model's continuations are abstract tokens, so it \
+      says which one a channel keeps and nothing about what a continuation is; `locked_install`'s \
+      consume comparison is the node's, pinned by the rspace test rather than by a theorem." },
+  { number := 60, clause := "b", layer := "RSpace",
+    statement := "**What a channel carries after any permitted run** — the continuation it was first \
+      given. A contract with several methods is therefore **one** continuation that dispatches on the \
+      method, not several installs on one name.",
+    status := .provedModel,
+    declarations := [`Rchain.a_permitted_run_keeps_the_first, `Rchain.InstallStep, `Rchain.installed],
+    axioms := [],
+    rust := ["rholang/src/system_processes.rs", "rspace/src/hot_store.rs"],
+    rustWitness := [ "casper/tests/determinism.rs:a_minted_vault_handle_spends_in_the_deploy_that_minted_it"],
+    witness := [`Rchain.a_permitted_run_keeps_the_first],
+    falsifiable := some "**the pair with 60a's falsifier is the falsifier**, which is the shape \
+      `Rchain/Casper/Dag.lean` establishes for law 14b: `a_permitted_run_keeps_the_first` is the law \
+      on the rule, and `the_replacing_rule_does_not_keep_the_first` is the *same statement* false of \
+      the rule the fix replaces. Without the second, the first would be a restatement of a container's \
+      type; with it, the rule is what is being judged. On the port the control is a *movement*: \
+      `a_minted_vault_handle_spends_in_the_deploy_that_minted_it` asserts the transfer moved \
+      30_000_000, so the one-continuation handle is a working capability rather than merely a \
+      non-refusing one.",
+    note := "**The shape every multi-method contract here already used, now the only shape that \
+      installs.** `rev_vault`, `ertp` and `pos` are one continuation at `arity: 1, remainder: true` \
+      with the method dispatched inside; a vault handle is the one site that did it the other way, and \
+      this is the row that says which way is the rule. **What the change costs:** the handle's \
+      `body_ref` is derived from `(name, arity)` and the arity went 2/5 → 1, so newly minted handles \
+      move — consensus-visible, with the note in `spec/GENESIS.md`. The oracle's \
+      `RevVault.rho:196-200` spells the two arms as two `contract`s on one name, which is what the \
+      port's one-continuation-per-channel store cannot express; the dispatch is where that difference \
+      is paid." },
+  { number := 61, clause := "a", layer := "Progress",
+    statement := "**A delivery in flight does not stall the loop.** With an answer outstanding, the \
+      session's loop can still read the next delivery — so an unrelated delivery on the same session \
+      is served while an object waits on something outside the session.",
+    status := .provedModel,
+    declarations := [`Rchain.Delivery, `Rchain.LoopState, `Rchain.Step, `Rchain.BlockingStep, `Rchain.a_pending_answer_does_not_block_the_next_delivery],
+    axioms := [],
+    rust := ["ocapn/src/conn.rs", "ocapn/src/owner.rs", "ocapn/src/bootstrap.rs"],
+    rustWitness := [ "ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session"],
+    witness := [`Rchain.a_pending_answer_does_not_block_the_next_delivery],
+    falsifiable := some "**the defect's shape is a second relation, and the pair is the claim.** \
+      `BlockingStep` is what polling inside the delivery did — an answer outstanding means the loop \
+      stays exactly where it is — and `the_blocking_rule_never_shortens_the_queue` states that under \
+      it **no** step shortens the queue while an answer is outstanding: the loop spins, and the \
+      delivery behind it is unreachable. That is the stall, and it is false of `Step`, where \
+      `Step.defer` reads the delivery and takes the answer on. On the port \
+      `ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session` sends a signed \
+      handoff claim for a gift nobody will ever deposit and then, on the **same** socket, a fetch: the \
+      fetch must be fulfilled within seconds, where the old shape could not read it until the \
+      ten-second deposit wait ended.",
+    note := "**The statement is about the loop, because that is where the stall was.** `handle_deliver` \
+      is awaited on the task that owns the socket, so an object that awaits something outside the \
+      session does not merely delay its own answer — it stops the session reading anything. The fix \
+      is `Reply::Deferred`: the object hands the loop a future, the loop writes the answer when it \
+      lands, and the *connection stays single-owner*, which is the invariant the whole module is \
+      built on. **What the model does not claim:** deliveries are abstract tokens, so it says when the \
+      loop reads and nothing about what a delivery says, and the queue is a `List` where the port's is \
+      a socket. **What the deferral costs:** the answer position of a deferred delivery is recorded \
+      with no object, so a delivery *pipelined* onto it breaks rather than resolving — the honest \
+      answer while the answer itself is unknown, and re-recording it later would be the silent \
+      re-point C223 already refuses." },
+  { number := 61, clause := "b", layer := "Progress",
+    statement := "**And the outstanding answer is still written** — deferring is not dropping. The loop \
+      reaches a state with nothing pending.",
+    status := .provedModel,
+    declarations := [`Rchain.Reach, `Rchain.a_deferred_answer_is_still_written, `Rchain.Step],
+    axioms := [],
+    rust := ["ocapn/src/owner.rs", "ocapn/src/conn.rs"],
+    rustWitness := [ "ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session"],
+    witness := [`Rchain.a_deferred_answer_is_still_written],
+    falsifiable := some "**the clause a deferral most easily gets wrong**, and the reason it is stated \
+      separately: 'the loop reads on' is trivially satisfiable by never answering at all. The proof \
+      exhibits the run — serve, then fulfil — so a relation that only had the reading step would not \
+      satisfy it. On the port the same shape is the conformance suite's \
+      `test_valid_handoff_wait_deposit_gift`, which withdraws *before* the deposit and requires the \
+      gift anyway: the deferred path is exercised by \
+      `spec/audit/evidence/ocapn-conformance/run-11.txt` (24/24), and a deferral that dropped the \
+      answer would fail it.",
+    note := "**Two clauses rather than one, because they fail independently.** 61a says the loop is not \
+      blocked; 61b says the work is not lost. A change that answered nothing would satisfy the first \
+      and fail the second, which is why the row exists — and why the port's fix had to write the \
+      answer *from the loop* (a spawned waiter would have had to reach the socket, which is the \
+      single-owner invariant). **What the model does not claim:** that the answer is written in \
+      bounded time — `DEPOSIT_WAIT` bounds the wait and the `Deferred` queue is bounded \
+      (`MAX_DEFERRED_ANSWERS`), but neither bound is in this model." },
+  { number := 62, layer := "Wire",
+    statement := "**A peer cannot extend this node's reach.** The node never dials, on a peer's word, \
+      anything that peer could not dial itself — so a *remote* peer cannot aim this node at its own \
+      loopback services, while a loopback peer (the conformance suite's own case) still can.",
+    status := .provedModel,
+    declarations := [`Rchain.Origin, `Rchain.Target, `Rchain.ownReach, `Rchain.isLocal, `Rchain.permits, `Rchain.originBlind, `Rchain.the_node_never_exceeds_the_peers_own_reach, `Rchain.the_origin_blind_rule_exceeds_the_peers_reach, `Rchain.denying_local_targets_outright_would_refuse_a_local_peer],
+    axioms := [],
+    rust := ["ocapn/src/dial_policy.rs", "ocapn/src/netlayer.rs", "ocapn/src/enliven.rs", "ocapn/src/fixtures.rs"],
+    rustWitness := [ "ocapn/src/dial_policy.rs:a_remote_peer_cannot_reach_this_nodes_own_services"],
+    witness := [`Rchain.the_node_never_exceeds_the_peers_own_reach],
+    falsifiable := some "**the defect's shape is a second rule, and the pair is the claim.** \
+      `originBlind` judges the target without the peer — what the policy did before the socket address \
+      was threaded to it — and `the_origin_blind_rule_exceeds_the_peers_reach` states that under it, \
+      with the **default** configuration, a peer elsewhere reaches this node's own services: reach the \
+      peer does not have. The law's own thesis is a *containment* rather than a list of denied \
+      targets, proved for every configuration of the policy's ingredients (the always-refused set, the \
+      operator's `deny_local`, and the origin), so refusing more can only shrink the node's side. \
+      `denying_local_targets_outright_would_refuse_a_local_peer` is the control that rules out the \
+      cheap fix: refusing local targets outright breaks the demo the conformance suite is. On the port, \
+      `ocapn/src/dial_policy.rs:a_remote_peer_cannot_reach_this_nodes_own_services` asserts both halves \
+      — remote refused, loopback permitted — and \
+      `a_remote_peer_cannot_reach_this_node_by_name` that a *name* resolving to loopback is the same \
+      dial.",
+    note := "**The origin had to be carried to the policy, and that is most of the fix.** The policy \
+      could not tell one peer from another because nothing on the dial path knew where the request came \
+      from: `NetConn` gains a provided `peer_address`, the session handle carries it, and `Netlayer` \
+      gains a provided `new_outgoing_connection_from` so the two dial sites that *do* know — the \
+      enlivener and the handoff greeter, both session-local objects — can say which peer asked. Both \
+      are **provided** methods: the netlayer standard fixes two functions, and a transport that cannot \
+      report an origin keeps the behaviour it had rather than becoming non-conforming. **What the model \
+      does not claim:** `Origin` is two-valued where the port has a socket address and a list of \
+      ranges, and `Target` is three-valued where the port has every `IpAddr` — the model says the shape \
+      of the rule and the port says which addresses are in which class, pinned by its own tests. \
+      **What the operator still decides:** whether local targets are refused at all is `deny_local`, \
+      unchanged; the origin rule is not switchable, because it is the containment rather than a \
+      preference." },
+  { number := 63, clause := "a", layer := "Protocol",
+    statement := "**A bridged delivery's consensus footprint is attributable to a payer** — the state a \
+      session causes is one the peer that caused it pays for, and this node neither pays phlo it did \
+      not choose to spend nor carries consensus state it cannot remove.",
+    status := .open,
+    declarations := [`Rchain.Payer, `Rchain.Write, `Rchain.Attributable, `Rchain.bridgedWrite, `Rchain.a_bridged_write_is_not_attributable, `Rchain.AttributableWrite, `Rchain.the_relay_would_satisfy_it, `Rchain.bounding_the_state_does_not_make_it_attributable],
+    axioms := [],
+    falsifiable := some "**the falsifier is the state as it is, and it is a theorem rather than a \
+      paragraph about one.** `a_bridged_write_is_not_attributable` states that a write a session \
+      caused has `thisNode` as its payer, for every size of write: every delivery to a \
+      method-carrying chain capability runs `insertArbitrary` unconditionally and the deploy is \
+      signed by the node's key, so the chain binds the node and the node's vault pays. \
+      `bounding_the_state_does_not_make_it_attributable` is the sentence the row's *first* proposed \
+      close condition got wrong: the law is about **who pays**, so a smaller write is the same \
+      unattributable write — which is why the repair is the relay and not a bound. \
+      `the_relay_would_satisfy_it` shows the law is not vacuous: a write whose payer is the caller and \
+      whose state is within what the caller's phlo bought exists, which is what the relay produces.",
+    witness := [`Rchain.a_bridged_write_is_not_attributable, `Rchain.the_relay_would_satisfy_it],
+    note := "**Why this one is `open` and the other three laws of this family are not.** The OCapN \
+      surface's *bounds* are already guards before the work — `MAX_SESSIONS`, the export and answer \
+      tables' caps, `MAX_DEFERRED_ANSWERS`, the bridged-deploy rate limiter — and that is **Law 55's \
+      clause a**, which is why C222's row now cites `55a` rather than proposing a law of its own \
+      (rule 3: one home). What no bound reaches is *attribution*: the node cannot know whether a \
+      reply holds a capability before registering it, because the value does not survive the \
+      evaluation, so it cannot refuse the write on that ground. The close is the **relay** — the node \
+      hands the peer the exact `DeployData` to sign with its own secp256k1 key, so the chain binds the \
+      peer as `deployerId` and the peer's vault pays — and it cannot be landed here: Endo does not \
+      speak this shard's `DeployData` shape, so it is a cross-implementation protocol change. The row \
+      names that rather than a fix this tree cannot reach. **What the model does not claim:** the \
+      state is a byte count and the payer is two-valued, so it says the *shape* of the obligation and \
+      nothing about what a reply holds; the surviving growth is a chain-wide property of the registry \
+      (no delete anywhere), bounded economically by whoever pays, and that property is the registry \
+      layer's rather than this one's." },
+  { number := 64, clause := "a", layer := "Wire",
+    statement := "**Where the draft and the implementations differ, the port speaks the \
+      implementations' reading.** The prose is not the oracle; what every peer actually speaks is.",
+    status := .provedModel,
+    declarations := [`Rchain.Source, `Rchain.Form, `Rchain.Disagreement, `Rchain.speaks, `Rchain.the_port_speaks_the_implementations_reading, `Rchain.the_draft_is_not_the_oracle],
+    axioms := [],
+    rust := ["ocapn/src/captp.rs", "ocapn/src/session.rs", "casper/src/shard_invoke.rs"],
+    rustWitness := [ "ocapn/tests/reference_vectors.rs:start_session_matches_the_reference", "casper/src/shard_invoke.rs:reply_channel_is_the_deploy_id"],
+    witness := [`Rchain.the_port_speaks_the_implementations_reading, `Rchain.the_draft_is_not_the_oracle],
+    falsifiable := some "**the figures are the drafts', and they disagree.** AUDIT C216: the draft \
+      defines `op:start-session` with **five** fields and contradicts itself about one of them \
+      (`Ed25519_SHA256` when constructing, `Ed25519` when receiving), while the suite's \
+      `OpStartSession` carries **four** — so a port following the prose fails against every \
+      implementation. AUDIT C218: `invoke_term` passed the reply channel as a backticked \
+      `` `rho:rchain:deployId` ``, which is a `GUri` *ground* — an ordinary, guessable name — where the \
+      reference binds the unforgeable per-deploy channel; the port spoke a reading **no** \
+      implementation produces, and every reply went nowhere while the deploy reported success. \
+      `the_draft_is_not_the_oracle` is the clause as a theorem: the two readings differ, so speaking \
+      one is not speaking the other. The tie is the known-answer corpus — \
+      `ocapn/tests/reference_vectors.rs`'s vectors are produced by the suite's own \
+      `contrib/syrup.py` encoder, and `start_session_matches_the_reference` pins the four-field form.",
+    note := "**Both halves of this row are about the same mistake, made in opposite directions.** \
+      Following the prose (C216) fails against the peers; inventing a reading the prose and the peers \
+      both lack (C218) fails silently, because the wire does not complain about a name nobody reads. \
+      The oracle is the **implementation**, which is what `ocapn/src/captp.rs`'s module doc states and \
+      what the KATs enforce. **What the model does not claim:** a reading is a `Nat` where the port has \
+      a record shape, so the model says *which* reading is spoken and nothing about its fields; the \
+      divergences themselves are rows in the findings register (C216, C218, C224), which is where a \
+      reader finds what each one is." },
+  { number := 64, clause := "b", layer := "Wire",
+    statement := "**Where the implementations disagree with each other, the port accepts every reading \
+      they produce** — the union on the reading side, because there is no single reading to speak.",
+    status := .provedModel,
+    declarations := [`Rchain.accepts, `Rchain.every_reference_reading_is_accepted, `Rchain.oneReading, `Rchain.one_reading_refuses_another, `Rchain.the_union_accepts_it],
+    axioms := [],
+    rust := ["ocapn/src/bootstrap.rs", "ocapn/src/session.rs"],
+    rustWitness := [ "ocapn/src/bootstrap.rs:bootstrap_deliver_accepts_a_swiss_number_as_bytes_or_as_a_string"],
+    witness := [`Rchain.every_reference_reading_is_accepted],
+    falsifiable := some "**the falsifier is the port's own history, stated as a rule.** `oneReading` is \
+      what 'the reference implementation is the oracle' was taken to mean before it was noticed that \
+      there are two — a port that speaks one reading — and `one_reading_refuses_another` is AUDIT C217 \
+      exactly: `@endo/ocapn` sends a swiss number as a Syrup **String** (which is what the draft says \
+      it is) and the Python suite sends a **byte array**, so a port built to either alone refuses the \
+      other. `the_union_accepts_it` states the contrast on the same row, so the pair is a claim rather \
+      than a preference. On the port, \
+      `bootstrap_deliver_accepts_a_swiss_number_as_bytes_or_as_a_string` asserts both readings are \
+      accepted, and C224's locator-hints case is the same shape one field over.",
+    note := "**Why the reading side is a union and the speaking side is not.** A port has to *choose* \
+      one shape to emit, and choosing the implementations' is right because they are what peers read; \
+      it does not have to choose one to *accept*, and choosing would refuse a peer that is not wrong. \
+      The asymmetry is the law's content, not an inconsistency. **What the model does not claim:** \
+      that every divergence is tolerated — C217's is, and C224's four are settled readings the port \
+      *pins* rather than accepts both ways; the register's rows say which is which. **What the law \
+      cannot reach:** a third implementation with a third reading would be another row, and nothing in \
+      this model finds it — the corpus is where a new reading shows up." },
+  { number := 65, layer := "Rholang",
+    statement := "**A value with no faithful literal is refused, not written.** Every literal the \
+      printer writes reads back as the value it was written for, and a value that has no such literal \
+      is refused rather than written as one that reads back as something else.",
+    status := .provedModel,
+    declarations := [`Rchain.Literal, `Rchain.Faithful, `Rchain.mayWrite, `Rchain.the_printer_writes_only_what_reads_back, `Rchain.an_unfaithful_literal_is_refused, `Rchain.theQuotedStringCase, `Rchain.the_quoted_string_case_is_refused],
+    axioms := [],
+    rust := ["rholang/src/pretty_printer.rs", "casper/src/shard_invoke.rs"],
+    rustWitness := [ "casper/src/shard_invoke.rs:an_argument_that_would_close_its_literal_is_refused"],
+    witness := [`Rchain.the_printer_writes_only_what_reads_back, `Rchain.the_quoted_string_case_is_refused],
+    falsifiable := some "**the falsifier is a concrete literal, and it was written into signed terms.** \
+      Rholang's literal grammar has **no escape**, so a string containing a quote has no faithful \
+      literal at all: `theQuotedStringCase` is one — the printer meant seven units and a reader gets \
+      the three before the quote — and `the_quoted_string_case_is_refused` says both that it is \
+      unfaithful and that the guard refuses it. Two production paths printed values into terms they \
+      then parsed, and **the values arrived from a peer** in the OCapN bridge's case \
+      (`casper/src/shard_invoke.rs`'s builders), so what was signed was a body the peer chose. On the \
+      port, `an_argument_that_would_close_its_literal_is_refused` is that case.",
+    note := "**This is Law 59's clause c for a second encoder.** 59c says an encoder never emits a shape \
+      outside its domain; here the domain is the literals that read back, and the encoder is the \
+      printer rather than the bridge. It is a separate law rather than a clause of 59 because the \
+      *domain* is different — a printable literal is a syntactic object, not a wire value — and because \
+      the failing thing is different: 59's writes go to a peer, this one's go into a term the node's \
+      own key signs. **What the model does not claim:** the values are `Nat`s standing for a value and \
+      its read-back, so it says the *guard* and nothing about the encoding; that Rholang *could* have \
+      an escape (it cannot — that is the grammar's choice, and it is why the answer is refusal rather \
+      than quoting) is stated in the module doc, not modelled. **What the tie does not reach:** the \
+      three printer warts Law 33 names are a different row's." },
 ]
 
 

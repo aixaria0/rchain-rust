@@ -57,6 +57,17 @@ Notes for operators:
 - `GET /api/v1/shards` lists the memberships, primary first, each with its own chain height. The
   membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
   parses on its own.
+- **There is a fourth kind of listener, and every one of them is off unless you ask for one.** The
+  OCapN listeners (issue #249) are where a foreign peer — an Agoric vat, say — can hold live references
+  to objects on this node: `api-server.ocapn-listen` is the conformance suite's plaintext
+  `tcp-testing-only` port, `ocapn-listen-unix` a domain socket authenticated by its `0600` mode,
+  `ocapn-listen-noise` the one a remote peer should use (authenticated *and* encrypted), and
+  `ocapn-listen-websocket` the one `@endo/ocapn` speaks and the weakest of the networked two. They are
+  **not** part of the API above, and when `dev.deployer-private-key` is set a peer that
+  reaches one can make this node **submit deploys signed with that key** and cause it to **dial any
+  address the peer names**. Read [](ocapn.md) before enabling it; the short version is that binding it
+  publishes the node's own authority, so bind loopback unless every peer that can reach the address is
+  one you trust.
 
 ---
 
@@ -320,6 +331,47 @@ this page's, but the short form is: your principal sits inside the operator's bo
 slash tier as the operator's own stake, and the operator's participation scales the reward your share is
 drawn from.
 
+
+---
+
+## Has a key signed a deploy? The deployer index
+
+**`GET /api/v1/deployer/<key>`** answers whether a key has signed a deploy that is in a block. Once
+it has, the key is public, which is what a wallet's quantum key-hygiene check needs to know (the
+[post-quantum plan](../contributor/post-quantum-plan.md) §16.1). `<key>` is the hex `blake2b256` hash
+of the 65-byte uncompressed public key, or the key itself. **A wallet should send the hash**: asking
+about a key that has never signed by sending the key would hand it to the node (and its logs), which
+is the exposure the check exists to avoid. The hash does not reveal the key, and it is not the REV
+address either, so it cannot be computed from an address.
+
+```sh
+curl -s http://localhost:40403/api/v1/deployer/<64 hex chars> | jq
+# {"block": {…LightBlockInfo…} | null, "indexedFromHeight": 0}
+```
+
+The answer is about **this node's blocks**: a `null` says no block it holds and has indexed carries a
+deploy from the key, not that the key was never shown to anyone (a deploy sent elsewhere and never
+included, or a signature made off-chain, is outside what any node can see).
+
+- `block` is the first block this node inserted that carries a deploy from the key, or `null`.
+- `indexedFromHeight` is the height the index reaches down to. `0` means every stored block is
+  indexed, so `null` means "in no block this node holds". A node upgraded onto an existing chain
+  starts above `0` and backfills the older blocks once, in the background (`deployer index backfilled
+  from N stored blocks` in the log). Until then a `null` only covers the heights from there up.
+  A node that joined by last-finalized-state sync never stored the blocks below the fringe, so it
+  reports the lowest height it holds and stays above `0`; ask a node that has the whole chain for a
+  full answer.
+- On a multi-shard node the lookup searches every member shard. `block` is the first hit (the primary
+  shard first), and `indexedFromHeight` is the highest of the members' values, so `0` still means
+  "complete on every shard".
+- Every block is indexed, including blocks that failed validation: a deploy in one still published
+  the key.
+- Anything other than 32 or 65 hex-encoded bytes answers `400`.
+
+The index lives in the shard's `deployer-index` store: one entry per distinct signing key (a 32-byte
+hash of the key → a 32-byte block hash) plus a height marker. It can never hold more entries than the
+`deploy-index` store, which has one per deploy. Code: `casper/src/dag.rs` (`with_deployer_index`,
+`backfill_deployer_index`, `lookup_by_deployer`).
 ---
 
 ## The Docker multi-node network (bare topology)

@@ -33,15 +33,18 @@ as rows that can be spelled arrive; it does not pretend to cover the urns it can
 namespace Rchain
 
 /-- What one value in a reply is. `any` is for a value whose shape is the caller's own (a registry
-lookup returns whatever was stored), and it is the only tag that asserts nothing. -/
+lookup returns whatever was stored), and it is the only tag that asserts nothing. `name` is an
+**unforgeable name** — a capability — which is what an issuer, a purse or a brand is, and what the
+consumer asserts with `RhoName::unapply`. -/
 inductive SlotShape where
-  | any | nil | bool | int | string | uri | byteArray | map | set | list
+  | any | nil | bool | int | string | uri | byteArray | map | set | list | name
 deriving DecidableEq, Repr
 
 /-- The tag the corpus and the consumer use for a slot shape. -/
 def SlotShape.tag : SlotShape → String
   | .any => "any" | .nil => "nil" | .bool => "bool" | .int => "int" | .string => "string"
   | .uri => "uri" | .byteArray => "byteArray" | .map => "map" | .set => "set" | .list => "list"
+  | .name => "name"
 
 /-- How the reply arrives. A system process produces with `cc.produce(…, &[v, …], ack, …)`, so `send`
 is an *n-arity send* (the receiver needs `n` patterns); `tuple` is one datum that is an n-tuple (one
@@ -56,13 +59,19 @@ def ReplyKind.tag : ReplyKind → String
 
 /-- A row of the catalog: the urn, the call's arguments **as rholang source** (before the reply
 channel), the call's arity — the node's `Definition.arity`, which counts the reply channel when there
-is one — and the reply's shape. -/
+is one — and the reply's shape.
+
+`remainder` says the urn is a **method-dispatch** contract: installed as `arity: 1, remainder: true`,
+so every call arrives as `(method, args…)` and the *spelled* arguments are not the call's arity. It is
+a field rather than an inference because the two halves it ties together are a `decide` in Lean and an
+assertion in Rust, and neither should have to guess. -/
 structure ReplyRow where
   urn : String
   args : String
   callArity : Nat
   kind : ReplyKind
   slots : List SlotShape
+  remainder : Bool := false
 
 /-- Does `s` begin with `p`? (`take`/`List Char` so the kernel can reduce it: the `decide`s below are
 about strings, and an opaque `startsWith` would not reduce.) -/
@@ -129,6 +138,16 @@ def replyCatalog : List ReplyRow :=
     -- why its kind is `tuple` and not `send`.
     { urn := "rho:qucalc:zfa", args := "[0, 1]", callArity := 2, kind := .tuple,
       slots := [.bool, .int] }
+  , -- **The ERTP ledger, and the first row that is a dispatch contract** (issue #249): installed
+    -- `arity: 1, remainder: true`, so `L!("makeKit", ret)` is the whole call and the spelled
+    -- `"makeKit"` is a *method*, not an argument count. `makeKit` replies one datum — the bare
+    -- `(brand, authority)` pair — and both of its members are **capabilities**, which is what the
+    -- `name` slot asserts and what the whole ERTP exchange turns on. Its other ops
+    -- (`makePurse`, `balance`, `mint`, `withdraw`, `deposit`) take unforgeable names as arguments,
+    -- which the surface grammar here cannot spell, so `makeKit` is the row that can be written — the
+    -- same boundary `Protocol.lean`'s header draws for `ByteArray`.
+    { urn := "rho:rchain:ertp:ledger", args := "\"makeKit\"", callArity := 1, kind := .tuple,
+      slots := [.name, .name], remainder := true }
   ]
 
 /-- Every row of the catalog is well-formed, `decide`d: the urns are namespaced and unique, an arity is
@@ -136,12 +155,13 @@ at least one, the **arity agrees with the arguments as written** (the C22 item 2
 kind agrees with the slots. A row that drifts in any of those fails `lake build`. -/
 theorem replyCatalog_decide :
     (replyCatalog.all (fun r =>
-        urnShaped r.urn && r.callArity ≥ 1 && r.callArity == r.probeArity && kindAgrees r)
+        urnShaped r.urn && r.callArity ≥ 1
+          && r.callArity == (if r.remainder then 1 else r.probeArity) && kindAgrees r)
       && (replyCatalog.map ReplyRow.urn).eraseDups.length == replyCatalog.length) = true := by
   decide
 
 /-- The count the Rust consumer asserts it read. -/
-def replyCaseCount : Nat := 9
+def replyCaseCount : Nat := 10
 
 /-- The catalog carries exactly `replyCaseCount` rows. -/
 theorem replyCatalog_length : replyCatalog.length = replyCaseCount := by decide

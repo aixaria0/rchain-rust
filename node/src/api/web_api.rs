@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 
+use rchain_casper::api::block_api::DeployerInfo;
 use rchain_models::casper::protocol::deploy_service::{BlockInfo, LightBlockInfo};
 
 use super::dto::{
@@ -43,6 +44,15 @@ pub trait WebApi: Send + Sync {
     async fn get_blocks(&self, depth: i32) -> Result<Vec<LightBlockInfo>, BlockApiException>;
 
     async fn find_deploy(&self, deploy_id: &str) -> Result<LightBlockInfo, BlockApiException>;
+
+    /// `GET /api/v1/deployer/{key}` — whether a key has signed a deploy in a block. `key` is the hex
+    /// `blake2b256` hash of the public key, or the 65-byte public key itself. The default refuses, so
+    /// a test double that does not care need not implement it.
+    async fn find_deployer(&self, _key: &str) -> Result<DeployerInfo, BlockApiException> {
+        Err(BlockApiException(
+            "this node keeps no deployer index".to_string(),
+        ))
+    }
 
     async fn exploratory_deploy(
         &self,

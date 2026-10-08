@@ -1,11 +1,15 @@
 //! Web API implementation (port of `WebApi.WebApiImpl`).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
 
 use async_trait::async_trait;
 
-use rchain_casper::api::block_api::BlockApi;
+use rchain_casper::api::block_api::{BlockApi, DeployerInfo};
+use rchain_casper::dag::deployer_index_key;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::ast::Expr;
@@ -39,6 +43,7 @@ pub struct WebApiImpl {
     shard_id: String,
     /// Faucet accounting is one lock so concurrent requests cannot pass separate address/total checks.
     faucet_ledger: Arc<Mutex<FaucetLedger>>,
+    faucet_ledger_path: Option<PathBuf>,
 }
 
 impl WebApiImpl {
@@ -54,12 +59,65 @@ impl WebApiImpl {
             deployer_key,
             shard_id,
             faucet_ledger: Arc::new(Mutex::new(FaucetLedger::default())),
+            faucet_ledger_path: None,
         }
     }
 
+    /// Production ledger lives alongside the node's other data. A missing or corrupt ledger
+    /// cannot silently reset a previously used allocation.
+    pub fn with_persistent_faucet_ledger(mut self, path: PathBuf) -> Result<Self, String> {
+        if self.deployer_key.is_none() {
+            return Ok(self);
+        }
+        let ledger = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<FaucetLedger>(&bytes)
+                .map_err(|e| format!("faucet ledger {}: {e}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let ledger = FaucetLedger::default();
+                Self::write_faucet_ledger(&path, &ledger)?;
+                ledger
+            }
+            Err(e) => return Err(format!("faucet ledger {}: {e}", path.display())),
+        };
+        if !(0..=FAUCET_TOTAL_BUDGET).contains(&ledger.spent) {
+            return Err(format!(
+                "faucet ledger {}: invalid spent amount",
+                path.display()
+            ));
+        }
+        self.faucet_ledger = Arc::new(Mutex::new(ledger));
+        self.faucet_ledger_path = Some(path);
+        Ok(self)
+    }
+
+    fn write_faucet_ledger(path: &Path, ledger: &FaucetLedger) -> Result<(), String> {
+        use std::io::Write;
+        let parent = path
+            .parent()
+            .ok_or("faucet ledger has no parent directory")?;
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let tmp = path.with_extension("tmp");
+        let bytes = serde_json::to_vec(ledger).map_err(|e| e.to_string())?;
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        std::fs::File::open(parent)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| e.to_string())
+    }
+
+    fn save_faucet_ledger(&self, ledger: &FaucetLedger) -> Result<(), BlockApiException> {
+        if let Some(path) = &self.faucet_ledger_path {
+            Self::write_faucet_ledger(path, ledger)
+                .map_err(|e| BlockApiException(format!("faucet ledger persistence failed: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Read the recipient's REV balance from the same finalised fringe used by the public
-    /// explore-deploy endpoint. This is the faucet's durable per-account eligibility check: a
-    /// process restart can forget local reservations, but it cannot forget REV already delivered.
+    /// explore-deploy endpoint. The finalized balance determines eligibility; the persisted
+    /// ledger preserves unresolved reservations and the allocation across restarts.
     async fn finalized_rev_balance(&self, address: &str) -> Result<i64, BlockApiException> {
         let term = format!(
             r#"new return, vault(`rho:rchain:revVault`), ret in {{ vault!("getBalance", "{address}", *ret) | for (@b <- ret) {{ return!(b) }} }}"#
@@ -87,7 +145,12 @@ impl WebApiImpl {
 
     /// Remove one exact reservation. A replay/submission failure refunds the total allocation; a
     /// delivered drip only drops the in-process marker because its budget was genuinely spent.
-    fn clear_faucet_reservation(&self, address: &str, expected: Option<&[u8]>, refund: bool) {
+    fn clear_faucet_reservation(
+        &self,
+        address: &str,
+        expected: Option<&[u8]>,
+        refund: bool,
+    ) -> Result<(), BlockApiException> {
         let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
         let matches = match (ledger.pending.get(address), expected) {
             (Some(None), None) => true,
@@ -95,18 +158,22 @@ impl WebApiImpl {
             _ => false,
         };
         if matches {
-            ledger.pending.remove(address);
+            let mut next = ledger.clone();
+            next.pending.remove(address);
             if refund {
-                ledger.spent = ledger.spent.saturating_sub(faucet::FAUCET_AMOUNT);
+                next.spent = next.spent.saturating_sub(faucet::FAUCET_AMOUNT);
             }
+            self.save_faucet_ledger(&next)?;
+            *ledger = next;
         }
+        Ok(())
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct FaucetLedger {
-    /// One in-process reservation per recipient. `None` means the submit is still in progress;
-    /// `Some(sig)` means it was accepted and later requests must reconcile its chain outcome.
+    /// The deploy signature is persisted before submission. After a crash, an unknown
+    /// outcome stays reserved until the chain reports a definitive result.
     pending: HashMap<String, Option<Vec<u8>>>,
     spent: i64,
 }
@@ -292,6 +359,18 @@ mod tests {
         async fn find_deploy(&self, _: &DeployId) -> ApiErr<LightBlockInfo> {
             unreachable!("not exercised here")
         }
+        /// Echoes the first byte of the hash it was asked about, so a test can tell which hash arrived.
+        async fn find_deployer(&self, deployer_hash: &[u8]) -> ApiErr<DeployerInfo> {
+            assert_eq!(
+                deployer_hash.len(),
+                32,
+                "the block API is always asked by hash"
+            );
+            Ok(DeployerInfo {
+                block: None,
+                indexed_from_height: i64::from(deployer_hash[0]),
+            })
+        }
         async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
             unreachable!("not exercised here")
         }
@@ -402,6 +481,33 @@ mod tests {
                 caps.faucet, expected,
                 "dev_mode = {dev_mode}, key = {has_key}"
             );
+        }
+    }
+
+    /// The deployer lookup takes the key's hash as is (so a wallet need not reveal an unused key) or
+    /// the 65-byte key, which it hashes the way the index does; anything else is refused.
+    #[tokio::test]
+    async fn the_deployer_lookup_takes_a_key_hash_or_a_key() {
+        let web = api(StubBlockApi::default(), None);
+
+        let hash = [0xabu8; 32];
+        let by_hash = web.find_deployer(&base16::encode(&hash)).await.unwrap();
+        assert_eq!(by_hash.indexed_from_height, 0xab);
+
+        let key = [4u8; 65];
+        // The same vector r-wallet's unit tests pin for `deployer_key_hash`: the two must agree.
+        assert_eq!(
+            base16::encode(&deployer_index_key(&key)),
+            "b0ec3ad69aacbdc6499f533d58abd768331f5977fb42d302c3cf7f8a401e75f1"
+        );
+        let by_key = web.find_deployer(&base16::encode(&key)).await.unwrap();
+        assert_eq!(
+            by_key.indexed_from_height,
+            i64::from(deployer_index_key(&key)[0])
+        );
+
+        for bad in ["zz", "04", &base16::encode(&[4u8; 33])] {
+            assert!(web.find_deployer(bad).await.is_err(), "{bad} was accepted");
         }
     }
 
@@ -547,6 +653,68 @@ mod tests {
             1,
             "no second drip was submitted"
         );
+    }
+
+    /// Restart must retain both the in-flight recipient gate and the total allocation.
+    #[tokio::test]
+    async fn faucet_ledger_survives_restart_and_reconciles_failure() {
+        let (sk, _) = key_and_address();
+        let address = faucet_target();
+        let dir = std::env::temp_dir().join(format!(
+            "faucet-ledger-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let path = dir.join("faucet.json");
+        let stub = StubBlockApi::default();
+        let status = stub.deploy_status.clone();
+        let deployed = stub.deployed.clone();
+        let first = api(stub, Some(sk.clone()))
+            .with_persistent_faucet_ledger(path.clone())
+            .expect("open ledger");
+        first.faucet(&address).await.expect("first submission");
+        drop(first);
+
+        let restarted = api(
+            StubBlockApi {
+                deploy_status: status.clone(),
+                deployed: deployed.clone(),
+                ..StubBlockApi::default()
+            },
+            Some(sk),
+        )
+        .with_persistent_faucet_ledger(path.clone())
+        .expect("reload ledger");
+        assert_eq!(
+            restarted.capabilities().await.unwrap().faucet_remaining,
+            FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
+        );
+        let blocked = restarted
+            .faucet(&address)
+            .await
+            .expect_err("pending survives restart");
+        assert!(blocked.0.contains("still pending"));
+        assert_eq!(deployed.lock().unwrap().len(), 1);
+
+        *status.lock().unwrap() = Ok(DomainExecStatus::ProcessedWithError {
+            deploy_error: "preCharge: insufficient funds".to_string(),
+            block: light_block_info(7),
+        });
+        restarted
+            .faucet(&address)
+            .await
+            .expect("failed replay permits retry");
+        assert_eq!(deployed.lock().unwrap().len(), 2);
+        assert_eq!(
+            restarted.capabilities().await.unwrap().faucet_remaining,
+            FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
+        );
+        drop(restarted);
+        let bytes = std::fs::read(&path).expect("durable ledger");
+        let persisted: FaucetLedger = serde_json::from_slice(&bytes).expect("valid ledger");
+        assert_eq!(persisted.spent, faucet::FAUCET_AMOUNT);
+        std::fs::remove_dir_all(&dir).expect("clean test directory");
     }
 
     /// A submitted drip remains reserved until its outcome is known, closing the concurrent/retry
@@ -862,7 +1030,7 @@ impl WebApi for WebApiImpl {
                 .map_err(BlockApiException)?
             {
                 CasperDeployExecStatus::ProcessedWithError { .. } => {
-                    self.clear_faucet_reservation(address, Some(&deploy_id), true);
+                    self.clear_faucet_reservation(address, Some(&deploy_id), true)?;
                 }
                 CasperDeployExecStatus::NotProcessed { status } => {
                     return Err(BlockApiException(format!(
@@ -884,7 +1052,7 @@ impl WebApi for WebApiImpl {
 
                     let balance = self.finalized_rev_balance(address).await?;
                     if balance >= faucet::FAUCET_AMOUNT {
-                        self.clear_faucet_reservation(address, Some(&deploy_id), false);
+                        self.clear_faucet_reservation(address, Some(&deploy_id), false)?;
                         return Err(BlockApiException(format!(
                             "faucet: address {address} is already funded in finalized state ({balance} drops)"
                         )));
@@ -892,7 +1060,7 @@ impl WebApi for WebApiImpl {
 
                     // Replay succeeded, finality passed, but the recipient still did not receive a
                     // drip. Delivery is the invariant, so release the reservation and let it retry.
-                    self.clear_faucet_reservation(address, Some(&deploy_id), true);
+                    self.clear_faucet_reservation(address, Some(&deploy_id), true)?;
                 }
             }
         }
@@ -927,20 +1095,17 @@ impl WebApi for WebApiImpl {
                     "faucet: total budget exhausted".to_string(),
                 ));
             }
-            ledger.pending.insert(address.to_string(), None);
-            ledger.spent = ledger.spent.saturating_add(faucet::FAUCET_AMOUNT);
+            let mut next = ledger.clone();
+            next.pending
+                .insert(address.to_string(), Some(signed.sig.clone()));
+            next.spent = next.spent.saturating_add(faucet::FAUCET_AMOUNT);
+            self.save_faucet_ledger(&next)?;
+            *ledger = next;
         }
 
         if let Err(err) = self.block_api.deploy(&signed).await {
-            self.clear_faucet_reservation(address, None, true);
+            self.clear_faucet_reservation(address, Some(&signed.sig), true)?;
             return Err(BlockApiException(err));
-        }
-
-        {
-            let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(slot) = ledger.pending.get_mut(address) {
-                *slot = Some(signed.sig.clone());
-            }
         }
 
         Ok(FaucetResponse {
@@ -1001,6 +1166,28 @@ impl WebApi for WebApiImpl {
         let id = base16::decode(deploy_id).ok_or_else(invalid_deploy_id)?;
         self.block_api
             .find_deploy(&id)
+            .await
+            .map_err(BlockApiException)
+    }
+
+    async fn find_deployer(&self, key: &str) -> Result<DeployerInfo, BlockApiException> {
+        // Either the 32-byte `blake2b256` hash of the key (what a wallet checking a key that has
+        // never signed should send: the hash does not reveal the key) or, for convenience, the
+        // 65-byte key itself, hashed here. Anything else is refused rather than answered: "not seen"
+        // for a mistyped key would tell a wallet the wrong thing about the key it meant.
+        let hash = match base16::decode(key) {
+            Some(h) if h.len() == 32 => h,
+            Some(k) if k.len() == 65 => deployer_index_key(&k),
+            _ => {
+                return Err(BlockApiException(
+                    "Expected the hex blake2b256 hash of a public key (32 bytes) or a 65-byte \
+                     uncompressed secp256k1 public key."
+                        .to_string(),
+                ))
+            }
+        };
+        self.block_api
+            .find_deployer(&hash)
             .await
             .map_err(BlockApiException)
     }

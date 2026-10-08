@@ -1,0 +1,36 @@
+# The Noise interop run: Agoric's implementation against this repository's netlayer.
+#
+# inlined:   spec/audit/evidence/ocapn-noise/ref/lib.rs, after two mechanical edits (README.md):
+#            `#![no_std]` dropped, and the `unsafe extern "C" { fn buffer_callback(..); }`
+#            declaration dropped because the harness supplies that symbol (else E0428). The
+#            reference's *calls* to it are untouched and resolve to the harness's definition.
+#
+# What this run establishes: the handshake completes ACROSS IMPLEMENTATIONS — the reference, in the
+# responder role, accepted the frame this repository's `ocapn/src/noise.rs` produced (the SYN behind
+# its 32-byte intended-responder prefix, and the ACK), and the signature checks on both sides hold —
+# and transport messages decrypt in both directions.
+#
+# What it does NOT establish, said here so a green result is not read as more than it is:
+#   * THE RECORD FRAMING. The reference binds `encrypt`/`decrypt` over one record of at most 65535
+#     bytes and leaves the record *boundaries* to a netlayer, and up to and including 2026-10-07 it
+#     ships none — so the length prefix and chunking in `ocapn/src/noise.rs` still have no counterpart
+#     to be tested against. See the README's section on C227 for what was read and when.
+#   * A LIVE PEER. This drives the reference's core from a harness — which is what the reference is
+#     built to be driven by, its own JS binding doing the same — not a shipped implementation.
+#   * THE DESIGNATOR CONVENTION. This harness passes the responder's Ed25519 verifying key in the
+#     locator's `verify` hint (base16), because the locator convention is not pinned by anything
+#     reachable — though the reference's own netlayer, where one exists, does use hex.
+# reference: endojs/endo rust/ocapn_noise at commit 356d6e70affc5adfd35cd65adda758119521ec5f
+# digest:    4ee614676728823126409bae2dc6eda96d64483161be4debb85d51cb8a2ad290  ref/lib.rs
+# tree:      e1eac114b
+# command:   bash spec/audit/evidence/ocapn-noise/run.sh
+#
+=== OCapN noise interop: Agoric's core as responder, rchain as initiator ===
+reference: endojs/endo rust/ocapn_noise at the commit pinned by run.sh
+reference responder key: e8d9ce9869074cb6eff05860dad8387962fb7a2044d90533416cf69dab077dbf
+reference listening on 127.0.0.1:43617
+handshake: completed — the reference accepted our SYN and our ACK
+reference decrypted: "hello from rchain"
+rchain decrypted:   "hello from agoric's noise core"
+=== interop: OK ===
+NOT PROVEN by this run: the record framing. The reference frames one record of at most 65535 bytes and leaves boundaries to a netlayer; `@endo/ocapn-noise` ships none, so the length prefix and chunking in `ocapn/src/noise.rs` have no counterpart here.

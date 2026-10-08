@@ -106,6 +106,60 @@ pub struct ApiServer {
     pub max_connection_idle: Duration,
     pub max_connection_age: Duration,
     pub max_connection_age_grace: Duration,
+    /// Bind an **OCapN** listener on this `host:port` (issue #249), or `None` for no listener —
+    /// the default, because the only netlayer implemented is the OCapN project's
+    /// `tcp-testing-only`, which is explicitly unencrypted and unauthenticated.
+    ///
+    /// A non-Shared field, like `enable_txn_api` beside it: the Scala `ApiServer` has no OCapN
+    /// listener, and this port's is opt-in rather than always-on for the reason above.
+    pub ocapn_listen: Option<String>,
+    /// Bind the **`unix`** OCapN listener at this socket path, or `None` for none (issue #249). A
+    /// transport rather than a second address for the one above, and the one the node offers that is
+    /// **not** a testing transport: what admits a peer is the socket's file mode (`0600`, set at bind),
+    /// so `tcp-testing-only`'s "no authentication" does not apply here.
+    pub ocapn_listen_unix: Option<String>,
+    /// Bind the **`noise`** OCapN listener on this `host:port`, or `None` for none (issue #249). This
+    /// is the transport a peer *not on this host* can reach: the handshake authenticates both ends and
+    /// encrypts everything above it, with no certificate authority and no daemon. It needs
+    /// `ocapn_identity_key`, because the handshake names the node by a key the node must hold.
+    pub ocapn_listen_noise: Option<String>,
+    /// Bind the **`websocket`** OCapN listener on this `host:port`, or `None` for none (issue #249).
+    /// The transport `@endo/ocapn` speaks, so it is the one a *published* peer can be pointed at —
+    /// and it is **weaker than `noise`**: as the reference writes it, `ws://` carries no TLS and
+    /// authenticates only the server. Reach for `noise` unless the peer speaks nothing else.
+    pub ocapn_listen_websocket: Option<String>,
+    /// **The host peers should dial this node at**, when the bound address is not one they can reach
+    /// (HAZOP row C237). `local_addr()` is what a listener is bound to, and a bind to `0.0.0.0` or
+    /// `::` means "every address on this host" — which is not an address *another* host can dial: a
+    /// remote peer that follows it reaches itself, so every sturdyref and handoff to this node is
+    /// unusable off-host. Same-host dialling happens to work, which is why nothing measured it.
+    ///
+    /// Set this to a name or address a peer can resolve and reach. A listener bound to an
+    /// unspecified address with no value here is **refused at startup** rather than advertising
+    /// something undialable.
+    pub ocapn_advertised_host: Option<String>,
+    /// Where the node's **Noise identity** is kept: an Ed25519 seed then an X25519 static, 64 bytes,
+    /// mode `0600`. Generated and written on first use when the file is absent, so a node's name is
+    /// stable across restarts — an identity that changed on every start would be one no peer could
+    /// hold in advance, which is the whole point of it.
+    ///
+    /// **One file is one peer** (HAZOP row C234): the designator *is* this key, so two nodes sharing
+    /// the file are one peer to everyone else — the crossed-hello rule compares sessions by that name,
+    /// so their sessions evict each other — and replacing the key renames the node, which is the same
+    /// breakage as losing it. **And the name is a function of configuration** (HAZOP row C235): adding
+    /// a listener that consumes this key, or setting the key, moves the designator off the
+    /// deployer-key derivation it would otherwise use, so a node that already handed out locations
+    /// stops being reachable at them. A key with no listener to consume it is read and validated and
+    /// does *not* move the name (`ocapn_identity_for`).
+    pub ocapn_identity_key: Option<String>,
+    /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4; off by default
+    /// because the conformance suite and the ERTP transcript both dial loopback).
+    pub ocapn_deny_local_dial: bool,
+    /// Mount the **node-started dial** route (`POST /api/v1/ocapn/dial`) on the admin server, or
+    /// `false` for the default (issue #249). A new **egress** primitive, so it gets an explicit switch
+    /// in the same shape as `enable_txn_api`: a peer-chosen locator is one the node then connects to,
+    /// and a peer-chosen swiss number is one it fetches. Off unless an operator asks for it.
+    pub enable_ocapn_dial: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

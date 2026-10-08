@@ -95,6 +95,7 @@ use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
+use crate::api::ocapn::{serve_ocapn, ChainCapability, OcapnDialSlot, OcapnListeners};
 use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
@@ -110,6 +111,7 @@ use crate::web::pos_read::{PosReadApi, ShardPosRead};
 use crate::web::transaction::TransactionAPIImpl;
 use rchain_casper::gateway::ledger::TxnLedger;
 use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
+use rchain_ocapn::conn::Export;
 
 /// Interval between `--autopropose` timer ticks. Together with the dev-mode dummy deploy this makes a
 /// fresh devnet produce blocks on its own (a lone validator has no peer/deploy to kick the
@@ -460,6 +462,31 @@ pub struct NodeProgram {
     enable_txn_api: bool,
     enable_devnet_cors: bool,
     enable_devnet_admin_public: bool,
+    /// The transports to bind the OCapN listener on — `tcp-testing-only` and/or `unix`, or neither
+    /// for a dial-only node (issue #249).
+    ocapn_listeners: OcapnListeners,
+    /// The node's Noise identity, when it has one — required exactly when `ocapn_listeners.noise` is
+    /// set, and also what makes the designator a name a peer can verify (issue #249).
+    ocapn_identity: Option<rchain_ocapn::noise::NoiseIdentity>,
+    /// Where the listener publishes the [`OcapnDialSlot`]'s dialer, and the admin server reads it to
+    /// serve a node-started dial (issue #249).
+    ocapn_dial: OcapnDialSlot,
+    /// Whether the node-started dial route is mounted (`api-server.enable-ocapn-dial`).
+    enable_ocapn_dial: bool,
+    /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4).
+    ocapn_deny_local_dial: bool,
+    /// The name this node advertises in every session (C224 item 2).
+    ocapn_designator: String,
+    /// The host peers are told to dial, when the bound address is not one they can reach (HAZOP row
+    /// C237). `None` means "the bound address", which `serve_ocapn` refuses for `0.0.0.0`/`::`.
+    ocapn_advertised_host: Option<String>,
+    /// The node's log, for the one surface that had none: the OCapN listener served, refused and
+    /// spent in silence, so an operator could not tell "nobody is calling" from "calls are failing"
+    /// (HAZOP row E6).
+    log: Arc<dyn Log>,
+    /// The chain-backed capability the listener publishes, or `None` when there is no key.
+    /// The chain-backed capabilities the OCapN bridge publishes, each under its swiss number.
+    ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
 }
@@ -492,6 +519,15 @@ impl NodeProgram {
             enable_txn_api,
             enable_devnet_cors,
             enable_devnet_admin_public,
+            ocapn_listeners,
+            ocapn_identity,
+            ocapn_dial,
+            enable_ocapn_dial,
+            ocapn_deny_local_dial,
+            ocapn_designator,
+            ocapn_advertised_host,
+            log,
+            ocapn_chain,
             protocol_server,
             status_provider,
             gateway,
@@ -557,6 +593,9 @@ impl NodeProgram {
         let mut admin = tokio::spawn({
             let host = host.clone();
             let stop = stop.clone();
+            // The listener publishes the dialer through this slot; the admin route reads it. Cloned
+            // here so the listener task below can still take the slot by value.
+            let ocapn_dial = ocapn_dial.clone();
             async move {
                 // The admin HTTP server hosts the **unauthenticated** `/api/propose`, which triggers
                 // block production. It used to bind `api-server.host` — `0.0.0.0` — unconditionally,
@@ -578,12 +617,28 @@ impl NodeProgram {
                     enable_devnet_cors,
                     gateway,
                     enable_txn_api,
+                    ocapn_dial,
+                    enable_ocapn_dial,
                     max_connection_idle,
                     stop,
                 )
                 .await
             }
         });
+
+        // The OCapN listener (issue #249). Spawned even when it is not configured — see
+        // `serve_ocapn` — so its select arm and drain slot are unconditional.
+        let mut ocapn = tokio::spawn(serve_ocapn(
+            ocapn_listeners,
+            ocapn_chain,
+            ocapn_designator,
+            ocapn_deny_local_dial,
+            ocapn_dial,
+            ocapn_identity,
+            ocapn_advertised_host,
+            log.clone(),
+            stop.clone(),
+        ));
 
         // **The first moment a node can say the expensive part is over, and the expensive part is
         // replay rather than the bind** (issue #60's observability half). Every costly step — the store
@@ -619,7 +674,7 @@ impl NodeProgram {
         // arm already consumed. `node/tests/shutdown.rs` asserts the serve task must not panic, which
         // is how this surfaced (CI, 2026-09-28); it does not reproduce under a light local load,
         // because there `stop_requested` wins.
-        let mut drained = [false; 4];
+        let mut drained = [false; 5];
         let stopped = if let Some(protocol) = protocol_server {
             let mut protocol = tokio::spawn(async move {
                 protocol
@@ -632,6 +687,7 @@ impl NodeProgram {
                 r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
                 r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
                 r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
+                r = &mut ocapn => { drained[4] = true; Some(listener_stopped("OCapN listener", r, *stopping.borrow())) },
                 r = &mut protocol => Some(listener_stopped("protocol listener", r, *stopping.borrow())),
                 _ = stop_requested(stop) => None,
             }
@@ -641,6 +697,7 @@ impl NodeProgram {
                 r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped("internal gRPC listener", r, *stopping.borrow())) },
                 r = &mut http => { drained[2] = true; Some(listener_stopped("HTTP listener", r, *stopping.borrow())) },
                 r = &mut admin => { drained[3] = true; Some(listener_stopped("admin HTTP listener", r, *stopping.borrow())) },
+                r = &mut ocapn => { drained[4] = true; Some(listener_stopped("OCapN listener", r, *stopping.borrow())) },
                 _ = stop_requested(stop) => None,
             }
         };
@@ -666,6 +723,9 @@ impl NodeProgram {
             }
             if !drained[3] {
                 let _ = admin.await;
+            }
+            if !drained[4] {
+                let _ = ocapn.await;
             }
         };
         let _ = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await;
@@ -1228,12 +1288,87 @@ pub async fn setup_node_program(
     // API's `dev_mode` and its own key, asynchronously, which a synchronously-built router cannot
     // consult; the two values are the same pair the faucet handler refuses without.
     let faucet_enabled = conf.dev_mode && faucet_deployer_key.is_some();
-    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
-        routing.clone(),
-        primary_parts.transaction_api.clone(),
-        faucet_deployer_key,
-        primary_id.to_string(),
-    ));
+    // **The listeners, resolved once** (issue #249): the tcp address, the unix path, and the noise
+    // address, any of them or none — a node with none is dial-only.
+    let ocapn_listeners = OcapnListeners {
+        tcp: conf.api_server.ocapn_listen.clone(),
+        unix: conf.api_server.ocapn_listen_unix.clone(),
+        noise: conf.api_server.ocapn_listen_noise.clone(),
+        websocket: conf.api_server.ocapn_listen_websocket.clone(),
+    };
+    // **The node's OCapN identity**, loaded or generated at the configured path. Required exactly by
+    // the two transports that authenticate with it — `noise` names the node by the key, and
+    // `websocket` signs its challenge response with it — and this is also where the node stops being
+    // nameless: `node_designator` below is a *hash* of the deployer key and cannot sign, while this is
+    // a key a peer can hold in advance. The three cases, including the one where a configured key is
+    // validated without being used, are `ocapn_identity_for`'s (and are tested there).
+    let ocapn_identity = crate::api::ocapn::ocapn_identity_for(
+        &ocapn_listeners,
+        conf.api_server.ocapn_identity_key.as_deref(),
+    )?;
+    // **This node's OCapN designator** — its name. When the node has a Noise identity the designator
+    // **is** the Ed25519 verifying key, because that is the name the handshake actually checks: a peer
+    // must put it in the SYN's cleartext prefix, and a responder refuses a SYN naming another node.
+    // Without one, it falls back to the derivation that predates Noise (C224 item 2), which is a hash
+    // of the deployer key and is stable across restarts but is not a key anything can sign with.
+    let ocapn_designator = match &ocapn_identity {
+        Some(identity) => rchain_shared::base16::encode(&identity.verifying_key()),
+        None => crate::api::ocapn::node_designator(faucet_deployer_key.as_ref(), id),
+    };
+    // **The host a peer is told to dial** (HAZOP row C237). `local_addr()` is what a listener binds,
+    // and `0.0.0.0`/`::` is not an address another host can reach — a remote peer following it reaches
+    // itself — so the operator says what to advertise, and `serve_ocapn` refuses a listener bound to
+    // an unspecified address that has not been told.
+    let ocapn_advertised_host = conf.api_server.ocapn_advertised_host.clone();
+    // Where the listener publishes the dialer it builds once its transports are bound; the admin
+    // route reads it to start a dial of the node's own (issue #249).
+    let ocapn_dial: OcapnDialSlot = Arc::new(std::sync::OnceLock::new());
+    // The OCapN bridge (issue #249): a delivery to a chain-backed capability becomes a signed deploy.
+    // Built only when the node both listens and has a key to sign with — today the node's own dev
+    // deployer key, because binding a CapTP session to a caller's identity is the work
+    // `docs/src/node/ocapn.md` lists as future.
+    let ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)> =
+        match (ocapn_listeners.any(), faucet_deployer_key.as_ref()) {
+            (true, Some(key)) => {
+                // **One limiter for the node's whole OCapN surface**, shared by every capability and
+                // every session: each bridged delivery is a signed deploy paid for out of the node's own
+                // REV, so the bound has to be on the node, not per capability — two capabilities with a
+                // limiter each are a bound of twice the number (HAZOP row A3).
+                let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
+                    crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
+                ));
+                vec![
+                    (
+                        crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
+                        Arc::new(ChainCapability::rev_vault_balance(
+                            routing.clone(),
+                            key.clone(),
+                            primary_id.to_string(),
+                            limiter.clone(),
+                        )) as Arc<dyn Export>,
+                    ),
+                    (
+                        crate::api::ocapn::ERTP_SWISS.to_vec(),
+                        Arc::new(crate::api::ocapn::ertp_capability(
+                            routing.clone(),
+                            key.clone(),
+                            primary_id.to_string(),
+                            limiter,
+                        )),
+                    ),
+                ]
+            }
+            _ => Vec::new(),
+        };
+    let web_api: Arc<dyn WebApi> = Arc::new(
+        WebApiImpl::new(
+            routing.clone(),
+            primary_parts.transaction_api.clone(),
+            faucet_deployer_key,
+            primary_id.to_string(),
+        )
+        .with_persistent_faucet_ledger(conf.storage.data_dir.join("faucet-ledger.json"))?,
+    );
     // The PoS read (AUDIT C148): the primary shard's live native state through the runtime manager
     // that owns it, plus the status API for the head's height — one definition of "latest block".
     let pos_read: Arc<dyn PosReadApi> = Arc::new(ShardPosRead::new(
@@ -1287,6 +1422,15 @@ pub async fn setup_node_program(
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
+        ocapn_listeners,
+        ocapn_identity,
+        ocapn_dial,
+        enable_ocapn_dial: conf.api_server.enable_ocapn_dial,
+        ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,
+        ocapn_designator,
+        ocapn_advertised_host,
+        log: log.clone(),
+        ocapn_chain,
         protocol_server: Some(build_protocol_server(
             conf,
             &comm_state,
@@ -1901,7 +2045,17 @@ pub async fn setup_shard(
         )
         .await?,
     );
-    let block_dag_storage: Arc<dyn BlockDagStorage> = Arc::new(
+    // Deployer key (hashed) → a block it signed in, for `GET /api/v1/deployer/{pubkey}`.
+    let deployer_index: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>> = Arc::new(
+        database(
+            &store_manager,
+            "deployer-index",
+            Arc::new(BytesCodec),
+            Arc::new(BytesCodec),
+        )
+        .await?,
+    );
+    let dag_kv = Arc::new(
         BlockDagKeyValueStorage::create(
             block_metadata_store,
             fringe_data_store,
@@ -1911,8 +2065,11 @@ pub async fn setup_shard(
         .await
         .map_err(|e| e.to_string())?
         // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
-        .with_metrics(metrics),
+        .with_metrics(metrics)
+        .with_deployer_index(deployer_index)
+        .await?,
     );
+    let block_dag_storage: Arc<dyn BlockDagStorage> = dag_kv.clone();
 
     // Runtime manager (play + replay runtimes + mergeable store). The configured effect-scheduler
     // mode (Laws 20–22) applies to the play runtime and is recorded on the manager for the
@@ -2109,6 +2266,29 @@ pub async fn setup_shard(
     // Claim this shard's data directory before anything else touches it: a directory that belonged
     // to a different shard must fail startup, not read as an empty chain.
     check_shard_data_dir(&data_dir, spec, block_dag_storage.as_ref(), &block_store).await?;
+
+    // A node upgraded onto an existing chain indexes the blocks it already holds, once, in the
+    // background; until it finishes, `GET /api/v1/deployer` reports the height it has reached.
+    {
+        let dag_kv = dag_kv.clone();
+        let block_store = block_store.clone();
+        let shard_id = spec.shard_id.to_string();
+        tokio::spawn(async move {
+            let log = rchain_shared::log::StderrLog::default();
+            let source = LogSource::new("coop.rchain.node.runtime.DeployerIndex");
+            match dag_kv.backfill_deployer_index(&block_store).await {
+                Ok(0) => {}
+                Ok(n) => log.info(
+                    source,
+                    &format!("{shard_id}: deployer index backfilled from {n} stored blocks"),
+                ),
+                Err(e) => log.warn(
+                    source,
+                    &format!("{shard_id}: deployer index backfill failed: {e}"),
+                ),
+            }
+        });
+    }
 
     Ok(ShardParts {
         spec: spec.clone(),

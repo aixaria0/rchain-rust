@@ -113,3 +113,30 @@ fn the_host_clock_seam_answers_on_wasm() {
     let b = rchain_shared::time::nano_time();
     assert!(b >= a, "nano_time must be monotonic");
 }
+
+/// Law 19's X25519 witnesses (`crypto/src/encryption/x25519.rs`) — the RFC 7748 §6.1
+/// Diffie-Hellman example, on the real target. The scalar-multiplication ladder is exactly the kind of
+/// code a target change can break silently, and the OCapN Noise transport's static key is derived by
+/// it, so it is pinned on wasm as the other primitives are.
+#[wasm_bindgen_test]
+fn x25519_known_answers_hold_on_wasm() {
+    use rchain_crypto::encryption::x25519::{public_from_secret, x25519};
+
+    let decode = |s: &str| -> [u8; 32] {
+        base16::decode(s)
+            .expect("a base16 vector")
+            .try_into()
+            .expect("32 bytes")
+    };
+    let alice_secret = decode("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+    let bob_secret = decode("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");
+
+    assert_eq!(
+        base16::encode(&public_from_secret(&alice_secret)),
+        "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
+    );
+    assert_eq!(
+        base16::encode(&x25519(&alice_secret, &public_from_secret(&bob_secret))),
+        "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+    );
+}

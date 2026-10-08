@@ -39,6 +39,8 @@
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
+- [OCapN interoperability](node/ocapn.md)
+- [ERTP: brands, issuers, purses and payments](node/ertp.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
 - [Validator economics](node/validator-economics.md)
 - [Scaling and performance limits](node/scaling.md)
@@ -51,6 +53,8 @@
 # Part IV — Building applications
 
 - [Building applications on the local devnet](developer/building-apps.md)
+- [Tokens in Rholang: ERTP](developer/ertp.md)
+- [Talking to a node from another implementation](developer/ocapn.md)
 - [Porting an app from rnode](developer/porting-a-client.md)
 
 # Part V — Contributor / port
@@ -60,6 +64,7 @@
 - [The laws → Rust code](contributor/laws-to-rust.md)
 - [On-chain validation phases (Laws 23–25)](contributor/onchain-validation-phases.md)
 - [Formal specification & audit](contributor/spec.md)
+- [Plan: post-quantum migration](contributor/post-quantum-plan.md)
 
 # Part VI — QuCalc: native AI & governance
 
