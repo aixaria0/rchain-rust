@@ -15,6 +15,11 @@
 #   4. enumerates what is above the point, per block, and never drops it silently;
 #   5. (`--apply`) stops every non-master node, moves each data directory aside — **never deleting** —
 #      and restarts them to resync from the master's DAG;
+#   5b. (`--restore-from-master`) copies the master's *chain state* onto each joiner instead, for the case
+#      step 5 cannot reach — a net with no finalised fringe has nothing to resync to (C259). This is
+#      **not a sync**: the joiners adopt the master's view wholesale, which is the operator asserting a
+#      winner. It is a labelled stopgap, it never copies node identity, and the tool prints what it is
+#      adopting and what it is dropping before it runs;
 #   6. verifies the outcome on **block hashes per height**, not on heights.
 #
 # What it never does
@@ -32,7 +37,8 @@
 #   or `docker` (the devnet: stop/start the container, and its data hangs off a volume, so "aside" is a
 #   tar on the host kept beside the volume rather than a rename).
 #
-# Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh [--apply] [--master NAME]
+# Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh \
+#           [--apply | --restore-from-master] [--master NAME]
 
 set -uo pipefail
 
@@ -46,8 +52,12 @@ if [ -n "${RECONCILE_NODES:-}" ]; then NODES="$(cat "$RECONCILE_NODES")"; else N
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_droplet}
 SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
 CONTROL=${RECONCILE_CONTROL:-systemd}
-APPLY=0; MASTER=A
-while [ $# -gt 0 ]; do case "$1" in --apply) APPLY=1;; --master) MASTER=$2; shift;; esac; shift; done
+APPLY=0; MASTER=A; RESTORE=0
+while [ $# -gt 0 ]; do case "$1" in
+  --apply) APPLY=1;;
+  --restore-from-master) RESTORE=1; APPLY=1;;
+  --master) MASTER=$2; shift;;
+esac; shift; done
 
 is_local() { case "$1" in local|127.0.0.1|localhost) return 0;; esac; return 1; }
 
@@ -104,8 +114,88 @@ stake_of() { # sender bonds
   echo 0
 }
 
+# --- A: the chain-state environments, by `casper/src/storage.rs::rnode_db_mapping` ---------------
+#
+# **Copied**: `blockstorage` (block bodies), `dagstorage` (block metadata, the fringe records, the
+# approved store, the deploy and deployer indices, and the two merge caches), `rspace/history` and
+# `rspace/cold` (the on-chain tuple space), and `transaction`.
+#
+# **Not copied, each for its own reason**: `deploypoolstorage` (this node's pending deploy pool — not
+# the network's; owners re-submit), `reporting` (a local trace cache), `eval/history` and `eval/cold`
+# (the *off-chain* evaluator's space, not consensus), `gateway` (its own comment says "node-local, never
+# consensus state").
+#
+# **And never the identity.** `node.key.pem`, `node.certificate.pem` and the validator key are the
+# node's own and are not in this list. A joiner holding the survivor's key *is* an equivocator, and an
+# agreement check cannot see it — the two look identical until they later sign conflicting blocks.
+CHAIN_ENVS="blockstorage dagstorage rspace/history rspace/cold transaction"
+
+# The named volume a container keeps its shard data on.
+data_volume() {
+  docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/rnode"}}{{.Name}}{{end}}{{end}}' "$1" 2>/dev/null
+}
+
+# **The stopgap, and it says so.** This is not a sync: it copies the survivor's chain state onto each
+# joiner, so what the joiners agree about afterwards is the *survivor's view*, including the blocks above
+# the meet that only it accepted. The operator is asserting a winner, which is why `--apply` prints the
+# blocks being adopted and the blocks being dropped before it runs. It exists because on a net with no
+# finalised fringe there is nothing to sync *to* (see section 3's meet and `--sync-anchor`), and it is
+# marked a stopgap because it depends on the data-dir layout being movable — the thing #287's design
+# deliberately avoided depending on.
+restore_chain_state_from_master() {
+  local n="$1" mvol vol mdir dir
+  if [ "$CONTROL" = "docker" ]; then
+    # `$MASTER` is the node's *name*; the container that holds its volume is `UNIT[$MASTER]`. Passing the
+    # name is the bug that made this report "no data volume on A" while the volume sat there — found by
+    # running it, and worth the sentence because the two are easy to confuse in this script.
+    mvol="$(data_volume "${UNIT[$MASTER]}")"; vol="$(data_volume "${UNIT[$n]}")"
+    [ -z "$mvol" ] && { echo "    WARNING: no data volume on ${UNIT[$MASTER]} — nothing copied" >&2; return 1; }
+    [ -z "$vol" ] && { echo "    WARNING: no data volume on ${UNIT[$n]} — nothing copied" >&2; return 1; }
+    docker run --rm -v "$mvol":/src:ro -v "$vol":/dst alpine sh -c "
+      set -e
+      copied=''; skipped=''
+      for d in $CHAIN_ENVS; do
+        # **A source that is not there is skipped, not fatal.** LMDB creates an environment only when
+        # something writes to it, so a directory the mapping names (`transaction` on this build) can
+        # simply not exist — and under \`set -e\` a failed \`cp\` aborted the whole copy, which is how the
+        # first run reported a failure while the store was fine.
+        if [ ! -e \"/src/\$d\" ]; then skipped=\"\$skipped \$d\"; continue; fi
+        # **Copy beside, then swap.** Removing the destination first and *then* copying means a failed
+        # copy leaves the joiner with nothing — the opposite of the 'aside, never gone' rule this tool
+        # holds itself to everywhere else. So the new copy lands at a staging name and the old one is
+        # only removed once the copy is complete.
+        mkdir -p \"/dst/\$(dirname \"\$d\")\"
+        rm -rf \"/dst/\$d.reconcile-new\"
+        cp -a \"/src/\$d\" \"/dst/\$d.reconcile-new\"
+        rm -rf \"/dst/\$d\"
+        mv \"/dst/\$d.reconcile-new\" \"/dst/\$d\"
+        copied=\"\$copied \$d\"
+      done
+      # A copied LMDB lock file is a stale lock: the joiner would wait on a lock nobody holds.
+      find /dst -name 'lock.mdb' -delete
+      echo \"    copied:\$copied\${skipped:+; not present on the survivor:\$skipped}\" >&2
+      true" \
+      && echo "    chain state copied from ${UNIT[$MASTER]}'s volume; identity and genesis untouched" \
+      || { echo "    WARNING: the copy failed — $n is unchanged" >&2; return 1; }
+  else
+    mdir="$($SSH "root@${HOST[$MASTER]}" "systemctl cat ${UNIT[$MASTER]} | grep -oP '(?<=--data-dir ).*?(?= |\$)' | head -1" 2>/dev/null)"
+    dir="$($SSH "root@${HOST[$n]}" "systemctl cat ${UNIT[$n]} | grep -oP '(?<=--data-dir ).*?(?= |\$)' | head -1" 2>/dev/null)"
+    [ -z "$mdir" ] || [ -z "$dir" ] && { echo "    WARNING: a --data-dir could not be read" >&2; return 1; }
+    # tar on the survivor, stream through this host, untar on the joiner: no key between the two.
+    $SSH "root@${HOST[$MASTER]}" "tar -C '$mdir' -cf - $CHAIN_ENVS" 2>/dev/null \
+      | $SSH "root@${HOST[$n]}" "mkdir -p '$dir' && tar -C '$dir' -xf - && find '$dir' -name lock.mdb -delete" 2>/dev/null \
+      && echo "    chain state streamed from ${MASTER} to $n; identity and genesis untouched" \
+      || { echo "    WARNING: the copy failed — $n is unchanged" >&2; return 1; }
+  fi
+}
+
 stop_node() {
-  local n="$1" host="${HOST[$n]}" unit="${UNIT[$n]}"
+  # **Resolve the node first, in its own statement.** `local n="$1" unit="${UNIT[$n]}"` looks right and is
+  # not: the words are expanded *before* `local` runs, so the subscript uses the caller's `n` — which is
+  # whatever the last loop left there. It worked by accident in one loop (whose variable and argument
+  # coincided) and started the wrong container in another, found by running it.
+  local n="$1" host unit
+  host="${HOST[$n]}"; unit="${UNIT[$n]}"
   if [ "$CONTROL" = "docker" ]; then
     docker stop "$unit" >/dev/null 2>&1 && echo "    $unit stopped (container)" && return
     echo "    WARNING: $unit did not stop" >&2
@@ -115,7 +205,8 @@ stop_node() {
   fi
 }
 start_node() {
-  local n="$1" host="${HOST[$n]}" unit="${UNIT[$n]}"
+  local n="$1" host unit
+  host="${HOST[$n]}"; unit="${UNIT[$n]}"
   if [ "$CONTROL" = "docker" ]; then
     docker start "$unit" >/dev/null 2>&1 && echo "    $unit started (container)" && return
   else
@@ -131,7 +222,8 @@ start_node() {
 # dir is what destroyed the genesis inputs on the live net. On the devnet they are mounted from outside
 # at `/genesis`, so the copy is a no-op there and must not read as failure.
 move_data_dir_aside() {
-  local n="$1" ts="$2" host="${HOST[$n]}" unit="${UNIT[$n]}" vol backup
+  local n="$1" ts="$2" host unit vol backup
+  host="${HOST[$n]}"; unit="${UNIT[$n]}"
   if [ "$CONTROL" = "docker" ]; then
     vol="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/rnode"}}{{.Name}}{{end}}{{end}}' "$unit" 2>/dev/null)"
     if [ -z "$vol" ]; then echo "    WARNING: no data volume found on $unit — nothing moved" >&2; return; fi
@@ -286,6 +378,35 @@ if [ "$APPLY" != "1" ]; then
   exit 0
 fi
 
+if [ "$RESTORE" = "1" ]; then
+  echo "== 5. apply (--restore-from-master): the whole network is stopped, the survivor included =="
+  # The survivor is stopped too, and that is not an oversight: a filesystem-level copy of a live LMDB is a
+  # torn snapshot, and in this mode the copy *is* the truth the network will run on.
+  for n in "${NAMES[@]}"; do echo "  $n:"; stop_node "$n"; done
+
+  echo "== 6. the fiat, printed before it is applied =="
+  echo "  This is NOT a sync. The joiners adopt ${MASTER}'s chain state wholesale, so what they agree about"
+  echo "  afterwards is ${MASTER}'s view of the chain — including any block above the point that ${MASTER}"
+  echo "  accepted and its peers did not. The blocks this drops are enumerated in section 4; that count is"
+  echo "  the write set the owners re-submit. Running this is the operator asserting that ${MASTER} is the"
+  echo "  chain. It is a stopgap because it depends on the data-dir layout being movable — which #287's"
+  echo "  design deliberately avoided depending on — and not a substitute for an agreed anchor."
+
+  TS=$(date -u +%Y%m%d-%H%M)
+  echo "== 7. chain state copied onto each joiner (identity and genesis untouched) =="
+  for n in "${NAMES[@]}"; do
+    [ "$n" = "$MASTER" ] && continue
+    echo "  $n:"
+    restore_chain_state_from_master "$n"
+  done
+
+  echo "== 8. restarted: the survivor first, then the joiners =="
+  start_node "$MASTER"; sleep 20
+  for n in "${NAMES[@]}"; do
+    [ "$n" = "$MASTER" ] && continue
+    echo "  $n:"; start_node "$n"
+  done
+else
 echo "== 5. apply: every non-master node is stopped first, before anything is moved =="
 # All of them, then the moves. The version this derives from stopped and restarted each node inside one
 # iteration, putting production back up before agreement had been proven.
@@ -325,6 +446,8 @@ for n in "${NAMES[@]}"; do
   [ "$n" = "$first_joiner" ] && continue
   echo "  $n:"; start_node "$n"
 done
+
+fi
 
 echo "== 9. verification: block hashes per height, not heights =="
 # A converged *height* is not a converged chain — four nodes at height 0 are equal. Every assertion is on

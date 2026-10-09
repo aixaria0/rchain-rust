@@ -99,3 +99,53 @@ This is a design question for #287 and it is now a measured one rather than an a
 - **The equivocation check has never fired.** No injection here produces two signed blocks by one sender
   at one height; the existing `--equivocation-injection` would, and that arm is unrun.
 - One host, one attempt per staging.
+
+---
+
+# Second run: the store-level restore (Unit A), and the half of the acceptance the instrument blocks
+
+**What was added.** `--restore-from-master` in the tool: stop the whole network (the survivor included —
+a filesystem copy of a live LMDB is a torn snapshot), copy the survivor's *chain state* onto each joiner,
+restart. Copied: `blockstorage`, `dagstorage`, `rspace/history`, `rspace/cold` — and `transaction` when it
+exists, which on this build it does not, so the copy says so rather than failing. **Never copied**: the
+node's identity (`node.key.pem`, `node.certificate.pem`, the validator key — a joiner holding the
+survivor's key *is* an equivocator, and no agreement check would see it), and the node-local environments
+(the pending deploy pool, `reporting`, `eval/*`, `gateway`).
+
+**What it achieved — the first two clauses of the acceptance, demonstrated.**
+
+```
+h=0: c01a6091 | c01a6091 | c01a6091 | c01a6091
+h=1: 116d0679 | 116d0679 | 116d0679 | 116d0679
+h=2: 9967518a | 9967518a | 9967518a | 9967518a
+```
+
+**One head, with agreeing block hashes at every height, on all four nodes, without a genesis.** Before the
+restore the four heights were 3/3/4/3 with mutually rejected blocks; after it, every height's hash is
+identical across the four. The raw run is [`restore-run.txt`](restore-run.txt) and the reading after it is
+[`restore-after.txt`](restore-after.txt).
+
+**What it did not achieve, and this is the honest limit: finality does not advance.** All four still answer
+`"Finalized fringe is not available."`, with `finalityStall: none`. **The reason is the instrument, not the
+recovery.** The joiners were restarted with `docker start`, which reuses the container's original command —
+so they come back with `--merge-divergence-injection` still armed. Their merges stay perturbed, so no node
+can validate the chain they now hold, so nothing finalises. A drill that wants that clause has to
+**un-inject the joiners**, which a restart cannot do: it needs the containers *recreated* with their
+volumes preserved, and the tool's `start_node` deliberately does the least destructive thing it can.
+
+**So this run establishes**: the store-level restore converges a diverged net to one head with agreeing
+hashes, without a genesis — which is the acceptance's convergence half, and more than was demonstrated
+before it. **It does not establish** the finality clause, and a green reading of that clause under this
+instrument would have been the meaningless kind: four identical copies agreeing with each other is a
+property of the copy.
+
+**Two bugs the run found, both worth the record.**
+
+- **`local n="$1" host="${HOST[$n]}"` resolves the subscript with the *caller's* `n`.** The words are
+  expanded before `local` runs, so `stop_node`/`start_node`/`move_data_dir_aside` used whatever the last
+  loop had left in `n`. It went unnoticed in one loop (whose variable and argument coincided) and started
+  the wrong container in another. Split into two statements, with the reason in the code.
+- **The first copy was destructive.** It `rm -rf`'d each destination directory *before* copying, so a
+  failed `cp` — and one failed, on the `transaction` directory this build does not create — left the joiner
+  with nothing, while the tool reported "unchanged". It now copies to a staging name and swaps, and skips a
+  source that is not there. The tool's own "aside, never gone" rule applies to its copies too.
