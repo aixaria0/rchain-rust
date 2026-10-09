@@ -5,6 +5,9 @@
 //! (`eval(Send/Receive/New/Match/Bundle)`, `produce`/`consume`, `new` allocation), and the
 //! collection methods (`union`/`diff`/`add`/`delete`/`contains`/`slice`/`keys`).
 
+// Only the wasm32 reducer spawns through this door; the native one has no spawn shim to route.
+#[cfg(target_arch = "wasm32")]
+use rchain_shared::chan;
 use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -2341,7 +2344,7 @@ fn spawn_reduce<T: std::marker::Send + 'static>(
 fn spawn_reduce<T: 'static>(fut: impl Future<Output = T> + 'static) -> ReduceTask<T> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = tx.send(fut.await);
+        chan::oneshot_send(tx, fut.await);
     });
     ReduceTask(rx)
 }

@@ -41,6 +41,12 @@
 #             *deliberate* here (the guard is still handed back; see the module's docs) — what the
 #             class forbids is a deliberate recovery that says nothing.
 #
+#   discard — a value handed to a channel with the outcome thrown away: `let _ = tx.send(v)`.
+#             The decision is often right (a shutdown path, where the receiver left first) and the shape
+#             is indistinguishable from a dropped error, so the sites go through `rchain_shared::chan`,
+#             which keeps the decision and counts the event. Like `poison`: no allow-list, a probe, and
+#             zero sites is the steady state.
+#
 # Soft reports (exit 0, informational — refined by `cargo clippy` + manual review):
 #   cast     — narrowing / signedness-changing numeric casts (`as i8/i32/i64/u8/u32/..`).
 #   lax      — silent parse/hex escapes: `from_str_radix(..).unwrap_or(..)` and `base16::unsafe_decode`
@@ -57,7 +63,7 @@
 #              **scoped to the refinement files**: an unchecked `a - b` elsewhere is a design choice,
 #              and one in `shared/src/refined.rs` is a refinement leaving its own domain.
 #
-# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|poison|cast|lax|get|index|div|overflow]
+# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|poison|discard|cast|lax|get|index|div|overflow]
 #        tools/audit-type-system.sh --sites   # with a counted class, list its sites (checked against the count)
 #        tools/audit-type-system.sh --files   # print the production-file roster every class scans, then exit
 #        (default: all)
@@ -276,7 +282,7 @@ note() {
   local kind="$1" file="$2" line="$3" text="$4"
   printf '  %s\n' "$file:$line: $text"
   case "$kind" in
-    panic|unsafe|silent|escape|poison) hard_failures=$((hard_failures + 1)) ;;
+    panic|unsafe|silent|escape|poison|discard) hard_failures=$((hard_failures + 1)) ;;
   esac
 }
 
@@ -512,17 +518,23 @@ scan_spanning() {
 # until it catches prose in the fixture, are both defects.
 POISON_PROBE="$ROOT/tools/audit-poison-probe.txt"
 POISON_PROBE_SHAPES=3
+DISCARD_PROBE="$ROOT/tools/audit-discard-probe.txt"
+DISCARD_PROBE_SHAPES=2
 
-verify_poison_probe() {
-  local pattern="$1" found
-  if [ ! -f "$POISON_PROBE" ]; then
-    note poison "$POISON_PROBE" "-" "the poison probe is missing — the class cannot show it is still looking"
+# `verify_probe <kind> <file> <shapes> <pattern>` — the check both zero-site classes rest on. It is one
+# function rather than two because the argument for it does not vary by class: a hard class with no sites
+# has nothing that can fail, so a pattern that quietly stopped matching would print the same green as a
+# tree with nothing to find, for ever.
+verify_probe() {
+  local kind="$1" probe="$2" shapes="$3" pattern="$4" found
+  if [ ! -f "$probe" ]; then
+    note "$kind" "$probe" "-" "the $kind probe is missing — the class cannot show it is still looking"
     return
   fi
-  found=$(PAT="$pattern" perl -0777 -ne 'my $pat = $ENV{PAT}; my $n = 0; $n++ while /$pat/g; print $n' "$POISON_PROBE")
-  if [ "${found:-0}" -ne "$POISON_PROBE_SHAPES" ]; then
-    note poison "$POISON_PROBE" "-" \
-      "the pattern matched $found of the $POISON_PROBE_SHAPES probe shape(s) — a class that stopped matching reports the same green as a class with nothing to find"
+  found=$(PAT="$pattern" perl -0777 -ne 'my $pat = $ENV{PAT}; my $n = 0; $n++ while /$pat/g; print $n' "$probe")
+  if [ "${found:-0}" -ne "$shapes" ]; then
+    note "$kind" "$probe" "-" \
+      "the pattern matched $found of the $shapes probe shape(s) — a class that stopped matching reports the same green as a class with nothing to find"
   fi
 }
 
@@ -614,6 +626,11 @@ fi
 # The pattern table. One place, so the scan and the count cannot disagree about what a class is.
 PAT_CAST='\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b'
 PAT_LAX='from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\('
+# **A value handed to a channel with the outcome discarded** (C254's E6b). `let _ = tx.send(v)` is the
+# shape of a *decision* — "the receiver may already be gone, and that is fine" — and it reads exactly like
+# a dropped error. The decision is kept; what the door (`rchain_shared::chan`) adds is that the event is
+# counted, so a shutdown that dropped work can be told from one that did not.
+PAT_DISCARD='let _ =(?:\s|\d+\t)*[^;]*\.(send|try_send)\('
 # **A poisoned lock recovered without being counted** (C253 E2). The tail recovers the guard — that
 # is deliberate, and `shared/src/lock.rs` says why — but it does not move `poison_recoveries()`, so
 # `poisonRecoveries` on `/api/status` reads 0 on a node that has taken a panic inside a store lock.
@@ -1379,7 +1396,12 @@ run_class() {
     # The third alternative is the same recovery spelled as a match arm. It cannot match the door
     # itself: `lock.rs`'s arm calls `note_poison();` first, and `[^;]*` stops at that semicolon.
     poison)  scan_spanning poison "$PAT_POISON"
-             verify_poison_probe "$PAT_POISON" ;;
+             verify_probe poison "$POISON_PROBE" "$POISON_PROBE_SHAPES" "$PAT_POISON" ;;
+    # **The discarded send** (C254's E6b). Same shape as `poison` — read whole, no allow-list, a probe
+    # because zero sites cannot fail — for the same reason: the decision ("this receiver may be gone") is
+    # legitimate, and what was missing is any way to tell a node that took it from a node that did not.
+    discard) scan_spanning discard "$PAT_DISCARD"
+             verify_probe discard "$DISCARD_PROBE" "$DISCARD_PROBE_SHAPES" "$PAT_DISCARD" ;;
 
     # The counted classes list through `counted_scan_sites`, so **the listing is exactly the set the
     # ratchet measures** — always, not only under `--sites`. They used to list through `scan`, which
@@ -1469,7 +1491,7 @@ if (( FILES_MODE )); then
 fi
 
 if [ "${#_cls_args[@]}" -eq 0 ]; then
-  classes=(panic unsafe silent escape poison cast lax get index div overflow)
+  classes=(panic unsafe silent escape poison discard cast lax get index div overflow)
 else
   classes=("${_cls_args[@]}")
 fi
@@ -1499,7 +1521,7 @@ if [ "$site_mismatches" -gt 0 ]; then
   exit 1
 fi
 if [ "$hard_failures" -gt 0 ]; then
-  echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape/poison) in production code."
+  echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape/poison/discard) in production code."
   exit 1
 fi
 if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
@@ -1507,7 +1529,7 @@ if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
   echo "  site listings corroborated against the counts above:"
   for _t in "${site_totals[@]}"; do echo "    $_t"; done
 fi
-echo "OK: no hard production violations (panic/unsafe/silent/escape/poison) in production code."
+echo "OK: no hard production violations (panic/unsafe/silent/escape/poison/discard) in production code."
 echo "    The counted classes (cast/lax/get/index/div/overflow) are reported above and not enforced."
 # **What a green panic class is a statement about** (C255, B2). The panic class is satisfied by an
 # allow-list, and an allow-list is a statement about the sites it *lists* — never about the ingress

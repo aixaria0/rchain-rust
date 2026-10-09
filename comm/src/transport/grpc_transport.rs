@@ -77,6 +77,7 @@ mod tests {
     use super::*;
     use crate::peer_node::NodeIdentifier;
     use rchain_models::comm::protocol::tl_response;
+    use rchain_shared::chan;
     use rchain_shared::lock::Unpoison;
 
     fn peer() -> PeerNode {
@@ -208,7 +209,7 @@ mod tests {
                         Box::pin(async move {
                             let sender = tx.lock().unpoison().take();
                             if let Some(sender) = sender {
-                                let _ = sender.send(protocol);
+                                chan::oneshot_send(sender, protocol);
                             }
                             CommunicationResponse::handled_without_message()
                         })
@@ -262,6 +263,7 @@ mod dispatch_bound_tests {
     //! TLS streams — more expensive than the invariant is worth. `ConcurrencyLimits` exists so this
     //! test can set the bound to one and observe the same code path deterministically.
 
+    use rchain_shared::chan;
     use std::sync::Arc;
 
     use crate::peer_node::{NodeIdentifier, PeerNode};
@@ -324,7 +326,7 @@ mod dispatch_bound_tests {
                         let entered_tx = entered_tx.clone();
                         let release = release_for_handler.clone();
                         Box::pin(async move {
-                            let _ = entered_tx.try_send(());
+                            chan::try_send(&entered_tx, ());
                             release.notified().await;
                             crate::transport::communication_response::CommunicationResponse::handled_without_message()
                         })

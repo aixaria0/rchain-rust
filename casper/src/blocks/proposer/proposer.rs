@@ -3,6 +3,7 @@
 //! `Proposer.apply` builds the dependency closures from the DAG/runtime; the `proposeEffect`
 //! (broadcast via `CommUtil`) is supplied by the caller.
 
+use rchain_shared::chan;
 use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -382,9 +383,12 @@ impl Proposer {
         let next_seq = (self.get_latest_seq_number)(validator).await + 1;
 
         if source.acknowledges() {
-            let _ = propose_id.send(ProposerResult::Started {
-                seq_number: next_seq,
-            });
+            chan::oneshot_send(
+                propose_id,
+                ProposerResult::Started {
+                    seq_number: next_seq,
+                },
+            );
             self.do_propose(source).await
         } else {
             let result = self.do_propose(source).await;
@@ -404,7 +408,7 @@ impl Proposer {
                     message: e.clone(),
                 },
             };
-            let _ = propose_id.send(proposer_result);
+            chan::oneshot_send(propose_id, proposer_result);
             result
         }
     }

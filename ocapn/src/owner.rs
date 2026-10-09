@@ -22,6 +22,7 @@
 //! `op_start_session.py` asserts in each variant, one on the leg the implementation dialed and one on
 //! the leg it accepted.
 
+use rchain_shared::chan;
 use rchain_shared::lock::Unpoison;
 use std::sync::{Arc, Mutex};
 
@@ -92,7 +93,7 @@ impl SessionHandle {
 
     /// Ask the loop to abort this session (the crossed-hello rule uses this on the loser).
     pub async fn abort(&self) {
-        let _ = self.abort.try_send(());
+        chan::try_send(&self.abort, ());
     }
 
     /// The abort signal itself, for the registry to keep: an older session that loses a crossing has

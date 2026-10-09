@@ -5,6 +5,7 @@
 //! comm/transport/discovery layer, the proposer, the block receiver/processor streams, the
 //! NodeLaunch state machines, and the report-store codec.
 
+use rchain_shared::chan;
 use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -789,7 +790,7 @@ pub(crate) async fn pump_validated_blocks(
         match block_store.get(&[hash]).await {
             Ok(mut v) => {
                 if let Some(block) = v.pop().flatten() {
-                    let _ = processor_input_tx.send(block).await;
+                    chan::send(&processor_input_tx, block).await;
                 }
             }
             Err(e) => log.error(
@@ -890,7 +891,7 @@ fn wire_block_processing_observed(
     let put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync> = Arc::new({
         let incoming_blocks_tx = incoming_blocks_tx.clone();
         move |block| {
-            let _ = incoming_blocks_tx.try_send(block);
+            chan::try_send(&incoming_blocks_tx, block);
         }
     });
     let validation_rx = block_receiver::apply_with_queue_observer(
@@ -2173,7 +2174,7 @@ pub async fn setup_shard(
                 Box::pin(async move {
                     let (otx, orx) = tokio::sync::oneshot::channel();
                     // A caller asked, and waits: `Explicit`, so C171's pace bound does not apply.
-                    let _ = tx.send((ProposeSource::Explicit { is_async }, otx)).await;
+                    chan::send(&tx, (ProposeSource::Explicit { is_async }, otx)).await;
                     orx.await.unwrap_or(ProposerResult::Empty)
                 })
             },
@@ -2992,7 +2993,7 @@ fn tap_validated_blocks(
             let tap_tx = tap_tx.clone();
             async move {
                 tap(&block);
-                let _ = tap_tx.send(block).await;
+                chan::send(&tap_tx, block).await;
             }
         },
     ));

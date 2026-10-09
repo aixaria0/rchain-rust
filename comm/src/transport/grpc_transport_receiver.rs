@@ -4,6 +4,7 @@
 //! `LimitedBufferObservable` dispatch queues are simplified to a direct spawned dispatch; the
 //! streamed-message circuit breaker and `PacketOps` cache round-trip are preserved.
 
+use rchain_shared::chan;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -118,12 +119,14 @@ pub fn accept_tls(
                     // is not reachable from a request handler, and this is the only place the
                     // handshake's own state is still available (AUDIT C115).
                     let peer_id = peer_id_of_tls(&tls);
-                    let _ = tx
-                        .send(Ok(TlsIo {
-                            stream: tls,
-                            peer_id,
-                        }))
-                        .await;
+                    // The accept loop outlives the session on a shutdown, so a handshake result nobody
+                    // is left to receive is the case this is for — and it is a `futures` sink, not a
+                    // tokio channel, so the named door is the one that applies (C254's E6b).
+                    chan::best_effort(tx.send(Ok(TlsIo {
+                        stream: tls,
+                        peer_id,
+                    })))
+                    .await;
                 }
             });
         }

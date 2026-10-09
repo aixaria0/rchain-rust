@@ -29,6 +29,7 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 // repository's image, and the settings are that `background_thread:true` (the purge must not depend on
 // allocation activity — an idle worker never allocates again) with 5 s decay on dirty and muzzy pages.
 
+use rchain_shared::chan;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -212,7 +213,7 @@ async fn async_main(options: Options, log_level: rchain_shared::log::Level) {
                     rchain_node::runtime::shutdown::SHUTDOWN_DRAIN_TIMEOUT.as_secs()
                 ),
             );
-            let _ = stop_tx.send(true);
+            chan::watch_send(&stop_tx, true);
             if let Err(e) = serving.await {
                 eprintln!("Server error while shutting down: {e}");
                 std::process::exit(1);

@@ -235,18 +235,32 @@ pub async fn handle_block_request(
 pub async fn handle_has_block_request(
     transport: &dyn TransportLayer,
     conf: &RPConf,
+    log: &dyn Log,
+    source: LogSource,
     peer: &PeerNode,
     hbr: &HasBlockRequest,
     has_block: bool,
 ) {
     if has_block {
-        transport_layer_syntax::send_to_peer(
+        if let Err(e) = transport_layer_syntax::send_to_peer(
             transport,
             conf,
             peer,
             HasBlockSerde.mk_packet(&HasBlock { hash: hbr.hash }),
         )
-        .await;
+        .await
+        {
+            // **Loud, because the caller cannot be** (C254's E6b): this handler returns nothing, so a
+            // packet that never left the node used to leave no trace anywhere. The response to a peer's
+            // request either went or it did not, and now the log says which.
+            log.warn(
+                source,
+                &format!(
+                    "could not tell {peer} this node has block {}: {e} (AUDIT C254's E6b)",
+                    hbr.hash.to_hex()
+                ),
+            );
+        }
     }
 }
 
@@ -271,13 +285,22 @@ pub async fn handle_fork_choice_tip_request(
         .map(|m| m.id)
         .collect();
     for tip in &tips {
-        transport_layer_syntax::send_to_peer(
+        if let Err(e) = transport_layer_syntax::send_to_peer(
             transport,
             conf,
             peer,
             HasBlockSerde.mk_packet(&HasBlock { hash: *tip }),
         )
-        .await;
+        .await
+        {
+            log.warn(
+                source,
+                &format!(
+                    "could not tell {peer} about the tip {} this node finalized: {e} (AUDIT C254's E6b)",
+                    tip.to_hex()
+                ),
+            );
+        }
     }
     log.info(
         source,
@@ -698,8 +721,16 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 let repr = self.dag.get_representation().await;
                 let hash = hbr.hash;
                 let has_block = repr.contains(&hash);
-                handle_has_block_request(self.transport.as_ref(), &self.conf, peer, hbr, has_block)
-                    .await;
+                handle_has_block_request(
+                    self.transport.as_ref(),
+                    &self.conf,
+                    self.log.as_ref(),
+                    self.log_source,
+                    peer,
+                    hbr,
+                    has_block,
+                )
+                .await;
             }
             CasperMessage::HasBlock(hb) => {
                 let hash = hb.hash;
@@ -1381,6 +1412,8 @@ mod tests {
         handle_has_block_request(
             transport.as_ref(),
             &conf(&local),
+            &NopLog,
+            LogSource::new("test"),
             &remote,
             &HasBlockRequest { hash: hash(1) },
             true,
@@ -1403,6 +1436,8 @@ mod tests {
         handle_has_block_request(
             transport.as_ref(),
             &conf(&local),
+            &NopLog,
+            LogSource::new("test"),
             &remote,
             &HasBlockRequest { hash: hash(1) },
             false,

@@ -32,6 +32,8 @@ pub mod throwable_ops;
 pub mod time;
 
 #[cfg(feature = "tokio")]
+pub mod chan;
+#[cfg(feature = "tokio")]
 pub mod compression;
 #[cfg(feature = "lmdb")]
 pub mod lmdb;
