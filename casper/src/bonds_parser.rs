@@ -49,6 +49,27 @@ pub fn parse_or_generate(
     }
 }
 
+/// Create the directory an output path lives in, if it is not already there.
+///
+/// **Found by a CI failure, not by reading** (C253's E4, completed). The ceremony writes each
+/// validator's `.sk` beside the bonds file and the bonds file last, and it never created the
+/// directory it wrote into — which nobody noticed while both writes were discarded, because the
+/// failure was silent. The moment the writes became checked, `node_api::http_surface_without_genesis`
+/// went red in CI: a fresh standalone node's default bonds path is `<data_dir>/genesis/bonds.txt`,
+/// nothing creates `genesis/`, and the node therefore could not boot at all.
+///
+/// Creating it is the right repair rather than a test patch, because requiring an operator to
+/// pre-create the directory a ceremony is about to fill is not a real precondition — the devnet makes
+/// it with `mktemp -d`, which is what hid this. The write is still checked, and a genuinely unwritable
+/// location still fails with the same message naming the same file; only the *missing directory* case
+/// changed, from "fails loudly" to "works".
+fn ensure_parent(path: &Path) -> Result<(), String> {
+    match path.parent() {
+        None => Ok(()),
+        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| e.to_string()),
+    }
+}
+
 /// Generate `autogen_shard_size` validators and write their keys + bonds file (port of
 /// `newValidators`).
 pub fn new_validators(
@@ -67,17 +88,25 @@ pub fn new_validators(
         // looks healthy and its identity silently rotates.
         if let Some(parent) = bonds_file_path.parent() {
             let sk_file = parent.join(format!("{}.sk", base16::encode(pub_key.bytes())));
-            rchain_crypto::util::key_util::write_private_key(
-                &sk_file,
-                base16::encode(sec.bytes()),
-            )
-            .map_err(|e| {
-                format!(
-                    "FAILED WRITING VALIDATOR KEY {}, so the key this node would bond with does not \
-                     exist on disk and the next boot would generate a different one: {e}",
-                    sk_file.display()
-                )
-            })?;
+            // The mkdir is inside this chain rather than before it, so a location that cannot hold
+            // the key — a *regular file* where the directory should be, which is the case the unit's
+            // own test plants — still reports through the write's message and still names the `.sk`
+            // path. Creating the directory and then failing to write it would otherwise split into
+            // two different errors for one symptom.
+            ensure_parent(&sk_file)
+                .and_then(|()| {
+                    rchain_crypto::util::key_util::write_private_key(
+                        &sk_file,
+                        base16::encode(sec.bytes()),
+                    )
+                })
+                .map_err(|e| {
+                    format!(
+                        "FAILED WRITING VALIDATOR KEY {}, so the key this node would bond with does not \
+                         exist on disk and the next boot would generate a different one: {e}",
+                        sk_file.display()
+                    )
+                })?;
         }
         // `i >= 0`, so `i + 1 >= 1` is non-negative by construction.
         let stake = NonNegI64::try_from(i64::from(i) + 1)
@@ -96,13 +125,15 @@ pub fn new_validators(
     // **And so is the bonds file itself** (C253's E4, the same site's other half). A discarded write
     // here means the ceremony produced no bonds file: the validator set it just generated exists only
     // in this process's memory, and the chain it starts cannot be rejoined by the node that started it.
-    std::fs::write(bonds_file_path, content).map_err(|e| {
-        format!(
-            "FAILED WRITING BONDS FILE {}, so the validator set this ceremony generated exists only \
-             in memory and the node cannot rejoin the chain it started: {e}",
-            bonds_file_path.display()
-        )
-    })?;
+    ensure_parent(bonds_file_path)
+        .and_then(|()| std::fs::write(bonds_file_path, content).map_err(|e| e.to_string()))
+        .map_err(|e| {
+            format!(
+                "FAILED WRITING BONDS FILE {}, so the validator set this ceremony generated exists only \
+                 in memory and the node cannot rejoin the chain it started: {e}",
+                bonds_file_path.display()
+            )
+        })?;
     Ok(bonds)
 }
 
