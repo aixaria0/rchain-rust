@@ -223,12 +223,23 @@ mod tests {
     #[test]
     fn cwait_returns_on_a_notification() {
         let pair = std::sync::Arc::new((Mutex::new(0u8), Condvar::new()));
+        // **The mutex is held across the spawn, and that is the whole difference between a test and a
+        // race.** The first version spawned the notifier and *then* waited: if the notifier won the
+        // scheduler — which it does on a loaded runner — `notify_one` arrived before the wait had begun
+        // and was, by `Condvar`'s own semantics, simply lost, so `cwait` waited for ever. It took a
+        // 45-minute CI job down with it (the job was cancelled with this crate's test binary still
+        // alive). Holding the lock here means the notifier cannot take it until `cwait` has released it
+        // *inside* `wait`, so the ordering is a property of the program rather than of the scheduler.
+        //
+        // The lesson is not new: `chan`'s module docs state the same hazard for a `notify_one` that
+        // arrives before its waiter, written a day before this test ignored it.
+        let guard = mlock(&pair.0);
         let notifier = std::sync::Arc::clone(&pair);
         let handle = std::thread::spawn(move || {
             let _guard = mlock(&notifier.0);
             notifier.1.notify_one();
         });
-        let guard = cwait(&pair.1, mlock(&pair.0));
+        let guard = cwait(&pair.1, guard);
         assert_eq!(*guard, 0);
         drop(guard);
         handle.join().expect("the notifier returns");
