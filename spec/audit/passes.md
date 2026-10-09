@@ -8618,3 +8618,95 @@ than created at this level — is a reason to expect the incident's four heads t
 somewhere else and merely *carried* by this map. That is C250's question, not this fix's. What the join
 settles is that the map can no longer be a carrier: whatever two nodes disagree about, they cannot
 disagree about what a fringe key holds.
+
+## 86. The close-out: what ended, what was filed, and the negative result that stopped a fix (C215, C259)
+
+**§85 superseded this pass's C215 half, and merged after it was written.** §85 found *why* the
+full-path test described below passed on the unfixed tree and made the fix real, so the paragraph on
+C215's missing falsifier is the state of play at the time of writing rather than the end of it. What
+stands unchanged is the other half: what was filed, and where.
+
+**The programme ends here, and this pass records why each of the two remaining code units did not land as a
+fix.**
+
+**C215's fix has no falsifier, and the attempt to build one is the evidence.** Review of #299 asked for the
+collision to be shown through the merge's own entry point rather than as a storage-level counterexample.
+That test was built — two blocks per height whose post-states the runtime computes, a finalised fringe they
+share, two arrival orders, and `MergeScope::merge` over each comparing `MergeOutcome::state` and
+`rejected_deploys` — and **it passes on the unfixed tree**: two orders, one outcome, nothing rejected. The
+collision the storage-level test asserts is real and is asserted first; it simply does not reach this
+merge's decision, and why is not established. So the fix is not written. The storage-level counterexample
+stands, the mechanism stands, and the claim that the merge's *outcome* depends on arrival order is
+**withdrawn** until a construction exists where the final-scope rejection fires. The shortfall is between
+`rejections_for`'s read and `rejected_finally`, not in the setup.
+
+**A gap found on the way, and it is worth more than the test.** `MergeReport`'s `conflict_chains`,
+`kept_chains` and `rejected_chains` are `conflict_set.len()` and friends (`merging.rs:1934`; the struct's own
+doc says "Chains in the conflict scope"), so **a merge that drops a *finalised* chain reports
+`rejected_chains: 0` and says nothing about it**. `rejected_deploys` does cover those chains — which is the
+only reason the negative result above is visible at all — but the report an operator reads does not.
+
+**C259(a)'s mechanism, from reading after the drill.** The anchor seed is built with `ancestry: Vec::new()`
+(`node_launch.rs`), which **bypasses exactly the #139 fix** that makes a restored block replayable, and the
+sidecar stores a merge needs (`mergeable-channel-cache`, `native-changes-cache`, `storage.rs:71,77`) are
+**not part of the state a sync transfers**. So a node restored to an anchor reaches it and stops — silently
+near the tip (the single-parent arm reads the parent's post-state and never calls `block_index`, so one hop
+works while the multi-parent suffix never validates), and loudly far back (`regenerated mergeable channels`
+on the suffix's epoch-boundary blocks, which is C188). **Two halves in order**: carry the anchor's ancestry
+(reusing `collect_fringe_ancestry`, `node_running.rs:333`) rather than fabricating an empty one; then sync,
+or bound a one-time replay of, the sidecars for the restored range.
+
+**What the operator gets instead, and it is the case that matters.** `--sync-anchor` lands **without**
+either half, with its limit in the flag's own help text — a flag that stalls a node should say so where the
+operator meets it. And `docs/src/node/testnet.md` §Recovery, which listed restart, wait and
+rebuild-from-genesis and nothing else, gains the store-level restore: it is the **only** mechanism
+demonstrated to bring a frozen chain back (one head, identical block hashes at every height, no genesis,
+finality resumed), and the page now says what it does, that it is a fiat the tool prints before applying,
+and that it is not the protocol answer.
+
+## 87. The anchor names its root in the request, so its ancestry travels (C259a)
+
+**What §84 left, and this closes.** C259(a) was filed as two halves; this is the first, the anchor's
+ancestry. The *restore* half already worked — a node pointed at an anchor restored that block's state —
+and the node then **stopped there**: silently near the tip, loudly (with `regenerated mergeable channels`)
+on an older one. §84 named the mechanism: the seed carried `ancestry: Vec::new()`, which is the #139 fix
+bypassed.
+
+**Why an empty ancestry stalls a restore.** A block's fringe state is the *receiver's* own recomputation,
+not a field on the wire — that is why #139 added `ancestry` and why `dag.rs` needs it to index a restored
+block. With nothing carried, the joiner derives its own; the derivation needs a mergeable-channel sidecar
+that the LFS state transfer does not send; the derivation fails; and the block above the anchor cannot be
+validated. Near the tip the failure is **silent** because the single-parent arm reads the parent's
+post-state and never calls `block_index`, so one hop works while the multi-parent suffix never validates.
+
+**Why it could not be fixed at the joiner.** `collect_fringe_ancestry` walks a DAG, and the joiner's DAG is
+empty — that is *why* it is syncing. The ancestry has to come from a peer, so the joiner has to be able to
+say *which block* it wants an ancestry for. The old path fetched the block with `request_for_block` and
+patched a fringe together locally, which can supply the root and nothing under it.
+
+**The change, one bounded field.** `FinalizedFringeRequest` gains `anchor: Option<BlockHash>` (the #139
+pattern: a responder that does not know the field reads the request as an ordinary one, so a mixed pair
+degrades rather than failing), the joiner sends its anchor in the request, and the responder builds the
+fringe — and the whole ancestry — from that block. The response construction moves out of `handle`'s match
+arm into `finalized_fringe_response`, which is what gives the choice a test that needs no engine.
+
+**An anchor the responder does not hold is answered with nothing.** Not with its own latest fringe: on a
+net with finality frozen that is the genesis block, which is precisely the substitution C259 is about — the
+joiner would sync to block 0, reject everything after it, and never re-enter the sync path, with the
+operator's anchor silently ignored. Silence is retryable, names itself in both logs, and a sync that
+cannot be answered lands on the terminal state #125 added rather than on a chain the node never synced.
+The distinction that matters is between a responder that *knows the field and lacks the block* (refuses)
+and one that *does not know the field* (degrades to the ordinary answer, which no requester can prevent).
+
+**Falsifier.** `engine::node_running::tests::an_anchored_fringe_request_is_answered_with_that_block_and_its_ancestry`
+— red with the anchored branch disabled (the response root is the genesis block, not the anchor), green
+with it — over a three-block chain whose per-block fringe state is asserted to travel, plus the refusal
+above. The request's field is pinned at the wire in `models`: an anchor round-trips, `None` is not the
+zero hash, and a 31-byte one is **refused** rather than read as an absent anchor.
+
+**What this does not establish.** The end-to-end recovery — a net in the no-finality state converging to
+one head without a genesis, which is C259's close condition — is not run here. What is now in place is the
+mechanism that makes it reachable: the joiner's restored blocks carry the fringe state they were merged
+with, so the catch-up above the anchor has something to validate against. The drill that shows a wiped
+joiner reaching the tip from an anchor is the next run, and the flag's own help says what it still depends
+on instead of claiming the acceptance.

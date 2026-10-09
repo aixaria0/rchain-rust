@@ -1862,6 +1862,7 @@ async fn setup_shard_runtime(
         incoming_blocks_tx,
         spec.clone(),
         !conf.protocol_client.disable_lfs,
+        conf.casper.sync_anchor.clone(),
         conf.protocol_server.disable_state_exporter,
         parts.validator_identity_opt.clone(),
         conf.standalone,

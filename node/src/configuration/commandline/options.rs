@@ -647,6 +647,24 @@ pub struct Run {
     #[arg(long = "merge-divergence-injection")]
     pub merge_divergence_injection: Option<u8>,
 
+    /// **A block hash to sync to when this node has no chain** — the anchor a reconciliation computes
+    /// when a net has no finalised fringe to resync from. Empty is the ordinary path.
+    ///
+    /// The hash is named **in the fringe request** (C259a), and the bootstrap answers with that block's
+    /// post-state **and the per-block fringe state of its ancestry** — the piece #139 added so a restored
+    /// block can be replayed rather than re-derived. The earlier form of this flag fetched the block and
+    /// patched a seed together locally, which left the ancestry empty: the node then restored the state
+    /// and **stopped at the anchor**, silently near the tip and loudly on an older anchor
+    /// (`regenerated mergeable channels…`). That is measured in
+    /// `spec/audit/evidence/n-anchor-drill/run.md`.
+    ///
+    /// **What it still depends on.** A peer that does not know the request's `anchor` field answers with
+    /// its own latest fringe — or, with finality frozen, the genesis block — so the recovery degrades to
+    /// the ordinary path rather than failing. Every node in a shard runs the same binary, so in practice
+    /// the responder is one that knows it.
+    #[arg(long = "sync-anchor")]
+    pub sync_anchor: Option<String>,
+
     /// Public keys of the Coop multisig vault.
     ///
     /// **Wired, but not to what the name suggests.** In the blessed contract these keys own the Coop

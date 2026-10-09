@@ -20,8 +20,8 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    BlockFringe, BlockMessage, BlockRequest, CasperMessage, FinalizedFringe, HasBlock,
-    HasBlockRequest, StoreItemsMessage, StoreItemsMessageRequest,
+    BlockFringe, BlockMessage, BlockRequest, CasperMessage, FinalizedFringe,
+    FinalizedFringeRequest, HasBlock, HasBlockRequest, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_models::fringe_data::FringeData;
@@ -394,6 +394,128 @@ pub async fn handle_finalized_fringe_request(
     )
     .await;
     log.info(source, &format!("FinalizedFringe sent to {peer}"));
+}
+
+/// **The answer to a finalized-fringe request** — this node's own latest fringe, or the block a
+/// *recovery sync* named (C259, C259a).
+///
+/// Naming the block in the request rather than letting the joiner fetch the block and patch a seed
+/// together locally is what carries the `ancestry`: the per-block fringe state of every block at and
+/// below the root, which a restoring node cannot derive for itself and which #139 exists to send.
+/// Without it the joiner derives its own, that derivation needs a sidecar the state transfer does not
+/// include, and the node **stalls at its anchor** — silently near the tip, loudly on an older one.
+///
+/// `None` means "nothing to answer with". That is a shard with no finalized fringe and no genesis
+/// block, and it is also **an anchor this node does not hold**: answering that one with the ordinary
+/// fringe would hand the joiner a root it did not ask for — on a frozen net, the genesis block — which
+/// is the substitution C259 is about. Silence is retryable and names itself in the log.
+pub(crate) async fn finalized_fringe_response(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    log: &dyn Log,
+    log_source: LogSource,
+    req: &FinalizedFringeRequest,
+) -> Option<FinalizedFringe> {
+    let repr = dag.get_representation().await;
+    let latest_fringe_hashes: BTreeSet<BlockHash> =
+        repr.latest_fringe().iter().map(|m| m.id).collect();
+    let ordinary = if latest_fringe_hashes.is_empty() {
+        // Fresh genesis: the shard-choice fringe is empty (no finalized messages), so the "chosen"
+        // state is the genesis block (block 0). Hand it over so the syncing validator downloads
+        // block 0 + its post-state (bonds) instead of ending up unbonded with an empty DAG.
+        let genesis_hash = repr
+            .height_map
+            .get(&BlockHeight::zero())
+            .and_then(|s| s.iter().next().copied());
+        match genesis_hash {
+            Some(genesis_hash) => {
+                let genesis = match block_store.get(&[genesis_hash]).await {
+                    Ok(mut v) => v.pop().flatten(),
+                    Err(e) => {
+                        // **A read that fails is not "there is no genesis block"** (C249's class).
+                        // This branch exists so a joining validator downloads the genesis and its
+                        // bonds instead of ending up unbonded with an empty DAG — which is exactly
+                        // what it would do on a silent `None`.
+                        log.error(
+                            log_source,
+                            &format!(
+                                "Failed to read the genesis block {}: {e}",
+                                genesis_hash.to_hex()
+                            ),
+                        );
+                        None
+                    }
+                };
+                genesis.map(|b| FinalizedFringe {
+                    hashes: vec![genesis_hash],
+                    state_hash: b.post_state_hash,
+                    ancestry: Vec::new(),
+                })
+            }
+            None => None,
+        }
+    } else {
+        repr.fringe_states
+            .get(&FringeData::fringe_hash_of(&latest_fringe_hashes))
+            .map(|fringe_data| FinalizedFringe {
+                hashes: latest_fringe_hashes.iter().copied().collect(),
+                state_hash: StateHash::from_slice(fringe_data.state_hash.as_bytes()),
+                ancestry: Vec::new(),
+            })
+    };
+    // **A recovery sync names its own root** (C259a). The joiner asks for the block the operator's
+    // reconciliation chose, and the answer is that block's post-state — the same pair the genesis
+    // branch above hands a fresh shard — with the ancestry filled below by the same
+    // `include_fringe_metadata` path. Naming it here rather than at the joiner is what carries the
+    // ancestry: without it every restored block at or below the anchor had no fringe state to be
+    // replayed against.
+    //
+    // **An anchor this node does not hold is answered with nothing, not with the ordinary fringe.**
+    // Falling back would hand the joiner a root it did not ask for — and on a net with finality frozen
+    // that root is the genesis block, which is precisely the substitution C259 is about: the joiner
+    // would sync to block 0, reject everything after it, and never re-enter the sync path, with the
+    // operator's anchor silently ignored. No answer is retryable and visible in both logs, and a sync
+    // that cannot be answered is a thing the joiner already has a terminal state for (AUDIT C181).
+    let response = match req.anchor {
+        Some(anchor) => match block_store.get(&[anchor]).await {
+            Ok(mut v) => v.pop().flatten().map(|b| FinalizedFringe {
+                hashes: vec![anchor],
+                state_hash: b.post_state_hash,
+                ancestry: Vec::new(),
+            }),
+            Err(e) => {
+                log.error(
+                    log_source,
+                    &format!(
+                        "Failed to read the anchored block {} a sync asked for: {e}",
+                        anchor.to_hex()
+                    ),
+                );
+                None
+            }
+        },
+        None => ordinary,
+    };
+    // **Filled only when the requester asks** (#139): a bounded addition to a message that already
+    // exists, so a requester or responder that does not know the field simply gets the pre-#139
+    // exchange rather than a failed sync.
+    match response {
+        Some(mut f) => {
+            if req.include_fringe_metadata {
+                let hashes: BTreeSet<BlockHash> = f.hashes.iter().copied().collect();
+                f.ancestry = collect_fringe_ancestry(dag, &hashes, log, log_source).await;
+                log.info(
+                    log_source,
+                    &format!(
+                        "Included {} block fringe(s) in the fringe response (#139).",
+                        f.ancestry.len()
+                    ),
+                );
+            }
+            Some(f)
+        }
+        None => None,
+    }
 }
 
 /// Serve a peer's store-items (state-sync) request from the exporter (port of
@@ -813,81 +935,18 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 .await;
             }
             CasperMessage::FinalizedFringeRequest(req) => {
-                let repr = self.dag.get_representation().await;
-                let latest_fringe_hashes: BTreeSet<BlockHash> =
-                    repr.latest_fringe().iter().map(|m| m.id).collect();
-                let fringe_response = if latest_fringe_hashes.is_empty() {
-                    // Fresh genesis: the shard-choice fringe is empty (no finalized messages), so the
-                    // "chosen" state is the genesis block (block 0). Hand it over so the syncing
-                    // validator downloads block 0 + its post-state (bonds) instead of ending up
-                    // unbonded with an empty DAG.
-                    let genesis_hash = repr
-                        .height_map
-                        .get(&BlockHeight::zero())
-                        .and_then(|s| s.iter().next().copied());
-                    match genesis_hash {
-                        Some(genesis_hash) => {
-                            let genesis = match self.block_store.get(&[genesis_hash]).await {
-                                Ok(mut v) => v.pop().flatten(),
-                                Err(e) => {
-                                    // **A read that fails is not "there is no genesis block"** (C249's
-                                    // class). This branch exists so a joining validator downloads the
-                                    // genesis and its bonds instead of ending up unbonded with an empty
-                                    // DAG — which is exactly what it would do on a silent `None`.
-                                    self.log.error(
-                                        self.log_source,
-                                        &format!(
-                                            "Failed to read the genesis block {}: {e}",
-                                            genesis_hash.to_hex()
-                                        ),
-                                    );
-                                    None
-                                }
-                            };
-                            genesis.map(|b| FinalizedFringe {
-                                hashes: vec![genesis_hash],
-                                state_hash: b.post_state_hash,
-                                ancestry: Vec::new(),
-                            })
-                        }
-                        None => None,
-                    }
-                } else {
-                    repr.fringe_states
-                        .get(&FringeData::fringe_hash_of(&latest_fringe_hashes))
-                        .map(|fringe_data| FinalizedFringe {
-                            hashes: latest_fringe_hashes.iter().copied().collect(),
-                            state_hash: StateHash::from_slice(fringe_data.state_hash.as_bytes()),
-                            ancestry: Vec::new(),
-                        })
-                };
-                // **Filled only when the requester asks** (#139): a bounded addition to a message
-                // that already exists, so a requester or responder that does not know the field
-                // simply gets the pre-#139 exchange rather than a failed sync.
-                let fringe_response = match fringe_response {
-                    Some(mut f) => {
-                        if req.include_fringe_metadata {
-                            let hashes: BTreeSet<BlockHash> = f.hashes.iter().copied().collect();
-                            f.ancestry = collect_fringe_ancestry(
-                                self.dag.as_ref(),
-                                &hashes,
-                                self.log.as_ref(),
-                                self.log_source,
-                            )
-                            .await;
-                            self.log.info(
-                                self.log_source,
-                                &format!(
-                                    "Included {} block fringe(s) in the fringe response (#139).",
-                                    f.ancestry.len()
-                                ),
-                            );
-                        }
-                        Some(f)
-                    }
-                    None => None,
-                };
-                if let Some(fringe_response) = fringe_response {
+                // The response construction — the peer's own fringe, or the block a recovery sync
+                // named, with the ancestry either way — is a free function of its own so the choice
+                // has a test that does not need a whole engine (C259a).
+                if let Some(fringe_response) = finalized_fringe_response(
+                    self.dag.as_ref(),
+                    &self.block_store,
+                    self.log.as_ref(),
+                    self.log_source,
+                    req,
+                )
+                .await
+                {
                     handle_finalized_fringe_request(
                         self.transport.as_ref(),
                         &self.conf,
@@ -1704,6 +1763,114 @@ mod tests {
             1,
             "a legitimate page must still be served — otherwise the drop above is the handler \
              refusing everything"
+        );
+    }
+
+    /// A block at a height with parents, for the ancestry test below.
+    fn chain_block(id: u8, height: i64, parents: &[BlockHash]) -> BlockMessage {
+        let mut b = block(hash(id));
+        b.block_number = height.try_into().unwrap();
+        b.sender = Validator::new([id + 1; 65]);
+        b.justifications = parents.to_vec();
+        b.post_state_hash = StateHash::new([id; 32]);
+        b
+    }
+
+    /// **A recovery sync's root, and the ancestry that makes it replayable** (C259a).
+    ///
+    /// A joiner with an empty DAG cannot derive the fringe state of the blocks it restores — that is a
+    /// node's own recomputation and not a block field — so a restore that does not carry it stalls at
+    /// its anchor. This is the responder's half: an anchored request is answered with **that block**
+    /// and the per-block fringe state of its whole ancestry, rather than with this node's own latest
+    /// fringe and an empty vector.
+    ///
+    /// **Falsifier.** With the anchored branch removed, the response falls back to the ordinary
+    /// answer — here the genesis block, because this DAG holds no fringe record — so the anchor is
+    /// never the root and the first assertion fails. Verified by reverting the branch (C259a).
+    #[tokio::test]
+    async fn an_anchored_fringe_request_is_answered_with_that_block_and_its_ancestry() {
+        use rchain_models::block_metadata::BlockMetadata;
+
+        let dag = build_dag().await;
+
+        // A chain of three, each block's *receiver-derived* fringe state set explicitly — this is the
+        // data a restoring node must be handed and cannot recompute.
+        let g = chain_block(0, 0, &[]);
+        let a = chain_block(1, 1, &[g.block_hash]);
+        let anchor = chain_block(2, 2, &[a.block_hash]);
+        for (b, fringe, state) in [
+            (&g, vec![], 9u8),
+            (&a, vec![g.block_hash], 8),
+            (&anchor, vec![a.block_hash], 7),
+        ] {
+            let mut m = BlockMetadata::from_block(b);
+            m.fringe = fringe.into_iter().collect();
+            m.fringe_state_hash = StateHash::new([state; 32]);
+            dag.insert(m, b.clone()).await.expect("the block inserts");
+        }
+
+        let store = block_store(vec![g.clone(), a.clone(), anchor.clone()]).await;
+        let req = FinalizedFringeRequest {
+            identifier: String::new(),
+            trim_state: true,
+            include_fringe_metadata: true,
+            anchor: Some(anchor.block_hash),
+        };
+        let response =
+            finalized_fringe_response(dag.as_ref(), &store, &NopLog, LogSource::new("test"), &req)
+                .await
+                .expect("an anchored request is answered");
+
+        assert_eq!(
+            response.hashes,
+            vec![anchor.block_hash],
+            "the anchor is the sync's root — not this node's own latest fringe"
+        );
+        assert_eq!(
+            response.state_hash, anchor.post_state_hash,
+            "and the state the joiner restores is the anchor's own post-state"
+        );
+
+        // The ancestry carries the anchor *and* its ancestors, each with the fringe state a restoring
+        // node cannot derive. That is the whole of C259a's first half: with it a restored block is
+        // replayed against the fringe its proposer used; without it the joiner derives its own, needs a
+        // sidecar the state transfer does not include, and stops at the anchor.
+        let carried: BTreeMap<BlockHash, (BTreeSet<BlockHash>, StateHash)> = response
+            .ancestry
+            .iter()
+            .map(|f| (f.block_hash, (f.fringe.clone(), f.fringe_state_hash)))
+            .collect();
+        assert_eq!(
+            carried.get(&anchor.block_hash),
+            Some(&(BTreeSet::from([a.block_hash]), StateHash::new([7u8; 32]))),
+            "the anchor's own fringe state travels"
+        );
+        assert_eq!(
+            carried.get(&a.block_hash),
+            Some(&(BTreeSet::from([g.block_hash]), StateHash::new([8u8; 32]))),
+            "and so does its parent's — the blocks a restore has to replay, not only the root"
+        );
+        assert_eq!(carried.len(), 3, "g -> a -> anchor: the whole ancestry");
+
+        // **An anchor this node does not hold is answered with nothing**, not with the ordinary
+        // fringe: substituting one would send the joiner to a root it did not ask for — on a frozen
+        // net, the genesis block — which is exactly the conflation C259 records. The refusal is the
+        // behaviour, so it is pinned rather than left to the retry loop.
+        let absent = FinalizedFringeRequest {
+            anchor: Some(hash(0xEE)),
+            ..req.clone()
+        };
+        assert!(
+            finalized_fringe_response(
+                dag.as_ref(),
+                &store,
+                &NopLog,
+                LogSource::new("test"),
+                &absent
+            )
+            .await
+            .is_none(),
+            "an unknown anchor must not be answered with a root the requester did not ask for"
         );
     }
 }

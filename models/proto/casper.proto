@@ -35,6 +35,13 @@ message FinalizedFringeRequestProto {
   // is what makes this a non-breaking addition: a mixed pair degrades to the pre-#139 behaviour
   // instead of failing to sync.
   bool   includeFringeMetadata = 3;
+  // A block the operator named as the sync's root (C259). Set only on a recovery sync: a peer with
+  // finality frozen has no fringe to offer and would answer a fringe request with the genesis block,
+  // so the joiner names the block it intends to restore to instead, and the responder builds the
+  // fringe — and its `ancestry` — from that block rather than from its own latest fringe. Empty is
+  // an ordinary fringe request, which is what an unaware responder sees: the same degraded exchange
+  // the field above already gets.
+  bytes  anchor = 4;
 }
 
 // ------- End Approved block --------

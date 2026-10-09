@@ -3,6 +3,7 @@
 //! The genesis-from-config helpers and the `apply` mode-dispatch state machine (genesis → syncing →
 //! running over the packet stream) are ported here.
 
+use rchain_models::block_hash::BlockHash;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -225,6 +226,9 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     incoming_blocks: mpsc::Sender<BlockMessage>,
     spec: ShardSpec,
     trim_state: bool,
+    // **An operator-named block to sync to instead of a finalised fringe** (C259). See
+    // `CasperConf::sync_anchor`; only consulted when this node's DAG is empty.
+    sync_anchor: Option<String>,
     // Operator switch, threaded to `NodeRunning`: when set, this node refuses store-items
     // (state-sync) requests (port of the Scala's `disableStateExporter`).
     disable_state_exporter: bool,
@@ -276,8 +280,57 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             trim_state,
             importer,
         )));
+        // **A named anchor replaces the fringe request** (C259). A peer with no finalised fringe answers
+        // a `FinalizedFringeRequest` with **genesis** (`node_running.rs`), so a wiped joiner syncs to
+        // block 0 and can never re-enter sync — which is the state a chain with frozen finality is in,
+        // and the reason this switch exists. The anchor is the block the operator's reconciliation
+        // computed: the deepest height a strict supermajority of stake agrees on.
+        //
+        // Nothing else about the sync changes. `request_blocks` walks from whatever hashes it is given
+        // (`lfs_block_requester.rs`), so seeding it with an anchor rather than with a peer's fringe is
+        // the same machinery with a different root — and `request_tuple_space` then pulls the state at
+        // the anchor's post-state, exactly as it would for a fringe.
+        let anchor = match sync_anchor.as_deref() {
+            None => None,
+            Some(hex) => Some(
+                BlockHash::try_from_hex(hex)
+                    .map_err(|e| format!("--sync-anchor `{hex}` is not a block hash: {e}"))?,
+            ),
+        };
+        // **The anchor is named *in the request*, not fetched and patched in afterwards** (C259a).
+        // Seeding the sync from the anchor block alone left `ancestry` empty, which bypasses exactly the
+        // #139 fix that makes a restored block replayable: no block below the anchor then carries the
+        // fringe state the joiner cannot derive, the joiner falls back to deriving it, that derivation
+        // needs a sidecar the LFS transfer does not send, and the node stalls **at** the anchor —
+        // silently near the tip, and loudly on an older one (`validateBlockCheckpoint failed:
+        // regenerated mergeable channels…`). The responder now builds the fringe *and its ancestry* from
+        // the named block, so a recovery restore carries the same data the ordinary fringe path does.
+        //
+        // Nothing else about the sync changes. `request_blocks` walks from whatever hashes it is given
+        // (`lfs_block_requester.rs`), so seeding it with an anchor rather than with a peer's fringe is
+        // the same machinery with a different root — and `request_tuple_space` then pulls the state at
+        // the anchor's post-state, exactly as it would for a fringe.
+        if let Some(hash) = anchor {
+            if rp_conf.bootstrap.is_none() {
+                return Err(
+                    "--sync-anchor needs a bootstrap to ask for the anchor's fringe, and this node \
+                     has none configured"
+                        .to_string(),
+                );
+            }
+            log.info(
+                source,
+                &format!(
+                    "Syncing to the operator-named anchor {} rather than to a fringe a peer offers: \
+                     with finality frozen no peer has one, and the answer to an ordinary fringe request \
+                     would be the genesis block (C259)",
+                    hash.to_hex()
+                ),
+            );
+        }
+        // With no anchor this *is* the ordinary request; with one, the same request names the root.
         comm_util
-            .request_finalized_fringe(trim_state, true)
+            .request_finalized_fringe(trim_state, true, anchor)
             .await
             .map_err(|e| e.to_string())?;
 

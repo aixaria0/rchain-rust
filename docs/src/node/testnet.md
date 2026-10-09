@@ -294,6 +294,32 @@ the others are arithmetic on the same numbers, and are labelled as such.
 | **two** validators (50 %) | *arithmetic, not yet run:* 500 of 1000 is not `> ⅔`, so the fringe cannot advance however many blocks are produced | **one** of the two coming back restores 75 % and the chain finalises again. Nothing is lost while they are away: the state is on disk, and the pool still counts their stake |
 | **all four** | production stops; every node's state sits unchanged on disk | stop and start all four: each replays its own store and the chain resumes with no loss (this exact restart was measured on the previous shape on 2026-10-04: h 59 → 78, finality 53 → 72 after all nodes were restarted) |
 | a validator's **key or host** permanently | as above, while its stake still sits in the pool | restore that validator's `validator.key` and data directory, or its host from the provider's backup. Because no stake exceeds a quarter, **no single loss is fatal** — but two simultaneous permanent losses are, since 50 % can never reach a quorum |
+| the chain **diverges** — several heads, finality frozen | nothing in-protocol recovers it: `docs/src/spec/testnet-acceptance.md` §TE-1 states the verdict as *"Recovery from the divergent finality itself: none."*, and the live occurrence is witnessed at `spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md` | **the store-level restore** — see below. It is the only recovery demonstrated for this state |
+
+### Recovering a diverged chain
+
+The last row is the one recovery demonstrated for a chain whose finality has frozen, and it is worth
+stating what it does and does not do, because **it is not a sync**.
+
+- **It copies state.** `tools/reconcile-network.sh --restore-from-master` stops the whole network — the
+  survivor included, because a filesystem-level copy of a live LMDB is a torn snapshot — and copies the
+  survivor's *chain state* (`blockstorage`, `dagstorage`, `rspace/history`, `rspace/cold`) onto the other
+  nodes. It **never copies identity**: a joiner holding the survivor's key would be an equivocator, and no
+  agreement check would see it until the two later signed conflicting blocks.
+- **It is a fiat, and the tool prints that before it applies.** The joiners adopt the survivor's view of the
+  chain, including any block above the meet that only the survivor accepted — so running it is the operator
+  choosing a winner. That is why the plan is printed first, why `--apply` is required, and why the tool
+  refuses outright when the meet cannot be computed (disagreeing bond maps, or no height with a strict
+  supermajority of stake).
+- **The meet is computed, not chosen.** It is the deepest height where the nodes agreeing on one block hold
+  a strict supermajority of **stake** (`stake * 3 > total * 2`), with a provably equivocating validator's
+  stake removed from both the numerator and the denominator — by proof, never by silence.
+- **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated per block
+  with their signatures, and their owners re-submit. It is also **not** the protocol answer — a node-side
+  path that syncs to an agreed anchor exists in part (`--sync-anchor`) and does not yet catch up
+  (register row **C259**(a)); until it does, this is the mechanism an operator has.
+- **Nothing is deleted.** Data directories are moved aside or tarred before anything is removed, and the
+  genesis inputs are preserved across it — a joiner without them cannot validate what it pulls.
 
 What this shape gives up is nothing structural: with no stake above a quarter, the tolerance is
 symmetric — the property a validator set needs before the *join and leave* questions can be answered on
