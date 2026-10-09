@@ -8311,3 +8311,80 @@ here.
 **Negative control, run rather than asserted.** A production `.unwrap()` appended to
 `shared/src/string_ops.rs` makes the gate print `FAIL: 1 hard violation(s) (panic/unsafe/silent/escape)
 in production code` and exit non-zero; removed, it is green.
+
+---
+
+## 81. Every poison recovery is counted, and the un-counted spelling is now a gate failure (C253 E2)
+
+**What C249/F-U9-03 landed and what it did not.** The counter exists — `poison_recoveries()`, published
+as `poisonRecoveries` on `/api/status` — and it was wired to three accessors (`rlock`/`wlock`/`mlock`)
+that most of the tree does not use. The refutation adjudicated the raw population at **77 production
+sites**, and the reason the surface could still read 0 is sharper than "some sites are missed": the
+accessors were `pub(crate)` to `rspace`, so **no site outside `rspace` could increment them at all**,
+and the crates that hold most of the sites — `rholang` (52 tails), `node` (28), `ocapn` (18) — do not
+depend on `rspace`.
+
+**Measured on this tree: 136 raw tails across 32 files.** Six commits, one per crate, each compiling
+before it was committed: `shared`+`comm` 11, `ocapn` 18, `casper` 10, `rspace` 14, `node` 28,
+`rholang` 52 — plus `sync_var`'s three (a local `lock` helper and the two `Condvar` waits), which were
+the unit's first falsifier.
+
+**The mechanism is not the one the plan named, and the reason is recorded because the plan's one was
+tried and failed.** The plan said: route the sites through `rlock`/`wlock`/`mlock`. That requires
+naming the receiver, and at most sites the receiver is an **expression**:
+
+```rust
+self.writermlock(self.writer).lock().unwrap_or_else(|p| p.into_inner())
+```
+
+`mlock(&self.writermlock(self.writer))` borrows a temporary, so the guard would dangle. The first
+attempt at mechanically rewriting these sites produced a broken receiver — the accessor's call
+swallowed by the very expression it was meant to wrap — at **30 files and 31 compile errors**, and the
+tree had to be restored. The module now carries a second, receiver-free mechanism: `Unpoison::unpoison`
+is a method on the `LockResult` itself, so the substitution is the **tail only** and the receiver is
+never touched. Both doors count, through one `note_poison`.
+
+**The falsifier is a production path, not a fixture.** `shared/src/sync_var.rs`'s `take()` recovered a
+poison through the raw tail; the test poisons the cell's mutex, calls `take()` and asserts the counter
+moved. Red on the pre-fix tree:
+
+```
+thread '…' panicked at shared/src/sync_var.rs:98:
+…and invisible no longer (0 -> 0)
+```
+
+The guard came back — the test's first assertion, `take() == 1`, passed — and the counter did not move.
+That is the defect in one line. (The test is run alone: the counter is process-wide, so a concurrent
+test's recovery is a legitimate increment and `>` would otherwise be trivially true.)
+
+**The rule, and why it has no allow-list.** A hard `poison` class now forbids three spellings — the
+`unwrap_or_else` tail, the explicit `PoisonError::into_inner` path, and the same recovery as a match
+arm. Read whole like `silent`, because a chain rustfmt wrapped is the same recovery. **Its pattern is
+the tail only, never the receiver** — the lesson above, encoded.
+
+Every other hard class is kept honest by something it can lose: `panic` by an allow-list whose stale
+entries fail, the rest by sites the tree may not have. **This one's correct steady state is zero
+sites**, so nothing would notice if its pattern quietly stopped matching — it would print the same
+green as a tree with nothing to find, for ever. So it carries a probe:
+`tools/audit-poison-probe.txt` holds one of each spelling and `verify_poison_probe` fails the gate
+unless the pattern matches exactly three of them.
+
+**Both halves shown to bite, run rather than asserted.** A planted site
+(`shared/src/zz_probe_poison.rs`, three spellings) printed all three and failed the gate; a
+deliberately broken pattern printed
+
+```
+/…/tools/audit-poison-probe.txt:-: the pattern matched 0 of the 3 probe shape(s) — a class that
+stopped matching reports the same green as a class with nothing to find
+```
+
+`scan_spanning` now drops comment lines before matching — the rule `scan_panic` has always had, and for
+the same reason, which this unit made concrete: the new module's docs explain the banned tail *by
+writing it out*. The full gate is green with the filter in place.
+
+**What closes and what that leaves.** With (a) landed, C253's four clauses are all closed — (b) the
+three-way `Revalidation` (§78's sibling, `5c4aabbd7`), (c) the two checked genesis writes
+(`19300bad1`), (d) the binding-form extension to `silent` (C251's rule) — and the row moves to `done`.
+The deviation from (a)'s letter, stated rather than glossed: the sites route through a receiver-free
+trait rather than the free accessors, and the class has **no allow-list** because it has nothing to
+allow. Both deviations are this pass's subject, not an omission from it.
