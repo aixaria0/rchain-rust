@@ -103,8 +103,12 @@ POST https://<node>/api/faucet   {"address": "<your REV address>"}
 That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
 needs to fund a fresh address. It is a **dev-mode** endpoint: the node must be started with
 `--dev-mode --deployer-private-key`, and it signs the transfer from that key's vault. **Without the key
-the route is not mounted at all, so a keyless node answers `404`** — not a 400 with a message — and it
-reports `faucet: false` in its capability list.
+the route is not mounted at all, so a keyless node answers `404`**, and it reports `faucet: false` in
+its capability list. Once #246 lands, `faucetRemaining` reports the remaining allocation in drops;
+a dry faucet reports `faucet: false`. The 10,000 REV allocation and unresolved deploy reservations
+are stored in the node's data directory so ordinary process restarts preserve both. After a crash,
+an unresolved drip is retried with its original signed deploy and deploy ID; the reservation remains
+until its chain outcome can be reconciled.
 
 | node | faucet |
 |---|---|
@@ -118,7 +122,8 @@ error); and a drip is only visible in a **finalised** block, so read the recipie
 two quick requests earn `HTTP 429 "faucet rate limit exceeded"`.
 **This net's faucet was off until 2026-10-06, and this table said so**; it is on now, signed by a key whose
 vault holds REV ([#247](https://github.com/rchain-community/rchain-rust/issues/247) is the story of the one
-that was not).
+that was not). This row describes the currently deployed ten-drips-per-process policy; #246 changes
+eligibility to require the recipient's finalized balance to remain below one drip.
 
 **In a room: `/facil faucet`.**
 
@@ -128,8 +133,9 @@ A quantum-os facilitator started with `--key <funded deploy key>` answers
 /facil faucet <your REV address>     # or just /facil faucet, once it has remembered your address
 ```
 
-and signs a fixed **10 REV** transfer to it. It remembers the address per peer, has no rate limit — a
-faucet on a test system is meant to be asked repeatedly — and refuses to move anything if it was started
+and signs a fixed **10 REV** transfer to it. This facilitator surface is separate from the node HTTP
+faucet; do not describe the node faucet as unlimited: its public HTTP surface has a fixed-window rate
+limiter and its own address/total budgets. The facilitator refuses to move anything if it was started
 without a key. Plain English works too: `/facil ask give me some test rev` routes to the same function,
 never to an LLM decision to move funds.
 
@@ -403,7 +409,7 @@ the `deployer` key is **not** among them, and its vault reads `0`.
 | the developer keys in `scripts/localnet/pk.txt` | funded accounts for tooling; not part of the net's operation |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
-here — they get REV from the faucet; this table is the answer to "which address funds them".
+here — they get REV from the faucet.
 
 ## Operating the nodes
 

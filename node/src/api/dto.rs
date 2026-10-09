@@ -151,8 +151,10 @@ pub struct NodeCapabilities {
     pub admin_http: bool,
     /// Dev mode is on (`--dev-mode`).
     pub dev_mode: bool,
-    /// The `/api/v1/faucet` endpoint is available (dev mode + a deployer key).
+    /// The `/api/v1/faucet` endpoint is available (dev mode + a deployer key + remaining budget).
     pub faucet: bool,
+    /// Faucet transfer budget still available, in REV drops. Clients can hide a dry faucet.
+    pub faucet_remaining: i64,
 }
 
 /// A pooled (not-yet-included) deploy (an entry in the `/api/v1/deploys` response).

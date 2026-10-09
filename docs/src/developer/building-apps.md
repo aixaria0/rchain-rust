@@ -238,10 +238,12 @@ curl -s -X POST http://localhost:40403/api/v1/faucet \
   -d '{"address": "<rev-address>"}'
 ```
 
-The response is `{ "deployId": "<hex>", "amount": 30000000, "to": "<rev-address>" }`. The transfer is
-a normal deploy, so poll `GET /api/v1/deploy-status/{deployId}` for `ProcessedWithSuccess`. The
-endpoint is **dev-mode only** (a node without `--deployer-private-key` returns `400`) and is
-rate-limited to one drip per second.
+The response is `{ "deployId": "<hex>", "amount": 30000000, "to": "<rev-address>" }`. `deployId` is
+the deploy signature, so poll `GET /api/v1/deploy-status/{deployId}` for `ProcessedWithSuccess`, then
+wait until `last-finalized-block >= blockNumber` before reading the recipient balance. Submission is
+not delivery. The endpoint is **dev-mode only**. When the faucet route is not enabled, it is not mounted
+and therefore returns `404`. Requests are rate-limited to one drip per second; this change makes recipient
+eligibility depend on finalized chain balance, and the public-testnet allocation is bounded to 10,000 REV.
 
 ### 3.5 Discover node capabilities (gate UI features without a hardcoded "devnet" flag)
 
@@ -260,7 +262,8 @@ curl -s http://localhost:40403/api/v1/capabilities
   "manualPropose": false,
   "adminHttp": true,
   "devMode": true,
-  "faucet": true
+  "faucet": true,
+  "faucetRemaining": 999970000000
 }
 ```
 
@@ -273,7 +276,8 @@ Semantics:
 | `manualPropose` | `!autopropose && !proposeOnDeploy` — an app must call `POST /api/v1/propose` to make blocks. |
 | `adminHttp` | the admin HTTP surface (`POST /api/v1/propose` on `40405`) is published and CORS-enabled (`--admin` + `--api-enable-devnet-cors`). |
 | `devMode` | `--dev-mode`. |
-| `faucet` | the `/api/v1/faucet` endpoint is actually available (`--dev-mode` **and** a deployer key). |
+| `faucet` | the `/api/v1/faucet` endpoint is available and has enough remaining budget for another drip. |
+| `faucetRemaining` | remaining faucet allocation in REV drops; clients can stop offering a dry faucet. |
 
 Recommended gating:
 

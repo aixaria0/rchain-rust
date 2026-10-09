@@ -1086,7 +1086,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean" },
           "adminHttp": { "type": "boolean" },
           "devMode": { "type": "boolean" },
-          "faucet": { "type": "boolean" }
+          "faucet": { "type": "boolean" },
+        "faucetRemaining": { "type": "integer", "format": "int64" }
         }
       },
       "PooledDeploy": {

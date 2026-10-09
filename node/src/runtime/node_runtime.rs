@@ -1362,12 +1362,15 @@ pub async fn setup_node_program(
             }
             _ => Vec::new(),
         };
-    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
-        routing.clone(),
-        primary_parts.transaction_api.clone(),
-        faucet_deployer_key,
-        primary_id.to_string(),
-    ));
+    let web_api: Arc<dyn WebApi> = Arc::new(
+        WebApiImpl::new(
+            routing.clone(),
+            primary_parts.transaction_api.clone(),
+            faucet_deployer_key,
+            primary_id.to_string(),
+        )
+        .with_persistent_faucet_ledger(conf.storage.data_dir.join("faucet-ledger.json"))?,
+    );
     // The PoS read (AUDIT C148): the primary shard's live native state through the runtime manager
     // that owns it, plus the status API for the head's height — one definition of "latest block".
     let pos_read: Arc<dyn PosReadApi> = Arc::new(ShardPosRead::new(
