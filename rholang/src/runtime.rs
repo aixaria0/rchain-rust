@@ -408,11 +408,12 @@ impl RhoRuntime {
         self.space.last_native_changes()
     }
 
-    /// The same drain **minus cost accounting's writes** — what the block's *sidecar* carries, since
-    /// the merge re-derives those from the accepted deploys (AUDIT C207). The checkpoint still folds
-    /// the whole set; this is only what travels.
-    pub fn last_own_native_changes(&self) -> Vec<NativeStoreAction> {
-        self.space.last_own_native_changes()
+    /// The same drain, **grouped by the deploy that wrote each slot** — what the block's *sidecar* is
+    /// built from, since the merge re-derives cost accounting from the accepted deploys (AUDIT C207)
+    /// and a write outside any deploy's window has no deploy to travel under (#280). The checkpoint
+    /// still folds the whole set; this is only what is attributable.
+    pub fn last_native_drain(&self) -> rchain_rspace::native_store::NativeDrain {
+        self.space.last_native_drain()
     }
 
     pub fn cost(&self) -> &CostAccounting {
@@ -675,10 +676,10 @@ impl ReplayRhoRuntime {
         self.space.last_native_changes()
     }
 
-    /// The same drain **minus cost accounting's writes** — what the block's *sidecar* carries, since
-    /// the merge re-derives those from the accepted deploys (AUDIT C207).
-    pub fn last_own_native_changes(&self) -> Vec<NativeStoreAction> {
-        self.space.last_own_native_changes()
+    /// The same drain, **grouped by the deploy that wrote each slot** — what the block's *sidecar* is
+    /// built from (#280).
+    pub fn last_native_drain(&self) -> rchain_rspace::native_store::NativeDrain {
+        self.space.last_native_drain()
     }
 
     pub fn cost(&self) -> &CostAccounting {

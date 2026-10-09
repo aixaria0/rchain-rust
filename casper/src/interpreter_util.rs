@@ -526,12 +526,21 @@ where
                 );
             }
         }
+        // **What the merge did, when it did anything at all** (#280). This is the line the live
+        // incident could not produce: a merge rejected a boundary chain, a user deploy died with it,
+        // and no counter and no line anywhere moved. `is_quiet` is the guard rather than a rate limit
+        // because a merge that rejects nothing is the ordinary case, and the interesting merges — the
+        // ones that drop a chain, or that violate an invariant — are exactly the ones worth a line.
+        if !pre_state.merge_report.is_quiet() {
+            log.warn(source, &pre_state.merge_report.describe());
+        }
         pre_state
     } else {
         // Genesis block: no parents.
         let genesis_pre_state_hash = empty_state_hash_fixed();
         ParentsMergedState {
             finality_stall: None,
+            merge_report: crate::merging::MergeReport::default(),
             justifications: Vec::new(),
             max_block_num: 0,
             max_seq_nums: BTreeMap::from([(block.sender, 0)]),
@@ -720,6 +729,7 @@ mod tests {
 
         let pre_state = ParentsMergedState {
             finality_stall: None,
+            merge_report: crate::merging::MergeReport::default(),
             justifications: vec![],
             max_block_num: 41,
             max_seq_nums: BTreeMap::new(),

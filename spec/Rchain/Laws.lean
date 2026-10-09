@@ -1,6 +1,23 @@
 /-!
 # The law register — every law, in one place, with what each one rests on
 
+**The heartbeat ceiling, and why it is raised here rather than the rows shortened** (2026-10-08). A row
+is mostly prose — `statement`, `note`, `falsifiable` — held as string literals in one structure, and the
+elaborator's cost grows with the register. Adding law 17c and 17d's rows took seven declarations past
+Lean's 200,000 default and the build failed with `(deterministic) timeout at \`elaborator\`` (at
+`Laws.lean:446, 460, 482, 610, 640, 774, 814` — declarations that had been inside the budget, so the
+number that moved is the *register's*, not theirs). The ceiling is raised here instead of the prose
+being trimmed because the prose **is** the record: a `note` cut to fit a compiler budget is a note that
+stopped saying what it knows, and this file's own history is a list of the times a hand-written claim
+drifted from the tree. The same tool, for the same reason, is already used in `Print.lean`
+(`8000000`), `ValueDepth.lean` and `Depth.lean` (`4000000`) and `Par.lean` (`1000000`). The number
+below is 5× the default and still an order of magnitude under the heaviest block in the tree; if it
+ever needs raising again, that is a signal about this module's shape rather than about Lean.
+-/
+set_option maxHeartbeats 1000000
+
+/-!
+
 `spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/laws.md`
 — the folder's one-page rendering of the whole set — is its reader-facing counterpart, but
 none of the three is *checkable*:
@@ -1397,6 +1414,84 @@ def laws : List Law := [
       release wrap. That half was a code finding (AUDIT C41) and is **fixed**: the accumulation is
       checked now and its error reaches the merge, with `combining_refuses_a_diff_that_leaves_i64`
       (`rspace/src/merger/event_log_index.rs`) failing on a `wrapping_add`" },
+  { number := 17, clause := "c", layer := "Casper",
+    rustWitness := [
+      "casper/src/merging.rs:a_boundary_round_does_not_lose_a_contained_deploys_charge",
+      "casper/src/merging.rs:a_rejected_boundary_chain_does_not_take_its_blocks_other_chains",
+      "casper/src/merging.rs:the_merge_report_names_every_dropped_native_write",
+      "rspace/src/native_store.rs:a_drained_write_names_the_deploy_that_made_it",
+      "rspace/src/native_store.rs:a_write_outside_any_window_is_not_attributed_to_a_block"],
+    statement := "The native relation is on the **chain**, not on the block: two concurrent native \
+      writers of one slot conflict, and a chain that wrote nothing contended is not a conflict \
+      partner at all — so a user deploy's effects cannot die with a boundary its block also carried",
+    status := .provedModel,
+    declarations := [`Rchain.Chain, `Rchain.chainConflict, `Rchain.hostSlots,
+      `Rchain.hostConflict, `Rchain.incidentChains, `Rchain.foldRefuses, `Rchain.resolves,
+      `Rchain.host_keys_conflict_where_the_chains_do_not,
+      `Rchain.the_resolution_leaves_the_fold_nothing_to_refuse,
+      `Rchain.the_fold_refuses_concurrent_writers_of_one_slot],
+    axioms := [],
+    rust := ["casper/src/merging.rs", "rspace/src/native_store.rs", "rholang/src/merging.rs"],
+    witness := [`Rchain.host_keys_conflict_where_the_chains_do_not,
+      `Rchain.the_resolution_leaves_the_fold_nothing_to_refuse,
+      `Rchain.the_fold_refuses_concurrent_writers_of_one_slot],
+    falsifiable := some "Two halves, and the falsifier is the first. \
+      `host_keys_conflict_where_the_chains_do_not` exhibits the incident's own shape — one block \
+      carrying a boundary chain that wrote `{1,2}` and a user chain that wrote ∅, plus a concurrent \
+      sibling writing `{1,2}` — and shows the **block-level** relation holding of the user chain while \
+      the **chain-level** one does not: that is the rule that stood, refuted on the pair of chains it \
+      rejected, and it fails the moment the relation is keyed on the host again. \
+      `the_resolution_leaves_the_fold_nothing_to_refuse` is the positive half and is a *bridge*, not a \
+      restatement: `resolves` is stated on `chainConflict` and `foldRefuses` on its own \
+      shared-slot-and-unsequenced shape, so drop the overlap conjunct from `chainConflict` and two \
+      concurrent writers of one slot are kept, the fold's own `Err` fires, and the theorem is false. \
+      `the_fold_refuses_concurrent_writers_of_one_slot` stops the refusal being an empty predicate — \
+      without it the positive half would be a statement about a shape nothing can have.",
+    note := "**What this row does not model, and why that is deliberate.** The *selection* over the \
+      rejection options is law 17a's and is unchanged; the **option enumeration** over a chain-level \
+      conflict graph — the maximal conflict-free sets and the budget that bounds them — is still not \
+      modelled here, because it would be a second model of `compute_rejection_options` \
+      (`sdk/src/dag/merging.rs`) and its subject is not what the defect falsified. What is modelled is \
+      the relation and the acceptance predicate, which is. **The defect it answers** is the live one: \
+      `spec/audit/evidence/n280-merge-loses-a-write-results.md` records a four-validator net losing a \
+      deployed write at an epoch boundary, unanimously, with the boundary blocks' `CloseBlock` ids in \
+      the rejected set and no node refusing a peer's block. The Rust side is structural as well as \
+      proved — `spec/TYPE-SYSTEM.md` — because the block-level *set* is not constructible any more: \
+      `BlockIndex.native_changes` is gone, `DeployChainIndex::native_effects` carries each chain's own \
+      writes, and `reject_whole_blocks` is deleted rather than narrowed, so 'reject every chain of a \
+      block because of a write the block made' has no operation left to express it." },
+  { number := 17, clause := "d", layer := "Casper",
+    rustWitness := [
+      "rholang/src/merging.rs:a_legacy_sidecar_decodes_as_unattributed_and_not_as_empty",
+      "rholang/src/merging.rs:an_attributed_sidecar_round_trips_and_a_damaged_one_is_not_read_as_empty",
+      "rspace/src/native_store.rs:a_genesis_write_is_named_and_does_not_travel_in_a_sidecar"],
+    statement := "A block's native effects are **attributed to the deploy that made them, by \
+      construction**: an unattributed, block-level native-effect set is not a value — the sidecar's \
+      shape has no arm for it, and a write outside any deploy's window is refused rather than filed \
+      under the block",
+    status := .vacuous,
+    declarations := [`Rchain.Chain],
+    axioms := [],
+    rust := ["rspace/src/native_store.rs", "rholang/src/merging.rs"],
+    falsifiable := some "the *negative* half is the machine half, as in law 22: the two decode tests \
+      pin that a record written before attribution existed reads as `LegacyUnattributed` with its \
+      actions intact and **not** as `Attributed(empty)` — collapsing either way is how a block's \
+      effects come to be filed under the block or to vanish — and that a truncated or \
+      trailing-byte record is an `Err` rather than an empty one. What would reopen the row is a second \
+      constructor taking a bare action list, which is the shape the type exists to remove.",
+    note := "**`vacuous` in the register's own sense, and the reason is law 22's.** The positive half — \
+      \"an unattributed native-effect set is not a value\" — is a fact about a **type**, not a \
+      theorem: `BlockNativeEffects` has a private field, no `Deref` and no getter, and its keys are \
+      deploy ordinals, so there is no key that could mean \"the block\". Stating it in Lean would \
+      prove that a type ignores a constructor nobody writes, which is the deleted \
+      `next_step_closure_computable` shape this register already refused once. The artifact is \
+      `rspace/src/native_store.rs`'s `BlockNativeEffects` + `NativeWriter` (whose `OutsideAnyDeploy` \
+      arm is refused by `from_drain` rather than attributed to the block, and whose `Genesis` arm is \
+      *named* rather than unattributed, and does not travel), the codec's three-way `SidecarRecord` \
+      in `rholang/src/merging.rs`, and the gate that keeps the discipline: \
+      `tools/audit-type-system.sh`'s construction scan. **Not a refinement in that gate's roster**, \
+      deliberately: the gate's `escape` class is for types carrying a *predicate* (a validator the \
+      constructor must run), and this type carries none — its invariant is its key type." },
   { number := 18, layer := "Storage",
     rustWitness := [
       "block-storage/src/dag/metadata_store.rs:law18_contiguous_height_map_is_valid",

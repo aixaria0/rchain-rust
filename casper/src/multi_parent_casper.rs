@@ -21,7 +21,9 @@ use rchain_shared::refined::BlockHeight;
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::validate_block_checkpoint;
-use crate::merging::{BlockIndex, DeployChainIndex, MergeScope, ParentsMergedState};
+use crate::merging::{
+    BlockIndex, DeployChainIndex, MergeOutcome, MergeReport, MergeScope, ParentsMergedState,
+};
 use crate::runtime_manager::RuntimeManager;
 
 /// A deploy-parsing error (port of `ParsingError`).
@@ -247,8 +249,15 @@ where
         }
         None => None,
     };
+    // The fringe merge's outcome, or the previous fringe's when nothing finalised. Its **report** is
+    // carried rather than logged here: this function has no logger (#280).
+    let fringe_merge = new_fringe_result.unwrap_or(MergeOutcome {
+        state: prev_fringe_state,
+        rejected_deploys: prev_fringe_rejected_deploys,
+        report: MergeReport::default(),
+    });
     let (fringe_state, fringe_rejected_deploys) =
-        new_fringe_result.unwrap_or((prev_fringe_state, prev_fringe_rejected_deploys));
+        (fringe_merge.state, fringe_merge.rejected_deploys.clone());
 
     let max_height = justifications
         .iter()
@@ -262,16 +271,17 @@ where
     let new_fringe = new_fringe_hashes.unwrap_or(prev_fringe_hashes);
 
     // Merge the conflict scope (non-finalized blocks above the fringe).
-    let (pre_state_hash, cs_rejected_deploys) = if parent_hashes.len() == 1 {
+    let conflict_merge = if parent_hashes.len() == 1 {
         let parent = parent_hashes
             .iter()
             .next()
             .ok_or_else(|| "expected one parent".to_string())?;
         let block = get_block_unsafe(block_store, parent).await?;
-        (
-            Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes()),
-            BTreeSet::new(),
-        )
+        MergeOutcome {
+            state: Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes()),
+            rejected_deploys: BTreeSet::new(),
+            report: MergeReport::default(),
+        }
     } else {
         let (m_scope, base_opt) =
             MergeScope::from_dag(parent_hashes, &new_fringe, &dag_repr.child_map, msg_map)?;
@@ -294,9 +304,48 @@ where
         )
         .await?
     };
+    let (pre_state_hash, cs_rejected_deploys) = (
+        conflict_merge.state,
+        conflict_merge.rejected_deploys.clone(),
+    );
+    // **The report an operator gets, and where it comes from** (#280). Both merges' — the fringe's
+    // and the conflict scope's — because either can be the one that drops something, and the
+    // conflict scope's is the one that did on the live net.
+    let merge_report = MergeReport {
+        conflict_chains: fringe_merge.report.conflict_chains
+            + conflict_merge.report.conflict_chains,
+        kept_chains: fringe_merge.report.kept_chains + conflict_merge.report.kept_chains,
+        rejected_chains: fringe_merge.report.rejected_chains
+            + conflict_merge.report.rejected_chains,
+        dropped_native_slots: fringe_merge
+            .report
+            .dropped_native_slots
+            .iter()
+            .chain(conflict_merge.report.dropped_native_slots.iter())
+            .cloned()
+            .collect(),
+        rejected_cost_accounted_chains: fringe_merge.report.rejected_cost_accounted_chains
+            + conflict_merge.report.rejected_cost_accounted_chains,
+        rejections_without_a_conflict: fringe_merge
+            .report
+            .rejections_without_a_conflict
+            .iter()
+            .chain(conflict_merge.report.rejections_without_a_conflict.iter())
+            .cloned()
+            .collect(),
+        unapplied_kept_writes: fringe_merge
+            .report
+            .unapplied_kept_writes
+            .iter()
+            .chain(conflict_merge.report.unapplied_kept_writes.iter())
+            .copied()
+            .collect(),
+        native_writer_of_slot: conflict_merge.report.native_writer_of_slot.clone(),
+    };
 
     Ok(ParentsMergedState {
         finality_stall: no_advance,
+        merge_report,
         justifications,
         max_block_num: max_height,
         max_seq_nums,
