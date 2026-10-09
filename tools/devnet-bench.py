@@ -43,6 +43,7 @@ Three caveats, stated because they bound what the numbers mean:
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -503,6 +504,19 @@ def container_image_id(container):
         return None
 
 
+def file_sha256(path):
+    if not path:
+        return None
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -553,6 +567,7 @@ def main():
             "drain": args.drain,
             "container": args.container,
             "native_rnode": args.native_rnode,
+            "native_rnode_sha256": file_sha256(args.native_rnode),
             "sample_every": args.sample_every,
             "sample_seconds": args.sample_seconds,
             "block_timeout": args.block_timeout,

@@ -68,10 +68,12 @@ height rate.
 
 The reference command above uses Docker because that is how `tools/devnet.sh` normally packages the
 single validator. The campaign may instead run the **same `rnode` binary directly on the measurement
-host** when Docker is unavailable, provided all consensus/runtime flags, genesis inputs, API ports,
-deployer key, scheduler, proposal policy and fresh-data condition are identical. In that arm the
-harness uses `--native-rnode <path>` so deploys are still signed and submitted by the repository's Rust
-client over the external gRPC API; Python does not construct or sign deploy bytes.
+host** when Docker is unavailable, provided it is built with `cargo build --release` (the Dockerfile's
+build profile) and all consensus/runtime flags, genesis inputs, API ports, deployer key, scheduler,
+proposal policy and fresh-data condition are identical. In that arm the harness uses
+`--native-rnode <path>` so deploys are still signed and submitted by the repository's Rust client over
+the external gRPC API; Python does not construct or sign deploy bytes. The JSON records both the path
+and SHA-256 of that binary.
 
 This is an execution-wrapper substitution, not a second measurement arm: the decision rule remains the
 checkpoint-time fraction inside the same process work unit, and the artifact must record
