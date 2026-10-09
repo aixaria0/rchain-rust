@@ -294,67 +294,26 @@ else
   for e in "${EQUIV_LINES[@]}"; do echo "    $e"; done
 fi
 
-# --- 3. the meet --------------------------------------------------------------
-# **Weighed by stake, not by node count** (#287's correction): a lagging node must not drag the network
-# back, and node count treats a silent validator as an equal voter. The threshold is `stake * 3 >
-# total * 2` *strictly* — the protocol's own rule — not "two thirds", which reads as ≥. The pool is the
-# bond map the block at that height carries, so every node's view of it is checkable; and when the nodes'
-# bond maps disagree at a height, the denominators differ and no supermajority over a shared pool exists:
-# that is state divergence wearing a quorum's clothes, and the corrected refusal case.
-echo "== 3. the meet (stake-weighted, strict supermajority) =="
-MEET=""; MEET_HASH=""; MEET_STAKE=0; MEET_POOL=0; MEET_VOUCHERS=""
-TOPH=0; for n in "${NAMES[@]}"; do [ "${LFB[$n]:-0}" -gt "$TOPH" ] 2>/dev/null && TOPH=${LFB[$n]}; done
-for (( h=TOPH; h>=0; h-- )); do
-  declare -A hash_stake=() hash_vouchers=() seen_candidate_sender=()
-  pool=""; pool_disagreement=0
-  for n in "${NAMES[@]}"; do
-    while read -r bh sender _post _deploys bonds; do
-      [ -z "${bh:-}" ] && continue
-      if [ -z "$pool" ]; then pool="$bonds"
-      elif [ "$pool" != "$bonds" ]; then pool_disagreement=1; fi
-      if [ -z "${EXCLUDED[$sender]:-}" ] && [ -z "${seen_candidate_sender[$bh:$sender]:-}" ]; then
-        seen_candidate_sender[$bh:$sender]=1
-        hash_stake[$bh]=$(( ${hash_stake[$bh]:-0} + $(stake_of "$sender" "$bonds") ))
-        hash_vouchers[$bh]="${hash_vouchers[$bh]:-}${n} "
-      fi
-    done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")
-  done
-  [ -z "$pool" ] && continue
-  if [ "$pool_disagreement" = "1" ]; then
-    echo "  REFUSING: the nodes report different bond maps at height $h."
-    echo "  The denominators differ, so no supermajority can be computed over a shared pool — that is"
-    echo "  state divergence wearing a quorum's clothes. Stop and investigate; do not choose a pool."
-    exit 3
+# --- 3. conservative finalized anchor -----------------------------------------
+# A block producer is not a validator vote for the block. The heights API
+# cannot prove stake-weighted finalized ancestry. Require identical explicit
+# last-finalized blocks from every listed node instead of fabricating quorum.
+echo "== 3. finalized anchor (unanimous LFB; no inferred stake votes) =="
+MEET=""; MEET_HASH=""
+for n in "${NAMES[@]}"; do
+  h="${LFB[$n]:-}"; bh="${LFH[$n]:-}"
+  if ! [[ "$h" =~ ^[0-9]+$ ]] || [ -z "$bh" ]; then
+    echo "  REFUSING: $n has no usable finalized block (height/hash)." >&2
+    exit 4
   fi
-  total=0; for kv in ${pool//;/ }; do total=$(( total + ${kv##*=} )); done
-  excl_stake=0
-  for s in "${!EXCLUDED[@]}"; do excl_stake=$(( excl_stake + $(stake_of "$s" "$pool") )); done
-  denominator=$(( total - excl_stake ))
-  best=""; best_stake=0
-  for bh in "${!hash_stake[@]}"; do
-    eligible=0
-    for fn in "${NAMES[@]}"; do
-      if [ "${LFB[$fn]:-}" = "$h" ] && [ "${LFH[$fn]:-}" = "$bh" ]; then eligible=1; break; fi
-    done
-    [ "$eligible" = "1" ] || continue
-    [ "${hash_stake[$bh]}" -gt "$best_stake" ] && { best="$bh"; best_stake=${hash_stake[$bh]}; }
-  done
-  if [ -n "$best" ] && [ $(( best_stake * 3 )) -gt $(( denominator * 2 )) ]; then
-    MEET=$h; MEET_HASH=$best; MEET_STAKE=$best_stake; MEET_POOL=$denominator
-    MEET_VOUCHERS="${hash_vouchers[$best]}"
-    break
+  if [ -z "$MEET" ]; then MEET="$h"; MEET_HASH="$bh"
+  elif [ "$h" != "$MEET" ] || [ "$bh" != "$MEET_HASH" ]; then
+    echo "  REFUSING: finalized heads differ; block observations cannot prove a stake quorum." >&2
+    exit 4
   fi
 done
-if [ -z "$MEET" ]; then
-  echo "  REFUSING: no height has a strict supermajority of stake agreeing on one block."
-  for n in "${NAMES[@]}"; do printf "    %-2s finalised %-6s %s\n" "$n" "${LFB[$n]:-?}" "${LFH[$n]:0:44}"; done
-  echo "  Nothing here is safe to rewind to, and choosing one by hand would make a stall into a lie."
-  exit 4
-fi
-echo "  the point is height $MEET, block ${MEET_HASH:0:44}"
-echo "  vouched for by: $MEET_VOUCHERS"
-echo "  stake: $MEET_STAKE of $MEET_POOL = $(( MEET_STAKE * 100 / MEET_POOL ))% — a strict supermajority (>66.6%)"
-[ "${#EXCLUDED[@]}" -gt 0 ] && echo "  (the denominator excludes ${#EXCLUDED[@]} equivocator(s), by proof)"
+echo "  unanimously reported finalized anchor: height $MEET, hash $MEET_HASH"
+echo "  No stake-weighted quorum or finalized ancestry is inferred from block producers."
 
 # --- 4. what is above the point ----------------------------------------------
 echo "== 4. what is above the point =="
@@ -482,9 +441,11 @@ for i in $(seq 1 40); do
   for (( h=MEET; h<=MAXH; h++ )); do
     first=""
     for n in "${NAMES[@]}"; do
-      bh="$(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h" | head -1 | cut -d' ' -f1)"
-      if [ -z "$bh" ]; then ok=0; break; fi
-      if [ -z "$first" ]; then first="$bh"; elif [ "$bh" != "$first" ]; then ok=0; fi
+      # Compare the complete unordered block-hash set at this height.
+      hashes="$(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h" | awk 'NF {print $1}' | LC_ALL=C sort -u)"
+      if [ -z "$hashes" ]; then ok=0; break; fi
+      if [ -z "$first" ]; then first="$hashes"
+      elif [ "$hashes" != "$first" ]; then ok=0; break; fi
     done
     [ "$ok" = "0" ] && break
   done
