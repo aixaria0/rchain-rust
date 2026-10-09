@@ -203,6 +203,7 @@ stop_node() {
     $SSH "root@$host" "systemctl stop $unit" >/dev/null 2>&1 && echo "    $unit stopped" && return
     echo "    WARNING: $unit did not stop" >&2
   fi
+  return 1
 }
 start_node() {
   local n="$1" host unit
@@ -213,6 +214,7 @@ start_node() {
     $SSH "root@$host" "systemctl start $unit" >/dev/null 2>&1 && echo "    $unit started" && return
   fi
   echo "    WARNING: $unit did not start" >&2
+  return 1
 }
 # **Aside, never gone.** systemd: the data directory is renamed in place. docker: the data lives on a
 # volume, which cannot be renamed, so its whole contents are tarred to a host file named after the
@@ -226,14 +228,15 @@ move_data_dir_aside() {
   host="${HOST[$n]}"; unit="${UNIT[$n]}"
   if [ "$CONTROL" = "docker" ]; then
     vol="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/rnode"}}{{.Name}}{{end}}{{end}}' "$unit" 2>/dev/null)"
-    if [ -z "$vol" ]; then echo "    WARNING: no data volume found on $unit — nothing moved" >&2; return; fi
+    if [ -z "$vol" ]; then echo "    WARNING: no data volume found on $unit — refusing" >&2; return 1; fi
     backup="${RECONCILE_BACKUP_DIR:-$PWD/target}/reconcile-backup-${vol}-${ts}.tar"
     docker run --rm -v "$vol":/data -v "$(dirname "$backup")":/backup alpine \
       tar cf "/backup/$(basename "$backup")" -C /data . >/dev/null 2>&1 \
       && echo "    $vol backed up to $backup (never deleted — this is the 'aside')" \
       || { echo "    WARNING: could not back up $vol — refusing to touch it" >&2; return 1; }
-    docker rm -f "$unit" >/dev/null 2>&1
-    docker volume rm "$vol" >/dev/null 2>&1 && echo "    $vol emptied; the backup holds its contents"
+    docker rm -f "$unit" >/dev/null 2>&1 || { echo "    WARNING: docker rm failed" >&2; return 1; }
+    docker volume rm "$vol" >/dev/null 2>&1 || { echo "    WARNING: docker volume rm failed" >&2; return 1; }
+    echo "    $vol emptied; the backup holds its contents"
   else
     $SSH "root@$host" "d=\$(systemctl cat $unit | grep -oP '(?<=--data-dir ).*?(?= |\$)' | head -1)
       cp -a \$d/genesis \${d}.genesis-keep-$ts 2>/dev/null && echo '    genesis inputs preserved'
@@ -301,14 +304,15 @@ echo "== 3. the meet (stake-weighted, strict supermajority) =="
 MEET=""; MEET_HASH=""; MEET_STAKE=0; MEET_POOL=0; MEET_VOUCHERS=""
 TOPH=0; for n in "${NAMES[@]}"; do [ "${LFB[$n]:-0}" -gt "$TOPH" ] 2>/dev/null && TOPH=${LFB[$n]}; done
 for (( h=TOPH; h>=0; h-- )); do
-  declare -A hash_stake=() hash_vouchers=()
+  declare -A hash_stake=() hash_vouchers=() seen_candidate_sender=()
   pool=""; pool_disagreement=0
   for n in "${NAMES[@]}"; do
     while read -r bh sender _post _deploys bonds; do
       [ -z "${bh:-}" ] && continue
       if [ -z "$pool" ]; then pool="$bonds"
       elif [ "$pool" != "$bonds" ]; then pool_disagreement=1; fi
-      if [ -z "${EXCLUDED[$sender]:-}" ]; then
+      if [ -z "${EXCLUDED[$sender]:-}" ] && [ -z "${seen_candidate_sender[$bh:$sender]:-}" ]; then
+        seen_candidate_sender[$bh:$sender]=1
         hash_stake[$bh]=$(( ${hash_stake[$bh]:-0} + $(stake_of "$sender" "$bonds") ))
         hash_vouchers[$bh]="${hash_vouchers[$bh]:-}${n} "
       fi
@@ -327,6 +331,11 @@ for (( h=TOPH; h>=0; h-- )); do
   denominator=$(( total - excl_stake ))
   best=""; best_stake=0
   for bh in "${!hash_stake[@]}"; do
+    eligible=0
+    for fn in "${NAMES[@]}"; do
+      if [ "${LFB[$fn]:-}" = "$h" ] && [ "${LFH[$fn]:-}" = "$bh" ]; then eligible=1; break; fi
+    done
+    [ "$eligible" = "1" ] || continue
     [ "${hash_stake[$bh]}" -gt "$best_stake" ] && { best="$bh"; best_stake=${hash_stake[$bh]}; }
   done
   if [ -n "$best" ] && [ $(( best_stake * 3 )) -gt $(( denominator * 2 )) ]; then
@@ -382,7 +391,7 @@ if [ "$RESTORE" = "1" ]; then
   echo "== 5. apply (--restore-from-master): the whole network is stopped, the survivor included =="
   # The survivor is stopped too, and that is not an oversight: a filesystem-level copy of a live LMDB is a
   # torn snapshot, and in this mode the copy *is* the truth the network will run on.
-  for n in "${NAMES[@]}"; do echo "  $n:"; stop_node "$n"; done
+  for n in "${NAMES[@]}"; do echo "  $n:"; stop_node "$n" || { echo "REFUSING: node stop failed: $n" >&2; exit 6; }; done
 
   echo "== 6. the fiat, printed before it is applied =="
   echo "  This is NOT a sync. The joiners adopt ${MASTER}'s chain state wholesale, so what they agree about"
@@ -397,14 +406,14 @@ if [ "$RESTORE" = "1" ]; then
   for n in "${NAMES[@]}"; do
     [ "$n" = "$MASTER" ] && continue
     echo "  $n:"
-    restore_chain_state_from_master "$n"
+    restore_chain_state_from_master "$n" || { echo "REFUSING: state copy failed: $n" >&2; exit 7; }
   done
 
   echo "== 8. restarted: the survivor first, then the joiners =="
-  start_node "$MASTER"; sleep 20
+  start_node "$MASTER" || { echo "REFUSING: master start failed" >&2; exit 8; }; sleep 20
   for n in "${NAMES[@]}"; do
     [ "$n" = "$MASTER" ] && continue
-    echo "  $n:"; start_node "$n"
+    echo "  $n:"; start_node "$n" || { echo "REFUSING: joiner start failed: $n" >&2; exit 8; }
   done
 
   echo "== 8b. triggering a block, because an idle chain cannot finalise =="
@@ -424,29 +433,29 @@ echo "== 5. apply: every non-master node is stopped first, before anything is mo
 # iteration, putting production back up before agreement had been proven.
 for n in "${NAMES[@]}"; do
   [ "$n" = "$MASTER" ] && continue
-  echo "  $n:"; stop_node "$n"
+  echo "  $n:"; stop_node "$n" || { echo "REFUSING: node stop failed: $n" >&2; exit 6; }
 done
 
 TS=$(date -u +%Y%m%d-%H%M)
 echo "== 6. data directories moved aside (never deleted) =="
 for n in "${NAMES[@]}"; do
   [ "$n" = "$MASTER" ] && continue
-  echo "  $n:"; move_data_dir_aside "$n" "$TS"
+  echo "  $n:"; move_data_dir_aside "$n" "$TS" || { echo "REFUSING: backup/move failed: $n" >&2; exit 7; }
 done
 
 echo "== 7. one joiner is restarted and must reach the point before the rest follow =="
 first_joiner=""; for n in "${NAMES[@]}"; do [ "$n" = "$MASTER" ] && continue; first_joiner=$n; break; done
 if [ -n "$first_joiner" ]; then
-  start_node "$first_joiner"
+  start_node "$first_joiner" || { echo "REFUSING: first joiner start failed" >&2; exit 8; }
   f=""
   for i in $(seq 1 40); do
     sleep 15
     f=$(lfb_num "${HOST[$first_joiner]}" "${PORT[$first_joiner]}")
     h="$(lfb_hash "${HOST[$first_joiner]}" "${PORT[$first_joiner]}")"
     echo "  [$i] $first_joiner finalised=${f:-?} ${h:0:32}"
-    [ -n "$f" ] && [ "$f" -ge "$MEET" ] 2>/dev/null && break
+    [ "$f" = "$MEET" ] && [ "$h" = "$MEET_HASH" ] && break
   done
-  if [ -z "$f" ] || [ "$f" -lt "$MEET" ] 2>/dev/null; then
+  if [ "$f" != "$MEET" ] || [ "$h" != "$MEET_HASH" ]; then
     echo "  the first joiner did not reach the point — refusing to restart the others" >&2
     exit 5
   fi
@@ -456,7 +465,7 @@ echo "== 8. the rest are restarted =="
 for n in "${NAMES[@]}"; do
   [ "$n" = "$MASTER" ] && continue
   [ "$n" = "$first_joiner" ] && continue
-  echo "  $n:"; start_node "$n"
+  echo "  $n:"; start_node "$n" || { echo "REFUSING: joiner start failed: $n" >&2; exit 8; }
 done
 
 fi
@@ -473,7 +482,7 @@ for i in $(seq 1 40); do
     first=""
     for n in "${NAMES[@]}"; do
       bh="$(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h" | head -1 | cut -d' ' -f1)"
-      [ -z "$bh" ] && continue
+      if [ -z "$bh" ]; then ok=0; break; fi
       if [ -z "$first" ]; then first="$bh"; elif [ "$bh" != "$first" ]; then ok=0; fi
     done
     [ "$ok" = "0" ] && break
