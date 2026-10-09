@@ -1,5 +1,6 @@
 //! Web API implementation (port of `WebApi.WebApiImpl`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -575,6 +576,11 @@ impl WebApi for WebApiImpl {
             &health,
             &finality,
             rchain_rspace::lock::poison_recoveries(),
+            // C254: the supervisor's counters. Every long-lived background task is watched by
+            // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a
+            // probe can read rather than an absence an operator has to infer from the silence.
+            rchain_shared::supervise::tasks_panicked(),
+            rchain_shared::supervise::tasks_exited(),
         ))
     }
 
@@ -651,7 +657,7 @@ impl WebApi for WebApiImpl {
         // Per-address drip budget (R17): bound how much REV one address can pull, so a single caller
         // cannot monopolize the rate limit and drain the genesis dev wallet.
         {
-            let mut counts = self.drip_counts.lock().unwrap_or_else(|p| p.into_inner());
+            let mut counts = self.drip_counts.lock().unpoison();
             let count = counts.entry(address.to_string()).or_insert(0);
             if *count >= FAUCET_MAX_DRIPS_PER_ADDRESS {
                 return Err(BlockApiException(format!(

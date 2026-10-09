@@ -3,6 +3,7 @@
 //! A `ReplayRhoRuntime` analogue whose space is a [`ReportingRspace`], so produce/consume/COMM
 //! events are recorded during replay. Exposes `get_report` to drain the recorded report.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -100,15 +101,12 @@ impl ReportingRuntime {
     }
 
     pub fn set_block_data(&self, block_data: BlockData) {
-        *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
+        *self.block_data.lock().unpoison() = block_data;
     }
 
     /// The per-block data as it stands (the getter's pair; see `RhoRuntime::block_data`, B2, #150).
     pub fn block_data(&self) -> BlockData {
-        self.block_data
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.block_data.lock().unpoison().clone()
     }
 
     pub async fn inj(

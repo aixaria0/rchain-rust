@@ -119,6 +119,21 @@ pub struct ApiStatus {
     /// Monotone and process-wide, because the poisoning is: the panic happened in whichever thread held
     /// the guard (`rspace::lock`). Counted rather than silently absorbed, which is F-U9-03.
     pub poison_recoveries: u64,
+    /// **How many blocks this node has given up on** (C249's R3 gap): a divergence record whose
+    /// revalidation budget is spent and which still fails here, so the node refuses it and its
+    /// descendants for the process lifetime. Nothing resets a running node yet — this is the
+    /// denominator a reset would be reviewed against, shipped dark.
+    pub unrestorable_records: u64,
+    /// …and which block, as `<hash> (seq <n>)`. `None` when the node has never given one up.
+    pub unrestorable_block: Option<String>,
+    /// **How many supervised background tasks have panicked** (C254). The node has no supervisor: a
+    /// long-lived task was a bare `tokio::spawn` whose handle was dropped, so nothing could tell one
+    /// that was running from one that died at startup. A panic reached stderr; a plain early return
+    /// reached nothing at all.
+    pub tasks_panicked: u64,
+    /// …and how many have **returned**, which is the quieter death and the reason the two are counted
+    /// apart: a panic announces itself once, a return does not announce itself anywhere.
+    pub tasks_exited: u64,
 }
 
 /// The node's capabilities, returned by `GET /api/v1/capabilities` (the app-facing "can I propose /
@@ -246,6 +261,10 @@ mod tests {
             finality_stall_episodes: 0,
             non_quiet_merge_reports: 0,
             poison_recoveries: 0,
+            unrestorable_records: 0,
+            unrestorable_block: None,
+            tasks_panicked: 0,
+            tasks_exited: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

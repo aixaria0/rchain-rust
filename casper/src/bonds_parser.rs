@@ -49,6 +49,27 @@ pub fn parse_or_generate(
     }
 }
 
+/// Create the directory an output path lives in, if it is not already there.
+///
+/// **Found by a CI failure, not by reading** (C253's E4, completed). The ceremony writes each
+/// validator's `.sk` beside the bonds file and the bonds file last, and it never created the
+/// directory it wrote into — which nobody noticed while both writes were discarded, because the
+/// failure was silent. The moment the writes became checked, `node_api::http_surface_without_genesis`
+/// went red in CI: a fresh standalone node's default bonds path is `<data_dir>/genesis/bonds.txt`,
+/// nothing creates `genesis/`, and the node therefore could not boot at all.
+///
+/// Creating it is the right repair rather than a test patch, because requiring an operator to
+/// pre-create the directory a ceremony is about to fill is not a real precondition — the devnet makes
+/// it with `mktemp -d`, which is what hid this. The write is still checked, and a genuinely unwritable
+/// location still fails with the same message naming the same file; only the *missing directory* case
+/// changed, from "fails loudly" to "works".
+fn ensure_parent(path: &Path) -> Result<(), String> {
+    match path.parent() {
+        None => Ok(()),
+        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| e.to_string()),
+    }
+}
+
 /// Generate `autogen_shard_size` validators and write their keys + bonds file (port of
 /// `newValidators`).
 pub fn new_validators(
@@ -59,12 +80,33 @@ pub fn new_validators(
     for i in 0..autogen_shard_size {
         let (sec, pub_key) = Secp256k1.new_key_pair();
         // Write `<public_key>.sk` file with the private key (owner-only perms: it is secret).
+        //
+        // **The write is checked** (C253's E4). It used to be `let _ = …`, so a ceremony that could
+        // not write (a read-only directory, a full disk, a permissions mistake) produced no key file
+        // and **no complaint**: the node came up with a validator key that does not exist on disk, and
+        // the *next* boot generated a fresh one. That is the worst kind of ceremony failure — the node
+        // looks healthy and its identity silently rotates.
         if let Some(parent) = bonds_file_path.parent() {
             let sk_file = parent.join(format!("{}.sk", base16::encode(pub_key.bytes())));
-            let _ = rchain_crypto::util::key_util::write_private_key(
-                &sk_file,
-                base16::encode(sec.bytes()),
-            );
+            // The mkdir is inside this chain rather than before it, so a location that cannot hold
+            // the key — a *regular file* where the directory should be, which is the case the unit's
+            // own test plants — still reports through the write's message and still names the `.sk`
+            // path. Creating the directory and then failing to write it would otherwise split into
+            // two different errors for one symptom.
+            ensure_parent(&sk_file)
+                .and_then(|()| {
+                    rchain_crypto::util::key_util::write_private_key(
+                        &sk_file,
+                        base16::encode(sec.bytes()),
+                    )
+                })
+                .map_err(|e| {
+                    format!(
+                        "FAILED WRITING VALIDATOR KEY {}, so the key this node would bond with does not \
+                         exist on disk and the next boot would generate a different one: {e}",
+                        sk_file.display()
+                    )
+                })?;
         }
         // `i >= 0`, so `i + 1 >= 1` is non-negative by construction.
         let stake = NonNegI64::try_from(i64::from(i) + 1)
@@ -80,7 +122,18 @@ pub fn new_validators(
             i64::from(*stake)
         ));
     }
-    let _ = std::fs::write(bonds_file_path, content);
+    // **And so is the bonds file itself** (C253's E4, the same site's other half). A discarded write
+    // here means the ceremony produced no bonds file: the validator set it just generated exists only
+    // in this process's memory, and the chain it starts cannot be rejoined by the node that started it.
+    ensure_parent(bonds_file_path)
+        .and_then(|()| std::fs::write(bonds_file_path, content).map_err(|e| e.to_string()))
+        .map_err(|e| {
+            format!(
+                "FAILED WRITING BONDS FILE {}, so the validator set this ceremony generated exists only \
+                 in memory and the node cannot rejoin the chain it started: {e}",
+                bonds_file_path.display()
+            )
+        })?;
     Ok(bonds)
 }
 
@@ -119,6 +172,50 @@ mod tests {
         std::fs::write(&path, "garbage line without spaces\n").unwrap();
 
         assert!(parse(&path).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A ceremony that cannot write its keys, or its bonds file, fails loudly and names the path**
+    /// (C253's E4).
+    ///
+    /// Both writes used to discard their `Result` — `let _ = write_private_key(…)` and
+    /// `let _ = std::fs::write(…)`. What that hid is not "a file is missing": it is that the node
+    /// **comes up anyway**, bonded to a validator key that does not exist on disk, and the next boot
+    /// generates a *different* one. The node looks healthy and its identity silently rotates, which is
+    /// the worst shape a ceremony failure can take.
+    ///
+    /// So the falsifier asserts the loud failure *and* that the message carries the path, because an
+    /// operator's next step is to look at it. Two cases, one per write, so the second write is not
+    /// covered only by the first one's accident: a parent that is a **regular file** (the key write
+    /// fails) and a bonds path that is a **directory** (the key write succeeds, the bonds write fails).
+    #[test]
+    fn a_ceremony_that_cannot_write_fails_loudly_and_names_the_path() {
+        let dir =
+            std::env::temp_dir().join(format!("rchain-bonds-unwritable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // (1) The parent is a regular file, so the `.sk` write cannot succeed.
+        let blocker = dir.join("not-a-directory");
+        std::fs::write(&blocker, b"a file, not a directory").unwrap();
+        let err = new_validators(1, &blocker.join("bonds.txt"))
+            .expect_err("no key file can be written under a regular file");
+        assert!(
+            err.contains("FAILED WRITING VALIDATOR KEY") && err.contains(".sk"),
+            "the refusal names the step and the file: {err}"
+        );
+
+        // (2) The parent is writable, so the key write succeeds — and the bonds path is a directory,
+        //     so the second write is the one that fails. This is the half a single case would miss.
+        let second = dir.join("second");
+        std::fs::create_dir_all(second.join("bonds.txt")).unwrap();
+        let err = new_validators(1, &second.join("bonds.txt"))
+            .expect_err("a bonds path that is a directory cannot be written");
+        assert!(
+            err.contains("FAILED WRITING BONDS FILE") && err.contains("bonds.txt"),
+            "the refusal names the second write and its path: {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

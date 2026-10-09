@@ -16,6 +16,7 @@
 //! the log stays empty while the height never moves. Logging at the point of production makes every
 //! one of those paths visible at once, including the ones with no caller left to report to.
 
+use rchain_shared::chan;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,7 +131,7 @@ fn create_with_retry(
                 let permit = match lock.clone().try_acquire_owned() {
                     Ok(p) => p,
                     Err(_) => {
-                        let _ = propose_id_def.send(ProposerResult::Empty);
+                        chan::oneshot_send(propose_id_def, ProposerResult::Empty);
                         trigger.store(true, Ordering::SeqCst);
                         return None;
                     }
@@ -150,7 +151,7 @@ fn create_with_retry(
                         None,
                     ),
                 };
-                let _ = r_tx.send(r.clone());
+                chan::oneshot_send(r_tx, r.clone());
                 // The requester may be long gone (both autopropose taps drop the receiver), so this
                 // is the only place every outcome is guaranteed to be seen.
                 log_propose_result(&log, &r);
@@ -167,7 +168,7 @@ fn create_with_retry(
                 // own, and it is paced like the taps it usually came from.
                 if trigger.swap(false, Ordering::SeqCst) {
                     let (d_tx, d_rx) = oneshot::channel();
-                    let _ = tx.send((ProposeSource::Automatic, d_tx)).await;
+                    chan::send(&tx, (ProposeSource::Automatic, d_tx)).await;
                     // Keep the receiver alive until the re-queued propose completes it.
                     std::mem::forget(d_rx);
                 }
@@ -180,7 +181,7 @@ fn create_with_retry(
                         tokio::time::sleep(not_due_retry).await;
                         retry_pending.store(false, Ordering::SeqCst);
                         let (d_tx, d_rx) = oneshot::channel();
-                        let _ = tx.send((ProposeSource::Automatic, d_tx)).await;
+                        chan::send(&tx, (ProposeSource::Automatic, d_tx)).await;
                         std::mem::forget(d_rx);
                     });
                 }

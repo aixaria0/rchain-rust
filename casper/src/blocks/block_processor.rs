@@ -1,5 +1,6 @@
 //! Block processing (port of `blocks/BlockProcessor.scala`).
 
+use rchain_shared::chan;
 use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
@@ -190,7 +191,7 @@ pub async fn apply<F, Fut>(
                     // state, and the producer here is CPU-bound replay validation — exactly the shape R15
                     // bounded on the other half of this pipeline. `let _ =` stays: a send fails only when
                     // every receiver is gone, which is shutdown, and the block is already in the DAG.
-                    let _ = validated_tx.send(block.clone()).await;
+                    chan::send(&validated_tx, block.clone()).await;
                     comm_util
                         .send_block_hash(&block.block_hash, block.sender.as_bytes())
                         .await;

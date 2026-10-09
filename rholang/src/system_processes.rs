@@ -4,6 +4,7 @@
 //! builds the `ScalaBodyFn` handlers (stdout/stderr, crypto verify/hash, block data, REV address,
 //! deployer-id ops, registry ops, sys-auth-token ops) that the runtime installs and dispatches to.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -1424,7 +1425,7 @@ impl SystemProcesses {
                 match pars.as_slice() {
                     [ack] => {
                         let (block_number, sender_bytes, timestamp) = {
-                            let data = bd.lock().unwrap_or_else(|p| p.into_inner());
+                            let data = bd.lock().unpoison();
                             (
                                 i64::from(data.block_number),
                                 data.sender.bytes().to_vec(),
@@ -1737,7 +1738,7 @@ impl SystemProcesses {
                 };
                 // The current block number drives the bond/withdraw quarantine bookkeeping.
                 let block_number = {
-                    let bd = block_data.lock().unwrap_or_else(|p| p.into_inner());
+                    let bd = block_data.lock().unpoison();
                     i64::from(bd.block_number)
                 };
                 match op {
@@ -2080,7 +2081,7 @@ impl SystemProcesses {
                 let rest = RhoList::unapply(rest_par)
                     .ok_or_else(|| illegal_arg("http arguments must be a list"))?;
                 let block_number = {
-                    let bd = block_data.lock().unwrap_or_else(|p| p.into_inner());
+                    let bd = block_data.lock().unpoison();
                     i64::from(bd.block_number)
                 };
                 match op {
@@ -2906,7 +2907,7 @@ mod tests {
         > {
             self.produced
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unpoison()
                 .push((channel, data, persist));
             Ok(None)
         }
@@ -3139,7 +3140,7 @@ mod tests {
         let args = vec![lpw(vec![RhoByteArray::apply(input.clone()), ack.clone()])];
         (handler.handler)(args, DfsPath::root()).await.unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ack);
         assert_eq!(
@@ -3173,15 +3174,12 @@ mod tests {
             vec![lpw(vec![s(op), RhoList::apply(rest)])]
         };
         let reply = || -> Par {
-            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            let produced = mock.produced.lock().unpoison();
             assert_eq!(produced.len(), 1, "each call answers exactly once");
             produced[0].1.pars[0].as_par().clone()
         };
         let clear = || {
-            mock.produced
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
+            mock.produced.lock().unpoison().clear();
         };
 
         // `record` writes a value at the current block; it answers whether it was newly recorded.
@@ -3291,14 +3289,11 @@ mod tests {
             .find(|d| d.body_ref == BodyRefs::SECP256K1_VERIFY)
             .expect("secp256k1Verify definition");
         let reply = || -> Par {
-            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            let produced = mock.produced.lock().unpoison();
             produced[0].1.pars[0].as_par().clone()
         };
         let clear = || {
-            mock.produced
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
+            mock.produced.lock().unpoison().clear();
         };
         let bytes = |bs: Vec<u8>| RhoByteArray::apply(bs);
         let ack = FixedChannels::stdout();
@@ -3364,7 +3359,7 @@ mod tests {
             .find(|d| d.body_ref == BodyRefs::REG_OPS)
             .expect("registry ops definition");
         let reply = || -> Par {
-            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            let produced = mock.produced.lock().unpoison();
             produced[0].1.pars[0].as_par().clone()
         };
         let ack = FixedChannels::stdout();
@@ -3387,10 +3382,7 @@ mod tests {
             Some(registry::build_uri(&blake2b256::hash(&[1, 2, 3])).as_str()),
             "the URI is the hash of the argument, by the registry's own builder"
         );
-        mock.produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        mock.produced.lock().unpoison().clear();
 
         // A non-byte-array argument: the empty par, which no `for` matches.
         (ops.handler)(
@@ -3407,10 +3399,7 @@ mod tests {
             RhoNil::unapply(&reply()),
             "an argument that cannot be a hash answers Nil, not an error"
         );
-        mock.produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        mock.produced.lock().unpoison().clear();
 
         for (label, args) in [
             (
@@ -3457,14 +3446,11 @@ mod tests {
             ])]
         };
         let reply = || -> Par {
-            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            let produced = mock.produced.lock().unpoison();
             produced[0].1.pars[0].as_par().clone()
         };
         let clear = || {
-            mock.produced
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
+            mock.produced.lock().unpoison().clear();
         };
 
         (ops.handler)(call(RhoSysAuthToken::apply()), DfsPath::root())
@@ -3525,7 +3511,7 @@ mod tests {
             .unwrap();
 
         let uri = {
-            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            let produced = mock.produced.lock().unpoison();
             assert_eq!(produced.len(), 1);
             assert_eq!(produced[0].0.as_par(), &ret);
             produced[0].1.pars[0].clone()
@@ -3547,7 +3533,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 2);
         assert_eq!(produced[1].0.as_par(), &ret2);
         // The stored value goes out on its own, unpaired with the uri (C18) — a pair would bind to
@@ -3599,7 +3585,7 @@ mod tests {
         ])];
         (pos.handler)(args, DfsPath::root()).await.unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let map = RhoMap::unapply(produced[0].1.pars[0].as_par()).expect("getBonds returns a map");
@@ -3699,7 +3685,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         // 1 transfer + 2 getBalance = 3 produces (deposit produced nothing).
         assert_eq!(produced.len(), 3);
         // The last two are the getBalance replies.
@@ -3831,7 +3817,7 @@ mod tests {
             .await
             .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ack);
         let parts = RhoTupleN::unapply(produced[0].1.pars[0].as_par()).expect("(zfa, phase) tuple");
@@ -3864,7 +3850,7 @@ mod tests {
             .unwrap();
 
         let cap = {
-            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            let produced = mock.produced.lock().unpoison();
             assert_eq!(produced.len(), 1);
             assert_eq!(produced[0].0.as_par(), &ret);
             assert!(
@@ -3883,7 +3869,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 2);
         assert_eq!(produced[1].0.as_par(), &ret2);
         assert_eq!(
@@ -3915,7 +3901,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let tuple =
@@ -3965,7 +3951,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let w = parse_member_int_map(produced[0].1.pars[0].as_par()).expect("weights map");
@@ -4000,7 +3986,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let w = parse_member_int_map(produced[0].1.pars[0].as_par()).expect("weights map");
@@ -4044,7 +4030,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let lv = parse_member_int_map(produced[0].1.pars[0].as_par()).expect("levels map");
@@ -4101,7 +4087,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let tuple =
@@ -4214,7 +4200,7 @@ mod tests {
         .await
         .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         assert_eq!(
@@ -4239,7 +4225,7 @@ mod tests {
     }
 
     fn ertp_reply(mock: &Arc<MockSpace>) -> Par {
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         produced.last().expect("the handler replied").1.pars[0]
             .as_par()
             .clone()

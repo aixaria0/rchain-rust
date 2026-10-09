@@ -4,6 +4,7 @@
 //! `PeriodSnapshot` the reporters can consume. Replaces kamon's `TrieMap[String, Metric[_]]`
 //! backend with a `Mutex`-guarded `BTreeMap` accumulator.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -65,7 +66,7 @@ impl MetricsRegistry {
         let mut_stats = Mutex::new((0_i64, 0_i64));
         Arc::new(move |depth, active| {
             let depth = i64::try_from(depth).unwrap_or(i64::MAX);
-            let mut stats = mut_stats.lock().unwrap_or_else(|p| p.into_inner());
+            let mut stats = mut_stats.lock().unpoison();
             stats.0 = stats.0.max(depth);
             stats.1 = stats.1.saturating_add(1);
             // Update together so one scrape cannot mix values from two samples.
@@ -82,7 +83,7 @@ impl MetricsRegistry {
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+        self.inner.lock().unpoison()
     }
 
     fn key(source: &Source, name: &str) -> String {

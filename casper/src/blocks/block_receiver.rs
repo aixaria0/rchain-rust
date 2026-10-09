@@ -4,6 +4,7 @@
 //! helper, and the `apply` stream wiring (incoming + validated block streams → validation queue)
 //! are ported.
 
+use rchain_shared::chan;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -539,7 +540,7 @@ async fn incoming_blocks(
         }
 
         if has_all_deps {
-            let _ = out_tx.send(block.block_hash);
+            chan::unbounded_send(&out_tx, block.block_hash);
         } else {
             if !pending_requests.is_empty() {
                 request_missing_dependencies(&pending_requests, block_retriever.as_ref()).await;
@@ -685,7 +686,7 @@ async fn validated_blocks(
                 }
             };
             for hash in next {
-                let _ = out_tx.send(hash);
+                chan::unbounded_send(&out_tx, hash);
             }
         }
     })

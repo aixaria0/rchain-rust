@@ -38,6 +38,7 @@
 //! binding introduces. Writing the URI instead sent every reply into a channel nobody watched and
 //! the deploy still reported success.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1035,7 +1036,7 @@ impl SessionFactory {
                 return;
             }
         };
-        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        *slot.lock().unpoison() = Some(context);
         // **Admission is auditable** (HAZOP row C236). The name is the peer's own assertion where the
         // transport authenticates nobody, and the key the handshake *proved* where it does — both,
         // because "who said they were calling" and "who the transport says it is" are different
@@ -1689,34 +1690,19 @@ mod tests {
             true
         }
         fn trace(&self, _s: rchain_shared::log::LogSource, m: &str) {
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(m.to_string());
+            self.0.lock().unpoison().push(m.to_string());
         }
         fn debug(&self, _s: rchain_shared::log::LogSource, m: &str) {
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(m.to_string());
+            self.0.lock().unpoison().push(m.to_string());
         }
         fn info(&self, _s: rchain_shared::log::LogSource, m: &str) {
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(m.to_string());
+            self.0.lock().unpoison().push(m.to_string());
         }
         fn warn(&self, _s: rchain_shared::log::LogSource, m: &str) {
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(m.to_string());
+            self.0.lock().unpoison().push(m.to_string());
         }
         fn error(&self, _s: rchain_shared::log::LogSource, m: &str) {
-            self.0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(m.to_string());
+            self.0.lock().unpoison().push(m.to_string());
         }
     }
 
@@ -1750,7 +1736,7 @@ mod tests {
         // Wait for the line rather than for a sleep: the bind is what produces it.
         let mut said = Vec::new();
         for _ in 0..200 {
-            said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            said = log.0.lock().unpoison().clone();
             if !said.is_empty() {
                 break;
             }
@@ -1797,7 +1783,7 @@ mod tests {
 
         let mut said = Vec::new();
         for _ in 0..200 {
-            said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            said = log.0.lock().unpoison().clone();
             if !said.is_empty() {
                 break;
             }
@@ -1840,7 +1826,7 @@ mod tests {
             "a dial-only node's listener task must stay alive, not return at once"
         );
         assert!(
-            log.0.lock().unwrap_or_else(|p| p.into_inner()).is_empty(),
+            log.0.lock().unpoison().is_empty(),
             "and with nothing to serve it binds nothing and logs no listener line"
         );
         stop_tx.send(true).expect("ask the listener to stop");
@@ -1884,7 +1870,7 @@ mod tests {
         ));
 
         let port: u16 = loop {
-            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let said = log.0.lock().unpoison().clone();
             if let Some(port) = said
                 .iter()
                 .find_map(|line| line.split("tcp-testing-only on 127.0.0.1:").nth(1))
@@ -1925,18 +1911,18 @@ mod tests {
         assert!(
             log.0
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unpoison()
                 .iter()
                 .any(|line| line.contains("session admitted: caller over tcp-testing-only")),
             "the operator must see who was admitted, over which transport: {:?}",
-            log.0.lock().unwrap_or_else(|p| p.into_inner())
+            log.0.lock().unpoison()
         );
 
         // The peer goes away, and the end is recorded with the same name.
         drop(client);
         let mut ended = false;
         for _ in 0..100 {
-            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let said = log.0.lock().unpoison().clone();
             if said
                 .iter()
                 .any(|line| line.contains("session ended: caller over tcp-testing-only"))
@@ -1949,7 +1935,7 @@ mod tests {
         assert!(
             ended,
             "and when the peer left: {:?}",
-            log.0.lock().unwrap_or_else(|p| p.into_inner())
+            log.0.lock().unpoison()
         );
 
         stop_tx.send(true).expect("ask the listener to stop");
@@ -2151,7 +2137,7 @@ mod tests {
                 .and_then(|port| port.parse().ok())
         };
         let (tcp_port, ws_port) = loop {
-            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let said = log.0.lock().unpoison().clone();
             let tcp = port_after(&said, "tcp-testing-only on 127.0.0.1:");
             let ws = port_after(&said, "websocket on 127.0.0.1:");
             if let (Some(tcp), Some(ws)) = (tcp, ws) {
@@ -2240,7 +2226,7 @@ mod tests {
         let port_of = |marker: &str| -> Option<u16> {
             log.0
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unpoison()
                 .iter()
                 .find_map(|line| line.split(marker).nth(1))
                 .and_then(|rest| rest.split([' ', '(']).next())
@@ -2279,7 +2265,7 @@ mod tests {
                 .await
                 .expect("connect");
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let said = log.0.lock().unpoison().clone();
             if said.iter().any(|line| {
                 line.contains("tcp-testing-only's session share")
                     && line.contains(&format!("({share} of {accept_total} accepts,"))
@@ -2291,20 +2277,20 @@ mod tests {
         assert!(
             refused,
             "a full transport must refuse at its own share and say which: {:?}",
-            log.0.lock().unwrap_or_else(|p| p.into_inner())
+            log.0.lock().unpoison()
         );
 
         // **And the other transport is untouched.** `tcp-testing-only` is holding its whole share at
         // this moment; a connection on `unix` is still accepted, which is the property that was
         // missing when the semaphore was node-wide.
-        let before = log.0.lock().unwrap_or_else(|p| p.into_inner()).len();
+        let before = log.0.lock().unpoison().len();
         let unix = tokio::net::UnixStream::connect(&socket).await;
         assert!(
             unix.is_ok(),
             "unix must still accept while tcp is at its share: {unix:?}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let after = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let after = log.0.lock().unpoison().clone();
         assert_eq!(
             before,
             after.len(),

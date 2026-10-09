@@ -144,6 +144,13 @@ pub struct FinalityHealth {
     /// Merges whose report was not quiet: a dropped chain, or an invariant violation (#280). The log
     /// carries the detail; this is the number the live incident would have moved.
     pub non_quiet_merge_reports: u64,
+    /// **How many blocks this node has given up on** (C249's R3 gap): a `Divergence` record whose
+    /// revalidation budget is spent and which still fails, so the node refuses it and its descendants
+    /// for the process lifetime. Nothing acts on this yet — it is the denominator a reset would be
+    /// reviewed against, shipped dark.
+    pub unrestorable_records: u64,
+    /// …and *which* block, as `<hash> (seq <n>)` — the count says it happened, this says where.
+    pub unrestorable_block: Option<String>,
 }
 
 /// The block API (port of `BlockApi[F]`). Implementations read from the block store/DAG and drive
@@ -184,6 +191,8 @@ pub trait BlockApi: Send + Sync {
             stall_reason: crate::interpreter_util::finality_stall_reason(),
             stall_episodes: crate::interpreter_util::finality_stall_episodes(),
             non_quiet_merge_reports: crate::interpreter_util::non_quiet_merge_reports(),
+            unrestorable_records: crate::interpreter_util::unrestorable_records(),
+            unrestorable_block: crate::interpreter_util::unrestorable_block(),
         }
     }
 

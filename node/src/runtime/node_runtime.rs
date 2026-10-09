@@ -5,6 +5,8 @@
 //! comm/transport/discovery layer, the proposer, the block receiver/processor streams, the
 //! NodeLaunch state machines, and the report-store codec.
 
+use rchain_shared::chan;
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -352,7 +354,7 @@ pub async fn create_comm_state(
         let kademlia_tls =
             rchain_comm::transport::hostname_trust_manager::server_config(&cert, &key)
                 .map_err(|e| format!("kademlia server TLS: {e}"))?;
-        tokio::spawn(async move {
+        rchain_shared::supervise::spawn_supervised("kademlia-serve", async move {
             if let Err(e) = kademlia_serve(discovery_addr, server, kademlia_tls).await {
                 log.error(source, &format!("Kademlia RPC server failed: {e}"));
             }
@@ -377,7 +379,7 @@ pub async fn create_comm_state(
         let rp_conf = rp_conf.clone();
         let connections = connections.clone();
         let interval = conf.peers_discovery.lookup_interval;
-        tokio::spawn(async move {
+        rchain_shared::supervise::spawn_supervised("peer-discovery", async move {
             loop {
                 discovery.discover().await;
                 let current = connections.read().await.clone();
@@ -400,7 +402,7 @@ pub async fn create_comm_state(
         let rp_conf = rp_conf.clone();
         let connections = connections.clone();
         let interval = conf.peers_discovery.cleanup_interval;
-        tokio::spawn(async move {
+        rchain_shared::supervise::spawn_supervised("clear-connections", async move {
             loop {
                 let snapshot = connections.read().await.clone();
                 let (to_ping, successful, _failed) =
@@ -788,7 +790,7 @@ pub(crate) async fn pump_validated_blocks(
         match block_store.get(&[hash]).await {
             Ok(mut v) => {
                 if let Some(block) = v.pop().flatten() {
-                    let _ = processor_input_tx.send(block).await;
+                    chan::send(&processor_input_tx, block).await;
                 }
             }
             Err(e) => log.error(
@@ -889,7 +891,7 @@ fn wire_block_processing_observed(
     let put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync> = Arc::new({
         let incoming_blocks_tx = incoming_blocks_tx.clone();
         move |block| {
-            let _ = incoming_blocks_tx.try_send(block);
+            chan::try_send(&incoming_blocks_tx, block);
         }
     });
     let validation_rx = block_receiver::apply_with_queue_observer(
@@ -1258,7 +1260,7 @@ pub async fn setup_node_program(
             }
         }
     };
-    tokio::spawn(request_deps);
+    rchain_shared::supervise::spawn_supervised("block-retriever", request_deps);
 
     // The client surface is one set of servers over all the members: `ShardRoutingBlockApi` sends
     // each request to the shard that owns it, so the gRPC/HTTP services above it need no shard
@@ -1735,7 +1737,7 @@ async fn setup_shard_runtime(
                 let timer_metrics = metrics.clone();
                 let timer_source = health_source.clone();
                 let timer_health = propose_health.clone();
-                tokio::spawn(async move {
+                rchain_shared::supervise::spawn_supervised("autopropose-timer", async move {
                     let mut interval = tokio::time::interval(AUTOPROPOSE_INTERVAL);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
@@ -1816,7 +1818,7 @@ async fn setup_shard_runtime(
                     return;
                 }
                 {
-                    let mut answered = answered.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut answered = answered.lock().unpoison();
                     let last_for_sender = answered.get(&sender).copied();
                     if !attest_warranted(&me, &sender, height, last_for_sender) {
                         return;
@@ -2172,7 +2174,7 @@ pub async fn setup_shard(
                 Box::pin(async move {
                     let (otx, orx) = tokio::sync::oneshot::channel();
                     // A caller asked, and waits: `Explicit`, so C171's pace bound does not apply.
-                    let _ = tx.send((ProposeSource::Explicit { is_async }, otx)).await;
+                    chan::send(&tx, (ProposeSource::Explicit { is_async }, otx)).await;
                     orx.await.unwrap_or(ProposerResult::Empty)
                 })
             },
@@ -2991,7 +2993,7 @@ fn tap_validated_blocks(
             let tap_tx = tap_tx.clone();
             async move {
                 tap(&block);
-                let _ = tap_tx.send(block).await;
+                chan::send(&tap_tx, block).await;
             }
         },
     ));

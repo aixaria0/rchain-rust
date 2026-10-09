@@ -11,6 +11,7 @@
 //! client is held to the rate it was given; the burst a fixed window allowed after an *idle* period
 //! is preserved, because the bucket starts full.
 
+use crate::lock::Unpoison;
 use std::sync::Mutex;
 
 // The wasm build takes the host's clock (`web-time`); `std`'s panics there (issue #98).
@@ -43,7 +44,7 @@ impl RateLimiter {
     /// Admit a request if a token is available, refilling at the configured rate.
     pub fn allow(&self) -> bool {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unpoison();
         let (tokens, last) = &mut *state;
         let refill = now.duration_since(*last).as_secs_f64() * self.max_per_sec as f64;
         *tokens = (*tokens + refill).min(self.max_per_sec as f64);

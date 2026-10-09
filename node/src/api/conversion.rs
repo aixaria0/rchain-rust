@@ -34,6 +34,8 @@ pub fn to_api_status(
     health: &ProposerHealth,
     finality: &FinalityHealth,
     poison_recoveries: u64,
+    tasks_panicked: u64,
+    tasks_exited: u64,
 ) -> ApiStatus {
     ApiStatus {
         version: VersionInfo {
@@ -59,6 +61,10 @@ pub fn to_api_status(
         finality_stall_episodes: finality.stall_episodes,
         non_quiet_merge_reports: finality.non_quiet_merge_reports,
         poison_recoveries,
+        unrestorable_records: finality.unrestorable_records,
+        unrestorable_block: finality.unrestorable_block.clone(),
+        tasks_panicked,
+        tasks_exited,
     }
 }
 
@@ -238,8 +244,10 @@ mod tests {
             ),
             stall_episodes: 7,
             non_quiet_merge_reports: 2,
+            unrestorable_records: 1,
+            unrestorable_block: Some("ab12 (seq 9)".to_string()),
         };
-        let api = to_api_status(&status, &caps, &health, &finality, 11);
+        let api = to_api_status(&status, &caps, &health, &finality, 11, 2, 40);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
@@ -266,6 +274,15 @@ mod tests {
         assert_eq!(api.non_quiet_merge_reports, 2);
         // F-U9-03: a poisoned-lock recovery is reported rather than absorbed.
         assert_eq!(api.poison_recoveries, 11);
+        // C249's R3 gap: a node that has given up on a block says so, and says *which* one. Nothing
+        // acts on it yet — the surface exists so the reset that later does act on it is reviewable
+        // against a real denominator.
+        assert_eq!(api.unrestorable_records, 1);
+        assert_eq!(api.unrestorable_block.as_deref(), Some("ab12 (seq 9)"));
+        // C254: the supervisor's two counters, carried through as their own source. A panic and a
+        // return are different facts — the return is the one nothing else reports.
+        assert_eq!(api.tasks_panicked, 2);
+        assert_eq!(api.tasks_exited, 40);
     }
 
     #[test]
