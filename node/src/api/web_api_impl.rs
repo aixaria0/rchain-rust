@@ -575,6 +575,11 @@ impl WebApi for WebApiImpl {
             &health,
             &finality,
             rchain_rspace::lock::poison_recoveries(),
+            // C254: the supervisor's counters. Every long-lived background task is watched by
+            // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a
+            // probe can read rather than an absence an operator has to infer from the silence.
+            rchain_shared::supervise::tasks_panicked(),
+            rchain_shared::supervise::tasks_exited(),
         ))
     }
 

@@ -92,7 +92,7 @@ pub fn accept_tls(
 ) -> futures::channel::mpsc::Receiver<Result<TlsIo, std::io::Error>> {
     let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(capacity);
     let handshake_slots = Arc::new(tokio::sync::Semaphore::new(capacity));
-    tokio::spawn(async move {
+    rchain_shared::supervise::spawn_supervised("tls-handshake", async move {
         let tx = tx;
         loop {
             let Ok((tcp, _)) = listener.accept().await else {
@@ -103,6 +103,12 @@ pub fn accept_tls(
             };
             let acceptor = acceptor.clone();
             let tx = tx.clone();
+            // **Not supervised, and that is a decision rather than an omission** (AUDIT C254). Every
+            // connection's handshake *ends* — that is its normal completion — so counting returns
+            // here would turn the supervisor into a flood of lines about healthy handshakes, and the
+            // counter would stop meaning "a subsystem died". A panic in this task already reaches
+            // stderr through the runtime's default hook. The long-lived accept loop above is the task
+            // whose death is a real loss, and it is the one that is watched.
             tokio::spawn(async move {
                 let _permit = permit;
                 let mut tx = tx;

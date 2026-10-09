@@ -8206,3 +8206,35 @@ persisted rewind anchor, and the detector that *acts* are the rest of F-U5-01; t
 is the drill the programme names — a planted unrecoverable divergence resets and rejoins, a restorable
 one restores in place and does not reset. #287/#294 own the net-wide reconciliation; this is the
 node-side counter they will be reviewed against.
+
+---
+
+## 78. Six detached tasks, and the two deaths — one of which nothing announced (C254, E6/E6a)
+
+**What the audit found.** The node has **no supervisor**. Every long-lived background task is a bare
+`tokio::spawn` whose `JoinHandle` is dropped, so nothing can tell a task that is running from one that
+died at startup. A panic reaches stderr through the runtime's default hook and is at least visible once;
+a plain early `return` — the loop that exits on its first error, the future that completes when its
+channel closes — produces **no line anywhere**, and the node serves on with that subsystem gone.
+
+**What lands.** `rchain_shared::supervise::spawn_supervised(name, fut)`: spawn the work, and spawn one
+watcher that awaits its handle and reports what it finds. `Ok` is a **return** — counted and printed at
+`warn`, because it is the quieter death and nothing else announces it. A panic is counted apart and
+printed with its payload. The two counters reach `/api/status` as `tasksPanicked` / `tasksExited`
+beside `finalityStall`.
+
+**The six sites, and the seventh that is deliberately not one.** The five in
+`node/src/runtime/node_runtime.rs` (kademlia-serve, peer-discovery, clear-connections,
+block-retriever, autopropose-timer) and the TLS accept loop in
+`comm/src/transport/grpc_transport_receiver.rs`. The **per-connection** handshake spawn in that same
+function is **not** supervised, and that is a decision rather than an omission: every handshake *ends*,
+so counting its returns would flood the surface with lines about healthy connections and the counter
+would stop meaning "a subsystem died". The long-lived accept loop above it is the task whose death is a
+real loss, and it is the one watched.
+
+**Falsifier.** The two events had no counter, so a probe could not ask whether a subsystem had died.
+`a_panicking_task_and_a_returning_task_are_counted_apart` pins both, and pins that they are **different
+facts** — conflating them would lose the one that nothing else reports.
+
+**What remains.** The closed-channel half (E6b): a `let _ = tx.send(…)` on a shutdown channel is the
+same silence in a different shape, ~18 sites plus the lint decision, and it is not in this commit.

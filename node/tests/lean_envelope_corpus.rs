@@ -272,6 +272,8 @@ fn dto_by_name(name: &str) -> Value {
             poison_recoveries: 0,
             unrestorable_records: 0,
             unrestorable_block: None,
+            tasks_panicked: 0,
+            tasks_exited: 0,
         }),
         "NodeCapabilities" => to_json(&NodeCapabilities {
             autopropose: false,

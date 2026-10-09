@@ -34,6 +34,8 @@ pub fn to_api_status(
     health: &ProposerHealth,
     finality: &FinalityHealth,
     poison_recoveries: u64,
+    tasks_panicked: u64,
+    tasks_exited: u64,
 ) -> ApiStatus {
     ApiStatus {
         version: VersionInfo {
@@ -61,6 +63,8 @@ pub fn to_api_status(
         poison_recoveries,
         unrestorable_records: finality.unrestorable_records,
         unrestorable_block: finality.unrestorable_block.clone(),
+        tasks_panicked,
+        tasks_exited,
     }
 }
 
@@ -243,7 +247,7 @@ mod tests {
             unrestorable_records: 1,
             unrestorable_block: Some("ab12 (seq 9)".to_string()),
         };
-        let api = to_api_status(&status, &caps, &health, &finality, 11);
+        let api = to_api_status(&status, &caps, &health, &finality, 11, 2, 40);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
@@ -275,6 +279,10 @@ mod tests {
         // against a real denominator.
         assert_eq!(api.unrestorable_records, 1);
         assert_eq!(api.unrestorable_block.as_deref(), Some("ab12 (seq 9)"));
+        // C254: the supervisor's two counters, carried through as their own source. A panic and a
+        // return are different facts — the return is the one nothing else reports.
+        assert_eq!(api.tasks_panicked, 2);
+        assert_eq!(api.tasks_exited, 40);
     }
 
     #[test]

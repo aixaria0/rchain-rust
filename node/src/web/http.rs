@@ -941,7 +941,9 @@ pub const OPENAPI_JSON: &str = r##"{
           "nonQuietMergeReports": { "type": "integer", "format": "int64", "description": "Merges whose report was not quiet: a chain dropped, or an invariant violated. The log carries the detail; this is the count the live incident would have moved" },
           "poisonRecoveries": { "type": "integer", "format": "int64", "description": "Times a poisoned lock was recovered from, which means a panic happened while shared state was held. Process-wide and monotone" },
           "unrestorableRecords": { "type": "integer", "format": "int64", "description": "Blocks this node has given up on: a divergence record whose revalidation budget is spent and which still fails here, so the node refuses it and its descendants for the process lifetime. Nothing resets a running node yet; this is the counter a reset would act on" },
-          "unrestorableBlock": { "type": "string", "nullable": true, "description": "The block the node last gave up on, as '<hash> (seq <n>)'. Null when it never has" }
+          "unrestorableBlock": { "type": "string", "nullable": true, "description": "The block the node last gave up on, as '<hash> (seq <n>)'. Null when it never has" },
+          "tasksPanicked": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have panicked. Before the supervisor these deaths were invisible: a bare tokio::spawn whose handle was dropped" },
+          "tasksExited": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have returned normally, counted apart from panics because a return is the quieter death — nothing announces it anywhere" }
         }
       },
       "DeployData": {
@@ -1566,6 +1568,8 @@ mod tests {
             poison_recoveries: 0,
             unrestorable_records: 0,
             unrestorable_block: None,
+            tasks_panicked: 0,
+            tasks_exited: 0,
         }
     }
 

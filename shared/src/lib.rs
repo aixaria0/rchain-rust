@@ -43,4 +43,6 @@ pub mod monixable;
 #[cfg(feature = "tokio")]
 pub mod store_manager;
 #[cfg(feature = "tokio")]
+pub mod supervise;
+#[cfg(feature = "tokio")]
 pub mod typed_store;
