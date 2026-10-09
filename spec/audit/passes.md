@@ -8568,9 +8568,63 @@ un-validatable by a clean node. That makes the copy path demonstrable and an anc
 drill under the injection would prove the copy, not a sync — so the anchor's drill needs a staging where
 the joiners' blocks stay valid to a clean node, which is work the instrument still owes.
 
----
+## 85. The record at a fringe key is a function of that key — the negative result overturned (C215)
 
-## 85. The close-out: what ended, what was filed, and the negative result that stopped a fix (C215, C259)
+**What §84 could not do, this does.** The close-out recorded C215 as a fix with **no falsifier**: the
+storage-level reproduction existed (two arrival orders left two `FringeState` records at one key) and a
+unit test of the read consumed it, but the full-path test the #299 review asked for **passed on the
+unfixed tree** — two orders, one outcome, nothing rejected — so the claim that the merge's *outcome*
+depended on arrival order was withdrawn and the fix withheld. It is withdrawn no longer.
+
+**Why it passed, found by instrumenting the merge rather than by reading it.** The collision reached
+`rejections_for` and did flip `accepted_finally`/`rejected_finally` — 1/0 on one node, 0/1 on the other —
+and the resolution still returned `to_merge=2, rejected=0` on both. `incompatible_with_final` is the only
+consumer of those two sets, and it is **asymmetric**: an accepted-finally chain `x` rejects the conflict
+chains that *conflict with* it (`conflicts_map[x]`), a rejected-finally `x` rejects the ones that *depend
+on* it (`dependency_map[x]`). In the old construction `x` was related to neither `y` nor `z`, so both
+branches of the asymmetry were empty and the flip changed nothing.
+
+**The construction therefore has to choose the relation deliberately.** A probe over candidate term pairs
+(`DeployChainIndex::depends` / `deploys_are_conflicting` on chains the runtime built) gave the one that
+works: **`x` produces an event and `y` consumes it** — `depends(y, x) = true`, `conflicts(y, x) = false`.
+With that, the same validated blocks merged to two different states (`c337791b…` and `2a9dff46…`) and two
+different rejected sets, one `y` apiece — **red on the unfixed tree**, green after the join.
+
+The probe's own first run read `false/false` for every pair, including ones that are plainly related.
+That was the instrument, not the subject: `BLOCK_INDEX_CACHE` is process-global and keyed by block hash
+alone, so a probe reusing one hash handed every later pair the first pair's chains. It is the same
+cache the plan's C249 note already names, met from the other side.
+
+**The fix.** `insert` joins a record already stored at a fringe key with the incoming one instead of
+overwriting it: the rejection sets and `fringe_diff` by **union** — monotone, so the merges that read them
+can only reject more of what some finalising block rejected, the fail-closed direction — and `state_hash`
+by a deterministic tie-break, because a hash cannot be joined. The join is commutative, associative and
+idempotent, so every arrival order reaches one record. That restores the invariant the type already
+states: `FringeData`'s `Hash` impl hashes **only** `fringe_hash`, and its own doc says it "is uniquely
+identified by the hash of its fringe hashes", so a map from key to record must hold `value(key)`.
+
+**Falsifiers, both measured red-before-green-after on one tree** (the join reverted for the second run):
+`casper/tests/merge_determinism.rs::two_arrival_orders_of_one_block_set_leave_one_fringe_cache` (the
+storage, through the production `insert`) and
+`casper/tests/merge_determinism.rs::the_same_validated_blocks_merge_identically_in_both_arrival_orders`
+(the merge's own entry point, with states the runtime computes).
+
+**What remains open, and is stated in the test file rather than implied.** The colliding pair needs two
+blocks that **disagree about one fringe** — genuinely different content, which is the shape the row's
+original note said the difference had to be. Whether two honest nodes holding the *same* block set can
+produce such a pair is not settled here: the argument that they cannot — the merge for a fringe is a
+function of the DAG, so same-DAG nodes compute the same report, and the divergence is propagated rather
+than created at this level — is a reason to expect the incident's four heads to have been *caused*
+somewhere else and merely *carried* by this map. That is C250's question, not this fix's. What the join
+settles is that the map can no longer be a carrier: whatever two nodes disagree about, they cannot
+disagree about what a fringe key holds.
+
+## 86. The close-out: what ended, what was filed, and the negative result that stopped a fix (C215, C259)
+
+**§85 superseded this pass's C215 half, and merged after it was written.** §85 found *why* the
+full-path test described below passed on the unfixed tree and made the fix real, so the paragraph on
+C215's missing falsifier is the state of play at the time of writing rather than the end of it. What
+stands unchanged is the other half: what was filed, and where.
 
 **The programme ends here, and this pass records why each of the two remaining code units did not land as a
 fix.**
@@ -8610,7 +8664,7 @@ demonstrated to bring a frozen chain back (one head, identical block hashes at e
 finality resumed), and the page now says what it does, that it is a fiat the tool prints before applying,
 and that it is not the protocol answer.
 
-## 86. The anchor names its root in the request, so its ancestry travels (C259a)
+## 87. The anchor names its root in the request, so its ancestry travels (C259a)
 
 **What §84 left, and this closes.** C259(a) was filed as two halves; this is the first, the anchor's
 ancestry. The *restore* half already worked — a node pointed at an anchor restored that block's state —

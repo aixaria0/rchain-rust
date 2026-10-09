@@ -35,10 +35,17 @@ the falsifier turned out to be green on the unfixed tree (§2). That is the rule
 | the recovery tool | #301, on `dev` | plan phase verified against a real divergence: stake-weighted meet, equivocation by proof, a written report |
 | **the stopgap** | #301 | `--restore-from-master` converges a frozen chain to **one head, agreeing hashes at every height, no genesis, finality resumed** — the acceptance's four clauses, demonstrated (`spec/audit/evidence/n-reconcile-drill/restore-disarmed.txt`) |
 | a CI flake | #300, on `dev` | `cwait_returns_on_a_notification` was a lost-wakeup race costing 45-minute jobs |
-| `--sync-anchor` | `fix/sync-anchor` (**open PR**) | a node restores to a named block's state instead of a fringe — and **does not catch up**; §2 |
-| the negative result | `c215-merge-path-negative` (**open PR**) | the merge-path reproduction the #299 review asked for, which passes on the unfixed tree |
+| **C215's fix** | #304 (**open PR**) | `insert` joins a record at a fringe key instead of overwriting it, so the map is a function of its key — with the full-path falsifier the first attempt lacked (pass §85) |
+| `--sync-anchor` | #303 (**open PR**) | a node restores to a named block's state **and its ancestry travels**, so the catch-up has something to validate against (pass §87) |
 
-Register: **295 findings, 8 todo** — C215, C249, C250, C253, C254, C255, C256, C260.
+Register: **296 findings, 6 todo, 1 in progress** — C249, C250, C254, C255, C256, C260; C259 in progress.
+
+**Correction, 2026-10-09, after this handover was written.** §2's first entry below — "C215's fix is
+unproven, and the proof attempt is the evidence" — was true when written and is not any more. The
+full-path test was made to bite (the shortfall was `incompatible_with_final`'s asymmetry, and the
+construction needed a conflict-scope chain that the final-scope chain *produces* for), and the fix
+landed in #304 with that test as its falsifier. Read §2's C215 section as the record of why the first
+attempt did not count, not as a description of the tree.
 
 ---
 
