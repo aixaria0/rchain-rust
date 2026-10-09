@@ -650,16 +650,18 @@ pub struct Run {
     /// **A block hash to sync to when this node has no chain** — the anchor a reconciliation computes
     /// when a net has no finalised fringe to resync from. Empty is the ordinary path.
     ///
-    /// **The restore works; the catch-up does not, and this records why rather than leaving it to be
-    /// discovered.** The seed this builds carries **no fringe ancestry**, which is the one piece #139
-    /// added to make a restored block replayable — and the sidecar stores a merge needs
-    /// (`mergeable-channel-cache`, `native-changes-cache`) are not part of the state a sync transfers.
-    /// A node restored this way therefore reaches its anchor and stops: pointed near the tip it stalls
-    /// silently (single-parent hops validate, the multi-parent suffix above the anchor never does);
-    /// pointed far back it fails loudly on `regenerated mergeable channels` for the suffix's
-    /// epoch-boundary blocks, which is the C188 class. Measured in
-    /// `spec/audit/evidence/n-anchor-drill/run.md`; owed as C259(a), whose first half is carrying the
-    /// anchor's ancestry rather than fabricating an empty one.
+    /// The hash is named **in the fringe request** (C259a), and the bootstrap answers with that block's
+    /// post-state **and the per-block fringe state of its ancestry** — the piece #139 added so a restored
+    /// block can be replayed rather than re-derived. The earlier form of this flag fetched the block and
+    /// patched a seed together locally, which left the ancestry empty: the node then restored the state
+    /// and **stopped at the anchor**, silently near the tip and loudly on an older anchor
+    /// (`regenerated mergeable channels…`). That is measured in
+    /// `spec/audit/evidence/n-anchor-drill/run.md`.
+    ///
+    /// **What it still depends on.** A peer that does not know the request's `anchor` field answers with
+    /// its own latest fringe — or, with finality frozen, the genesis block — so the recovery degrades to
+    /// the ordinary path rather than failing. Every node in a shard runs the same binary, so in practice
+    /// the responder is one that knows it.
     #[arg(long = "sync-anchor")]
     pub sync_anchor: Option<String>,
 

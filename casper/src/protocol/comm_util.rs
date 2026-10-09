@@ -225,10 +225,17 @@ impl CommUtil {
     /// `close_block` anchors the epoch seed to the fringe state replays to a different post-state,
     /// and the node never catches up. A responder that does not know the field ignores it, so a
     /// mixed pair falls back to the pre-#139 behaviour rather than failing to sync.
+    ///
+    /// `anchor` names the block the sync is to be rooted at (C259). `None` is the ordinary request.
+    /// `Some(h)` is a recovery sync: the responder builds the fringe, and its ancestry, from block `h`
+    /// instead of from its own latest fringe — which a peer with finality frozen does not have, and
+    /// which it silently replaces with the genesis block. Without the anchor a wiped joiner syncs to
+    /// block 0 and can never re-enter the sync path.
     pub async fn request_finalized_fringe(
         &self,
         trim_state: bool,
         include_fringe_metadata: bool,
+        anchor: Option<BlockHash>,
     ) -> Result<(), StandaloneNodeSendToBootstrapError> {
         let bootstrap = self
             .conf
@@ -239,6 +246,7 @@ impl CommUtil {
             identifier: String::new(),
             trim_state,
             include_fringe_metadata,
+            anchor,
         };
         let packet = FinalizedFringeRequestSerde.mk_packet(&msg);
         self.send_with_retry(
@@ -371,7 +379,7 @@ mod tests {
         let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
 
         let err = comm
-            .request_finalized_fringe(false, false)
+            .request_finalized_fringe(false, false, None)
             .await
             .expect_err("a standalone node has no bootstrap to ask");
         assert_eq!(err, StandaloneNodeSendToBootstrapError);
@@ -394,7 +402,7 @@ mod tests {
             Vec::new(),
         );
 
-        comm.request_finalized_fringe(true, false)
+        comm.request_finalized_fringe(true, false, None)
             .await
             .expect("a bootstrap");
         let sends = transport.sends.lock().unwrap();
