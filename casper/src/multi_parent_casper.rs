@@ -609,8 +609,27 @@ where
             log,
         )
         .await;
-        let record = revalidated_record(&stored, outcome.ok());
-        let cleared = !record.validation_failed;
+        // **A fault is not a verdict** (C253's E3/E5). `Internal` says *this node* could not run the
+        // check, which is not a fact about the block: recording it as a failure would refuse the block
+        // and its descendants for the process lifetime on the strength of a fault that said nothing
+        // about them. So the record is left exactly as it was and no attempt is spent.
+        let (record, cleared) = match revalidated_record(&stored, outcome) {
+            Revalidation::Restored(record) => (record, true),
+            Revalidation::StillRefused(record) => (record, false),
+            Revalidation::Fault(e) => {
+                log.error(
+                    source,
+                    &format!(
+                        "could not re-validate block {}: the failure is internal to this node and not a \
+                         verdict about the block, so its record is left as it was and no attempt is \
+                         spent (AUDIT C253)",
+                        hash.to_hex()
+                    ),
+                );
+                log.error(source, &format!("  the internal failure was: {e}"));
+                continue;
+            }
+        };
         note_unrestorable_if_exhausted(&record, &hash, source, log);
         match dag.update_metadata(record).await {
             Ok(()) if cleared => {
@@ -639,31 +658,66 @@ where
     false
 }
 
-/// The record to store after one revalidation attempt: `Some(fresh)` when the block passed, `None`
-/// when it did not.
+/// **What one revalidation attempt produced — including the arm that is not a verdict** (C253's E3/E5).
+///
+/// The old signature took `Option<BlockMetadata>`, which every caller built with `outcome.ok()`. That
+/// folds two utterly different facts into one `None`: *this block does not validate here* — a verdict,
+/// which the record must keep and which spends an attempt — and *this node could not run the check*,
+/// an internal error that is not a fact about the block at all. **The erasure is the defect**: a node
+/// that hit an internal error on a good block recorded the block as bad, and the record is permanent,
+/// so it refused that block and its descendants for the process lifetime on the strength of a fault
+/// that said nothing about them.
+///
+/// So the arms are the three things an attempt can produce, and [`Revalidation::Fault`] is not a
+/// verdict: it spends no attempt and leaves the stored record exactly as it was.
+#[derive(Debug)]
+pub enum Revalidation {
+    /// The block validates against this node's DAG now — the refusal is withdrawn.
+    Restored(BlockMetadata),
+    /// It still fails, and the failure is a verdict about the block. The attempt is spent.
+    StillRefused(BlockMetadata),
+    /// **The check itself failed.** Not a fact about the block, so it is neither recorded nor counted.
+    Fault(String),
+}
+
+/// The record to store after one revalidation attempt, or the fault that says there is none.
 ///
 /// **`slashable` is carried, not recomputed.** Clearing the refusal must not clear attribution — the
 /// restore gives the refused state an inverse, it does not withdraw the verdict about whose fault the
 /// failure was. For a `Divergence` record the carried value is `false` by construction, so the restore
 /// cannot mint slash evidence in either direction.
 ///
-/// The attempt is spent either way, which is what makes the cap a cap: a record that keeps failing to
-/// restore stops being re-validated rather than being retried on every block that justifies it.
-fn revalidated_record(stored: &BlockMetadata, fresh: Option<BlockMetadata>) -> BlockMetadata {
-    let attempts = stored.restore_attempts + 1;
-    match fresh {
-        Some(fresh) => BlockMetadata {
+/// **An attempt is spent on a verdict, never on a fault.** That is what makes the cap a cap *and* what
+/// keeps a fault from consuming the block's whole budget: a record that keeps failing to restore stops
+/// being re-validated rather than being retried on every block that justifies it, but a node whose own
+/// machinery is broken does not thereby condemn the block.
+fn revalidated_record(
+    stored: &BlockMetadata,
+    outcome: Result<BlockMetadata, ValidateError>,
+) -> Revalidation {
+    match outcome {
+        Ok(fresh) => Revalidation::Restored(BlockMetadata {
             validation_failed: false,
             failure_cause: None,
             slash_severity: SlashSeverity::Unspecified,
             slashable: stored.slashable,
-            restore_attempts: attempts,
+            restore_attempts: stored.restore_attempts + 1,
             ..fresh
-        },
-        None => BlockMetadata {
-            restore_attempts: attempts,
+        }),
+        // The verdict: the block was checked and refused, so the record stands and the attempt is spent.
+        Err(ValidateError::ValidationFailed(..)) => Revalidation::StillRefused(BlockMetadata {
+            restore_attempts: stored.restore_attempts + 1,
             ..stored.clone()
-        },
+        }),
+        Err(ValidateError::Internal(e)) => Revalidation::Fault(e),
+        // `validate_checks` does not produce this — only the proposer's self-insert does — but if it
+        // ever did, it would be a fact about this node's view rather than about the block, which is
+        // the fault arm and not the verdict arm.
+        Err(ValidateError::SelfEquivocation) => Revalidation::Fault(
+            "a re-validation reported a self-equivocation, which only the proposer's own self-insert \
+             produces"
+                .to_string(),
+        ),
     }
 }
 
@@ -768,8 +822,27 @@ async fn restore_divergent_justifications<F, Fut>(
             log,
         )
         .await;
-        let record = revalidated_record(&stored, outcome.ok());
-        let restored = !record.validation_failed;
+        let (record, restored) = match revalidated_record(&stored, outcome) {
+            Revalidation::Restored(record) => (record, true),
+            Revalidation::StillRefused(record) => (record, false),
+            // **The fault arm, and it is not a verdict** (C253's E3/E5). An internal failure says
+            // nothing about the block: writing it as a failure would refuse the block and everything
+            // above it for the process lifetime, and would spend one of the three attempts the record
+            // has. Left as it was, the next pass tries again with a working node.
+            Revalidation::Fault(e) => {
+                log.error(
+                    source,
+                    &format!(
+                        "could not re-validate justification {}: the failure is internal to this node \
+                         and not a verdict about the block, so its record is left as it was and no \
+                         attempt is spent (AUDIT C253)",
+                        j.to_hex()
+                    ),
+                );
+                log.error(source, &format!("  the internal failure was: {e}"));
+                continue;
+            }
+        };
         note_unrestorable_if_exhausted(&record, j, source, log);
 
         // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
@@ -1178,8 +1251,10 @@ mod newest_justification_tests {
 #[cfg(test)]
 mod restore_tests {
     use super::{
-        restore_budget_is_spent, restore_is_warranted, revalidated_record, RESTORE_ATTEMPT_LIMIT,
+        restore_budget_is_spent, restore_is_warranted, revalidated_record, Revalidation,
+        ValidateError, RESTORE_ATTEMPT_LIMIT,
     };
+    use crate::block_status::BlockStatus;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::block_metadata::{BlockMetadata, FailureCause};
@@ -1269,7 +1344,9 @@ mod restore_tests {
         };
         let fresh = meta(false, None, 0);
 
-        let record = revalidated_record(&stored, Some(fresh));
+        let Revalidation::Restored(record) = revalidated_record(&stored, Ok(fresh)) else {
+            panic!("a passing revalidation must restore the record");
+        };
         assert!(
             !record.validation_failed,
             "the restoring rule's whole point: the record is cleared"
@@ -1291,13 +1368,69 @@ mod restore_tests {
     #[test]
     fn a_failed_revalidation_keeps_the_record_and_spends_the_attempt() {
         let stored = meta(true, Some(FailureCause::Divergence), 1);
-        let record = revalidated_record(&stored, None);
+        let verdict =
+            ValidateError::ValidationFailed(stored.clone(), BlockStatus::InvalidStateHash);
+        let Revalidation::StillRefused(record) = revalidated_record(&stored, Err(verdict)) else {
+            panic!("a validation failure is a verdict and must keep the record");
+        };
 
         assert!(record.validation_failed, "still refused");
         assert_eq!(record.failure_cause, Some(FailureCause::Divergence));
         assert_eq!(record.restore_attempts, 2);
         // Everything else is untouched — the failure is the same failure it was.
         assert_eq!(record.block_hash, stored.block_hash);
+    }
+
+    /// **A fault is not a verdict** (C253's E3/E5) — the arm whose absence was the defect.
+    ///
+    /// Both restore sites built the argument with `outcome.ok()`, so `None` meant *both* "the block was
+    /// checked and refused" (a fact about the block, which the record must keep and which costs an
+    /// attempt) *and* "the check could not run" (a fact about **this node**, which says nothing about
+    /// the block and must cost nothing). A node that hit an internal error on a good block therefore
+    /// recorded the block as bad — permanently, and against its descendants too.
+    ///
+    /// So the falsifier is the arm itself: an internal failure produces *neither* a restored record
+    /// *nor* a refused one, which is exactly what leaves the caller with nothing to write and nothing
+    /// to count.
+    #[test]
+    fn an_internal_failure_is_a_fault_and_not_a_verdict() {
+        let stored = meta(true, Some(FailureCause::Divergence), 1);
+
+        match revalidated_record(
+            &stored,
+            Err(ValidateError::Internal(
+                "the store could not be read".into(),
+            )),
+        ) {
+            Revalidation::Fault(e) => {
+                assert_eq!(e, "the store could not be read", "the reason travels")
+            }
+            other => panic!("an internal failure is not a fact about the block: {other:?}"),
+        }
+
+        // `validate_checks` does not produce this one, but if it ever did it would be a fact about
+        // this node's view rather than about the block — the fault arm, not the verdict arm.
+        assert!(
+            matches!(
+                revalidated_record(&stored, Err(ValidateError::SelfEquivocation)),
+                Revalidation::Fault(_)
+            ),
+            "a self-equivocation is this node's race, not the block's fault"
+        );
+
+        // And the verdict arm is unchanged: a refusal still keeps the record and spends the attempt.
+        match revalidated_record(
+            &stored,
+            Err(ValidateError::ValidationFailed(
+                stored.clone(),
+                BlockStatus::InvalidStateHash,
+            )),
+        ) {
+            Revalidation::StillRefused(record) => {
+                assert_eq!(record.restore_attempts, 2, "a verdict spends the attempt")
+            }
+            other => panic!("a validation failure is still a verdict: {other:?}"),
+        }
     }
 
     /// **The moment the node gives up, and it is the *last* attempt, not the first.**
