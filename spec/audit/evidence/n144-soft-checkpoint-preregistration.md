@@ -1,0 +1,103 @@
+# #144 Stage 1 — soft-checkpoint cost, pre-registered
+
+**Status: FROZEN before the first measurement.** Issue
+[#144](https://github.com/rchain-community/rchain-rust/issues/144).
+
+## Question
+
+Candidate 1 in #144 is a full in-memory soft checkpoint on the user-deploy play path. The checkpoint
+clones the striped hot-store overlay and snapshots the native overlay. Source inspection shows four
+user-deploy sites on the cost-accounted block path, but source count is not a performance result. This
+run asks one narrower question before any optimization is allowed:
+
+> **What fraction of a real user-deploy unit is spent taking soft checkpoints, under the default
+> sequential scheduler?**
+
+This unit is measurement only. It does **not** remove, defer, reuse, or narrow any checkpoint and it
+does not change rollback, scheduling, state, block bytes, or validation verdicts.
+
+## Instrument
+
+`casper/src/runtime_manager.rs` times the five existing play-path call sites separately:
+
+| metric stem | role |
+|---|---|
+| `deploy_fallback` | pre-deploy rollback checkpoint |
+| `deploy_log` | post-deploy event-log checkpoint |
+| `cost_unit_fallback` | pre-charge → deploy → refund rollback checkpoint |
+| `pre_charge_log` | event-log checkpoint after pre-charge |
+| `system_deploy_log` | block-level system deploy; recorded, but excluded from per-user-deploy cost |
+
+The first four are the user-deploy numerator. The same fold also times the enclosing cost-accounted
+user-deploy unit. Counters are monotone process totals and are published as `rchain_runtime_*` gauges on
+the DAG's existing metrics tick. The harness reads **deltas between two scrapes**, so work before the
+arm is not charged to the arm. Process-wide maxima are retained for diagnosis but are not used by the
+decision rule because a maximum cannot be scoped to an arm by subtraction.
+
+`tools/devnet-bench.py` derives:
+
+- `snapshots_per_deploy`;
+- `checkpoint_ms_per_deploy`;
+- `deploy_unit_ms_per_deploy`;
+- `checkpoint_fraction_of_deploy_unit`;
+- the count and time of each of the four user-deploy sites.
+
+The JSON artifact carries the exact git tree and the harness configuration that produced it.
+
+## Arm
+
+One-validator local devnet, because #144's existing benchmark explicitly scopes itself to the
+single-node ceiling and does not claim multi-validator consensus throughput:
+
+```sh
+tools/devnet.sh up --validators 1 --fresh --no-autopropose
+python3 tools/devnet-bench.py \
+  --validators 1 \
+  --only deploys \
+  --deploys 200 \
+  --concurrency 4 \
+  --json target/n144-soft-checkpoint/run-<attempt>.json
+```
+
+Three attempts, unfiltered, one fresh devnet per attempt. `--no-autopropose` keeps the block path driven
+by the submitted work; the harness may use its existing explicit drain proposals after submission so a
+backlog is not mistaken for a throughput failure. The reading is the runtime-counter delta, not the
+height rate.
+
+Before each attempt record the image id and preserve the JSON. After the run, copy the three JSON files
+under `spec/audit/evidence/n144-soft-checkpoint/<tree>-<utc>/`; `target/` alone is not citable evidence.
+
+## Frozen reading and decision rule
+
+For each attempt, report the four quantities above. The campaign reading is the **median of the three
+attempts** for `checkpoint_fraction_of_deploy_unit`, with the three raw values beside it.
+
+| observation | Stage-2 decision |
+|---|---|
+| `snapshots_per_deploy < 3.5` | **void for candidate 1** — the arm did not exercise the expected successful user-deploy path often enough to price its four sites |
+| median checkpoint fraction **>= 10%** | candidate 1 is the first node-local lever to optimize; a behavior-preserving ablation gets its own before/after PR |
+| median checkpoint fraction **< 5%** | candidate 1 is not the cheapest first lever; instrument candidate 2 (mempool full decode) next |
+| median **5–10%** | inconclusive; repeat at 1,000 deploys before choosing a lever |
+
+The thresholds are relative on purpose. An absolute millisecond threshold would price the developer
+machine rather than the algorithm, while the question is whether an O(hot-state) clone is material
+inside the work unit that owns it.
+
+## Void conditions
+
+- The JSON does not contain a git tree or the stated configuration.
+- Any requested deploy is rejected before entering the pool for a harness/client reason.
+- The runtime gauges are absent or move backwards between scrapes.
+- Fewer than 90% of submitted deploys are processed inside the bounded drain window.
+- The node logs a validation failure, replay mismatch, or self-validation failure during the arm.
+
+A void attempt is preserved and named; it is not silently replaced.
+
+## What this does not claim
+
+- It is not a production TPS number or a multi-validator capacity plan.
+- It does not justify widening the 255-deploy consensus ceiling.
+- It does not authorize deleting a rollback checkpoint. `RelaxedValidated` still needs the fallback
+  path; any later optimization must preserve that behavior and prove equivalence separately.
+- It does not rank candidates 2/3/5/6 without measuring them. It only decides whether candidate 1 is
+  large enough to earn the first Stage-2 ablation.
