@@ -1,0 +1,22 @@
+name: Reconciliation Docker regression
+on:
+  pull_request:
+    paths:
+      - "tools/reconcile-network.sh"
+      - "tests/reconcile-docker-lifecycle.sh"
+      - ".github/workflows/reconcile-docker.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  docker-lifecycle:
+    name: Docker recovery lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify Docker engine
+        run: docker info
+      - name: Exercise recovery on disposable Docker resources
+        run: bash tests/reconcile-docker-lifecycle.sh
