@@ -81,6 +81,9 @@ pub struct BlockDagKeyValueStorage {
     /// The height at and above which every inserted block has been indexed (see
     /// [`DeployerLookup::indexed_from`]); persisted under [`DEPLOYER_INDEXED_FROM_KEY`].
     deployer_indexed_from: AtomicI64,
+    /// **A devnet-only injection**: make this node's own fringe records disagree with its peers'
+    /// (default `0` = off). See [`Self::with_merge_divergence_injection`].
+    merge_divergence_injection: u8,
 }
 
 /// The deployer index's one non-key entry: the `indexed_from` height, big-endian `i64`. Deployer
@@ -109,6 +112,7 @@ impl BlockDagKeyValueStorage {
             equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
             deployer_index: None,
             deployer_indexed_from: AtomicI64::new(0),
+            merge_divergence_injection: 0,
         })
     }
 
@@ -341,6 +345,35 @@ impl BlockDagKeyValueStorage {
     ///
     /// The publish is on attach as well as per insert: a restart has a whole chain to report before
     /// it accepts its first block, and `/metrics` should say so.
+    /// **Perturb this node's own fringe records, so the merge here answers differently from its peers'**
+    /// — a devnet-only injection, and the instrument the reconciliation drill needs.
+    ///
+    /// **What it stages.** `fringe_states` is keyed by `fringe_hash_of(fringe_set)` and carries
+    /// per-block values, so two blocks that finalise the same fringe set and disagree about that set are
+    /// one key with one winner, last write first (`insert` below). On an honest net the records agree, the
+    /// winner does not matter, and that is why the ambiguity was never noticed; when two blocks *do*
+    /// disagree, the node that saw one of them last reads that one's rejections and the node that saw the
+    /// other last reads the other's, and their merges produce different states. That is C215, reproduced
+    /// in process by `casper/tests/merge_determinism.rs::two_arrival_orders_of_one_block_set_leave_different_fringe_caches`
+    /// and `merging::tests::two_caches_of_one_block_set_reject_differently`.
+    ///
+    /// **What it injects.** With `n > 0`, every fringe record this node writes gains one synthetic
+    /// rejected-deploy id derived from `n` — so four nodes with four values hold four *different* records
+    /// at any key they share, the collision bites on every arrival order rather than only when honest
+    /// nodes happen to disagree, and four different merged states follow at the first height where the
+    /// merge reads them. It is the *cause* that is injected, not the symptom: nothing fabricates a state
+    /// hash or a block, and the divergence that follows is computed by the real merge from real records.
+    ///
+    /// **It is self-disclosing.** Every perturbed write prints a line naming the block and the key, so a
+    /// node that has been asked to do this cannot be mistaken for one that has gone wrong on its own —
+    /// the same standard the equivocation injection holds itself to. The node refuses to arm it without
+    /// `--dev-mode` (see `node/src/configuration`), because a chain that forks on purpose on a real
+    /// network is indistinguishable, from every other node's side, from one that forked by accident.
+    pub fn with_merge_divergence_injection(mut self, injection: u8) -> Self {
+        self.merge_divergence_injection = injection;
+        self
+    }
+
     pub fn with_metrics(mut self, metrics: Arc<dyn Metrics + Send + Sync>) -> Self {
         self.metrics = metrics;
         // Synchronous, and no guard is held here — `try_read` rather than an await, because this is
@@ -651,7 +684,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             fringe_seen.difference(&prev_seen).copied().collect()
         };
 
-        let fringe_data = FringeData {
+        let mut fringe_data = FringeData {
             fringe_hash,
             fringe: block_metadata.fringe.clone(),
             fringe_diff: fringe_diff.clone(),
@@ -662,6 +695,25 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             rejected_blocks: block.rejected_blocks.clone(),
             rejected_senders: block.rejected_senders.clone(),
         };
+
+        // **The injection** — see `with_merge_divergence_injection`. One synthetic rejected deploy, its
+        // one byte the injection number, added to every record this node writes: records that would
+        // otherwise agree now differ, so the `fringe_states` collision below bites on every arrival order
+        // instead of only when honest nodes happen to disagree. The id is a function of the injection
+        // alone, so the perturbation is deterministic and every node is distinguishable in the log.
+        if self.merge_divergence_injection > 0 {
+            fringe_data
+                .rejected_deploys
+                .insert(vec![0xd1, self.merge_divergence_injection]);
+            eprintln!(
+                "[merge-divergence-injection {}] perturbed the fringe record for block {} at key {:?}: \
+                 one synthetic rejected deploy added, so this node's merge answers differently from a peer \
+                 that saw a different block finalising the same fringe last (C215's staging instrument)",
+                self.merge_divergence_injection,
+                block.block_hash.to_hex(),
+                fringe_hash
+            );
+        }
         self.fringe_data_store
             .put(&[(fringe_hash, fringe_data.clone())])
             .await?;

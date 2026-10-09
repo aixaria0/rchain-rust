@@ -145,6 +145,16 @@ pub struct CasperConf {
     /// It is *self-harm* on a real network and it says so: the twin is equally signed, so every peer
     /// records the node as having equivocated, and it is the node's own bond the peers will take.
     pub equivocation_injection: bool,
+    /// **Perturb this node's fringe records, so its merge answers differently from its peers'** (default
+    /// `0` = off). A devnet-only injection, and the instrument the reconciliation drill needs: it makes
+    /// the `fringe_states` ambiguity — a map keyed by the fringe *set* whose value the set does not
+    /// determine (C215) — bite on every arrival order rather than only when honest nodes happen to
+    /// disagree, which is what four divergent heads and a frozen chain were made of.
+    ///
+    /// It refuses to arm without `--dev-mode` (`check_merge_divergence_injection`), and every perturbed
+    /// write prints a line saying so. See `BlockDagKeyValueStorage::with_merge_divergence_injection` for
+    /// what it does and does not fabricate.
+    pub merge_divergence_injection: u8,
     /// The effect-scheduler mode (Laws 20–25): `dfs` (default), `gate`, `relaxed`, or
     /// `relaxed-validated`. Parsed via `FromStr` at consumption (`EffectMode`); the block paths
     /// hard-reject `relaxed` (off-chain only) and accept `relaxed-validated` with

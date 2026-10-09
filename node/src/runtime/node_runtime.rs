@@ -2065,6 +2065,9 @@ pub async fn setup_shard(
         .map_err(|e| e.to_string())?
         // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
         .with_metrics(metrics)
+        // `0` (the default, and the only value a non-dev node can hold — see
+        // `check_merge_divergence_injection`) injects nothing.
+        .with_merge_divergence_injection(conf.casper.merge_divergence_injection)
         .with_deployer_index(deployer_index)
         .await?,
     );
