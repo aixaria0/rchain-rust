@@ -647,8 +647,15 @@ async fn select_deploys(
     let pooled = dag.pooled_deploys().await?;
     let mut deploys: Vec<DeployId> = Vec::new();
     for (id, d) in pooled {
-        let future = d.data.valid_after_block_number > i64::from(next_block_num);
-        let expired = d.data.valid_after_block_number < next_block_num - DEPLOY_LIFESPAN;
+        let future = crate::validate::deploy_is_future_at_block(
+            d.data.valid_after_block_number,
+            i64::from(next_block_num),
+        );
+        let expired = crate::validate::deploy_expired_at_block(
+            d.data.valid_after_block_number,
+            i64::from(next_block_num),
+            DEPLOY_LIFESPAN,
+        );
         let replay_attack = dag.lookup_by_deploy_id(&id).await?.is_some();
         if !(future || expired || replay_attack) {
             deploys.push(id);
@@ -1428,19 +1435,102 @@ mod tests {
             .unwrap();
         assert_eq!(with_one_slash.len(), MAX_BLOCK_DEPLOYS - 1);
 
-        // And the pool's own filter still runs: an expired deploy is not selected at all.
+        // And the pool's own filter still runs at the exact validation boundary. At candidate
+        // block 51 with lifespan 50, valid_after=1 is already expired (`1 <= 51 - 50`), while 2 is
+        // still valid. This is the edge that used to let the proposer construct a block it rejected
+        // itself during validation.
         let mut with_expired = std::collections::BTreeMap::new();
-        with_expired.insert(vec![0u8, 9u8], pooled(9, 0));
-        with_expired.insert(vec![0u8, 10u8], pooled(10, -(DEPLOY_LIFESPAN + 1)));
+        with_expired.insert(vec![0u8, 8u8], pooled(8, 2));
+        with_expired.insert(vec![0u8, 9u8], pooled(9, 1));
+        with_expired.insert(vec![0u8, 10u8], pooled(10, 0));
         let dag = PoolDag {
             pooled: with_expired,
         };
+        let expiry_edge = BlockHeight::try_from(51).unwrap();
         assert_eq!(
-            select_deploys(&dag, next, per_block_deploy_budget(0))
+            select_deploys(&dag, expiry_edge, per_block_deploy_budget(0))
                 .await
                 .unwrap(),
-            vec![vec![0u8, 9u8]],
-            "the expiry filter must still apply under the cap"
+            vec![vec![0u8, 8u8]],
+            "the proposer must exclude both an old deploy and the exact first-height expiry boundary"
+        );
+    }
+
+    /// The operational wedge from #284 was a disagreement between selection and validation at
+    /// the exact expiry boundary. Exercise both sides together across the boundary so the proposer
+    /// cannot manufacture a block that the validator rejects, and so a deploy that is still valid
+    /// remains proposable on the following height.
+    #[tokio::test]
+    async fn expiry_boundary_selection_and_validation_advance_together() {
+        use rchain_models::casper::protocol::casper_message::{PCost, ProcessedDeploy};
+
+        let processed = |d: SignedDeployData| ProcessedDeploy {
+            deploy: d,
+            cost: PCost { cost: 0 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        };
+
+        // At block 51, valid_after=1 is exactly expired and valid_after=2 is still usable.
+        let mut pool_51 = std::collections::BTreeMap::new();
+        pool_51.insert(vec![0u8, 1u8], pooled(1, 1));
+        pool_51.insert(vec![0u8, 2u8], pooled(2, 2));
+        let dag_51 = PoolDag {
+            pooled: pool_51.clone(),
+        };
+        let height_51 = BlockHeight::try_from(51).unwrap();
+        let selected_51 = select_deploys(&dag_51, height_51, per_block_deploy_budget(0))
+            .await
+            .unwrap();
+        assert_eq!(selected_51, vec![vec![0u8, 2u8]]);
+
+        let mut candidate_51 = block();
+        candidate_51.block_number = height_51;
+        candidate_51.state.deploys = selected_51
+            .iter()
+            .map(|id| processed(pool_51[id].clone()))
+            .collect();
+        assert_eq!(
+            crate::validate::transaction_expiration(&candidate_51, DEPLOY_LIFESPAN),
+            crate::block_status::BlockStatus::Valid,
+            "anything selected for block 51 must pass block 51's expiry validation"
+        );
+        assert_eq!(
+            crate::validate::future_transaction(&candidate_51),
+            crate::block_status::BlockStatus::Valid,
+            "anything selected for block 51 must also pass its future-deploy validation"
+        );
+
+        // Move one height forward. valid_after=2 is now exactly expired; a fresh valid_after=3 deploy
+        // must take its place. This is the liveness half: the boundary advances rather than wedging
+        // forever on the stale deploy that used to be selected and self-rejected.
+        let mut pool_52 = std::collections::BTreeMap::new();
+        pool_52.insert(vec![0u8, 2u8], pooled(2, 2));
+        pool_52.insert(vec![0u8, 3u8], pooled(3, 3));
+        let dag_52 = PoolDag {
+            pooled: pool_52.clone(),
+        };
+        let height_52 = BlockHeight::try_from(52).unwrap();
+        let selected_52 = select_deploys(&dag_52, height_52, per_block_deploy_budget(0))
+            .await
+            .unwrap();
+        assert_eq!(selected_52, vec![vec![0u8, 3u8]]);
+
+        let mut candidate_52 = block();
+        candidate_52.block_number = height_52;
+        candidate_52.state.deploys = selected_52
+            .iter()
+            .map(|id| processed(pool_52[id].clone()))
+            .collect();
+        assert_eq!(
+            crate::validate::transaction_expiration(&candidate_52, DEPLOY_LIFESPAN),
+            crate::block_status::BlockStatus::Valid,
+            "the next candidate remains valid after crossing the original block-51 wedge"
+        );
+        assert_eq!(
+            crate::validate::future_transaction(&candidate_52),
+            crate::block_status::BlockStatus::Valid
         );
     }
 

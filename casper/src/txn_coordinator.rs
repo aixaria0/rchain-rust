@@ -86,7 +86,7 @@ pub fn txn_term(
 /// destination REV address, and the height to anchor the phase deploy at.
 ///
 /// **The anchor is a field rather than a defaulted `0`, because a `0` anchor is a silent failure**
-/// (AUDIT C166). A deploy is expired once `height - valid_after_block_number > DEPLOY_LIFESPAN` (50),
+/// (AUDIT C166). A deploy is expired once `height - valid_after_block_number >= DEPLOY_LIFESPAN` (50),
 /// so a phase anchored at genesis is *born expired* on any chain taller than the lifespan: the
 /// participant never sees it, nothing reports an error, and the transaction quietly does not happen.
 /// The gateway reads each shard's head for this (`gateway/mod.rs`'s `current_height`) and
@@ -116,7 +116,7 @@ impl TxnCoordinator {
     /// Sign, submit and await one phase, anchoring the deploy at the shard's height.
     ///
     /// `valid_after_block_number` must be the *target shard's* current height: a deploy anchored at
-    /// 0 is born expired once that chain is more than `DEPLOY_LIFESPAN` blocks past genesis, and the
+    /// 0 is born expired once that chain reaches `DEPLOY_LIFESPAN` blocks past genesis, and the
     /// participant would never see the phase at all.
     ///
     /// **The 0-anchored `run_phase` wrapper this replaced is deleted rather than kept** (AUDIT C166).
