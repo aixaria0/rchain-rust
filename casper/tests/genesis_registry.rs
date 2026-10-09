@@ -12,11 +12,15 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+
 use rchain_casper::genesis::contracts::{ProofOfStake, Registry};
 use rchain_casper::genesis::default_blessed_terms;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::Par;
-use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+use rchain_models::casper::protocol::casper_message::{
+    DeployData, ProcessedDeploy, SignedDeployData,
+};
 use rchain_models::rholang::RhoType::{RhoList, RhoString};
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
@@ -303,6 +307,84 @@ fn a_fresh_chain_resolves_and_can_call_every_seeded_shorthand() {
         assert_eq!(
             tags, expected,
             "every seeded shorthand must resolve AND answer a call"
+        );
+    });
+}
+
+/// **The genesis replays to itself** — the falsifier for #293.
+///
+/// A validator joining a chain holds no mergeable-channel sidecar for block #0, so `merging.rs`
+/// regenerates one by replaying the genesis (`regenerate_sidecars`). That replay runs `replay_deploys`
+/// with `with_cost_accounting = false`, and re-seeds the registry aliases **after every blessed
+/// deploy** — writes that are genesis state, exactly as `compute_genesis` has them, which holds one
+/// `NativeWriter::Genesis` window open across its whole loop (`runtime_manager.rs:789-828`). The
+/// replay used to close its genesis window *before* that loop, so every post-deploy re-seed landed
+/// with **no** writer. `BlockNativeEffects::from_drain` refuses a block with an unattributed write,
+/// so the regeneration returned
+///
+///     failed to regenerate mergeable channels … N native write(s) outside any deploy's window
+///
+/// and every propose on a chain whose genesis installs anything stalled (`dev`, 2026-10-09, #293).
+///
+/// The genesis below is the *blessed* one — the case that seeds an alias after a deploy, and so the
+/// case that goes red. Red on the pre-fix tree by the refusal above; green once the replay holds its
+/// window across the deploy loop.
+#[test]
+fn the_genesis_replays_to_itself() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+            &ceremony_identity(),
+        )
+        .expect("the blessed term list builds");
+        assert!(
+            !terms.is_empty(),
+            "the genesis must install something — an empty list would never re-seed an alias after \
+             a deploy, which is the write this test exists for"
+        );
+
+        let (empty, post, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        let processed: Vec<ProcessedDeploy> = results.iter().map(|r| r.deploy.clone()).collect();
+
+        // The genesis replay as `merging.rs` performs it: no cost accounting, and the vaults the
+        // genesis was created with (`&[]` here).
+        let (replayed, _) = rm
+            .replay_compute_state(
+                &empty,
+                &processed,
+                &[],
+                &rand,
+                BlockData::empty(),
+                &fringe_state(1),
+                &BTreeMap::new(),
+                false,
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect(
+                "the genesis must replay to itself — a replay that leaves a genesis write with no \
+                 deploy to attribute it to is refused (#293)",
+            );
+        assert_eq!(
+            post, replayed,
+            "the replayed genesis must compute the same post-state as the played one"
         );
     });
 }

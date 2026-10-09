@@ -75,7 +75,7 @@ use rchain_models::comm::protocol::Protocol;
 use rchain_models::fringe_data::FringeData;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
-use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
+use rchain_rholang::merging::{DeployMergeableDataCodec, NativeSidecarCodec};
 use rchain_rholang::reporting_runtime::create_reporting_rspace;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
@@ -2117,7 +2117,7 @@ pub async fn setup_shard(
             &store_manager,
             "native-changes-cache",
             Arc::new(BytesCodec),
-            Arc::new(NativeStoreActionsCodec),
+            Arc::new(NativeSidecarCodec),
         )
         .await?,
     );

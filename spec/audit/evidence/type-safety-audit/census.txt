@@ -1,0 +1,973 @@
+# The candidate universe for the type-safety audit — taken from the gate, not re-derived.
+# tree: b625eef060ecbd5ae5e2ec003873ee80e37bc7ec   dirty paths: 0
+# produced by: tools/audit-type-system.sh --sites
+
+===== class: panic =====
+  (allowed) sdk/src/primitive.rs:16 — port of the Scala `getUnsafe` escape hatch: the panic *is* the API (the Scala throws), which is why the whole file is a declared escape
+  (allowed) sdk/src/primitive.rs:44 — `TryOps::get_unsafe`, the same declared escape hatch on the Result side
+  (allowed) crypto/src/hash/blake2b256_hash.rs:50 — `from_byte_array`: a length assert on a fixed-size-array construction, and the doc says so
+  (allowed) crypto/src/hash/blake2b512_random.rs:192 — `merge`: the state merge is defined for two or more inputs; the doc states it and the assert is the boundary
+  (allowed) models/src/block/state_hash.rs:24 — `StateHash::from_slice`: the same internal length assert as `BlockHash`/`Validator`, re-walked by C97 (its callers pass `as_bytes()` of fixed-width values)
+  (allowed) models/src/validator.rs:22 — `Validator::from_slice` asserts the 32-byte length; every caller passes a fixed-width `PublicKey::bytes()`/`as_bytes()`, which the C97 ingress sweep re-walked, and untrusted bytes use the checked `TryFrom<&[u8]>` (validate-on-ingress, AUDIT R12)
+  (allowed) models/src/block_hash.rs:33 — `BlockHash::from_slice`: a length assert on internally-produced data only. This entry's justification said "an internal length assert" while three peer-facing handlers called it on wire bytes — AUDIT C97 is that correction, and the wire paths now use the checked `TryFrom<&[u8]>`, which the doc comment states.
+  (allowed) block-storage/src/dag/message_state.rs:259 — a development-time self-consistency check between two fields of one struct, maintained together by `insert_msg_mut`; the invariant is the message
+  (allowed) comm/src/transport/buffer/limited_buffer.rs:28 — a buffer of size 0 cannot exist; the Scala `require` this ports is in the message
+  (allowed) rspace/src/replay_rspace.rs:481 — a consume with no channels is unconstructible at every call site; the assert is the boundary, ported from the Scala `require`
+  (allowed) rspace/src/replay_rspace.rs:482 — channels and patterns are zipped, so their lengths must agree; the assert states the pairing invariant
+  (allowed) rspace/src/history/key_segment.rs:38 — `from_slice_of_valid`: private, and its name is its precondition — the argument is only ever a slice of a valid segment, so `len <= 127` holds by monotonicity and the `Err` arm is unreachable (C61's fix; the proof is the doc above)
+  (allowed) rspace/src/history/key_segment.rs:65 — head reads through head_option and refuses by name; every caller argues its segment is non-empty, and the doc above names each enforcer (H2e, 7ec9e16d5)
+  (allowed) rspace/src/history/export.rs:105 — `export`: a node whose prefix is not a prefix of the searched one is a corrupt tree, and the diagnostic is rendered fallibly just above so the panic cannot fire while formatting
+  (allowed) rspace/src/history/history_repository.rs:48 — `key_segment`: one prefix byte plus a 32-byte hash is 33 bytes by type (`as_bytes()` is `&[u8; 32]`), so the constructor cannot refuse — the comment above states the measurement
+  (allowed) rspace/src/history/instances/radix_history.rs:69 — one action per key per commit; duplicates are rejected upstream, and the assert is the boundary
+  (allowed) rspace/src/history/radix_tree.rs:131 — C61's decode site: the length prefix is 7 bits, so the slice re-wrapped here is at most 127 bytes; the comment above names the measurement
+  (allowed) rspace/src/history/radix_tree.rs:223 — a node referenced by a node ptr must be in the store: a corrupt tree, not a reachable statespace condition
+  (allowed) rspace/src/history/radix_tree.rs:245 — a hash collision between a cached record and a new one: a corrupt-cache check, not a data condition
+  (allowed) rspace/src/history/radix_tree.rs:346 — `create_node_from_item` is defined on a non-empty prefix (the Scala `require`); the leaf is stored under its head byte, so an empty prefix has no place to go
+  (allowed) rspace/src/history/radix_tree.rs:355 — the NodePtr arm of the same constructor, same invariant
+  (allowed) rspace/src/history/radix_tree.rs:389 — a re-wrap of a one-byte segment: 1 <= 127 arithmetically, stated in the message
+  (allowed) rspace/src/history/radix_tree.rs:447 — the subtree prefix invariant of the radix tree, stated in the message
+  (allowed) rspace/src/history/radix_tree.rs:484 — an insert key must be strictly longer than a node ptr key — the tree's structural invariant, stated in the message
+  (allowed) rspace/src/rspace.rs:507 — the same consume boundary as `replay_rspace.rs`'s `consume_result`
+  (allowed) rspace/src/rspace.rs:508 — the channels/patterns pairing at `consume` **and** at `install` (the same text occurs twice in this file): they are zipped, so their lengths must agree
+  (allowed) rspace/src/rspace.rs:554 (+1 more site(s) of the same text) — the channels/patterns pairing at `consume` **and** at `install` (the same text occurs twice in this file): they are zipped, so their lengths must agree
+  (allowed) casper/src/block_random_seed.rs:49 — `ShardId` is ASCII by invariant (the refinement), and H2d changed this from a `debug_assert!` to a plain `assert!` so the port's check is live in every profile, as the Scala's `Predef.assert` is — the rename is what staled the previous key, which is this staleness check earning its keep on a real commit rather than on a planted probe
+  (allowed) casper/src/block_random_seed.rs:100 — `random_generator`: `var_size`'s inputs are far below 256 bytes — the comment above states the measurement the `expect` documents
+  (allowed) ocapn/src/owner.rs:210 — `owner::split` takes the receiving half of the deferred-answer channel, and it is called exactly once per session — by `accept_and_book`, and by nothing else. The field is an `Option` only because a field cannot be moved out of a `&mut` borrow, so the alternative to this panic is not a total function but `Option::take` returning a *closed* receiver on a second call: the loop would then own a dead channel and answers would be dropped with no error at all. A panic that cannot fire is the better of the two, and this entry is the review that says so (the unit is the deferred-answer one, whose register row is AUDIT C223)
+  (reviewed) 30 panic-class site(s) in production code; 30 allowlisted by 29 entr(y|ies)
+===== class: unsafe =====
+===== class: silent =====
+===== class: escape =====
+  (allowed) shared/src/refined.rs:69 — the literal 1 is in the domain; the doc states the totality argument
+  (allowed) shared/src/refined.rs:74 — the literal 0 is in the domain
+  (allowed) shared/src/refined.rs:86 — the literal 0 is in the domain
+  (allowed) shared/src/refined.rs:88 — the clamp. `NonNegI64(v)` is the else arm of `if v < 0`, so v is non-negative by the branch that selected it
+  (allowed) shared/src/refined.rs:101 — genesis height: the literal 0 is in the domain
+  (allowed) shared/src/refined.rs:136 — sum of a non-negative height and a NonNegI64; saturating, so a hypothetical overflow stays in the domain rather than wrapping negative
+  (allowed) shared/src/refined.rs:161 — the literal 0 is in the domain
+  (allowed) shared/src/refined.rs:196 — sum of a non-negative sequence number and a NonNegI64; saturating, same argument as BlockHeight
+  (allowed) shared/src/refined.rs:395 — the root id: "/" is the literal its own doc calls non-empty ASCII
+  (allowed) shared/src/refined.rs:421 — C78: the appended name is validated by the same predicates TryFrom applies, so the join is ASCII and non-empty
+  (allowed) shared/src/refined.rs:423 — C78: same, on the non-root arm
+  (allowed) shared/src/refined.rs:441 — a strict prefix of a valid id, cut at a `/` byte: ASCII by the invariant, non-empty because the `Some(0)` arm took the root case
+  (allowed) models/src/sorted.rs:31 — the canonicalizer runs on the way in — the construction *is* the sort
+  (allowed) models/src/sorted.rs:50 — the empty `Par` is a fixed point of the canonicalizer
+  (allowed) models/src/types.rs:388 — the `Closed::new` guard: the construction is inside the branch that proved closure
+  (allowed) models/src/types.rs:541 — the `WellScoped::new` guard, same shape as `Closed`
+  (allowed) models/src/types.rs:581 — zero binds, so the free-variable count is 0 — in the domain
+  (allowed) models/src/types.rs:584 — one binding, so the count is 1 — in the domain
+  (allowed) models/src/types.rs:589 — the `FreeCount::new` guard: the construction is inside the `n >= 0` branch
+  (allowed) models/src/types.rs:610 — `from_len`: the argument is a collection length, so the sign is impossible rather than checked, and saturation keeps width out of the domain
+  (allowed) models/src/types.rs:620 — sum of two non-negative counts; saturating, like the `BlockHeight`/`SeqNum` additions
+  (allowed) rspace/src/history/key_segment.rs:44 — the empty segment: 0 <= 127, and the doc states it
+  (allowed) rholang/src/util/rev_address.rs:75 — `from_eth_address`: the length guard on the branch the construction is in
+  (allowed) rholang/src/util/rev_address.rs:90 — `from_unforgeable`: every field is derived from `gprivate.id` and `self.prefix` by a hash of fixed width, so the record is total on its input
+  (allowed) rholang/src/util/rev_address.rs:113 — `parse`: length, checksum and prefix are checked on the lines above the construction
+  (reviewed) 25 narrow-refinement construction(s) in 11 file(s)
+  (reviewed) 30 refinement-shaped newtype(s) derived; 20 in REFINEMENT_TYPES, 10 exempt, 0 named above
+===== class: cast =====
+shared/src/stopwatch.rs:16:    let m = nanos as f64;
+shared/src/stopwatch.rs:49:        show_time(t0.elapsed().as_nanos() as i64)
+shared/src/stopwatch.rs:66:    (a, show_time(d.as_nanos() as i64))
+shared/src/stopwatch.rs:74:    (a, show_time(t0.elapsed().as_nanos() as i64))
+shared/src/rate_limiter.rs:39:            state: Mutex::new((max_per_sec as f64, Instant::now())),
+shared/src/rate_limiter.rs:48:        let refill = now.duration_since(*last).as_secs_f64() * self.max_per_sec as f64;
+shared/src/rate_limiter.rs:49:        *tokens = (*tokens + refill).min(self.max_per_sec as f64);
+shared/src/base32.rs:26:            out.push(ALPHABET[((buffer >> bits) & 0x1f) as usize] as char);
+shared/src/base32.rs:34:        out.push(ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
+shared/src/base32.rs:49:        let value = ALPHABET.iter().position(|c| *c == character)? as u64;
+shared/src/base32.rs:54:            out.push(((buffer >> bits) & 0xff) as u8);
+shared/src/long_ops.rs:13:        let scaled = value as f64 / (1_i64 << (z * 10)) as f64;
+shared/src/long_ops.rs:14:        let unit = b[z as usize] as char;
+shared/src/time.rs:22:        .as_millis() as i64
+shared/src/time.rs:28:    START.get_or_init(Instant::now).elapsed().as_nanos() as i64
+shared/src/base16.rs:48:        let hi = (chunk[0] as char).to_digit(16)? as u8;
+shared/src/base16.rs:49:        let lo = (chunk[1] as char).to_digit(16)? as u8;
+crypto/src/util/certificate_helper.rs:52:    out.push(r_enc.len() as u8);
+crypto/src/util/certificate_helper.rs:55:    out.push(s_enc.len() as u8);
+crypto/src/util/certificate_helper.rs:119:        out.push(len as u8);
+crypto/src/util/certificate_helper.rs:126:        out.push(0x80 | (bytes.len() - start) as u8);
+crypto/src/util/certificate_helper.rs:134:        Ok((first as usize, pos + 1))
+crypto/src/util/certificate_helper.rs:136:        let n = (first & 0x7f) as usize;
+crypto/src/util/certificate_helper.rs:142:            len = (len << 8) | *buf.get(pos + 1 + i).ok_or()? as usize;
+crypto/src/util/sorting.rs:10:    (a as i8).cmp(&(b as i8))
+crypto/src/signatures/signatures_alg.rs:78:        let mut diff = SECP256K1_ORDER[i] as i16 - s[i] as i16 - borrow;
+crypto/src/signatures/signatures_alg.rs:85:        out[i] = diff as u8;
+crypto/src/hash/blake2b512_random.rs:42:        let path_position = bytes[96] as usize;
+crypto/src/hash/blake2b512_random.rs:43:        let remainder_position = bytes[97] as usize;
+crypto/src/hash/blake2b512_random.rs:220:        result.push(self.path_position as u8);
+crypto/src/hash/blake2b512_random.rs:221:        result.push(self.position as u8);
+crypto/src/hash/blake2b512_random.rs:240:        let path_position = bytes[96] as usize;
+crypto/src/hash/blake2b512_random.rs:241:        let remainder_position = bytes[97] as usize;
+crypto/src/hash/blake2b512_random.rs:312:        let mut result = Blake2b512Random::new_with_fanout(slice.len() as u8);
+crypto/src/hash/blake2b512_block.rs:67:        let param0_with_fanout = PARAM_VALUE_0 | ((fanout as u64 & 0xff) << 16);
+crypto/src/hash/blake2b512_block.rs:124:        let new_t0 = self.t0.wrapping_add(BLOCK_LENGTH_BYTES as u64);
+crypto/src/hash/blake2b512_block.rs:192:                m[s[0] as usize],
+crypto/src/hash/blake2b512_block.rs:193:                m[s[1] as usize],
+crypto/src/hash/blake2b512_block.rs:201:                m[s[2] as usize],
+crypto/src/hash/blake2b512_block.rs:202:                m[s[3] as usize],
+crypto/src/hash/blake2b512_block.rs:210:                m[s[4] as usize],
+crypto/src/hash/blake2b512_block.rs:211:                m[s[5] as usize],
+crypto/src/hash/blake2b512_block.rs:219:                m[s[6] as usize],
+crypto/src/hash/blake2b512_block.rs:220:                m[s[7] as usize],
+crypto/src/hash/blake2b512_block.rs:228:                m[s[8] as usize],
+crypto/src/hash/blake2b512_block.rs:229:                m[s[9] as usize],
+crypto/src/hash/blake2b512_block.rs:237:                m[s[10] as usize],
+crypto/src/hash/blake2b512_block.rs:238:                m[s[11] as usize],
+crypto/src/hash/blake2b512_block.rs:246:                m[s[12] as usize],
+crypto/src/hash/blake2b512_block.rs:247:                m[s[13] as usize],
+crypto/src/hash/blake2b512_block.rs:255:                m[s[14] as usize],
+crypto/src/hash/blake2b512_block.rs:256:                m[s[15] as usize],
+models/src/casper/protocol/casper_message.rs:1203:        index: s.1.map(|b| b as i32).unwrap_or(STORE_NODE_KEY_NONE_INDEX),
+models/src/wire.rs:26:    let max = bitset.iter().map(|e| *e as usize).max().unwrap_or(0);
+models/src/wire.rs:34:        let e = e as usize;
+models/src/wire.rs:59:                out.push((word_idx * 64 + bit) as i32);
+models/src/pretty.rs:30:                sb.push_str(&format!(, c as u32));
+models/src/sorter.rs:203:            score: leaves(&[BOUND_VAR, *level as i64]),
+models/src/sorter.rs:207:            score: leaves(&[FREE_VAR, *level as i64]),
+models/src/sorter.rs:448:            score: leaves(&[CONNECTIVE_VARREF, vr.index as i64, vr.depth as i64]),
+models/src/types.rs:32:        Var::BoundVar(l) if *l >= 0 => ctx.get(*l as usize).copied(),
+models/src/types.rs:411:        Var::BoundVar(l) => *l >= 0 && (*l as usize) < depth,
+models/src/types.rs:444:        && well_scoped_par(depth + i32::from(r.bind_count) as usize, &r.body)
+models/src/types.rs:448:    well_scoped_par(depth + i32::from(n.bind_count) as usize, &n.p)
+models/src/types.rs:453:        && well_scoped_par(depth + i32::from(mc.free_count) as usize, &mc.source)
+models/src/murmur_hash3.rs:7:const PRODUCT_SEED: i32 = 0xcafebabeu32 as i32;
+models/src/murmur_hash3.rs:12:        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+models/src/murmur_hash3.rs:17:    (value ^ (value as u64 >> 32) as i64) as i32
+models/src/murmur_hash3.rs:41:        finalize_hash(h, elements.len() as i32)
+models/src/murmur_hash3.rs:48:    h.wrapping_mul(5).wrapping_add(0xe6546b64u32 as i32)
+models/src/murmur_hash3.rs:52:    let k = data.wrapping_mul(0xcc9e2d51u32 as i32);
+models/src/murmur_hash3.rs:64:    h ^= (h as u32 >> 16) as i32;
+models/src/murmur_hash3.rs:65:    h = h.wrapping_mul(0x85ebca6bu32 as i32);
+models/src/murmur_hash3.rs:66:    h ^= (h as u32 >> 13) as i32;
+models/src/murmur_hash3.rs:67:    h = h.wrapping_mul(0xc2b2ae35u32 as i32);
+models/src/murmur_hash3.rs:68:    h ^= (h as u32 >> 16) as i32;
+comm/src/discovery/peer_table.rs:35:    n.leading_zeros() as usize
+comm/src/transport/stream_handler.rs:109:                stmd.read_so_far += d.content_data.len() as i64;
+comm/src/transport/grpc_transport_receiver.rs:463:                received += d.content_data.len() as i64;
+comm/src/transport/hostname_trust_manager.rs:43:    let now_secs = now.as_secs() as i64;
+rspace/src/hot_store.rs:38:    (u64::from_le_bytes(word) as usize) % shards.max(1)
+rspace/src/hot_store.rs:407:        if index >= 0 && (index as usize) < cur.len() {
+rspace/src/hot_store.rs:408:            *cur = remove_index(cur, index as usize);
+rspace/src/state/instances.rs:75:        traverse_history(start_path, skip as i32, take as i32, &get_node)
+rspace/src/state/mod.rs:86:    let size_prefix = prefix_seq[0].as_bytes()[0] as usize;
+rspace/src/state/mod.rs:142:    size_array[0] = prefix_size as u8;
+rspace/src/state/mod.rs:247:    let received = history_items.len() as i32;
+rspace/src/state/exporters.rs:104:                chunk_size as i32,
+rspace/src/replay_rspace.rs:213:                    indexed.push((d, i as i64));
+rspace/src/replay_rspace.rs:283:                        .map(|(i, d)| (d, i as i64)),
+rspace/src/history/export.rs:90:        let item_idx = rest_prefix.head() as usize;
+rspace/src/history/export.rs:143:        Some(idx) => idx as usize + 1,
+rspace/src/history/export.rs:147:    let cur_idx = cur_idx_int as u8;
+rspace/src/history/cold_store.rs:35:    w.write_bits(bytes.len() as u64, 64);
+rspace/src/history/cold_store.rs:37:        w.write_bits(b as u64, 8);
+rspace/src/history/cold_store.rs:46:    let len = r.read_bits(64) as usize;
+rspace/src/history/radix_tree.rs:63:                out.push(idx as u8);
+rspace/src/history/radix_tree.rs:64:                out.push((prefix.len() & 0x7F) as u8);
+rspace/src/history/radix_tree.rs:69:                out.push(idx as u8);
+rspace/src/history/radix_tree.rs:70:                out.push((0x80 | (prefix.len() & 0x7F)) as u8);
+rspace/src/history/radix_tree.rs:94:            let idx = bytes[pos] as usize;
+rspace/src/history/radix_tree.rs:99:            let prefix_size = (bytes[pos + 1] & 0x7F) as usize;
+rspace/src/history/radix_tree.rs:120:        let idx = bytes[pos] as usize;
+rspace/src/history/radix_tree.rs:122:        let prefix_size = (second & 0x7F) as usize;
+rspace/src/history/radix_tree.rs:312:            match &node[prefix.head() as usize] {
+rspace/src/history/radix_tree.rs:348:                node[prefix.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:357:                node[prefix.head() as usize] = Item::NodePtr {
+rspace/src/history/radix_tree.rs:388:                    let idx_seg = KeySegment::try_from(vec![idx as u8])
+rspace/src/history/radix_tree.rs:465:                    new_node[leaf_prefix_rest.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:469:                    new_node[ins_prefix_rest.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:492:                    let child_item_idx = ins_prefix_rest.head() as usize;
+rspace/src/history/radix_tree.rs:511:                    new_node[ptr_prefix_rest.head() as usize] = Item::NodePtr {
+rspace/src/history/radix_tree.rs:515:                    new_node[ins_prefix_rest.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:554:                    let del_item_idx = del_prefix_rest.head() as usize;
+rspace/src/history/radix_tree.rs:594:            let item_idx = group_idx as usize;
+rspace/src/rspace.rs:183:                .map(|(i, d)| (d, i as i64))
+rspace/src/rspace.rs:309:                    .map(|(i, d)| (d, i as i64))
+rspace/src/rspace.rs:447:                .map(|(i, d)| (d, i as i64))
+rspace/src/serializers/scodec_serialize.rs:20:    let mut out = (bytes.len() as i64).to_be_bytes().to_vec();
+rspace/src/serializers/scodec_serialize.rs:28:    let mut out = (elements.len() as i32).to_be_bytes().to_vec();
+rspace/src/serializers/scodec_serialize.rs:30:        out.extend_from_slice(&(element.len() as i64).to_be_bytes());
+rspace/src/serializers/scodec_serialize.rs:80:            self.write_bit(((value >> i) & 1) as u8);
+rspace/src/serializers/scodec_serialize.rs:86:            self.write_bits(b as u64, 8);
+rspace/src/serializers/scodec_serialize.rs:116:            v = (v << 1) | (self.read_bit() as u64);
+rspace/src/serializers/scodec_serialize.rs:124:            out.push(self.read_bits(8) as u8);
+rspace/src/serializers/scodec_serialize.rs:131:    w.write_bits(bytes.len() as u64, 64);
+rspace/src/serializers/scodec_serialize.rs:136:    let len = r.read_bits(64) as usize;
+rspace/src/serializers/scodec_serialize.rs:147:    w.write_bits(consume.channels_hashes.len() as u64, 32);
+rspace/src/serializers/scodec_serialize.rs:170:    w.write_bits(wc.patterns.len() as u64, 32);
+rspace/src/serializers/scodec_serialize.rs:178:    w.write_bits(wc.peeks.len() as u64, 32);
+rspace/src/serializers/scodec_serialize.rs:180:        w.write_bits(*peek as u64, 8);
+rspace/src/serializers/scodec_serialize.rs:197:    let count = r.read_bits(32) as usize;
+rspace/src/serializers/scodec_serialize.rs:231:    let pattern_count = r.read_bits(32) as usize;
+rspace/src/serializers/scodec_serialize.rs:242:    let peek_count = r.read_bits(32) as usize;
+rspace/src/serializers/scodec_serialize.rs:245:        peeks.insert(r.read_bits(8) as usize);
+rspace/src/serializers/scodec_serialize.rs:335:    let count = r.read_bits(32) as usize;
+rholang/src/system_processes.rs:1290:            .charge(crate::accounting::Costs::gov_fold_cost(universe as i64))
+rholang/src/matcher/par_spatial_matcher_utils.rs:61:    let lo = if min_size <= 0 { 0 } else { min_size as usize };
+rholang/src/matcher/par_spatial_matcher_utils.rs:62:    let hi = std::cmp::min(max_size as usize, n);
+rholang/src/matcher/par_spatial_matcher_utils.rs:184:    let send_max = i32::min(max.sends, par.sends.len() as i32 - min_prune.sends);
+rholang/src/matcher/par_spatial_matcher_utils.rs:185:    let receive_max = i32::min(max.receives, par.receives.len() as i32 - min_prune.receives);
+rholang/src/matcher/par_spatial_matcher_utils.rs:186:    let news_max = i32::min(max.news, par.news.len() as i32 - min_prune.news);
+rholang/src/matcher/par_spatial_matcher_utils.rs:187:    let expr_max = i32::min(max.exprs, par.exprs.len() as i32 - min_prune.exprs);
+rholang/src/matcher/par_spatial_matcher_utils.rs:188:    let match_max = i32::min(max.matches, par.matches.len() as i32 - min_prune.matches);
+rholang/src/matcher/par_spatial_matcher_utils.rs:191:        par.unforgeables.len() as i32 - min_prune.unforgeables,
+rholang/src/matcher/par_spatial_matcher_utils.rs:193:    let bundle_max = i32::min(max.bundles, par.bundles.len() as i32 - min_prune.bundles);
+rholang/src/matcher/par_spatial_matcher_utils.rs:195:    let send_min = i32::max(min.sends, par.sends.len() as i32 - max_prune.sends);
+rholang/src/matcher/par_spatial_matcher_utils.rs:196:    let receive_min = i32::max(min.receives, par.receives.len() as i32 - max_prune.receives);
+rholang/src/matcher/par_spatial_matcher_utils.rs:197:    let news_min = i32::max(min.news, par.news.len() as i32 - max_prune.news);
+rholang/src/matcher/par_spatial_matcher_utils.rs:198:    let expr_min = i32::max(min.exprs, par.exprs.len() as i32 - max_prune.exprs);
+rholang/src/matcher/par_spatial_matcher_utils.rs:199:    let match_min = i32::max(min.matches, par.matches.len() as i32 - max_prune.matches);
+rholang/src/matcher/par_spatial_matcher_utils.rs:202:        par.unforgeables.len() as i32 - max_prune.unforgeables,
+rholang/src/matcher/par_spatial_matcher_utils.rs:204:    let bundle_min = i32::max(min.bundles, par.bundles.len() as i32 - max_prune.bundles);
+rholang/src/matcher/par_count.rs:53:            sends: par.sends.len() as i32,
+rholang/src/matcher/par_count.rs:54:            receives: par.receives.len() as i32,
+rholang/src/matcher/par_count.rs:55:            news: par.news.len() as i32,
+rholang/src/matcher/par_count.rs:56:            matches: par.matches.len() as i32,
+rholang/src/matcher/par_count.rs:57:            exprs: par.exprs.len() as i32,
+rholang/src/matcher/par_count.rs:58:            unforgeables: par.unforgeables.len() as i32,
+rholang/src/matcher/par_count.rs:59:            bundles: par.bundles.len() as i32,
+rholang/src/storage.rs:318:                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+rholang/src/storage.rs:370:                .charge(Costs::event_storage_cost(channels.len() as i64))?,
+rholang/src/storage.rs:375:                        .charge(Costs::event_storage_cost(channels.len() as i64))?;
+rholang/src/storage.rs:378:                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+rholang/src/storage.rs:452:                .charge(Costs::event_storage_cost(channels.len() as i64))?,
+rholang/src/storage.rs:456:                        .charge(Costs::event_storage_cost(channels.len() as i64))?;
+rholang/src/storage.rs:459:                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+rholang/src/storage.rs:487:                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+rholang/src/util/base58.rs:18:        let d = rem.to_bytes_be().last().copied().unwrap_or(0) as usize;
+rholang/src/util/base58.rs:52:    ALPHABET.chars().position(|x| x == c).map(|i| i as u8)
+rholang/src/reduce.rs:123:    if n > i32::MAX as i64 || n < i32::MIN as i64 {
+rholang/src/reduce.rs:128:        Ok(n as usize)
+rholang/src/reduce.rs:242:            cost.charge(Costs::remove_cost().mul(b.ps.len() as i64))?;
+rholang/src/reduce.rs:247:            cost.charge(Costs::remove_cost().mul(b.kvs.len() as i64))?;
+rholang/src/reduce.rs:808:                        cost.charge(Costs::interpolate_cost(lhs.len() as i64, kvs.len() as i64))?;
+rholang/src/reduce.rs:829:                    cost.charge(Costs::string_append_cost(l.len() as i64, r.len() as i64))?;
+rholang/src/reduce.rs:833:                    cost.charge(Costs::string_append_cost(l.len() as i64, r.len() as i64))?;
+rholang/src/reduce.rs:839:                    cost.charge(Costs::list_append_cost((l.ps.len() + r.ps.len()) as i64))?;
+rholang/src/reduce.rs:855:                    cost.charge(Costs::union_cost(r.ps.len() as i64))?;
+rholang/src/reduce.rs:871:                    cost.charge(Costs::union_cost(r.kvs.len() as i64))?;
+rholang/src/reduce.rs:915:                    cost.charge(Costs::diff_cost(b.ps.len() as i64, o.ps.len() as i64))?;
+rholang/src/reduce.rs:1023:            expected: expected as i32,
+rholang/src/reduce.rs:1024:            actual: actual as i32,
+rholang/src/reduce.rs:1042:            expected: min as i32,
+rholang/src/reduce.rs:1043:            actual: actual as i32,
+rholang/src/reduce.rs:1151:                        Ok(from_expr(Expr::GInt(bs[nth] as i64)))
+rholang/src/reduce.rs:1263:                    cost.charge(Costs::union_cost(o.ps.len() as i64))?;
+rholang/src/reduce.rs:1276:                    cost.charge(Costs::union_cost(o.kvs.len() as i64))?;
+rholang/src/reduce.rs:1297:                    cost.charge(Costs::diff_cost(b.ps.len() as i64, o.ps.len() as i64))?;
+rholang/src/reduce.rs:1302:                    cost.charge(Costs::diff_cost(b.kvs.len() as i64, o.kvs.len() as i64))?;
+rholang/src/reduce.rs:1335:                    cost.charge(Costs::lookup_cost().mul(b.ps.len() as i64))?;
+rholang/src/reduce.rs:1339:                    cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
+rholang/src/reduce.rs:1348:                        s.chars().count() as i64,
+rholang/src/reduce.rs:1349:                        needle.chars().count() as i64,
+rholang/src/reduce.rs:1363:                    cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
+rholang/src/reduce.rs:1380:                    cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
+rholang/src/reduce.rs:1429:            cost.charge(Costs::size_method_cost(size as i64))?;
+rholang/src/reduce.rs:1430:            Ok(from_expr(Expr::GInt(size as i64)))
+rholang/src/reduce.rs:1444:            Ok(from_expr(Expr::GInt(n as i64)))
+rholang/src/reduce.rs:1457:                (until - from) as usize
+rholang/src/reduce.rs:1464:            let from = from as usize;
+rholang/src/reduce.rs:1492:            let n = if n_i <= 0 { 0 } else { n_i as usize };
+rholang/src/reduce.rs:1493:            cost.charge(Costs::take_cost(n as i64))?;
+rholang/src/reduce.rs:1516:                    cost.charge(Costs::to_list_cost(b.ps.len() as i64))?;
+rholang/src/reduce.rs:1525:                    cost.charge(Costs::to_list_cost(b.kvs.len() as i64))?;
+rholang/src/reduce.rs:1616:                s.chars().count() as i64
+rholang/src/reduce.rs:1624:                (until - from) as usize
+rholang/src/reduce.rs:1628:            let out: String = s.chars().skip(from as usize).take(len).collect();
+rholang/src/reduce.rs:1641:                s.chars().count() as i64,
+rholang/src/reduce.rs:1642:                needle.chars().count() as i64,
+rholang/src/reduce.rs:1647:            let start = from_i.max(0) as usize;
+rholang/src/reduce.rs:1662:            Ok(from_expr(Expr::GInt(found.map(|i| i as i64).unwrap_or(-1))))
+rholang/src/reduce.rs:1668:                s.chars().count() as i64,
+rholang/src/reduce.rs:1677:                s.chars().count() as i64,
+rholang/src/reduce.rs:1686:                s.chars().count() as i64,
+rholang/src/reduce.rs:1699:                s.chars().count() as i64,
+rholang/src/reduce.rs:1708:                s.chars().count() as i64,
+rholang/src/reduce.rs:1728:                s.chars().count() as i64,
+rholang/src/reduce.rs:1729:                prefix.chars().count() as i64,
+rholang/src/reduce.rs:1739:                s.chars().count() as i64,
+rholang/src/reduce.rs:1740:                suffix.chars().count() as i64,
+rholang/src/reduce.rs:1751:                s.chars().count() as i64,
+rholang/src/reduce.rs:1752:                old.chars().count() as i64,
+rholang/src/reduce.rs:1753:                new.chars().count() as i64,
+rholang/src/reduce.rs:1768:                s.chars().count() as i64,
+rholang/src/reduce.rs:1769:                sep.chars().count() as i64,
+rholang/src/reduce.rs:1801:                s.chars().count() as i64,
+rholang/src/reduce.rs:1802:                arg_pars.len() as i64,
+rholang/src/reduce.rs:1820:            cost.charge(Costs::to_string_cost(out.chars().count() as i64))?;
+rholang/src/reduce.rs:2197:    for _ in 0..(count - urns.len() as i32) {
+rholang/src/reduce.rs:2559:        if terms.len() > i16::MAX as usize {
+rholang/src/reduce.rs:2617:                            .apply_effect(effect, cost.clone(), path.child(i as u16))
+rholang/src/reduce.rs:2637:                        let effect_path = path.child(i as u16);
+rholang/src/reduce.rs:2663:                        let effect_path = path.child(i as u16);
+rholang/src/reduce.rs:2792:                                    path.child(i as u16),
+rholang/src/reduce.rs:3047:                        let effect_path = path.child(i as u16);
+rholang/src/merging.rs:177:    ((n << 1) ^ (n >> 63)) as u64
+rholang/src/merging.rs:184:        out.push((n as u8 & 0x7f) | 0x80);
+rholang/src/merging.rs:187:    out.push(n as u8);
+rholang/src/merging.rs:207:    out.extend_from_slice(&uint16_be(bytes.len() as u16));
+rholang/src/merging.rs:222:    let mut out = uint16_be(data.channels.len() as u16).to_vec();
+rholang/src/merging.rs:232:    let mut out = uint16_be(seq.len() as u16).to_vec();
+rholang/src/merging.rs:261:    let count = read_u16(bytes, &mut idx)? as usize;
+rholang/src/merging.rs:264:        let channel_count = read_u16(bytes, &mut idx)? as usize;
+rholang/src/merging.rs:300:    let mut out = (actions.len() as u32).to_be_bytes().to_vec();
+rholang/src/merging.rs:307:                out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+rholang/src/merging.rs:341:    let count = read_u32(bytes, idx)? as usize;
+rholang/src/merging.rs:353:                let len = read_u32(bytes, idx)? as usize;
+rholang/src/merging.rs:421:            out.extend_from_slice(&(map.len() as u32).to_be_bytes());
+rholang/src/merging.rs:441:        let count = u32::from_be_bytes(arr) as usize;
+rholang/src/native_state.rs:207:        out.extend_from_slice(&(addr.len() as u32).to_le_bytes());
+rholang/src/native_state.rs:306:    out.extend_from_slice(&(records.len() as u32).to_le_bytes());
+rholang/src/native_state.rs:308:        out.extend_from_slice(&(url.len() as u32).to_le_bytes());
+rholang/src/native_state.rs:310:        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+rholang/src/native_state.rs:4843:        out.extend_from_slice(&(self.anchors.len() as u64).to_le_bytes());
+rholang/src/native_state.rs:6894:    buf.extend_from_slice(&(brand.len() as u32).to_le_bytes());
+rholang/src/native_state.rs:6971:    let brand_len = u32::from_le_bytes(len) as usize;
+rholang/src/accounting.rs:97:        Cost::new(s.len() as i64, )
+rholang/src/accounting.rs:100:        Cost::new(bytes.len() as i64, )
+rholang/src/accounting.rs:149:        Cost::new(s.len() as i64, )
+rholang/src/accounting.rs:155:        Cost::new(s.len() as i64, )
+rholang/src/accounting.rs:198:        (bi.magnitude().bits() / 8 + 1) as i64
+rholang/src/accounting.rs:283:        Cost::new(term.len() as i64, )
+rholang/src/accounting.rs:338:            (<T as Serialize<T>>::encode(x).len() as i64)
+rholang/src/accounting.rs:339:                .min(<P as Serialize<P>>::encode(y).len() as i64),
+rholang/src/accounting.rs:347:        Cost::new(<T as Serialize<T>>::encode(a).len() as i64, )
+rholang/src/accounting.rs:355:                .map(|a| <T as Serialize<T>>::encode(a).len() as i64)
+rholang/src/accounting.rs:370:            .map(|c| <SortedProc as Serialize<SortedProc>>::encode(c).len() as i64)
+rholang/src/accounting.rs:374:            .map(|p| <BindPattern as Serialize<BindPattern>>::encode(p).len() as i64)
+rholang/src/accounting.rs:378:                <SortedProc as Serialize<SortedProc>>::encode(&pwr.body).len() as i64
+rholang/src/accounting.rs:387:        let channel_cost = <SortedProc as Serialize<SortedProc>>::encode(channel).len() as i64;
+rholang/src/accounting.rs:391:            .map(|p| <SortedProc as Serialize<SortedProc>>::encode(p).len() as i64)
+rholang/src/accounting.rs:413:        i32::MAX as i64
+rholang/src/accounting.rs:416:        Cost::new(i32::MAX as i64, )
+rholang/src/accounting.rs:431:        <T as Serialize<T>>::encode(a).len() as i64
+rholang/src/registry.rs:33:                v |= bit as u32;
+rholang/src/registry.rs:36:        out.push(ZBASE32_ALPHABET[v as usize] as char);
+rholang/src/compiler.rs:129:            .find_map(|(depth, m)| m.get(name).map(|bc| (bc, depth as i32)))
+rholang/src/compiler.rs:161:        self.chain.len() as i32 - 1
+rholang/src/compiler.rs:278:        self.next_level + self.wildcards.len() as i32 + self.connectives.len() as i32
+rholang/src/pretty_printer.rs:279:                out.push_str(&INDENT.repeat(indent as usize));
+rholang/src/pretty_printer.rs:285:                    out.push_str(&INDENT.repeat(indent as usize));
+rholang/src/pretty_printer.rs:337:                INDENT.repeat((indent + 1) as usize),
+rholang/src/pretty_printer.rs:338:                INDENT.repeat(indent as usize)
+rholang/src/pretty_printer.rs:363:            INDENT.repeat((indent + 1) as usize),
+rholang/src/pretty_printer.rs:380:            INDENT.repeat((indent + 1) as usize),
+rholang/src/pretty_printer.rs:382:            INDENT.repeat(indent as usize)
+rholang/src/pretty_printer.rs:389:            out.push_str(&INDENT.repeat((indent + 1) as usize));
+rholang/src/pretty_printer.rs:395:        out.push_str(&format!(, INDENT.repeat(indent as usize)));
+rholang/src/pretty_printer.rs:696:            INDENT.repeat((indent + 1) as usize),
+rholang/src/pretty_printer.rs:697:            INDENT.repeat(indent as usize)
+rholang/src/pretty_printer.rs:732:    (((c as i32 + 1 - 97).rem_euclid(26)) + 97) as u8 as char
+rholang/src/pretty_printer.rs:737:        .map(|c| (((c as i32 + rotation - 97).rem_euclid(26)) + 97) as u8 as char)
+casper/src/interpreter_util.rs:549:        let elapsed_ms = CENSUS_CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64;
+casper/src/event_converter.rs:53:                times_repeated.insert(p, pe.times_repeated as usize);
+casper/src/event_converter.rs:60:                .map(|p| p.channel_index as usize)
+casper/src/event_converter.rs:156:                    times_repeated: comm.times_repeated.get(p).copied().unwrap_or(0) as i32,
+casper/src/event_converter.rs:163:                    channel_index: i as i32,
+casper/src/reporting.rs:112:                    channel_index: *i as i32,
+casper/src/reporting.rs:145:                    channel_index: *i as i32,
+casper/src/merging.rs:168:        TOTAL_WIDTH.fetch_add(census.keys as u64, Ordering::Relaxed);
+casper/src/merging.rs:169:        TOTAL_EXPANDED.fetch_add(census.expanded as u64, Ordering::Relaxed);
+casper/src/merging.rs:1200:            (guard.len() as u64, capacity_evicted as u64)
+casper/src/merging.rs:1224:            INDEX_CACHE_PRUNED.fetch_add(pruned as u64, std::sync::atomic::Ordering::Relaxed);
+casper/src/merging.rs:1226:        INDEX_CACHE_LEN.store(guard.len() as u64, std::sync::atomic::Ordering::Relaxed);
+casper/src/merging.rs:1341:        replay_started.elapsed().as_millis() as u64,
+casper/src/protocol/client.rs:647:                .map(|d| d.as_millis() as i64)
+casper/src/blocks/block_retriever.rs:281:            let expired = current_millis() - requested.timestamp > age_threshold.as_millis() as i64;
+casper/src/blocks/proposer/proposer.rs:678:        .map(|d| d.as_millis() as i64)
+casper/src/blocks/proposer/proposer.rs:703:    waited > liveness::LIVENESS_WINDOW || stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
+casper/src/blocks/proposer/proposer.rs:821:    if max_number_of_parents > 0 && parent_hashes.len() > max_number_of_parents as usize {
+casper/src/blocks/proposer/proposer.rs:1111:                    .map(|d| d.as_millis() as i64)
+casper/src/genesis/standard_deploys.rs:74:const MAX_VALUE: i64 = i32::MAX as i64;
+casper/src/genesis/rgov.rs:90:const PHLO_LIMIT: i64 = i32::MAX as i64;
+casper/src/validate.rs:669:    if max_number_of_parents <= 0 || b.justifications.len() <= max_number_of_parents as usize {
+casper/src/api/block_api_impl.rs:509:        let depth_with_limit = depth.min(self.max_depth_limit) as usize;
+casper/src/api/block_api_impl.rs:525:        let len = out.len() as i32;
+casper/src/api/block_api_impl.rs:541:        let depth_with_limit = depth.min(self.max_depth_limit) as usize;
+casper/src/api/block_api_impl.rs:560:        let len = out.len() as i32;
+casper/src/api/block_api_impl.rs:575:        if range > self.max_depth_limit as i64 {
+casper/src/api/block_api_impl.rs:606:            start as i64
+casper/src/api/block_api_impl.rs:613:        let lowest_height = start_block_num - depth_limited as i64;
+casper/src/api/block_api_impl.rs:629:        let start = dag.latest_block_number() - depth as i64;
+casper/src/api/block_api_impl.rs:653:        let start = dag.latest_block_number() - depth as i64;
+casper/src/api/block_api.rs:313:        deploy_count: block.state.deploys.len() as i32,
+casper/src/construct_deploy.rs:82:        .map(|d| d.as_millis() as i64)
+qucalc/src/lib.rs:634:                let quorum = ((2 * eligible.len() as i64 + 2) / 3).max(2);
+qucalc/src/lib.rs:638:                    .count() as i64;
+qucalc/src/main.rs:41:    let mean = all_ways.iter().sum::<u64>() as f64 / n as f64;
+node/src/web/status_info.rs:30:        peers: connections.len() as i32,
+node/src/web/status_info.rs:31:        nodes: discovered.len() as i32,
+node/src/runtime/node_runtime.rs:1813:                    .map(|d| d.as_millis() as i64)
+node/src/runtime/node_runtime.rs:2202:                let peers = connections.read().await.len() as i32;
+node/src/runtime/node_runtime.rs:2203:                let nodes = discovery.peers().len() as i32;
+node/src/runtime/node_runtime.rs:2962:    let edges = |e: &[usize]| e.iter().map(|x| *x as f64).collect::<Vec<f64>>();
+node/src/runtime/node_runtime.rs:3013:    rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as i64;
+node/src/diagnostics/scrape_data_builder.rs:136:                let count = format_decimal(metric.distribution.count as f64);
+node/src/diagnostics/scrape_data_builder.rs:207:                &format_decimal(in_bucket_count as f64),
+node/src/diagnostics/scrape_data_builder.rs:221:            &format_decimal((left_over + in_bucket_count) as f64),
+node/src/diagnostics/scrape_data_builder.rs:314:        Dimension::Time | Dimension::Information => value as f64 * unit.magnitude,
+node/src/diagnostics/scrape_data_builder.rs:315:        Dimension::None => value as f64,
+node/src/diagnostics/effects.rs:239:        .as_millis() as i64
+node/src/diagnostics/influxdb.rs:106:            metric.distribution.percentile(p) as f64,
+node/src/diagnostics/influxdb.rs:159:        (self.buffer.len() + data.len()) as i64 <= self.max_packet_size
+node/src/diagnostics/model.rs:61:        let target = (p * self.count as f64) as i64;
+node/src/configuration/commandline/config_mapper.rs:28:        e.push((key.to_string(), Hocon::Integer(v as i64)));
+node/src/configuration/commandline/config_mapper.rs:55:        e.push((key.to_string(), Hocon::Integer(v.as_nanos() as i64)));
+node/src/configuration/hocon.rs:55:    Some((n * mult) as i64)
+node/src/configuration/hocon.rs:86:    Some(Duration::from_nanos((n * nanos) as u64))
+node/src/configuration/hocon.rs:136:        Hocon::Real(x) => Ok(*x as i64),
+node/src/configuration/hocon.rs:145:        Hocon::Integer(n) => Ok(*n as f64),
+node/src/configuration/configuration.rs:125:            if quorum > keys_len as i32 {
+node/src/instances/proposer_instance.rs:80:    rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as u64 + 1_000,
+node/src/main.rs:65:            Some(n) => n as usize,
+node/src/api/ocapn.rs:1461:            .map(|d| d.as_millis() as i64)
+node/src/api/faucet.rs:68:            .map(|d| d.as_millis() as i64)
+ocapn/src/syrup.rs:262:                claimed: len as u64,
+ocapn/src/noise.rs:656:        let len = u32::from_be_bytes(header) as usize;
+  (counted) cast   358 site(s) — was 331 when the list was last reviewed; not a failure, but a
+            count that moved is worth a look, and `--sites cast` prints them
+===== class: lax =====
+shared/src/base16.rs:28:pub fn unsafe_decode(input: &str) -> Vec<u8> {
+rholang/src/util/rev_address.rs:71:            let key_hash = keccak256::hash(&base16::unsafe_decode(stripped));
+rholang/src/util/rev_address.rs:135:        let prefix = base16::unsafe_decode(&format!());
+casper/src/interpreter_util.rs:142:    Blake2b256Hash::from_byte_array(&base16::unsafe_decode(
+casper/src/genesis/standard_deploys.rs:96:    let private_key = PrivateKey::new(base16::unsafe_decode(private_key_hex));
+casper/src/genesis/standard_deploys.rs:447:        let sk = PrivateKey::new(base16::unsafe_decode(private_key_hex));
+casper/src/genesis/rgov.rs:468:    let sk = PrivateKey::new(base16::unsafe_decode(&contract_key(name)));
+casper/src/genesis/rgov.rs:528:    let sk = PrivateKey::new(base16::unsafe_decode(private_key_hex));
+casper/src/construct_deploy.rs:13:    PrivateKey::new(base16::unsafe_decode(
+casper/src/construct_deploy.rs:37:    PrivateKey::new(base16::unsafe_decode(
+  (counted) lax    10 site(s)
+===== class: get =====
+  (counted) get    0 site(s)
+===== class: index =====
+sdk/src/dag/merging.rs:81:        let tail: Vec<BTreeSet<D>> = remaining[1..]
+shared/src/base32.rs:26:            out.push(ALPHABET[((buffer >> bits) & 0x1f) as usize] as char);
+shared/src/base32.rs:34:        out.push(ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
+shared/src/long_ops.rs:14:        let unit = b[z as usize] as char;
+shared/src/refined.rs:441:                Some(cut) => Some(ShardId(self.0[..cut].to_string())),
+shared/src/base16.rs:48:        let hi = (chunk[0] as char).to_digit(16)? as u8;
+shared/src/base16.rs:49:        let lo = (chunk[1] as char).to_digit(16)? as u8;
+crypto/src/util/certificate_helper.rs:35:    keccak256::hash(input)[12..].to_vec()
+crypto/src/util/certificate_helper.rs:65:    if signature_der[0] != 0x30 {
+crypto/src/util/certificate_helper.rs:81:    let r = &signature_der[r_pos..r_pos + r_len];
+crypto/src/util/certificate_helper.rs:91:    let s = &signature_der[s_pos..s_pos + s_len];
+crypto/src/util/certificate_helper.rs:102:    while bytes.len() > 1 && bytes[0] == 0 {
+crypto/src/util/certificate_helper.rs:103:        bytes = &bytes[1..];
+crypto/src/util/certificate_helper.rs:110:    if bytes[0] & 0x80 != 0 {
+crypto/src/util/certificate_helper.rs:127:        out.extend_from_slice(&bytes[start..]);
+crypto/src/util/certificate_helper.rs:150:    while start < bytes.len() && bytes[start] == 0 {
+crypto/src/util/certificate_helper.rs:153:    let significant = &bytes[start..];
+crypto/src/util/certificate_helper.rs:158:    out[32 - significant.len()..].copy_from_slice(significant);
+crypto/src/util/certificate_helper.rs:294:    public_address(&bytes[1..])
+crypto/src/signatures/signatures_alg.rs:78:        let mut diff = SECP256K1_ORDER[i] as i16 - s[i] as i16 - borrow;
+crypto/src/signatures/signatures_alg.rs:85:        out[i] = diff as u8;
+crypto/src/hash/blake2b512_random.rs:42:        let path_position = bytes[96] as usize;
+crypto/src/hash/blake2b512_random.rs:43:        let remainder_position = bytes[97] as usize;
+crypto/src/hash/blake2b512_random.rs:99:            padded[..n].copy_from_slice(&init[base..base + n]);
+crypto/src/hash/blake2b512_random.rs:145:        self.last_block[self.path_position] = index;
+crypto/src/hash/blake2b512_random.rs:155:            self.last_block[112..120].copy_from_slice(&0u64.to_le_bytes());
+crypto/src/hash/blake2b512_random.rs:156:            self.last_block[120..128].copy_from_slice(&high.wrapping_add(1).to_le_bytes());
+crypto/src/hash/blake2b512_random.rs:158:            self.last_block[112..120].copy_from_slice(&low.wrapping_add(1).to_le_bytes());
+crypto/src/hash/blake2b512_random.rs:167:            self.hash_array[0..32].to_vec()
+crypto/src/hash/blake2b512_random.rs:170:            self.hash_array[32..64].to_vec()
+crypto/src/hash/blake2b512_random.rs:185:        split.add_byte(packed[0]);
+crypto/src/hash/blake2b512_random.rs:186:        split.add_byte(packed[1]);
+crypto/src/hash/blake2b512_random.rs:202:        self.last_block[112..120].copy_from_slice(&u64::MAX.to_le_bytes());
+crypto/src/hash/blake2b512_random.rs:215:        result.extend_from_slice(&self.last_block[112..120]);
+crypto/src/hash/blake2b512_random.rs:216:        result.extend_from_slice(&self.last_block[120..128]);
+crypto/src/hash/blake2b512_random.rs:223:        result.extend_from_slice(&self.last_block[..self.path_position]);
+crypto/src/hash/blake2b512_random.rs:226:            result.extend_from_slice(&self.hash_array[self.position..64]);
+crypto/src/hash/blake2b512_random.rs:240:        let path_position = bytes[96] as usize;
+crypto/src/hash/blake2b512_random.rs:241:        let remainder_position = bytes[97] as usize;
+crypto/src/hash/blake2b512_random.rs:243:        let digest = Blake2b512Block::from_bytes(&bytes[16..96])?;
+crypto/src/hash/blake2b512_random.rs:251:        result.last_block[112..120].copy_from_slice(&bytes[0..8]);
+crypto/src/hash/blake2b512_random.rs:252:        result.last_block[120..128].copy_from_slice(&bytes[8..16]);
+crypto/src/hash/blake2b512_random.rs:253:        result.last_block[..path_position].copy_from_slice(&bytes[98..path_end]);
+crypto/src/hash/blake2b512_random.rs:257:            result.hash_array[remainder_position..64]
+crypto/src/hash/blake2b512_random.rs:258:                .copy_from_slice(&bytes[path_end..path_end + rem_len]);
+crypto/src/hash/blake2b512_random.rs:274:            &self.hash_array[rot_position..64]
+crypto/src/hash/blake2b512_random.rs:286:                || self.hash_array[self.position..] == other.hash_array[self.position..])
+crypto/src/hash/blake2b512_random.rs:320:                chain_block[quad.len() * 32..].fill(0);
+crypto/src/hash/blake2b512_block.rs:52:    arr.copy_from_slice(&bytes[start..start + 8]);
+crypto/src/hash/blake2b512_block.rs:69:        chain_value[0] ^= param0_with_fanout;
+crypto/src/hash/blake2b512_block.rs:70:        chain_value[2] ^= PARAM_VALUE_2;
+crypto/src/hash/blake2b512_block.rs:120:        write_le_long(&temp[..4], output, out_offset);
+crypto/src/hash/blake2b512_block.rs:153:            internal_state[pos_a] = internal_state[pos_a]
+crypto/src/hash/blake2b512_block.rs:154:                .wrapping_add(internal_state[pos_b])
+crypto/src/hash/blake2b512_block.rs:156:            internal_state[pos_d] =
+crypto/src/hash/blake2b512_block.rs:157:                (internal_state[pos_d] ^ internal_state[pos_a]).rotate_right(32);
+crypto/src/hash/blake2b512_block.rs:158:            internal_state[pos_c] = internal_state[pos_c].wrapping_add(internal_state[pos_d]);
+crypto/src/hash/blake2b512_block.rs:159:            internal_state[pos_b] =
+crypto/src/hash/blake2b512_block.rs:160:                (internal_state[pos_b] ^ internal_state[pos_c]).rotate_right(24);
+crypto/src/hash/blake2b512_block.rs:161:            internal_state[pos_a] = internal_state[pos_a]
+crypto/src/hash/blake2b512_block.rs:162:                .wrapping_add(internal_state[pos_b])
+crypto/src/hash/blake2b512_block.rs:164:            internal_state[pos_d] =
+crypto/src/hash/blake2b512_block.rs:165:                (internal_state[pos_d] ^ internal_state[pos_a]).rotate_right(16);
+crypto/src/hash/blake2b512_block.rs:166:            internal_state[pos_c] = internal_state[pos_c].wrapping_add(internal_state[pos_d]);
+crypto/src/hash/blake2b512_block.rs:167:            internal_state[pos_b] =
+crypto/src/hash/blake2b512_block.rs:168:                (internal_state[pos_b] ^ internal_state[pos_c]).rotate_right(63);
+crypto/src/hash/blake2b512_block.rs:172:        internal_state[..CHAIN_VALUE_LENGTH].copy_from_slice(&self.chain_value);
+crypto/src/hash/blake2b512_block.rs:173:        internal_state[CHAIN_VALUE_LENGTH..12].copy_from_slice(&IV[..4]);
+crypto/src/hash/blake2b512_block.rs:176:        internal_state[12] = new_t0 ^ IV[4];
+crypto/src/hash/blake2b512_block.rs:177:        internal_state[13] = new_t1 ^ IV[5];
+crypto/src/hash/blake2b512_block.rs:178:        internal_state[14] = f0 ^ IV[6];
+crypto/src/hash/blake2b512_block.rs:179:        internal_state[15] = f1 ^ IV[7];
+crypto/src/hash/blake2b512_block.rs:189:            let s = &SIGMA[round];
+crypto/src/hash/blake2b512_block.rs:192:                m[s[0] as usize],
+crypto/src/hash/blake2b512_block.rs:193:                m[s[1] as usize],
+crypto/src/hash/blake2b512_block.rs:201:                m[s[2] as usize],
+crypto/src/hash/blake2b512_block.rs:202:                m[s[3] as usize],
+crypto/src/hash/blake2b512_block.rs:210:                m[s[4] as usize],
+crypto/src/hash/blake2b512_block.rs:211:                m[s[5] as usize],
+crypto/src/hash/blake2b512_block.rs:219:                m[s[6] as usize],
+crypto/src/hash/blake2b512_block.rs:220:                m[s[7] as usize],
+crypto/src/hash/blake2b512_block.rs:228:                m[s[8] as usize],
+crypto/src/hash/blake2b512_block.rs:229:                m[s[9] as usize],
+crypto/src/hash/blake2b512_block.rs:237:                m[s[10] as usize],
+crypto/src/hash/blake2b512_block.rs:238:                m[s[11] as usize],
+crypto/src/hash/blake2b512_block.rs:246:                m[s[12] as usize],
+crypto/src/hash/blake2b512_block.rs:247:                m[s[13] as usize],
+crypto/src/hash/blake2b512_block.rs:255:                m[s[14] as usize],
+crypto/src/hash/blake2b512_block.rs:256:                m[s[15] as usize],
+crypto/src/hash/blake2b512_block.rs:265:            out[i] = self.chain_value[i] ^ internal_state[i] ^ internal_state[i + 8];
+crypto/src/hash/blake2b512_block.rs:321:        output[out_offset + i * 8..out_offset + i * 8 + 8].copy_from_slice(&bytes);
+graphz/src/lib.rs:343:        let content = &self.t[TAB.len()..];
+models/src/casper/pretty_printer.rs:52:    let first = base16::encode(&bytes[..bytes.len().min(10)]);
+models/src/casper/pretty_printer.rs:53:    let last = base16::encode(&bytes[bytes.len().saturating_sub(10)..]);
+models/src/wire.rs:35:        words[e / 64] |= 1u64 << (e % 64);
+models/src/wire.rs:51:    padded[..bytes.len()].copy_from_slice(bytes);
+models/src/sorter.rs:152:            Ordering::Equal => compare_children(&a[1..], &b[1..]),
+models/src/types.rs:105:    levels.windows(2).all(|w| w[0] != w[1])
+block-storage/src/syntax.rs:20:        format!(, &hex[..10])
+block-storage/src/dag/representation.rs:174:            let bytes = base16::decode(&truncated_hash[..truncated_hash.len() - 1])?;
+comm/src/discovery/kademlia_node_discovery.rs:39:        let dist = dists[i];
+comm/src/discovery/kademlia_node_discovery.rs:43:        target[byte_index] ^= different_bit;
+comm/src/discovery/peer_table.rs:83:            let n = a[idx] ^ b[idx];
+comm/src/discovery/peer_table.rs:100:        let mut bucket = self.buckets[index]
+comm/src/discovery/peer_table.rs:128:                let mut bucket = self.buckets[index]
+comm/src/discovery/peer_table.rs:149:            let bucket = self.buckets[i]
+comm/src/discovery/peer_table.rs:158:            let bucket = self.buckets[i]
+comm/src/rp/handle_messages.rs:50:                || (o[0] == 169 && o[1] == 254) 
+comm/src/rp/handle_messages.rs:51:                || o[0] == 10 
+comm/src/rp/handle_messages.rs:52:                || (o[0] == 172 && (16..=31).contains(&o[1])) 
+comm/src/rp/handle_messages.rs:53:                || (o[0] == 192 && o[1] == 168) 
+comm/src/transport/generate_certificate_if_absent.rs:22:    let address = rchain_crypto::util::certificate_helper::public_address(&raw[1..]);
+comm/src/transport/generate_certificate_if_absent.rs:51:        &raw[1..],
+comm/src/transport/hostname_trust_manager.rs:23:    if point.len() != 65 || point[0] != 0x04 {
+comm/src/transport/hostname_trust_manager.rs:27:        &point[1..],
+comm/src/upnp/gateway.rs:53:        let text = String::from_utf8_lossy(&buf[..len]);
+comm/src/upnp/gateway.rs:142:                || (o[0] == 169 && o[1] == 254) 
+comm/src/upnp/gateway.rs:148:                || (ip.segments()[0] & 0xffc0) == 0xfe80 
+rspace/src/hot_store.rs:36:    word.copy_from_slice(&bytes[..8]);
+rspace/src/hot_store.rs:183:            shard_states[channels_shard(&channels, shards)]
+rspace/src/hot_store.rs:188:            shard_states[channels_shard(&channels, shards)]
+rspace/src/hot_store.rs:193:            shard_states[channel_shard(&channel, shards)]
+rspace/src/hot_store.rs:198:            shard_states[channel_shard(&channel, shards)]
+rspace/src/hot_store.rs:203:            shard_states[channel_shard(&channel, shards)]
+rspace/src/hot_store.rs:282:        let mut state = self.state[channels_shard(channels, self.state.len())]
+rspace/src/hot_store.rs:314:        let mut state = self.state[channels_shard(channels, self.state.len())]
+rspace/src/hot_store.rs:340:        let mut state = self.state[channels_shard(channels, self.state.len())]
+rspace/src/hot_store.rs:358:        let mut state = self.state[channels_shard(channels, self.state.len())]
+rspace/src/hot_store.rs:379:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/hot_store.rs:393:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/hot_store.rs:403:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/hot_store.rs:415:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/hot_store.rs:443:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/hot_store.rs:454:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/hot_store.rs:465:        let mut state = self.state[channel_shard(channel, self.state.len())]
+rspace/src/state/mod.rs:86:    let size_prefix = prefix_seq[0].as_bytes()[0] as usize;
+rspace/src/state/mod.rs:89:        prefix128.extend_from_slice(prefix_seq[1 + i].as_bytes());
+rspace/src/state/mod.rs:142:    size_array[0] = prefix_size as u8;
+rspace/src/state/mod.rs:144:    prefix128_array[..prefix_size].copy_from_slice(last_prefix);
+rspace/src/state/mod.rs:150:            Blake2b256Hash::from_byte_array(&prefix128_array[0..32]),
+rspace/src/state/mod.rs:154:            Blake2b256Hash::from_byte_array(&prefix128_array[32..64]),
+rspace/src/state/mod.rs:158:            Blake2b256Hash::from_byte_array(&prefix128_array[64..96]),
+rspace/src/state/mod.rs:162:            Blake2b256Hash::from_byte_array(&prefix128_array[96..128]),
+rspace/src/state/mod.rs:200:    let root_hash = path_seq[0];
+rspace/src/state/mod.rs:201:    let last_prefix = create_last_prefix(&path_seq[1..])?;
+rspace/src/trace/tuplespace_event.rs:103:        let produce = &comm.produces[0];
+rspace/src/merger/state_change.rs:127:            let history_pointer = consume_channels[0];
+rspace/src/space_matcher.rs:32:                    prefix.insert(0, remaining[0].clone());
+rspace/src/space_matcher.rs:33:                    remaining = &remaining[1..];
+rspace/src/space_matcher.rs:40:                        out.extend_from_slice(&remaining[1..]);
+rspace/src/history/key_segment.rs:73:        Self::from_slice_of_valid(self.value[1..].to_vec())
+rspace/src/history/key_segment.rs:114:        while i < a.value.len() && i < b.value.len() && a.value[i] == b.value[i] {
+rspace/src/history/key_segment.rs:118:            Self::from_slice_of_valid(a.value[..i].to_vec()),
+rspace/src/history/key_segment.rs:119:            Self::from_slice_of_valid(a.value[i..].to_vec()),
+rspace/src/history/key_segment.rs:120:            Self::from_slice_of_valid(b.value[i..].to_vec()),
+rspace/src/history/export.rs:91:        match node[item_idx].clone() {
+rspace/src/history/export.rs:146:    let cur_item = node[cur_idx_int].clone();
+rspace/src/history/export.rs:279:    new_path.extend_from_slice(&p.path[1..]);
+rspace/src/history/export.rs:323:    let cur_node_data = &p.path[0];
+rspace/src/history/export.rs:343:            path: p.path[1..].to_vec(),
+rspace/src/history/radix_tree.rs:94:            let idx = bytes[pos] as usize;
+rspace/src/history/radix_tree.rs:95:            if seen[idx] {
+rspace/src/history/radix_tree.rs:98:            seen[idx] = true;
+rspace/src/history/radix_tree.rs:99:            let prefix_size = (bytes[pos + 1] & 0x7F) as usize;
+rspace/src/history/radix_tree.rs:120:        let idx = bytes[pos] as usize;
+rspace/src/history/radix_tree.rs:121:        let second = bytes[pos + 1];
+rspace/src/history/radix_tree.rs:130:        let prefix = KeySegment::try_from(bytes[prefix_start..prefix_start + prefix_size].to_vec())
+rspace/src/history/radix_tree.rs:133:        let val = Blake2b256Hash::from_byte_array(&bytes[val_start..val_start + 32]);
+rspace/src/history/radix_tree.rs:139:        result[idx] = item;
+rspace/src/history/radix_tree.rs:312:            match &node[prefix.head() as usize] {
+rspace/src/history/radix_tree.rs:348:                node[prefix.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:357:                node[prefix.head() as usize] = Item::NodePtr {
+rspace/src/history/radix_tree.rs:387:                    let (idx, item) = non_empty[0];
+rspace/src/history/radix_tree.rs:465:                    new_node[leaf_prefix_rest.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:469:                    new_node[ins_prefix_rest.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:494:                    let child_item = child_node[child_item_idx].clone();
+rspace/src/history/radix_tree.rs:501:                            updated_child_node[child_item_idx] = new_child_item;
+rspace/src/history/radix_tree.rs:511:                    new_node[ptr_prefix_rest.head() as usize] = Item::NodePtr {
+rspace/src/history/radix_tree.rs:515:                    new_node[ins_prefix_rest.head() as usize] = Item::Leaf {
+rspace/src/history/radix_tree.rs:556:                    let child_item = child_node[del_item_idx].clone();
+rspace/src/history/radix_tree.rs:562:                            new_child_node[del_item_idx] = new_child_item;
+rspace/src/history/radix_tree.rs:595:            let item = cur_node[item_idx].clone();
+rspace/src/history/radix_tree.rs:597:                let action = &actions_in_group[0];
+rspace/src/history/radix_tree.rs:636:                new_cur_node[idx] = item;
+rspace/src/serializers/scodec_serialize.rs:74:        self.bytes[byte_idx] |= (bit & 1) << (7 - (self.bit_len % 8));
+rspace/src/serializers/scodec_serialize.rs:107:        let byte = self.bytes[self.bit_pos / 8];
+rholang/src/normalizer.rs:84:    raw[1..raw.len() - 1].to_string()
+rholang/src/normalizer.rs:88:    raw[1..raw.len() - 1].to_string()
+rholang/src/normalizer.rs:1328:            source: Box::new(source_pars[binds.len()].clone().quote()),
+rholang/src/normalizer.rs:1411:                    lds[0].0.clone(),
+rholang/src/normalizer.rs:1415:                        Decls::LinearDeclsImpl(lds[1..].to_vec())
+rholang/src/system_processes.rs:407:                        member_id(&t[0])?,
+rholang/src/system_processes.rs:408:                        member_id(&t[1])?,
+rholang/src/system_processes.rs:409:                        RhoNumber::unapply(&t[2])?,
+rholang/src/system_processes.rs:426:                    Some((member_id(&t[0])?, member_id(&t[1])?))
+rholang/src/matcher/par_spatial_matcher_utils.rs:72:    row[0] = 1;
+rholang/src/matcher/par_spatial_matcher_utils.rs:75:            row[k] = row[k].saturating_add(row[k - 1]);
+rholang/src/matcher/par_spatial_matcher_utils.rs:78:    row[lo..=hi]
+rholang/src/matcher/par_spatial_matcher_utils.rs:109:    let head = items[0].clone();
+rholang/src/matcher/par_spatial_matcher_utils.rs:110:    let rem = &items[1..];
+rholang/src/matcher/par_spatial_matcher_utils.rs:146:    let head = items[0].clone();
+rholang/src/matcher/par_spatial_matcher_utils.rs:147:    let rem = &items[1..];
+rholang/src/matcher/spatial_matcher.rs:270:        let (min_b, max_b) = &individual_bounds[i];
+rholang/src/matcher/spatial_matcher.rs:271:        let (min_prune, max_prune) = &remainder_bounds[i];
+rholang/src/matcher/spatial_matcher.rs:661:            for fm1 in spatial_match_fn(&tlist[0], &plist[0], fm)? {
+rholang/src/matcher/spatial_matcher.rs:663:                    fold_match(&tlist[1..], &plist[1..], remainder, &fm1, spatial_match_fn)?
+rholang/src/matcher/maximum_bipartite_match.rs:29:    let candidate = candidates[0];
+rholang/src/matcher/maximum_bipartite_match.rs:30:    let rest = &candidates[1..];
+rholang/src/matcher/maximum_bipartite_match.rs:34:    match match_fn(p, &targets[candidate]) {
+rholang/src/matcher/maximum_bipartite_match.rs:65:                let rest = pattern.1[1..].to_vec();
+rholang/src/matcher/maximum_bipartite_match.rs:100:        .map(|(idx, (pat, res))| (idx, targets[idx].clone(), pat.0, res))
+rholang/src/util/rev_address.rs:60:            let eth_hex = base16::encode(&keccak256::hash(&pk.bytes()[1..]));
+rholang/src/util/rev_address.rs:61:            let eth_address = &eth_hex[eth_hex.len() - ETH_ADDRESS_LENGTH..];
+rholang/src/util/base58.rs:19:        digits.push(ALPHABET.as_bytes()[d] as char);
+rholang/src/util/base58.rs:23:        digits.push(ALPHABET.as_bytes()[0] as char);
+rholang/src/util/base58.rs:32:        .take_while(|&c| c == ALPHABET.as_bytes()[0] as char)
+rholang/src/reduce.rs:335:                current = &current[k.len() + 3..];
+rholang/src/reduce.rs:1102:        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+rholang/src/reduce.rs:1117:            Some((ps[0].clone(), ps[1].clone()))
+rholang/src/reduce.rs:1141:            let nth = restrict_to_int(eval_to_long(&args[0], env, cost)?)?;
+rholang/src/reduce.rs:1151:                        Ok(from_expr(Expr::GInt(bs[nth] as i64)))
+rholang/src/reduce.rs:1260:            let other = eval_single_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1294:            let other = eval_single_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1317:            let element = eval_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1326:            let element = eval_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1332:            let element = eval_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1360:            let key = eval_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1376:            let key = eval_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1377:            let default = eval_expr(&args[1], env, cost)?;
+rholang/src/reduce.rs:1393:            let key = eval_expr(&args[0], env, cost)?;
+rholang/src/reduce.rs:1394:            let value = eval_expr(&args[1], env, cost)?;
+rholang/src/reduce.rs:1449:            let from_i = eval_to_long(&args[0], env, cost)?;
+rholang/src/reduce.rs:1450:            let until_i = eval_to_long(&args[1], env, cost)?;
+rholang/src/reduce.rs:1489:            let n_i = eval_to_long(&args[0], env, cost)?;
+rholang/src/reduce.rs:1612:            let from_i = eval_to_long(&args[0], env, cost)?;
+rholang/src/reduce.rs:1614:                eval_to_long(&args[1], env, cost)?
+rholang/src/reduce.rs:1634:            let needle = string_arg(, &args[0], env, cost)?;
+rholang/src/reduce.rs:1636:                eval_to_long(&args[1], env, cost)?
+rholang/src/reduce.rs:1657:                hay[start..]
+rholang/src/reduce.rs:1690:                Some(first) => first.to_uppercase().collect::<String>() + &s[first.len_utf8()..],
+rholang/src/reduce.rs:1726:            let prefix = string_arg(, &args[0], env, cost)?;
+rholang/src/reduce.rs:1737:            let suffix = string_arg(, &args[0], env, cost)?;
+rholang/src/reduce.rs:1748:            let old = string_arg(, &args[0], env, cost)?;
+rholang/src/reduce.rs:1749:            let new = string_arg(, &args[1], env, cost)?;
+rholang/src/reduce.rs:1766:            let sep = string_arg(, &args[0], env, cost)?;
+rholang/src/reduce.rs:1791:                match eval_single_expr(&args[0], env, cost)? {
+rholang/src/reduce.rs:1808:                out.push_str(&rest[..i]);
+rholang/src/reduce.rs:1811:                rest = &rest[i + 2..];
+rholang/src/merging.rs:243:    let v = u16::from_be_bytes([bytes[*idx], bytes[*idx + 1]]);
+rholang/src/merging.rs:253:    arr.copy_from_slice(&bytes[*idx..*idx + 8]);
+rholang/src/merging.rs:270:            let hash = Blake2b256Hash::from_byte_array(&bytes[idx..idx + 32]);
+rholang/src/merging.rs:337:        arr.copy_from_slice(&bytes[*idx..*idx + 4]);
+rholang/src/merging.rs:347:        let tag = bytes[*idx];
+rholang/src/merging.rs:348:        let prefix = bytes[*idx + 1];
+rholang/src/merging.rs:349:        let key = Blake2b256Hash::from_byte_array(&bytes[*idx + 2..*idx + 34]);
+rholang/src/merging.rs:357:                let value = bytes[*idx..*idx + len].to_vec();
+rholang/src/merging.rs:433:    if bytes.len() >= 4 && bytes[..4] == NATIVE_SIDECAR_MAGIC {
+rholang/src/merging.rs:439:        arr.copy_from_slice(&bytes[idx..idx + 4]);
+rholang/src/merging.rs:448:            ord.copy_from_slice(&bytes[idx..idx + 4]);
+rholang/src/native_state.rs:219:    let len_bytes: [u8; 4] = bytes[*off..len_end]
+rholang/src/native_state.rs:229:    let s = String::from_utf8(bytes[*off..s_end].to_vec())
+rholang/src/native_state.rs:240:    let state = TxnState::from_discriminant(bytes[0])
+rholang/src/native_state.rs:241:        .ok_or_else(|| format!(, bytes[0]))?;
+rholang/src/native_state.rs:242:    let coordinator = PublicKey::new(bytes[1..1 + VALIDATOR_LEN].to_vec());
+rholang/src/native_state.rs:243:    let amount_bytes: [u8; 8] = bytes[1 + VALIDATOR_LEN..1 + VALIDATOR_LEN + 8]
+rholang/src/native_state.rs:285:        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+rholang/src/native_state.rs:286:        let stake_bytes: [u8; 8] = chunk[VALIDATOR_LEN..BOND_ENTRY_LEN]
+rholang/src/native_state.rs:322:    let count_bytes: [u8; 4] = bytes[..4]
+rholang/src/native_state.rs:336:        let block_bytes: [u8; 8] = bytes[off..bn_end]
+rholang/src/native_state.rs:392:        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+rholang/src/native_state.rs:393:        let deadline: [u8; 8] = chunk[VALIDATOR_LEN..PENDING_ENTRY_LEN]
+rholang/src/native_state.rs:439:        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+rholang/src/native_state.rs:440:        let bond: [u8; 8] = chunk[VALIDATOR_LEN..VALIDATOR_LEN + 8]
+rholang/src/native_state.rs:445:        let deadline: [u8; 8] = chunk[VALIDATOR_LEN + 8..WITHDRAWER_ENTRY_LEN]
+rholang/src/native_state.rs:567:        arr.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+rholang/src/native_state.rs:1570:                    lags[0],
+rholang/src/native_state.rs:1571:                    lags[lags.len() / 2],
+rholang/src/native_state.rs:1572:                    lags[lags.len() * 9 / 10],
+rholang/src/native_state.rs:1573:                    lags[lags.len() - 1],
+rholang/src/native_state.rs:4862:            bytes[..8]
+rholang/src/native_state.rs:4867:            bytes[8..16]
+rholang/src/native_state.rs:4873:        let rest = &bytes[16..];
+rholang/src/native_state.rs:5074:        buf.copy_from_slice(&draw[..std::mem::size_of::<i128>()]);
+rholang/src/native_state.rs:5483:        let operator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+rholang/src/native_state.rs:5484:        let delegator = Validator::from_slice(&chunk[VALIDATOR_LEN..2 * VALIDATOR_LEN]);
+rholang/src/native_state.rs:5485:        let amount: [u8; 8] = chunk[2 * VALIDATOR_LEN..DELEGATION_ENTRY_LEN]
+rholang/src/native_state.rs:5522:        let operator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+rholang/src/native_state.rs:5523:        let delegator = Validator::from_slice(&chunk[VALIDATOR_LEN..2 * VALIDATOR_LEN]);
+rholang/src/native_state.rs:5524:        let deadline: [u8; 8] = chunk[2 * VALIDATOR_LEN..DELEGATION_ENTRY_LEN]
+rholang/src/native_state.rs:5562:        let operator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+rholang/src/native_state.rs:5563:        let delegator = Validator::from_slice(&chunk[VALIDATOR_LEN..2 * VALIDATOR_LEN]);
+rholang/src/native_state.rs:5564:        let amount: [u8; 8] = chunk[2 * VALIDATOR_LEN..2 * VALIDATOR_LEN + 8]
+rholang/src/native_state.rs:5567:        let deadline: [u8; 8] = chunk[2 * VALIDATOR_LEN + 8..DELEGATION_CLAIM_LEN]
+rholang/src/registry.rs:31:                let byte = data[idx / 8];
+rholang/src/registry.rs:36:        out.push(ZBASE32_ALPHABET[v as usize] as char);
+rholang/src/parser.rs:93:        let c = chars[i];
+rholang/src/parser.rs:99:        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+rholang/src/parser.rs:100:            while i < chars.len() && chars[i] != '\n' {
+rholang/src/parser.rs:105:        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+rholang/src/parser.rs:108:            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+rholang/src/parser.rs:125:            while i < chars.len() && chars[i] != '"' {
+rholang/src/parser.rs:136:            toks.push(Tok::Str(chars[start..i].iter().collect()));
+rholang/src/parser.rs:143:            while i < chars.len() && chars[i] != '`' {
+rholang/src/parser.rs:152:            toks.push(Tok::Uri(chars[start..i].iter().collect()));
+rholang/src/parser.rs:158:            while i < chars.len() && chars[i].is_ascii_digit() {
+rholang/src/parser.rs:161:            let n: i64 = chars[start..i]
+rholang/src/parser.rs:181:            while i < chars.len() && ident_continue(chars[i]) {
+rholang/src/parser.rs:184:            let ident: String = chars[start..i].iter().collect();
+rholang/src/parser.rs:319:        &self.toks[self.pos]
+rholang/src/parser.rs:322:        let t = self.toks[self.pos].clone();
+rholang/src/compiler.rs:134:        chain[0] = chain[0].put(binding);
+rholang/src/compiler.rs:140:        chain[0] = chain[0].put_all(bindings);
+rholang/src/compiler.rs:146:        chain[0] = chain[0].absorb_free(binders);
+rholang/src/pretty_printer.rs:722:            format!(, increment(&id[..id.len() - 1]), new_id)
+rholang/src/pretty_printer.rs:727:        format!(, &id[..id.len() - 1], new_id)
+casper/src/interpreter_util.rs:305:    v.as_bytes()[..4]
+casper/src/interpreter_util.rs:427:            n => format!(, diff[..4].join(), n - 4),
+casper/src/runtime_replay.rs:653:            free_count: count_free_vars(patterns[0].as_par()),
+casper/src/txn_coordinator.rs:204:            if ready[i] {
+casper/src/dag.rs:368:        let open = |edges: &[usize]| edges[edges.len() - 1];
+casper/src/merging.rs:146:            let total = counts[i].load(Ordering::Relaxed);
+casper/src/merging.rs:147:            let seen = published[i].swap(total, Ordering::Relaxed);
+casper/src/merging.rs:148:            out[i] = (
+casper/src/merging.rs:175:        WIDTH_COUNTS[width].fetch_add(1, Ordering::Relaxed);
+casper/src/merging.rs:177:        EXPANDED_COUNTS[cost].fetch_add(1, Ordering::Relaxed);
+casper/src/merging.rs:409:        format!(, items[..4].join(), items.len() - 4)
+casper/src/runtime_manager.rs:867:            free_count: count_free_vars(patterns[0].as_par()),
+casper/src/runtime_manager.rs:913:                    let result = process_bool_result(single.pars[0].as_par());
+casper/src/blocks/block_processor.rs:209:                        rchain_shared::base16::encode(&block.sender.as_bytes()[..8])
+casper/src/blocks/block_retriever.rs:137:                let already_known = state[hash].waiting_list.contains(peer);
+casper/src/blocks/block_retriever.rs:148:                    let was_empty = state[hash].waiting_list.is_empty();
+casper/src/blocks/block_retriever.rs:280:            let requested = state[&hash].clone();
+casper/src/blocks/proposer/proposer.rs:877:            &rchain_shared::base16::encode(pre_state.fringe_state.as_bytes())[..8],
+casper/src/blocks/proposer/proposer.rs:884:                    &rchain_shared::base16::encode(m.block_hash.as_bytes())[..8],
+casper/src/blocks/proposer/proposer.rs:1741:            v.as_bytes()[..4]
+casper/src/genesis/rgov.rs:394:    let before = rho[..at].trim_end();
+casper/src/genesis/rgov.rs:396:    let after = &rho[at..];
+casper/src/genesis/rgov.rs:398:    Ok(format!(, &rho[end..]))
+casper/src/genesis/rgov.rs:413:    let kept = &source[..at];
+casper/src/api/graph_generator.rs:173:        for n1 in pair[0].keys() {
+casper/src/api/graph_generator.rs:174:            for n2 in pair[1].keys() {
+casper/src/api/block_api_impl.rs:270:                sorted_names.len() == 1 && p.channels_hash == hash_channel(&sorted_names[0])
+casper/src/gateway/ledger.rs:244:        let slice = &self.bytes[self.off..end];
+qucalc/src/lib.rs:355:            && ((twists[i] == PLUS && twists[i + 1] == MINUS)
+qucalc/src/lib.rs:356:                || (twists[i] == MINUS && twists[i + 1] == PLUS))
+qucalc/src/lib.rs:360:            out.push(twists[i]);
+qucalc/src/main.rs:45:        all_ways[0],
+qucalc/src/main.rs:46:        all_ways[n - 1],
+qucalc/src/main.rs:47:        all_ways[n / 2]
+node/src/effects/console_io.rs:80:        let start = line[..pos]
+node/src/effects/console_io.rs:84:        let word = &line[start..pos];
+node/src/runtime/node_runtime.rs:686:                r = &mut grpc_external => { drained[0] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:687:                r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:688:                r = &mut http => { drained[2] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:689:                r = &mut admin => { drained[3] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:690:                r = &mut ocapn => { drained[4] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:696:                r = &mut grpc_external => { drained[0] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:697:                r = &mut grpc_internal => { drained[1] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:698:                r = &mut http => { drained[2] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:699:                r = &mut admin => { drained[3] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:700:                r = &mut ocapn => { drained[4] = true; Some(listener_stopped(, r, *stopping.borrow())) },
+node/src/runtime/node_runtime.rs:715:            if !drained[0] {
+node/src/runtime/node_runtime.rs:718:            if !drained[1] {
+node/src/runtime/node_runtime.rs:721:            if !drained[2] {
+node/src/runtime/node_runtime.rs:724:            if !drained[3] {
+node/src/runtime/node_runtime.rs:727:            if !drained[4] {
+node/src/diagnostics/scrape_data_builder.rs:258:            Some(&i) => groups[i].push(item),
+node/src/api/ocapn.rs:310:    let seed: [u8; 32] = bytes[..32].try_into().map_err(|_| found(bytes.len()))?;
+node/src/api/ocapn.rs:311:    let stat: [u8; 32] = bytes[32..].try_into().map_err(|_| found(bytes.len()))?;
+node/src/api/ocapn.rs:1270:    format!(, rchain_shared::base16::encode(&digest[..8]))
+ocapn/src/dial_policy.rs:248:                let link_local = (v6.segments()[0] & 0xffc0) == 0xfe80;
+ocapn/src/dial_policy.rs:254:                    && (v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00)
+ocapn/src/syrup.rs:255:        Ok(&self.bytes[start..self.pos])
+ocapn/src/syrup.rs:266:        let slice = &self.bytes[self.pos..self.pos + len];
+ocapn/src/framed.rs:93:            self.buf.extend_from_slice(&chunk[..n]);
+ocapn/src/noise.rs:182:        out[..32].copy_from_slice(&self.signing);
+ocapn/src/noise.rs:183:        out[32..].copy_from_slice(&self.static_secret);
+ocapn/src/noise.rs:191:        payload[..VERIFYING_KEY_LEN].copy_from_slice(&self.verifying);
+ocapn/src/noise.rs:199:        payload[VERIFYING_KEY_LEN..VERIFYING_KEY_LEN + SIGNATURE_LEN].copy_from_slice(&signature);
+ocapn/src/noise.rs:213:    let verifying: [u8; 32] = payload[..VERIFYING_KEY_LEN]
+ocapn/src/noise.rs:216:    let signature = &payload[VERIFYING_KEY_LEN..VERIFYING_KEY_LEN + SIGNATURE_LEN];
+ocapn/src/noise.rs:537:            buf[..chunk.len()].copy_from_slice(chunk);
+ocapn/src/noise.rs:581:                .decrypt_in_place(&mut ciphertext[offset..offset + take], take)
+ocapn/src/noise.rs:588:            plain.extend_from_slice(&ciphertext[offset..offset + written]);
+ocapn/src/noise.rs:643:            match self.stream.read(&mut header[filled..]).await {
+ocapn/src/websocket.rs:366:                && fields[0] == Value::Symbol(INIT_PEER_AUTH.to_string())
+ocapn/src/websocket.rs:367:                && matches!(&fields[1], Value::Bytes(bytes) if bytes.len() == CHALLENGE_LEN)
+ocapn/src/locator.rs:165:        Some(i) => (&rest[..i], &rest[i..]),
+ocapn/src/locator.rs:236:        if bytes[i] == b'%' {
+ocapn/src/locator.rs:240:            let hi = hex_val(bytes[i + 1]).ok_or(LocatorError::BadEscape)?;
+ocapn/src/locator.rs:241:            let lo = hex_val(bytes[i + 2]).ok_or(LocatorError::BadEscape)?;
+ocapn/src/locator.rs:245:            out.push(bytes[i]);
+ocapn/src/session_id.rs:61:    buf.extend_from_slice(&ids[0]);
+ocapn/src/session_id.rs:62:    buf.extend_from_slice(&ids[1]);
+ocapn/src/netstring.rs:38:    if colon == 0 || !buf[..colon].iter().all(u8::is_ascii_digit) {
+ocapn/src/netstring.rs:41:    let len: usize = std::str::from_utf8(&buf[..colon])
+ocapn/src/netstring.rs:52:    Ok(Some((buf[start..end].to_vec(), end)))
+  (counted) index  397 site(s) — was 316 when the list was last reviewed; not a failure, but a
+            count that moved is worth a look, and `--sites index` prints them
+===== class: div =====
+shared/src/stopwatch.rs:22:        format!(, double_to_string(m / hour))
+shared/src/stopwatch.rs:24:        format!(, double_to_string(m / min))
+shared/src/stopwatch.rs:26:        format!(, double_to_string(m / sec))
+shared/src/stopwatch.rs:28:        format!(, double_to_string(m / ms))
+shared/src/base32.rs:45:    let mut out = Vec::with_capacity(input.len() * 5 / 8);
+shared/src/long_ops.rs:12:        let z = (63 - value.leading_zeros()) / 10;
+shared/src/long_ops.rs:13:        let scaled = value as f64 / (1_i64 << (z * 10)) as f64;
+shared/src/base16.rs:18:    if input.len() % 2 != 0 {
+shared/src/base16.rs:40:    let padded: String = if digits.len() % 2 == 0 {
+shared/src/base16.rs:46:    let mut out = Vec::with_capacity(bytes.len() / 2);
+models/src/wire.rs:30:        max / 64 + 1
+models/src/wire.rs:35:        words[e / 64] |= 1u64 << (e % 64);
+models/src/wire.rs:49:    let buffer_size = (bytes.len() + 7) / 8 * 8;
+comm/src/discovery/kademlia_node_discovery.rs:41:        let byte_index = dist / 8;
+comm/src/discovery/kademlia_node_discovery.rs:42:        let different_bit = 1u8 << (dist % 8);
+comm/src/transport/grpc_transport_receiver.rs:356:                stream_byte_budget(limits.blobs, max_stream_message_size) / STREAM_BUDGET_UNIT,
+comm/src/transport/grpc_transport_receiver.rs:611:            stream_byte_budget(limits.blobs, max_stream_message_size) / STREAM_BUDGET_UNIT,
+comm/src/peer_node.rs:34:        if name.len() % 2 != 0 {
+comm/src/peer_node.rs:37:        let mut key = Vec::with_capacity(name.len() / 2);
+comm/src/upnp/gateway.rs:43:    let request = "M-SEARCH * HTTP/1.1\r\n\
+rspace/src/hot_store.rs:38:    (u64::from_le_bytes(word) as usize) % shards.max(1)
+rspace/src/serializers/scodec_serialize.rs:70:        let byte_idx = self.bit_len / 8;
+rspace/src/serializers/scodec_serialize.rs:74:        self.bytes[byte_idx] |= (bit & 1) << (7 - (self.bit_len % 8));
+rspace/src/serializers/scodec_serialize.rs:107:        let byte = self.bytes[self.bit_pos / 8];
+rspace/src/serializers/scodec_serialize.rs:108:        let bit = (byte >> (7 - (self.bit_pos % 8))) & 1;
+rholang/src/system_processes.rs:2199:                     multi-signature vault contract (casper/src/genesis/resources/MultiSigRevVault.rho) \
+rholang/src/reduce.rs:635:                |l, r| Ok(l / r),
+rholang/src/reduce.rs:652:                |l, r| Ok(l % r),
+rholang/src/reduce.rs:1097:    if s.len() % 2 != 0 {
+rholang/src/native_state.rs:277:    if bytes.len() % BOND_ENTRY_LEN != 0 {
+rholang/src/native_state.rs:359:    if bytes.len() % TRUSTED_ENTRY_LEN != 0 {
+rholang/src/native_state.rs:384:    if bytes.len() % PENDING_ENTRY_LEN != 0 {
+rholang/src/native_state.rs:431:    if bytes.len() % WITHDRAWER_ENTRY_LEN != 0 {
+rholang/src/native_state.rs:554:    if bytes.len() % 8 != 0 || bytes.len() < PARAMS_LEN_ORIGINAL || bytes.len() > PARAMS_LEN {
+rholang/src/native_state.rs:747:    block_number % epoch_divisor(params) == 0
+rholang/src/native_state.rs:830:        10_000 * (knee - behind) / (knee - grace)
+rholang/src/native_state.rs:840:    NonNegI64::saturating(i64::try_from(product / 10_000).unwrap_or(i64::MAX))
+rholang/src/native_state.rs:901:    let normaliser = active_bonds / minimum_bond;
+rholang/src/native_state.rs:910:    let scaled = i128::from(pot) * i128::from(bond / minimum_bond);
+rholang/src/native_state.rs:911:    checked_i64(scaled / i128::from(normaliser), )
+rholang/src/native_state.rs:1388:                    * (1 + i128::from(block_number) / i128::from(epoch_divisor(&params))),
+rholang/src/native_state.rs:1571:                    lags[lags.len() / 2],
+rholang/src/native_state.rs:1572:                    lags[lags.len() * 9 / 10],
+rholang/src/native_state.rs:1776:        let next_epoch = block_number / epoch_divisor(&params) + 1;
+rholang/src/native_state.rs:1957:            i64::try_from(i128::from(at_risk) * i128::from(severity.basis_points()) / 10_000)
+rholang/src/native_state.rs:2479:        let payment = i128::from(i64::from(burned)) * i128::from(share) / 10000;
+rholang/src/native_state.rs:5070:    let accept = (i128::MAX / bound) * bound;
+rholang/src/native_state.rs:5077:            return value % bound;
+rholang/src/native_state.rs:5475:    if bytes.len() % DELEGATION_ENTRY_LEN != 0 {
+rholang/src/native_state.rs:5514:    if bytes.len() % DELEGATION_ENTRY_LEN != 0 {
+rholang/src/native_state.rs:5554:    if bytes.len() % DELEGATION_CLAIM_LEN != 0 {
+rholang/src/native_state.rs:5607:                i128::from(amount) * i128::from(*w) / total,
+rholang/src/native_state.rs:5953:                + divisor * (1 + i128::from(block_number) / divisor),
+rholang/src/accounting.rs:198:        (bi.magnitude().bits() / 8 + 1) as i64
+rholang/src/accounting.rs:261:        let occurrences = if old <= 0 { 0 } else { input / old };
+rholang/src/registry.rs:24:    let mut out = String::with_capacity((bit_length + 4) / 5);
+rholang/src/registry.rs:31:                let byte = data[idx / 8];
+rholang/src/registry.rs:32:                let bit = (byte >> (7 - (idx % 8))) & 1;
+casper/src/merging.rs:1397:            let payment = i128::from(moves.burned) * i128::from(share) / 10000;
+casper/src/blocks/proposer/proposer.rs:926:        && i64::from(next_block_num) % i64::from(epoch_length) == 0;
+casper/src/genesis/standard_deploys.rs:152:            "wallet + rgov: r-wallet/src/utils/rho.ts:7,18; rgov src/actions/transfer.rho:4, \
+casper/src/genesis/standard_deploys.rs:158:        consumer: "wallet bonding: r-wallet/src/utils/rho.ts:29 — `lookup!` then `@(_, PoS)` then \
+casper/src/genesis/standard_deploys.rs:166:        consumer: "rgov src/actions/makeMint.rho:13 + wallet snippets.ts:751 — `lookup!` then \
+casper/src/genesis/standard_deploys.rs:191:        consumer: "rgov rholang/core/CrowdFund.rho:8 — `lookup!` then `@(_, *ListOps)` then \
+qucalc/src/lib.rs:233:        if t % 2 == 0 {
+qucalc/src/lib.rs:634:                let quorum = ((2 * eligible.len() as i64 + 2) / 3).max(2);
+qucalc/src/main.rs:41:    let mean = all_ways.iter().sum::<u64>() as f64 / n as f64;
+qucalc/src/main.rs:47:        all_ways[n / 2]
+node/src/runtime/node_runtime.rs:953:                if stats.calls > 0 && stats.calls % 250 == 0 {
+node/src/configuration/configuration.rs:209:             would report nothing — refused rather than accepted and ignored. `GET /metrics` serves \
+node/src/configuration/configuration.rs:215:        "metrics.prometheus is set: `GET /metrics` serves Prometheus text in this port and is always \
+node/src/configuration/configuration.rs:288:             `use-random-ports`/`dynamic-ip` do not change how a port is chosen, and no HTTP/2 or TCP \
+node/src/api/ocapn.rs:850:    let share = (accept_total / configured.max(1)).max(1);
+ocapn/src/noise.rs:96:    MAX_MESSAGE_BYTES + TAG_LEN * (1 + MAX_MESSAGE_BYTES / MAX_CHUNK_PLAINTEXT);
+  (counted) div    74 site(s) — was 54 when the list was last reviewed; not a failure, but a
+            count that moved is worth a look, and `--sites div` prints them
+===== class: overflow =====
+shared/src/refined.rs:143:        self.0 - rhs
+shared/src/refined.rs:150:        self.0 - rhs.0
+shared/src/refined.rs:203:        self.0 - rhs
+shared/src/refined.rs:210:        self.0 - rhs.0
+crypto/src/hash/blake2b512_random.rs:56:        let path_end = 98 + path_position;
+crypto/src/hash/blake2b512_random.rs:64:            let rem_len = 64 - remainder_position;
+crypto/src/hash/blake2b512_random.rs:65:            if path_end + rem_len > bytes.len() {
+crypto/src/hash/blake2b512_random.rs:67:                    expected: path_end + rem_len,
+crypto/src/hash/blake2b512_random.rs:92:        while base + 128 <= offset + length {
+crypto/src/hash/blake2b512_random.rs:96:        if base != offset + length {
+crypto/src/hash/blake2b512_random.rs:98:            let n = offset + length - base;
+crypto/src/hash/blake2b512_random.rs:99:            padded[..n].copy_from_slice(&init[base..base + n]);
+crypto/src/hash/blake2b512_random.rs:210:            64 - self.position
+crypto/src/hash/blake2b512_random.rs:212:        let total = 16 + 80 + 2 + self.path_position + remainder_size;
+crypto/src/hash/blake2b512_random.rs:242:        let path_end = 98 + path_position;
+crypto/src/hash/blake2b512_random.rs:256:            let rem_len = 64 - remainder_position;
+crypto/src/hash/blake2b512_random.rs:258:                .copy_from_slice(&bytes[path_end..path_end + rem_len]);
+crypto/src/hash/blake2b512_random.rs:317:                    .finalize_internal(&child.last_block, 0, &mut chain_block, i * 32);
+crypto/src/hash/blake2b512_random.rs:320:                chain_block[quad.len() * 32..].fill(0);
+models/src/types.rs:32:        Var::BoundVar(l) if *l >= 0 => ctx.get(*l as usize).copied(),
+models/src/types.rs:444:        && well_scoped_par(depth + i32::from(r.bind_count) as usize, &r.body)
+models/src/types.rs:448:    well_scoped_par(depth + i32::from(n.bind_count) as usize, &n.p)
+models/src/types.rs:453:        && well_scoped_par(depth + i32::from(mc.free_count) as usize, &mc.source)
+rspace/src/history/radix_tree.rs:54:                size += 2 + prefix.len() + 32;
+rspace/src/history/radix_tree.rs:91:            if pos + 2 > bytes.len() {
+rspace/src/history/radix_tree.rs:99:            let prefix_size = (bytes[pos + 1] & 0x7F) as usize;
+rspace/src/history/radix_tree.rs:100:            let prefix_start = pos + 2;
+rspace/src/history/radix_tree.rs:101:            if prefix_start + prefix_size > bytes.len() {
+rspace/src/history/radix_tree.rs:104:            let val_start = prefix_start + prefix_size;
+rspace/src/history/radix_tree.rs:105:            if val_start + 32 > bytes.len() {
+rspace/src/history/radix_tree.rs:108:            pos = val_start + 32;
+rspace/src/history/radix_tree.rs:121:        let second = bytes[pos + 1];
+rspace/src/history/radix_tree.rs:123:        let prefix_start = pos + 2;
+rspace/src/history/radix_tree.rs:130:        let prefix = KeySegment::try_from(bytes[prefix_start..prefix_start + prefix_size].to_vec())
+rspace/src/history/radix_tree.rs:132:        let val_start = prefix_start + prefix_size;
+rspace/src/history/radix_tree.rs:133:        let val = Blake2b256Hash::from_byte_array(&bytes[val_start..val_start + 32]);
+rspace/src/history/radix_tree.rs:140:        pos = val_start + 32;
+rspace/src/history/radix_tree.rs:318:                    return Ok(if *leaf_prefix == prefix.tail() {
+rholang/src/util/rev_address.rs:61:            let eth_address = &eth_hex[eth_hex.len() - ETH_ADDRESS_LENGTH..];
+rholang/src/util/rev_address.rs:99:        let checksum_start = self.prefix.len() + KEY_HASH_LENGTH;
+rholang/src/util/rev_address.rs:100:        let address_length = self.prefix.len() + KEY_HASH_LENGTH + self.checksum_length;
+  (counted) overflow 41 site(s)
+
+===== summary =====
+
+  site listings corroborated against the counts above:
+    cast listed=358 ratchet=358
+    lax listed=10 ratchet=10
+    get listed=0 ratchet=0
+    index listed=397 ratchet=397
+    div listed=74 ratchet=74
+    overflow listed=41 ratchet=41
+OK: no hard production violations (panic/unsafe/silent/escape) in production code.
+    The counted classes (cast/lax/get/index/div/overflow) are reported above and not enforced.

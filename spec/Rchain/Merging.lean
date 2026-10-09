@@ -1,3 +1,4 @@
+import Mathlib.Data.Finset.Basic
 import Rchain.Cmp
 import Rchain.Crypto.Random
 
@@ -300,5 +301,115 @@ theorem the_resolution_does_not_depend_on_the_iteration_order (cost : Nat → In
             the_minimum_is_unique cost hmem hmin (h.symm.mem_iff.mp hmem')
               (fun o ho => hmin' o (h.mem_iff.mp ho))
           rw [heq]
+
+/-! ## Law 17c — the native relation is on the chain, not the block
+
+The rows above model the merge's **selection**. This one models the relation the selection runs over,
+because that relation is where #280's defect lived and because the choice of *what a rejection unit is*
+is not a detail of the search — it decides what can be lost.
+
+The port carries each block's native state changes as `BlockIndex.native_changes`, a flat
+`Vec<NativeStoreAction>` (`casper/src/merging.rs`). The relation that decides conflicts reads that
+**host block's** set — `NativeRelations::conflicting` takes the union over the block's chains — and the
+rejection rule is over the host too: `reject_whole_blocks` removes every chain of a rejected block, on
+the stated grounds that "native effects are block-level and were computed with every chain's effects".
+At an epoch boundary every block runs `close_block`, so every block's host set holds the epoch's slots
+and **every** pair of concurrent blocks conflicts — including the pairs whose user chain wrote no
+contended slot at all. The user deploy's effects then die with a contention they had no part in, which is
+exactly what the live capture records (`spec/audit/evidence/n280-merge-loses-a-write-results.md`: the
+write present at heights 100, 101 and 102, gone from 103, with the boundary blocks' `CloseBlock` ids in
+the rejected set).
+
+**What this law does not model.** The rejection-*option enumeration* over the conflict graph — the
+maximal conflict-free sets the search returns, and the budget that bounds it — is still not modelled
+here; it is the piece law 17a's note names as law 9's and it would be a second model of
+`sdk/src/dag/merging.rs`'s `compute_rejection_options`. What is modelled is the relation and the
+acceptance predicate, which is what the defect falsified. -/
+
+/-- One deploy chain, as the native relation sees it: the block it rode in on, and the native slots its
+    **own** deploys wrote. `host` stands for the port's `host_block`, `slots` for the `(prefix, key)`
+    pairs its actions touch (`NativeStoreAction::slot`) folded into a set. -/
+structure Chain where
+  host : Nat
+  slots : Finset Nat
+  deriving DecidableEq
+
+/-- The native relation at the **chain** level: two chains of different blocks, sharing a slot, neither
+    having seen the other. `sees` is a parameter rather than a field because it comes from the DAG's
+    ancestry (`MergeScope::ancestry`) and is not a function of the two chains — the same reason the
+    port's `NativeRelations` reads it out of the scope rather than off the chains. -/
+def chainConflict (sees : Chain → Chain → Prop) (a b : Chain) : Prop :=
+  a.host ≠ b.host ∧ (a.slots ∩ b.slots).Nonempty ∧ ¬ sees a b ∧ ¬ sees b a
+
+/-- The slots written by **any** chain that rode in on block `h` — the port's
+    `native_keys: BTreeMap<host, BTreeSet<slot>>`, built by unioning the block's chains. -/
+def hostSlots (cs : List Chain) (h : Nat) : Finset Nat :=
+  cs.foldl (fun acc c => if c.host = h then acc ∪ c.slots else acc) ∅
+
+/-- The native relation at the **block** level — what the port applied before this law, and what a
+    chain is rejected by. Note that it says nothing about *which* chain wrote the shared slot: that is
+    the whole of the defect. -/
+def hostConflict (cs : List Chain) (a b : Chain) : Prop :=
+  a.host ≠ b.host ∧ (hostSlots cs a.host ∩ hostSlots cs b.host).Nonempty
+
+/-- **The incident's shape, as data.** One block (host `1`) carried two chains: its boundary chain,
+    which ran `close_block` and wrote the epoch's slots `{1, 2}`, and its user deploy's chain, which
+    wrote **no native slot at all** (`∅`). A concurrent sibling (host `2`) wrote the same two slots.
+    This is the round the live chain ran at height 100. -/
+def incidentChains : List Chain :=
+  [⟨1, {1, 2}⟩, ⟨1, ∅⟩, ⟨2, {1, 2}⟩]
+
+/-- **The rule that stood, refuted.** At the block level the user chain conflicts with the sibling —
+    different hosts, and the *host* key sets overlap — while at the chain level it does not, because its
+    own slot set is empty. So the rule that stood rejects a chain that wrote nothing contended, and that
+    is how a user deploy's effects came to die for a slot they never touched. The two sides here are the
+    falsifier: `hostConflict` is the shape the port applied and `¬ chainConflict` is the shape this law
+    requires, of the *same* pair of chains. -/
+theorem host_keys_conflict_where_the_chains_do_not (sees : Chain → Chain → Prop) :
+    hostConflict incidentChains ⟨1, ∅⟩ ⟨2, {1, 2}⟩ ∧
+      ¬ chainConflict sees ⟨1, ∅⟩ ⟨2, {1, 2}⟩ := by
+  constructor
+  · unfold hostConflict hostSlots incidentChains
+    decide
+  · intro h
+    exact absurd h.2.1 (by simp)
+
+/-- **The fold's refusal**, as the port computes it: two accepted chains that both wrote one slot and
+    that the order cannot sequence. The port sequences two writers of one slot only when one saw the
+    other — a descendant's absolute value already includes its ancestor's — or when they are chains of
+    **one** block, where the block's own execution order decides. That second arm is what this law's fix
+    adds (`first_deploy_ordinal`); the block-level rule had no need of it because it never applied two
+    chains of one block separately. -/
+def foldRefuses (sees : Chain → Chain → Prop) (kept : List Chain) : Prop :=
+  ∃ a ∈ kept, ∃ b ∈ kept, a ≠ b ∧ (a.slots ∩ b.slots).Nonempty ∧
+    ¬ sees a b ∧ ¬ sees b a ∧ a.host ≠ b.host
+
+/-- **The resolution's own guarantee**: no two kept chains are in conflict. This is the predicate the
+    search hands the fold, and it is witnessed independently on the Rust side
+    (`sdk/src/property_tests.rs:law17_the_survivors_of_a_rejection_option_are_conflict_free`), so the two
+    predicates below are not two spellings of one thing. -/
+def resolves (sees : Chain → Chain → Prop) (kept : List Chain) : Prop :=
+  ∀ a ∈ kept, ∀ b ∈ kept, ¬ chainConflict sees a b
+
+/-- **Law 17c's positive half: the resolution leaves the fold nothing to refuse.** `resolves` is stated
+    on `chainConflict` and `foldRefuses` on its own shared-slot-and-unsequenced shape, so this is a bridge
+    between two independently defined predicates rather than a restatement of either: a kept pair that
+    shares a slot and is unsequenced *is* a chain conflict, which `resolves` forbids. It is what lets the
+    fold's refusal be made **loud** rather than defensively swallowed — after this law the refusal is
+    unreachable on any state the resolution can produce, so a report of one is a defect and not a
+    judgement call. -/
+theorem the_resolution_leaves_the_fold_nothing_to_refuse (sees : Chain → Chain → Prop)
+    {kept : List Chain} (h : resolves sees kept) : ¬ foldRefuses sees kept := by
+  rintro ⟨a, ha, b, hb, _, hslots, hsa, hsb, hhost⟩
+  exact h a ha b hb ⟨hhost, hslots, hsa, hsb⟩
+
+/-- **And the refusal is not an empty predicate**, which is what makes the theorem above a statement
+    about a reachable shape rather than about nothing: two chains of different blocks that wrote one slot
+    without either having seen the other are exactly what the fold refuses. (`hostSlotWriters` in the
+    port is this pair; the fix's job is to keep such a pair out of the *kept* set, not to make the
+    refusal unstatable.) -/
+theorem the_fold_refuses_concurrent_writers_of_one_slot :
+    foldRefuses (fun _ _ => False) [⟨1, {1}⟩, ⟨2, {1}⟩] := by
+  refine ⟨⟨1, {1}⟩, by simp, ⟨2, {1}⟩, by simp, by decide, by decide, by simp, by simp, by decide⟩
 
 end Rchain

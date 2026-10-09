@@ -25,6 +25,7 @@ use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
 use rchain_models::validator::Validator;
+use rchain_rholang::merging::SidecarRecord;
 use rchain_rholang::native_state::NativeSystemState;
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::system_processes::BlockData;
@@ -200,13 +201,24 @@ async fn the_sidecar_a_block_saves_carries_the_user_deploys_write_not_only_the_s
         user[0].eval_result.errors
     );
 
-    let sidecar = rm
+    let record = rm
         .load_native_changes(post_state.as_bytes(), &sender, 0)
         .await
         .expect("the sidecar read is not a store error")
         .expect("compute_state must have saved a sidecar for the block it just played");
-    let slots: Vec<(u8, rchain_crypto::hash::blake2b256_hash::Blake2b256Hash)> =
-        sidecar.iter().map(|a| a.slot()).collect();
+    // **Attributed, and the test says so** (#280). A record that is not attributed is one whose
+    // effects cannot be placed with the deploys that made them — the representation the defect lived
+    // in — so matching it here is what keeps the assertions below from being blind to it.
+    let sidecar = match record {
+        SidecarRecord::Attributed(effects) => effects,
+        other => panic!("a played block's sidecar must be attributed; got {other:?}"),
+    };
+    let slots: Vec<(u8, rchain_crypto::hash::blake2b256_hash::Blake2b256Hash)> = sidecar
+        .into_map()
+        .into_values()
+        .flatten()
+        .map(|a| a.slot())
+        .collect();
 
     assert!(
         slots.contains(&(PREFIX_POS, pos_epoch_seed_key())),
@@ -396,11 +408,18 @@ async fn a_merged_block_reproduces_its_own_post_state() {
         .map(|u| u.mergeable.clone())
         .chain(system.iter().map(|s| s.mergeable.clone()))
         .collect();
-    let sidecar = rm
+    // **The attributed record, unflattened** (#280): `BlockIndex::apply` places each deploy's actions
+    // on the chain that carries it, so the flattened list an earlier revision built here is neither
+    // what the index takes nor a shape in which a write is attributable at all.
+    let sidecar = match rm
         .load_native_changes(post_state.as_bytes(), &sender, 0)
         .await
         .expect("the sidecar read is not a store error")
-        .expect("compute_state must have saved a sidecar for the block it just played");
+        .expect("compute_state must have saved a sidecar for the block it just played")
+    {
+        SidecarRecord::Attributed(effects) => effects,
+        other => panic!("a played block's sidecar must be attributed; got {other:?}"),
+    };
     let executor = RevAddress::from_public_key(&PublicKey::new(sender.clone()))
         .expect("the block's sender names a REV address")
         .to_base58();
@@ -433,7 +452,7 @@ async fn a_merged_block_reproduces_its_own_post_state() {
         conflict_scope: BTreeSet::from([BlockHash::new(*post_state.as_bytes())]),
         ancestry: BTreeMap::new(),
     };
-    let (merged, rejected) = MergeScope::merge(
+    let outcome = MergeScope::merge(
         &scope,
         start,
         &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -443,6 +462,7 @@ async fn a_merged_block_reproduces_its_own_post_state() {
     )
     .await
     .expect("a lone block merges");
+    let (merged, rejected) = (outcome.state, outcome.rejected_deploys);
     assert!(rejected.is_empty(), "nothing to conflict with");
 
     assert_eq!(

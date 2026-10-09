@@ -1,0 +1,15 @@
+{
+  "ts": 1791489530,
+  "host": "testnet-a",
+  "ok": true,
+  "rnode_unit": "active",
+  "api_reachable": true,
+  "blocks": 106,
+  "blocks_since_last_tick": 0,
+  "peers": 3,
+  "nodes": 3,
+  "finalized_fringe": true,
+  "autopropose": false,
+  "mem_available_mb": 595,
+  "disk_free_mb": 21488
+}

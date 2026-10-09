@@ -22,6 +22,7 @@ use rchain_models::validator::Validator;
 use rchain_rholang::accounting::Cost;
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::evaluate_result::EvaluateResult;
+use rchain_rholang::merging::SidecarRecord;
 use rchain_rholang::merging::{
     calculate_num_channel_diff, encode_mergeable_key, get_number_with_rnd, DeployMergeableData,
     NumberChannel,
@@ -33,7 +34,7 @@ use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
-use rchain_rspace::native_store::{NativeStoreAction, PREFIX_POS};
+use rchain_rspace::native_store::{BlockNativeEffects, NativeWriter, PREFIX_POS};
 use rchain_rspace::rspace::RSpace;
 use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::typed_store::KeyValueTypedStore;
@@ -61,7 +62,7 @@ pub type MergeableStore = Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<DeployMergeabl
 /// effect log, so a merge that re-applies tuple space alone silently reverts every native write in the
 /// merged branches (issue #74). This sidecar is that missing effect log, written wherever a block is
 /// played or replayed and carried into `BlockIndex` for `MergeScope::merge` to apply.
-pub type NativeChangesStore = Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<NativeStoreAction>>>;
+pub type NativeChangesStore = Arc<dyn KeyValueTypedStore<Vec<u8>, SidecarRecord>>;
 
 /// The phlo (gas) limit for a single exploratory deploy (documented Scala deviation: Scala runs
 /// exploratory deploys with no limit). Mirrors the Repl bound in
@@ -316,15 +317,20 @@ impl RuntimeManager {
         Ok(())
     }
 
-    /// Load a block's native state mutations from the sidecar, or `None` when the block has no record
-    /// (never played or replayed by this node, or written before this sidecar existed). A recorded
-    /// *empty* block answers `Some(vec![])`, which is why the absent case is `None` and not an empty vec.
+    /// Load a block's native-changes record from the sidecar, or `None` when the block has no record
+    /// (never played or replayed by this node, or written before this sidecar existed).
+    ///
+    /// **Three states, told apart here and not at the caller** (#280): no record, a record that
+    /// attributes every effect to the deploy that made it, and one written before attribution existed
+    /// (`SidecarRecord::LegacyUnattributed`). The last is *not* the same as an empty record, and the
+    /// caller refuses a nonempty one rather than reading it as a block-level set — which is the
+    /// representation the defect lived in.
     pub async fn load_native_changes(
         &self,
         state_hash: &[u8],
         creator: &[u8],
         seq_num: i64,
-    ) -> Result<Option<Vec<NativeStoreAction>>, String> {
+    ) -> Result<Option<SidecarRecord>, String> {
         let state_hash = Blake2b256Hash::from_byte_array(state_hash);
         let key = encode_mergeable_key(&state_hash, creator, seq_num);
         let vals = self.native_changes_store.get(&[key]).await?;
@@ -338,11 +344,11 @@ impl RuntimeManager {
         post_state_hash: Blake2b256Hash,
         creator: &[u8],
         seq_num: i64,
-        native_changes: &[NativeStoreAction],
+        native_changes: &BlockNativeEffects,
     ) -> Result<(), String> {
         let key = encode_mergeable_key(&post_state_hash, creator, seq_num);
         self.native_changes_store
-            .put(&[(key, native_changes.to_vec())])
+            .put(&[(key, SidecarRecord::Attributed(native_changes.clone()))])
             .await?;
         Ok(())
     }
@@ -633,9 +639,11 @@ impl RuntimeManager {
         // ones the merge re-derives from the accepted deploys rather than carrying in the block's
         // sidecar. Nothing else can run here — these are system deploys evaluated on this call's own
         // stack — so the attribution is exact rather than heuristic.
-        runtime.native_store().begin_cost_accounting();
+        runtime
+            .native_store()
+            .begin_writer(NativeWriter::CostAccounting);
         let (pre_result, pre_eval) = Self::eval_system_deploy_with(runtime, &pre_charge).await?;
-        runtime.native_store().end_cost_accounting();
+        runtime.native_store().end_writer();
         let pre_checkpoint = runtime.create_soft_checkpoint().await;
         collector = collector.add(
             &pre_checkpoint
@@ -674,7 +682,9 @@ impl RuntimeManager {
             processed.refund_amount(),
             rand.split_byte(2),
         );
-        runtime.native_store().begin_cost_accounting();
+        runtime
+            .native_store()
+            .begin_writer(NativeWriter::CostAccounting);
         let _ = Self::eval_system_deploy_with(runtime, &refund).await?;
 
         // **And the block's producer is paid for the work** (B2, #150). Last, because the amount is a
@@ -691,7 +701,7 @@ impl RuntimeManager {
         let _ = Self::eval_system_deploy_with(runtime, &pay_executor).await?;
         // The cost-accounting window closes with the last of the three, before the block's own
         // bookkeeping resumes.
-        runtime.native_store().end_cost_accounting();
+        runtime.native_store().end_writer();
 
         processed.deploy_log = collector.event_log.clone();
         Ok(UserDeployRuntimeResult {
@@ -729,7 +739,20 @@ impl RuntimeManager {
         for (i, d) in terms.iter().enumerate() {
             let r = rand
                 .split_byte(u8::try_from(i).map_err(|e| RuntimeRunError::Other(e.to_string()))?);
-            results.push(Self::play_deploy_with_cost_accounting_with(runtime, d, &r).await?);
+            // The deploy's **ordinal** in the block's list is the name its native writes travel
+            // under (#280), so it is threaded down to the window rather than re-derived there.
+            let ordinal = u32::try_from(i).map_err(|_| {
+                RuntimeRunError::Other("more deploys than a u32 ordinal can name".to_string())
+            })?;
+            // The whole cost-accounting unit runs inside the deploy's own window, so the inner
+            // cost windows (which the unit opens and closes itself) nest inside it rather than
+            // replacing it — see `InMemNativeStore::begin_writer`'s stack.
+            runtime
+                .native_store()
+                .begin_writer(NativeWriter::Deploy(ordinal));
+            let played = Self::play_deploy_with_cost_accounting_with(runtime, d, &r).await;
+            runtime.native_store().end_writer();
+            results.push(played?);
         }
         let checkpoint = runtime
             .create_checkpoint()
@@ -756,6 +779,14 @@ impl RuntimeManager {
         self.runtime.set_block_data(block_data);
         let pre_state_hash = self.runtime.empty_state_hash().await?;
         self.runtime.reset(pre_state_hash).await.map_err(|e| e)?;
+        // **The genesis installation is its own writer** (#280). Everything from here to the final
+        // checkpoint is block 0's own native state — the PoS pool, the vault balances and the
+        // registry aliases — written before any deploy list exists to attribute it to. It is named
+        // rather than left unattributed, and it does not travel in a sidecar
+        // (`NativeWriter::Genesis` says why).
+        self.runtime
+            .native_store()
+            .begin_writer(NativeWriter::Genesis);
         let native = NativeSystemState::new(self.runtime.native_store());
         // The native-channel aliases have no deploy to wait for; seed them before the loop so a
         // blessed deploy could look them up, and re-seed after each deploy below.
@@ -794,6 +825,7 @@ impl RuntimeManager {
         // tests, and for a chain that installs a different contract set), and demanding the full
         // manifest here would reject those.
         crate::genesis::seed_registry_aliases(&native).await?;
+        self.runtime.native_store().end_writer();
         let checkpoint = self.runtime.create_checkpoint().await.map_err(|e| e)?;
         let mergeable_chs: Vec<NumberChannelsDiff> =
             results.iter().map(|r| r.mergeable.clone()).collect();
@@ -1118,7 +1150,7 @@ impl RuntimeManager {
             Blake2b256Hash,
             Vec<UserDeployRuntimeResult>,
             Vec<SystemDeployRuntimeResult>,
-            Vec<NativeStoreAction>,
+            BlockNativeEffects,
         ),
         RuntimeRunError,
     > {
@@ -1130,24 +1162,34 @@ impl RuntimeManager {
         // accepted deploys (AUDIT C207), so carrying them here would make every user-deploy block
         // overlap every concurrent sibling on `pos:vault` and lose its own writes to a whole-block
         // rejection. The checkpoint has already folded both halves.
-        let mut native_changes = runtime.last_own_native_changes();
+        let mut native_effects = BlockNativeEffects::from_drain(&runtime.last_native_drain())
+            .map_err(RuntimeRunError::Other)?;
         let mut processed_system_deploys = Vec::new();
-        for sd in system_deploys {
-            let (new_hash, processed) =
-                Self::play_system_deploy_with(runtime, &state_hash, sd).await?;
+        for (i, sd) in system_deploys.iter().enumerate() {
+            let ordinal = u32::try_from(terms.len() + i).map_err(|_| {
+                RuntimeRunError::Other("more deploys than a u32 ordinal can name".to_string())
+            })?;
+            runtime
+                .native_store()
+                .begin_writer(NativeWriter::Deploy(ordinal));
+            let played = Self::play_system_deploy_with(runtime, &state_hash, sd).await;
+            runtime.native_store().end_writer();
+            let (new_hash, processed) = played?;
             state_hash = new_hash;
             // Each block-level system deploy resets and checkpoints its own state, so its native
             // mutations (activation, rewards, withdrawal processing, slashing) are read here and
             // accumulated — one `last_native_changes` per checkpoint, and reset does not clear it.
             // A block-level system deploy is not cost accounting, so the own-set is the right read.
-            native_changes.extend(runtime.last_own_native_changes());
+            let effects = BlockNativeEffects::from_drain(&runtime.last_native_drain())
+                .map_err(RuntimeRunError::Other)?;
+            native_effects.merge(effects);
             processed_system_deploys.push(processed);
         }
         Ok((
             state_hash,
             processed_deploys,
             processed_system_deploys,
-            native_changes,
+            native_effects,
         ))
     }
 
@@ -1168,13 +1210,13 @@ impl RuntimeManager {
         relaxed_user: &[UserDeployRuntimeResult],
         relaxed_sys: &[SystemDeployRuntimeResult],
         relaxed_hash: Blake2b256Hash,
-        relaxed_native: Vec<NativeStoreAction>,
+        relaxed_native: BlockNativeEffects,
     ) -> Result<
         (
             Blake2b256Hash,
             Vec<UserDeployRuntimeResult>,
             Vec<SystemDeployRuntimeResult>,
-            Vec<NativeStoreAction>,
+            BlockNativeEffects,
         ),
         String,
     > {
@@ -1322,8 +1364,9 @@ impl RuntimeManager {
         // replay it again to index it, and so the merge can re-apply them (issue #74).
         // **The sidecar's half**, as on the play path: cost accounting is re-derived by the merge
         // (AUDIT C207), so only the block's own writes travel. The checkpoint has folded both.
-        let native_changes = replay_runtime.last_own_native_changes();
-        self.save_native_changes(state_hash, &creator, seq_num, &native_changes)
+        let native_effects = BlockNativeEffects::from_drain(&replay_runtime.last_native_drain())
+            .map_err(ReplayFailure::internal_error)?;
+        self.save_native_changes(state_hash, &creator, seq_num, &native_effects)
             .await
             .map_err(ReplayFailure::internal_error)?;
         Ok((state_hash, mergeable_chs))
@@ -1454,7 +1497,7 @@ fn to_blake(hash: &StateHash) -> Blake2b256Hash {
 mod tests {
     use super::*;
     use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
-    use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
+    use rchain_rholang::merging::{DeployMergeableDataCodec, NativeSidecarCodec};
     use rchain_rspace::factory::create_history_repository;
     use rchain_shared::store_manager::{database, InMemoryStoreManager};
     use rchain_shared::typed_store::BytesCodec;
@@ -1496,7 +1539,7 @@ mod tests {
                 &manager,
                 "native-changes",
                 Arc::new(BytesCodec),
-                Arc::new(NativeStoreActionsCodec),
+                Arc::new(NativeSidecarCodec),
             )
             .await
             .unwrap(),
