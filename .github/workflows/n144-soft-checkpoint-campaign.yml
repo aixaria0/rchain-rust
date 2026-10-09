@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Measure the PR head itself, not GitHub's synthetic refs/pull/*/merge commit, so the
+          # JSON tree remains a durable commit that can be checked out and reproduced later.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Build instrumented rnode image
         run: tools/devnet.sh build
@@ -113,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: n144-soft-checkpoint-${{ github.sha }}
+          name: n144-soft-checkpoint-${{ github.event.pull_request.head.sha || github.sha }}
           path: target/n144-soft-checkpoint/
           if-no-files-found: error
           retention-days: 14
