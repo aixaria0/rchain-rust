@@ -3,6 +3,10 @@ name: "#144 soft-checkpoint campaign"
 on:
   pull_request:
     branches: [dev]
+    # Once a completed arm is copied into the evidence tree, that archival-only commit must not
+    # launch the same campaign again and create an evidence -> run -> evidence loop.
+    paths-ignore:
+      - "spec/audit/evidence/n144-soft-checkpoint/**"
   workflow_dispatch:
 
 permissions:

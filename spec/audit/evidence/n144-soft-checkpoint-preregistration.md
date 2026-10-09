@@ -129,6 +129,12 @@ does not change the node, scheduler, checkpoint instrumentation, number of deplo
 void conditions, or any frozen decision threshold above. The original void arm remains evidence and is
 not replaced.
 
+## Completed rerun
+
+The corrected rerun on `3b6d7c74a480a27502786fe7db8d44ef025df9c1` processed **200/200** deploys in all three attempts, recorded exactly **4.0 checkpoints/deploy**, and logged no validation/replay/self-validation failure. The checkpoint fractions were **37.270%**, **40.859%**, and **38.673%**; median **38.673%**.
+
+By the frozen rule above, **candidate 1 earns the first behavior-preserving ablation**. Raw JSON, compressed node logs and the mechanically-derived summary are preserved under `spec/audit/evidence/n144-soft-checkpoint/3b6d7c74a4-20261009T050515Z/`.
+
 ## What this does not claim
 
 - It is not a production TPS number or a multi-validator capacity plan.
