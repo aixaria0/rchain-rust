@@ -40,6 +40,9 @@ jobs:
               --deploys 200 \
               --concurrency 4 \
               --json "target/n144-soft-checkpoint/run-${attempt}.json"
+            # The preregistration already makes validation/replay/self-validation failures a void
+            # condition. Preserve the node log before teardown so that condition is actually checkable.
+            docker logs devnet-bootstrap > "target/n144-soft-checkpoint/run-${attempt}.log" 2>&1 || true
             cleanup
           done
 
@@ -72,7 +75,15 @@ jobs:
           if len(rows) != 3:
               raise SystemExit(f'expected 3 runs, found {len(rows)}')
 
+          import re
+
           void = []
+          failure_re = re.compile(
+              r"self[- ]validation.{0,80}(?:fail|error)|"
+              r"self-created block.{0,120}failed validation|"
+              r"replay.{0,80}mismatch|validation failure",
+              re.IGNORECASE,
+          )
           for row in rows:
               if not row['available']:
                   void.append(f"{row['file']}: census unavailable ({row['reason']})")
@@ -80,6 +91,13 @@ jobs:
                   void.append(f"{row['file']}: snapshots/deploy={row['snapshots_per_deploy']}")
               if row['submitted'] and (row['processed'] or 0) / row['submitted'] < 0.9:
                   void.append(f"{row['file']}: processed={row['processed']}/{row['submitted']}")
+              log_path = root / row['file'].replace('.json', '.log')
+              if not log_path.exists():
+                  void.append(f"{row['file']}: node log missing; preregistered log void condition cannot be checked")
+              else:
+                  match = failure_re.search(log_path.read_text(errors='replace'))
+                  if match:
+                      void.append(f"{row['file']}: node log matched consensus-failure void pattern: {match.group(0)[:120]!r}")
 
           lines = ['# #144 soft-checkpoint campaign summary', '']
           lines.append('| run | tree | processed | snapshots/deploy | checkpoint ms/deploy | deploy-unit ms/deploy | fraction |')

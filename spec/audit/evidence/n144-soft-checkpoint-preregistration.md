@@ -109,6 +109,7 @@ inside the work unit that owns it.
 - The runtime gauges are absent or move backwards between scrapes.
 - Fewer than 90% of submitted deploys are processed inside the bounded drain window.
 - The node logs a validation failure, replay mismatch, or self-validation failure during the arm.
+  The campaign preserves each attempt's node log and mechanically scans it before applying the frozen decision; a missing log is also void because this condition would otherwise be uncheckable.
 
 A void attempt is preserved and named; it is not silently replaced.
 
