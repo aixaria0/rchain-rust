@@ -8710,3 +8710,99 @@ mechanism that makes it reachable: the joiner's restored blocks carry the fringe
 with, so the catch-up above the anchor has something to validate against. The drill that shows a wiped
 joiner reaching the tip from an anchor is the next run, and the flag's own help says what it still depends
 on instead of claiming the acceptance.
+
+## 88. C250's answer: two honest siblings cannot collide — and the three gaps that go round it
+
+**What was asked, and what "settled" turned out to mean.** Three carriers closed on 2026-10-09, each with a
+red-before test: C215's `fringe_states` record (#304), a recovery meet that fabricated a quorum (#305), a
+faucet that answered success while delivering nothing (#306). None of them named the *cause* of the
+2026-10-08 incident — four peers that disagreed about a pre-state and froze finality at 101 for thirteen
+hours. C250's close condition asked for something the register could not get: the four nodes' logs read
+together, from a capture tarball it names only by digest. **That tarball exists in one place, and it is not
+anywhere this programme can reach** — `/home/jimscarver/testnet-stall-20261009.tar.gz` on the reporting
+machine, never attached to #280, absent from git history and from LFS. A close condition naming an
+unreachable input is not an open row; it is a blocked one, and this pass separates the two.
+
+**The answer, and it is from the code rather than from the logs.** The question C215's own residue left was
+whether the colliding pair — two blocks that finalise **the same fringe set** and disagree about its value
+— can be produced by two honest nodes holding the same DAG. It cannot, for the shape #304's tests build,
+and the reason is a field identity rather than a probabilistic argument:
+
+- a block's `rejected_deploys` is **not** its own conflict scope's resolution. It is
+  `pre_state.fringe_rejected_deploys` (`casper/src/blocks/proposer/block_creator.rs:90`) — the **fringe**
+  merge's rejections, computed from the block's justifications;
+- its `fringe` and `fringe_state_hash` are not on the wire at all (`models/src/block_metadata.rs:323`
+  zeroes them; `proto_util.rs:95-97` leaves `rejected_blocks`/`rejected_senders` empty) — they are the
+  receiver's derivation in `interpreter_util.rs:766-767`, from the same merge;
+- and the whole derivation, `get_pre_state_for_parents(dag, block_store, runtime, parent_hashes,
+  block_index)`, takes **no argument for the block being built** (`multi_parent_casper.rs:105`). Two
+  siblings justify one parent set, so there is nothing left for them to differ on.
+
+What a sibling's own conflict scope resolves is a *different field* — `ParentsMergedState::rejected_deploys`
+(`multi_parent_casper.rs:307-310`) — and its only consumer in the tree is a log line
+(`proposer.rs:890`). It never reaches a block and never reaches a record. So #299's reading was right in
+the sense that matters and wrong in its conclusion: the collision is not "ordinary multi-proposer
+behaviour"; it is not honest behaviour at all, and the construction that showed it was *assigning* the
+disagreement rather than deriving it. **#304 therefore removed a carrier, not a cause.** Whatever made
+those four peers disagree happened above this map, and this pass says so rather than leaving the fix to
+take credit for a cause it never addressed.
+
+**The test that pins it.** `casper/tests/merge_determinism.rs::two_honest_siblings_contribute_one_value_to_the_fringe_they_share`
+takes the same pair of siblings — two consumers racing for the single produce `x` leaves on `@"c"`, so
+their content genuinely differs — and asks the production derivation what each would write. Both get one
+fringe, one state and one rejection set, and both records land on one key with one value in either arrival
+order. Its control is the other half: a second DAG changes a single record and the derivation **moves**, so
+the equality is a fact about two honest siblings over one DAG rather than arithmetic on a constant. The
+test's own doc comment records the rig's limit — the fringe does not advance past genesis there, so the
+shared key is the genesis fringe's, and what is exercised is the derivation's *inputs* rather than an
+advancing walk.
+
+**The residue, and it is real.** The record's key is `FringeData::fringe_hash_of(fringe)` while its value
+depends on the **base** the merge started from: `prev_fringe` supplies both `base_state` and the scope
+(`multi_parent_casper.rs:156-166, 226-238`), and the key does not name it. Two *non*-sibling blocks that
+reach one fringe set from two different bases would therefore still write two values at one key. Nothing in
+this pass excludes that, and the derivation's sensitivity to the DAG — the control above — is exactly what
+would make such a pair differ. What it would *not* be, on today's tree, is a divergence: post-#304 the join
+is commutative, associative and idempotent, so both nodes converge on one record either way; the
+consequence would be a `.min()` tie-break standing in for a real state hash rather than a fork. Stated here
+as unproduced and unrefuted, with what would decide it: a construction in which two honest blocks share a
+final fringe and differ in `prev_fringe`.
+
+**The four-log reading, and it now has a route rather than a wish.** C250's second half is carried by a row
+of its own, **C263**, whose condition names the observable (the logs read together from that tarball) and
+the route (Jim's offer, on #280, to attach it or to commit the redacted directory under
+`spec/audit/evidence/n280-merge-loses-a-write/`). Its request is posted. A blocked row that names its
+blocker is a different object from an open row nobody is on, and the register should be able to tell them
+apart at a glance.
+
+**The meet and the equivocation check, which #305 left half-accounted for.** `tools/reconcile-network.sh`
+now asks every node for the same explicitly reported finalised block and refuses when they differ; it
+computes no meet, infers no quorum from block producers, and prints no stake fraction. §2 flags a sender
+with two distinct blocks at one height — from the block API's own `sender` field, with **no signature
+check** — so it is one endpoint's word: a suspicion, not an attributable artefact, and nothing consumes it.
+The four obligations that would make a real meet honest (an authenticated endpoint→validator binding, a
+signed vote, verified ancestry, and equivocation that moves both numerator and denominator *by proof*) live
+on #287; the denominator rule is #290's part 1, where the proof and the slash belong to the node. Latent
+today because there is no denominator, live the moment one returns — **C261**.
+
+**And three documents that outlived their mechanism** — the class this programme keeps meeting. #305 changed
+§3 of the tool and left the tool's own header advertising a "stake-weighted **meet**", a validator dropped
+"**provably** … before weighing stake", and "the stake arithmetic"; left §2's banner describing a check
+"before any stake is weighed"; and left `docs/src/node/testnet.md` — the page an operator reads — still
+explaining that "the meet is computed, not chosen … a strict supermajority of stake (`stake * 3 > total *
+2`), with a provably equivocating validator's stake removed from both the numerator and the denominator".
+Found by this reconnaissance, not recorded anywhere before it. Separately, `spec/TYPE-SYSTEM.md:109-111`
+still claimed the counted classes are "compared in both directions against `tools/type-system-baseline.tsv`
+— a rise or a fall fails the build", a file C255 deleted in §80 and nothing replaces. Both corrected here.
+
+**The formal gate's cadence, resolved rather than noted.** `tools/check-lean-conformance.sh` runs only in
+`nightly.yml`, which is why the envelope row moved by hand. A per-push run of the whole gate is not
+affordable (a 16-minute cold Lean build behind ~104 serial `cargo test` invocations), but the *hole* is
+narrow: it needs the specification or the surfaces the corpora pin to move. `.github/workflows/formal-on-change.yml`
+runs the same single entry point on exactly those paths, so the two cadences cannot disagree about what
+"the specification holds" means. The nightly remains the backstop for everything else — **C262** records
+both the hole and the decision.
+
+**What this pass does not do.** It does not read the four logs (C263 is blocked on the artefact), and it
+does not claim the incident's cause is now known — only that C215's map is not it, in the sibling shape, and
+that the map cannot be a carrier either way. C249, C254, C256, C259 and C260 stay open and owned elsewhere.

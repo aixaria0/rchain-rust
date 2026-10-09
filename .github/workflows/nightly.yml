@@ -52,10 +52,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Coq
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y coq
+        # Bounded for the same reason as the per-PR job's: an `apt-get` stall on a runner otherwise
+        # holds the job until its timeout, which reads as a slow build (see formal-on-change.yml).
+        run: sudo timeout 300 apt-get update && sudo timeout 900 apt-get install --no-install-recommends -y coq
 
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+        run: sudo timeout 300 apt-get update && sudo timeout 900 apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

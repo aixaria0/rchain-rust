@@ -6,12 +6,15 @@
 # it exists for: spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md.
 #
 # What it does
-#   1. reads every node's finalised block and reaches a **meet** — the deepest height a *strict
-#      supermajority of stake* agrees on — or refuses, naming what is missing;
-#   2. **drops a provably equivocating validator from the decision before weighing stake** (two distinct
-#      signed blocks by one sender at one height, which the block API can show). Never by silence: a
-#      validator that is merely quiet, slow or absent keeps its whole weight;
-#   3. states the point, the vouching set and the stake arithmetic out loud rather than implying them;
+#   1. reads every node's explicitly reported finalised block and requires them to **agree** — the same
+#      height *and* the same hash on every listed node — or refuses, naming what differs. A block producer
+#      is not a validator vote and the heights API cannot prove stake-weighted finalized ancestry, so this
+#      equality is the whole of the anchor: no quorum is inferred, and no stake fraction is printed;
+#   2. **reports** suspected equivocation from the block API's own `sender` field (two distinct blocks by
+#      one sender at one height). It is one endpoint's word — this script checks no signature and binds no
+#      endpoint to a bonded key — so it is a suspicion worth a human's attention, never an attributable
+#      artefact, and **nothing is dropped, reweighted or decided on it** (§2);
+#   3. states the anchor and what each node reported, rather than implying a quorum it did not compute;
 #   4. enumerates what is above the point, per block, and never drops it silently;
 #   5. (`--apply`) stops every non-master node, moves each data directory aside — **never deleting** —
 #      and restarts them to resync from the master's DAG;
@@ -24,7 +27,8 @@
 #
 # What it never does
 #   * treat an unfinalised block as the truth;
-#   * shrink the denominator by anything but proof (see 2);
+#   * infer a stake quorum from block producers, or print a stake fraction it has not verified (1-2);
+#     there is no denominator here to shrink;
 #   * touch the master's data directory;
 #   * run without `--apply` — the default prints the plan and exits 0;
 #   * report a height as converged (four nodes at height 0 are equal).
@@ -137,9 +141,9 @@ data_volume() {
 
 # **The stopgap, and it says so.** This is not a sync: it copies the survivor's chain state onto each
 # joiner, so what the joiners agree about afterwards is the *survivor's view*, including the blocks above
-# the meet that only it accepted. The operator is asserting a winner, which is why `--apply` prints the
+# the agreed anchor that only it accepted. The operator is asserting a winner, which is why `--apply` prints the
 # blocks being adopted and the blocks being dropped before it runs. It exists because on a net with no
-# finalised fringe there is nothing to sync *to* (see section 3's meet and `--sync-anchor`), and it is
+# finalised fringe there is nothing to sync *to* (see section 3's anchor and `--sync-anchor`), and it is
 # marked a stopgap because it depends on the data-dir layout being movable — the thing #287's design
 # deliberately avoided depending on.
 restore_chain_state_from_master() {
@@ -262,14 +266,17 @@ done <<< "$NODES"
 if [ "${#NAMES[@]}" -eq 0 ]; then echo "no nodes in the table — nothing to reconcile" >&2; exit 2; fi
 MAXH=0; for n in "${NAMES[@]}"; do [ "${HGT[$n]:-0}" -gt "$MAXH" ] 2>/dev/null && MAXH=${HGT[$n]}; done
 
-# --- 2. provable equivocation, before any stake is weighed ---------------------
-# **Proof, never silence.** A sender is excluded only when two *distinct* blocks by it appear at one
-# height, which anyone can check from the block API and which no honest node produces. Silence, slowness
-# and absence are not evidence: shrinking the denominator by silence is how an attacker who can mute
-# honest validators finalises with a minority, which is the trade #290 names.
-declare -A EXCLUDED=() EXCLUDED_WHY=()
+# --- 2. reported equivocation -------------------------------------------------
+# **A report, not a proof, and it decides nothing.** A sender is flagged when two *distinct* blocks by it
+# appear at one height in the answers the endpoints gave. The `sender` field is the endpoint's word: this
+# script verifies no signature and binds no endpoint to a bonded key, so the output is a suspicion for a
+# human to chase, never an attributable artefact — the proof, and the slash, are the node's (#287's
+# obligation 4, #290 part 1). **No arithmetic consumes it**: since 2026-10-09 there is no stake-weighted
+# meet here and no denominator, so nothing is dropped or reweighted on this output. Silence, slowness and
+# absence are not evidence either way, here or anywhere else in this script.
+declare -A REPORTED=() REPORTED_WHY=()
 EQUIV_LINES=()
-echo "== 2. provable equivocation, checked before stake is weighed (heights 0..$MAXH) =="
+echo "== 2. reported equivocation from the block API — a report, not a proof (heights 0..$MAXH) =="
 for (( h=0; h<=MAXH; h++ )); do
   declare -A seen_sender_block=()
   for n in "${NAMES[@]}"; do
@@ -277,9 +284,9 @@ for (( h=0; h<=MAXH; h++ )); do
       [ -z "${bh:-}" ] && continue
       prev="${seen_sender_block[$sender]:-}"
       if [ -n "$prev" ] && [ "$prev" != "$bh" ]; then
-        if [ -z "${EXCLUDED[$sender]:-}" ]; then
-          EXCLUDED[$sender]=1
-          EXCLUDED_WHY[$sender]="two distinct blocks at height $h"
+        if [ -z "${REPORTED[$sender]:-}" ]; then
+          REPORTED[$sender]=1
+          REPORTED_WHY[$sender]="two distinct blocks at height $h"
           EQUIV_LINES+=("height $h: ${prev:0:12}… and ${bh:0:12}… by ${sender:0:16}…")
         fi
       fi
@@ -287,11 +294,12 @@ for (( h=0; h<=MAXH; h++ )); do
     done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")
   done
 done
-if [ "${#EXCLUDED[@]}" -eq 0 ]; then
-  echo "  none — every sender has at most one block per height, so no stake is dropped"
+if [ "${#REPORTED[@]}" -eq 0 ]; then
+  echo "  none reported — every sender has at most one block per height in these endpoints' answers"
 else
-  for s in "${!EXCLUDED[@]}"; do echo "  EXCLUDED ${s:0:16}… — ${EXCLUDED_WHY[$s]}"; done
+  for s in "${!REPORTED[@]}"; do echo "  REPORTED ${s:0:16}… — ${REPORTED_WHY[$s]}"; done
   for e in "${EQUIV_LINES[@]}"; do echo "    $e"; done
+  echo "  A report only: the sender fields are unverified, and no stake is weighed, dropped or decided."
 fi
 
 # --- 3. conservative finalized anchor -----------------------------------------
