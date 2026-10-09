@@ -5,6 +5,7 @@
 //! comm/transport/discovery layer, the proposer, the block receiver/processor streams, the
 //! NodeLaunch state machines, and the report-store codec.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -1816,7 +1817,7 @@ async fn setup_shard_runtime(
                     return;
                 }
                 {
-                    let mut answered = answered.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut answered = answered.lock().unpoison();
                     let last_for_sender = answered.get(&sender).copied();
                     if !attest_warranted(&me, &sender, height, last_for_sender) {
                         return;
