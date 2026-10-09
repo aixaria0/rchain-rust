@@ -185,6 +185,16 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             // **Block 0's own installation, named** (#280) — the same window `compute_genesis` opens,
             // so play and replay agree about what belongs to the genesis rather than to a deploy. It
             // is not carried in a sidecar; `NativeWriter::Genesis` states why.
+            //
+            // **The window stays open across the whole user-deploy loop below** (#293). The genesis
+            // installation is not only this block of writes: the registry and `rgov` aliases are
+            // *re-seeded after every deploy* (`compute_genesis`, `runtime_manager.rs:811`), and those
+            // re-seeds are genesis state too. Closing the window here would leave them with no writer
+            // — and `BlockNativeEffects::from_drain` refuses a block with an unattributed write
+            // (`rspace/src/native_store.rs:230`), which is exactly the error that stopped every
+            // propose. The window is popped after the loop, at the line that carries the same
+            // `!with_cost_accounting` guard, so play and replay attribute the same writes to the
+            // genesis.
             self.runtime
                 .native_store()
                 .begin_writer(NativeWriter::Genesis);
@@ -215,7 +225,6 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                     .await
                     .map_err(ReplayFailure::internal_error)?;
             }
-            self.runtime.native_store().end_writer();
         }
 
         let mut mergeable: Vec<NumberChannelsDiff> = Vec::new();
@@ -258,6 +267,14 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                         .map_err(ReplayFailure::internal_error)?;
                 }
             }
+        }
+        if !with_cost_accounting {
+            // The genesis window opened above is popped only **now** — after the last deploy's alias
+            // re-seeding — so every genesis write between the two lines is attributed to
+            // `NativeWriter::Genesis` and none is left unattributed, which is what
+            // `BlockNativeEffects::from_drain` refuses (#293). The deploy windows above nest inside
+            // it and are already popped, so this pops the genesis window itself.
+            self.runtime.native_store().end_writer();
         }
         for (i, sd) in system_deploys.iter().enumerate() {
             // The ordinal continues the block's deploy list: `state.deploys` first, then these.

@@ -1,0 +1,50 @@
+== 4-validator fresh genesis, devnet, epoch-length 10, no autopropose ==
+   image built from commit 435cf6a59 (= the fix); genesis fresh (--fresh)
+
+== # node version, from each node's own HTTP API ==
+curl: /home/patrick/miniforge3/lib/libcurl.so.4: no version information available (required by curl)
+   node: RChain Node 0.1.0 (435cf6a59b05bb958fd14c21c081de604b23c586)
+
+== # status: block production and the finality surface ==
+curl: /home/patrick/miniforge3/lib/libcurl.so.4: no version information available (required by curl)
+   latestBlockNumber: 28   peers: 3   finalityStall: None   finalityStallEpisodes: 1   nonQuietMergeReports: 32
+
+== # last finalized block (two epoch boundaries are 10 and 20) ==
+   blockNumber: 24   blockHash: 4e9e183e5eeba939320627d1b7690ac16c073e8b2952f56304f5cd661683cb8e
+
+== # the #293 error itself, counted on EVERY node (expect 0 everywhere) ==
+   devnet-bootstrap       0
+   devnet-validator-1     0
+   devnet-validator-2     0
+   devnet-validator-3     0
+
+== # a deploy is INCLUDED, not merely accepted ==
+   deploy id: 304402206d81f5adde97bd29e6d7b954f11f1f25c6d3ae1f3dc63b68eb4ccd7170eecf0d022039cc048053e74601ebc43ce4ff458d94acfc361819992e904f972ca39b464a8b
+{
+  "version": 1,
+  "shardId": "/root",
+  "blockHash": "6094a7058475911c139523ae12b60dd4ee374489643d6dd5ef5a68b9272e86cd",
+  "blockNumber": 28,
+  "sender": "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4",
+  "seqNum": 28,
+  "preStateHash": "79af9d5632650ba2c83c19d01ece89f162a9bfa847d9633b4e2a9b4242ca1a28",
+  "postStateHash": "a4cef7bd19036338a51acae97f45ed63ea75dd9a711a686026b4fd9a1c4f8c3f",
+  "justifications": [
+    "4ccc28ac2367453959174fff84142d0f199b8f74a63da182cad0920d532d7cf5",
+    "cc1a554eb4b02f14391306ee86e2bd06028a6ec384ed634cfb2facf42fb36a9a",
+    "d75dce56851f3ed7da2d0d385bfafa31557a85ce03adbd28db9c12674fdcc272",
+    "e41bc2ffd504b0a866339a4bdc74734fd8c72364768b9cbb741f67f7d81ca521"
+  ],
+  "bonds": [
+    {
+      "validator": "04d8b6c325ae12e89823866b2a292a62d7acee520954761890a1621fef79dca1c8e8df79dd8519480e5c015ae6cf3ba7de8669e260561616a36eb9c308b5983ab0",
+      "stake": 100
+    },
+
+== # the two frontiers, read at the same moment ==
+curl: /home/patrick/miniforge3/lib/libcurl.so.4: no version information available (required by curl)
+   latestBlockNumber: 35    last finalized: 31    (epoch boundaries at 10 and 20)
+
+== # and it is advancing, not frozen =="
+   the same two frontiers were read again minutes earlier: finalized 24 while the tip was 28.
+   A frozen chain reads the same finalized height every time; this one moved 24 -> 31.

@@ -8114,3 +8114,55 @@ truncation silent. Recorded as **C256** (`todo`, with the decision as its close 
 cleanest example of why the refutation stage exists: the lens graded the row **R1** in good faith, and the
 refuter's answer was neither "confirmed" nor "refuted for the reason you gave" but *"the mechanism you are
 reasoning about is not wired"*.
+
+---
+
+## 76. The genesis replay closed its writer window before the loop it had to span (C257, #293)
+
+**Who found it, and that is the finding's first fact.** Not a lens and not the worksheet: a **live run**.
+A fresh four-validator genesis on `dev@256a931b7` could not produce a single block — every propose failed
+on the proposer path with
+
+    failed to regenerate mergeable channels … 17 native write(s) outside any deploy's window
+
+while the height pinned at 4 and finality never started (#293). It is the third time in this programme
+that the reading passes found *shapes* while the running node found the *blocker*
+(`docs/src/spec/failure-hazop.md` §6, the audit's §7).
+
+**The defect is one window.** `runtime_replay.rs`'s `replay_deploys` attributes the genesis block's own
+installation correctly — it names the window `NativeWriter::Genesis`, which is #280's work — but it
+closed that window **before** the user-deploy loop. And the registry and `rgov` aliases are re-seeded
+*after every deploy*: not incidentally, `compute_genesis` (`runtime_manager.rs:811`) does exactly the
+same, because `MakeMint` resolves `rho:lang:nonNegativeNumber` **during** its deploy, so the alias has to
+exist by then. Those re-seeds are genesis state, and with the window already popped they landed with no
+writer at all. `BlockNativeEffects::from_drain` (`rspace/src/native_store.rs:230`) refuses a block with
+an unattributed write — the type doing precisely its job; the replay was the one producing the write.
+
+**The fix is spelled by the play path.** `compute_genesis` opens one `Genesis` window and holds it across
+its whole loop, so the replay must hold its own across the same span. It can: the store's writer is a
+**stack** (`begin_writer` pushes, `end_writer` pops, `current_writer()` reads the innermost), so a
+deploy's own writes still attribute to its `Deploy(ordinal)` window while the seeds attribute to
+`Genesis`. The window is popped after the user-deploy loop, under the same `!with_cost_accounting` guard
+that opened it, so the cost-accounting path is byte-identical.
+
+**Why every existing test passed, which is the transferable part.** Every genesis-replay test in the tree
+uses a genesis whose deploys register nothing —
+`a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis` uses `@"chan"!(42)`. Both seeding
+functions are **idempotent**: with nothing new registered by the deploy, the post-deploy re-seed writes
+nothing, the unattributed set stays empty, and the replay succeeds. The defect needs a deploy that
+*registers* something, so it needs the **blessed** genesis — the one a real chain has — and the falsifier
+is written in `genesis_registry.rs`, where the blessed terms already live.
+
+**Falsifier (a), one commit with the fix.** `the_genesis_replays_to_itself` plays the blessed genesis and
+replays it as `merging.rs` does. Witnessed both ways: red on the pre-fix tree with the production error
+verbatim and the same count, green with the fix, and the replayed post-state equals the played one.
+
+**Falsifier (b), #293's own close condition.**
+`spec/audit/evidence/n293-genesis-replay-window/` — a fresh four-validator genesis, epoch length 10,
+which **included a deploy at block 28** (its post-state hash moved), produced blocks, and **finalised past
+both boundaries** (24, then advancing to 31), with the error counted **0 on all four nodes**.
+
+**The rule this yields, and it is the one that would have caught it by reading.** *A window opened for a
+loop must be closed after it* — and `compute_genesis` is the reference for what the genesis's own span
+is. A window closed early does not fail loudly; it silently re-labels the writes that follow, and the
+refusal only arrives much later, in a different subsystem, naming a count rather than a cause.
