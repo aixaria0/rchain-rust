@@ -100,7 +100,7 @@ impl LocalShardDeployService {
     }
 
     /// The shard's current height, which a phase deploy is anchored at: with a hardcoded
-    /// `valid_after = 0` the deploy is *born expired* once the chain is more than `DEPLOY_LIFESPAN`
+    /// `valid_after = 0` the deploy is *born expired* once the chain reaches `DEPLOY_LIFESPAN`
     /// blocks past genesis, and the participant never sees it.
     ///
     /// **A head that cannot be read is an `Err`, not `0`** (AUDIT C67). `0` anchors the deploy at
@@ -910,7 +910,7 @@ mod tests {
 
     /// **A head that cannot be read is not `valid_after = 0`** (AUDIT C64).
     ///
-    /// `0` anchors the deploy at genesis, and once the chain is more than `DEPLOY_LIFESPAN` past it
+    /// `0` anchors the deploy at genesis, and once the chain reaches `DEPLOY_LIFESPAN` past it
     /// the phase deploy is *born expired*: the participant never sees the leg and nothing reports an
     /// error. The gateway has no Scala oracle (it is this port's own coordinator), but its submit
     /// path is its own oracle here and already refuses a phase it cannot build, one line below the

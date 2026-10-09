@@ -643,7 +643,11 @@ async fn select_deploys(
     let mut deploys: Vec<DeployId> = Vec::new();
     for (id, d) in pooled {
         let future = d.data.valid_after_block_number > i64::from(next_block_num);
-        let expired = d.data.valid_after_block_number < next_block_num - DEPLOY_LIFESPAN;
+        let expired = crate::validate::deploy_expired_at_block(
+            d.data.valid_after_block_number,
+            i64::from(next_block_num),
+            DEPLOY_LIFESPAN,
+        );
         let replay_attack = dag.lookup_by_deploy_id(&id).await?.is_some();
         if !(future || expired || replay_attack) {
             deploys.push(id);
@@ -1423,19 +1427,24 @@ mod tests {
             .unwrap();
         assert_eq!(with_one_slash.len(), MAX_BLOCK_DEPLOYS - 1);
 
-        // And the pool's own filter still runs: an expired deploy is not selected at all.
+        // And the pool's own filter still runs at the exact validation boundary. At candidate
+        // block 51 with lifespan 50, valid_after=1 is already expired (`1 <= 51 - 50`), while 2 is
+        // still valid. This is the edge that used to let the proposer construct a block it rejected
+        // itself during validation.
         let mut with_expired = std::collections::BTreeMap::new();
-        with_expired.insert(vec![0u8, 9u8], pooled(9, 0));
-        with_expired.insert(vec![0u8, 10u8], pooled(10, -(DEPLOY_LIFESPAN + 1)));
+        with_expired.insert(vec![0u8, 8u8], pooled(8, 2));
+        with_expired.insert(vec![0u8, 9u8], pooled(9, 1));
+        with_expired.insert(vec![0u8, 10u8], pooled(10, 0));
         let dag = PoolDag {
             pooled: with_expired,
         };
+        let expiry_edge = BlockHeight::try_from(51).unwrap();
         assert_eq!(
-            select_deploys(&dag, next, per_block_deploy_budget(0))
+            select_deploys(&dag, expiry_edge, per_block_deploy_budget(0))
                 .await
                 .unwrap(),
-            vec![vec![0u8, 9u8]],
-            "the expiry filter must still apply under the cap"
+            vec![vec![0u8, 8u8]],
+            "the proposer must exclude both an old deploy and the exact first-height expiry boundary"
         );
     }
 

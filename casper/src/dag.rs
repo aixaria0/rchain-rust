@@ -390,16 +390,20 @@ impl BlockDagKeyValueStorage {
         }
     }
 
-    /// Expire deploys from the pool whose `valid_after_block_number` is older than the deploy
-    /// lifespan (port of `removeExpiredFromPool`). Without this the pool grows without bound and
-    /// stale deploys are re-proposed.
+    /// Expire deploys from the pool before the next candidate block reaches the validator's
+    /// inclusive expiry boundary (port of `removeExpiredFromPool`). Without this the pool grows
+    /// without bound; with a looser boundary, the proposer can select a deploy its own validator
+    /// rejects.
     async fn expire_deploys(&self, latest_block_number: i64) -> Result<(), String> {
         let pooled = self.deploy_store.to_map().await?;
         let expired: Vec<DeployId> = pooled
             .iter()
             .filter(|(_, d)| {
-                latest_block_number - d.data.valid_after_block_number
-                    > crate::multi_parent_casper::DEPLOY_LIFESPAN
+                crate::validate::deploy_expired_at_block(
+                    d.data.valid_after_block_number,
+                    latest_block_number,
+                    crate::multi_parent_casper::DEPLOY_LIFESPAN,
+                )
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -1065,6 +1069,27 @@ mod tests {
             sig: id.to_le_bytes().to_vec(),
             sig_algorithm: "secp256k1".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn pool_drops_a_deploy_before_the_first_block_that_would_reject_it() {
+        let storage = build_storage().await;
+        let mut deploy = deploy_with_id(1);
+        deploy.data.valid_after_block_number = 1;
+        let id = deploy.sig.clone();
+        storage.add_deploy(deploy).await.unwrap();
+
+        storage.expire_deploys(50).await.unwrap();
+        assert!(
+            storage.contains_deploy_in_pool(&id).await.unwrap(),
+            "the deploy is still valid for block 50"
+        );
+
+        storage.expire_deploys(51).await.unwrap();
+        assert!(
+            !storage.contains_deploy_in_pool(&id).await.unwrap(),
+            "block 51 validation rejects valid_after=1 at lifespan 50, so the proposer pool must remove it before block 51 can select it"
+        );
     }
 
     #[tokio::test]

@@ -168,7 +168,7 @@ fn to_json_pretty<T: serde::Serialize>(value: &T) -> String {
 
 /// The block height to anchor a deploy at when the caller did not choose one.
 ///
-/// A deploy is expired once `height - valid_after_block_number > DEPLOY_LIFESPAN` (50), so a
+/// A deploy is expired once `height - valid_after_block_number >= DEPLOY_LIFESPAN` (50), so a
 /// hardcoded anchor is *born expired* on any chain taller than the lifespan: the deploy is purged
 /// from the pool and silently never proposed. `rnode deploy` passed `-1` whenever the caller omitted
 /// `--valid-after-block-number`, which is why the same command worked against a young chain and
@@ -1047,7 +1047,7 @@ mod runtime_tests {
     async fn deploy_anchor_defaults_to_the_node_height() {
         // `-1` is how the CLI says "not specified" (`valid_after_block_number.unwrap_or(-1)`). It has
         // to become the node's current height: a deploy anchored at a stale block is purged from the
-        // pool once the chain is more than DEPLOY_LIFESPAN (50) blocks past it, so it gets accepted,
+        // pool once the chain reaches DEPLOY_LIFESPAN (50) blocks past it, so it gets accepted,
         // reported as `Response: Success!`, and then silently never proposed.
         let status = r#"{"version":{"api":"1","node":"0.1.0"},"address":"abc","networkId":"testnet",
                          "shardId":"/root","peers":0,"nodes":0,"minPhloPrice":1,

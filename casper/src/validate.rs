@@ -57,14 +57,28 @@ pub fn future_transaction(b: &BlockMessage) -> BlockStatus {
     }
 }
 
+/// The one deploy-expiration boundary used by both block validation and the deploy pool.
+///
+/// A deploy is invalid in block `B` when its `valid_after_block_number` is at or before
+/// `B - expiration_threshold`. Keeping this as one predicate prevents the proposer pool from
+/// retaining a deploy for the exact first block in which validation will reject it.
+pub(crate) fn deploy_expired_at_block(
+    valid_after_block_number: i64,
+    block_number: i64,
+    expiration_threshold: i64,
+) -> bool {
+    valid_after_block_number <= block_number - expiration_threshold
+}
+
 /// Validate that no deploy has expired (port of `transactionExpiration`).
 pub fn transaction_expiration(b: &BlockMessage, expiration_threshold: i64) -> BlockStatus {
-    let earliest = b.block_number - expiration_threshold;
-    if b.state
-        .deploys
-        .iter()
-        .any(|d| d.deploy.data.valid_after_block_number <= earliest)
-    {
+    if b.state.deploys.iter().any(|d| {
+        deploy_expired_at_block(
+            d.deploy.data.valid_after_block_number,
+            i64::from(b.block_number),
+            expiration_threshold,
+        )
+    }) {
         BlockStatus::ContainsExpiredDeploy
     } else {
         BlockStatus::Valid
@@ -1030,6 +1044,26 @@ mod tests {
 
         b.state.deploys = vec![deploy(5, 1, "root")];
         assert_eq!(phlo_price(&b, 10), BlockStatus::ContainsLowCostDeploy);
+    }
+
+    #[test]
+    fn deploy_expiration_boundary_is_inclusive() {
+        let mut b = block();
+        b.block_number = 51.try_into().unwrap();
+
+        b.state.deploys = vec![deploy(1, 10, "root")];
+        assert_eq!(
+            transaction_expiration(&b, 50),
+            BlockStatus::ContainsExpiredDeploy,
+            "valid_after=1 is already expired in block 51: 1 <= 51 - 50"
+        );
+
+        b.state.deploys = vec![deploy(2, 10, "root")];
+        assert_eq!(
+            transaction_expiration(&b, 50),
+            BlockStatus::Valid,
+            "the next valid_after value must remain eligible at the same height"
+        );
     }
 
     /// **The regression test for AUDIT C109**, and it is written against the *block* path on purpose.
