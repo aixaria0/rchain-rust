@@ -5,6 +5,7 @@
 //! store, fork-choice-tip / finalized-fringe requests are served from the DAG, and store-items
 //! (LFS state-sync) requests are served from the RSpace exporter.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -138,7 +139,7 @@ impl PeerRateLimiter {
     /// Admit a request from `peer` if it is within the per-peer one-second window.
     pub fn allow(&self, peer_key: &[u8]) -> bool {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unpoison();
         // Prune peers whose window expired long ago, so a connection churn with many distinct node
         // ids (Kademlia-injectable) cannot grow this map without bound (R30).
         state.retain(|_, (last, _)| now.duration_since(*last) < Duration::from_secs(60));

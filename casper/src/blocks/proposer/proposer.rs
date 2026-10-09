@@ -3,6 +3,7 @@
 //! `Proposer.apply` builds the dependency closures from the DAG/runtime; the `proposeEffect`
 //! (broadcast via `CommUtil`) is supplied by the caller.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -1780,7 +1781,7 @@ fn line_due(
     tip: i64,
 ) -> bool {
     let changed = {
-        let mut last = last_line.lock().unwrap_or_else(|p| p.into_inner());
+        let mut last = last_line.lock().unpoison();
         let changed = last.as_deref() != Some(line);
         if changed {
             *last = Some(line.to_string());

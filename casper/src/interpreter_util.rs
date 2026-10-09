@@ -1,5 +1,6 @@
 //! Interpreter utilities (port of `rholang/InterpreterUtil.scala`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -254,9 +255,7 @@ static NON_QUIET_MERGE_REPORTS: AtomicU64 = AtomicU64::new(0);
 /// not. Called on every block's validation, so the surface follows the chain rather than the log.
 fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
     let rendered = reason.map(describe_no_advance);
-    let mut current = CURRENT_STALL_REASON
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut current = CURRENT_STALL_REASON.lock().unpoison();
     if rendered.is_some() && current.is_none() {
         STALL_EPISODES.fetch_add(1, Ordering::Relaxed);
     }
@@ -268,10 +267,7 @@ fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
 /// `None` means the last observation saw a merge that advanced — **not** "finality is healthy", which is
 /// a judgement the acceptance spec makes, not this accessor.
 pub fn finality_stall_reason() -> Option<String> {
-    CURRENT_STALL_REASON
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
+    CURRENT_STALL_REASON.lock().unpoison().clone()
 }
 
 /// How many finality stalls this process has entered (monotone).
@@ -313,19 +309,14 @@ pub fn unrestorable_records() -> u64 {
 /// that has given up on one block may still be serving, and this says what it is stuck on, not how
 /// bad that is.
 pub fn unrestorable_block() -> Option<String> {
-    CURRENT_UNRESTORABLE
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
+    CURRENT_UNRESTORABLE.lock().unpoison().clone()
 }
 
 /// Record that this node has given up on a block. See the caller in `multi_parent_casper.rs` for what
 /// that means and what it deliberately does not do.
 pub fn note_unrestorable(block_hex: &str, seq_num: i64) {
     UNRESTORABLE_RECORDS.fetch_add(1, Ordering::Relaxed);
-    *CURRENT_UNRESTORABLE
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some(format!("{block_hex} (seq {seq_num})"));
+    *CURRENT_UNRESTORABLE.lock().unpoison() = Some(format!("{block_hex} (seq {seq_num})"));
 }
 
 /// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
@@ -610,7 +601,7 @@ where
             // …), and those are the diagnosis, so the line firing on any change is what makes it readable.
             let line = describe_no_advance(reason);
             let changed = {
-                let mut last = LAST_STALL_DESC.lock().unwrap_or_else(|p| p.into_inner());
+                let mut last = LAST_STALL_DESC.lock().unpoison();
                 let changed = last.as_deref() != Some(line.as_str());
                 if changed {
                     *last = Some(line.clone());
