@@ -12,6 +12,7 @@ pub mod dag;
 pub mod debug;
 pub mod key_value_cache;
 pub mod language;
+pub mod lock;
 pub mod long_ops;
 pub mod matcher;
 pub mod maybe_cell;
