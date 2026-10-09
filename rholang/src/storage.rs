@@ -497,6 +497,7 @@ mod tests {
     use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
     use rchain_models::ast::Par;
     use rchain_rspace::errors::RSpaceError;
+    use rchain_shared::lock::Unpoison;
     use std::sync::Mutex;
 
     use crate::accounting::Cost;
@@ -562,13 +563,9 @@ mod tests {
         > {
             self.produced
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unpoison()
                 .push((channel, data, persist));
-            Ok(self
-                .matched
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone())
+            Ok(self.matched.lock().unpoison().clone())
         }
 
         async fn install(

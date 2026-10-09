@@ -5,6 +5,7 @@
 //! (`eval(Send/Receive/New/Match/Bundle)`, `produce`/`consume`, `new` allocation), and the
 //! collection methods (`union`/`diff`/`add`/`delete`/`contains`/`slice`/`keys`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -2436,14 +2437,14 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// the Law 24 per-commit certificate on the claim queue. Interior-mutable: the casper
     /// block path switches it around the per-deploy sequential fallback re-run.
     pub fn set_effect_mode(&self, mode: EffectMode) {
-        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+        *self.effect_mode.lock().unpoison() = mode;
         self.claims
             .set_validation_enabled(mode == EffectMode::RelaxedValidated);
     }
 
     /// The current effect-scheduler mode.
     pub fn effect_mode(&self) -> EffectMode {
-        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner())
+        *self.effect_mode.lock().unpoison()
     }
 
     /// Whether the current evaluation observed the S.3 enqueue window (a DFS-earlier claim landing
@@ -2502,7 +2503,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             // `mut` is needed by the host arm's `join_next`; the wasm arm consumes the set by value.
             #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
             let mut set = {
-                let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+                let mut guard = self.relaxed_tasks.lock().unpoison();
                 if guard.is_empty() {
                     return Ok(());
                 }
@@ -2883,7 +2884,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             Ok(fut) => fut,
             Err(e) => Box::pin(async move { Err(e) }),
         };
-        let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.relaxed_tasks.lock().unpoison();
         #[cfg(not(target_arch = "wasm32"))]
         guard.spawn(fut);
         #[cfg(target_arch = "wasm32")]
@@ -3109,7 +3110,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
 
     fn update_mergeable_channels(&self, chan: &SortedProc) {
         if self.is_mergeable_channel(chan) {
-            let mut chs = self.merge_chs.lock().unwrap_or_else(|p| p.into_inner());
+            let mut chs = self.merge_chs.lock().unpoison();
             if !chs.contains(chan) {
                 chs.push(chan.clone());
             }
@@ -3657,12 +3658,7 @@ mod tests {
                 "one effect per top-level term ({n} term(s))"
             );
             assert!(
-                interp
-                    .space
-                    .produced
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .is_empty(),
+                interp.space.produced.lock().unpoison().is_empty(),
                 "computing the closure must not touch the tuple space"
             );
         }
@@ -3696,11 +3692,7 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp
-            .space
-            .produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let produced = interp.space.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par().exprs, vec![Expr::GInt(1)]);
         assert_eq!(
@@ -3741,11 +3733,7 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp
-            .space
-            .produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let produced = interp.space.produced.lock().unpoison();
         assert_eq!(produced.len(), 64);
     }
 

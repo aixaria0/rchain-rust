@@ -1,5 +1,6 @@
 //! The rholang runtime façade (port of `RhoRuntime.scala`, core).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -266,7 +267,7 @@ impl RhoRuntime {
 
     /// Set the per-block data exposed to the `rho:block:data` contract (port of `setBlockData`).
     pub fn set_block_data(&self, block_data: BlockData) {
-        *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
+        *self.block_data.lock().unpoison() = block_data;
     }
 
     /// The per-block data as it stands — the getter's pair, added for the producer's payment
@@ -275,10 +276,7 @@ impl RhoRuntime {
     /// A copy rather than a guard: the block data is four small fields and holding the lock across
     /// the fold would serialise anything else that wants it, for no benefit.
     pub fn block_data(&self) -> BlockData {
-        self.block_data
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.block_data.lock().unpoison().clone()
     }
 
     /// Set the effect-scheduler mode (forwards to the reducer, which also arms the Law 24
@@ -581,7 +579,7 @@ impl ReplayRhoRuntime {
 
     /// Set the per-block data exposed to the `rho:block:data` contract (port of `setBlockData`).
     pub fn set_block_data(&self, block_data: BlockData) {
-        *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
+        *self.block_data.lock().unpoison() = block_data;
     }
 
     /// The per-block data as it stands — the getter's pair, added for the producer's payment
@@ -590,10 +588,7 @@ impl ReplayRhoRuntime {
     /// A copy rather than a guard: the block data is four small fields and holding the lock across
     /// the fold would serialise anything else that wants it, for no benefit.
     pub fn block_data(&self) -> BlockData {
-        self.block_data
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.block_data.lock().unpoison().clone()
     }
 
     /// Execute a `Closed` process in the given environment (port of `inj`). The `Closed` proof is
@@ -811,7 +806,7 @@ mod tests {
         > {
             self.produced
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unpoison()
                 .push((channel, data, persist));
             Ok(None)
         }
@@ -859,7 +854,7 @@ mod tests {
             .await
             .unwrap();
 
-        let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = mock.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(
             produced[0].1.pars,

@@ -1,5 +1,6 @@
 //! Continuation dispatch (port of `dispatch.scala`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -67,14 +68,11 @@ impl RholangAndScalaDispatcher {
     }
 
     pub fn set_eval(&self, eval: EvalBodyFn) {
-        *self.eval.lock().unwrap_or_else(|p| p.into_inner()) = Some(eval);
+        *self.eval.lock().unpoison() = Some(eval);
     }
 
     pub fn set_dispatch_table(&self, table: BTreeMap<i64, ScalaBodyFn>) {
-        *self
-            .dispatch_table
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = table;
+        *self.dispatch_table.lock().unpoison() = table;
     }
 
     /// Bind one handler to one id, leaving every other entry alone — the entry point the vault
@@ -90,10 +88,7 @@ impl RholangAndScalaDispatcher {
         body_ref: i64,
         handler: ScalaBodyFn,
     ) -> Result<(), RholangError> {
-        let mut table = self
-            .dispatch_table
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut table = self.dispatch_table.lock().unpoison();
         if table.contains_key(&body_ref) {
             return Ok(());
         }
@@ -122,7 +117,7 @@ impl Dispatch for RholangAndScalaDispatcher {
                 randoms.extend(data_list.iter().map(|d| d.random_state.clone()));
                 let merged = Blake2b512Random::merge(&randoms);
                 let fut = {
-                    let eval = self.eval.lock().unwrap_or_else(|p| p.into_inner());
+                    let eval = self.eval.lock().unpoison();
                     let f = eval.as_ref().ok_or_else(|| {
                         RholangError::BugFoundError("dispatcher eval not set".to_string())
                     })?;
@@ -132,10 +127,7 @@ impl Dispatch for RholangAndScalaDispatcher {
             }
             TaggedContinuation::ScalaBodyRef(r) => {
                 let fut = {
-                    let table = self
-                        .dispatch_table
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
+                    let table = self.dispatch_table.lock().unpoison();
                     match table.get(r) {
                         Some(f) => f(data_list, path),
                         None => {
@@ -259,10 +251,7 @@ mod tests {
 
         // The constant that was already there is untouched, and the new id is now occupied.
         {
-            let table = dispatcher
-                .dispatch_table
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let table = dispatcher.dispatch_table.lock().unpoison();
             assert_eq!(table.len(), 2, "one entry added, not a replacement");
             assert!(table.contains_key(&7), "the constant survives");
             assert!(table.contains_key(&-5));
