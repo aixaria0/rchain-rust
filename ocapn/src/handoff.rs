@@ -21,6 +21,7 @@
 //! in the clear: it is the *name* of the party allowed to sign.
 
 use rchain_crypto::signatures::ed25519::Ed25519;
+use rchain_shared::lock::Unpoison;
 
 use crate::locator::PeerLocator;
 use crate::session::{public_key_bytes, public_key_syrup, signature_bytes, signature_syrup};
@@ -285,7 +286,7 @@ impl Handoffs {
                 crate::capacity::MAX_GIFT_ID
             ));
         }
-        let mut gifts = self.gifts.lock().unwrap_or_else(|p| p.into_inner());
+        let mut gifts = self.gifts.lock().unpoison();
         if gifts.contains_key(&(gift_id.clone(), session.clone())) {
             // Replacing an existing gift is not growth, and the guard survives it.
             if let Some(gift) = gifts.get_mut(&(gift_id, session)) {
@@ -310,7 +311,7 @@ impl Handoffs {
     pub fn has(&self, gift_id: &[u8], session: &[u8]) -> bool {
         self.gifts
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unpoison()
             .contains_key(&(gift_id.to_vec(), session.to_vec()))
     }
 
@@ -323,7 +324,7 @@ impl Handoffs {
         session: &[u8],
         count: u64,
     ) -> Result<Option<crate::captp::Desc>, String> {
-        let mut gifts = self.gifts.lock().unwrap_or_else(|p| p.into_inner());
+        let mut gifts = self.gifts.lock().unpoison();
         let Some(gift) = gifts.get_mut(&(gift_id.to_vec(), session.to_vec())) else {
             return Ok(None);
         };

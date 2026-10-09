@@ -15,6 +15,7 @@
 //! session therefore holds a live reference to something it never had a session with, which is the
 //! enlivening the suite is testing.
 
+use rchain_shared::lock::Unpoison;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -273,11 +274,7 @@ impl Export for Enlivener {
         // the object with the exporter and answer with the give — and the suite's handoff fixture is
         // exactly that. The session slot is filled in as soon as the session exists, and this
         // delivery cannot have arrived before it did.
-        let serving = self
-            .session
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let serving = self.session.lock().unpoison().clone();
         match serving {
             Some(serving) => self.gift(&sturdyref, &serving).await,
             // A peer that published the enlivener without a session (a bare fixture, not a session's

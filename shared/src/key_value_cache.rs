@@ -4,6 +4,7 @@
 //! The cats-effect `Deferred`/`Ref` are simplified to a `Mutex`-guarded map; the "populate at most
 //! once per key" semantics are preserved.
 
+use crate::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
@@ -95,7 +96,7 @@ impl<K: Ord + Clone, V: Clone, F: Fn(&K) -> V> LazyKeyValueCache<K, V, F> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|p| p.into_inner())
+    mutex.lock().unpoison()
 }
 
 #[cfg(test)]

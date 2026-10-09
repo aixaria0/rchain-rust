@@ -8,6 +8,7 @@
 //! the netlayer, our location, the session registry and the slot that tells them which session they
 //! are serving.
 
+use rchain_shared::lock::Unpoison;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
@@ -166,7 +167,7 @@ impl Greeter {
         let session = self
             .session
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unpoison()
             .clone()
             .ok_or_else(|| "the greeter has no session to sign with".to_string())?;
 
@@ -308,7 +309,7 @@ impl Export for Car {
 /// Lock without letting a poisoned mutex take the session down: a poisoned lock means an earlier
 /// delivery panicked, and the honest response is to keep answering rather than to panic again.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unpoison()
 }
 
 /// Where a promise has got to.

@@ -5,6 +5,10 @@
 //! (`eval(Send/Receive/New/Match/Bundle)`, `produce`/`consume`, `new` allocation), and the
 //! collection methods (`union`/`diff`/`add`/`delete`/`contains`/`slice`/`keys`).
 
+// Only the wasm32 reducer spawns through this door; the native one has no spawn shim to route.
+#[cfg(target_arch = "wasm32")]
+use rchain_shared::chan;
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -1151,13 +1155,36 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// **Bytes, never a character index** (AUDIT C252).
+///
+/// The old form took `&s[i..i + 2]` and handed each window to `from_str_radix`. `s.len()` counts
+/// *bytes*, so the window's arithmetic is right — but a slice of a `&str` must land on character
+/// boundaries, and a two-byte window over a string containing a multi-byte character need not. So a
+/// **deploy** could do this:
+///
+/// - `"aéa"` is four bytes (1 + 2 + 1), so the even-length check passes; the window `2..4` starts
+///   inside `é`, and the slice **panics** — a stranger kills the node with a deploy, which is what
+///   the audit observed;
+/// - the neighbouring window that *does* land on boundaries hands `from_str_radix` bytes that are not
+///   a hex digit any more, and the hex it parses is not the character the term contains.
+///
+/// `as_bytes` removes the class rather than the site: there is no slice to leave, because an index
+/// cannot step off a boundary it never asks about. `to_digit(16)` is the per-byte counterpart of
+/// `from_str_radix`, and it differs in **exactly one** place, stated rather than discovered — the
+/// radix parser accepts a leading `+` (`"+1"` parses as 1) and `to_digit` does not, so `"+1"` becomes
+/// `None`. `"+1"` is not hex, and the stricter answer is the right one.
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    let bytes = s.as_bytes();
+    if bytes.len() % 2 != 0 {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = char::from(pair[0]).to_digit(16)?;
+            let lo = char::from(pair[1]).to_digit(16)?;
+            u8::try_from((hi << 4) | lo).ok()
+        })
         .collect()
 }
 
@@ -2468,7 +2495,7 @@ fn spawn_reduce<T: std::marker::Send + 'static>(
 fn spawn_reduce<T: 'static>(fut: impl Future<Output = T> + 'static) -> ReduceTask<T> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = tx.send(fut.await);
+        chan::oneshot_send(tx, fut.await);
     });
     ReduceTask(rx)
 }
@@ -2564,14 +2591,14 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// the Law 24 per-commit certificate on the claim queue. Interior-mutable: the casper
     /// block path switches it around the per-deploy sequential fallback re-run.
     pub fn set_effect_mode(&self, mode: EffectMode) {
-        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+        *self.effect_mode.lock().unpoison() = mode;
         self.claims
             .set_validation_enabled(mode == EffectMode::RelaxedValidated);
     }
 
     /// The current effect-scheduler mode.
     pub fn effect_mode(&self) -> EffectMode {
-        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner())
+        *self.effect_mode.lock().unpoison()
     }
 
     /// Whether the current evaluation observed the S.3 enqueue window (a DFS-earlier claim landing
@@ -2630,7 +2657,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             // `mut` is needed by the host arm's `join_next`; the wasm arm consumes the set by value.
             #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
             let mut set = {
-                let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+                let mut guard = self.relaxed_tasks.lock().unpoison();
                 if guard.is_empty() {
                     return Ok(());
                 }
@@ -3011,7 +3038,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             Ok(fut) => fut,
             Err(e) => Box::pin(async move { Err(e) }),
         };
-        let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.relaxed_tasks.lock().unpoison();
         #[cfg(not(target_arch = "wasm32"))]
         guard.spawn(fut);
         #[cfg(target_arch = "wasm32")]
@@ -3237,7 +3264,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
 
     fn update_mergeable_channels(&self, chan: &SortedProc) {
         if self.is_mergeable_channel(chan) {
-            let mut chs = self.merge_chs.lock().unwrap_or_else(|p| p.into_inner());
+            let mut chs = self.merge_chs.lock().unpoison();
             if !chs.contains(chan) {
                 chs.push(chan.clone());
             }
@@ -3785,12 +3812,7 @@ mod tests {
                 "one effect per top-level term ({n} term(s))"
             );
             assert!(
-                interp
-                    .space
-                    .produced
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .is_empty(),
+                interp.space.produced.lock().unpoison().is_empty(),
                 "computing the closure must not touch the tuple space"
             );
         }
@@ -3824,11 +3846,7 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp
-            .space
-            .produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let produced = interp.space.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par().exprs, vec![Expr::GInt(1)]);
         assert_eq!(
@@ -3869,11 +3887,7 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp
-            .space
-            .produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let produced = interp.space.produced.lock().unpoison();
         assert_eq!(produced.len(), 64);
     }
 
@@ -3885,6 +3899,58 @@ mod tests {
         let bytes = eval_method("toUtf8Bytes", &target, &[], &e, &cost).unwrap();
         let hex = eval_method("bytesToHex", &bytes, &[], &e, &cost).unwrap();
         assert_eq!(hex, from_expr(Expr::GString("6162".to_string())));
+    }
+
+    /// **`hexToBytes` reads bytes, and a multi-byte character is a refusal rather than a panic**
+    /// (AUDIT C252).
+    ///
+    /// The falsifier for the byte-index defect, and it is the *panic* half that makes it one: `"aéa"`
+    /// is four bytes (1 + 2 + 1), so the even-length check passes and the old `&s[i..i + 2]` took a
+    /// window starting inside `é` — a slice off a character boundary, which **panics**. A stranger
+    /// could do that with a deploy, on any node, from the public deploy endpoint.
+    ///
+    /// The test asserts the *method's own refusal* rather than the absence of a crash, because "does
+    /// not panic" is satisfied by any wrong answer: the term is not hex, and the answer must say so in
+    /// the shape every other bad `hexToBytes` input gets.
+    #[test]
+    fn hex_to_bytes_reads_bytes_so_a_multibyte_character_is_refused_not_a_panic() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let call = |s: &str| {
+            eval_method(
+                "hexToBytes",
+                &from_expr(Expr::GString(s.to_string())),
+                &[],
+                &e,
+                &cost,
+            )
+        };
+
+        // Valid hex is unchanged, byte for byte — including upper case, which the radix parser
+        // accepted and `to_digit` accepts too.
+        assert_eq!(
+            call("6162").unwrap(),
+            from_expr(Expr::GByteArray(vec![0x61, 0x62]))
+        );
+        assert_eq!(
+            call("ABab").unwrap(),
+            from_expr(Expr::GByteArray(vec![0xab, 0xab]))
+        );
+
+        // The falsifier: this panicked before the fix.
+        let refused = call("aéa").expect_err("a multi-byte character is not hex");
+        assert!(
+            matches!(refused, RholangError::ReduceError(_)),
+            "and it is the method's own refusal, not a panic: {refused:?}"
+        );
+
+        // An odd *byte* length is still a refusal, and still not a panic.
+        assert!(call("abc").is_err(), "three bytes cannot be a byte string");
+
+        // The one behaviour difference the fix introduces, stated rather than discovered: the radix
+        // parser accepted a leading `+` and `to_digit` does not, so `"+1"` is now a refusal. It is not
+        // hex, and refusing it is the stricter and correct answer.
+        assert!(call("+1").is_err(), "a sign is not a hex digit");
     }
 
     /// **The four logical-connective bodies, and both short-circuits.** `EShortAnd`/`EShortOr` were

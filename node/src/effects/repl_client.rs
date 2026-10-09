@@ -1,5 +1,6 @@
 //! REPL client interface (port of `effects/ReplClient.scala`).
 
+use rchain_shared::lock::Unpoison;
 use std::sync::Mutex;
 
 use rchain_models::proto::repl::repl_client::ReplClient as TonicReplClient;
@@ -56,7 +57,7 @@ impl GrpcReplClient {
             // the class `clippy::await_holding_lock` exists to catch, and the audit's note that only
             // test modules remained was wrong about this file.
             let mut client = {
-                let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                let guard = self.inner.lock().unpoison();
                 guard.clone()
             };
             let response = client
@@ -76,7 +77,7 @@ impl ReplClient for GrpcReplClient {
         self.handle.block_on(async {
             // As `eval_one`: the guard is cloned out and dropped before the await (AUDIT F-9).
             let mut client = {
-                let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                let guard = self.inner.lock().unpoison();
                 guard.clone()
             };
             let response = client

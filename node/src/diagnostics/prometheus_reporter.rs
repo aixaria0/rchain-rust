@@ -5,6 +5,7 @@
 //! from kamon in the original; here the ported `Configuration` (with its `Default`) stands in, since
 //! the kamon config backend is deferred.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -196,7 +197,7 @@ impl NewPrometheusReporter {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|p| p.into_inner())
+    mutex.lock().unpoison()
 }
 
 #[cfg(test)]

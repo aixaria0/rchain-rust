@@ -4,6 +4,7 @@
 //! accepts the finalized fringe from the bootstrap, runs the `LfsBlockRequester` and
 //! `LfsTupleSpaceRequester` streams, then populates the DAG from the received blocks.
 
+use rchain_shared::chan;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,7 +159,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                         s.data_items.len()
                     ),
                 );
-                let _ = self.tuple_space_tx.send(s.clone()).await;
+                chan::send(&self.tuple_space_tx, s.clone()).await;
                 Ok(())
             }
             CasperMessage::BlockMessage(b) => {
@@ -166,7 +167,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                     self.log_source,
                     &format!("BlockMessage received #{} from {peer}.", b.block_number),
                 );
-                let _ = self.incoming_blocks_tx.send(b.clone()).await;
+                chan::send(&self.incoming_blocks_tx, b.clone()).await;
                 Ok(())
             }
             _ => Ok(()),

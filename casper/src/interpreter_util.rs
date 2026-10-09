@@ -1,5 +1,6 @@
 //! Interpreter utilities (port of `rholang/InterpreterUtil.scala`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -254,9 +255,7 @@ static NON_QUIET_MERGE_REPORTS: AtomicU64 = AtomicU64::new(0);
 /// not. Called on every block's validation, so the surface follows the chain rather than the log.
 fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
     let rendered = reason.map(describe_no_advance);
-    let mut current = CURRENT_STALL_REASON
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut current = CURRENT_STALL_REASON.lock().unpoison();
     if rendered.is_some() && current.is_none() {
         STALL_EPISODES.fetch_add(1, Ordering::Relaxed);
     }
@@ -268,10 +267,7 @@ fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
 /// `None` means the last observation saw a merge that advanced — **not** "finality is healthy", which is
 /// a judgement the acceptance spec makes, not this accessor.
 pub fn finality_stall_reason() -> Option<String> {
-    CURRENT_STALL_REASON
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
+    CURRENT_STALL_REASON.lock().unpoison().clone()
 }
 
 /// How many finality stalls this process has entered (monotone).
@@ -286,6 +282,41 @@ pub fn non_quiet_merge_reports() -> u64 {
 
 fn note_non_quiet_merge_report() {
     NON_QUIET_MERGE_REPORTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// **How many blocks this node has given up on** — C249's R3 gap, made countable.
+///
+/// When a `Divergence` record's revalidation budget is spent and it is *still* failed, the node has
+/// stopped trying: it will refuse that block, and every descendant of it, for the process lifetime
+/// (`casper/src/multi_parent_casper.rs:restore_is_warranted`). That transition used to be silent — the
+/// scan simply `continue`d — which is the disposition pass's finding at its far end: the failure
+/// upstream is loud and the *state* it leaves has no surface, no count and no inverse.
+///
+/// **Nothing acts on this.** It is the denominator a reset would act on, shipped dark so an operator
+/// can see what a reset *would* have done before one is wired (#287/#294 own the net-wide half).
+static UNRESTORABLE_RECORDS: AtomicU64 = AtomicU64::new(0);
+
+/// The block this node last gave up on, as `<hash> (seq <n>)`. The count answers "has this happened";
+/// this answers "on what". An operator needs both, and the count alone is not actionably specific.
+static CURRENT_UNRESTORABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// How many blocks this node has given up on (monotone).
+pub fn unrestorable_records() -> u64 {
+    UNRESTORABLE_RECORDS.load(Ordering::Relaxed)
+}
+
+/// The last block this node gave up on, or `None` if it never has. **Not** a health verdict: a node
+/// that has given up on one block may still be serving, and this says what it is stuck on, not how
+/// bad that is.
+pub fn unrestorable_block() -> Option<String> {
+    CURRENT_UNRESTORABLE.lock().unpoison().clone()
+}
+
+/// Record that this node has given up on a block. See the caller in `multi_parent_casper.rs` for what
+/// that means and what it deliberately does not do.
+pub fn note_unrestorable(block_hex: &str, seq_num: i64) {
+    UNRESTORABLE_RECORDS.fetch_add(1, Ordering::Relaxed);
+    *CURRENT_UNRESTORABLE.lock().unpoison() = Some(format!("{block_hex} (seq {seq_num})"));
 }
 
 /// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
@@ -570,7 +601,7 @@ where
             // …), and those are the diagnosis, so the line firing on any change is what makes it readable.
             let line = describe_no_advance(reason);
             let changed = {
-                let mut last = LAST_STALL_DESC.lock().unwrap_or_else(|p| p.into_inner());
+                let mut last = LAST_STALL_DESC.lock().unpoison();
                 let changed = last.as_deref() != Some(line.as_str());
                 if changed {
                     *last = Some(line.clone());
@@ -1026,6 +1057,45 @@ mod tests {
         assert!(
             finality_stall_episodes() > after_first,
             "a stall after a recovery is a new episode"
+        );
+    }
+
+    /// **A node that has given up on a block says so, and says where** — C249's R3 gap, counted.
+    ///
+    /// Falsifier: before this change the moment a node stopped trying was **silent** — the restore scan
+    /// simply `continue`d — so there was no cell, no accessor and no way for a test (or a probe) to ask
+    /// whether it had happened at all. That is the shape the disposition pass calls "fails loudly and
+    /// then does nothing", and this is the *doing nothing* half made legible.
+    ///
+    /// The assertions are `>`/`>=` against a captured reading and the value is matched by suffix, for
+    /// the same reason the stall test explains: the counters are process-wide and libtest runs this
+    /// module's tests concurrently.
+    #[test]
+    fn the_unrestorable_surface_names_the_block_it_gave_up_on() {
+        let before = unrestorable_records();
+
+        note_unrestorable("deadbeef", 42);
+
+        assert!(
+            unrestorable_records() > before,
+            "giving up on a block is counted ({before} -> {})",
+            unrestorable_records()
+        );
+        let named = unrestorable_block().expect("the block it gave up on is named");
+        assert!(
+            named.ends_with("deadbeef (seq 42)"),
+            "the name carries the hash and the sequence number an operator needs to act: {named}"
+        );
+
+        // Monotone: a later give-up replaces the *name* and adds to the count, so a node that has
+        // given up on two blocks reads 2 and names the second — never 1.
+        let after_first = unrestorable_records();
+        note_unrestorable("cafebabe", 7);
+        assert!(unrestorable_records() > after_first, "and again");
+        let named = unrestorable_block().expect("named");
+        assert!(
+            named.ends_with("cafebabe (seq 7)"),
+            "the surface names the most recent, not the first: {named}"
         );
     }
 }

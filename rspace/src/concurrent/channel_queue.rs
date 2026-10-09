@@ -27,6 +27,7 @@
 //! position), but cross-channel cycles are the reducer's responsibility
 //! (`law20_deadlock_freedom` + stress tests; fallback: per-key `TwoStepLock`).
 
+use rchain_shared::lock::Unpoison;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -210,7 +211,7 @@ where
                 .insert(Arc::new(Mutex::new(ChannelQueue::default())))
                 .clone(),
         };
-        let mut queue = arc.lock().unwrap_or_else(|p| p.into_inner());
+        let mut queue = arc.lock().unpoison();
         // Ties keep arrival order (FIFO), so an equal-path claim lands *behind* the executing
         // entry — only a strictly DFS-earlier path reaches the front of a held channel.
         let at = queue.entries.partition_point(|e| e.path <= *path);
@@ -332,7 +333,7 @@ where
 
         let mut locks = Vec::with_capacity(arcs.len());
         for (channel, arc) in self.channels.iter().zip(&arcs) {
-            let queue = arc.lock().unwrap_or_else(|p| p.into_inner());
+            let queue = arc.lock().unpoison();
             // A claim already holding the lease here (produce phase two: `claim_more` after
             // `wait_at_head` re-waits without releasing the trigger channel) keeps running
             // regardless of position — a DFS-earlier pending claim must still wait for our
@@ -387,7 +388,7 @@ where
             let Some(arc) = self.inner.channels.get(channel) else {
                 continue;
             };
-            let mut queue = arc.lock().unwrap_or_else(|p| p.into_inner());
+            let mut queue = arc.lock().unpoison();
             queue.entries.retain(|e| e.id != self.id);
             if queue.active == Some(self.id) {
                 queue.active = None;

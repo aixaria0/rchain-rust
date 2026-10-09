@@ -14,6 +14,7 @@
 //! hiding: reachability is what a swiss number *is* here, and the objects it names are the ones the
 //! node chose to publish.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -134,7 +135,7 @@ impl Export for Bootstrap {
                 let session = self
                     .session
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .unpoison()
                     .clone()
                     .and_then(|s| s.handle.id.as_ref().map(|id| id.to_vec()))
                     .ok_or_else(|| "a deposit arrived on a session with no id".to_string())?;
@@ -163,7 +164,7 @@ impl Export for Bootstrap {
                 let session = self
                     .session
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .unpoison()
                     .clone()
                     .ok_or_else(|| "the exporter has no session yet".to_string())?;
                 if let Some(id) = session.handle.id.as_ref() {
