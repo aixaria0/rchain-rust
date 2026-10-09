@@ -234,9 +234,10 @@ move_data_dir_aside() {
       tar cf "/backup/$(basename "$backup")" -C /data . >/dev/null 2>&1 \
       && echo "    $vol backed up to $backup (never deleted — this is the 'aside')" \
       || { echo "    WARNING: could not back up $vol — refusing to touch it" >&2; return 1; }
-    docker rm -f "$unit" >/dev/null 2>&1 || { echo "    WARNING: docker rm failed" >&2; return 1; }
-    docker volume rm "$vol" >/dev/null 2>&1 || { echo "    WARNING: docker volume rm failed" >&2; return 1; }
-    echo "    $vol emptied; the backup holds its contents"
+    # Preserve the stopped container and its volume so docker start can restart it.
+    docker run --rm -v "$vol":/data alpine sh -c 'cd /data && rm -rf -- blockstorage dagstorage rspace/history rspace/cold transaction' >/dev/null 2>&1 \
+      || { echo "    WARNING: could not clear chain state; refusing restart" >&2; return 1; }
+    echo "    $vol chain state cleared; container preserved; backup at $backup"
   else
     $SSH "root@$host" "d=\$(systemctl cat $unit | grep -oP '(?<=--data-dir ).*?(?= |\$)' | head -1)
       cp -a \$d/genesis \${d}.genesis-keep-$ts 2>/dev/null && echo '    genesis inputs preserved'
