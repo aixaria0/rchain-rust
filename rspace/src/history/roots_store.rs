@@ -61,11 +61,29 @@ impl RootsStore {
         }
     }
 
+    /// Whether `key` has been recorded as a root, **without** changing which root is current.
+    ///
+    /// The read half of [`Self::validate_and_set_current_root`], split out for the merge: it must be
+    /// able to refuse a root the store does not hold without *publishing* the one it is resetting to
+    /// (see `HistoryRepository::reset_volatile`).
+    pub async fn is_known_root(&self, key: Blake2b256Hash) -> Result<bool, String> {
+        Ok(self.get(&key.to_byte_array()).await?.is_some())
+    }
+
     /// Record `key` as a known root and set it as current (port of `recordRoot`).
+    ///
+    /// **One call, not two** (the programme's L2). The two writes are one fact — "this root exists, and
+    /// it is the current one" — and splitting them across two `put`s gave the store the chance to commit
+    /// the second without the first: a crash in between leaves `CURRENT_ROOT` naming a root the store
+    /// does not know, and every read that resolves through it then fails with no explanation. The store
+    /// opens one transaction per call (`shared/src/lmdb.rs`), so batching the pairs is what makes the
+    /// pair atomic rather than merely adjacent.
     pub async fn record_root(&self, key: Blake2b256Hash) -> Result<(), String> {
         let bytes = key.to_byte_array().to_vec();
-        self.put(bytes.clone(), ROOT_TAG.to_vec()).await?;
-        self.put(CURRENT_ROOT.to_vec(), bytes).await
+        self.store.lock().await.put(vec![
+            (bytes.clone(), ROOT_TAG.to_vec()),
+            (CURRENT_ROOT.to_vec(), bytes),
+        ])
     }
 }
 

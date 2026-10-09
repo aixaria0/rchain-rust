@@ -2043,8 +2043,13 @@ impl MergeScope {
         )
         .await?;
 
+        // **`reset_volatile`, not `reset`** (the programme's L2). `reset` publishes `base_state` as
+        // `CURRENT_ROOT` before the merged trie exists, so a crash between it and the checkpoint below
+        // left the node naming an *ancestor* on restart — neither the pre-merge nor the post-merge
+        // state. The base is still validated; only the publication moves to the one place where the
+        // merged state is real.
         let reset_repo = history_repository
-            .reset(base_state)
+            .reset_volatile(base_state)
             .await
             .map_err(|e| e.to_string())?;
         let new_repo = reset_repo

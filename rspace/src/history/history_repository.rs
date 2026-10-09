@@ -343,6 +343,35 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         }))
     }
 
+    /// **Reset without publishing** — the programme's L2, and the merge's half of the split.
+    ///
+    /// [`Self::reset`] advances `CURRENT_ROOT` as it resets, which is right for a caller whose new root
+    /// *is* the base: a rewind, a rejoin, a replay. It is wrong for the **merge**, which resets to its
+    /// base and then does real work before the merged trie exists — `do_checkpoint_with_native` is
+    /// where the merge's root appears. With `reset`, a crash between the two leaves `CURRENT_ROOT`
+    /// naming an **ancestor**: on restart the node resumes from neither the pre-merge nor the
+    /// post-merge state, and the two commit points are the reason.
+    ///
+    /// The **validation is kept** (`validate_known_root`, the same refusal `reset` gives an unknown
+    /// root); what is dropped is the write. The merge therefore has one commit point, and it is the one
+    /// where the merged state actually exists.
+    pub async fn reset_volatile(&self, root: Blake2b256Hash) -> Result<Arc<Self>, String>
+    where
+        C: Serialize<C>,
+        P: Serialize<P>,
+        A: Serialize<A>,
+        K: Serialize<K>,
+    {
+        self.roots_repository.validate_known_root(root).await?;
+        let next = self.current_history.reset(root).await?;
+        Ok(Arc::new(HistoryRepository {
+            current_history: next,
+            roots_repository: self.roots_repository.clone(),
+            leaf_store: self.leaf_store.clone(),
+            marker: PhantomData,
+        }))
+    }
+
     pub async fn get_history_reader(
         &self,
         state_hash: Blake2b256Hash,
@@ -422,6 +451,39 @@ mod tests {
         assert_eq!(moved.root(), empty);
         let third = repository(&manager).await;
         assert_eq!(third.root(), empty);
+    }
+
+    /// **The merge's reset still validates, and it still moves the in-memory view** (the L2 gap).
+    ///
+    /// The *publication* half of this split is pinned where it can be observed —
+    /// `root_repository::tests::validate_known_root_refuses_without_publishing`, which is the level
+    /// that holds two known roots. What is pinned here is that `reset_volatile` is a reset and not a
+    /// no-op: an unknown root is refused exactly as `reset` refuses it, and a known one produces a
+    /// repository rooted at it.
+    #[tokio::test]
+    async fn a_volatile_reset_still_validates_and_still_moves_the_view() {
+        let manager = InMemoryStoreManager::default();
+        let repo = repository(&manager).await;
+        let empty = crate::history::history::empty_root_hash_value();
+
+        let unknown = Blake2b256Hash::from_bytes([0xCD; 32]);
+        assert!(
+            repo.reset_volatile(unknown).await.is_err(),
+            "a root the store does not hold is still refused — the validation is not the half \
+             that was dropped"
+        );
+
+        let volatile = repo.reset_volatile(empty).await.expect("a known root");
+        assert_eq!(volatile.root(), empty, "the in-memory view moved");
+
+        // The publishing reset is unchanged, which is what a rewind or a rejoin uses.
+        let moved = repo.reset(empty).await.expect("reset to the empty root");
+        assert_eq!(moved.root(), empty);
+        assert_eq!(
+            repository(&manager).await.root(),
+            empty,
+            "the publishing reset survives a restart, as it must"
+        );
     }
 
     /// Resetting to a root the store has never recorded is an error, and the repository keeps its
