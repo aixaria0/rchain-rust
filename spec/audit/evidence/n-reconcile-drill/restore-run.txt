@@ -1,0 +1,66 @@
+== 1. what each node is showing ==
+  A  h=3      finalised=?      
+  V1 h=3      finalised=?      
+  V2 h=4      finalised=?      
+  V3 h=3      finalised=?      
+== 2. provable equivocation, checked before stake is weighed (heights 0..4) ==
+  none — every sender has at most one block per height, so no stake is dropped
+== 3. the meet (stake-weighted, strict supermajority) ==
+  the point is height 0, block c01a6091fbde1a1098e7791d29818e3da81380da87f1
+  vouched for by: A V1 V2 V3 
+  stake: 400 of 400 = 100% — a strict supermajority (>66.6%)
+== 4. what is above the point ==
+  The survivor is A's DAG, not a chain: every validator proposes its own block each round, so
+  a height legitimately holds one sibling per validator and there is no single line to extract. The
+  joiners resync onto this DAG; the writers re-submit what they can see is missing.
+  #1: 5 block(s)
+  #2: 4 block(s)
+  #3: 1 block(s)
+  10 deploy(s) above the point; the per-block record is target/reconcile-deploys.jsonl
+  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights
+   route carries counts. The owners re-submit; this tool does not claim to replay them.)
+== 5. apply (--restore-from-master): the whole network is stopped, the survivor included ==
+  A:
+    devnet-bootstrap stopped (container)
+  V1:
+    devnet-validator-1 stopped (container)
+  V2:
+    devnet-validator-2 stopped (container)
+  V3:
+    devnet-validator-3 stopped (container)
+== 6. the fiat, printed before it is applied ==
+  This is NOT a sync. The joiners adopt A's chain state wholesale, so what they agree about
+  afterwards is A's view of the chain — including any block above the point that A
+  accepted and its peers did not. The blocks this drops are enumerated in section 4; that count is
+  the write set the owners re-submit. Running this is the operator asserting that A is the
+  chain. It is a stopgap because it depends on the data-dir layout being movable — which #287's
+  design deliberately avoided depending on — and not a substitute for an agreed anchor.
+== 7. chain state copied onto each joiner (identity and genesis untouched) ==
+  V1:
+tools/reconcile-network.sh: line 154: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-bootstrap's volume; identity and genesis untouched
+  V2:
+tools/reconcile-network.sh: line 154: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-bootstrap's volume; identity and genesis untouched
+  V3:
+tools/reconcile-network.sh: line 154: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-bootstrap's volume; identity and genesis untouched
+== 8. restarted: the survivor first, then the joiners ==
+    devnet-bootstrap started (container)
+  V1:
+    devnet-validator-1 started (container)
+  V2:
+    devnet-validator-2 started (container)
+  V3:
+    devnet-validator-3 started (container)
+== 9. verification: block hashes per height, not heights ==
+  [1] A=3 V1=3 V2=3 V3=3  hashes-agree=1
+== 10. finality past the point ==
+  A  finalised ?      
+  V1 finalised ?      
+  V2 finalised ?      
+  V3 finalised ?      
+  (this section plus section 9 is #287's falsifier: one head, agreeing block hashes, no genesis.)

@@ -1,0 +1,27 @@
+== after the store restore DISARMED joiners + a deploy that drives a block ==
+
+== the deploy was needed: this is a --no-autopropose net, and an idle chain produces nothing,
+   so finality cannot move (the wipe path triggers a block for exactly this reason; the restore
+   path did not, and that gap was found by measuring rather than by reading). ==
+
+== heights ==
+40403: h 17 stall none
+41403: h 17 stall none
+42403: h 17 stall none
+43403: h 17 stall none
+
+== last-finalized-block: finality has advanced past the reconciliation point (0), on a common hash ==
+40403: h 11 ef05ce68966d09ffc42aeef4e66b8720e31adae3cd059108af400a516190a13c
+41403: h 11 ef05ce68966d09ffc42aeef4e66b8720e31adae3cd059108af400a516190a13c
+42403: h 11 ef05ce68966d09ffc42aeef4e66b8720e31adae3cd059108af400a516190a13c
+43403: h 11 ef05ce68966d09ffc42aeef4e66b8720e31adae3cd059108af400a516190a13c
+
+== block hashes per height, all four (one head) ==
+h=0 : c01a6091 | c01a6091 | c01a6091 | c01a6091 | 
+h=1 : 83795bc0,99de0848,9edbbffa,de8a2545 | 83795bc0,99de0848,9edbbffa,de8a2545 | 83795bc0,99de0848,9edbbffa,de8a2545 | 83795bc0,99de0848,9edbbffa,de8a2545 | 
+h=2 : a3d2b67a | a3d2b67a | a3d2b67a | a3d2b67a | 
+h=3 : 96f6f7e3 | 96f6f7e3 | 96f6f7e3 | 96f6f7e3 | 
+h=4 : 132e7f08,d84c9cc6 | 132e7f08,d84c9cc6 | 132e7f08,d84c9cc6 | 132e7f08,d84c9cc6 | 
+h=5 : 2e6b09e7,a52fc0d4,ee91a57e | 2e6b09e7,a52fc0d4,ee91a57e | 2e6b09e7,a52fc0d4,ee91a57e | 2e6b09e7,a52fc0d4,ee91a57e | 
+h=6 : 149b34e6 | 149b34e6 | 149b34e6 | 149b34e6 | 
+h=7 : 142eedca,4c6c5cbe,760ad523 | 142eedca,4c6c5cbe,760ad523 | 142eedca,4c6c5cbe,760ad523 | 142eedca,4c6c5cbe,760ad523 | 

@@ -1,0 +1,27 @@
+== the joiners after the wipe: why they are not syncing ==
+2026-10-09T16:25:14.524Z INFO  [casper.blocks.BlockRetriever] Block 55aed4c24eb8cc1bbf98276b3699c052383d4f3b55b338b6f8f81671acc6d308 marked as received.
+2026-10-09T16:25:14.530Z WARN  [casper.interpreter.validate] finality did not advance at tip 0: a layer exists but its supporting stake is not a supermajority — 0 of 400 (0 full partition(s) among 0
+2026-10-09T16:25:14.530Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 55aed4c24eb8cc1bbf98276b3699c052383d4f3b55b338b6f8f81671acc6d308 by 04f700a4 — this
+2026-10-09T16:25:14.546Z WARN  [casper.blocks.BlockProcessor] Block #1 55aed4c24eb8cc1bbf98276b3699c052383d4f3b55b338b6f8f81671acc6d308 from 04f700a417754b77 failed validation: the block's rejected-de
+2026-10-09T16:25:14.663Z INFO  [casper.blocks.BlockRetriever] Block 08d0c62e1b26d07c9aab0d48b7f43c2a01e55ed0a70fef65de62b8b1cac4e181 marked as received.
+2026-10-09T16:25:14.667Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 08d0c62e1b26d07c9aab0d48b7f43c2a01e55ed0a70fef65de62b8b1cac4e181 by 04d8b6c3 — this
+2026-10-09T16:25:14.687Z WARN  [casper.blocks.BlockProcessor] Block #1 08d0c62e1b26d07c9aab0d48b7f43c2a01e55ed0a70fef65de62b8b1cac4e181 from 04d8b6c325ae12e8 failed validation: the block's rejected-de
+2026-10-09T16:25:14.695Z WARN  [casper.engine.NodeRunning] There is another node rnode://311ee804a41aecc0966f4b0eb47295cf36ab7674@devnet-bootstrap?protocol=40400&discovery=40404 proposing using the sa
+2026-10-09T16:25:14.704Z INFO  [casper.blocks.BlockRetriever] Block 2bff86453f4def1d85c34a912ec2883bcd5a71cbd4d7c0be52ea973ae62114ab marked as received.
+2026-10-09T16:25:14.709Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 2bff86453f4def1d85c34a912ec2883bcd5a71cbd4d7c0be52ea973ae62114ab by 04dbe32c — this
+2026-10-09T16:25:14.727Z WARN  [casper.blocks.BlockProcessor] Block #1 2bff86453f4def1d85c34a912ec2883bcd5a71cbd4d7c0be52ea973ae62114ab from 04dbe32c2062240a failed validation: the block's rejected-de
+2026-10-09T16:25:14.742Z INFO  [casper.blocks.BlockRetriever] Block 4ea929919aa8e6e609c88d176a43ef38f1346ae5ac1011e4b3f99cf61b764509 marked as received.
+2026-10-09T16:25:14.747Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 4ea929919aa8e6e609c88d176a43ef38f1346ae5ac1011e4b3f99cf61b764509 by 04ea3ce0 — this
+2026-10-09T16:25:14.763Z WARN  [casper.blocks.BlockProcessor] Block #1 4ea929919aa8e6e609c88d176a43ef38f1346ae5ac1011e4b3f99cf61b764509 from 04ea3ce04abbe780 failed validation: the block's rejected-de
+
+== what each node says about its finalised fringe ==
+40403: "Finalized fringe is not available."
+41403: "Finalized fringe is not available."
+42403: "Finalized fringe is not available."
+43403: "Finalized fringe is not available."
+
+== heights and self-validation failures ==
+40403: h 3 selffail 1 stall a layer exists but its supporting stake 
+41403: h 1 selffail 0 stall a layer exists but its supporting stake 
+42403: h 1 selffail 0 stall a layer exists but its supporting stake 
+43403: h 1 selffail 0 stall a layer exists but its supporting stake 
