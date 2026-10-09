@@ -9,9 +9,10 @@
 # arrives detached from the change that caused it.
 #
 # So this workflow runs the *same single entry point* on the pull requests that can invalidate it: the
-# specification, the corpora, the Rust surfaces the corpora pin, and the gate's own tooling. Everything
-# else — a Rust-only change, a docs change — is still covered by `nightly.yml` on its schedule, and this
-# one deliberately does not try to be that backstop.
+# checked surface of the specification, the corpora, the Rust surfaces the corpora pin, and the gate's own
+# tooling — **not** the audit's register, which cannot make a corpus stale. Everything else is still
+# covered by `nightly.yml` on its schedule; this one deliberately does not try to be that backstop, and it
+# does not list itself, because a 30-minute run per YAML tweak is the cost it exists to avoid.
 #
 # Why these paths, and nothing wider: the gate re-emits each corpus from its Lean definition and refuses
 # a stale one, then runs the mapped Rust consumer 1:1 (`check-lean-conformance.sh`'s layer → test table).
@@ -22,8 +23,19 @@ name: Formal gate on the changed surface
 
 on:
   pull_request:
+    # **The formal surface, not the whole of `spec/`.** `spec/audit/**`, `spec/findings.tsv` and
+    # `spec/AUDIT.md` are the audit's own record: editing a register row cannot make a corpus stale, and
+    # most changes in this repository are exactly that. `spec/**` made this job fire on nearly every pull
+    # request and spend 30 minutes proving nothing about it (found on #308, where it fired for a
+    # register-only diff). What is listed is what the gate reads or re-emits.
     paths:
-      - "spec/**"
+      - "spec/Rchain/**"
+      - "spec/conformance/**"
+      - "spec/coq/**"
+      - "spec/laws.tsv"
+      - "spec/LAWS.md"
+      - "spec/lean-toolchain"
+      - "spec/lakefile.lean"
       - "tools/check-lean-conformance.sh"
       - "tools/emit-lean-corpus.sh"
       - "Makefile"
@@ -31,7 +43,6 @@ on:
       - "rholang/tests/lean_*.rs"
       - "node/src/api/**"
       - "node/src/web/**"
-      - ".github/workflows/formal-on-change.yml"
   workflow_dispatch:
 
 permissions:
