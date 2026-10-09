@@ -945,6 +945,34 @@ async fn a_substring_search_is_charged_for_its_worst_case() {
     );
 }
 
+/// **The bit operations (RCHIP #12) parse and run end to end, and a left shift is charged for the
+/// integer it builds** — before building it, so `1.shiftLeft(2^40)` runs out of phlo instead of
+/// allocating 128 GiB. The left shift is the one bit operation whose result can outgrow its operands.
+#[tokio::test]
+async fn bit_operations_run_and_a_left_shift_is_charged_for_its_result() {
+    let rt = build_runtime(false).await;
+    let term = r#"@"out"!([12.bitAnd(10), 12.bitOr(10), 12.bitXor(10), 0.bitNot(),
+        1.shiftLeft(64), (-7).shiftRight(1), (-1).shiftRightUnsigned(60),
+        "f00f".hexToBytes().bitXor("ffff".hexToBytes())])"#;
+    let res = rt.evaluate(term, &fixed_rand()).await.expect("evaluate");
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+
+    let tight = build_runtime(false).await;
+    tight.cost().set(Cost::new(1_000_000, "deploy"));
+    let refused = tight
+        .evaluate(r#"@"out"!(1.shiftLeft(1099511627776))"#, &fixed_rand())
+        .await
+        .expect("no node fault");
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|e| matches!(e, RholangError::OutOfPhlogistonsError)),
+        "a huge left shift must run out of phlo: {:?}",
+        refused.errors
+    );
+}
+
 /// **A set difference is charged for the product of its operands, not one of them** (AUDIT F-3).
 ///
 /// `a.diff(b)` filters `a` by `!b.contains(p)`, and `contains` on a set is a linear scan, so the work
