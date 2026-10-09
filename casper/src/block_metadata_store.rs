@@ -98,6 +98,53 @@ impl BlockMetadataStore {
     pub async fn height_map(&self) -> Arc<BTreeMap<BlockHeight, BTreeSet<BlockHash>>> {
         self.dag_state.read().await.height_map.clone()
     }
+
+    /// **Drop every block above `height`** — from the persisted store and from the in-memory index —
+    /// and return the hashes that went (C249's node-side reset, #287).
+    ///
+    /// A node that cannot locally heal has exactly one way back today: an operator stops it and deletes
+    /// the shard data dir by hand. That path exists as a comment (`casper/src/dag.rs`) and nowhere as
+    /// code. This is the node-side primitive that replaces it: rewind the DAG to a height the node can
+    /// replay from, and start again from there.
+    ///
+    /// **The order is the store first, then the rebuild, and the rebuild is a rebuild rather than an
+    /// edit.** The store-first order is the one [`Self::add`] uses and for the same reason (AUDIT C172):
+    /// a refused or failed delete leaves the index untouched. Building the surviving index from what the
+    /// store holds, rather than removing entries from the live one, is what makes the two agree *by
+    /// construction* instead of by two implementations of the same rule — and
+    /// [`recreate_in_memory_state`] re-runs the height-map contiguity check on the way, so a rewind that
+    /// would leave a gap is refused rather than published.
+    ///
+    /// **`height` is kept, not dropped**: it is the state the node replays from. The caller's anchor and
+    /// this primitive's argument have to be the same block, which is why the anchor is persisted
+    /// separately rather than re-derived from a DAG the reset is about to shorten.
+    ///
+    /// The hashes are returned rather than a count because the reset is not the only thing that has to
+    /// be rewound: the DAG's *derived* indices (the deploy index, the deployer index) hold block hashes
+    /// too, and a caller that only learned "2 blocks went" could not clean them.
+    pub async fn drop_above(&self, height: BlockHeight) -> Result<Vec<BlockHash>, String> {
+        let blocks = self.store.to_map().await?;
+        let doomed: Vec<BlockHash> = blocks
+            .iter()
+            .filter(|(_, meta)| meta.block_num > height)
+            .map(|(hash, _)| *hash)
+            .collect();
+        if doomed.is_empty() {
+            return Ok(doomed);
+        }
+        // The store reports what it actually removed. The index below is rebuilt from what *survives*,
+        // not from what was asked for, so a key that was already gone changes nothing either way.
+        let _removed = self.store.delete(&doomed).await?;
+
+        let surviving: BTreeMap<BlockHash, BlockInfo> = blocks
+            .iter()
+            .filter(|(_, meta)| meta.block_num <= height)
+            .map(|(hash, meta)| (*hash, block_metadata_to_info(meta)))
+            .collect();
+        let rebuilt = recreate_in_memory_state(&surviving)?;
+        *self.dag_state.write().await = rebuilt;
+        Ok(doomed)
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +254,71 @@ mod tests {
             "the index must not report a block the add refused"
         );
         assert_eq!(store.get(&hash(5)).await.unwrap(), None);
+    }
+
+    /// **A reset drops the blocks above the anchor — from the store *and* from the index — and a
+    /// restart over the same store sees the dropped state** (C249's node-side half, #287).
+    ///
+    /// This is the primitive an operator performs by hand today: stop the node, delete the shard data
+    /// dir — a path that exists as a comment and nowhere as code. The direction that matters is the
+    /// restart. The in-memory index is only an index; a rewind that lived only in memory would be
+    /// undone by the next boot, putting the node back on exactly the blocks it gave up on, which is
+    /// the wedge the reset exists to break.
+    ///
+    /// Falsifier: the method does not exist on the pre-fix tree, so this test does not **build** there.
+    /// That is the R1 form of a red-before — the capability is absent, and an absent capability has no
+    /// behaviour to be wrong.
+    #[tokio::test]
+    async fn dropping_above_the_anchor_takes_the_higher_blocks_with_it() {
+        let store = metadata_store();
+        let index = BlockMetadataStore::create(store.clone()).await.unwrap();
+        // A contiguous chain 0..=4, each block justified by the one below it.
+        let mut parents: Vec<BlockHash> = Vec::new();
+        for n in 0..=4u8 {
+            let h = hash(n);
+            index.add(meta(h, &parents, i64::from(n))).await.unwrap();
+            parents = vec![h];
+        }
+        assert_eq!(
+            index.height_map().await.len(),
+            5,
+            "the chain is in the index to begin with"
+        );
+
+        let anchor = rchain_shared::refined::BlockHeight::try_from(2).unwrap();
+        let removed = index.drop_above(anchor).await.unwrap();
+        assert_eq!(
+            removed.iter().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([hash(3), hash(4)]),
+            "exactly the blocks above the anchor, and the anchor is not one of them"
+        );
+        assert_eq!(
+            index.get(&hash(4)).await.unwrap(),
+            None,
+            "gone from the persisted store"
+        );
+        assert!(
+            !index.contains(&hash(3)).await,
+            "…and from the index, which is what `has_all_deps` reads"
+        );
+        assert_eq!(
+            index.height_map().await.len(),
+            3,
+            "the anchor and everything below it survive"
+        );
+
+        // The restart the design cares about: a *fresh* index over the same store.
+        let rebooted = BlockMetadataStore::create(store).await.unwrap();
+        assert_eq!(
+            rebooted.height_map().await.len(),
+            3,
+            "a rewind that lived only in memory would be undone by the next boot"
+        );
+        assert_eq!(rebooted.get(&hash(4)).await.unwrap(), None);
+        assert!(
+            rebooted.get(&hash(2)).await.unwrap().is_some(),
+            "the anchor itself is kept — it is the state the node replays from"
+        );
     }
 
     /// **And the other side of the same pair: a write that fails does not leave the index claiming the
