@@ -649,6 +649,17 @@ pub struct Run {
 
     /// **A block hash to sync to when this node has no chain** — the anchor a reconciliation computes
     /// when a net has no finalised fringe to resync from. Empty is the ordinary path.
+    ///
+    /// **The restore works; the catch-up does not, and this records why rather than leaving it to be
+    /// discovered.** The seed this builds carries **no fringe ancestry**, which is the one piece #139
+    /// added to make a restored block replayable — and the sidecar stores a merge needs
+    /// (`mergeable-channel-cache`, `native-changes-cache`) are not part of the state a sync transfers.
+    /// A node restored this way therefore reaches its anchor and stops: pointed near the tip it stalls
+    /// silently (single-parent hops validate, the multi-parent suffix above the anchor never does);
+    /// pointed far back it fails loudly on `regenerated mergeable channels` for the suffix's
+    /// epoch-boundary blocks, which is the C188 class. Measured in
+    /// `spec/audit/evidence/n-anchor-drill/run.md`; owed as C259(a), whose first half is carrying the
+    /// anchor's ancestry rather than fabricating an empty one.
     #[arg(long = "sync-anchor")]
     pub sync_anchor: Option<String>,
 
