@@ -20,6 +20,7 @@
 //! 4. **a peer whose sessions have all ended is forgotten** (row B3) — `forget` must remove the key,
 //!    because the key is the peer's own `designator`, and a map that only grows is the node's memory.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -656,7 +657,7 @@ async fn a_claim_that_waits_does_not_stall_its_session() {
             accept_and_book(conn, &identity, bootstrap, &registry)
                 .await
                 .expect("the session is booked");
-        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        *slot.lock().unpoison() = Some(context);
         let _ = handle;
         let _ = loop_.run().await;
     });
@@ -830,7 +831,7 @@ async fn the_claim_waiters_on_one_session_are_bounded() {
             accept_and_book(conn, &identity, bootstrap, &registry)
                 .await
                 .expect("the session is booked");
-        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+        *slot.lock().unpoison() = Some(context);
         let _ = handle;
         let _ = loop_.run().await;
     });

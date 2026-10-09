@@ -22,6 +22,7 @@
 //! `op_start_session.py` asserts in each variant, one on the leg the implementation dialed and one on
 //! the leg it accepted.
 
+use rchain_shared::lock::Unpoison;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -354,7 +355,7 @@ impl SessionRegistry {
         peer: &PeerLocator,
         handle: &SessionHandle,
     ) -> Result<Vec<SessionHandle>, String> {
-        let mut peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
+        let mut peers = self.peers.lock().unpoison();
         let key = peer_key(peer);
         if !peers.contains_key(&key) {
             // **A new peer past the cap is refused, not queued.** The map is keyed by the peer's own
@@ -439,7 +440,7 @@ impl SessionRegistry {
     /// [`SessionRegistry::forget`] — so "a peer is forgotten" is a claim about a number, and a claim
     /// about a number that nothing can read is a claim nothing checks (HAZOP row B3).
     pub fn tracked_peers(&self) -> usize {
-        self.peers.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.peers.lock().unpoison().len()
     }
 
     /// A live session to `peer`, if there is one — **the one the peer dialed, when there is a choice**.
@@ -449,7 +450,7 @@ impl SessionRegistry {
     /// peer whose session *it* dialed, and expects the fetch on that session. Preferring the accepted
     /// session is what makes that work; a dialed-only peer is reached on the session we dialed.
     pub fn live(&self, peer: &PeerLocator) -> Option<SessionHandle> {
-        let peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
+        let peers = self.peers.lock().unpoison();
         let entry = peers.get(&peer_key(peer))?;
         entry
             .accepted
@@ -465,7 +466,7 @@ impl SessionRegistry {
     /// derived from both keys, and per-connection keys are not shared. So the registry is the only
     /// place that can turn an id back into a connection.
     pub fn by_id(&self, id: &Octets32) -> Option<SessionHandle> {
-        let peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
+        let peers = self.peers.lock().unpoison();
         for (_, session) in peers.iter() {
             for (_, handle) in [session.dialed.as_ref(), session.accepted.as_ref()]
                 .into_iter()
@@ -497,7 +498,7 @@ impl SessionRegistry {
     /// `a_peer_whose_sessions_have_ended_is_forgotten`, which is why that test asserts the map's size
     /// and not only `live`.
     pub fn forget(&self, peer: &PeerLocator, own_pi: &Octets32, dialed: bool) {
-        let mut peers = self.peers.lock().unwrap_or_else(|p| p.into_inner());
+        let mut peers = self.peers.lock().unpoison();
         let key = peer_key(peer);
         let Some(entry) = peers.get_mut(&key) else {
             return;
@@ -571,7 +572,7 @@ pub type SessionSlot = Arc<Mutex<Option<SessionContext>>>;
 pub fn session_origin(session: &SessionSlot) -> Option<std::net::SocketAddr> {
     session
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unpoison()
         .as_ref()
         .and_then(|context| context.handle.peer_address)
 }

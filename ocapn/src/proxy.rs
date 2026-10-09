@@ -14,6 +14,7 @@
 //! that session a bounded wait rather than a hung task (which is what a suite that only checks the
 //! *dial* would otherwise leave behind).
 
+use rchain_shared::lock::Unpoison;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -64,7 +65,7 @@ impl Export for Catcher {
             },
             _ => Err("a resolver was delivered a message that is not a fulfilment".to_string()),
         };
-        if let Some(tx) = self.tx.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(tx) = self.tx.lock().unpoison().take() {
             let _ = tx.send(outcome);
         }
         Ok(Act::nothing())
