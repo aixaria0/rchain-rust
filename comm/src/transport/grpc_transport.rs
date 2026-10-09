@@ -77,6 +77,7 @@ mod tests {
     use super::*;
     use crate::peer_node::NodeIdentifier;
     use rchain_models::comm::protocol::tl_response;
+    use rchain_shared::lock::Unpoison;
 
     fn peer() -> PeerNode {
         PeerNode::from(
@@ -205,7 +206,7 @@ mod tests {
                     move |protocol: Protocol| {
                         let tx = dispatch_tx.clone();
                         Box::pin(async move {
-                            let sender = tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+                            let sender = tx.lock().unpoison().take();
                             if let Some(sender) = sender {
                                 let _ = sender.send(protocol);
                             }
