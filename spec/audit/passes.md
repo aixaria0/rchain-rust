@@ -8514,3 +8514,56 @@ clippy with CI's allow-list is clean; the full gate is green.
 readable in process, not yet on `/api/status`. That is the next increment, and until it lands "counted but
 not yet published" is the honest description — the same sentence, and the same owed step, that the lock
 module carries.
+
+---
+
+## 84. The recovery path's trigger state closes the path (C259)
+
+**What was run.** The reconciliation utility's own drill, against a divergence staged on demand: four
+validators, `--epoch-length 10 --no-autopropose --fresh`, the C215 divergence injection armed so the net
+reaches four mutually rejecting heads with finality frozen. The tool's **plan phase** is verified against
+that state — it finds no equivocation, reaches the meet at genesis at 400 of 400, enumerates the writes
+above the point and exits 0 without touching anything (`spec/audit/evidence/n-reconcile-drill/results.md`).
+This pass is about its **recovery**, which does not work in exactly the state the tool exists for.
+
+**The finding, and it is a closure rather than a bug.** #287's recovery is *wipe the non-master nodes and
+resync them from the finalised fringe*. Four divergent heads with frozen finality means **no node has a
+finalised fringe** — all four answer `"Finalized fringe is not available."` — so a wiped joiner asks a peer
+for a `FinalizedFringe`, the responder cannot build one, and it **substitutes the genesis block**
+(`node_running.rs:819-853`). That branch exists for a good reason ("a fresh shard must not leave a joiner
+unbonded") and it cannot tell that state from this one, because **both are an empty `latest_fringe`**. The
+joiner therefore syncs *to block 0*, enters `NodeRunning`, fetches head blocks by hash — which works, and
+`BlockRetriever` says so — and rejects every one against a genesis-only DAG, permanently, by the neglect
+rule. **The recovery's trigger state closes the recovery.**
+
+One correction to the obvious reading of that, because the first draft of it was wrong: the wiped joiner
+*does* enter the sync path (its DAG is empty, so the boot guard's arm runs). The boot guard's one-shot
+dispatch is what strands a *partial*-DAG node; the wiped joiner is stranded by what the responder answers
+and by what the receiving side then does with the blocks it fetches.
+
+**Two facts from the same reading, both load-bearing for the fix.**
+
+- **`get_approved_block` has zero production callers.** The approved store is written by the genesis master
+  and by a successful sync, and read by nobody: a persisted anchor that nothing consults is not an anchor,
+  and it is the first place a fringe-free restore would look.
+- **`request_blocks` is hash-seeded, not fringe-typed.** It takes a `FinalizedFringe` and uses **only
+  `fringe.hashes`** as the walk's root (`lfs_block_requester.rs:207-222`). So a *fringe* is not required —
+  a set of agreed block hashes is. That is what makes the protocol-level fix small: an anchor is a
+  configuration field, a bounded request field and a boot-path branch, not new sync machinery.
+
+**And the limit that decides how many units this takes.** On a net with **no finality at all** the meet is
+*genesis*, so an anchor-based restore lands a joiner exactly where the responder already sends it. The
+anchor therefore closes every divergence that still has some finality left — the partial case, and the
+common one — and the full four-heads case needs a store-level transfer of the survivor's DAG, which is not
+a sync at all and is documented as a stopgap. Neither is presented as the general answer.
+
+**Falsifiers.** The red is measured and committed: the same rig, with the tool's wipe-and-resync, leaves
+every joiner at genesis rejecting every block (`why-no-resync.txt`). Green is #287's acceptance — one head,
+agreeing block hashes per height, finality past the point, without a genesis — asserted by the tool's own
+sections 9 and 10, for the store-level path and again for the anchor path.
+
+**What this does not show.** The drill's staging has its own limit, already recorded on the staging file
+(`c215-divergence-staging/run.md`): the injection reaches *block content*, so an injected node's blocks are
+un-validatable by a clean node. That makes the copy path demonstrable and an anchor path **not** — a green
+drill under the injection would prove the copy, not a sync — so the anchor's drill needs a staging where
+the joiners' blocks stay valid to a clean node, which is work the instrument still owes.
