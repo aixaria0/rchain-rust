@@ -99,3 +99,12 @@ predicts, and it is what the two in-process tests assert one link at a time.
 - **The reconciliation tool has not run against this state.** That is the drill, and this staging is its
   precondition.
 - **One host, one run.** Four containers on one machine; the timeouts and the heights are this box's.
+- **The injection reaches the *blocks*.** Found later, by running the recovery drill against a net staged
+  this way: a proposer's `rejected_deploys` is computed by its own merge under its own perturbed cache and
+  then written into the block, so every block an injected node publishes is un-validatable by a clean
+  node — permanently, because the set is *in* the block. The paragraph above says nothing fabricates a
+  state hash or a block, and that is true of the *injection*; what it did not anticipate is that a
+  perturbed cache is not private to the node holding it, because the node's next block publishes the
+  difference. So this instrument stages a chain that is *worse* than a genuinely diverged one — see
+  `spec/audit/evidence/n-reconcile-drill/results.md`, which is where the cost and the correction are
+  recorded.
