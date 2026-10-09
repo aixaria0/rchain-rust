@@ -148,6 +148,19 @@ fn meta(b: &BlockMessage, fringe: &[BlockHash], fringe_state: u8) -> BlockMetada
     m
 }
 
+/// The same, with a state the **runtime** produced rather than a byte pattern — for a record whose
+/// value has to be readable (`compute_bonds` runs against it) rather than merely distinct.
+fn meta_state(
+    b: &BlockMessage,
+    fringe: &BTreeSet<BlockHash>,
+    state: &Blake2b256Hash,
+) -> BlockMetadata {
+    let mut m = BlockMetadata::from_block(b);
+    m.fringe = fringe.clone();
+    m.fringe_state_hash = StateHash::new(*state.as_bytes());
+    m
+}
+
 async fn insert(dag: &BlockDagKeyValueStorage, m: BlockMetadata, b: BlockMessage) {
     dag.insert(m, b).await.expect("the block inserts");
 }
@@ -262,6 +275,7 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::genesis::contracts::Vault;
 use rchain_casper::merging::{BlockIndex, MergeScope};
+use rchain_casper::multi_parent_casper::get_pre_state_for_parents;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
@@ -539,5 +553,242 @@ async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
     assert_eq!(
         outcome_one.rejected_deploys, outcome_two.rejected_deploys,
         "…and rejected different deploys, from the same set"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// C250: is the colliding pair those tests build reachable from two honest siblings? It is not — the
+// value is the parent set's, and a block's own deploys are not an input to it.
+// ---------------------------------------------------------------------------------------------------
+
+/// **C250's answer, pinned: two honest siblings contribute one value to the fringe they share.**
+///
+/// The tests above construct the collision by *assigning* it — `y.rejected_deploys = {x's deploy}` and
+/// `z.rejected_deploys = {}` — which is the hypothesis the row is about rather than an observation of
+/// it, and review of #299 read the construction as "ordinary multi-proposer behaviour". This takes the
+/// same pair of siblings and asks the **production derivation** what each of them would write.
+///
+/// There is nothing for them to differ on. `get_pre_state_for_parents(dag, block_store, runtime,
+/// parent_hashes, block_index)` has **no argument for the block being built**: a proposer takes its
+/// `rejected_deploys` from that call's `fringe_rejected_deploys` — the **fringe** merge's rejections
+/// (`blocks/proposer/block_creator.rs:90`) — and its `fringe` and `fringe_state` from the same call. Two
+/// siblings share `parent_hashes`, so all three are one value per parent set.
+///
+/// What a sibling's own conflict scope resolves is a **different field**: here, two consumers racing for
+/// the single produce `x` leaves on `@"c"`. That lands in `ParentsMergedState::rejected_deploys`, whose
+/// only consumer in the tree is a log line (`blocks/proposer/proposer.rs:890`) — it is never written to a
+/// block and never reaches a record.
+///
+/// **The control is half the test.** Two identical calls returning the same value proves little, so the
+/// second DAG below changes one record and shows the derivation move: the same blocks, with `x` claiming
+/// a different fringe, derive a different `prev_fringe` — the base every merge for that block starts
+/// from. The equality above is therefore a fact about two honest siblings over one DAG, not about a
+/// derivation that returns a constant.
+///
+/// **What this does not settle, stated so it is not read as more.** It fixes the siblings' parent set,
+/// and `prev_fringe` with it — and `prev_fringe` is the **base** every merge for that block starts from,
+/// while the record's key is `fringe_hash_of(fringe)` alone. The key therefore does not name the base: a
+/// pair of *non*-sibling blocks that reach one fringe from two different bases would still write two
+/// different values at one key, and nothing here excludes that. The derivation's sensitivity to the DAG
+/// (the control) is what would make such a pair differ, which is why the control is the other half of
+/// this test rather than an aside. Register row C250 carries the residue.
+///
+/// **The rig's own limit.** The fringe does not advance past genesis here, so the shared key is the
+/// genesis fringe's rather than one the walk produced. What the test exercises is therefore the
+/// derivation's *inputs* — absent, for a block — rather than an advancing walk; the shape where the walk
+/// does advance is the one the tests above build by hand (`meta(&y, &[x.block_hash], 3)`).
+#[tokio::test]
+async fn two_honest_siblings_contribute_one_value_to_the_fringe_they_share() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    // A plain genesis. The fringe does **not** advance past it in this rig — a single producer's chain
+    // finalises on a *later* justification's seeing of its block, and these synthetic blocks are not
+    // that — so the key the siblings share below is the genesis fringe's. That does not weaken the test:
+    // the claim is about what a block *contributes* to the derivation, and `parent_hashes` is the whole
+    // of it. The control at the end shows the derivation is not returning a constant.
+    let (genesis_pre, genesis_post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let mut g = shell(0x01, 1, 0, 0, &[]);
+    g.pre_state_hash = StateHash::new(*genesis_pre.as_bytes());
+    g.post_state_hash = StateHash::new(*genesis_post.as_bytes());
+
+    let (x, x_post) = validated(
+        &rm,
+        &genesis_post,
+        shell(0x11, 1, 1, 1, &[g.block_hash]),
+        "@\"c\"!(1)",
+        1,
+    )
+    .await;
+
+    // Two siblings that genuinely contend: both consume the single produce `x` leaves on `@"c"`. Each is
+    // a block a node would accept on its own. They are not alternatives one proposer weighs — they are
+    // two proposers' blocks for one round, which is the shape the row is about.
+    let (y, _y_post) = validated(
+        &rm,
+        &x_post,
+        shell(0x21, 2, 0, 2, &[x.block_hash]),
+        "for(_ <- @\"c\"){@\"y\"!(1)}",
+        2,
+    )
+    .await;
+    let (z, _z_post) = validated(
+        &rm,
+        &x_post,
+        shell(0x31, 3, 0, 2, &[x.block_hash]),
+        "for(_ <- @\"c\"){@\"z\"!(1)}",
+        3,
+    )
+    .await;
+    assert_ne!(
+        y.post_state_hash, z.post_state_hash,
+        "the two siblings are different content — one parent set, different deploys, different state \
+         — so a value that comes out equal did not come out of their content"
+    );
+    assert!(
+        !y.state.deploys.is_empty() && !z.state.deploys.is_empty(),
+        "and each really carries its deploy, so neither is vacuous"
+    );
+    // **The input, named.** `parent_hashes` is the only thing a block contributes to the derivation, and
+    // two proposers for one round justify the same set — which is the whole of the argument.
+    assert_eq!(
+        y.justifications, z.justifications,
+        "the siblings justify one parent set; that set is the derivation's *only* input from a block"
+    );
+
+    // The proposer's DAG while it builds *either* sibling: g and x, and neither sibling yet.
+    let proposer = build_storage().await;
+    insert(
+        &proposer,
+        meta_state(&g, &BTreeSet::new(), &genesis_post),
+        g.clone(),
+    )
+    .await;
+    insert(
+        &proposer,
+        meta_state(&x, &BTreeSet::from([g.block_hash]), &genesis_post),
+        x.clone(),
+    )
+    .await;
+
+    let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(BlockHashCodec),
+        Arc::new(BlockMessageCodec),
+    ));
+    for b in [&g, &x] {
+        store.put(&[(b.block_hash, b.clone())]).await.expect("put");
+    }
+    let lookup = {
+        let rm = &rm;
+        let store = store.clone();
+        move |h: BlockHash| {
+            let store = store.clone();
+            async move {
+                BlockIndex::get_block_index(rm, &*build_storage().await, &store, h, fringe_state(1))
+                    .await
+            }
+        }
+    };
+
+    let parents = BTreeSet::from([x.block_hash]);
+    let pre_y = get_pre_state_for_parents(&*proposer, &store, &rm, &parents, &lookup)
+        .await
+        .expect("the derivation a proposer of y runs");
+    let pre_z = get_pre_state_for_parents(&*proposer, &store, &rm, &parents, &lookup)
+        .await
+        .expect("the derivation a proposer of z runs");
+
+    // **The answer.** Nothing about which sibling is being built reaches the derivation.
+    assert_eq!(pre_y.fringe, pre_z.fringe, "one parent set, one fringe");
+    assert_eq!(
+        pre_y.fringe_state, pre_z.fringe_state,
+        "and one state at that fringe"
+    );
+    assert_eq!(
+        pre_y.fringe_rejected_deploys, pre_z.fringe_rejected_deploys,
+        "and one set of rejections — the fringe merge's, which is what `block_creator.rs:90` puts on \
+         the block; the siblings' own racing consumes are a *different* field and never reach it"
+    );
+
+    // So both write the same value under the same key, in either arrival order.
+    let key = FringeData::fringe_hash_of(&pre_y.fringe);
+    let g_meta = meta_state(&g, &BTreeSet::new(), &genesis_post);
+    let x_meta = meta_state(&x, &BTreeSet::from([g.block_hash]), &genesis_post);
+    let y_meta = meta_state(&y, &pre_y.fringe, &pre_y.fringe_state);
+    let z_meta = meta_state(&z, &pre_z.fringe, &pre_z.fringe_state);
+    assert_eq!(
+        FringeData::fringe_hash_of(&y_meta.fringe),
+        key,
+        "both siblings' records land on the key the derivation named"
+    );
+
+    let node_one = build_storage().await;
+    for (m, b) in [
+        (g_meta.clone(), g.clone()),
+        (x_meta.clone(), x.clone()),
+        (y_meta.clone(), y.clone()),
+        (z_meta.clone(), z.clone()),
+    ] {
+        insert(&node_one, m, b).await;
+    }
+    let node_two = build_storage().await;
+    for (m, b) in [
+        (g_meta.clone(), g.clone()),
+        (x_meta.clone(), x.clone()),
+        (z_meta.clone(), z.clone()),
+        (y_meta.clone(), y.clone()),
+    ] {
+        insert(&node_two, m, b).await;
+    }
+
+    let one = node_one.get_representation().await;
+    let two = node_two.get_representation().await;
+    assert_eq!(
+        one.fringe_states.get(&key),
+        two.fringe_states.get(&key),
+        "two arrival orders of two honest siblings leave one record — not because the join merged two \
+         claims, but because there was only ever one"
+    );
+    assert_eq!(
+        one.fringe_states.get(&key).map(|f| f.state_hash),
+        Some(Blake2b256Hash::from_byte_array(
+            pre_y.fringe_state.as_bytes()
+        )),
+        "and it is the derivation's value, not a tie-break between two"
+    );
+
+    // **The control.** The same blocks, with one record changed: `x` now claims no fringe, so the
+    // derivation starts from a different base. If this were equal to the above, the equality would be a
+    // fact about a constant rather than about two honest siblings.
+    let moved = build_storage().await;
+    insert(
+        &moved,
+        meta_state(&g, &BTreeSet::new(), &genesis_post),
+        g.clone(),
+    )
+    .await;
+    insert(
+        &moved,
+        meta_state(&x, &BTreeSet::new(), &genesis_post),
+        x.clone(),
+    )
+    .await;
+    let pre_moved = get_pre_state_for_parents(&*moved, &store, &rm, &parents, &lookup)
+        .await
+        .expect("the derivation over the changed DAG");
+    assert_ne!(
+        pre_moved.prev_fringe, pre_y.prev_fringe,
+        "the derivation reads the DAG: a different `x` record is a different base, which is what makes \
+         the equalities above evidence rather than arithmetic"
     );
 }
