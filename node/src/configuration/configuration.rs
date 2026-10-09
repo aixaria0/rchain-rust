@@ -144,6 +144,7 @@ impl Configuration {
         }
 
         check_merge_divergence_injection(&node_conf)?;
+        check_sync_anchor(&node_conf)?;
 
         Ok((check_dev_mode(node_conf), profile, config_file))
     }
@@ -307,6 +308,27 @@ pub fn check_inert_config(node_conf: &NodeConf, defaults: &NodeConf) -> Result<(
 /// recover. That is the one thing a mis-typed flag must not be able to cause on a network anyone is
 /// reading, so the injection requires `--dev-mode` alongside it. The equivocation injection needs no
 /// such guard because it is self-harm only — the node's own bond is what its peers take.
+/// **A `--sync-anchor` that is not a block hash is refused here, not at boot.**
+///
+/// The value is the one thing that decides where a wiped node syncs to (C259), so a typo in it is the
+/// difference between recovering a chain and syncing to something nobody vouched for. Refusing at
+/// startup costs the operator a restart; refusing at boot would too, but *after* the node has read its
+/// store and told the peers it is joining. Checked with the other operator-facing configuration errors,
+/// which is where this file already puts them.
+fn check_sync_anchor(node_conf: &NodeConf) -> Result<(), String> {
+    let Some(anchor) = node_conf.casper.sync_anchor.as_deref() else {
+        return Ok(());
+    };
+    rchain_models::block_hash::BlockHash::try_from_hex(anchor)
+        .map(|_| ())
+        .map_err(|e| {
+            format!(
+                "casper.sync-anchor `{anchor}` is not a block hash: {e}. It is the anchor a wiped node \
+                 syncs to, so it is not a value to guess at"
+            )
+        })
+}
+
 fn check_merge_divergence_injection(node_conf: &NodeConf) -> Result<(), String> {
     let n = node_conf.casper.merge_divergence_injection;
     if n > 0 && !node_conf.dev_mode {
@@ -488,6 +510,35 @@ mod tests {
         );
     }
 
+    /// **A `--sync-anchor` that is not a block hash is refused at load, and a real one is accepted.**
+    ///
+    /// The value decides where a wiped node syncs to (C259), so a typo in it is the difference between
+    /// recovering a chain and syncing to something nobody vouched for. The assertions are a set rather
+    /// than a single refusal, so the test cannot pass by refusing everything: no anchor is the ordinary
+    /// path and a well-formed block hash is the operator's real case.
+    #[test]
+    fn a_sync_anchor_that_is_not_a_block_hash_is_refused() {
+        let mut conf = default_expected();
+        assert!(
+            check_sync_anchor(&conf).is_ok(),
+            "no anchor is the ordinary path and must stay accepted"
+        );
+
+        conf.casper.sync_anchor = Some("not-a-hash".to_string());
+        let err = check_sync_anchor(&conf).expect_err("a typo must be refused at load");
+        assert!(
+            err.contains("is not a block hash"),
+            "the refusal says what is wrong: {err}"
+        );
+
+        conf.casper.sync_anchor =
+            Some("c01a6091fbde1a1098e7791d29818e3da81380da87f142cc74c98b2ae5d2face".to_string());
+        assert!(
+            check_sync_anchor(&conf).is_ok(),
+            "a well-formed block hash is the case the switch exists for"
+        );
+    }
+
     fn default_expected() -> NodeConf {
         let bootstrap = PeerNode::from_address(
             "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404",
@@ -603,6 +654,7 @@ mod tests {
                 min_phlo_price: 1,
                 equivocation_injection: false,
                 merge_divergence_injection: 0,
+                sync_anchor: None,
                 effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
@@ -1188,6 +1240,7 @@ mod tests {
                 min_phlo_price: 1,
                 equivocation_injection: false,
                 merge_divergence_injection: 0,
+                sync_anchor: None,
                 effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {

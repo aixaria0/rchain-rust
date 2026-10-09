@@ -647,6 +647,11 @@ pub struct Run {
     #[arg(long = "merge-divergence-injection")]
     pub merge_divergence_injection: Option<u8>,
 
+    /// **A block hash to sync to when this node has no chain** — the anchor a reconciliation computes
+    /// when a net has no finalised fringe to resync from. Empty is the ordinary path.
+    #[arg(long = "sync-anchor")]
+    pub sync_anchor: Option<String>,
+
     /// Public keys of the Coop multisig vault.
     ///
     /// **Wired, but not to what the name suggests.** In the blessed contract these keys own the Coop

@@ -3,6 +3,7 @@
 //! The genesis-from-config helpers and the `apply` mode-dispatch state machine (genesis → syncing →
 //! running over the packet stream) are ported here.
 
+use rchain_models::block_hash::BlockHash;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -225,6 +226,9 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     incoming_blocks: mpsc::Sender<BlockMessage>,
     spec: ShardSpec,
     trim_state: bool,
+    // **An operator-named block to sync to instead of a finalised fringe** (C259). See
+    // `CasperConf::sync_anchor`; only consulted when this node's DAG is empty.
+    sync_anchor: Option<String>,
     // Operator switch, threaded to `NodeRunning`: when set, this node refuses store-items
     // (state-sync) requests (port of the Scala's `disableStateExporter`).
     disable_state_exporter: bool,
@@ -276,10 +280,50 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             trim_state,
             importer,
         )));
-        comm_util
-            .request_finalized_fringe(trim_state, true)
-            .await
-            .map_err(|e| e.to_string())?;
+        // **A named anchor replaces the fringe request** (C259). A peer with no finalised fringe answers
+        // a `FinalizedFringeRequest` with **genesis** (`node_running.rs`), so a wiped joiner syncs to
+        // block 0 and can never re-enter sync — which is the state a chain with frozen finality is in,
+        // and the reason this switch exists. The anchor is the block the operator's reconciliation
+        // computed: the deepest height a strict supermajority of stake agrees on.
+        //
+        // Nothing else about the sync changes. `request_blocks` walks from whatever hashes it is given
+        // (`lfs_block_requester.rs`), so seeding it with an anchor rather than with a peer's fringe is
+        // the same machinery with a different root — and `request_tuple_space` then pulls the state at
+        // the anchor's post-state, exactly as it would for a fringe.
+        let anchor = match sync_anchor.as_deref() {
+            None => None,
+            Some(hex) => Some(
+                BlockHash::try_from_hex(hex)
+                    .map_err(|e| format!("--sync-anchor `{hex}` is not a block hash: {e}"))?,
+            ),
+        };
+        match anchor {
+            None => {
+                comm_util
+                    .request_finalized_fringe(trim_state, true)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Some(hash) => {
+                let Some(bootstrap) = rp_conf.bootstrap.as_ref() else {
+                    return Err(
+                        "--sync-anchor needs a bootstrap to request the anchor block from, and this                          node has none configured"
+                            .to_string(),
+                    );
+                };
+                log.info(
+                    source,
+                    &format!(
+                        "Syncing to the operator-named anchor {} rather than to a fringe a peer \
+                         offers: with finality frozen no peer has one, and the answer to a fringe \
+                         request would be the genesis block (C259)",
+                        hash.to_hex()
+                    ),
+                );
+                // The block itself; the packet loop below turns it into the sync's seed.
+                comm_util.request_for_block(bootstrap, &hash).await;
+            }
+        }
 
         // Handle packets concurrently with the syncing-finished signal, and with the **terminal**
         // one (AUDIT C181, #125). `finished` is the successful exit — the state was restored, go on
@@ -290,8 +334,49 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         // prevent — the two facts are different and get different signals.
         let finished = { engine.lock().await.finished_handle() };
         let terminal = { engine.lock().await.terminal_handle() };
+        // `false` until the anchor block has been turned into a seed; `true` from the start when there
+        // is no anchor, because then there is nothing to wait for.
+        let mut seeded = anchor.is_none();
         let handle_loop = async {
             while let Some(pm) = packet_rx.recv().await {
+                // **The anchor block becomes the sync's seed.** It arrives as an ordinary
+                // `BlockMessage` — this node's own store is empty, which is why it is syncing — so the
+                // fringe is built from the block itself and handed to the engine exactly as a peer's
+                // fringe would be. Everything after that is the unchanged path.
+                if !seeded {
+                    if let CasperMessage::BlockMessage(b) = &pm.message {
+                        if Some(b.block_hash) == anchor {
+                            let fringe = FinalizedFringe {
+                                hashes: vec![b.block_hash],
+                                state_hash: b.post_state_hash,
+                                ancestry: Vec::new(),
+                            };
+                            let mut guard = engine.lock().await;
+                            match guard
+                                .handle(&pm.peer, &CasperMessage::FinalizedFringe(fringe))
+                                .await
+                            {
+                                Ok(()) => {
+                                    log.info(
+                                        source,
+                                        &format!(
+                                            "the anchor block {} is the sync's root",
+                                            b.block_hash.to_hex()
+                                        ),
+                                    );
+                                }
+                                Err(err) => log.warn(
+                                    source,
+                                    &format!(
+                                        "could not seed the sync from the anchor block: {err}"
+                                    ),
+                                ),
+                            }
+                            seeded = true;
+                            continue;
+                        }
+                    }
+                }
                 let mut guard = engine.lock().await;
                 if let Err(err) = guard.handle(&pm.peer, &pm.message).await {
                     log.warn(

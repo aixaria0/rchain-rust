@@ -439,6 +439,7 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
                 .map_err(|_| "merge-divergence-injection must be 0..=255 (0 = off)".to_string())?,
             None => 0,
         },
+        sync_anchor: to_optional_string(h, "sync-anchor")?,
         effect_mode: to_optional_string(h, "effect-scheduler")?
             .unwrap_or_else(|| "dfs".to_string()),
     })
