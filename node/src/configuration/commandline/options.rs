@@ -639,6 +639,14 @@ pub struct Run {
     #[arg(long = "equivocation-injection")]
     pub equivocation_injection: bool,
 
+    /// **Perturb this node's fringe records, so its merge answers differently from its peers'** — `0`
+    /// (the default) injects nothing. A measurement instrument for the divergence class, and the
+    /// staging instrument for the reconciliation drill: it makes four nodes reach four different merged
+    /// states at one height, which is the shape of a chain that halts and cannot recover. Requires
+    /// `--dev-mode`, and every perturbed write prints a line saying what it did.
+    #[arg(long = "merge-divergence-injection")]
+    pub merge_divergence_injection: Option<u8>,
+
     /// Public keys of the Coop multisig vault.
     ///
     /// **Wired, but not to what the name suggests.** In the blessed contract these keys own the Coop

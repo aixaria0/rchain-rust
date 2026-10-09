@@ -316,6 +316,12 @@ pub fn from_options(options: &Options) -> Hocon {
                 Hocon::Boolean(true),
             ));
         }
+        if let Some(n) = run.merge_divergence_injection {
+            e.push((
+                "casper.merge-divergence-injection".to_string(),
+                Hocon::Integer(i64::from(n)),
+            ));
+        }
         if let Some(mode) = &run.effect_scheduler {
             e.push((
                 "casper.effect-scheduler".to_string(),

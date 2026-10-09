@@ -2568,6 +2568,79 @@ mod tests {
             );
         }
     }
+
+    /// **C215's second link: the merge's rejection input is a function of the cache, not of the scope.**
+    ///
+    /// The first link is `casper/tests/merge_determinism.rs`, over the real `BlockDagKeyValueStorage`:
+    /// two arrival orders of *one* block set leave two different `FringeData` records at **one key**,
+    /// because that map is keyed by the fringe *set* and carries a value the set does not determine
+    /// (`state_hash`, `rejected_deploys`, …), and its write is last-write-wins.
+    ///
+    /// This is what the difference costs. `MergeScope::merge` reads the map once per final-scope block
+    /// (`rejections_map.get(&b.block_hash)`), tests the chain's first deploy id against it, and reads
+    /// **absence as "not rejected"** (`_ => false`) — so the chain is *accepted*. Two nodes holding the
+    /// same blocks, with the same scope, differing only in arrival order therefore put the same chain in
+    /// `rejected_finally` on one and `accepted_finally` on the other, and from there the merged state
+    /// differs. That is the shape the incident's log shows from outside: `state-hash disagreement on
+    /// pre-state: block #104`, three different hashes, four nodes, no equivocation.
+    ///
+    /// **The collision is not exotic**, and the pair below is what a height with one block per validator
+    /// produces: two blocks finalising the same fringe set that disagree about which deploy that set
+    /// rejected. `fringe_data`'s first argument is the state/rejection marker, so the two arguments here
+    /// give one key and two records.
+    ///
+    /// **What settles whether this is reachable on a real chain** is whether two blocks at one height
+    /// ever share a fringe set with different `rejected_deploys` — the storage test constructs it, and the
+    /// live capture would confirm it. This test does not need it to be *common*; it needs it to be
+    /// *possible*, and shows what happens when it is.
+    #[test]
+    fn two_caches_of_one_block_set_reject_differently() {
+        let scope: BTreeSet<BlockHash> = (490u16..500).map(block_hash).collect();
+
+        let a = fringe_data(7, 490u16..500);
+        let b = fringe_data(8, 490u16..500);
+        assert_eq!(
+            a.fringe_hash, b.fringe_hash,
+            "the two records are one key — that is the collision, and without it this test says nothing"
+        );
+        assert_ne!(
+            a.rejected_deploys, b.rejected_deploys,
+            "…and they disagree about what that fringe rejected"
+        );
+
+        let cache_a: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::from([(a.fringe_hash, a)]);
+        let cache_b: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::from([(b.fringe_hash, b)]);
+
+        let map_a = rejections_for(&cache_a, &scope);
+        let map_b = rejections_for(&cache_b, &scope);
+        assert_eq!(
+            map_a.len(),
+            scope.len(),
+            "the same scope indexes the same blocks"
+        );
+        assert_eq!(map_b.len(), scope.len());
+
+        // The merge's own read, on the same block, for a chain whose first deploy id is this one:
+        // `rejections_map.get(&b.block_hash)` → `rej.contains(first_id)`, absence meaning "not rejected".
+        let block = block_hash(495);
+        let chain_first_deploy: Vec<u8> = vec![7];
+        let rejected_on_a = map_a
+            .get(&block)
+            .is_some_and(|rej| rej.contains(&chain_first_deploy));
+        let rejected_on_b = map_b
+            .get(&block)
+            .is_some_and(|rej| rej.contains(&chain_first_deploy));
+
+        assert!(
+            rejected_on_a,
+            "node A's cache rejects this chain, so `merge` files it under `rejected_finally`"
+        );
+        assert!(
+            !rejected_on_b,
+            "…and node B's cache does not, so the same chain goes under `accepted_finally`. Same blocks, \
+             same scope, two verdicts — decided by which block arrived last, one link after the storage"
+        );
+    }
 }
 
 #[cfg(test)]
