@@ -256,6 +256,13 @@ fn read_i64(bytes: &[u8], idx: &mut usize) -> Result<i64, String> {
 }
 
 /// Decode a sequence of deploy mergeable data (inverse of `encode_deploy_mergeable_data_seq`).
+///
+/// **The trailing bytes are refused** (AUDIT C256's E8). The loop stops when the count runs out, and
+/// without this check whatever follows is ignored — so a value that is longer than its own length
+/// prefix says, or one that a *different* writer produced under a longer prefix, decodes to a **silent
+/// partial** result: the merge would fold fewer channels than the block carries and no party would
+/// report it. The native-changes sidecar next door already refuses trailing bytes
+/// (`decode_native_changes`); this is the same discipline at the codec whose value a deploy controls.
 pub fn decode_deploy_mergeable_data_seq(bytes: &[u8]) -> Result<Vec<DeployMergeableData>, String> {
     let mut idx = 0usize;
     let count = read_u16(bytes, &mut idx)? as usize;
@@ -273,6 +280,14 @@ pub fn decode_deploy_mergeable_data_seq(bytes: &[u8]) -> Result<Vec<DeployMergea
             channels.push(NumberChannel { hash, diff });
         }
         seq.push(DeployMergeableData { channels });
+    }
+    if idx != bytes.len() {
+        return Err(format!(
+            "mergeable data: {} trailing byte(s) after {} deploy(s) — the length prefix says the value \
+             ends here and it does not, so decoding what is there would silently drop them",
+            bytes.len() - idx,
+            seq.len()
+        ));
     }
     Ok(seq)
 }
@@ -543,6 +558,38 @@ mod tests {
         ];
         let bytes = encode_deploy_mergeable_data_seq(&seq);
         assert_eq!(decode_deploy_mergeable_data_seq(&bytes).unwrap(), seq);
+    }
+
+    /// **Trailing bytes are refused rather than silently dropped** (AUDIT C256's E8).
+    ///
+    /// The decode loop stops when the count runs out, so anything after it was ignored: a value longer
+    /// than its own prefix says decodes to a **silent partial** result, and the merge would then fold
+    /// fewer channels than the block carries with no party reporting it. That is the shape that makes
+    /// this worth a check now rather than when the collection is wired (E7): the codec is already
+    /// reachable, and the failure it hides is *silent*, which is the property this programme exists to
+    /// remove.
+    #[test]
+    fn a_mergeable_value_with_trailing_bytes_is_refused() {
+        let seq = vec![DeployMergeableData {
+            channels: vec![NumberChannel {
+                hash: h(7),
+                diff: 3,
+            }],
+        }];
+        let mut bytes = encode_deploy_mergeable_data_seq(&seq);
+        assert_eq!(
+            decode_deploy_mergeable_data_seq(&bytes).expect("the clean round trip"),
+            seq,
+            "the check must not refuse a well-formed value"
+        );
+
+        bytes.push(0x00);
+        let err = decode_deploy_mergeable_data_seq(&bytes)
+            .expect_err("a value longer than its prefix says must be refused");
+        assert!(
+            err.contains("trailing byte"),
+            "and the refusal says what it is: {err}"
+        );
     }
 
     /// The native-changes sidecar round-trips both action shapes, including an empty value and an
