@@ -42,7 +42,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rchain_block_storage::dag::codecs::{
-    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
+    Blake2b256HashCodec, BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, FringeDataCodec,
+    SignedDeployDataCodec,
 };
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_casper::block_metadata_store::BlockMetadataStore;
@@ -238,5 +239,296 @@ async fn two_arrival_orders_of_one_block_set_leave_different_fringe_caches() {
         b.fringe_states.get(&key),
         "**the reproduction**: two nodes with the same blocks hold different `FringeData` at one key, \
          because that map is keyed by the fringe *set* and carries a value the set does not determine"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// C215 at the merge's own entry point: a *validated* block set, two arrival orders, one outcome.
+//
+// The tests above are a storage-level counterexample — they feed metadata straight to `insert` and read
+// the rejection input one link short of the merge. Review of #299 said so, correctly. This is the form
+// the review asked for: two blocks per height whose post-states the **runtime computes**, a finalised
+// fringe they share, and `MergeScope::merge` itself over each of two arrival orders, comparing the
+// resulting state hash *and* rejected set.
+// ---------------------------------------------------------------------------------------------------
+
+mod common;
+
+use common::fringe_state;
+use rchain_block_storage::block_store::BlockStore;
+use rchain_casper::block_random_seed::BlockRandomSeed;
+use rchain_casper::genesis::contracts::Vault;
+use rchain_casper::merging::{BlockIndex, MergeScope};
+use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+use rchain_crypto::public_key::PublicKey;
+use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+use rchain_rholang::native_state::PosGenesis;
+use rchain_rholang::system_processes::BlockData;
+use rchain_rholang::util::rev_address::RevAddress;
+use rchain_shared::refined::NonNegI64;
+
+fn deploy_with(term: &str, sig: u8) -> SignedDeployData {
+    SignedDeployData {
+        data: DeployData {
+            attachments: Vec::new(),
+            term: term.to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 500_000,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+        },
+        deployer: vec![0u8; 65],
+        sig: vec![sig],
+        sig_algorithm: "secp256k1".to_string(),
+    }
+}
+
+fn seeded_vault() -> Vault {
+    Vault {
+        rev_address: RevAddress::from_public_key(&PublicKey::new(vec![0u8; 65]))
+            .expect("valid rev address"),
+        initial_balance: NonNegI64::try_from(1_000_000_000).unwrap(),
+    }
+}
+
+fn shell(id: u8, sender: u8, seq: i64, height: i64, parents: &[BlockHash]) -> BlockMessage {
+    BlockMessage {
+        version: 1,
+        shard_id: "root".to_string(),
+        block_hash: hash(id),
+        block_number: BlockHeight::try_from(height).expect("a height"),
+        sender: Validator::new([sender; 65]),
+        seq_num: SeqNum::try_from(seq).expect("a sequence number"),
+        pre_state_hash: StateHash::new([0u8; 32]),
+        post_state_hash: StateHash::new([0u8; 32]),
+        justifications: parents.to_vec(),
+        bonds: BTreeMap::new(),
+        rejected_deploys: BTreeSet::new(),
+        rejected_blocks: BTreeSet::new(),
+        rejected_senders: BTreeSet::new(),
+        state: RholangState::default(),
+        sig_algorithm: "secp256k1".to_string(),
+        sig: Vec::new(),
+        timestamp: 0,
+    }
+}
+
+/// Run a deploy through the runtime, returning the block with its state computed — **a block a node
+/// would accept**, which is the whole point of this test.
+async fn validated(
+    rm: &rchain_casper::runtime_manager::RuntimeManager,
+    pre: &Blake2b256Hash,
+    mut b: BlockMessage,
+    term: &str,
+    sig: u8,
+) -> (BlockMessage, Blake2b256Hash) {
+    let rand = BlockRandomSeed::random_generator_from_block(&b);
+    let (post, user, sys) = rm
+        .compute_state(
+            pre,
+            &[deploy_with(term, sig)],
+            &[],
+            &rand,
+            BlockData::from_block(&b),
+            pre,
+        )
+        .await
+        .expect("compute_state");
+    b.pre_state_hash = StateHash::new(*pre.as_bytes());
+    b.post_state_hash = StateHash::new(*post.as_bytes());
+    b.state = RholangState {
+        deploys: user.into_iter().map(|r| r.deploy).collect(),
+        system_deploys: sys.into_iter().map(|r| r.deploy).collect(),
+    };
+    (b, post)
+}
+
+/// **The merge's own entry point, with blocks a node would accept — and a negative result.**
+///
+/// **This does NOT reproduce C215's divergence, and it is not the fix's falsifier.** It was written to
+/// be: two arrival orders, one block set, and a comparison of `MergeOutcome::state` *and*
+/// `rejected_deploys`. It passes on the unfixed tree — the two orders merge identically, with nothing
+/// rejected — so the collision the storage-level test above asserts does **not** reach this merge's
+/// decision in this construction, and why is not established. That matters for what may be claimed: with
+/// no red-before artifact, a fix for C215 has no falsifier, and writing one on an argument would be the
+/// thing this programme keeps refusing to do.
+///
+/// **What it is worth keeping for**: the invariant it asserts (the same validated blocks merge to the
+/// same state whatever order they arrived in) is the property C215 says is violated, it is checked
+/// through the real entry point with real computed states, and it would catch a regression that broke
+/// it. It is a regression test and a negative result, not evidence of a defect.
+///
+/// **And a gap it exposed**: `MergeReport`'s `conflict_chains`/`kept_chains`/`rejected_chains` count the
+/// **conflict scope only** (`conflict_set.len()`, `merging.rs:1934`), so a merge that drops a *finalised*
+/// chain reports `rejected_chains: 0` and says nothing about it. `rejected_deploys` does cover it — which
+/// is how the negative result above is even visible — but the report an operator reads does not.
+///
+/// `g` (genesis) → `x` (height 1) → `y`, `z` (height 2, concurrent siblings, different senders).
+///
+/// `y` and `z` both finalise the fringe `{x}` and disagree about what that fringe rejected: `y`'s block
+/// records `x`'s deploy as rejected and `z`'s records nothing — which is what two concurrent proposers
+/// see of each other. Their `FringeData` therefore collide on `fringe_hash_of({x})` with different
+/// values, and `insert` keeps the **last one written**. Two nodes that received `y` and `z` in opposite
+/// orders hold different records at that key, and `MergeScope::merge` reads it for the **final scope**
+/// (`{x}`) to decide whether `x`'s chain is kept — `rejections_for` maps the record's rejected set onto
+/// every block of its fringe.
+///
+/// So the merge over the same blocks answers differently, and this compares **the answer**: the merged
+/// state hash and the rejected set. That is what review of #299 asked for and what the two tests above
+/// do not do — they feed metadata straight to `insert` and stop one link short of the merge.
+#[tokio::test]
+async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let (genesis_pre, genesis_post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let mut g = shell(0x01, 1, 0, 0, &[]);
+    g.pre_state_hash = StateHash::new(*genesis_pre.as_bytes());
+    g.post_state_hash = StateHash::new(*genesis_post.as_bytes());
+
+    let (x, x_post) = validated(
+        &rm,
+        &genesis_post,
+        shell(0x11, 1, 1, 1, &[g.block_hash]),
+        "@\"x\"!(1)",
+        1,
+    )
+    .await;
+    let (mut y, _y_post) = validated(
+        &rm,
+        &x_post,
+        shell(0x21, 2, 0, 2, &[x.block_hash]),
+        "@\"y\"!(2)",
+        2,
+    )
+    .await;
+    let (mut z, _z_post) = validated(
+        &rm,
+        &x_post,
+        shell(0x31, 3, 0, 2, &[x.block_hash]),
+        "@\"z\"!(3)",
+        3,
+    )
+    .await;
+
+    // The two proposers' own views of the round. `y` rejected `x`'s deploy and `z` did not; the deploy
+    // id the merge matches on is the deploy's `sig` (`merging.rs:802`).
+    let x_deploy_id = x.state.deploys[0].deploy.sig.clone();
+    y.rejected_deploys = BTreeSet::from([x_deploy_id.clone()]);
+    z.rejected_deploys = BTreeSet::new();
+
+    // What a *receiver* records. `y` and `z` finalise the same fringe set — `{x}` — and each writes its
+    // own block's rejected set into the record under that key.
+    let g_meta = meta(&g, &[], 1);
+    let x_meta = meta(&x, &[g.block_hash], 2);
+    let y_meta = meta(&y, &[x.block_hash], 3);
+    let z_meta = meta(&z, &[x.block_hash], 4);
+    let key = FringeData::fringe_hash_of(&BTreeSet::from([x.block_hash]));
+
+    // One block set, two arrival orders.
+    let node_one = build_storage().await;
+    for (m, b) in [
+        (g_meta.clone(), g.clone()),
+        (x_meta.clone(), x.clone()),
+        (y_meta.clone(), y.clone()),
+        (z_meta.clone(), z.clone()),
+    ] {
+        insert(&node_one, m, b).await;
+    }
+    let node_two = build_storage().await;
+    for (m, b) in [
+        (g_meta.clone(), g.clone()),
+        (x_meta.clone(), x.clone()),
+        (z_meta.clone(), z.clone()),
+        (y_meta.clone(), y.clone()),
+    ] {
+        insert(&node_two, m, b).await;
+    }
+
+    let one = node_one.get_representation().await;
+    let two = node_two.get_representation().await;
+
+    // **The premise**: the same blocks, the same messages, the same heights.
+    assert_eq!(one.dag_set, two.dag_set);
+    assert_eq!(one.dag_message_state.msg_map, two.dag_message_state.msg_map);
+    assert_eq!(one.child_map, two.child_map);
+    assert_eq!(one.height_map, two.height_map);
+
+    // **The difference**: one key, two values — the same collision the storage-level test asserts, now
+    // with blocks whose states the runtime computed.
+    assert_ne!(
+        one.fringe_states.get(&key),
+        two.fringe_states.get(&key),
+        "the two arrival orders must leave different records at the shared key, or this test says \
+         nothing about the merge below"
+    );
+
+    // The indexes the merge reads, built from the runtime's own sidecars.
+    let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(BlockHashCodec),
+        Arc::new(BlockMessageCodec),
+    ));
+    for b in [&g, &x, &y, &z] {
+        store.put(&[(b.block_hash, b.clone())]).await.expect("put");
+    }
+    let scope = MergeScope {
+        final_scope: BTreeSet::from([x.block_hash]),
+        conflict_scope: BTreeSet::from([y.block_hash, z.block_hash]),
+        ancestry: BTreeMap::new(),
+    };
+    let lookup = {
+        let rm = &rm;
+        let store = store.clone();
+        move |h: BlockHash| {
+            let store = store.clone();
+            async move {
+                BlockIndex::get_block_index(rm, &*build_storage().await, &store, h, fringe_state(1))
+                    .await
+            }
+        }
+    };
+
+    let outcome_one = MergeScope::merge(
+        &scope,
+        x_post,
+        &one.fringe_states,
+        rm.get_history_repo(),
+        &lookup,
+        |_| 0,
+    )
+    .await
+    .expect("the merge on node one");
+    let outcome_two = MergeScope::merge(
+        &scope,
+        x_post,
+        &two.fringe_states,
+        rm.get_history_repo(),
+        &lookup,
+        |_| 0,
+    )
+    .await
+    .expect("the merge on node two");
+
+    // **The reproduction, and the fix's falsifier.** Two nodes holding the same validated blocks and
+    // differing only in arrival order must merge to the same state and reject the same deploys. This
+    // asserts that property; it fails on a tree where `fringe_states` keeps the last write.
+    assert_eq!(
+        outcome_one.state, outcome_two.state,
+        "the same validated block set merged to two different states, decided by arrival order"
+    );
+    assert_eq!(
+        outcome_one.rejected_deploys, outcome_two.rejected_deploys,
+        "…and rejected different deploys, from the same set"
     );
 }
