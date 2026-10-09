@@ -1,0 +1,155 @@
+name: N144 soft-checkpoint campaign
+
+on:
+  push:
+    branches: [ops/n144-campaign-runner]
+
+permissions:
+  contents: read
+
+env:
+  MEASURE_SHA: fa2cadfe5ca898ad5dcf2beb7acdae3bfb033a72
+
+jobs:
+  campaign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact measurement tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.MEASURE_SHA }}
+          path: measure
+
+      - name: Build the devnet image from the pinned tree
+        working-directory: measure
+        run: bash tools/devnet.sh build
+
+      - name: Execute the three frozen attempts
+        shell: bash
+        run: |
+          set -u
+          ROOT="$GITHUB_WORKSPACE/measure"
+          ART="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$ART"
+          echo "measurement_tree=$(git -C "$ROOT" rev-parse HEAD)" > "$ART/campaign-identity.txt"
+          echo "runner=${RUNNER_NAME:-unknown}" >> "$ART/campaign-identity.txt"
+
+          overall=0
+          for n in 1 2 3; do
+            echo "== attempt $n =="
+            cd "$ROOT"
+            bash tools/devnet.sh down -v >/dev/null 2>&1 || true
+            if ! bash tools/devnet.sh up --validators 1 --fresh --no-autopropose; then
+              echo "devnet start failed" > "$ART/attempt-$n-error.txt"
+              overall=1
+              continue
+            fi
+            set +e
+            python3 tools/devnet-bench.py \
+              --validators 1 \
+              --only deploys \
+              --deploys 200 \
+              --concurrency 4 \
+              --json "$ART/run-$n.json" \
+              2>&1 | tee "$ART/bench-$n.txt"
+            rc=${PIPESTATUS[0]}
+            set -e
+            echo "$rc" > "$ART/exit-code-$n.txt"
+            docker logs devnet-bootstrap 2>&1 | \
+              grep -Ein 'failed validation|replay mismatch|self[- ]validation failure|InvalidStateHash|InvalidRejectedDeploy' \
+              > "$ART/log-failures-$n.txt" || true
+            bash tools/devnet.sh down -v >/dev/null 2>&1 || true
+            if [[ "$rc" -ne 0 ]]; then overall=1; fi
+          done
+          echo "overall_rc=$overall" >> "$ART/campaign-identity.txt"
+          exit 0
+
+      - name: Derive the frozen Stage-2 decision
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, statistics
+          from pathlib import Path
+
+          root = Path("artifacts")
+          rows, invalid = [], []
+          for n in (1, 2, 3):
+              p = root / f"run-{n}.json"
+              if not p.exists():
+                  invalid.append(f"attempt {n}: JSON missing")
+                  continue
+              doc = json.loads(p.read_text())
+              d = doc.get("deploys", {})
+              s = d.get("soft_checkpoints", {})
+              submitted = d.get("submitted", 0)
+              processed = d.get("processed", 0)
+              failed = d.get("failed", 0)
+              snaps = s.get("snapshots_per_deploy") if s.get("available") else None
+              frac = s.get("checkpoint_fraction_of_deploy_unit") if s.get("available") else None
+              rows.append((n, submitted, processed, failed, snaps, frac,
+                           s.get("checkpoint_ms_per_deploy"), s.get("deploy_unit_ms_per_deploy"), doc.get("tree")))
+              if not s.get("available"):
+                  invalid.append(f"attempt {n}: runtime gauges unavailable: {s.get('reason')}")
+              if submitted and processed / submitted < 0.90:
+                  invalid.append(f"attempt {n}: only {processed}/{submitted} processed")
+              if failed:
+                  invalid.append(f"attempt {n}: {failed} failed submissions")
+              if snaps is not None and snaps < 3.5:
+                  invalid.append(f"attempt {n}: {snaps:.3f} snapshots/deploy < 3.5")
+              lf = root / f"log-failures-{n}.txt"
+              if lf.exists() and lf.read_text().strip():
+                  invalid.append(f"attempt {n}: validation/replay failure log non-empty")
+
+          lines = ["# #144 Stage-1 soft-checkpoint campaign", "",
+                   "Measurement tree: `fa2cadfe5ca898ad5dcf2beb7acdae3bfb033a72`.", "",
+                   "Reference arm: Docker devnet, one validator, fresh data, autopropose off, "
+                   "propose-on-deploy on, default dfs scheduler, 200 deploys, concurrency 4.", "",
+                   "| attempt | processed | snapshots/deploy | checkpoint ms/deploy | deploy-unit ms/deploy | checkpoint fraction |",
+                   "|---:|---:|---:|---:|---:|---:|"]
+          for n, submitted, processed, failed, snaps, frac, cp_ms, unit_ms, tree in rows:
+              val = lambda x: "n/a" if x is None else f"{x:.6f}"
+              pct = "n/a" if frac is None else f"{100*frac:.3f}%"
+              lines.append(f"| {n} | {processed}/{submitted} | {val(snaps)} | {val(cp_ms)} | {val(unit_ms)} | {pct} |")
+          lines.append("")
+
+          if invalid or len(rows) != 3:
+              decision = "VOID"
+              lines += ["## Decision: VOID", ""] + [f"- {x}" for x in invalid]
+          else:
+              med = statistics.median(r[5] for r in rows)
+              lines += [f"Median checkpoint fraction: **{100*med:.3f}%**.", ""]
+              if med >= 0.10:
+                  decision = "CANDIDATE_1"
+                  text = "Candidate 1 earns the first behavior-preserving ablation."
+              elif med < 0.05:
+                  decision = "CANDIDATE_2"
+                  text = "Candidate 1 is not the cheapest first lever; instrument candidate 2 next."
+              else:
+                  decision = "REPEAT_1000"
+                  text = "Inconclusive 5–10% band; repeat at 1,000 deploys before choosing."
+              lines += [f"## Decision: {decision}", "", text]
+
+          lines += ["", "This is a single-validator measurement, not a production TPS or multi-validator capacity claim."]
+          (root / "campaign-summary.md").write_text("\n".join(lines) + "\n")
+          (root / "decision.txt").write_text(decision + "\n")
+          print("\n".join(lines))
+          if decision == "VOID":
+              raise SystemExit(2)
+          PY
+
+      - name: Upload raw campaign evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: n144-soft-checkpoint-campaign-fa2cadfe5c
+          path: |
+            artifacts/campaign-identity.txt
+            artifacts/campaign-summary.md
+            artifacts/decision.txt
+            artifacts/run-*.json
+            artifacts/bench-*.txt
+            artifacts/exit-code-*.txt
+            artifacts/log-failures-*.txt
+            artifacts/attempt-*-error.txt
+          if-no-files-found: warn
