@@ -250,7 +250,6 @@ WHITELIST_PANIC=(
 )
 
 hard_failures=0
-ratchet_failures=0
 # `--sites` lists a counted class's sites. The listing is checked against the count it explains, and
 # this counts the disagreements — a listing that has drifted from its own number is a defect in the
 # audit trail, not a cosmetic one (see `counted_scan_sites`).
@@ -698,8 +697,6 @@ counted_scan_sites_refinements() {
   fi
 }
 
-BASELINE_FILE="$ROOT/tools/type-system-baseline.tsv"
-
 # The counted classes are **measured and reported, not enforced** (2026-09-27).
 #
 # They were a ratchet for two days: the number lived in `tools/type-system-baseline.tsv` and the gate
@@ -710,21 +707,19 @@ BASELINE_FILE="$ROOT/tools/type-system-baseline.tsv"
 # has to be edited"). So the measurement stays -- it is useful for a review, and `--sites` still lists
 # the sites -- and the verdict does not.
 #
+# **The baseline file is gone (C255, B1).** It was not enforcing anything and had drifted 128 sites
+# below the measurement (its own header records AUDIT F-16 and the reason), so its only remaining
+# effect was to print a comparison against a number that was wrong. A record that cannot be right and
+# is not checked is worse than no record: it reads as a ratchet to anyone who does not read the code.
+# If a dated snapshot is ever wanted, it belongs in the pass record where it was taken, not in a file
+# the gate half-reads.
+#
 # The four **hard** classes above (panic/unsafe/silent/escape) are untouched and still fail the build.
 # Those are the ones that mean partiality in production code, and they are what this gate is for.
 ratchet() {
   # $1 = class; $2 = measured count.
-  local cls="$1" measured="$2" recorded
-  recorded=$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' "$BASELINE_FILE" 2>/dev/null)
-  if [ -z "$recorded" ]; then
-    printf '  (counted) %-6s %s site(s) — no recorded number to compare\n' "$cls" "$measured"
-  elif [ "$measured" = "$recorded" ]; then
-    printf '  (counted) %-6s %s site(s)\n' "$cls" "$measured"
-  else
-    printf '  (counted) %-6s %s site(s) — was %s when the list was last reviewed; not a failure, but a\n' \
-      "$cls" "$measured" "$recorded"
-    printf '            count that moved is worth a look, and `--sites %s` prints them\n' "$cls"
-  fi
+  printf '  (counted) %-6s %s site(s) — reported, not enforced; `--sites %s` prints them\n' \
+    "$1" "$2" "$1"
 }
 
 # The refinement newtypes must not surrender the invariant they exist to carry.
@@ -1448,3 +1443,23 @@ if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
 fi
 echo "OK: no hard production violations (panic/unsafe/silent/escape) in production code."
 echo "    The counted classes (cast/lax/get/index/div/overflow) are reported above and not enforced."
+# **What a green panic class is a statement about** (C255, B2). The panic class is satisfied by an
+# allow-list, and an allow-list is a statement about the sites it *lists* — never about the ingress
+# discipline those sites depend on. The audit's L1 found that limit by re-walking all 29 entries with
+# C97's question ("what makes this unreachable, and what would make it reachable again?"); nothing
+# about a run on a *different* day could have found it. This line prints that limit on every green run,
+# because the caveat lived in the file's header where a reader who is looking at a green build does not
+# go.
+echo "    The panic class is an allow-list: a green result here is evidence about the sites this file"
+echo "    lists, and never about the ingress discipline that keeps each one unreachable. A site that is"
+echo "    reachable because a *caller* changed cannot fail this gate — only a re-walk can find it."
+# **And a site key can be coarser than a site** (C255, B3). An entry is keyed on its `file;;site-regex`
+# pair — on *text*, never on a line number, because a line-keyed entry fails **open** (insert a line
+# above and it silently claims its neighbour while the staleness check stays green). The cost of that
+# choice is that two occurrences of the same text in one file share an entry, so one review can be
+# standing behind several sites. The number is printed because it was previously invisible: a reader of
+# this list could not tell a one-site entry from a twenty-site one.
+echo "    ${#WHITELIST_PANIC[@]} entries are keyed on \`file;;regex\`, never on a line number — a"
+echo "    line-keyed entry fails *open*, which the header states. One entry can therefore cover several"
+echo "    sites of identical text in one file, and this run does not count them: the staleness check only"
+echo "    proves each key claimed at least one site, not exactly one."
