@@ -406,6 +406,18 @@ if [ "$RESTORE" = "1" ]; then
     [ "$n" = "$MASTER" ] && continue
     echo "  $n:"; start_node "$n"
   done
+
+  echo "== 8b. triggering a block, because an idle chain cannot finalise =="
+  # **Found by measuring.** The first run of this mode reported no finality and looked like a failure of
+  # the restore; it was an idle net. This is a `--no-autopropose` network, so a chain that nobody deploys to
+  # produces nothing and finality cannot move — the same reason the wipe path above has its own trigger.
+  # Without this the mode can converge a net to one head and *still* report no finality, which reads as
+  # the recovery failing when it is the measurement that is idle.
+  curl -s -X POST --max-time 30 "http://${HOST[$MASTER]}:${PORT[$MASTER]}/api/faucet" \
+    -H 'Content-Type: application/json' \
+    --data-binary '{"address":"11112wWGeUA5qt6MpH9CantYj2UWWt4C3LP4cx8TpQmeM79dyen6Sk"}' >/dev/null 2>&1 \
+    && echo "    a block was requested (a faucet transfer on the master)" \
+    || echo "    NOTE: no block could be requested — on a net without the faucet, deploy something" >&2
 else
 echo "== 5. apply: every non-master node is stopped first, before anything is moved =="
 # All of them, then the moves. The version this derives from stopped and restarted each node inside one

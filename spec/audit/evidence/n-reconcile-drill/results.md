@@ -149,3 +149,50 @@ property of the copy.
   failed `cp` — and one failed, on the `transaction` directory this build does not create — left the joiner
   with nothing, while the tool reported "unchanged". It now copies to a staging name and swaps, and skips a
   source that is not there. The tool's own "aside, never gone" rule applies to its copies too.
+
+---
+
+# Third run: disarmed joiners, and the acceptance met
+
+**What changed from the second run.** The second run's joiners kept `--merge-divergence-injection` through
+their `docker start`, so their merges stayed perturbed and nothing validated. Here they were **un-injected
+before the restore** — which the devnet's own `reset` does, and it also empties their volumes, so the tool's
+copy is what fills them. That is the whole difference, and it is a drill-sequencing fix rather than node
+code.
+
+**And one more thing the run found, by measuring rather than reading.** After the restore the four nodes
+were identical and un-injected, and finality *still* did not advance — because this is a
+`--no-autopropose` net and **an idle chain produces nothing**, so there is nothing to finalise. The wipe
+path already triggers a block for exactly this reason; the restore path did not. Sending one deploy moved
+every reading.
+
+**The result — #287's acceptance, all four clauses:**
+
+```
+heights:                17  17  17  17
+last-finalized-block:   11 ef05ce68966d09ffc42aeef4e66b8720e31adae3cd059108af400a516190a13c  (all four)
+block hashes per height, identical on all four:
+  h=0: c01a6091
+  h=1: 83795bc0, 99de0848, 9edbbffa, de8a2545
+  h=2: a3d2b67a      h=3: 96f6f7e3
+  h=4: 132e7f08, d84c9cc6
+  h=5: 2e6b09e7, a52fc0d4, ee91a57e
+  h=6: 149b34e6      h=7: 142eedca, 4c6c5cbe, 760ad523
+```
+
+- **one head** — every height's hash set is identical across the four, including the multi-block heights;
+- **agreeing block hashes** — and not merely agreeing heights, which four nodes at zero would also show;
+- **without a genesis** — the genesis block is untouched (`c01a6091`, unchanged from before the incident's
+  staging) and no chain was re-created;
+- **finality advances past the reconciliation point** — the meet was genesis (height 0) and all four
+  finalised **height 11 on one hash**, up from "not available" on every node.
+
+Raw: [`restore-disarmed.txt`](restore-disarmed.txt).
+
+**What this is and is not.** It is the store-level path working end to end, and it is a **stopgap**: the
+joiners adopted the survivor's store, so the one head they agree on is the survivor's *view* — the operator
+asserting a winner, which the tool prints before it applies. It does not make the anchor-based path
+(Unit B) unnecessary: that is the one that an operator can run without a data-dir copy, and it is what
+would close the partial-divergence case properly. And the instrument's limit stands: this chain's blocks
+were produced under perturbation, so its *validity* is not what was demonstrated — its **convergence and
+resumed finality** are.
