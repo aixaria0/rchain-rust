@@ -168,8 +168,12 @@ impl NativeWriter {
 /// merges at — per accepted deploy — and lets every other write be carried by the chain that made it.
 #[derive(Clone, Debug)]
 struct Slot {
+    /// Final value folded into the checkpoint.
     value: Option<Vec<u8>>,
-    writer: NativeWriter,
+    /// Lossless per-writer history for this slot since the last drain.  Merge attribution must not
+    /// be derived from only the last writer: a later deploy may be rejected while an earlier deploy
+    /// in the same block remains accepted (#280 review).
+    history: Vec<(NativeWriter, Option<Vec<u8>>)>,
 }
 
 /// **The overlay, drained, grouped by the deploy that last wrote each slot** (#280).
@@ -179,7 +183,10 @@ struct Slot {
 /// passes because three passes is three chances for the attributions to drift.
 #[derive(Clone, Debug, Default)]
 pub struct NativeDrain {
-    /// The block's **own** writes, by the ordinal of the deploy that last wrote each slot — the
+    /// The final checkpoint batch: exactly one action per slot.  This is intentionally separate from
+    /// `by_deploy`, which may contain historical writes by several deploys to the same slot.
+    final_actions: Vec<NativeStoreAction>,
+    /// The block's **own** writes, by deploy ordinal.  Each deploy keeps its own last write to a slot,
     /// sidecar's shape. Cost accounting's writes are not here (AUDIT C207).
     pub by_deploy: BTreeMap<u32, Vec<NativeStoreAction>>,
     /// Cost accounting's writes, one flat set: the merge re-derives them from the accepted deploys.
@@ -196,15 +203,7 @@ impl NativeDrain {
     /// Every action, for the checkpoint that folds them — the union of the three views, and the only
     /// place they are combined.
     pub fn all(&self) -> Vec<NativeStoreAction> {
-        let mut out: Vec<NativeStoreAction> = self
-            .by_deploy
-            .values()
-            .flat_map(|v| v.iter().cloned())
-            .collect();
-        out.extend(self.cost.iter().cloned());
-        out.extend(self.unattributed.iter().cloned());
-        out.extend(self.genesis.iter().cloned());
-        out
+        self.final_actions.clone()
     }
 }
 
@@ -397,13 +396,17 @@ impl InMemNativeStore {
     ) {
         let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(slot) = overlay.get_mut(&(prefix, key)) {
-            slot.value = value;
-            if !writer.is_cost() || slot.writer.is_cost() {
-                slot.writer = writer;
-            }
+            slot.value = value.clone();
+            slot.history.push((writer, value));
             return;
         }
-        overlay.insert((prefix, key), Slot { value, writer });
+        overlay.insert(
+            (prefix, key),
+            Slot {
+                value: value.clone(),
+                history: vec![(writer, value)],
+            },
+        );
     }
 
     /// Drain the pending mutations, clearing the overlay (the caller folds the actions into a
@@ -423,8 +426,14 @@ impl InMemNativeStore {
     pub fn drain_native(&self) -> NativeDrain {
         let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
         let mut drain = NativeDrain::default();
+        let mut by_deploy: BTreeMap<u32, BTreeMap<(u8, Blake2b256Hash), NativeStoreAction>> =
+            BTreeMap::new();
+        let mut cost: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+        let mut genesis: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+        let mut unattributed: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+
         for (&(prefix, key), slot) in overlay.iter() {
-            let action = match &slot.value {
+            let final_action = match &slot.value {
                 Some(v) => NativeStoreAction::Put {
                     prefix,
                     key,
@@ -432,15 +441,45 @@ impl InMemNativeStore {
                 },
                 None => NativeStoreAction::Delete { prefix, key },
             };
-            match slot.writer {
-                NativeWriter::Deploy(ordinal) => {
-                    drain.by_deploy.entry(ordinal).or_default().push(action)
+            drain.final_actions.push(final_action);
+
+            // Preserve every deploy's own last write to this slot.  The checkpoint still receives only
+            // the final action above, so RadixHistory's one-action-per-key invariant is unchanged.
+            for (writer, value) in &slot.history {
+                let action = match value {
+                    Some(v) => NativeStoreAction::Put {
+                        prefix,
+                        key,
+                        value: v.clone(),
+                    },
+                    None => NativeStoreAction::Delete { prefix, key },
+                };
+                match writer {
+                    NativeWriter::Deploy(ordinal) => {
+                        by_deploy
+                            .entry(*ordinal)
+                            .or_default()
+                            .insert((prefix, key), action);
+                    }
+                    NativeWriter::CostAccounting => {
+                        cost.insert((prefix, key), action);
+                    }
+                    NativeWriter::Genesis => {
+                        genesis.insert((prefix, key), action);
+                    }
+                    NativeWriter::OutsideAnyDeploy => {
+                        unattributed.insert((prefix, key), action);
+                    }
                 }
-                NativeWriter::CostAccounting => drain.cost.push(action),
-                NativeWriter::Genesis => drain.genesis.push(action),
-                NativeWriter::OutsideAnyDeploy => drain.unattributed.push(action),
             }
         }
+        drain.by_deploy = by_deploy
+            .into_iter()
+            .map(|(ordinal, actions)| (ordinal, actions.into_values().collect()))
+            .collect();
+        drain.cost = cost.into_values().collect();
+        drain.genesis = genesis.into_values().collect();
+        drain.unattributed = unattributed.into_values().collect();
         overlay.clear();
         drain
     }
@@ -606,10 +645,10 @@ mod tests {
             Some(1),
             "the slot is attributed to deploy 3: {drain:?}"
         );
-        assert!(
-            drain.cost.is_empty(),
-            "and **not** to the charge that came after it — the C207 rule, which used to be a bool: \
-             {drain:?}"
+        assert_eq!(
+            drain.cost.len(),
+            1,
+            "the later charge keeps its own provenance without stealing the deploy's write: {drain:?}"
         );
         assert!(
             drain.unattributed.is_empty(),
@@ -619,6 +658,52 @@ mod tests {
             drain.all().len(),
             1,
             "the checkpoint folds it exactly once, whatever its writer: {drain:?}"
+        );
+    }
+
+    /// Two deploys may write the same native slot in one block.  The checkpoint needs only the final
+    /// value, but merge attribution must retain both deploy-local values so rejecting the later chain
+    /// cannot erase the earlier accepted transition.
+    #[test]
+    fn two_deploys_writing_one_slot_keep_their_own_writes() {
+        let store = InMemNativeStore::empty();
+        let key = Blake2b256Hash::from_bytes([14u8; 32]);
+
+        store.begin_writer(NativeWriter::Deploy(0));
+        store.put(PREFIX_POS, key, vec![1]);
+        store.end_writer();
+
+        store.begin_writer(NativeWriter::Deploy(1));
+        store.put(PREFIX_POS, key, vec![2]);
+        store.end_writer();
+
+        let drain = store.drain_native();
+        assert_eq!(
+            drain.by_deploy.get(&0),
+            Some(&vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key,
+                value: vec![1]
+            }]),
+            "deploy 0's transition must survive attribution: {drain:?}"
+        );
+        assert_eq!(
+            drain.by_deploy.get(&1),
+            Some(&vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key,
+                value: vec![2]
+            }]),
+            "deploy 1 keeps its own later transition: {drain:?}"
+        );
+        assert_eq!(
+            drain.all(),
+            vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key,
+                value: vec![2]
+            }],
+            "the checkpoint still folds exactly one final action per slot"
         );
     }
 

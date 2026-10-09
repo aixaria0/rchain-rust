@@ -357,6 +357,34 @@ pub struct MergeOutcome {
 }
 
 /// A list of `(prefix, key)` slots, first four then a count.
+fn rejection_has_a_reason<D: Ord>(
+    chain: &D,
+    kept: &BTreeSet<D>,
+    rejected: &BTreeSet<D>,
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+    dependency_map: &BTreeMap<D, BTreeSet<D>>,
+) -> bool {
+    let conflicts = |a: &D, b: &D| {
+        conflicts_map.get(a).is_some_and(|s| s.contains(b))
+            || conflicts_map.get(b).is_some_and(|s| s.contains(a))
+    };
+
+    // Direct conflict with a chain that survives is a reason to reject this chain.
+    if kept.iter().any(|k| conflicts(chain, k)) {
+        return true;
+    }
+
+    // `dependency_map` is keyed by the dependency and points to its dependents.  The resolver's
+    // `with_dependencies` walks exactly this edge when a rejection cascades, so a rejected chain is
+    // justified when some other rejected chain has this chain among its dependents.
+    rejected.iter().any(|r| {
+        r != chain
+            && dependency_map
+                .get(r)
+                .is_some_and(|dependents| dependents.contains(chain))
+    })
+}
+
 fn describe_plain_slots(slots: &[(u8, Blake2b256Hash)]) -> String {
     let rendered: Vec<String> = slots
         .iter()
@@ -1904,14 +1932,13 @@ impl MergeScope {
                 .iter()
                 .filter(|c| conflict_set.contains(*c))
                 .filter(|c| {
-                    let conflicts = |a: &Arc<DeployChainIndex>, b: &Arc<DeployChainIndex>| {
-                        conflicts_map.get(a).is_some_and(|s| s.contains(b))
-                            || conflicts_map.get(b).is_some_and(|s| s.contains(a))
-                    };
-                    !to_merge.iter().any(|k| conflicts(c, k))
-                        && !rejected
-                            .iter()
-                            .any(|r| !Arc::ptr_eq(r, c) && conflicts(c, r))
+                    !rejection_has_a_reason(
+                        *c,
+                        &to_merge,
+                        &rejected,
+                        &conflicts_map,
+                        &dependency_map,
+                    )
                 })
                 .flat_map(|c| c.deploys_with_cost.iter().map(|d| d.id.clone()))
                 .collect(),
@@ -3092,6 +3119,60 @@ mod native_merge_tests {
 /// batch with every key twice, and every node panicked (`Cannot process duplicate actions on one
 /// key`) in the same second. These play the boundary for real on `NativeSystemState`, then merge.
 #[cfg(test)]
+mod rejection_reason_tests {
+    use super::rejection_has_a_reason;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn set(xs: impl IntoIterator<Item = i32>) -> BTreeSet<i32> {
+        xs.into_iter().collect()
+    }
+
+    #[test]
+    fn i1_accepts_a_dependency_cascade_and_rejects_self_justification() {
+        let kept = set([10]);
+        let rejected = set([1, 2, 3]);
+
+        // 1 conflicts with a kept chain: a direct reason.
+        let conflicts = BTreeMap::from([(1, set([10])), (3, set([2]))]);
+        // 2 depends on rejected 1; 3 depends on rejected 2.  These are the exact directed edges
+        // `with_dependencies` follows when it cascades a rejection.
+        let dependencies = BTreeMap::from([(1, set([2])), (2, set([3]))]);
+
+        assert!(rejection_has_a_reason(
+            &1,
+            &kept,
+            &rejected,
+            &conflicts,
+            &dependencies
+        ));
+        assert!(rejection_has_a_reason(
+            &2,
+            &kept,
+            &rejected,
+            &conflicts,
+            &dependencies
+        ));
+        assert!(rejection_has_a_reason(
+            &3,
+            &kept,
+            &rejected,
+            &conflicts,
+            &dependencies
+        ));
+
+        // A conflict only with another rejected chain is not a reason by itself.
+        let no_dependencies = BTreeMap::new();
+        assert!(!rejection_has_a_reason(
+            &3,
+            &BTreeSet::new(),
+            &set([2, 3]),
+            &conflicts,
+            &no_dependencies,
+        ));
+    }
+}
+
+#[cfg(test)]
 mod boundary_merge_tests {
     use super::*;
     use std::sync::Arc;
@@ -3251,14 +3332,15 @@ mod boundary_merge_tests {
             .unwrap();
         store.end_writer();
         let drain = store.drain_native();
+        // `by_deploy` is provenance and can legitimately contain several historical writes to the
+        // same slot.  The block's actual post-state is the drain's final checkpoint view: exactly one
+        // action per slot.  Reconstructing it as `own + cost` would re-introduce duplicate actions.
+        let full = drain.all();
         let own: Vec<NativeStoreAction> = drain
             .by_deploy
             .values()
             .flat_map(|actions| actions.iter().cloned())
             .collect();
-        let cost = drain.cost;
-        let mut full = own.clone();
-        full.extend(cost);
         Played { own, moves, full }
     }
 
@@ -3290,6 +3372,77 @@ mod boundary_merge_tests {
                 executor: payer(1).1,
             })],
         }
+    }
+
+    /// Regression for the finer-grained #280 failure found in review: two deploys in one block write
+    /// the same native slot; a concurrent chain conflicts with the **later** deploy for an independent
+    /// reason; resolution rejects that later chain; the earlier accepted native value must remain.
+    ///
+    /// This deliberately drives the real resolver and `NativeRelations::fold`.  A store-only test can
+    /// prove provenance was recorded, but not that the merge consumes that provenance correctly.
+    #[test]
+    fn rejecting_a_later_same_block_writer_keeps_the_earlier_value() {
+        let base = Blake2b256Hash::from_bytes([0x11; 32]);
+        let slot = Blake2b256Hash::from_bytes([0x44; 32]);
+        let host = Blake2b256Hash::from_bytes([0xa0; 32]);
+        let other_host = Blake2b256Hash::from_bytes([0xc0; 32]);
+
+        let chain = |host_block: Blake2b256Hash, ordinal: u32, id: u8, value: Option<u8>| {
+            Arc::new(DeployChainIndex {
+                first_deploy_ordinal: ordinal,
+                native_effects: value
+                    .map(|v| {
+                        vec![NativeStoreAction::Put {
+                            prefix: PREFIX_POS,
+                            key: slot,
+                            value: vec![v],
+                        }]
+                    })
+                    .unwrap_or_default(),
+                host_block,
+                deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                    id: vec![id],
+                    cost: 0,
+                }]),
+                pre_state_hash: base,
+                post_state_hash: base,
+                event_log_index: EventLogIndex::empty(),
+                state_changes: StateChange::empty(),
+                cost_moves: BTreeMap::new(),
+                executor: String::new(),
+            })
+        };
+
+        let earlier = chain(host, 0, 1, Some(1));
+        let later = chain(host, 1, 2, Some(2));
+        let concurrent = chain(other_host, 0, 3, None);
+        let native = NativeRelations {
+            ancestry: &BTreeMap::new(),
+        };
+
+        assert!(
+            native.depends(&later, &earlier),
+            "later same-block writer must depend on earlier"
+        );
+        assert!(!native.depends(&earlier, &later), "dependency is directed");
+
+        // The conflict resolver has rejected `later` (its cascade semantics are pinned separately by
+        // `rejection_reason_tests`).  At the merge boundary the accepted set must therefore be able
+        // to reconstruct the state from the earlier deploy rather than silently losing the slot.
+        let accepted = BTreeSet::from([earlier.clone(), concurrent]);
+        let folded = native.fold(&accepted).expect("accepted native writes fold");
+        let (_, action) = folded
+            .get(&(PREFIX_POS, slot))
+            .expect("the earlier native slot remains in the batch");
+        assert_eq!(
+            action,
+            &NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: slot,
+                value: vec![1],
+            },
+            "rejecting the later writer must reveal the earlier accepted value, not erase the slot"
+        );
     }
 
     /// The same merge, with the outcome rather than the tuple — for the tests that assert on what the

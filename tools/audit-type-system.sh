@@ -1083,6 +1083,7 @@ scan_ctor_escapes() {
 # The exemptions are the same kind of artefact as the entries above — one line per name, with the
 # reason it is not a refinement — and an exemption that matches nothing derived is a hard failure.
 REFINEMENT_EXEMPT=(
+  'rspace/src/native_store.rs;;BlockNativeEffects;;G1;;a capability-shaped wrapper, not a narrow refinement: every `BTreeMap<u32, Vec<NativeStoreAction>>` is a valid value because the key type itself is the deploy ordinal. `from_drain` refuses unattributed writes at the drain boundary, but `from_map` is total over the wrapper inner domain'
   'crypto/src/public_key.rs;;PublicKey;;G1;;a wrapper, not a refinement: `PublicKey::new(bytes: Vec<u8>)` accepts any bytes, so there is no domain a validator could establish. Recorded as a finding rather than fixed — `crypto/` is another writer'"'"'s lane, and a 65-byte key would make this a refinement with a validator'
   'crypto/src/encryption/x25519.rs;;StaticKey;;G1;;a wrapper, not a refinement, for the same reason `PrivateKey` is one: `StaticKey::from_bytes([u8; 32])` accepts any 32 bytes, so there is no domain for a validator to reject anything from. What the newtype buys is a redacting `Debug` and zeroing on drop — the `PrivateKey` pair and its stated limits — not an invariant'
   'rspace/src/scheduled_space.rs;;ReleaseToken;;G1;;a marker: the field is `()`, so there is no wider domain for a validator to reject anything from'
