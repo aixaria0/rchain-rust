@@ -30,6 +30,16 @@
 #             before C78, `KeySegment::new` before C61). `spec/TYPE-SYSTEM.md` §1.7 is the rule; the
 #             construction sites are reviewed one by one in `ESCAPE_CTOR_ALLOW`, whose entries are
 #             keyed by text and each carry the guard their soundness rests on.
+#   poison  — a poisoned lock recovered **without being counted**: the raw
+#             `unwrap_or_else(|p| p.into_inner())` tail, `unwrap_or_else(PoisonError::into_inner)`,
+#             or a same-line `Err(p) => p.into_inner()`. No allow-list, because its steady state is
+#             zero sites: `shared/src/lock.rs` is the one door, and every recovery through it moves
+#             `poison_recoveries()`, which `/api/status` publishes as `poisonRecoveries`. The class
+#             exists because the two states are indistinguishable to a reader — a node that has
+#             recovered from a panic inside a store lock and one that has never panicked both print
+#             a number, and until 2026-10-09 the first printed 0 (C253 E2). A raw recovery is
+#             *deliberate* here (the guard is still handed back; see the module's docs) — what the
+#             class forbids is a deliberate recovery that says nothing.
 #
 # Soft reports (exit 0, informational — refined by `cargo clippy` + manual review):
 #   cast     — narrowing / signedness-changing numeric casts (`as i8/i32/i64/u8/u32/..`).
@@ -47,7 +57,7 @@
 #              **scoped to the refinement files**: an unchecked `a - b` elsewhere is a design choice,
 #              and one in `shared/src/refined.rs` is a refinement leaving its own domain.
 #
-# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|cast|lax|get|index|div|overflow]
+# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|poison|cast|lax|get|index|div|overflow]
 #        tools/audit-type-system.sh --sites   # with a counted class, list its sites (checked against the count)
 #        tools/audit-type-system.sh --files   # print the production-file roster every class scans, then exit
 #        (default: all)
@@ -266,7 +276,7 @@ note() {
   local kind="$1" file="$2" line="$3" text="$4"
   printf '  %s\n' "$file:$line: $text"
   case "$kind" in
-    panic|unsafe|silent|escape) hard_failures=$((hard_failures + 1)) ;;
+    panic|unsafe|silent|escape|poison) hard_failures=$((hard_failures + 1)) ;;
   esac
 }
 
@@ -438,6 +448,14 @@ panic_guard() {
 # `PAT=` in the environment rather than an interpolated argument: the patterns carry `(`, `)` and `|`,
 # and the environment is what keeps the shell from re-interpreting them. The `grep -vE` filter is the
 # same one `scan` applies, so the two scans cannot disagree about what they skip.
+#
+# **A comment line is not a site** — the same rule `scan_panic` has always applied, and the reason is
+# the one stated there: the docs in this tree quote the very shapes these classes exist to forbid
+# (the `poison` class's own module explains the banned tail by writing it out; `silent`'s rule is
+# quoted in several `//!` headers), and "a class that fires on prose is one people learn to work
+# around". Dropping the comment lines *before* the span match is safe in both directions: a comment
+# could not have been part of a genuine multi-line match anyway, because a real chain interrupted by
+# a comment is not a chain a reader could follow either.
 scan_spanning() {
   local kind="$1" pattern="$2"
   local c f
@@ -458,7 +476,9 @@ scan_spanning() {
       while IFS=$'\t' read -r line text; do
         [ -n "$line" ] || continue
         note "$kind" "$f" "$line" "$text"
-      done < <(awk "$STRIP_AWK_N" "$f" | PAT="$pattern" perl -0777 -ne '
+      done < <(awk "$STRIP_AWK_N" "$f" \
+                 | awk -F'\t' '$2 !~ /^[[:space:]]*\/\//' \
+                 | PAT="$pattern" perl -0777 -ne '
         my $pat = $ENV{PAT};
         while (/$pat/g) {
           # **Capture the match before matching anything else.** `$&` and `$-[0]` are reset by every
@@ -479,6 +499,31 @@ scan_spanning() {
         | grep -vE 'self\.expect\(|\.expect\(Tok::')
     done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
   done
+}
+
+# **The `poison` class's probe** (C253 E2). Every other hard class is kept honest by something it can
+# lose: `panic` by an allow-list whose stale entries fail, `unsafe`/`silent`/`escape` by sites the
+# tree is not allowed to have. This class has **no allow-list and zero correct sites**, so nothing
+# would notice if its pattern quietly stopped matching — it would print the same green as a tree with
+# nothing to find, for ever. The fixture holds one of each spelling the pattern claims, and a
+# different number of matches is a failure of the *class*, reported as one.
+#
+# The count is exact in both directions: a pattern narrowed until it misses a shape, and one widened
+# until it catches prose in the fixture, are both defects.
+POISON_PROBE="$ROOT/tools/audit-poison-probe.txt"
+POISON_PROBE_SHAPES=3
+
+verify_poison_probe() {
+  local pattern="$1" found
+  if [ ! -f "$POISON_PROBE" ]; then
+    note poison "$POISON_PROBE" "-" "the poison probe is missing — the class cannot show it is still looking"
+    return
+  fi
+  found=$(PAT="$pattern" perl -0777 -ne 'my $pat = $ENV{PAT}; my $n = 0; $n++ while /$pat/g; print $n' "$POISON_PROBE")
+  if [ "${found:-0}" -ne "$POISON_PROBE_SHAPES" ]; then
+    note poison "$POISON_PROBE" "-" \
+      "the pattern matched $found of the $POISON_PROBE_SHAPES probe shape(s) — a class that stopped matching reports the same green as a class with nothing to find"
+  fi
 }
 
 scan() {
@@ -569,6 +614,14 @@ fi
 # The pattern table. One place, so the scan and the count cannot disagree about what a class is.
 PAT_CAST='\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b'
 PAT_LAX='from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\('
+# **A poisoned lock recovered without being counted** (C253 E2). The tail recovers the guard — that
+# is deliberate, and `shared/src/lock.rs` says why — but it does not move `poison_recoveries()`, so
+# `poisonRecoveries` on `/api/status` reads 0 on a node that has taken a panic inside a store lock.
+# Read whole, like `silent`: a chain rustfmt wrapped is the same recovery. **The receiver in front of
+# the tail is deliberately not part of the pattern** — the banned thing is the tail, and rewriting
+# the receiver instead is what produced 31 compile errors across 30 files when this unit was first
+# attempted, because at most sites the receiver is an expression whose guard would dangle.
+PAT_POISON='\.unwrap_or_else\([^()]*into_inner\(\)\)|PoisonError::into_inner|Err\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=>[[:space:]]*\{?[^;]*\.into_inner\(\)'
 # Accessor lookups only. Until 2026-09-26 this class also carried `\b[a-zA-Z_]+\[[0-9]+\]`, and that
 # alternative was **all of it**: measured on this tree, the accessor half is 0 sites and the literal
 # index half is 95 of the class's 95. The class was named for what it barely contained and counted
@@ -1315,6 +1368,19 @@ run_class() {
     # nesting `try_from(DeployDataProto::decode(bytes))` needs, and perl's `.` does not cross newlines
     # without `/s`, so nothing here can match further than it should.
     silent)  scan_spanning silent 'try_into\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*(unwrap|expect)\(|try_(into\(\)|from\(([^()]|\([^()]*\))*\))(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))|\.parse(::<[^>]+>)?\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))|\.await(?:\s|\d+\t)*\.ok\(\)|\.await(?:\s|\d+\t)*\.unwrap_or_default\(\)' ;;
+    # **The un-counted poison recovery** (C253 E2). Read whole, like `silent`, and for the same
+    # reason: a chain rustfmt wrapped is still the same recovery. **The receiver is deliberately not
+    # part of the pattern** — the banned thing is the tail, and every attempt to rewrite the receiver
+    # instead (`X.lock().unwrap_or_else(..)` -> `mlock(&X)`) produced a broken borrow at 30 files,
+    # because at most sites the receiver is an expression whose guard would dangle. There is no
+    # allow-list: the tree holds zero of these, `shared/src/lock.rs` is the one door, and
+    # `verify_poison_probe` is what keeps a zero-site class from going quietly blind.
+    #
+    # The third alternative is the same recovery spelled as a match arm. It cannot match the door
+    # itself: `lock.rs`'s arm calls `note_poison();` first, and `[^;]*` stops at that semicolon.
+    poison)  scan_spanning poison "$PAT_POISON"
+             verify_poison_probe "$PAT_POISON" ;;
+
     # The counted classes list through `counted_scan_sites`, so **the listing is exactly the set the
     # ratchet measures** — always, not only under `--sites`. They used to list through `scan`, which
     # keeps comments (the count strips them) and reported stripped-stream line numbers (see
@@ -1403,7 +1469,7 @@ if (( FILES_MODE )); then
 fi
 
 if [ "${#_cls_args[@]}" -eq 0 ]; then
-  classes=(panic unsafe silent escape cast lax get index div overflow)
+  classes=(panic unsafe silent escape poison cast lax get index div overflow)
 else
   classes=("${_cls_args[@]}")
 fi
@@ -1433,7 +1499,7 @@ if [ "$site_mismatches" -gt 0 ]; then
   exit 1
 fi
 if [ "$hard_failures" -gt 0 ]; then
-  echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape) in production code."
+  echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape/poison) in production code."
   exit 1
 fi
 if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
@@ -1441,7 +1507,7 @@ if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
   echo "  site listings corroborated against the counts above:"
   for _t in "${site_totals[@]}"; do echo "    $_t"; done
 fi
-echo "OK: no hard production violations (panic/unsafe/silent/escape) in production code."
+echo "OK: no hard production violations (panic/unsafe/silent/escape/poison) in production code."
 echo "    The counted classes (cast/lax/get/index/div/overflow) are reported above and not enforced."
 # **What a green panic class is a statement about** (C255, B2). The panic class is satisfied by an
 # allow-list, and an allow-list is a statement about the sites it *lists* — never about the ingress
