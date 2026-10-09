@@ -41,6 +41,20 @@ impl RootRepository {
             None => Err("unknown root".to_string()),
         }
     }
+
+    /// The **same validation, without the publication** — the merge's half of the split.
+    ///
+    /// A caller that is about to do real work before it has a new root must not advance
+    /// `CURRENT_ROOT` to its base first: a crash in between leaves the node naming an **ancestor** on
+    /// restart, neither the pre-merge nor the post-merge state. The check is not the thing being
+    /// dropped, only the write.
+    pub async fn validate_known_root(&self, root: Blake2b256Hash) -> Result<(), String> {
+        if self.roots_store.is_known_root(root).await? {
+            Ok(())
+        } else {
+            Err("unknown root".to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -89,5 +103,54 @@ mod tests {
             known,
             "a refused root must not become current"
         );
+    }
+
+    /// **The validating read must not publish — and this is the level where that is observable**
+    /// (the programme's L2, and the merge's half of the split).
+    ///
+    /// A merge resets to its base and then does real work before the merged trie exists. `reset`
+    /// advanced `CURRENT_ROOT` to the base as it went, so a crash in between left the node naming an
+    /// **ancestor** on restart — neither the pre-merge nor the post-merge state. `validate_known_root`
+    /// is the same refusal `reset` gives an unknown root, with the write removed.
+    ///
+    /// This lives here rather than on `HistoryRepository` because a fresh repository over an in-memory
+    /// manager knows exactly **one** root, so there `before` and the reset target cannot be told apart.
+    /// Two recorded roots make the difference observable, which is what a falsifier needs.
+    #[tokio::test]
+    async fn validate_known_root_refuses_without_publishing() {
+        use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+        let repo = repository();
+        let first = Blake2b256Hash::from_bytes([0x11; 32]);
+        let second = Blake2b256Hash::from_bytes([0x22; 32]);
+        repo.commit(first).await.expect("commit first");
+        repo.commit(second).await.expect("commit second");
+        assert_eq!(
+            repo.current_root().await.expect("root"),
+            second,
+            "the last commit is current"
+        );
+
+        // The read: a known root is accepted, an unknown one is refused — the same verdicts the
+        // publishing setter gives.
+        repo.validate_known_root(first).await.expect("a known root");
+        let err = repo
+            .validate_known_root(Blake2b256Hash::from_bytes([0x33; 32]))
+            .await
+            .expect_err("an unknown root must be an error");
+        assert!(err.contains("unknown root"), "{err}");
+
+        // **And neither call moved the current root.** Under `validate_and_set_current_root` the
+        // first one would have; that difference is the whole of the fix.
+        assert_eq!(
+            repo.current_root().await.expect("root"),
+            second,
+            "the validating read must not publish"
+        );
+
+        // The publishing setter is unchanged, so the ordinary path still works.
+        repo.validate_and_set_current_root(first)
+            .await
+            .expect("a known root");
+        assert_eq!(repo.current_root().await.expect("root"), first);
     }
 }

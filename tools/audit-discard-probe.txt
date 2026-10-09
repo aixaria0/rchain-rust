@@ -1,0 +1,11 @@
+# The `discard` class's probe. Not Rust, not compiled, not scanned as a crate source: this file exists so
+# a class with no allow-list and no sites can still show it is looking. `verify_probe` in
+# tools/audit-type-system.sh runs the class's pattern over it and fails the gate unless it matches exactly
+# the two shapes below — a pattern narrowed until it misses one, or widened until it catches prose, is a
+# defect of the class either way.
+
+# 1. the async send
+let _ = tx.send(value).await;
+
+# 2. the non-blocking send
+let _ = tx.try_send(value);

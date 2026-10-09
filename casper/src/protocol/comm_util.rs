@@ -166,8 +166,19 @@ impl CommUtil {
             &format!("Requesting {} from {}.", hash.to_hex(), peer.endpoint.host),
         );
         let packet = BlockRequestSerde.mk_packet(&BlockRequest { hash: *hash });
-        transport_layer_syntax::send_to_peer(self.transport.as_ref(), &self.conf, peer, packet)
-            .await;
+        if let Err(e) =
+            transport_layer_syntax::send_to_peer(self.transport.as_ref(), &self.conf, peer, packet)
+                .await
+        {
+            self.log.warn(
+                self.log_source,
+                &format!(
+                    "could not request block {} from {}: {e} (AUDIT C254's E6b)",
+                    hash.to_hex(),
+                    peer.endpoint.host
+                ),
+            );
+        }
     }
 
     // --- CommUtil syntax extensions (port of `CommUtilOps`) --------------------------------

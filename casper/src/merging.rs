@@ -3,6 +3,7 @@
 //! Ports the pure data types, conflict/dependency relations, and the effectful constructors
 //! (`DeployChainIndex.apply`, `BlockIndex.apply`, `MergeScope.merge`) from `casper/.../merging/`.
 
+use rchain_shared::lock::Unpoison;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -1066,11 +1067,7 @@ impl BlockIndex {
     ) -> Result<Arc<BlockIndex>, String> {
         INDEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BlockIndexCache::default()));
-        if let Some(idx) = cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&block_hash)
-        {
+        if let Some(idx) = cache.lock().unpoison().get(&block_hash) {
             // A hit is a refcount bump, not a copy: see the cache's own comment.
             return Ok(idx);
         }
@@ -1195,7 +1192,7 @@ impl BlockIndex {
 
         let shared = Arc::new(index);
         let (cache_len, capacity_evicted) = {
-            let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = cache.lock().unpoison();
             let capacity_evicted = guard.insert(block_hash, Arc::clone(&shared));
             (guard.len() as u64, capacity_evicted as u64)
         };
@@ -1216,7 +1213,7 @@ impl BlockIndex {
         let Some(cache) = BLOCK_INDEX_CACHE.get() else {
             return;
         };
-        let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = cache.lock().unpoison();
         let pruned = guard.remove_many(hashes);
         // The oracle logs this (`Pruned N merging indices, new size: M`) and the port did not, which is
         // part of why the cache's growth was invisible (#60).
@@ -2043,8 +2040,13 @@ impl MergeScope {
         )
         .await?;
 
+        // **`reset_volatile`, not `reset`** (the programme's L2). `reset` publishes `base_state` as
+        // `CURRENT_ROOT` before the merged trie exists, so a crash between it and the checkpoint below
+        // left the node naming an *ancestor* on restart — neither the pre-merge nor the post-merge
+        // state. The base is still validated; only the publication moves to the one place where the
+        // merged state is real.
         let reset_repo = history_repository
-            .reset(base_state)
+            .reset_volatile(base_state)
             .await
             .map_err(|e| e.to_string())?;
         let new_repo = reset_repo

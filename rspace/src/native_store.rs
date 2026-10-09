@@ -8,6 +8,7 @@
 //! into the next checkpoint. This mirrors the `HotStore`/`HistoryRepository` split so native state
 //! stays content-addressed, replayable, and queryable at an arbitrary state hash.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -329,22 +330,19 @@ impl InMemNativeStore {
     /// deploy's own reduction gets a window of its own, and the ordinal it is opened under is the name
     /// the sidecar and the block index both use (#280).
     pub fn begin_writer(&self, writer: NativeWriter) {
-        self.writer
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(writer);
+        self.writer.lock().unpoison().push(writer);
     }
 
     /// Close the innermost window — see [`Self::begin_writer`].
     pub fn end_writer(&self) {
-        self.writer.lock().unwrap_or_else(|p| p.into_inner()).pop();
+        self.writer.lock().unpoison().pop();
     }
 
     /// Which deploy the write being made right now belongs to.
     fn current_writer(&self) -> NativeWriter {
         self.writer
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unpoison()
             .last()
             .copied()
             .unwrap_or(NativeWriter::OutsideAnyDeploy)
@@ -358,16 +356,12 @@ impl InMemNativeStore {
     /// Read a native value, consulting the overlay first and falling through to the persisted trie.
     pub async fn get(&self, prefix: u8, key: &Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
         {
-            let overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
+            let overlay = self.overlay.lock().unpoison();
             if let Some(slot) = overlay.get(&(prefix, *key)) {
                 return Ok(slot.value.clone());
             }
         }
-        let reader = self
-            .reader
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let reader = self.reader.read().unpoison().clone();
         reader.get_native(prefix, *key).await
     }
 
@@ -394,7 +388,7 @@ impl InMemNativeStore {
         value: Option<Vec<u8>>,
         writer: NativeWriter,
     ) {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
+        let mut overlay = self.overlay.lock().unpoison();
         if let Some(slot) = overlay.get_mut(&(prefix, key)) {
             slot.value = value.clone();
             slot.history.push((writer, value));
@@ -424,7 +418,7 @@ impl InMemNativeStore {
     /// travel under. One drain produces all three, so the attributions cannot drift from the actions
     /// they name.
     pub fn drain_native(&self) -> NativeDrain {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
+        let mut overlay = self.overlay.lock().unpoison();
         let mut drain = NativeDrain::default();
         let mut by_deploy: BTreeMap<u32, BTreeMap<(u8, Blake2b256Hash), NativeStoreAction>> =
             BTreeMap::new();
@@ -487,22 +481,18 @@ impl InMemNativeStore {
     /// Capture the current overlay for a soft-checkpoint rollback.
     pub fn snapshot(&self) -> NativeStoreState {
         NativeStoreState {
-            overlay: self
-                .overlay
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
+            overlay: self.overlay.lock().unpoison().clone(),
         }
     }
 
     /// Restore a previously captured overlay (soft-checkpoint rollback).
     pub fn revert(&self, state: NativeStoreState) {
-        *self.overlay.lock().unwrap_or_else(|p| p.into_inner()) = state.overlay;
+        *self.overlay.lock().unpoison() = state.overlay;
     }
 
     /// Point the store at a new history root (called on checkpoint/reset).
     pub fn set_reader(&self, reader: Arc<dyn NativeHistoryReader>) {
-        *self.reader.write().unwrap_or_else(|p| p.into_inner()) = reader;
+        *self.reader.write().unpoison() = reader;
         self.has_history.store(true, Ordering::SeqCst);
     }
 
@@ -526,7 +516,7 @@ impl InMemNativeStore {
     pub fn live_entries(&self, prefix: u8) -> Vec<(Blake2b256Hash, Vec<u8>)> {
         self.overlay
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unpoison()
             .iter()
             .filter_map(|(&(p, key), slot)| match (p == prefix, &slot.value) {
                 (true, Some(v)) => Some((key, v.clone())),

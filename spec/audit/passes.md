@@ -8166,3 +8166,351 @@ both boundaries** (24, then advancing to 31), with the error counted **0 on all 
 loop must be closed after it* — and `compute_genesis` is the reference for what the genesis's own span
 is. A window closed early does not fail loudly; it silently re-labels the writes that follow, and the
 refusal only arrives much later, in a different subsystem, naming a count rather than a cause.
+
+---
+
+## 77. The node that gives up, counted — C249's detect-and-log half, shipping dark (C249, #287)
+
+**What C249 left.** The disposition pass found R3 — *reset a node that cannot heal* — absent from the
+tree: a node whose divergence survives its restore budget stays in `NodeRunning`, keeps serving, and
+refuses the block and every descendant for the process lifetime, with the only way back an operator
+deleting the shard data dir. That path exists as a **comment** (`casper/src/dag.rs:534`) and nowhere as
+code.
+
+**Why the reset is not in this commit.** It is the half that acts, and acting without knowing the
+denominator would be inventing policy. What this pass lands is the denominator: the moment a node stops
+trying becomes **observable**, and nothing resets.
+
+**The moment, stated once.** `restore_is_warranted` already decides whether a record may be retried;
+`restore_budget_is_spent` is its far end — the record is still failed, the cause is still
+`Divergence`, and the attempts are at `RESTORE_ATTEMPT_LIMIT`. It is a separate predicate rather than a
+second spelling of the condition inside the reporter, so the report and the test read one rule.
+
+**The surface.** Both restore sites — the scan of an incoming block's justifications and the node's own
+failure record (`clear_own_failure_record`) — call `note_unrestorable_if_exhausted`, which logs at
+`error` with the hash and the sequence number and moves `unrestorableRecords` /
+`unrestorableBlock` onto `/api/status` beside `finalityStall` and `nonQuietMergeReports`. The value is
+`<hash> (seq <n>)` because the count alone answers "has this happened" and not "on what", and only the
+second is actionable.
+
+**Falsifier, and why it is the right one for an R2 rung.** The observable did not exist: before this,
+nothing could ask whether a node had given up — no cell, no accessor, and no line — so the failure was
+*"loud and then nothing"* and the nothing-half was invisible. `the_budget_is_spent_at_the_limit_and_only_
+for_a_record_that_still_fails` pins the boundary (the limit is where the node stops, and a *restored*
+record must not be reported as given-up-on) and
+`the_unrestorable_surface_names_the_block_it_gave_up_on` pins that the name carries what an operator
+needs.
+
+**What remains, named so this is not read as more.** The reset primitive (`drop_above(height)`), the
+persisted rewind anchor, and the detector that *acts* are the rest of F-U5-01; the falsifier for those
+is the drill the programme names — a planted unrecoverable divergence resets and rejoins, a restorable
+one restores in place and does not reset. #287/#294 own the net-wide reconciliation; this is the
+node-side counter they will be reviewed against.
+
+---
+
+## 78. Six detached tasks, and the two deaths — one of which nothing announced (C254, E6/E6a)
+
+**What the audit found.** The node has **no supervisor**. Every long-lived background task is a bare
+`tokio::spawn` whose `JoinHandle` is dropped, so nothing can tell a task that is running from one that
+died at startup. A panic reaches stderr through the runtime's default hook and is at least visible once;
+a plain early `return` — the loop that exits on its first error, the future that completes when its
+channel closes — produces **no line anywhere**, and the node serves on with that subsystem gone.
+
+**What lands.** `rchain_shared::supervise::spawn_supervised(name, fut)`: spawn the work, and spawn one
+watcher that awaits its handle and reports what it finds. `Ok` is a **return** — counted and printed at
+`warn`, because it is the quieter death and nothing else announces it. A panic is counted apart and
+printed with its payload. The two counters reach `/api/status` as `tasksPanicked` / `tasksExited`
+beside `finalityStall`.
+
+**The six sites, and the seventh that is deliberately not one.** The five in
+`node/src/runtime/node_runtime.rs` (kademlia-serve, peer-discovery, clear-connections,
+block-retriever, autopropose-timer) and the TLS accept loop in
+`comm/src/transport/grpc_transport_receiver.rs`. The **per-connection** handshake spawn in that same
+function is **not** supervised, and that is a decision rather than an omission: every handshake *ends*,
+so counting its returns would flood the surface with lines about healthy connections and the counter
+would stop meaning "a subsystem died". The long-lived accept loop above it is the task whose death is a
+real loss, and it is the one watched.
+
+**Falsifier.** The two events had no counter, so a probe could not ask whether a subsystem had died.
+`a_panicking_task_and_a_returning_task_are_counted_apart` pins both, and pins that they are **different
+facts** — conflating them would lose the one that nothing else reports.
+
+**What remains.** The closed-channel half (E6b): a `let _ = tx.send(…)` on a shutdown channel is the
+same silence in a different shape, ~18 sites plus the lint decision, and it is not in this commit.
+
+---
+
+## 79. A merge had two commit points, and a crash between them landed on an ancestor (C258, L2)
+
+**What the programme's L2 named**, and what measuring it found. The entry claim was that
+`record_root` (`rspace/src/history/roots_store.rs`) writes `root → ROOT_TAG` and
+`CURRENT_ROOT → root` as two `put`s and that `shared/src/lmdb.rs` opens one transaction per call — so a
+crash between them leaves `CURRENT_ROOT` naming a root the store does not hold. That is true, and it is
+the **smaller** half: the two pairs are now one call, which is one transaction, which makes the pair
+atomic rather than merely adjacent.
+
+**The larger half is the merge, and it is not in that file.** `HistoryRepository::reset` calls
+`validate_and_set_current_root(root)` and then resets the history — so a reset *publishes* the root it
+resets to. That is right for a caller whose new root **is** its base: a rewind, a rejoin, a replay.
+It is wrong for the merge, which is `reset(base)` and then real work — the mergeable-channel overrides,
+`compute_trie_actions`, and only then `do_checkpoint_with_native`, where the merged trie finally exists.
+With `reset`, `CURRENT_ROOT` had already advanced to the base before any of that began. **A crash
+between the two commit points left the node naming an ancestor** — neither the pre-merge nor the
+post-merge state, and no record anywhere that a merge had been in flight.
+
+**The fix is the split, and it keeps the check.** `reset_volatile` performs the same refusal `reset`
+gives an unknown root (`validate_known_root` → `RootsStore::is_known_root`) and does not write. The
+merge resets through it, so it has **one** commit point, and it is the one where the merged state is
+real. Nothing about the ordinary path changes.
+
+**Falsifier, at the level where the difference is observable.**
+`root_repository::tests::validate_known_root_refuses_without_publishing`: two recorded roots make
+"the current root did not move" a real assertion, which a fresh repository (knowing exactly one root)
+cannot. `a_volatile_reset_still_validates_and_still_moves_the_view` pins that the volatile reset is a
+reset and not a no-op. The restart-shaped test the design review asked for — checkpoint, drop and
+rebuild the manager the way boot does — is **owed**: the in-memory manager a unit test can build
+hands back the same store object, so "rebuild the manager" is not a restart there, and doing it
+honestly needs the LMDB manager.
+
+---
+
+## 80. The gate's three instrument findings: what was deleted, what is now printed, what is decided (C255)
+
+**The audit's instrument findings were about the *gate*, not the code**, and they are the reason its
+green result was weaker than it read. Three of them, and C255's `owes` enumerates them; this pass
+closes two and decides a third.
+
+**(I1 → B1) The baseline is deleted, not wired back.** `tools/type-system-baseline.tsv` had drifted
+**128 sites** below what the gate measures (its own header records AUDIT F-16 and the reason it was
+abandoned as a ratchet), and nothing read it for a verdict — so its only remaining effect was to print
+a comparison against a number that was wrong. A record that cannot be right and is not checked is worse
+than no record: it reads as a ratchet to anyone who does not read the code. Deleted, with the reason in
+the gate where the decision lives, and the dead `ratchet_failures` counter with it. `ratchet()` is now
+a pure "measured N sites" print.
+
+**(I2 → B2) The panic class's limit is printed on every run.** A green panic class is evidence about
+the **sites the allow-list lists**, never about the ingress discipline that keeps each one unreachable.
+The audit's L1 found that limit by re-walking all 29 entries with C97's question; no run on a later day
+could have found it. The caveat lived in the file's header, where a reader looking at a green build
+does not go, and it is now two lines in the summary of every run.
+
+**(I3 → B3) The key's coarseness is now stated rather than silently assumed.** An entry is keyed on
+`file;;regex` — on *text*, never on a line number, because a line-keyed entry fails **open** — so one
+entry can cover several sites of identical text in one file. The run now says so, and says what the
+staleness check does and does not prove: each key claimed at least one site, not exactly one. The
+per-entry half (an entry *stating* that it covers a shape) is not done; the class's limit is.
+
+**(Clause four, decided rather than left unassessed.)** `unwrap_used` is **redundant with the panic
+class**, and strictly weaker: that class already fails the build on any production `.unwrap()` outside
+its 29 entries, so a lint that flags the same shape adds a second gate over the same sites. The
+`let_underscore_must_use` option is **not redundant** — it is the closed-channel silence of C254's E6b
+(`let _ = tx.send(…)`), a different class, and it belongs with that unit's remaining half rather than
+here.
+
+**Negative control, run rather than asserted.** A production `.unwrap()` appended to
+`shared/src/string_ops.rs` makes the gate print `FAIL: 1 hard violation(s) (panic/unsafe/silent/escape)
+in production code` and exit non-zero; removed, it is green.
+
+---
+
+## 81. Every poison recovery is counted, and the un-counted spelling is now a gate failure (C253 E2)
+
+**What C249/F-U9-03 landed and what it did not.** The counter exists — `poison_recoveries()`, published
+as `poisonRecoveries` on `/api/status` — and it was wired to three accessors (`rlock`/`wlock`/`mlock`)
+that most of the tree does not use. The refutation adjudicated the raw population at **77 production
+sites**, and the reason the surface could still read 0 is sharper than "some sites are missed": the
+accessors were `pub(crate)` to `rspace`, so **no site outside `rspace` could increment them at all**,
+and the crates that hold most of the sites — `rholang` (52 tails), `node` (28), `ocapn` (18) — do not
+depend on `rspace`.
+
+**Measured on this tree: 136 raw tails across 32 files.** Six commits, one per crate, each compiling
+before it was committed: `shared`+`comm` 11, `ocapn` 18, `casper` 10, `rspace` 14, `node` 28,
+`rholang` 52 — plus `sync_var`'s three (a local `lock` helper and the two `Condvar` waits), which were
+the unit's first falsifier.
+
+**The mechanism is not the one the plan named, and the reason is recorded because the plan's one was
+tried and failed.** The plan said: route the sites through `rlock`/`wlock`/`mlock`. That requires
+naming the receiver, and at most sites the receiver is an **expression**:
+
+```rust
+self.writermlock(self.writer).lock().unwrap_or_else(|p| p.into_inner())
+```
+
+`mlock(&self.writermlock(self.writer))` borrows a temporary, so the guard would dangle. The first
+attempt at mechanically rewriting these sites produced a broken receiver — the accessor's call
+swallowed by the very expression it was meant to wrap — at **30 files and 31 compile errors**, and the
+tree had to be restored. The module now carries a second, receiver-free mechanism: `Unpoison::unpoison`
+is a method on the `LockResult` itself, so the substitution is the **tail only** and the receiver is
+never touched. Both doors count, through one `note_poison`.
+
+**The falsifier is a production path, not a fixture.** `shared/src/sync_var.rs`'s `take()` recovered a
+poison through the raw tail; the test poisons the cell's mutex, calls `take()` and asserts the counter
+moved. Red on the pre-fix tree:
+
+```
+thread '…' panicked at shared/src/sync_var.rs:98:
+…and invisible no longer (0 -> 0)
+```
+
+The guard came back — the test's first assertion, `take() == 1`, passed — and the counter did not move.
+That is the defect in one line. (The test is run alone: the counter is process-wide, so a concurrent
+test's recovery is a legitimate increment and `>` would otherwise be trivially true.)
+
+**The rule, and why it has no allow-list.** A hard `poison` class now forbids three spellings — the
+`unwrap_or_else` tail, the explicit `PoisonError::into_inner` path, and the same recovery as a match
+arm. Read whole like `silent`, because a chain rustfmt wrapped is the same recovery. **Its pattern is
+the tail only, never the receiver** — the lesson above, encoded.
+
+Every other hard class is kept honest by something it can lose: `panic` by an allow-list whose stale
+entries fail, the rest by sites the tree may not have. **This one's correct steady state is zero
+sites**, so nothing would notice if its pattern quietly stopped matching — it would print the same
+green as a tree with nothing to find, for ever. So it carries a probe:
+`tools/audit-poison-probe.txt` holds one of each spelling and `verify_poison_probe` fails the gate
+unless the pattern matches exactly three of them.
+
+**Both halves shown to bite, run rather than asserted.** A planted site
+(`shared/src/zz_probe_poison.rs`, three spellings) printed all three and failed the gate; a
+deliberately broken pattern printed
+
+```
+/…/tools/audit-poison-probe.txt:-: the pattern matched 0 of the 3 probe shape(s) — a class that
+stopped matching reports the same green as a class with nothing to find
+```
+
+`scan_spanning` now drops comment lines before matching — the rule `scan_panic` has always had, and for
+the same reason, which this unit made concrete: the new module's docs explain the banned tail *by
+writing it out*. The full gate is green with the filter in place.
+
+**What closes and what that leaves.** With (a) landed, C253's four clauses are all closed — (b) the
+three-way `Revalidation` (§78's sibling, `5c4aabbd7`), (c) the two checked genesis writes
+(`19300bad1`), (d) the binding-form extension to `silent` (C251's rule) — and the row moves to `done`.
+The deviation from (a)'s letter, stated rather than glossed: the sites route through a receiver-free
+trait rather than the free accessors, and the class has **no allow-list** because it has nothing to
+allow. Both deviations are this pass's subject, not an omission from it.
+
+---
+
+## 82. The node-side reset: the primitive, and the dry run that ships dark (C249, #287)
+
+**What C249's R3 gap is, in one line**: a running node that cannot locally heal has no inverse. It keeps
+serving, refuses the block and its descendants for the process lifetime, and the only way back is an
+operator deleting the shard data dir — a path that exists as a comment (`casper/src/dag.rs`) and nowhere
+as code. The plan's unit for it ships **dark**, and the reason is in the plan: the detector's output has
+to be reviewable against a real denominator from a real node before a build that acts exists. This pass
+lands the primitive and the denominator; the runtime reset and the wiring that acts are the unit's
+remaining half, deliberately.
+
+**The primitive: `drop_above`, in two layers.** `BlockMetadataStore::drop_above(height)` rewinds the
+persisted metadata and rebuilds the in-memory index from what survives — store first, index second, the
+order `add` uses and for `add`'s reason (AUDIT C172). The rebuild is a *rebuild* rather than an edit, so
+the two agree by construction, and `recreate_in_memory_state` re-runs the height-map contiguity check on
+the way, so a rewind that would leave a gap is refused rather than published. It returns the dropped
+hashes, because the reset is not the only thing that has to be rewound.
+
+`BlockDagKeyValueStorage::drop_above(height)` then rebuilds the representation by the **same** fold
+`create` uses — extracted to `rebuild_representation` for exactly that reason — and cleans the deploy and
+deployer indices of entries pointing above the anchor, found by value since both are keyed by
+deploy/deployer rather than by block. It holds the insert lock, so a concurrent insert cannot land a
+block above the anchor mid-rewind and leave the view holding a block the store has dropped.
+
+What it does not drop is stated in the method's doc rather than implied: block *messages* live in
+`BlockStore`, which this type does not own, so bodies stay on disk; `fringe_data_store` keeps its entries
+(keyed by fringe hash, read only for messages the map still holds); and `deployer_indexed_from` stays,
+because its claim is *complete from this height up to the tip* and the tip is now the anchor.
+
+**The denominator: `DagRepresentation::rewind_plan`.** The anchor is the tree's existing last finalized
+block — the highest block in the latest fringe — and `blocks_above` counts what sits above it. The two
+arms are **not merged**: a view with a fringe can name the block it would replay from, and a view
+*without* one cannot name a safe state at all — the number it prints is what a replay from genesis would
+redo. Reading the second as "nothing to drop" is the confusion the split exists to prevent; the falsifier
+is the same three blocks with different fringes and different answers (2 above genesis vs 0 above the
+anchor), which is how the first draft's fixture was caught (it put the fringe on `seen`, where
+`latest_fringe` does not read it). The count comes from the height map, so it is a **floor** —
+validation-failed blocks are not in it, and `drop_above` works from the store and takes those too. That
+is the safe direction to be wrong in.
+
+`note_unrestorable_if_exhausted` becomes async and takes the DAG, so the give-up report and the dry run
+are one function rather than two calls that could drift; both call sites pass the DAG they already have.
+Nothing is dropped, and the log line says so.
+
+**Falsifier form, stated because it is the weaker rung.** Both the primitive and the plan are *absent*
+capabilities on the pre-fix tree, so their red-before is the R1 form — a compile failure, captured
+verbatim for the metadata store:
+
+```
+error[E0599]: no method named `drop_above` found for struct `BlockMetadataStore`
+```
+
+What the tests then pin is *behavioural*: the store loses heights 3 and 4 and a **fresh** index over the
+same store sees the rewound chain (a rewind that lived only in memory would be undone by the next boot);
+the representation loses the tip and keeps the anchor; and the plan's two arms differ. This is weaker
+than a red-before on a running defect and is recorded as such rather than dressed up: the defect here is
+an absent capability, and the artifact of an absent capability is that the code does not build.
+
+**Not done, and owned elsewhere**: #287/#294 own the net-wide reconciliation, and the runtime's own
+`RhoRuntime::reset` (`rholang/src/runtime.rs:440`) plus the wiring that calls `drop_above` on a spent
+budget are the acting half, which ships after an operator has seen the denominator.
+
+---
+
+## 83. The discarded send: a counted door, and a class instead of a lint (C254's E6b)
+
+**The shape and why it is a finding.** `let _ = tx.send(v)` is the shape of a *decision* — "the receiver
+may already be gone, and that is fine" — and it reads exactly like a dropped error. On a shutdown path the
+decision is usually right: the node is going down and the consumer left first. The problem is the evidence:
+a node that dropped work during a shutdown and a node that shut down cleanly produced the same amount of
+it, which was none. That is C249's class arriving in a second shape, and the row is the audit's own
+observation rather than this pass's.
+
+**A door per shape of sender.** `rchain_shared::chan` — `send` (blocking `mpsc`), `try_send`,
+`unbounded_send`, `oneshot_send`, `watch_send`, and `best_effort` for the sinks those do not cover (a
+`futures` sink, a connection). Each keeps the decision — the value is still discarded — and counts the
+event. **One door carries a distinction the raw shape erased**: `try_send` fails *either* because the
+receiver is gone *or* because the buffer is full, and only the first is this module's business. A full
+buffer drops the value too, but the peer is still there, and counting it would make the counter mean
+something else, so `try_send` counts `Closed` and passes `Full` through as a plain `false`.
+
+**`best_effort` was `f.await.ok()` for one revision, and the `silent` class rejected it.** That class
+exists to stop "an I/O call's error erased into an absence", and a helper whose entire point is that
+erasure is the worst place to make an exception — every caller would inherit the silence the class was
+written for. It records through the same counter instead. The gate earned its keep on the person writing
+the door, which is the second time in two days (C255's audit made the first case out of a different
+question) and is worth recording as such.
+
+**The shape is forbidden by a class, not a crate-wide lint, and the reason is measured.** The first draft
+added `#![deny(clippy::let_underscore_must_use)]` to six crate roots. It fired on `let _ =
+thread::scope(..)` in `shared`'s own lock tests and `let _ = fs::remove_dir_all(..)` in its LMDB tests —
+six sites in one crate — none of which has anything to do with sends. The proportionate mechanism is
+`tools/audit-type-system.sh`'s new hard `discard` class: scoped to production code (the stripper drops
+`#[cfg(test)]` blocks), matching `let _ = …send(…)` and nothing else, with no allow-list and a probe
+because its steady state is zero sites. The lint's own virtue — that the compiler checks it — is what made
+it unsuitable: it is a lint about a *pattern*, and the pattern it matches is broader than the finding.
+
+**Two sites were not channels, and both are now loud.** `comm`'s `send_to_peer`/`send_to_bootstrap`
+**return** their `CommErr` rather than discarding it (four call sites now log or propagate, two of which
+is where the change is visible on a running node), and `ocapn`'s `send_abort` — whose thirteen callers all
+already return an error naming the reason, so there is nothing for it to do with a failure — goes through
+`chan::best_effort`, whose *name* states the decision the `let _ =` hid. The named door is the honest
+exception to a class with no allow-list, and it is written down as one: what the class forbids is the
+silent shape, not the decision.
+
+**Falsifiers.** `chan::tests::a_send_to_a_gone_receiver_moves_the_counter_and_the_old_shape_does_not` runs
+the old shape **beside** the new door inside one test: the old one drops the value and moves the counter
+not at all, the door moves it once for the same event. That control is kept in the tree rather than
+described. `a_full_buffer_drops_the_value_without_counting_a_receiver_that_still_listens` pins the
+distinction above. The class was shown to bite both ways — three findings on a planted site, and its own
+probe's failure on a deliberately broken pattern:
+
+```
+/…/tools/audit-discard-probe.txt:-: the pattern matched 0 of the 2 probe shape(s) — a class that stopped
+matching reports the same green as a class with nothing to find
+```
+
+`cargo test --lib` is green across all seven touched crates (100/135/119/56/408/317/239, 0 failed);
+clippy with CI's allow-list is clean; the full gate is green.
+
+**What is not here.** The counter is the **source half**, exactly as C249's F-U9-03 was when it landed:
+readable in process, not yet on `/api/status`. That is the next increment, and until it lands "counted but
+not yet published" is the honest description — the same sentence, and the same owed step, that the lock
+module carries.

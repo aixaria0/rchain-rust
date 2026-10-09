@@ -2,6 +2,7 @@
 //!
 //! The cats-effect `Ref[F, Option[A]]` is simplified to a `Mutex<Option<A>>`.
 
+use crate::lock::Unpoison;
 use std::sync::{Mutex, MutexGuard};
 
 /// A cell that is either empty or holds a value (port of `MaybeCell[F, A]`).
@@ -40,7 +41,7 @@ impl<A> MaybeCell<A> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|p| p.into_inner())
+    mutex.lock().unpoison()
 }
 
 #[cfg(test)]

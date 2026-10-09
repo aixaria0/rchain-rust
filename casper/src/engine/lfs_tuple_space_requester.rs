@@ -3,6 +3,7 @@
 //! Downloads the rholang state (history + data items) for the last finalized state in chunks, via
 //! the pure `LfsTupleSpaceState` state machine and the effectful `stream` orchestration.
 
+use rchain_shared::chan;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -215,12 +216,20 @@ async fn request_next(
                 skip: 0,
                 take: PAGE_SIZE,
             };
-            transport_layer_syntax::send_to_bootstrap(
+            if let Err(e) = transport_layer_syntax::send_to_bootstrap(
                 transport,
                 conf,
                 StoreItemsMessageRequestSerde.mk_packet(&req),
             )
-            .await;
+            .await
+            {
+                log.warn(
+                    source,
+                    &format!(
+                        "could not ask the bootstrap peer for store items: {e} (AUDIT C254's E6b)"
+                    ),
+                );
+            }
         }
     }
 }
@@ -250,7 +259,7 @@ async fn process_store_items<I: RSpaceImporter>(
             let mut guard = st.lock().await;
             *guard = guard.add(&last_path);
         }
-        let _ = request_tx.send(false).await;
+        chan::send(request_tx, false).await;
 
         // Validate received state items against the trie.
         validate_state_items(
@@ -281,7 +290,7 @@ async fn process_store_items<I: RSpaceImporter>(
             let mut guard = st.lock().await;
             *guard = guard.done(start_path.clone());
         }
-        let _ = request_tx.send(false).await;
+        chan::send(request_tx, false).await;
     }
     Ok(())
 }
@@ -341,7 +350,7 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
         start_requests,
     )));
     let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<bool>(2);
-    let _ = request_tx.send(false).await;
+    chan::send(&request_tx, false).await;
 
     let error: Arc<tokio::sync::Mutex<Option<StateValidationError>>> =
         Arc::new(tokio::sync::Mutex::new(None));

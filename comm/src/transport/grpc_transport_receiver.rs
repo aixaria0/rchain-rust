@@ -4,6 +4,7 @@
 //! `LimitedBufferObservable` dispatch queues are simplified to a direct spawned dispatch; the
 //! streamed-message circuit breaker and `PacketOps` cache round-trip are preserved.
 
+use rchain_shared::chan;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ pub fn accept_tls(
 ) -> futures::channel::mpsc::Receiver<Result<TlsIo, std::io::Error>> {
     let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(capacity);
     let handshake_slots = Arc::new(tokio::sync::Semaphore::new(capacity));
-    tokio::spawn(async move {
+    rchain_shared::supervise::spawn_supervised("tls-handshake", async move {
         let tx = tx;
         loop {
             let Ok((tcp, _)) = listener.accept().await else {
@@ -103,6 +104,12 @@ pub fn accept_tls(
             };
             let acceptor = acceptor.clone();
             let tx = tx.clone();
+            // **Not supervised, and that is a decision rather than an omission** (AUDIT C254). Every
+            // connection's handshake *ends* — that is its normal completion — so counting returns
+            // here would turn the supervisor into a flood of lines about healthy handshakes, and the
+            // counter would stop meaning "a subsystem died". A panic in this task already reaches
+            // stderr through the runtime's default hook. The long-lived accept loop above is the task
+            // whose death is a real loss, and it is the one that is watched.
             tokio::spawn(async move {
                 let _permit = permit;
                 let mut tx = tx;
@@ -112,12 +119,14 @@ pub fn accept_tls(
                     // is not reachable from a request handler, and this is the only place the
                     // handshake's own state is still available (AUDIT C115).
                     let peer_id = peer_id_of_tls(&tls);
-                    let _ = tx
-                        .send(Ok(TlsIo {
-                            stream: tls,
-                            peer_id,
-                        }))
-                        .await;
+                    // The accept loop outlives the session on a shutdown, so a handshake result nobody
+                    // is left to receive is the case this is for — and it is a `futures` sink, not a
+                    // tokio channel, so the named door is the one that applies (C254's E6b).
+                    chan::best_effort(tx.send(Ok(TlsIo {
+                        stream: tls,
+                        peer_id,
+                    })))
+                    .await;
                 }
             });
         }
