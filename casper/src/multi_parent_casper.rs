@@ -630,7 +630,7 @@ where
                 continue;
             }
         };
-        note_unrestorable_if_exhausted(&record, &hash, source, log);
+        note_unrestorable_if_exhausted(dag, &record, &hash, source, log).await;
         match dag.update_metadata(record).await {
             Ok(()) if cleared => {
                 log.warn(
@@ -733,7 +733,8 @@ fn revalidated_record(
 /// *would* act on before one ships. #287/#294 own the net-wide reconciliation; the per-node reset is a
 /// later unit, and shipping the detector first is what makes that unit reviewable against a real
 /// denominator rather than an argument.
-fn note_unrestorable_if_exhausted(
+async fn note_unrestorable_if_exhausted(
+    dag: &dyn BlockDagStorage,
     record: &BlockMetadata,
     hash: &BlockHash,
     source: LogSource,
@@ -755,6 +756,59 @@ fn note_unrestorable_if_exhausted(
             record.restore_attempts,
         ),
     );
+    report_reset_dry_run(dag, hash, source, log).await;
+}
+
+/// **What a per-node reset would drop, computed and logged, and nothing dropped** (C249's R3).
+///
+/// The reset ships **dark**, deliberately: the primitive it would call exists
+/// (`BlockDagKeyValueStorage::drop_above`, and the runtime's own `reset` beside it), and an operator
+/// needs to see what it would act on — against a real denominator from a real node — before a build
+/// that acts exists. This is that denominator, printed at the one moment the condition is true: a
+/// divergence whose revalidation budget is spent.
+///
+/// It reports from the *view* (`DagRepresentation::rewind_plan`), so the count is a floor — the height
+/// map leaves out validation-failed blocks, and the reset itself works from the store. That direction
+/// is the safe one to be wrong in: the log under-states what a reset would drop rather than promising
+/// more than it would.
+///
+/// **The two arms are different findings and are not merged.** A view with a finalized fringe can
+/// name the block it would replay from; a view without one cannot name a safe state at all, and the
+/// number it prints is what a replay from genesis would redo. Reading the second as "nothing to drop"
+/// is exactly the confusion this separates.
+async fn report_reset_dry_run(
+    dag: &dyn BlockDagStorage,
+    refused: &BlockHash,
+    source: LogSource,
+    log: &Arc<dyn Log>,
+) {
+    let repr = dag.get_representation().await;
+    let plan = repr.rewind_plan();
+    match (plan.anchor, plan.anchor_height) {
+        (Some(anchor), Some(height)) => log.warn(
+            source,
+            &format!(
+                "a per-node reset would rewind to the last finalized block {} (height {}) and drop {} \
+                 block(s) above it, replaying from there. Nothing is dropped: this node keeps refusing \
+                 {} and its descendants (AUDIT C249; #287/#294 own the net-wide half)",
+                anchor.to_hex(),
+                i64::from(height) + 1,
+                plan.blocks_above,
+                refused.to_hex(),
+            ),
+        ),
+        // No fringe: a node this early in a chain has nothing to rewind *to*, which is not the same
+        // answer as having nothing to drop.
+        _ => log.warn(
+            source,
+            &format!(
+                "a per-node reset has no finalized block to rewind to yet, so it could not name a safe \
+                 state: the {} block(s) this node holds above genesis would have to be replayed from it. \
+                 Nothing is dropped (AUDIT C249)",
+                plan.blocks_above,
+            ),
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -843,7 +897,7 @@ async fn restore_divergent_justifications<F, Fut>(
                 continue;
             }
         };
-        note_unrestorable_if_exhausted(&record, j, source, log);
+        note_unrestorable_if_exhausted(dag, &record, j, source, log).await;
 
         // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
         // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
