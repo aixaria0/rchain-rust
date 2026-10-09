@@ -20,11 +20,11 @@ rebuilt 2026-10-06 and producing and finalising normally until the event.
 ```
 A 19:05:46.336  proposed and added block #105 (seq 105)
 A 19:05:46.901  state-hash disagreement on pre-state: block #104 75b98665bc52fa20…
-A 19:05:46.975  Block #105 cf44cfd5… from 041ed2a2… (D) failed
+A 19:05:46.975  Block #105 cf44cfd5… from 041ed2a2… (B) failed
 A 19:05:47.029  state-hash disagreement on pre-state: block #104 3ad32f956b58b217…
-A 19:05:47.185  Block #105 703255e2… from 04dce59b… (C) failed
+A 19:05:47.185  Block #105 703255e2… from 04dce59b… (D) failed
 A 19:05:47.287  state-hash disagreement on pre-state: block #104 4386635a89cfe73f…
-A 19:05:47.414  Block #105 a11ba361… from 04d7707c… (B) failed
+A 19:05:47.414  Block #105 a11ba361… from 04d7707c… (C) failed
 A 19:05:48.369  state-hash disagreement on rejected-deploys: block #106 58664b88…
 A 19:05:48.369  ERROR Self-created block #106 (seq 106) failed validation: the block's rejected-deploy
                 set does not match its parent
@@ -35,9 +35,19 @@ Three validators' #105 blocks rejected on a disagreement about the **pre-state o
 A's own proposer could not build a child of its own state: the rejected-deploy set it derived disagreed with
 the parent state it had just computed.
 
-**The divergence is per node, not per host.** A and D share `164.90.140.144` and D rejected A's #106
-(`e3e16461adb3d5b2a7c9b7f5c569cc30…`) on the same pre-state complaint about #105. Four validators, four
-distinct #106 blocks. That pattern is what a nondeterministic choice inside the merge looks like from
+**The divergence is per validator.** B rejected A's #106
+(`e3e16461adb3d5b2a7c9b7f5c569cc30…`) on the same pre-state complaint about #105, in the same stretch of
+seconds in which A rejected B's, C's and D's #105. Four validators, four
+distinct #106 blocks.
+
+*Corrected 2026-10-09, while landing this file (C250).* This paragraph said "per node, not per host" and
+rested on "A and D share `164.90.140.144`". The validator letters in the log block above were **rotated**
+against the mapping the `#280` capture states as authoritative — `A 0410b8c5, B 041ed2a2, C 04d7707c,
+D 04dce59b` (`spec/audit/evidence/n280-merge-loses-a-write-results.md`) — which is the same incident's
+other face, so the letters are transcribed rather than assigned. No host pairing is established by this
+capture at all, so the claim is struck rather than restated, and the "per host" conclusion goes with it.
+What remains does not depend on either: the disagreement is between validators about a pre-state, and B
+rejected A's block while A rejected B's. That pattern is what a nondeterministic choice inside the merge looks like from
 outside; it is not claimed here as the mechanism.
 
 ## The restart experiments — measurement, not recovery
@@ -69,11 +79,13 @@ an already-finalised write?**
 ## What this confirms, corrects, leaves open
 
 - **Confirms (live)**: TE-1 for divergent finality, and the specification's verdict of *none* for recovery.
-- **Corrects**: my own hypothesis, posted on #280, that the split followed the hosts. A and D share a host
-  and disagree with each other; n=2 was coincidence.
+- **Corrects**: the validator letters in the log block above, which were rotated against the `#280` capture's
+  mapping — see the correction note under the log. With them goes the claim this bullet used to make (that
+  the split did not follow the hosts): it rested on a host pairing this capture does not establish. The
+  per-validator disagreement it was arguing for stands on its own.
 - **Leaves open**: whether an already-finalised write can be undone by a later merge; and whether a diverged
   chain can be reconciled **without a genesis** — a candidate mechanism is proposed in the reconciliation
-  issue (#283).
+  issue (#287).
 - **Falsifier**: a network in this state that converges to one head, with block hashes agreeing across
   nodes, **without a genesis**. Nothing in this capture suggests one exists today.
 
