@@ -323,13 +323,21 @@ stating what it does and does not do, because **it is not a sync**.
   nodes. It **never copies identity**: a joiner holding the survivor's key would be an equivocator, and no
   agreement check would see it until the two later signed conflicting blocks.
 - **It is a fiat, and the tool prints that before it applies.** The joiners adopt the survivor's view of the
-  chain, including any block above the meet that only the survivor accepted — so running it is the operator
-  choosing a winner. That is why the plan is printed first, why `--apply` is required, and why the tool
-  refuses outright when the meet cannot be computed (disagreeing bond maps, or no height with a strict
-  supermajority of stake).
-- **The meet is computed, not chosen.** It is the deepest height where the nodes agreeing on one block hold
-  a strict supermajority of **stake** (`stake * 3 > total * 2`), with a provably equivocating validator's
-  stake removed from both the numerator and the denominator — by proof, never by silence.
+  chain, including the blocks above the agreed anchor that only the survivor accepted — so running it is the
+  operator choosing a winner. That is why the plan is printed first, why `--apply` is required, and why the
+  tool refuses outright when its nodes do not already agree: a node with no usable finalised block, or nodes
+  reporting different heights or hashes, stop it at the plan phase.
+- **The anchor is required, not computed.** Every listed node must report the **same** finalised block —
+  height *and* hash — or the tool refuses and says what differs. That is deliberate, and it is a limit
+  rather than a design flourish: a block producer is not a validator vote, and the heights API cannot prove
+  stake-weighted finalised ancestry, so no quorum is inferred from it. A stake-weighted meet would need
+  reports authenticated to bonded validators, carrying a signed vote, with verified ancestry — issue
+  [#287](https://github.com/rchain-community/rchain-rust/issues/287)'s design, which is not implemented here.
+- **Its equivocation check is a report, not a proof.** The tool's section 2 flags a sender with two distinct
+  blocks at one height, read from the block API's own `sender` field. It verifies no signature and binds no
+  endpoint to a bonded key, so what it prints is a suspicion to chase; nothing is dropped or reweighted on
+  it, and the proof — and the slash — belong to the node ([#290](https://github.com/rchain-community/rchain-rust/issues/290)'s
+  part 1). A validator that is merely quiet, slow or absent keeps its weight: silence is not evidence.
 - **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated per block
   with their signatures, and their owners re-submit. It is also **not** the protocol answer — a node-side
   path that syncs to an agreed anchor exists in part (`--sync-anchor`) and does not yet catch up
