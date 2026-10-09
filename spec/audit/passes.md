@@ -8567,3 +8567,45 @@ sections 9 and 10, for the store-level path and again for the anchor path.
 un-validatable by a clean node. That makes the copy path demonstrable and an anchor path **not** — a green
 drill under the injection would prove the copy, not a sync — so the anchor's drill needs a staging where
 the joiners' blocks stay valid to a clean node, which is work the instrument still owes.
+
+---
+
+## 85. The close-out: what ended, what was filed, and the negative result that stopped a fix (C215, C259)
+
+**The programme ends here, and this pass records why each of the two remaining code units did not land as a
+fix.**
+
+**C215's fix has no falsifier, and the attempt to build one is the evidence.** Review of #299 asked for the
+collision to be shown through the merge's own entry point rather than as a storage-level counterexample.
+That test was built — two blocks per height whose post-states the runtime computes, a finalised fringe they
+share, two arrival orders, and `MergeScope::merge` over each comparing `MergeOutcome::state` and
+`rejected_deploys` — and **it passes on the unfixed tree**: two orders, one outcome, nothing rejected. The
+collision the storage-level test asserts is real and is asserted first; it simply does not reach this
+merge's decision, and why is not established. So the fix is not written. The storage-level counterexample
+stands, the mechanism stands, and the claim that the merge's *outcome* depends on arrival order is
+**withdrawn** until a construction exists where the final-scope rejection fires. The shortfall is between
+`rejections_for`'s read and `rejected_finally`, not in the setup.
+
+**A gap found on the way, and it is worth more than the test.** `MergeReport`'s `conflict_chains`,
+`kept_chains` and `rejected_chains` are `conflict_set.len()` and friends (`merging.rs:1934`; the struct's own
+doc says "Chains in the conflict scope"), so **a merge that drops a *finalised* chain reports
+`rejected_chains: 0` and says nothing about it**. `rejected_deploys` does cover those chains — which is the
+only reason the negative result above is visible at all — but the report an operator reads does not.
+
+**C259(a)'s mechanism, from reading after the drill.** The anchor seed is built with `ancestry: Vec::new()`
+(`node_launch.rs`), which **bypasses exactly the #139 fix** that makes a restored block replayable, and the
+sidecar stores a merge needs (`mergeable-channel-cache`, `native-changes-cache`, `storage.rs:71,77`) are
+**not part of the state a sync transfers**. So a node restored to an anchor reaches it and stops — silently
+near the tip (the single-parent arm reads the parent's post-state and never calls `block_index`, so one hop
+works while the multi-parent suffix never validates), and loudly far back (`regenerated mergeable channels`
+on the suffix's epoch-boundary blocks, which is C188). **Two halves in order**: carry the anchor's ancestry
+(reusing `collect_fringe_ancestry`, `node_running.rs:333`) rather than fabricating an empty one; then sync,
+or bound a one-time replay of, the sidecars for the restored range.
+
+**What the operator gets instead, and it is the case that matters.** `--sync-anchor` lands **without**
+either half, with its limit in the flag's own help text — a flag that stalls a node should say so where the
+operator meets it. And `docs/src/node/testnet.md` §Recovery, which listed restart, wait and
+rebuild-from-genesis and nothing else, gains the store-level restore: it is the **only** mechanism
+demonstrated to bring a frozen chain back (one head, identical block hashes at every height, no genesis,
+finality resumed), and the page now says what it does, that it is a fiat the tool prints before applying,
+and that it is not the protocol answer.
