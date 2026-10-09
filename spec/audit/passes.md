@@ -8451,3 +8451,66 @@ an absent capability, and the artifact of an absent capability is that the code 
 **Not done, and owned elsewhere**: #287/#294 own the net-wide reconciliation, and the runtime's own
 `RhoRuntime::reset` (`rholang/src/runtime.rs:440`) plus the wiring that calls `drop_above` on a spent
 budget are the acting half, which ships after an operator has seen the denominator.
+
+---
+
+## 83. The discarded send: a counted door, and a class instead of a lint (C254's E6b)
+
+**The shape and why it is a finding.** `let _ = tx.send(v)` is the shape of a *decision* — "the receiver
+may already be gone, and that is fine" — and it reads exactly like a dropped error. On a shutdown path the
+decision is usually right: the node is going down and the consumer left first. The problem is the evidence:
+a node that dropped work during a shutdown and a node that shut down cleanly produced the same amount of
+it, which was none. That is C249's class arriving in a second shape, and the row is the audit's own
+observation rather than this pass's.
+
+**A door per shape of sender.** `rchain_shared::chan` — `send` (blocking `mpsc`), `try_send`,
+`unbounded_send`, `oneshot_send`, `watch_send`, and `best_effort` for the sinks those do not cover (a
+`futures` sink, a connection). Each keeps the decision — the value is still discarded — and counts the
+event. **One door carries a distinction the raw shape erased**: `try_send` fails *either* because the
+receiver is gone *or* because the buffer is full, and only the first is this module's business. A full
+buffer drops the value too, but the peer is still there, and counting it would make the counter mean
+something else, so `try_send` counts `Closed` and passes `Full` through as a plain `false`.
+
+**`best_effort` was `f.await.ok()` for one revision, and the `silent` class rejected it.** That class
+exists to stop "an I/O call's error erased into an absence", and a helper whose entire point is that
+erasure is the worst place to make an exception — every caller would inherit the silence the class was
+written for. It records through the same counter instead. The gate earned its keep on the person writing
+the door, which is the second time in two days (C255's audit made the first case out of a different
+question) and is worth recording as such.
+
+**The shape is forbidden by a class, not a crate-wide lint, and the reason is measured.** The first draft
+added `#![deny(clippy::let_underscore_must_use)]` to six crate roots. It fired on `let _ =
+thread::scope(..)` in `shared`'s own lock tests and `let _ = fs::remove_dir_all(..)` in its LMDB tests —
+six sites in one crate — none of which has anything to do with sends. The proportionate mechanism is
+`tools/audit-type-system.sh`'s new hard `discard` class: scoped to production code (the stripper drops
+`#[cfg(test)]` blocks), matching `let _ = …send(…)` and nothing else, with no allow-list and a probe
+because its steady state is zero sites. The lint's own virtue — that the compiler checks it — is what made
+it unsuitable: it is a lint about a *pattern*, and the pattern it matches is broader than the finding.
+
+**Two sites were not channels, and both are now loud.** `comm`'s `send_to_peer`/`send_to_bootstrap`
+**return** their `CommErr` rather than discarding it (four call sites now log or propagate, two of which
+is where the change is visible on a running node), and `ocapn`'s `send_abort` — whose thirteen callers all
+already return an error naming the reason, so there is nothing for it to do with a failure — goes through
+`chan::best_effort`, whose *name* states the decision the `let _ =` hid. The named door is the honest
+exception to a class with no allow-list, and it is written down as one: what the class forbids is the
+silent shape, not the decision.
+
+**Falsifiers.** `chan::tests::a_send_to_a_gone_receiver_moves_the_counter_and_the_old_shape_does_not` runs
+the old shape **beside** the new door inside one test: the old one drops the value and moves the counter
+not at all, the door moves it once for the same event. That control is kept in the tree rather than
+described. `a_full_buffer_drops_the_value_without_counting_a_receiver_that_still_listens` pins the
+distinction above. The class was shown to bite both ways — three findings on a planted site, and its own
+probe's failure on a deliberately broken pattern:
+
+```
+/…/tools/audit-discard-probe.txt:-: the pattern matched 0 of the 2 probe shape(s) — a class that stopped
+matching reports the same green as a class with nothing to find
+```
+
+`cargo test --lib` is green across all seven touched crates (100/135/119/56/408/317/239, 0 failed);
+clippy with CI's allow-list is clean; the full gate is green.
+
+**What is not here.** The counter is the **source half**, exactly as C249's F-U9-03 was when it landed:
+readable in process, not yet on `/api/status`. That is the next increment, and until it lands "counted but
+not yet published" is the honest description — the same sentence, and the same owed step, that the lock
+module carries.
