@@ -331,7 +331,6 @@ def soft_checkpoint_delta(before, after):
 def bench_deploys(args, container):
     print(f"==> deploys: {args.deploys} signed deploys, concurrency {args.concurrency}")
     shard = (status().get("shardId") or "/root")
-    valid_after = height() or 0
     lock = threading.Lock()
     submitted = []          # (id, t_submit, client_seconds)
     failures = []
@@ -347,6 +346,13 @@ def bench_deploys(args, container):
             # A unique term per deploy: the node refuses a replayed deploy id, so a repeated term
             # would be rejected by the pool rather than measured.
             term = f'@"bench-{w}-{n}"!({n})'
+            # Anchor each deploy to the chain height at submission time. A single height captured
+            # before a long load ages the earliest deploys across DEPLOY_LIFESPAN while the chain is
+            # still processing later submissions; #144's first preregistered arm exposed the node's
+            # separate pool/validation boundary bug that way. Per-submit anchoring is also what
+            # `tools/devnet.sh deploy` does, and keeps this performance arm from manufacturing stale
+            # deploys as client-side load progresses. The checkpoint decision thresholds are unchanged.
+            valid_after = height() or 0
             did, client_dt, err = one_deploy(
                 container, args.deployer_key, f"bench-{w}.rho", term, valid_after, shard,
                 native_rnode=args.native_rnode)

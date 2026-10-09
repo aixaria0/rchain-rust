@@ -113,6 +113,22 @@ inside the work unit that owns it.
 
 A void attempt is preserved and named; it is not silently replaced.
 
+### Post-void rerun amendment — client anchor only, thresholds unchanged
+
+The first three-run arm on `74cda38f14e14ab34f03b75d9989ae1f0c38c94d` is preserved under
+`spec/audit/evidence/n144-soft-checkpoint/74cda38f14-20261009T045442Z/` and is **void**: only
+95/200, 96/200 and 99/200 deploys processed, and every attempt hit the same self-validation failure at
+block 51 (`a deploy has expired`). The harness had captured one `valid_after_block_number` before all
+200 submissions, so the earliest deploys were deliberately allowed to age while later submissions kept
+advancing the chain. That exposed a real node-side pool/validation boundary defect, but it makes the arm
+invalid for pricing checkpoints.
+
+For the rerun, the client refreshes `valid_after_block_number` from the current height **for each signed
+deploy**, matching `tools/devnet.sh deploy`. This changes only the load generator's freshness anchor; it
+does not change the node, scheduler, checkpoint instrumentation, number of deploys, concurrency, metrics,
+void conditions, or any frozen decision threshold above. The original void arm remains evidence and is
+not replaced.
+
 ## What this does not claim
 
 - It is not a production TPS number or a multi-validator capacity plan.
