@@ -4,6 +4,7 @@ on:
     paths:
       - "tools/reconcile-network.sh"
       - "tests/reconcile-docker-lifecycle.sh"
+      - "tests/reconcile-regression.py"
       - ".github/workflows/reconcile-docker.yml"
   workflow_dispatch:
 permissions:
@@ -16,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run deterministic reconciliation regressions
+        run: python3 tests/reconcile-regression.py
       - name: Verify Docker engine
         run: docker info
       - name: Exercise recovery on disposable Docker resources
