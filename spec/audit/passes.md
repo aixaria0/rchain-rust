@@ -8272,3 +8272,42 @@ reset and not a no-op. The restart-shaped test the design review asked for — c
 rebuild the manager the way boot does — is **owed**: the in-memory manager a unit test can build
 hands back the same store object, so "rebuild the manager" is not a restart there, and doing it
 honestly needs the LMDB manager.
+
+---
+
+## 80. The gate's three instrument findings: what was deleted, what is now printed, what is decided (C255)
+
+**The audit's instrument findings were about the *gate*, not the code**, and they are the reason its
+green result was weaker than it read. Three of them, and C255's `owes` enumerates them; this pass
+closes two and decides a third.
+
+**(I1 → B1) The baseline is deleted, not wired back.** `tools/type-system-baseline.tsv` had drifted
+**128 sites** below what the gate measures (its own header records AUDIT F-16 and the reason it was
+abandoned as a ratchet), and nothing read it for a verdict — so its only remaining effect was to print
+a comparison against a number that was wrong. A record that cannot be right and is not checked is worse
+than no record: it reads as a ratchet to anyone who does not read the code. Deleted, with the reason in
+the gate where the decision lives, and the dead `ratchet_failures` counter with it. `ratchet()` is now
+a pure "measured N sites" print.
+
+**(I2 → B2) The panic class's limit is printed on every run.** A green panic class is evidence about
+the **sites the allow-list lists**, never about the ingress discipline that keeps each one unreachable.
+The audit's L1 found that limit by re-walking all 29 entries with C97's question; no run on a later day
+could have found it. The caveat lived in the file's header, where a reader looking at a green build
+does not go, and it is now two lines in the summary of every run.
+
+**(I3 → B3) The key's coarseness is now stated rather than silently assumed.** An entry is keyed on
+`file;;regex` — on *text*, never on a line number, because a line-keyed entry fails **open** — so one
+entry can cover several sites of identical text in one file. The run now says so, and says what the
+staleness check does and does not prove: each key claimed at least one site, not exactly one. The
+per-entry half (an entry *stating* that it covers a shape) is not done; the class's limit is.
+
+**(Clause four, decided rather than left unassessed.)** `unwrap_used` is **redundant with the panic
+class**, and strictly weaker: that class already fails the build on any production `.unwrap()` outside
+its 29 entries, so a lint that flags the same shape adds a second gate over the same sites. The
+`let_underscore_must_use` option is **not redundant** — it is the closed-channel silence of C254's E6b
+(`let _ = tx.send(…)`), a different class, and it belongs with that unit's remaining half rather than
+here.
+
+**Negative control, run rather than asserted.** A production `.unwrap()` appended to
+`shared/src/string_ops.rs` makes the gate print `FAIL: 1 hard violation(s) (panic/unsafe/silent/escape)
+in production code` and exit non-zero; removed, it is green.
