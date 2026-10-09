@@ -53,6 +53,60 @@ pub fn message_from_block_metadata(
     })
 }
 
+/// **A fringe record is a function of its fringe key** (C215).
+///
+/// `FringeData`'s identity *is* its key: its `Hash` impl hashes `fringe_hash` and nothing else, and
+/// the Scala it mirrors says the same ("uniquely identified by the hash of its fringe hashes"). The
+/// store is therefore `key → value(key)` — and `insert` wrote it last-write-wins, so two blocks that
+/// finalise **the same fringe set** and arrive carrying different reports left a record decided by
+/// arrival order. Two nodes holding the same blocks then read different values:
+/// `merging.rs::rejections_for` turns the difference into different `accepted_finally` sets (so the
+/// merge's own outcome differs — `casper/tests/merge_determinism.rs`), and
+/// `multi_parent_casper.rs::get_pre_state_for_parents` reads `state_hash` straight into a block's
+/// pre-state, which is the `state-hash disagreement on pre-state` the TE-1 incident logged.
+///
+/// The join below is commutative, associative and idempotent, so **every arrival order reaches the
+/// same record**:
+///
+/// - the rejection sets and `fringe_diff` are **unioned** — monotone, so the merges that read them
+///   can only ever reject *more* of what some finalising block rejected, which is the fail-closed
+///   direction;
+/// - `state_hash` cannot be joined, so it is settled deterministically by taking the **smaller**. A
+///   disagreement is not a correction but two claims about one fringe, i.e. a divergence already in
+///   progress: the caller reports it, and the value carries no meaning once they differ — what
+///   matters is that every node holding these blocks reaches the same one.
+///
+/// Both arguments are records for one key: the caller reads `existing` out of the store *by* the key
+/// `incoming` was built for, so `fringe` and `fringe_hash` agree by construction and are taken from
+/// the existing record without a check.
+fn join_fringe_records(existing: &FringeData, incoming: &FringeData) -> FringeData {
+    FringeData {
+        fringe_hash: existing.fringe_hash,
+        fringe: existing.fringe.clone(),
+        fringe_diff: existing
+            .fringe_diff
+            .union(&incoming.fringe_diff)
+            .copied()
+            .collect(),
+        state_hash: existing.state_hash.min(incoming.state_hash),
+        rejected_deploys: existing
+            .rejected_deploys
+            .union(&incoming.rejected_deploys)
+            .cloned()
+            .collect(),
+        rejected_blocks: existing
+            .rejected_blocks
+            .union(&incoming.rejected_blocks)
+            .copied()
+            .collect(),
+        rejected_senders: existing
+            .rejected_senders
+            .union(&incoming.rejected_senders)
+            .cloned()
+            .collect(),
+    }
+}
+
 /// The concrete block DAG storage (port of `BlockDagKeyValueStorage`). Fringe pruning (the
 /// `BlockIndex` cache) and deploy-pool expiry run on finalization.
 pub struct BlockDagKeyValueStorage {
@@ -719,6 +773,34 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 fringe_hash
             );
         }
+        // **C215: the value at a fringe key must be a function of that key.** A record already stored
+        // under this key is joined with, not overwritten — see `join_fringe_records`. Read from the
+        // store rather than from the in-memory map because the store is the single source of truth
+        // (`rebuild_representation` reloads from it), and the two are otherwise identical.
+        let fringe_data = match self
+            .fringe_data_store
+            .get(&[fringe_hash])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+        {
+            Some(existing) if existing != fringe_data => {
+                if existing.state_hash != fringe_data.state_hash {
+                    eprintln!(
+                        "[fringe-divergence] block {} finalises a fringe already recorded with a \
+                         different state {} vs {} — two blocks disagree about one fringe's state. \
+                         The smaller is kept so that every node holding these blocks holds the same \
+                         record, and the rejection sets are unioned (C215)",
+                        block.block_hash.to_hex(),
+                        existing.state_hash.to_hex(),
+                        fringe_data.state_hash.to_hex(),
+                    );
+                }
+                join_fringe_records(&existing, &fringe_data)
+            }
+            _ => fringe_data,
+        };
         self.fringe_data_store
             .put(&[(fringe_hash, fringe_data.clone())])
             .await?;

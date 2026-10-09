@@ -1,42 +1,40 @@
-//! **C215 over the real storage**: does the merge's answer depend on the order a node received the same
-//! blocks in? Two DAGs, one block set, two arrival orders — and the only difference is the one the row's
-//! own note said could not exist.
+//! **C215**: does a node's answer depend on the order it received the same blocks in? Two DAGs, one
+//! block set, two arrival orders — and `fringe_states` is where the row's own note said no difference
+//! could exist.
 //!
-//! The row's note (`spec/findings.tsv`, C215) reasons that "delivery order alone is not a difference
-//! between two nodes — only different *content* is", because `child_map`, `msg_map` and the height map are
+//! The note (`spec/findings.tsv`, C215) reasons that "delivery order alone is not a difference between
+//! two nodes — only different *content* is", because `child_map`, `msg_map` and the height map are
 //! `BTreeMap`/`BTreeSet` over the same set, and `latest_msgs` is order-sensitive only on a tie, which the
 //! H-1 gate refuses before any write. That reasoning is right about those four, and it misses a fifth map
 //! in the merge's input: **`fringe_states`**.
 //!
 //! `FringeData` is keyed by `fringe_hash_of(fringe_set)` and carries **per-block** values —
-//! `state_hash`, `rejected_deploys`, `rejected_blocks`, `rejected_senders` (`models/src/fringe_data.rs`),
-//! and its `Hash` impl hashes only the key. So the map's value is not a function of its key: two blocks
-//! that finalise **the same fringe set** but disagree about that set's state are the *same key*, and the
-//! write is last-write-wins (`casper/src/dag.rs`). Two nodes that received those two blocks in different
-//! orders therefore hold different `fringe_states[K]`, hold the same everything else, and read that map
-//! unconditionally — for the merged base state (`multi_parent_casper.rs::get_pre_state_for_parents`) and
-//! for the rejection sets (`merging.rs::rejections_for`).
+//! `state_hash`, `rejected_deploys`, `rejected_blocks`, `rejected_senders` (`models/src/fringe_data.rs`)
+//! — while its `Hash` impl hashes only the key, i.e. the type's own identity *is* the key. Two blocks
+//! that finalise **the same fringe set** but carry different reports are therefore the *same key* with
+//! two values, and `insert` used to resolve that last-write-wins: two nodes holding the same blocks in
+//! different orders held different `fringe_states[K]`, and read it unconditionally — for the merged base
+//! state (`multi_parent_casper.rs::get_pre_state_for_parents`) and for the rejection sets
+//! (`merging.rs::rejections_for`).
 //!
-//! That is not exotic. It is *the incident*: four blocks at one height, the same justification, four
-//! different state hashes, and each node rejecting the others' on
-//! `state-hash disagreement on pre-state: block #104` (`spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md`).
+//! **The fix, and what it is falsified by.** `insert` now *joins* a record already stored at a key with
+//! the incoming one instead of overwriting it — the rejection sets and `fringe_diff` by union (monotone,
+//! so the merges reading them can only reject more), `state_hash` by a deterministic tie-break, since
+//! hashes cannot be joined (see `casper/src/dag.rs::join_fringe_records`). The join is commutative,
+//! associative and idempotent, so every arrival order reaches one record. Two tests are the falsifier and
+//! are **red before it, green after**:
 //!
-//! **What this file claims, stated so it cannot be read as more.** It is a **storage-level
-//! counterexample** to the premise C215's own note rests on ("delivery order alone is not a difference
-//! between two nodes"), and a **candidate mechanism** for the incident — not a reproduction of TE-1
-//! through block validation. The blocks here are metadata: their `fringe` and `fringe_state_hash` are
-//! the *receiver's* derived values, which is what the defect is about, but they never pass through
-//! `validate`, and the second test reads the rejection input one link short of `MergeScope::merge`
-//! (which needs a `RhoHistoryRepository`; `casper/tests/common::build_runtime_manager` supplies one, so
-//! the full-path version is buildable and is owed — see the PR discussion). A reader who wants the
-//! incident reproduced end to end does not have it here.
+//! 1. [`two_arrival_orders_of_one_block_set_leave_one_fringe_cache`] — the storage, through the
+//!    production `insert`.
+//! 2. [`the_same_validated_blocks_merge_identically_in_both_arrival_orders`] — the merge's own entry
+//!    point, with block states the runtime computes.
 //!
-//! **What this file measures, and what it does not.** It measures the storage: that two arrival orders
-//! leave two different caches for one block set. The second link in the chain — that a different cache
-//! yields different rejection sets for one scope — is the unit test
-//! `merging::tests::two_caches_of_one_block_set_reject_differently`, because `MergeScope::merge` needs a
-//! `RhoHistoryRepository`. Composed, the two are the defect. Neither is a model of the other's subject:
-//! this one drives the production `insert`.
+//! **What is left open, stated so it is not read as more.** The collision needs two blocks that
+//! *disagree about one fringe* — genuinely different content. Whether two honest nodes holding the same
+//! block set can ever produce such a pair is not settled here; the argument that they cannot (the merge
+//! for a fringe is a function of the DAG, so same-DAG nodes compute the same report) is reason to expect
+//! a divergence to be propagated rather than created at this level. What the join restores holds either
+//! way: the value at a fringe key is a function of that key.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -154,19 +152,21 @@ async fn insert(dag: &BlockDagKeyValueStorage, m: BlockMetadata, b: BlockMessage
     dag.insert(m, b).await.expect("the block inserts");
 }
 
-/// **Two arrival orders, one block set, two different caches.**
+/// **Two arrival orders, one block set, one fringe cache.**
 ///
 /// `p`, `x` and `y` all justify the genesis block `g` and all carry `fringe = {g}` — the same fringe
-/// *set*, so the same key `K` — while disagreeing about that set's state: `p` and `x` and `y` each claim a
+/// *set*, so the same key `K` — while disagreeing about that set's state: `p`, `x` and `y` each claim a
 /// different `fringe_state_hash`. They are three blocks at one height by three different senders, which is
 /// ordinary multi-proposer behaviour, not an offence.
 ///
 /// The two nodes insert the same four blocks in opposite orders. The assertions are ordered so the test
 /// cannot pass vacuously: the four maps that *are* functions of the block set must be **equal** (that is
-/// the premise — "the same justifications"), and the one map that is not must **differ** at `K`. If the
-/// second assertion fails, this file says nothing and C215's mechanism is refuted rather than reproduced.
+/// the premise — "the same justifications"), and the fifth, `fringe_states`, must be equal **too** —
+/// because a record at a fringe key is a function of that key. Before the join this last assertion was
+/// three assertions to the opposite effect (`state_hash` 41 on one node, 21 on the other), which is what
+/// made the merge-path test below answer differently per order.
 #[tokio::test]
-async fn two_arrival_orders_of_one_block_set_leave_different_fringe_caches() {
+async fn two_arrival_orders_of_one_block_set_leave_one_fringe_cache() {
     let g = block(1, 1, 0, 0, &[]);
     // One sender, ascending sequence numbers, as a real chain of one proposer's blocks looks.
     let p = block(2, 1, 1, 1, &[hash(1)]);
@@ -218,27 +218,30 @@ async fn two_arrival_orders_of_one_block_set_leave_different_fringe_caches() {
          where an order difference survives"
     );
 
-    // **And the difference.** One key, written three times, last write wins — so the two nodes disagree
-    // about the state at the fringe they both hold.
+    // **And the record is the same.** One key, written three times, and the value is a function of the
+    // key: `insert` joins rather than overwrites, so the arrival order cannot show through. Before the
+    // join this was three assertions to the opposite effect — node A ended on `y`'s record and node B on
+    // `p`'s, `state_hash` 41 against 21 — and that difference is what the merge-path test below turns
+    // into two different outcomes.
+    assert_eq!(
+        a.fringe_states.get(&key),
+        b.fringe_states.get(&key),
+        "**the fix**: two nodes with the same blocks hold the *same* `FringeData` at one key — a record \
+         is a function of its fringe, which is `FringeData`'s own identity"
+    );
     assert_eq!(
         a.fringe_states.get(&key).map(|f| f.state_hash),
         Some(Blake2b256Hash::from_byte_array(
-            StateHash::new([41u8; 32]).as_bytes()
-        )),
-        "the last block inserted wins the key: node A ends on y's record"
-    );
-    assert_eq!(
-        b.fringe_states.get(&key).map(|f| f.state_hash),
-        Some(Blake2b256Hash::from_byte_array(
             StateHash::new([21u8; 32]).as_bytes()
         )),
-        "and node B ends on p's record — the same key, a different value"
+        "the three writers report states 21, 31 and 41 for one fringe; they cannot be joined, so the \
+         smaller is kept — the same value on both nodes"
     );
-    assert_ne!(
-        a.fringe_states.get(&key),
-        b.fringe_states.get(&key),
-        "**the reproduction**: two nodes with the same blocks hold different `FringeData` at one key, \
-         because that map is keyed by the fringe *set* and carries a value the set does not determine"
+    assert!(
+        a.fringe_states
+            .get(&key)
+            .is_some_and(|f| f.rejected_deploys.is_empty()),
+        "and the rejection sets — empty here on all three — are unioned, not replaced"
     );
 }
 
@@ -344,39 +347,40 @@ async fn validated(
     (b, post)
 }
 
-/// **The merge's own entry point, with blocks a node would accept — and a negative result.**
+/// **The fix's falsifier: the merge's own entry point, with blocks a node would accept.**
 ///
-/// **This does NOT reproduce C215's divergence, and it is not the fix's falsifier.** It was written to
-/// be: two arrival orders, one block set, and a comparison of `MergeOutcome::state` *and*
-/// `rejected_deploys`. It passes on the unfixed tree — the two orders merge identically, with nothing
-/// rejected — so the collision the storage-level test above asserts does **not** reach this merge's
-/// decision in this construction, and why is not established. That matters for what may be claimed: with
-/// no red-before artifact, a fix for C215 has no falsifier, and writing one on an argument would be the
-/// thing this programme keeps refusing to do.
-///
-/// **What it is worth keeping for**: the invariant it asserts (the same validated blocks merge to the
-/// same state whatever order they arrived in) is the property C215 says is violated, it is checked
-/// through the real entry point with real computed states, and it would catch a regression that broke
-/// it. It is a regression test and a negative result, not evidence of a defect.
-///
-/// **And a gap it exposed**: `MergeReport`'s `conflict_chains`/`kept_chains`/`rejected_chains` count the
-/// **conflict scope only** (`conflict_set.len()`, `merging.rs:1934`), so a merge that drops a *finalised*
-/// chain reports `rejected_chains: 0` and says nothing about it. `rejected_deploys` does cover it — which
-/// is how the negative result above is even visible — but the report an operator reads does not.
+/// Two arrival orders, one block set, and a comparison of `MergeOutcome::state` *and*
+/// `rejected_deploys`. **Red before the join in `casper/src/dag.rs::insert`, green after** — the
+/// earlier version of this test passed on the unfixed tree only because its collision did not reach
+/// the merge's decision: the final-scope chain and the conflict-scope chains were unrelated, so
+/// flipping `accepted_finally`/`rejected_finally` changed nothing. `incompatible_with_final` reads
+/// `conflicts_map[x]` when `x` is accepted-finally and `dependency_map[x]` when it is rejected, so the
+/// falsifier needs a chain that **depends on `x` and does not conflict with it** — which is why `y`
+/// consumes the event `x` produces. With that, the two orders put `y` in `to_merge` on one node and in
+/// `rejected` on the other: two states, two rejected sets.
 ///
 /// `g` (genesis) → `x` (height 1) → `y`, `z` (height 2, concurrent siblings, different senders).
 ///
-/// `y` and `z` both finalise the fringe `{x}` and disagree about what that fringe rejected: `y`'s block
-/// records `x`'s deploy as rejected and `z`'s records nothing — which is what two concurrent proposers
-/// see of each other. Their `FringeData` therefore collide on `fringe_hash_of({x})` with different
-/// values, and `insert` keeps the **last one written**. Two nodes that received `y` and `z` in opposite
-/// orders hold different records at that key, and `MergeScope::merge` reads it for the **final scope**
-/// (`{x}`) to decide whether `x`'s chain is kept — `rejections_for` maps the record's rejected set onto
-/// every block of its fringe.
+/// `y` and `z` both finalise the fringe `{x}` and report that fringe differently: `y`'s block records
+/// `x`'s deploy as rejected and `z`'s records nothing. Their `FringeData` are therefore the **same
+/// key** (`fringe_hash_of({x})`) with different values. `insert` used to keep the last one written, so
+/// two nodes that received `y` and `z` in opposite orders held different records at that key;
+/// `MergeScope::merge` reads it for the **final scope** (`{x}`) to decide whether `x`'s chain is kept
+/// (`rejections_for` maps the record's rejected set onto every block of its fringe), and from there the
+/// answer differed. With the join, both orders reach one record and one answer.
 ///
-/// So the merge over the same blocks answers differently, and this compares **the answer**: the merged
-/// state hash and the rejected set. That is what review of #299 asked for and what the two tests above
-/// do not do — they feed metadata straight to `insert` and stop one link short of the merge.
+/// **What the construction's reachability leaves open.** The pair is only producible by two blocks that
+/// disagree about one fringe — genuinely different content. Whether two honest nodes holding the *same*
+/// block set can ever produce such a pair is not settled here; the argument that they cannot (the merge
+/// for a fringe is a function of the DAG, so same-DAG nodes compute the same report) is a reason to
+/// expect the divergence to be propagated rather than created at this level. The invariant the join
+/// restores — a record is a function of its key, which is `FringeData`'s own identity — holds either
+/// way, and this test is its falsifier.
+///
+/// **A gap it exposed**: `MergeReport`'s `conflict_chains`/`kept_chains`/`rejected_chains` count the
+/// **conflict scope only** (`conflict_set.len()`, `merging.rs:1934`), so a merge that drops a *finalised*
+/// chain reports `rejected_chains: 0` and says nothing about it. `rejected_deploys` does cover it, but
+/// the report an operator reads does not (AUDIT C260).
 #[tokio::test]
 async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
     let rm = common::build_runtime_manager().await;
@@ -400,7 +404,7 @@ async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
         &rm,
         &genesis_post,
         shell(0x11, 1, 1, 1, &[g.block_hash]),
-        "@\"x\"!(1)",
+        "@\"c\"!(1)",
         1,
     )
     .await;
@@ -408,7 +412,7 @@ async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
         &rm,
         &x_post,
         shell(0x21, 2, 0, 2, &[x.block_hash]),
-        "@\"y\"!(2)",
+        "for(_ <- @\"c\"){@\"y\"!(2)}",
         2,
     )
     .await;
@@ -464,13 +468,18 @@ async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
     assert_eq!(one.child_map, two.child_map);
     assert_eq!(one.height_map, two.height_map);
 
-    // **The difference**: one key, two values — the same collision the storage-level test asserts, now
-    // with blocks whose states the runtime computed.
-    assert_ne!(
+    // **The collision, and what the fix does with it.** `y` and `z` finalise the same fringe set and
+    // carry different reports, so the key is the same and the values are not: this is the collision
+    // the storage-level test asserts, now with blocks whose states the runtime computed. Before the
+    // fix the two orders left *different* records here (this assertion was `assert_ne!`, and it held),
+    // and the merge below therefore answered differently. With the join in `insert` both orders reach
+    // one record — which is what the merge's two assertions at the end then read.
+    assert_eq!(
         one.fringe_states.get(&key),
         two.fringe_states.get(&key),
-        "the two arrival orders must leave different records at the shared key, or this test says \
-         nothing about the merge below"
+        "the record at a fringe key is a function of that key, so the two arrival orders must leave \
+         the same one — if they do not, `insert` is still last-write-wins and the merge below will \
+         diverge"
     );
 
     // The indexes the merge reads, built from the runtime's own sidecars.
@@ -522,7 +531,7 @@ async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
 
     // **The reproduction, and the fix's falsifier.** Two nodes holding the same validated blocks and
     // differing only in arrival order must merge to the same state and reject the same deploys. This
-    // asserts that property; it fails on a tree where `fringe_states` keeps the last write.
+    // asserts that property; it fails on a tree where the record at a fringe key keeps the last write.
     assert_eq!(
         outcome_one.state, outcome_two.state,
         "the same validated block set merged to two different states, decided by arrival order"
