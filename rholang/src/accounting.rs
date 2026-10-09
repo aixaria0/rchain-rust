@@ -276,6 +276,26 @@ impl Costs {
     pub fn to_string_cost(len: i64) -> Cost {
         Cost::new(len, "toString")
     }
+    /// Cost of a bitwise method (RCHIP #12) on an `Int`: a word operation, priced as `+`.
+    pub fn bitwise_int_cost(what: &str) -> Cost {
+        Cost::new(3, what)
+    }
+    /// Cost of a bitwise method on a `BigInt` or `ByteArray`: the bytes walked (the larger operand,
+    /// or for a left shift the result's size), never less than one.
+    pub fn bitwise_cost(bytes: i64, what: &str) -> Cost {
+        Cost::new(bytes.max(1), what)
+    }
+    /// [`Self::big_int_size`] of `x << n`, computed from `x`'s magnitude bit width without building
+    /// the result: the shift adds exactly `n` bits, so the size is taken over the *total* width
+    /// (`x`'s remaining bits and the shift can cross a byte boundary together, which summing
+    /// `big_int_size(x)` and `n / 8` misses).
+    pub fn shift_left_result_size(x_bits: u64, n: u64) -> i64 {
+        // Zero shifted is still zero: no width is added.
+        if x_bits == 0 {
+            return 1;
+        }
+        i64::try_from(x_bits.saturating_add(n) / 8 + 1).unwrap_or(i64::MAX)
+    }
     pub fn to_list_cost(size: i64) -> Cost {
         Cost::new(size, "toList")
     }
