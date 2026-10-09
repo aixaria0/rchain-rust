@@ -16,6 +16,13 @@
 #   silent  — silent defaulting of a fallible numeric conversion: `try_into().unwrap()`,
 #             `try_into().expect(`, `try_into().unwrap_or(`, `try_from(..).unwrap_or(`,
 #             `..parse(..).unwrap_or(`. A fallible conversion must not be flattened to 0/Default.
+#             **And, since 2026-10-09, an awaited fallible call whose error is erased into an
+#             absence**: `.await.ok()` and `.await.unwrap_or_default()`. That shape is what the
+#             failure-mode worksheet's F-U8-01 found at one store read — a `None` a caller reads as
+#             "there is nothing here" when the truth is "the store could not answer" — and it was at
+#             four more sites when the rule was written. It is narrow on purpose: `.ok()` and
+#             `unwrap_or_default()` are common and mostly legitimate, so the *rule* is "an I/O call's
+#             error erased into an absence", not "the method exists".
 #   escape  — a refinement newtype surrendering its invariant. Four forms, all scoped to the files
 #             that hold the refinements (`REFINEMENT_FILES`): an `impl … Deref … for`, a public tuple
 #             field, a public `.get()`, and — since 2026-09-24 — a **construction** of a narrow
@@ -1083,6 +1090,7 @@ scan_ctor_escapes() {
 # The exemptions are the same kind of artefact as the entries above — one line per name, with the
 # reason it is not a refinement — and an exemption that matches nothing derived is a hard failure.
 REFINEMENT_EXEMPT=(
+  'rspace/src/native_store.rs;;BlockNativeEffects;;G1;;a capability-shaped wrapper, not a narrow refinement: every `BTreeMap<u32, Vec<NativeStoreAction>>` is a valid value because the key type itself is the deploy ordinal. `from_drain` refuses unattributed writes at the drain boundary, but `from_map` is total over the wrapper inner domain'
   'crypto/src/public_key.rs;;PublicKey;;G1;;a wrapper, not a refinement: `PublicKey::new(bytes: Vec<u8>)` accepts any bytes, so there is no domain a validator could establish. Recorded as a finding rather than fixed — `crypto/` is another writer'"'"'s lane, and a 65-byte key would make this a refinement with a validator'
   'crypto/src/encryption/x25519.rs;;StaticKey;;G1;;a wrapper, not a refinement, for the same reason `PrivateKey` is one: `StaticKey::from_bytes([u8; 32])` accepts any 32 bytes, so there is no domain for a validator to reject anything from. What the newtype buys is a redacting `Debug` and zeroing on drop — the `PrivateKey` pair and its stated limits — not an invariant'
   'rspace/src/scheduled_space.rs;;ReleaseToken;;G1;;a marker: the field is `()`, so there is no wider domain for a validator to reject anything from'
@@ -1311,7 +1319,7 @@ run_class() {
     # the call and its method is what closes it; `from\(([^()]|\([^()]*\))*\)` allows the one level of
     # nesting `try_from(DeployDataProto::decode(bytes))` needs, and perl's `.` does not cross newlines
     # without `/s`, so nothing here can match further than it should.
-    silent)  scan_spanning silent 'try_into\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*(unwrap|expect)\(|try_(into\(\)|from\(([^()]|\([^()]*\))*\))(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))|\.parse(::<[^>]+>)?\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))' ;;
+    silent)  scan_spanning silent 'try_into\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*(unwrap|expect)\(|try_(into\(\)|from\(([^()]|\([^()]*\))*\))(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))|\.parse(::<[^>]+>)?\(\)(?:\s|\d+\t)*\.(?:\s|\d+\t)*unwrap_or\((?:\s|\d+\t)*(0|_default\(\))|\.await(?:\s|\d+\t)*\.ok\(\)|\.await(?:\s|\d+\t)*\.unwrap_or_default\(\)' ;;
     # The counted classes list through `counted_scan_sites`, so **the listing is exactly the set the
     # ratchet measures** — always, not only under `--sites`. They used to list through `scan`, which
     # keeps comments (the count strips them) and reported stripped-stream line numbers (see

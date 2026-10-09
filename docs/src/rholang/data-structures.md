@@ -106,6 +106,24 @@ Byte arrays are the bridge to hashing and signatures (used throughout the crypto
 "deadbeef".hexToBytes().length()
 ```
 
+## Bit operations
+
+Integers and byte arrays carry the bitwise operators (RCHIP #12) as methods — `|` and `~` already
+mean parallel composition and pattern negation, so the operators are spelled out:
+
+| Method | Result |
+|---|---|
+| `x.bitAnd(y)` / `x.bitOr(y)` / `x.bitXor(y)` | bitwise and / or / xor |
+| `x.bitNot()` | bitwise complement (`-x - 1` on an integer) |
+| `x.shiftLeft(n)` | `x · 2ⁿ` — exact: it promotes to `BigInt` rather than wrapping |
+| `x.shiftRight(n)` | arithmetic shift, `⌊x / 2ⁿ⌋` |
+| `x.shiftRightUnsigned(n)` | logical shift of the 64-bit word (an `Int`-range value only) |
+
+On integers they work in two's complement across `Int` and `BigInt` (`(-1).bitAnd(255) == 255`).
+`bitAnd`/`bitOr`/`bitXor`/`bitNot` also apply byte by byte to byte arrays of equal length —
+`"f00f".hexToBytes().bitXor("ffff".hexToBytes())` is `0ff0`. A shift count must be non-negative and is
+never masked: unlike Scala, `1.shiftLeft(64)` is `2⁶⁴`, not `1`.
+
 ## Collections are data, not channels
 
 A collection is a *value* — you send it, receive it, match it, and pass it around like any other name.

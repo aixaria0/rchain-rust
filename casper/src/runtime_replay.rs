@@ -36,7 +36,7 @@ use rchain_rspace::errors::RSpaceError;
 use rchain_rspace::hashing::stable_hash_provider::hash_channel;
 use rchain_rspace::internal::Datum;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
-use rchain_rspace::native_store::InMemNativeStore;
+use rchain_rspace::native_store::{InMemNativeStore, NativeWriter};
 use rchain_rspace::trace::Log;
 use rchain_rspace::util::ReplayException;
 use rchain_shared::refined::BlockHeight;
@@ -182,6 +182,12 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         // trusted set, params, derived active set) and vault balances so the replayed post-state hash
         // matches the play genesis hash.
         if !with_cost_accounting {
+            // **Block 0's own installation, named** (#280) — the same window `compute_genesis` opens,
+            // so play and replay agree about what belongs to the genesis rather than to a deploy. It
+            // is not carried in a sidecar; `NativeWriter::Genesis` states why.
+            self.runtime
+                .native_store()
+                .begin_writer(NativeWriter::Genesis);
             let native = NativeSystemState::new(self.runtime.native_store());
             native
                 .install_genesis(pos_genesis)
@@ -209,20 +215,30 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                     .await
                     .map_err(ReplayFailure::internal_error)?;
             }
+            self.runtime.native_store().end_writer();
         }
 
         let mut mergeable: Vec<NumberChannelsDiff> = Vec::new();
         for (i, term) in terms.iter().enumerate() {
-            mergeable.push(
-                self.replay_deploy_e(
+            // The deploy's ordinal is the name its native writes travel under (#280), and the window
+            // is opened **here** so the unit's own cost-accounting windows nest inside it.
+            let ordinal = u32::try_from(i).map_err(|_| {
+                ReplayFailure::internal_error("deploy count exceeds u32".to_string())
+            })?;
+            self.runtime
+                .native_store()
+                .begin_writer(NativeWriter::Deploy(ordinal));
+            let played = self
+                .replay_deploy_e(
                     term,
                     rand.split_byte(u8::try_from(i).map_err(|_| {
                         ReplayFailure::internal_error("deploy count exceeds 255".to_string())
                     })?),
                     with_cost_accounting,
                 )
-                .await?,
-            );
+                .await;
+            self.runtime.native_store().end_writer();
+            mergeable.push(played?);
             if !with_cost_accounting {
                 let native = NativeSystemState::new(self.runtime.native_store());
                 crate::genesis::seed_registry_aliases(&native)
@@ -244,8 +260,15 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             }
         }
         for (i, sd) in system_deploys.iter().enumerate() {
-            mergeable.push(
-                self.replay_block_system_deploy(
+            // The ordinal continues the block's deploy list: `state.deploys` first, then these.
+            let ordinal = u32::try_from(terms.len() + i).map_err(|_| {
+                ReplayFailure::internal_error("deploy count exceeds u32".to_string())
+            })?;
+            self.runtime
+                .native_store()
+                .begin_writer(NativeWriter::Deploy(ordinal));
+            let played = self
+                .replay_block_system_deploy(
                     sd,
                     block_number,
                     fringe_state_hash,
@@ -254,8 +277,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                         ReplayFailure::internal_error("deploy count exceeds 255".to_string())
                     })?),
                 )
-                .await?,
-            );
+                .await;
+            self.runtime.native_store().end_writer();
+            mergeable.push(played?);
         }
 
         let checkpoint = self
@@ -328,12 +352,14 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         // **The same cost-accounting window the play path opens** (AUDIT C207). It must be the same
         // window on both paths or the two sidecars would name different effects for one block, and
         // validation — which recomputes the post-state from the replay — would refuse it.
-        self.runtime.native_store().begin_cost_accounting();
+        self.runtime
+            .native_store()
+            .begin_writer(NativeWriter::CostAccounting);
         let (pre_result, pre_eval) = self
             .eval_system_deploy(&pre_charge)
             .await
             .map_err(ReplayFailure::internal_error)?;
-        self.runtime.native_store().end_cost_accounting();
+        self.runtime.native_store().end_writer();
         self.runtime.create_soft_checkpoint().await;
         if pre_eval.succeeded() {
             mergeable.extend(pre_eval.mergeable.iter().cloned());
@@ -371,7 +397,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             processed_deploy.refund_amount(),
             rand.split_byte(REFUND_SPLIT_INDEX),
         );
-        self.runtime.native_store().begin_cost_accounting();
+        self.runtime
+            .native_store()
+            .begin_writer(NativeWriter::CostAccounting);
         let (_refund_result, refund_eval) =
             self.replay_system_deploy_internal(&refund, None).await?;
         self.runtime.create_soft_checkpoint().await;
@@ -391,7 +419,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         let (_pay_result, pay_eval) = self
             .replay_system_deploy_internal(&pay_executor, None)
             .await?;
-        self.runtime.native_store().end_cost_accounting();
+        self.runtime.native_store().end_writer();
         self.runtime.create_soft_checkpoint().await;
         if pay_eval.succeeded() {
             mergeable.extend(pay_eval.mergeable.iter().cloned());
