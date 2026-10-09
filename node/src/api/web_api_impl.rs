@@ -27,8 +27,8 @@ use super::conversion::{
 };
 use super::dto::{
     ApiStatus, BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest,
-    DataAtNameResponse, DeployExecStatus, DeployRequest, ExploratoryDeployResponse, FaucetResponse,
-    NodeCapabilities, PooledDeploys, RhoDataResponse,
+    DataAtNameResponse, DeployExecStatus, DeployRequest, ExploratoryDeployResponse,
+    FaucetDripStatus, FaucetResponse, NodeCapabilities, PooledDeploys, RhoDataResponse,
 };
 use super::faucet;
 use super::rho_expr::{rho_expr_to_par, unforg_to_par};
@@ -724,10 +724,25 @@ mod tests {
             deploy_error: "preCharge: insufficient funds".to_string(),
             block: light_block_info(7),
         });
+        let reported = restarted
+            .faucet(&address)
+            .await
+            .expect("a failed replay is reported, not refused");
+        assert_eq!(reported.status, FaucetDripStatus::Failed);
+        assert_eq!(
+            reported.deploy_error.as_deref(),
+            Some("preCharge: insufficient funds")
+        );
+        assert_eq!(
+            deployed.lock().unwrap().len(),
+            2,
+            "reporting the failure submits nothing"
+        );
+        // The refund is durable, so the retry is a *new* call — and a new deploy.
         restarted
             .faucet(&address)
             .await
-            .expect("failed replay permits retry");
+            .expect("the next call retries");
         assert_eq!(deployed.lock().unwrap().len(), 3);
         assert_eq!(
             restarted.capabilities().await.unwrap().faucet_remaining,
@@ -890,11 +905,15 @@ mod tests {
         );
     }
 
-    /// A replay-time failure is different from a submission refusal: the deploy was accepted, but
-    /// the chain later proved that nothing was delivered. The next request must refund that stale
-    /// reservation and be allowed to submit again.
+    /// A replay-time failure is different from a submission refusal: the deploy was accepted, but the
+    /// chain later proved that nothing was delivered.
+    ///
+    /// **The call that discovers it says so** (#247). This used to refund and fall through to a fresh
+    /// drip, so the caller got a `200` under a *new* `deployId` and never learned the first had failed —
+    /// which is exactly how the faucet's unfunded signer stayed invisible on the live testnet. The
+    /// refund still happens, so eligibility is not consumed and the retry is the *next* call's job.
     #[tokio::test]
-    async fn a_replay_failure_does_not_consume_recipient_eligibility() {
+    async fn a_replay_failure_is_reported_and_the_next_call_retries() {
         let (sk, _) = key_and_address();
         let address = faucet_target();
         let stub = StubBlockApi::default();
@@ -902,9 +921,12 @@ mod tests {
         let deployed = stub.deployed.clone();
         let web = api(stub, Some(sk));
 
-        web.faucet(&address)
+        let first = web
+            .faucet(&address)
             .await
             .expect("first submit is accepted");
+        assert_eq!(first.status, FaucetDripStatus::Pending);
+        assert_eq!(first.deploy_error, None, "nothing has failed yet");
         assert_eq!(
             web.capabilities().await.unwrap().faucet_remaining,
             FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT
@@ -915,10 +937,34 @@ mod tests {
             block: light_block_info(5),
         });
 
-        let retry = web
+        let reported = web
             .faucet(&address)
             .await
-            .expect("replay failure releases eligibility and retries");
+            .expect("a failed replay is reported, not refused");
+        assert_eq!(reported.status, FaucetDripStatus::Failed);
+        assert_eq!(
+            reported.deploy_error.as_deref(),
+            Some("preCharge: insufficient funds (0 < 1000000)"),
+            "the outcome names the error, which is what an unfunded signer looks like"
+        );
+        assert_eq!(
+            reported.deploy_id, first.deploy_id,
+            "the response names the FAILED deploy, not a fresh one"
+        );
+        assert_eq!(
+            deployed.lock().unwrap().len(),
+            1,
+            "**the falsifier**: reporting the failure must not submit a second doomed deploy"
+        );
+        assert_eq!(
+            web.capabilities().await.unwrap().faucet_remaining,
+            FAUCET_TOTAL_BUDGET,
+            "the failed replay was refunded and nothing was re-reserved, so the whole budget is back"
+        );
+
+        // And the refund is real: the next call submits a fresh drip.
+        let retry = web.faucet(&address).await.expect("the next call retries");
+        assert_eq!(retry.status, FaucetDripStatus::Pending);
         assert_eq!(retry.amount, faucet::FAUCET_AMOUNT);
         assert_eq!(
             deployed.lock().unwrap().len(),
@@ -928,7 +974,6 @@ mod tests {
         assert_eq!(
             web.capabilities().await.unwrap().faucet_remaining,
             FAUCET_TOTAL_BUDGET - faucet::FAUCET_AMOUNT,
-            "the failed replay was refunded before the retry reservation"
         );
     }
 
@@ -1098,8 +1143,24 @@ impl WebApi for WebApiImpl {
                 .await
                 .map_err(BlockApiException)?
             {
-                CasperDeployExecStatus::ProcessedWithError { .. } => {
+                CasperDeployExecStatus::ProcessedWithError { deploy_error, .. } => {
+                    // **The drip failed, and this call says so** (#247). It used to refund and fall
+                    // through to a fresh drip, so the caller got a `200` under a *new* `deployId` and
+                    // never learned the first one had failed — which is exactly how an unfunded signer
+                    // stayed invisible on the live testnet while the playground reported success.
+                    //
+                    // The refund still happens, so #246's contract is intact: eligibility is not
+                    // consumed and the recipient may retry. The retry is just on the *next* call rather
+                    // than silently inside this one, and with an empty vault that is also what stops one
+                    // doomed deploy being minted per call.
                     self.clear_faucet_reservation(address, Some(&deploy_id), true)?;
+                    return Ok(FaucetResponse {
+                        deploy_id: base16::encode(&deploy_id),
+                        amount: faucet::FAUCET_AMOUNT,
+                        to: address.to_string(),
+                        status: FaucetDripStatus::Failed,
+                        deploy_error: Some(deploy_error),
+                    });
                 }
                 CasperDeployExecStatus::NotProcessed { status } => {
                     // A crash may have happened after the reservation was made but before
@@ -1129,6 +1190,10 @@ impl WebApi for WebApiImpl {
                             deploy_id: base16::encode(&deploy_id),
                             amount: faucet::FAUCET_AMOUNT,
                             to: address.to_string(),
+                            // The *original* signed drip, replayed — the id is unchanged and nothing
+                            // new was signed, which is what a client watching the id needs to know.
+                            status: FaucetDripStatus::Resubmitted,
+                            deploy_error: None,
                         });
                     }
                     return Err(BlockApiException(format!(
@@ -1215,6 +1280,9 @@ impl WebApi for WebApiImpl {
             deploy_id: base16::encode(&signed.sig),
             amount: faucet::FAUCET_AMOUNT,
             to: address.to_string(),
+            // Submitted, outcome unknown — poll `deploy-status/{deployId}`.
+            status: FaucetDripStatus::Pending,
+            deploy_error: None,
         })
     }
 

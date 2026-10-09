@@ -97,15 +97,25 @@ both sign the same `revVault` transfer.
 
 ```
 POST https://<node>/api/faucet   {"address": "<your REV address>"}
-→ {"deployId":"3045…","amount":30000000,"to":"1111…"}        # 30,000,000 drops = 0.3 REV
+→ {"deployId":"3045…","amount":30000000,"to":"1111…",
+   "status":"pending","deployError":null}                    # 30,000,000 drops = 0.3 REV
 ```
+
+**Read `status`.** A submission is not a delivery, and the response now says which it is: `pending`
+(a deploy was submitted, outcome not yet known — poll `deploy-status/{deployId}`), `resubmitted` (the
+same, except it is the original signed drip replayed after a crash, so the ID is unchanged), or
+`failed` — the drip named by `deployId` was processed **with an error** and nothing was delivered, with
+the reason in `deployError`. A `failed` response has submitted nothing new, so call again to retry; the
+allocation was refunded either way. This is the field that would have made an **unfunded** signing key
+visible: signing with a key whose vault is empty produces a deploy that is accepted and then fails the
+phlo pre-charge, which used to be indistinguishable from a drip on its way.
 
 That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
 needs to fund a fresh address. It is a **dev-mode** endpoint: the node must be started with
 `--dev-mode --deployer-private-key`, and it signs the transfer from that key's vault. **Without the key
 the route is not mounted at all, so a keyless node answers `404`**, and it reports `faucet: false` in
-its capability list. Once #246 lands, `faucetRemaining` reports the remaining allocation in drops;
-a dry faucet reports `faucet: false`. The 10,000 REV allocation and unresolved deploy reservations
+its capability list. `faucetRemaining` reports the remaining allocation in drops, and a dry faucet
+reports `faucet: false`. The 10,000 REV allocation and unresolved deploy reservations
 are stored in the node's data directory so ordinary process restarts preserve both. After a crash,
 an unresolved drip is retried with its original signed deploy and deploy ID; the reservation remains
 until its chain outcome can be reconciled.
