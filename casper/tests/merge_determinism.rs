@@ -21,6 +21,16 @@
 //! different state hashes, and each node rejecting the others' on
 //! `state-hash disagreement on pre-state: block #104` (`spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md`).
 //!
+//! **What this file claims, stated so it cannot be read as more.** It is a **storage-level
+//! counterexample** to the premise C215's own note rests on ("delivery order alone is not a difference
+//! between two nodes"), and a **candidate mechanism** for the incident — not a reproduction of TE-1
+//! through block validation. The blocks here are metadata: their `fringe` and `fringe_state_hash` are
+//! the *receiver's* derived values, which is what the defect is about, but they never pass through
+//! `validate`, and the second test reads the rejection input one link short of `MergeScope::merge`
+//! (which needs a `RhoHistoryRepository`; `casper/tests/common::build_runtime_manager` supplies one, so
+//! the full-path version is buildable and is owed — see the PR discussion). A reader who wants the
+//! incident reproduced end to end does not have it here.
+//!
 //! **What this file measures, and what it does not.** It measures the storage: that two arrival orders
 //! leave two different caches for one block set. The second link in the chain — that a different cache
 //! yields different rejection sets for one scope — is the unit test
@@ -190,10 +200,14 @@ async fn two_arrival_orders_of_one_block_set_leave_different_fringe_caches() {
     // two nodes really did reach the same justifications; they differ in nothing a test could confuse
     // with content.
     assert_eq!(a.dag_set, b.dag_set, "the same blocks are held");
+    // **The whole map, not its keys.** Comparing keys establishes that the two nodes hold the same
+    // *set* of message ids and nothing about the messages behind them — and a `Message` carries the
+    // sender, the sequence number, the parents, the fringe and the `seen` closure, which is most of
+    // what a merge reads. Reviewing #299 caught the weaker form here; the stronger one is also the
+    // simpler one.
     assert_eq!(
-        a.dag_message_state.msg_map.keys().collect::<Vec<_>>(),
-        b.dag_message_state.msg_map.keys().collect::<Vec<_>>(),
-        "the same messages are held"
+        a.dag_message_state.msg_map, b.dag_message_state.msg_map,
+        "the same messages are held, keys *and* values"
     );
     assert_eq!(a.child_map, b.child_map, "the same parents");
     assert_eq!(a.height_map, b.height_map, "the same heights");
