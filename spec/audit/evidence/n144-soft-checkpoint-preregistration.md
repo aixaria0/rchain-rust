@@ -64,6 +64,8 @@ by the submitted work; the harness may use its existing explicit drain proposals
 backlog is not mistaken for a throughput failure. The reading is the runtime-counter delta, not the
 height rate.
 
+The canonical automation for these exact three attempts is `.github/workflows/n144-soft-checkpoint-campaign.yml`. It runs the Docker arm above unchanged on an Ubuntu runner, preserves all three raw JSON files, derives the frozen decision mechanically, and uploads both raw and derived evidence as one artifact. The workflow changes no threshold or void condition.
+
 ### Execution wrapper (frozen before the first measurement)
 
 The reference command above uses Docker because that is how `tools/devnet.sh` normally packages the

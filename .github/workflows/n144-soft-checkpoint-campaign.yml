@@ -1,0 +1,119 @@
+name: "#144 soft-checkpoint campaign"
+
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  campaign:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 283
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build instrumented rnode image
+        run: tools/devnet.sh build
+
+      - name: Run three pre-registered fresh-devnet attempts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/n144-soft-checkpoint
+          cleanup() { tools/devnet.sh down -v >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          for attempt in 1 2 3; do
+            cleanup
+            tools/devnet.sh up --validators 1 --fresh --no-autopropose
+            python3 tools/devnet-bench.py \
+              --validators 1 \
+              --only deploys \
+              --deploys 200 \
+              --concurrency 4 \
+              --json "target/n144-soft-checkpoint/run-${attempt}.json"
+            cleanup
+          done
+
+      - name: Derive frozen decision
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, statistics
+          from pathlib import Path
+
+          root = Path('target/n144-soft-checkpoint')
+          rows = []
+          for path in sorted(root.glob('run-*.json')):
+              doc = json.loads(path.read_text())
+              deploys = doc.get('deploys', {})
+              census = deploys.get('soft_checkpoints', {})
+              rows.append({
+                  'file': path.name,
+                  'tree': doc.get('tree'),
+                  'submitted': deploys.get('submitted'),
+                  'processed': deploys.get('processed'),
+                  'snapshots_per_deploy': census.get('snapshots_per_deploy'),
+                  'checkpoint_ms_per_deploy': census.get('checkpoint_ms_per_deploy'),
+                  'deploy_unit_ms_per_deploy': census.get('deploy_unit_ms_per_deploy'),
+                  'fraction': census.get('checkpoint_fraction_of_deploy_unit'),
+                  'available': census.get('available'),
+                  'reason': census.get('reason'),
+              })
+
+          if len(rows) != 3:
+              raise SystemExit(f'expected 3 runs, found {len(rows)}')
+
+          void = []
+          for row in rows:
+              if not row['available']:
+                  void.append(f"{row['file']}: census unavailable ({row['reason']})")
+              if row['snapshots_per_deploy'] is None or row['snapshots_per_deploy'] < 3.5:
+                  void.append(f"{row['file']}: snapshots/deploy={row['snapshots_per_deploy']}")
+              if row['submitted'] and (row['processed'] or 0) / row['submitted'] < 0.9:
+                  void.append(f"{row['file']}: processed={row['processed']}/{row['submitted']}")
+
+          lines = ['# #144 soft-checkpoint campaign summary', '']
+          lines.append('| run | tree | processed | snapshots/deploy | checkpoint ms/deploy | deploy-unit ms/deploy | fraction |')
+          lines.append('|---|---|---:|---:|---:|---:|---:|')
+          for row in rows:
+              frac = row['fraction']
+              lines.append(
+                  f"| {row['file']} | `{row['tree']}` | {row['processed']}/{row['submitted']} | "
+                  f"{row['snapshots_per_deploy']!s} | {row['checkpoint_ms_per_deploy']!s} | "
+                  f"{row['deploy_unit_ms_per_deploy']!s} | " + (f"{100*frac:.3f}%" if frac is not None else 'n/a') + ' |'
+              )
+
+          lines += ['', '## Frozen decision', '']
+          if void:
+              decision = 'VOID'
+              lines += ['**VOID**', ''] + [f'- {x}' for x in void]
+          else:
+              median = statistics.median(row['fraction'] for row in rows)
+              if median >= 0.10:
+                  decision = 'candidate-1-ablation'
+                  text = 'Candidate 1 earns the first behavior-preserving ablation.'
+              elif median < 0.05:
+                  decision = 'candidate-2-next'
+                  text = 'Candidate 1 is not the cheapest first lever; instrument candidate 2 next.'
+              else:
+                  decision = 'repeat-1000'
+                  text = 'Inconclusive; repeat at 1,000 deploys before choosing.'
+              lines += [f'Median checkpoint fraction: **{100*median:.3f}%**.', '', f'**Decision: {decision}.** {text}']
+
+          (root / 'summary.md').write_text('\n'.join(lines) + '\n')
+          print('\n'.join(lines))
+          PY
+
+      - name: Upload raw evidence and derived summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: n144-soft-checkpoint-${{ github.sha }}
+          path: target/n144-soft-checkpoint/
+          if-no-files-found: error
+          retention-days: 14
