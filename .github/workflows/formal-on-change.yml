@@ -55,10 +55,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Coq
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y coq
+        # **Bounded, because an unbounded apt holds the job.** On 2026-10-09 this step stalled for 21
+        # minutes on a pull request while the identical step of the scheduled run completes in 20
+        # seconds: a runner whose `apt-get` hangs burns the job's whole 60-minute timeout, and the run
+        # then reads as "the Lean build is slow" rather than "a runner is stuck". A timeout turns that
+        # into a named failure in minutes, which is the difference between a diagnosis and a mystery.
+        run: sudo timeout 300 apt-get update && sudo timeout 900 apt-get install --no-install-recommends -y coq
 
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+        run: sudo timeout 300 apt-get update && sudo timeout 900 apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
