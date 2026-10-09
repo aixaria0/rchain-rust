@@ -44,13 +44,20 @@ pub fn block_signature(b: &BlockMessage) -> bool {
     }
 }
 
+/// The one future-deploy boundary used by both block validation and proposer selection.
+/// A deploy is not yet usable in block `B` when its `valid_after_block_number` is after `B`.
+pub(crate) fn deploy_is_future_at_block(valid_after_block_number: i64, block_number: i64) -> bool {
+    valid_after_block_number > block_number
+}
+
 /// Validate that no deploy is scheduled for a future block (port of `futureTransaction`).
 pub fn future_transaction(b: &BlockMessage) -> BlockStatus {
-    if b.state
-        .deploys
-        .iter()
-        .any(|d| d.deploy.data.valid_after_block_number > i64::from(b.block_number))
-    {
+    if b.state.deploys.iter().any(|d| {
+        deploy_is_future_at_block(
+            d.deploy.data.valid_after_block_number,
+            i64::from(b.block_number),
+        )
+    }) {
         BlockStatus::ContainsFutureDeploy
     } else {
         BlockStatus::Valid

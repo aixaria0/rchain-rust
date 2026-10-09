@@ -390,10 +390,11 @@ impl BlockDagKeyValueStorage {
         }
     }
 
-    /// Expire deploys from the pool before the next candidate block reaches the validator's
-    /// inclusive expiry boundary (port of `removeExpiredFromPool`). Without this the pool grows
-    /// without bound; with a looser boundary, the proposer can select a deploy its own validator
-    /// rejects.
+    /// Expire deploys the current tip already rejects (`valid_after <= latest - lifespan`).
+    /// The proposer applies the same predicate at the *next* candidate height, so a deploy may remain
+    /// in the pool for one final height while still being excluded from a block that would reject it.
+    /// Keeping the pool GC conservative avoids deleting a deploy before the validator considers it
+    /// expired; proposer selection is the actual next-block gate.
     async fn expire_deploys(&self, latest_block_number: i64) -> Result<(), String> {
         let pooled = self.deploy_store.to_map().await?;
         let expired: Vec<DeployId> = pooled
