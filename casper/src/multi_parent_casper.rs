@@ -481,6 +481,17 @@ fn restore_is_warranted(stored: &BlockMetadata) -> bool {
         && stored.restore_attempts < RESTORE_ATTEMPT_LIMIT
 }
 
+/// **The far end of `restore_is_warranted`: this record's budget is spent and it is still failed.**
+///
+/// The node has stopped trying. `note_unrestorable_if_exhausted` reports the moment; this predicate is
+/// the moment itself, stated once so the report and the test read the same rule rather than two
+/// spellings of it that can drift.
+fn restore_budget_is_spent(record: &BlockMetadata) -> bool {
+    record.validation_failed
+        && record.failure_cause == Some(FailureCause::Divergence)
+        && record.restore_attempts >= RESTORE_ATTEMPT_LIMIT
+}
+
 /// **Clear this node's own spent failure record, if it has one** — C190's repair, and the other half of
 /// what the update path (C193) made possible.
 ///
@@ -600,6 +611,7 @@ where
         .await;
         let record = revalidated_record(&stored, outcome.ok());
         let cleared = !record.validation_failed;
+        note_unrestorable_if_exhausted(&record, &hash, source, log);
         match dag.update_metadata(record).await {
             Ok(()) if cleared => {
                 log.warn(
@@ -653,6 +665,42 @@ fn revalidated_record(stored: &BlockMetadata, fresh: Option<BlockMetadata>) -> B
             ..stored.clone()
         },
     }
+}
+
+/// **The moment a node gives up on a block, made countable** (C249's R3 gap).
+///
+/// When a `Divergence` record's revalidation budget is spent and the record is *still* failed, the node
+/// has stopped trying: `restore_is_warranted` answers `false` for it from now on, so it refuses that
+/// block and every descendant of it for the process lifetime. Until now that transition was **silent** —
+/// the scan simply `continue`d — which is the disposition pass's finding at its far end: the failure
+/// upstream is loud, and the *state* it leaves has no surface and no inverse at all.
+///
+/// **This resets nothing, on purpose.** It detects, logs and counts, so an operator can see what a reset
+/// *would* act on before one ships. #287/#294 own the net-wide reconciliation; the per-node reset is a
+/// later unit, and shipping the detector first is what makes that unit reviewable against a real
+/// denominator rather than an argument.
+fn note_unrestorable_if_exhausted(
+    record: &BlockMetadata,
+    hash: &BlockHash,
+    source: LogSource,
+    log: &Arc<dyn Log>,
+) {
+    if !restore_budget_is_spent(record) {
+        return;
+    }
+    crate::interpreter_util::note_unrestorable(&hash.to_hex(), i64::from(record.seq_num));
+    log.error(
+        source,
+        &format!(
+            "cannot restore block {} (seq {}): its revalidation budget is spent after {} attempt(s) and \
+             it still fails against this node's DAG, so this node will refuse it and its descendants for \
+             the process lifetime. Nothing resets a running node yet — an operator's only way back is \
+             deleting the shard data dir, which is a comment and not code (AUDIT C249; #287/#294)",
+            hash.to_hex(),
+            record.seq_num,
+            record.restore_attempts,
+        ),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -722,6 +770,7 @@ async fn restore_divergent_justifications<F, Fut>(
         .await;
         let record = revalidated_record(&stored, outcome.ok());
         let restored = !record.validation_failed;
+        note_unrestorable_if_exhausted(&record, j, source, log);
 
         // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
         // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
@@ -1128,7 +1177,9 @@ mod newest_justification_tests {
 
 #[cfg(test)]
 mod restore_tests {
-    use super::{restore_is_warranted, revalidated_record, RESTORE_ATTEMPT_LIMIT};
+    use super::{
+        restore_budget_is_spent, restore_is_warranted, revalidated_record, RESTORE_ATTEMPT_LIMIT,
+    };
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::block_metadata::{BlockMetadata, FailureCause};
@@ -1247,6 +1298,64 @@ mod restore_tests {
         assert_eq!(record.restore_attempts, 2);
         // Everything else is untouched — the failure is the same failure it was.
         assert_eq!(record.block_hash, stored.block_hash);
+    }
+
+    /// **The moment the node gives up, and it is the *last* attempt, not the first.**
+    ///
+    /// `restore_budget_is_spent` is the far end of `restore_is_warranted`: the record's budget is
+    /// spent *and* it still fails. Both halves matter. A record with attempts left is one the rule
+    /// will still retry; a record that has been *restored* has attempts spent but is no longer
+    /// failed, and reporting it would be the surface crying wolf over a healthy block.
+    ///
+    /// The boundary is the load-bearing part: at `LIMIT - 1` the rule fires again, at `LIMIT` it does
+    /// not, and the count of blocks the node has given up on must be the second and not the first.
+    #[test]
+    fn the_budget_is_spent_at_the_limit_and_only_for_a_record_that_still_fails() {
+        assert!(
+            !restore_budget_is_spent(&meta(true, Some(FailureCause::Divergence), 0)),
+            "a first failure still has its whole budget"
+        );
+        assert!(
+            !restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT - 1
+            )),
+            "the last attempt before the limit is still one the rule will spend"
+        );
+        assert!(
+            restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "at the limit with the record still failed, the node has stopped trying"
+        );
+        assert!(
+            restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT + 1
+            )),
+            "and it stays spent — the count is monotone and cannot un-happen"
+        );
+        assert!(
+            !restore_budget_is_spent(&meta(
+                false,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "a record that was restored has spent its attempts but is not refused — reporting it \
+             would be the surface crying wolf over a healthy block"
+        );
+        assert!(
+            !restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Attributable),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "an attributable refusal never had a budget to spend"
+        );
     }
 }
 

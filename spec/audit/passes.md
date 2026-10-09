@@ -8166,3 +8166,43 @@ both boundaries** (24, then advancing to 31), with the error counted **0 on all 
 loop must be closed after it* — and `compute_genesis` is the reference for what the genesis's own span
 is. A window closed early does not fail loudly; it silently re-labels the writes that follow, and the
 refusal only arrives much later, in a different subsystem, naming a count rather than a cause.
+
+---
+
+## 77. The node that gives up, counted — C249's detect-and-log half, shipping dark (C249, #287)
+
+**What C249 left.** The disposition pass found R3 — *reset a node that cannot heal* — absent from the
+tree: a node whose divergence survives its restore budget stays in `NodeRunning`, keeps serving, and
+refuses the block and every descendant for the process lifetime, with the only way back an operator
+deleting the shard data dir. That path exists as a **comment** (`casper/src/dag.rs:534`) and nowhere as
+code.
+
+**Why the reset is not in this commit.** It is the half that acts, and acting without knowing the
+denominator would be inventing policy. What this pass lands is the denominator: the moment a node stops
+trying becomes **observable**, and nothing resets.
+
+**The moment, stated once.** `restore_is_warranted` already decides whether a record may be retried;
+`restore_budget_is_spent` is its far end — the record is still failed, the cause is still
+`Divergence`, and the attempts are at `RESTORE_ATTEMPT_LIMIT`. It is a separate predicate rather than a
+second spelling of the condition inside the reporter, so the report and the test read one rule.
+
+**The surface.** Both restore sites — the scan of an incoming block's justifications and the node's own
+failure record (`clear_own_failure_record`) — call `note_unrestorable_if_exhausted`, which logs at
+`error` with the hash and the sequence number and moves `unrestorableRecords` /
+`unrestorableBlock` onto `/api/status` beside `finalityStall` and `nonQuietMergeReports`. The value is
+`<hash> (seq <n>)` because the count alone answers "has this happened" and not "on what", and only the
+second is actionable.
+
+**Falsifier, and why it is the right one for an R2 rung.** The observable did not exist: before this,
+nothing could ask whether a node had given up — no cell, no accessor, and no line — so the failure was
+*"loud and then nothing"* and the nothing-half was invisible. `the_budget_is_spent_at_the_limit_and_only_
+for_a_record_that_still_fails` pins the boundary (the limit is where the node stops, and a *restored*
+record must not be reported as given-up-on) and
+`the_unrestorable_surface_names_the_block_it_gave_up_on` pins that the name carries what an operator
+needs.
+
+**What remains, named so this is not read as more.** The reset primitive (`drop_above(height)`), the
+persisted rewind anchor, and the detector that *acts* are the rest of F-U5-01; the falsifier for those
+is the drill the programme names — a planted unrecoverable divergence resets and rejoins, a restorable
+one restores in place and does not reset. #287/#294 own the net-wide reconciliation; this is the
+node-side counter they will be reviewed against.
