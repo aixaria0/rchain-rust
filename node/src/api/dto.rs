@@ -51,6 +51,24 @@ pub struct FaucetRequest {
     pub address: String,
 }
 
+/// **What the node knows about a drip when it answers** (#247).
+///
+/// Submission is not delivery, and the endpoint used to return the same bare `{deployId, amount, to}`
+/// whether the drip was on its way or had already failed its phlo pre-charge — which is how an *unfunded*
+/// faucet signer stayed invisible on the live testnet while every client reported success.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaucetDripStatus {
+    /// A deploy was submitted and its outcome is not yet known; poll `deploy-status/{deployId}`.
+    Pending,
+    /// The same, except the deploy is the *original* signed drip replayed after a crash, so the id is
+    /// unchanged and nothing new was signed.
+    Resubmitted,
+    /// The deploy identified by `deployId` was processed **with an error**: nothing was delivered. The
+    /// reservation has been refunded, so a later call may retry.
+    Failed,
+}
+
 /// A faucet response: the deploy id of the transfer (poll `deploy-status/{deployId}` for the result).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +76,15 @@ pub struct FaucetResponse {
     pub deploy_id: String,
     pub amount: i64,
     pub to: String,
+    /// What the node knows about this drip *at answer time* — see [`FaucetDripStatus`].
+    pub status: FaucetDripStatus,
+    /// The replay error when `status` is `failed`, `null` otherwise.
+    ///
+    /// **The key is always present, deliberately.** The envelope register compares key *sets*, so a
+    /// `skip_serializing_if` here would drop `deployError` from the serialized shape and fail the corpus
+    /// check — and would also mean a client could not distinguish "no error" from "this node does not
+    /// report errors".
+    pub deploy_error: Option<String>,
 }
 
 /// API/node version info (port of `VersionInfo`).

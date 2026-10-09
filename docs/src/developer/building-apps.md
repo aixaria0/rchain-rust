@@ -238,8 +238,15 @@ curl -s -X POST http://localhost:40403/api/v1/faucet \
   -d '{"address": "<rev-address>"}'
 ```
 
-The response is `{ "deployId": "<hex>", "amount": 30000000, "to": "<rev-address>" }`. `deployId` is
-the deploy signature, so poll `GET /api/v1/deploy-status/{deployId}` for `ProcessedWithSuccess`, then
+The response is `{ "deployId": "<hex>", "amount": 30000000, "to": "<rev-address>", "status": "pending", "deployError": null }`.
+
+**`status` is the outcome, and it is why the response has five fields rather than three.** `pending`
+means a deploy was submitted and its result is not yet known; `resubmitted` means the same except the
+deploy is the original signed drip replayed after a crash, so `deployId` is unchanged; `failed` means the
+drip named by `deployId` was processed **with an error** and nothing was delivered — the reason is in
+`deployError`. A `failed` response submits nothing new, so call again to retry (the allocation was
+refunded). `deployId` is the deploy signature, so for a `pending` drip poll
+`GET /api/v1/deploy-status/{deployId}` for `ProcessedWithSuccess`, then
 wait until `last-finalized-block >= blockNumber` before reading the recipient balance. Submission is
 not delivery. The endpoint is **dev-mode only**. When the faucet route is not enabled, it is not mounted
 and therefore returns `404`. Requests are rate-limited to one drip per second; this change makes recipient

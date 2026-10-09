@@ -90,7 +90,7 @@ def envelopeCatalog : List EnvelopeRow :=
   , { name := "PooledDeploys", endpoint := "GET /api/v1/deploys",
       keys := ["deploys"] }
   , { name := "FaucetResponse", endpoint := "POST /api/v1/faucet",
-      keys := ["deployId", "amount", "to"] }
+      keys := ["deployId", "amount", "to", "status", "deployError"] }
   , { name := "DeployExecStatus", endpoint := "the `deployResult` body of a deploy response",
       keys := [],
       variants :=
