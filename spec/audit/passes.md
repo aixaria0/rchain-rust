@@ -8238,3 +8238,37 @@ facts** — conflating them would lose the one that nothing else reports.
 
 **What remains.** The closed-channel half (E6b): a `let _ = tx.send(…)` on a shutdown channel is the
 same silence in a different shape, ~18 sites plus the lint decision, and it is not in this commit.
+
+---
+
+## 79. A merge had two commit points, and a crash between them landed on an ancestor (C258, L2)
+
+**What the programme's L2 named**, and what measuring it found. The entry claim was that
+`record_root` (`rspace/src/history/roots_store.rs`) writes `root → ROOT_TAG` and
+`CURRENT_ROOT → root` as two `put`s and that `shared/src/lmdb.rs` opens one transaction per call — so a
+crash between them leaves `CURRENT_ROOT` naming a root the store does not hold. That is true, and it is
+the **smaller** half: the two pairs are now one call, which is one transaction, which makes the pair
+atomic rather than merely adjacent.
+
+**The larger half is the merge, and it is not in that file.** `HistoryRepository::reset` calls
+`validate_and_set_current_root(root)` and then resets the history — so a reset *publishes* the root it
+resets to. That is right for a caller whose new root **is** its base: a rewind, a rejoin, a replay.
+It is wrong for the merge, which is `reset(base)` and then real work — the mergeable-channel overrides,
+`compute_trie_actions`, and only then `do_checkpoint_with_native`, where the merged trie finally exists.
+With `reset`, `CURRENT_ROOT` had already advanced to the base before any of that began. **A crash
+between the two commit points left the node naming an ancestor** — neither the pre-merge nor the
+post-merge state, and no record anywhere that a merge had been in flight.
+
+**The fix is the split, and it keeps the check.** `reset_volatile` performs the same refusal `reset`
+gives an unknown root (`validate_known_root` → `RootsStore::is_known_root`) and does not write. The
+merge resets through it, so it has **one** commit point, and it is the one where the merged state is
+real. Nothing about the ordinary path changes.
+
+**Falsifier, at the level where the difference is observable.**
+`root_repository::tests::validate_known_root_refuses_without_publishing`: two recorded roots make
+"the current root did not move" a real assertion, which a fresh repository (knowing exactly one root)
+cannot. `a_volatile_reset_still_validates_and_still_moves_the_view` pins that the volatile reset is a
+reset and not a no-op. The restart-shaped test the design review asked for — checkpoint, drop and
+rebuild the manager the way boot does — is **owed**: the in-memory manager a unit test can build
+hands back the same store object, so "rebuild the manager" is not a restart there, and doing it
+honestly needs the LMDB manager.
