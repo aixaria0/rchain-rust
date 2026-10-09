@@ -39,6 +39,7 @@ use rchain_models::casper::protocol::casper_message::{
 };
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
+use rchain_rholang::merging::SidecarRecord;
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::refined::NonNegI64;
@@ -352,14 +353,21 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
             i64::from(block.seq_num),
         )
         .await
-        .expect("a readable native sidecar");
-    assert_eq!(
-        recorded.as_deref(),
-        Some(&[][..]),
-        "a block whose only native effect is cost accounting saves an empty sidecar: the merge \
-         re-derives that effect from the accepted deploys (AUDIT C207), and carrying it here is what \
-         used to make every user-deploy block overlap every concurrent sibling on `pos:vault`"
-    );
+        .expect("a readable native sidecar")
+        .expect("a played block records a sidecar");
+    // **An empty *attributed* record, and the difference is the point** (#280). A record that is
+    // empty because it attributes nothing is not the same value as one written before attribution
+    // existed — the second would be a block-level set, which is what the loader refuses. Asserting
+    // only "empty" would pass for either.
+    match recorded {
+        SidecarRecord::Attributed(effects) => assert!(
+            effects.is_empty(),
+            "a block whose only native effect is cost accounting saves an empty sidecar: the merge \
+             re-derives that effect from the accepted deploys (AUDIT C207), and carrying it here is \
+             what used to make every user-deploy block overlap every concurrent sibling on `pos:vault`"
+        ),
+        other => panic!("a played block's sidecar must be attributed; got {other:?}"),
+    }
 
     let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
         {
@@ -385,8 +393,17 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     )
     .await
     .expect("the block index");
+    // **On its chain, and empty** (#280). The index no longer has a block-level native set at all:
+    // every effect is placed on the chain that carries its deploy, so "the block's own native writes"
+    // is now read as the union of its chains' — which for this block is empty for the same reason the
+    // sidecar above is (AUDIT C207).
+    let indexed: Vec<&rchain_rspace::native_store::NativeStoreAction> = index
+        .deploy_chains
+        .iter()
+        .flat_map(|c| c.native_effects.iter())
+        .collect();
     assert!(
-        index.native_changes.is_empty(),
+        indexed.is_empty(),
         "the index carries the block's *own* native writes and no others, so for this block it is \
          empty — the same first half as the sidecar above, and the same reason (AUDIT C207)"
     );
@@ -435,7 +452,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
             }
         }
     };
-    let (merged, _rejected) = MergeScope::merge(
+    let merged = MergeScope::merge(
         &scope,
         Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
         &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -444,7 +461,8 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         |_| 0,
     )
     .await
-    .expect("the merge");
+    .expect("the merge")
+    .state;
 
     assert_eq!(
         merged,
@@ -628,7 +646,7 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
         conflict_scope: BTreeSet::from([a.block_hash]),
         ancestry: BTreeMap::new(),
     };
-    let (merged_alone, _) = MergeScope::merge(
+    let merged_alone = MergeScope::merge(
         &alone,
         Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
         &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -637,7 +655,8 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
         |_| 0,
     )
     .await
-    .expect("the merge of the slashing branch alone");
+    .expect("the merge of the slashing branch alone")
+    .state;
     let alone_bonds = rm
         .compute_bonds(&StateHash::from_slice(merged_alone.as_bytes()))
         .await
@@ -667,7 +686,7 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
         conflict_scope: BTreeSet::from([a.block_hash, b.block_hash]),
         ancestry: BTreeMap::new(),
     };
-    let (merged, _rejected) = MergeScope::merge(
+    let merged = MergeScope::merge(
         &scope,
         Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
         &BTreeMap::<Blake2b256Hash, FringeData>::new(),
@@ -676,7 +695,8 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
         |_| 0,
     )
     .await
-    .expect("the merge of two siblings");
+    .expect("the merge of two siblings")
+    .state;
 
     let bonded_after = rm
         .compute_bonds(&StateHash::from_slice(merged.as_bytes()))

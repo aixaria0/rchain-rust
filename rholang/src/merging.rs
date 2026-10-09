@@ -16,7 +16,7 @@ use rchain_rspace::history::history_reader::HistoryReader;
 use rchain_rspace::hot_store_trie_action::HotStoreTrieAction;
 use rchain_rspace::internal::Datum;
 use rchain_rspace::merger::channel_change::ChannelChange;
-use rchain_rspace::native_store::NativeStoreAction;
+use rchain_rspace::native_store::{BlockNativeEffects, NativeStoreAction};
 use rchain_rspace::serializers::scodec_serialize::{decode_datum, encode_datum_bytes};
 use rchain_rspace::trace::event::Produce;
 use rchain_shared::typed_store::Codec;
@@ -256,6 +256,13 @@ fn read_i64(bytes: &[u8], idx: &mut usize) -> Result<i64, String> {
 }
 
 /// Decode a sequence of deploy mergeable data (inverse of `encode_deploy_mergeable_data_seq`).
+///
+/// **The trailing bytes are refused** (AUDIT C256's E8). The loop stops when the count runs out, and
+/// without this check whatever follows is ignored — so a value that is longer than its own length
+/// prefix says, or one that a *different* writer produced under a longer prefix, decodes to a **silent
+/// partial** result: the merge would fold fewer channels than the block carries and no party would
+/// report it. The native-changes sidecar next door already refuses trailing bytes
+/// (`decode_native_changes`); this is the same discipline at the codec whose value a deploy controls.
 pub fn decode_deploy_mergeable_data_seq(bytes: &[u8]) -> Result<Vec<DeployMergeableData>, String> {
     let mut idx = 0usize;
     let count = read_u16(bytes, &mut idx)? as usize;
@@ -273,6 +280,14 @@ pub fn decode_deploy_mergeable_data_seq(bytes: &[u8]) -> Result<Vec<DeployMergea
             channels.push(NumberChannel { hash, diff });
         }
         seq.push(DeployMergeableData { channels });
+    }
+    if idx != bytes.len() {
+        return Err(format!(
+            "mergeable data: {} trailing byte(s) after {} deploy(s) — the length prefix says the value \
+             ends here and it does not, so decoding what is there would silently drop them",
+            bytes.len() - idx,
+            seq.len()
+        ));
     }
     Ok(seq)
 }
@@ -320,6 +335,15 @@ pub fn encode_native_store_actions(actions: &[NativeStoreAction]) -> Vec<u8> {
 /// Decode a block's native mutations (inverse of [`encode_native_store_actions`]).
 pub fn decode_native_store_actions(bytes: &[u8]) -> Result<Vec<NativeStoreAction>, String> {
     let mut idx = 0usize;
+    decode_native_store_actions_at(bytes, &mut idx)
+}
+
+/// The same decode, with a cursor — so an attributed record can carry one nested action list per
+/// deploy (#280) without re-encoding them into a separate buffer to find their lengths.
+fn decode_native_store_actions_at(
+    bytes: &[u8],
+    idx: &mut usize,
+) -> Result<Vec<NativeStoreAction>, String> {
     let read_u32 = |bytes: &[u8], idx: &mut usize| -> Result<u32, String> {
         if *idx + 4 > bytes.len() {
             return Err("native store actions: unexpected end of input".to_string());
@@ -329,24 +353,24 @@ pub fn decode_native_store_actions(bytes: &[u8]) -> Result<Vec<NativeStoreAction
         *idx += 4;
         Ok(u32::from_be_bytes(arr))
     };
-    let count = read_u32(bytes, &mut idx)? as usize;
+    let count = read_u32(bytes, idx)? as usize;
     let mut actions = Vec::with_capacity(count);
     for _ in 0..count {
-        if idx + 34 > bytes.len() {
+        if *idx + 34 > bytes.len() {
             return Err("native store actions: unexpected end of input".to_string());
         }
-        let tag = bytes[idx];
-        let prefix = bytes[idx + 1];
-        let key = Blake2b256Hash::from_byte_array(&bytes[idx + 2..idx + 34]);
-        idx += 34;
+        let tag = bytes[*idx];
+        let prefix = bytes[*idx + 1];
+        let key = Blake2b256Hash::from_byte_array(&bytes[*idx + 2..*idx + 34]);
+        *idx += 34;
         match tag {
             0 => {
-                let len = read_u32(bytes, &mut idx)? as usize;
-                if idx + len > bytes.len() {
+                let len = read_u32(bytes, idx)? as usize;
+                if *idx + len > bytes.len() {
                     return Err("native store actions: unexpected end of input".to_string());
                 }
-                let value = bytes[idx..idx + len].to_vec();
-                idx += len;
+                let value = bytes[*idx..*idx + len].to_vec();
+                *idx += len;
                 actions.push(NativeStoreAction::Put { prefix, key, value });
             }
             1 => actions.push(NativeStoreAction::Delete { prefix, key }),
@@ -358,16 +382,116 @@ pub fn decode_native_store_actions(bytes: &[u8]) -> Result<Vec<NativeStoreAction
     Ok(actions)
 }
 
-/// A codec for the native-changes store value `Vec<NativeStoreAction>`.
-pub struct NativeStoreActionsCodec;
+/// The magic that opens an **attributed** native-changes record (#280): `FF 'N' 'A' '2'`.
+///
+/// A legacy record begins with a `u32` action count, so the two formats are told apart by these four
+/// bytes — and exactly, not by luck: a legacy record would have to declare `0xFF4E4132` = 4,283,041,074
+/// actions to collide, at 34 bytes each that is ~145 GB of store value. If one ever did, the decoder
+/// takes this branch first and the attributed parse then fails with an `Err` — a loud refusal, never a
+/// silent misread of one format as the other.
+pub const NATIVE_SIDECAR_MAGIC: [u8; 4] = [0xFF, b'N', b'A', b'2'];
 
-impl Codec<Vec<NativeStoreAction>> for NativeStoreActionsCodec {
-    fn encode(&self, value: &Vec<NativeStoreAction>) -> Vec<u8> {
-        encode_native_store_actions(value)
+/// A block's native-changes sidecar, as it is stored (#280).
+///
+/// Three states, and the whole point is that they are three. `Attributed(empty)` is a block that made
+/// no native write; `LegacyUnattributed(empty)` is the same block recorded before attribution existed;
+/// and a record that cannot be decoded is an error. Collapsing any of them into another is how a
+/// block's effects come to be filed under the block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SidecarRecord {
+    /// A record written before attribution existed: a bare list belonging to the block as a whole.
+    ///
+    /// **Not usable for a block that wrote anything** — its effects cannot be attached to the deploys
+    /// that made them, which is the representation #280 removed, so a nonempty one is rejected by the
+    /// caller and the block replayed to produce an attributed record instead. An *empty* one is
+    /// accepted: there is no effect to mis-attribute.
+    LegacyUnattributed(Vec<NativeStoreAction>),
+    /// An attributed record: each deploy's writes, by its ordinal in the block's deploy list.
+    Attributed(BlockNativeEffects),
+}
+
+impl SidecarRecord {
+    /// Whether a record can be used as it stands, and why not when it cannot.
+    pub fn usable(&self) -> Result<(), String> {
+        match self {
+            SidecarRecord::Attributed(_) => Ok(()),
+            SidecarRecord::LegacyUnattributed(actions) if actions.is_empty() => Ok(()),
+            SidecarRecord::LegacyUnattributed(actions) => Err(format!(
+                "a {}-action record written before attribution existed: its effects cannot be \
+                 attached to the deploys that made them, which is the representation #280 removed",
+                actions.len()
+            )),
+        }
+    }
+}
+
+/// Encode a sidecar record (a legacy record is encoded exactly as it always was, so a round trip
+/// through this pair cannot move bytes a peer already has).
+pub fn encode_sidecar(record: &SidecarRecord) -> Vec<u8> {
+    match record {
+        SidecarRecord::LegacyUnattributed(actions) => encode_native_store_actions(actions),
+        SidecarRecord::Attributed(effects) => {
+            let map = effects.clone().into_map();
+            let mut out = NATIVE_SIDECAR_MAGIC.to_vec();
+            out.extend_from_slice(&(map.len() as u32).to_be_bytes());
+            for (ordinal, actions) in map {
+                out.extend_from_slice(&ordinal.to_be_bytes());
+                out.extend_from_slice(&encode_native_store_actions(&actions));
+            }
+            out
+        }
+    }
+}
+
+/// Decode a sidecar record — see [`NATIVE_SIDECAR_MAGIC`] for how the two formats are told apart.
+pub fn decode_sidecar(bytes: &[u8]) -> Result<SidecarRecord, String> {
+    if bytes.len() >= 4 && bytes[..4] == NATIVE_SIDECAR_MAGIC {
+        let mut idx = 4usize;
+        if idx + 4 > bytes.len() {
+            return Err("native sidecar: unexpected end of input".to_string());
+        }
+        let mut arr = [0u8; 4];
+        arr.copy_from_slice(&bytes[idx..idx + 4]);
+        idx += 4;
+        let count = u32::from_be_bytes(arr) as usize;
+        let mut map: BTreeMap<u32, Vec<NativeStoreAction>> = BTreeMap::new();
+        for _ in 0..count {
+            if idx + 4 > bytes.len() {
+                return Err("native sidecar: unexpected end of input".to_string());
+            }
+            let mut ord = [0u8; 4];
+            ord.copy_from_slice(&bytes[idx..idx + 4]);
+            idx += 4;
+            let ordinal = u32::from_be_bytes(ord);
+            let actions = decode_native_store_actions_at(bytes, &mut idx)?;
+            if map.insert(ordinal, actions).is_some() {
+                return Err(format!(
+                    "native sidecar: deploy {ordinal} appears twice, so one of the two action lists \
+                     is unreachable — the record is not one this writer could have made"
+                ));
+            }
+        }
+        if idx != bytes.len() {
+            return Err(format!(
+                "native sidecar: {} trailing byte(s) after the last deploy's actions",
+                bytes.len() - idx
+            ));
+        }
+        return Ok(SidecarRecord::Attributed(BlockNativeEffects::from_map(map)));
+    }
+    decode_native_store_actions(bytes).map(SidecarRecord::LegacyUnattributed)
+}
+
+/// A codec for the native-changes store value `SidecarRecord` (#280).
+pub struct NativeSidecarCodec;
+
+impl Codec<SidecarRecord> for NativeSidecarCodec {
+    fn encode(&self, value: &SidecarRecord) -> Vec<u8> {
+        encode_sidecar(value)
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<Vec<NativeStoreAction>, String> {
-        decode_native_store_actions(bytes)
+    fn decode(&self, bytes: &[u8]) -> Result<SidecarRecord, String> {
+        decode_sidecar(bytes)
     }
 }
 
@@ -434,6 +558,38 @@ mod tests {
         ];
         let bytes = encode_deploy_mergeable_data_seq(&seq);
         assert_eq!(decode_deploy_mergeable_data_seq(&bytes).unwrap(), seq);
+    }
+
+    /// **Trailing bytes are refused rather than silently dropped** (AUDIT C256's E8).
+    ///
+    /// The decode loop stops when the count runs out, so anything after it was ignored: a value longer
+    /// than its own prefix says decodes to a **silent partial** result, and the merge would then fold
+    /// fewer channels than the block carries with no party reporting it. That is the shape that makes
+    /// this worth a check now rather than when the collection is wired (E7): the codec is already
+    /// reachable, and the failure it hides is *silent*, which is the property this programme exists to
+    /// remove.
+    #[test]
+    fn a_mergeable_value_with_trailing_bytes_is_refused() {
+        let seq = vec![DeployMergeableData {
+            channels: vec![NumberChannel {
+                hash: h(7),
+                diff: 3,
+            }],
+        }];
+        let mut bytes = encode_deploy_mergeable_data_seq(&seq);
+        assert_eq!(
+            decode_deploy_mergeable_data_seq(&bytes).expect("the clean round trip"),
+            seq,
+            "the check must not refuse a well-formed value"
+        );
+
+        bytes.push(0x00);
+        let err = decode_deploy_mergeable_data_seq(&bytes)
+            .expect_err("a value longer than its prefix says must be refused");
+        assert!(
+            err.contains("trailing byte"),
+            "and the refusal says what it is: {err}"
+        );
     }
 
     /// The native-changes sidecar round-trips both action shapes, including an empty value and an
@@ -529,6 +685,74 @@ mod tests {
 #[cfg(test)]
 mod codec_tests {
     use super::*;
+
+    fn action(prefix: u8, seed: u8, value: Vec<u8>) -> NativeStoreAction {
+        NativeStoreAction::Put {
+            prefix,
+            key: Blake2b256Hash::from_bytes([seed; 32]),
+            value,
+        }
+    }
+
+    /// **A record written before attribution existed decodes as unattributed, and never as empty**
+    /// (#280).
+    ///
+    /// The three states have to stay three. Collapsing `LegacyUnattributed(nonempty)` into
+    /// `Attributed(..)` is how a block's effects get filed under the block — the representation the
+    /// defect lived in — and collapsing it into "empty" is how they vanish without a trace.
+    #[test]
+    fn a_legacy_sidecar_decodes_as_unattributed_and_not_as_empty() {
+        let legacy = encode_native_store_actions(&[action(0x04, 1, vec![9])]);
+        let record = decode_sidecar(&legacy).expect("a legacy record still decodes");
+        match record {
+            SidecarRecord::LegacyUnattributed(actions) => {
+                assert_eq!(actions.len(), 1, "with its actions, not dropped");
+            }
+            other => panic!("a legacy record must not read as attributed: {other:?}"),
+        }
+        // And the empty case is a *different* variant from the attributed-empty one.
+        let empty = decode_sidecar(&encode_native_store_actions(&[])).expect("an empty record");
+        assert!(
+            matches!(empty, SidecarRecord::LegacyUnattributed(ref a) if a.is_empty()),
+            "an empty legacy record is empty-legacy, not attributed-empty: {empty:?}"
+        );
+        assert!(
+            empty.usable().is_ok(),
+            "and it is usable — there is no effect to mis-attribute"
+        );
+    }
+
+    /// **The attributed form round-trips, and a damaged one is an error rather than an empty record**
+    /// (#280).
+    #[test]
+    fn an_attributed_sidecar_round_trips_and_a_damaged_one_is_not_read_as_empty() {
+        let effects = BlockNativeEffects::from_map(BTreeMap::from([
+            (0u32, vec![action(0x04, 2, vec![1, 2])]),
+            (3u32, vec![action(0x05, 4, vec![3])]),
+        ]));
+        let encoded = encode_sidecar(&SidecarRecord::Attributed(effects.clone()));
+        let decoded = decode_sidecar(&encoded).expect("a round trip");
+        assert_eq!(
+            decoded,
+            SidecarRecord::Attributed(effects),
+            "the encoding is its own inverse"
+        );
+
+        // Truncated: an `Err`, never an empty record — a decoder that answered "nothing" here would
+        // silently drop a block's native state.
+        let truncated = &encoded[..encoded.len() - 1];
+        assert!(
+            decode_sidecar(truncated).is_err(),
+            "a truncated record is an error, not an empty one"
+        );
+        // And a record whose tail is not part of any write the writer could have made.
+        let mut extra = encoded.clone();
+        extra.push(0);
+        assert!(
+            decode_sidecar(&extra).is_err(),
+            "trailing bytes mean the record is not one this writer makes: {extra:?}"
+        );
+    }
 
     /// The mergeable key and channel data are a **scodec wire format** shared with the Scala node's
     /// mergeable store, so the encodings are pinned byte-for-byte: a change here would make the Rust

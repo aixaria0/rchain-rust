@@ -633,3 +633,38 @@ the registry result slot — the same path the verified transcripts on this page
 - Certificates renew via `certbot.timer` on A (nginx authenticator), first expiry 2026-12-20.
 - To move the testnet to another host: copy `bonds.txt`, `wallets.txt`, the validator key and the
   static musl `rnode` binary. The binary is self-contained (no Docker, no runtime deps).
+
+**K8 — a deploy's write was lost at an epoch boundary, and nothing said so. FIXED 2026-10-08; a hard fork, so this chain needs a rebuild to carry it.**
+
+On 2026-10-08 a deploy landed in block 100, which is an epoch boundary on this net
+(`epoch_length = 10`) and therefore a round in which **every** validator's block runs `close_block`.
+Its write was `processedWithSuccess` and was in the state at heights 100, 101 and 102 — including the
+finalised block — and absent from 103 onward, **on every node at once**. No peer refused a block and
+no node disagreed with another, which is why the first hypothesis (C215, two nodes merging the same
+justifications to different pre-states) was wrong: the disagreement was between the chain and its own
+past, because the same round resolves differently once finality advances past it.
+
+The cause was the merge's **native** relation. It was keyed on the *host block* — the union of every
+chain that rode in on it — and a rejection was closed over the whole block
+(`reject_whole_blocks`). At a boundary that makes every concurrent pair conflict, including the pairs
+whose user chain wrote no contended slot at all, and the user chain then died with its host. The
+merge had no logger and the whole-block rule fired with no counter, so the only visible trace was the
+deploy being absent from a state that reported it as processed.
+
+**What an operator sees next time.** The relation is now on each chain's own writes, the whole-block
+rule is **deleted**, and the merge **returns** a report — the slots a rejected chain would have
+written and who won them, plus two invariants that must stay empty — which the validation path logs
+whenever the merge is not quiet. First thing to read on a stall or a state surprise:
+
+```sh
+journalctl -u rnode | grep 'merge:'     # one line per merge that rejected anything
+```
+
+**Two things this fix does not do.** It does not repair the chain it happened on — three of the four
+validators agreed on the pre-state that dropped the write, so the write is gone above height 102, and
+recovery is a rollback below height 100 or accepting the loss. And it is a **hard fork**:
+`rejected_deploys` is part of the hashed block body, so any block whose scope held a contended
+boundary hashes differently — the running chain must be rebuilt from genesis to carry it
+(`#51`, category A). The account, the raw readings and the diagnosis:
+[#280](https://github.com/rchain-community/rchain-rust/issues/280) and
+`spec/audit/evidence/n280-merge-loses-a-write-results.md`.

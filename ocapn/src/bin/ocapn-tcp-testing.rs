@@ -6,6 +6,7 @@
 //! This is a test harness, not a node feature: the transport it speaks is the suite's own
 //! explicitly-insecure one, and it exits only when killed.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -100,7 +101,7 @@ async fn main() -> std::io::Result<()> {
                     return;
                 }
             };
-            *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(context);
+            *slot.lock().unpoison() = Some(context);
             if let Err(e) = loop_.run().await {
                 eprintln!("session ended: {e}");
             }

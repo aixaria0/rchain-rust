@@ -1,0 +1,78 @@
+== Run 2 — the per-validator agreement capture, at #297's own head ==
+
+   This is the capture the review of #296 asked for: the four validators shown to agree on the same
+   finalized height, the same finalized block hash, and the same state hash — plus the genesis inputs
+   the run was started with. It is a **second, independent run**, on the tree the PR actually carries,
+   because the first run's tree (`435cf6a59`, see `nodes.txt`) is not this tree.
+
+   image commit  4ff5732133738a77fb78a3d3fb39600a502376c7
+                 (read from each node's own /api/v1/status, which reports
+                  "RChain Node 0.1.0 (4ff5732133738a77fb78a3d3fb39600a502376c7)")
+   topology      tools/devnet.sh up --validators 4 --epoch-length 10 --no-autopropose --fresh
+   genesis       fresh (--fresh), created by the bootstrap from the standard ceremony
+   epoch bounds  10 and 20 — finality below is far past both
+
+== last finalized block, per node: same height, same block hash, same state hash ==
+
+node                   height   blockHash                                                          postStateHash                                                      preStateHash
+devnet-bootstrap       161      b4f0490be6eb6e14ef39bac6a4158a9bb3cce8beda694358ba31b623329b8e91   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e
+devnet-validator-1     161      b4f0490be6eb6e14ef39bac6a4158a9bb3cce8beda694358ba31b623329b8e91   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e
+devnet-validator-2     161      b4f0490be6eb6e14ef39bac6a4158a9bb3cce8beda694358ba31b623329b8e91   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e
+devnet-validator-3     161      b4f0490be6eb6e14ef39bac6a4158a9bb3cce8beda694358ba31b623329b8e91   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e   03813e66a9130fb1ae1aa21b6b0e37182be1f9534613a2d2d5341877f959b90e
+
+   distinct finalized block hashes across the four nodes: 1
+
+   Captured by polling all four until they reported the same number *and* the same hash in the same
+   observation (it took one attempt at this height, which is itself the point: they were already
+   agreed). One block per validator per round, so a "height" counts rounds — 161 here is four blocks
+   per height, and finality is 161 with the epoch boundaries at 10 and 20.
+
+== the #293 error itself, counted on EVERY node (expect 0 everywhere) ==
+
+   devnet-bootstrap       0
+   devnet-validator-1     0
+   devnet-validator-2     0
+   devnet-validator-3     0
+
+== a user deploy was included, and it moved the state ==
+
+   block 158  a8268828c84b0af4f4eff14837898e9cfb4659aee7f1148e455c4ce8c6f62a2d  deployCount 1
+     preStateHash  77d7f2512c273a1c86d21b6ab16d9a94453dd95c2da5cf5d0bd522a43dcaa2b3
+     postStateHash 997d820c9b5130f399bd857dad7bc4d88f2f97c7da85ddc623573968b2da8426
+
+   The deploy was `examples/wallet.rho` (a save/load round trip through a private state channel), which
+   changes state; `examples/hello.rho` does not, and its blocks read pre == post. Both were submitted —
+   `hello.rho` to drive the earlier rounds, `wallet.rho` for the state move — and the difference between
+   them is visible in the block data, which is why this row is in the capture at all.
+
+== the genesis each validator was started with (read from its own mounted inputs) ==
+
+   devnet-validator-1 /genesis/bonds.txt — four bonded validators, 100 stake each:
+     04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4 100
+     04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc 100
+     04d8b6c325ae12e89823866b2a292a62d7acee520954761890a1621fef79dca1c8e8df79dd8519480e5c015ae6cf3ba7de8669e260561616a36eb9c308b5983ab0 100
+     04ea3ce04abbe780205eb5f94a82889600630ca73bd31e7a336efb6700e24c515b900dea427d3e0c0fc74a8a6d5e173331433f00df2de4b7f953c2922297c2c08e 100
+
+   devnet-validator-1 /genesis/wallets.txt — the throwaway deployer, 10^12:
+     11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYau,1000000000000
+
+   `bootstrap-sender` is the first key in the bonds file, which is the genesis block's sender below.
+   The keys are the devnet script's declared throwaway keys (its header says so: local testnet only).
+
+== the genesis block, as each node reports it ==
+
+   blockNumber 0  c01a6091fbde1a1098e7791d29818e3da81380da87f142cc74c98b2ae5d2face
+   sender      04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4
+   identical on all four (the /api/blocks/0/0 response is byte-identical across them)
+
+== status per node at the capture ==
+
+   latestBlockNumber 165 · peers 1 (bootstrap reports 3) · finalityStall None · finalityStallEpisodes 1
+   · nonQuietMergeReports 256 — on all four
+
+   The peer counts are the **star topology this devnet starts**, not a connection that dropped: `up`
+   gives each validator `--bootstrap rnode://…@devnet-bootstrap` and no other peer (`tools/devnet.sh`,
+   the validator loop), so each knows one, while the bootstrap knows the three that dialed it. That is
+   read from the start command rather than inferred from the counts — the counts alone would not
+   distinguish the topology from a peer that went away.
+

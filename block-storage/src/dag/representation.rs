@@ -3,6 +3,7 @@
 //! Mirrors `block-storage/src/main/scala/coop/rchain/blockstorage/dag/DagRepresentation.scala`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
@@ -16,6 +17,22 @@ use crate::errors::StorageError;
 
 use super::finalizer::Message;
 use super::message_state::DagMessageState;
+
+/// What a rewind to this node's own last finalized block would cost.
+///
+/// Produced by [`DagRepresentation::rewind_plan`] and reported, not acted on: the per-node reset ships
+/// dark, so an operator can see what it would drop before a build that drops it exists (C249's R3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewindPlan {
+    /// The block a reset would replay from — the highest block in the latest fringe, or `None` when
+    /// this view has no fringe at all.
+    pub anchor: Option<BlockHash>,
+    /// Where that block sits, if there is one.
+    pub anchor_height: Option<BlockHeight>,
+    /// How many blocks this view holds above the anchor (or above genesis when there is none).
+    /// Counted from the height map, so validation-failed blocks are not in it — a floor, not a count.
+    pub blocks_above: usize,
+}
 
 /// The in-memory state of the DAG — an index of the block metadata store.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +89,47 @@ impl DagRepresentation {
 
     pub fn contains(&self, block_hash: &BlockHash) -> bool {
         self.dag_set.contains(block_hash)
+    }
+
+    /// Which height this view files `hash` under, or `None` if it does not hold it.
+    ///
+    /// A linear scan of the height map, which is a `BTreeMap` of *sets*: the mapping from a block to
+    /// its height is not stored in that direction. It is used by the rewind plan, which runs at most
+    /// once per refused block, so the scan is deliberate rather than accidental.
+    pub fn block_height_of(&self, hash: &BlockHash) -> Option<BlockHeight> {
+        self.height_map
+            .iter()
+            .find(|(_, set)| set.contains(hash))
+            .map(|(height, _)| *height)
+    }
+
+    /// **What a per-node reset would cost, as this view sees it** (C249's node-side half, #287).
+    ///
+    /// The anchor is the tree's existing definition of the last finalized block — the highest block in
+    /// the latest fringe — because a reset has to replay from a state the node is sure of, and this is
+    /// the only such state the running node names. A view with no fringe yet has **no anchor**, which
+    /// is a different situation from "nothing to drop": a node that early in a chain has nothing to
+    /// rewind *to*.
+    ///
+    /// `blocks_above` is counted from the height map, so it leaves out validation-failed blocks (the
+    /// height map does not count them). A caller that has to be exact should read that as a floor:
+    /// `BlockMetadataStore::drop_above` works from the store and takes those blocks too.
+    pub fn rewind_plan(&self) -> RewindPlan {
+        let anchor = self.last_finalized_block_hash();
+        let anchor_height = anchor.and_then(|hash| self.block_height_of(&hash));
+        // With no anchor the floor is genesis: everything above it is what a replay from scratch would
+        // have to redo, which is the honest reading of "we cannot name a safe state yet".
+        let floor = anchor_height.unwrap_or_else(BlockHeight::zero);
+        let blocks_above: usize = self
+            .height_map
+            .range((Excluded(floor), Unbounded))
+            .map(|(_, set)| set.len())
+            .sum();
+        RewindPlan {
+            anchor,
+            anchor_height,
+            blocks_above,
+        }
     }
 
     pub fn children(&self, block_hash: &BlockHash) -> Option<&BTreeSet<BlockHash>> {
@@ -226,6 +284,36 @@ mod tests {
         }
     }
 
+    /// The same three blocks, with a message state so the view has a fringe: one sender, a chain, and
+    /// each message's `seen` is its whole ancestry.
+    ///
+    /// **`fringe` is what carries the anchor, not `seen`.** `latest_fringe` takes the highest message
+    /// in the map and returns *its* `fringe` set — so a message with an empty fringe (which is what the
+    /// first draft of this fixture had) leaves the view with no last finalized block at all, which is
+    /// the sibling test's case and not this one.
+    fn chain_with_a_tip() -> DagRepresentation {
+        let mut dag = chain();
+        let mut state: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+        for (seq, id, seen) in [
+            (0i64, hash(0), vec![hash(0)]),
+            (1, hash(1), vec![hash(0), hash(1)]),
+            (2, hash(2), vec![hash(0), hash(1), hash(2)]),
+        ] {
+            state.insert_msg_mut(&Message {
+                id,
+                height: BlockHeight::try_from(seq).unwrap(),
+                sender: Validator::new([0u8; 65]),
+                sender_seq: rchain_shared::refined::SeqNum::try_from(seq).unwrap(),
+                bonds_map: BTreeMap::new(),
+                parents: BTreeSet::new(),
+                fringe: [id].into_iter().collect(),
+                seen: Arc::new(seen.into_iter().collect()),
+            });
+        }
+        dag.dag_message_state = state;
+        dag
+    }
+
     /// An empty DAG has no last finalized block, and the `_unsafe` variant says so by name rather
     /// than panicking — the arm a caller reads when the fringe is not available yet.
     #[test]
@@ -245,6 +333,53 @@ mod tests {
         assert_eq!(dag.latest_block_number(), 0);
         assert!(dag.latest_fringe().is_empty());
         assert!(dag.finalized_blocks_set().is_empty());
+    }
+
+    /// **A rewind plan with no anchor counts everything above genesis, and says there is no anchor.**
+    ///
+    /// This is the state a node is in before its first finalization: it holds blocks, it has no block
+    /// it is *sure* of, and a reset would have to replay from genesis. "No anchor" and "nothing to
+    /// drop" are different answers and the plan keeps them apart — the first is loud, the second is
+    /// silent, and conflating them is how a node with nothing to rewind to looks like a node with
+    /// nothing to do.
+    #[test]
+    fn a_view_without_a_fringe_has_no_anchor_and_counts_from_genesis() {
+        let plan = chain().rewind_plan();
+        assert_eq!(plan.anchor, None, "an empty message state has no fringe");
+        assert_eq!(plan.anchor_height, None);
+        assert_eq!(
+            plan.blocks_above, 2,
+            "the two blocks above genesis: what a replay from scratch would redo"
+        );
+    }
+
+    /// **With a fringe, the anchor is the fringe's highest block and the plan counts above it.**
+    ///
+    /// The tip is finalized here, so the plan is the silent answer — zero blocks above the anchor —
+    /// which is the control for the test above: same three blocks, different fringe, different plan.
+    #[test]
+    fn a_finalized_tip_leaves_nothing_above_the_anchor() {
+        let plan = chain_with_a_tip().rewind_plan();
+        assert_eq!(
+            plan.anchor,
+            Some(hash(2)),
+            "the highest block in the fringe"
+        );
+        assert_eq!(plan.anchor_height, Some(BlockHeight::try_from(2).unwrap()));
+        assert_eq!(plan.blocks_above, 0);
+    }
+
+    /// `block_height_of` answers in one direction only: the height map is a map of *sets*, so a block
+    /// not in the view must come back `None` rather than colliding with the block filed at height 0.
+    #[test]
+    fn block_height_of_resolves_and_refuses() {
+        let dag = chain();
+        assert_eq!(dag.block_height_of(&hash(0)), Some(BlockHeight::zero()));
+        assert_eq!(
+            dag.block_height_of(&hash(1)),
+            Some(BlockHeight::try_from(1).unwrap())
+        );
+        assert_eq!(dag.block_height_of(&hash(9)), None, "not in this view");
     }
 
     /// The height index drives `latest_block_number` (one past the highest height) and the range

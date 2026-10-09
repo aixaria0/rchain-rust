@@ -21,7 +21,9 @@ use rchain_shared::refined::BlockHeight;
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::validate_block_checkpoint;
-use crate::merging::{BlockIndex, DeployChainIndex, MergeScope, ParentsMergedState};
+use crate::merging::{
+    BlockIndex, DeployChainIndex, MergeOutcome, MergeReport, MergeScope, ParentsMergedState,
+};
 use crate::runtime_manager::RuntimeManager;
 
 /// A deploy-parsing error (port of `ParsingError`).
@@ -247,8 +249,15 @@ where
         }
         None => None,
     };
+    // The fringe merge's outcome, or the previous fringe's when nothing finalised. Its **report** is
+    // carried rather than logged here: this function has no logger (#280).
+    let fringe_merge = new_fringe_result.unwrap_or(MergeOutcome {
+        state: prev_fringe_state,
+        rejected_deploys: prev_fringe_rejected_deploys,
+        report: MergeReport::default(),
+    });
     let (fringe_state, fringe_rejected_deploys) =
-        new_fringe_result.unwrap_or((prev_fringe_state, prev_fringe_rejected_deploys));
+        (fringe_merge.state, fringe_merge.rejected_deploys.clone());
 
     let max_height = justifications
         .iter()
@@ -262,16 +271,17 @@ where
     let new_fringe = new_fringe_hashes.unwrap_or(prev_fringe_hashes);
 
     // Merge the conflict scope (non-finalized blocks above the fringe).
-    let (pre_state_hash, cs_rejected_deploys) = if parent_hashes.len() == 1 {
+    let conflict_merge = if parent_hashes.len() == 1 {
         let parent = parent_hashes
             .iter()
             .next()
             .ok_or_else(|| "expected one parent".to_string())?;
         let block = get_block_unsafe(block_store, parent).await?;
-        (
-            Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes()),
-            BTreeSet::new(),
-        )
+        MergeOutcome {
+            state: Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes()),
+            rejected_deploys: BTreeSet::new(),
+            report: MergeReport::default(),
+        }
     } else {
         let (m_scope, base_opt) =
             MergeScope::from_dag(parent_hashes, &new_fringe, &dag_repr.child_map, msg_map)?;
@@ -294,9 +304,48 @@ where
         )
         .await?
     };
+    let (pre_state_hash, cs_rejected_deploys) = (
+        conflict_merge.state,
+        conflict_merge.rejected_deploys.clone(),
+    );
+    // **The report an operator gets, and where it comes from** (#280). Both merges' — the fringe's
+    // and the conflict scope's — because either can be the one that drops something, and the
+    // conflict scope's is the one that did on the live net.
+    let merge_report = MergeReport {
+        conflict_chains: fringe_merge.report.conflict_chains
+            + conflict_merge.report.conflict_chains,
+        kept_chains: fringe_merge.report.kept_chains + conflict_merge.report.kept_chains,
+        rejected_chains: fringe_merge.report.rejected_chains
+            + conflict_merge.report.rejected_chains,
+        dropped_native_slots: fringe_merge
+            .report
+            .dropped_native_slots
+            .iter()
+            .chain(conflict_merge.report.dropped_native_slots.iter())
+            .cloned()
+            .collect(),
+        rejected_cost_accounted_chains: fringe_merge.report.rejected_cost_accounted_chains
+            + conflict_merge.report.rejected_cost_accounted_chains,
+        rejections_without_a_conflict: fringe_merge
+            .report
+            .rejections_without_a_conflict
+            .iter()
+            .chain(conflict_merge.report.rejections_without_a_conflict.iter())
+            .cloned()
+            .collect(),
+        unapplied_kept_writes: fringe_merge
+            .report
+            .unapplied_kept_writes
+            .iter()
+            .chain(conflict_merge.report.unapplied_kept_writes.iter())
+            .copied()
+            .collect(),
+        native_writer_of_slot: conflict_merge.report.native_writer_of_slot.clone(),
+    };
 
     Ok(ParentsMergedState {
         finality_stall: no_advance,
+        merge_report,
         justifications,
         max_block_num: max_height,
         max_seq_nums,
@@ -432,6 +481,17 @@ fn restore_is_warranted(stored: &BlockMetadata) -> bool {
         && stored.restore_attempts < RESTORE_ATTEMPT_LIMIT
 }
 
+/// **The far end of `restore_is_warranted`: this record's budget is spent and it is still failed.**
+///
+/// The node has stopped trying. `note_unrestorable_if_exhausted` reports the moment; this predicate is
+/// the moment itself, stated once so the report and the test read the same rule rather than two
+/// spellings of it that can drift.
+fn restore_budget_is_spent(record: &BlockMetadata) -> bool {
+    record.validation_failed
+        && record.failure_cause == Some(FailureCause::Divergence)
+        && record.restore_attempts >= RESTORE_ATTEMPT_LIMIT
+}
+
 /// **Clear this node's own spent failure record, if it has one** — C190's repair, and the other half of
 /// what the update path (C193) made possible.
 ///
@@ -522,12 +582,19 @@ where
                 latest.map(|l| l.to_string()).unwrap_or_else(|| "none".to_string()),
             ),
         );
-        let Some(msg) = block_store
-            .get(&[hash])
-            .await
-            .ok()
-            .and_then(|mut v| v.pop().flatten())
-        else {
+        let msg = match block_store.get(&[hash]).await {
+            Ok(mut v) => v.pop().flatten(),
+            Err(e) => {
+                // A read that fails is not "this block has no message" (C249's class): the scan would
+                // skip a hash it never actually looked at.
+                log.error(
+                    source,
+                    &format!("Failed to read block {} to re-validate: {e}", hash.to_hex()),
+                );
+                None
+            }
+        };
+        let Some(msg) = msg else {
             continue;
         };
         let outcome = validate_checks(
@@ -542,8 +609,28 @@ where
             log,
         )
         .await;
-        let record = revalidated_record(&stored, outcome.ok());
-        let cleared = !record.validation_failed;
+        // **A fault is not a verdict** (C253's E3/E5). `Internal` says *this node* could not run the
+        // check, which is not a fact about the block: recording it as a failure would refuse the block
+        // and its descendants for the process lifetime on the strength of a fault that said nothing
+        // about them. So the record is left exactly as it was and no attempt is spent.
+        let (record, cleared) = match revalidated_record(&stored, outcome) {
+            Revalidation::Restored(record) => (record, true),
+            Revalidation::StillRefused(record) => (record, false),
+            Revalidation::Fault(e) => {
+                log.error(
+                    source,
+                    &format!(
+                        "could not re-validate block {}: the failure is internal to this node and not a \
+                         verdict about the block, so its record is left as it was and no attempt is \
+                         spent (AUDIT C253)",
+                        hash.to_hex()
+                    ),
+                );
+                log.error(source, &format!("  the internal failure was: {e}"));
+                continue;
+            }
+        };
+        note_unrestorable_if_exhausted(dag, &record, &hash, source, log).await;
         match dag.update_metadata(record).await {
             Ok(()) if cleared => {
                 log.warn(
@@ -571,31 +658,156 @@ where
     false
 }
 
-/// The record to store after one revalidation attempt: `Some(fresh)` when the block passed, `None`
-/// when it did not.
+/// **What one revalidation attempt produced — including the arm that is not a verdict** (C253's E3/E5).
+///
+/// The old signature took `Option<BlockMetadata>`, which every caller built with `outcome.ok()`. That
+/// folds two utterly different facts into one `None`: *this block does not validate here* — a verdict,
+/// which the record must keep and which spends an attempt — and *this node could not run the check*,
+/// an internal error that is not a fact about the block at all. **The erasure is the defect**: a node
+/// that hit an internal error on a good block recorded the block as bad, and the record is permanent,
+/// so it refused that block and its descendants for the process lifetime on the strength of a fault
+/// that said nothing about them.
+///
+/// So the arms are the three things an attempt can produce, and [`Revalidation::Fault`] is not a
+/// verdict: it spends no attempt and leaves the stored record exactly as it was.
+#[derive(Debug)]
+pub enum Revalidation {
+    /// The block validates against this node's DAG now — the refusal is withdrawn.
+    Restored(BlockMetadata),
+    /// It still fails, and the failure is a verdict about the block. The attempt is spent.
+    StillRefused(BlockMetadata),
+    /// **The check itself failed.** Not a fact about the block, so it is neither recorded nor counted.
+    Fault(String),
+}
+
+/// The record to store after one revalidation attempt, or the fault that says there is none.
 ///
 /// **`slashable` is carried, not recomputed.** Clearing the refusal must not clear attribution — the
 /// restore gives the refused state an inverse, it does not withdraw the verdict about whose fault the
 /// failure was. For a `Divergence` record the carried value is `false` by construction, so the restore
 /// cannot mint slash evidence in either direction.
 ///
-/// The attempt is spent either way, which is what makes the cap a cap: a record that keeps failing to
-/// restore stops being re-validated rather than being retried on every block that justifies it.
-fn revalidated_record(stored: &BlockMetadata, fresh: Option<BlockMetadata>) -> BlockMetadata {
-    let attempts = stored.restore_attempts + 1;
-    match fresh {
-        Some(fresh) => BlockMetadata {
+/// **An attempt is spent on a verdict, never on a fault.** That is what makes the cap a cap *and* what
+/// keeps a fault from consuming the block's whole budget: a record that keeps failing to restore stops
+/// being re-validated rather than being retried on every block that justifies it, but a node whose own
+/// machinery is broken does not thereby condemn the block.
+fn revalidated_record(
+    stored: &BlockMetadata,
+    outcome: Result<BlockMetadata, ValidateError>,
+) -> Revalidation {
+    match outcome {
+        Ok(fresh) => Revalidation::Restored(BlockMetadata {
             validation_failed: false,
             failure_cause: None,
             slash_severity: SlashSeverity::Unspecified,
             slashable: stored.slashable,
-            restore_attempts: attempts,
+            restore_attempts: stored.restore_attempts + 1,
             ..fresh
-        },
-        None => BlockMetadata {
-            restore_attempts: attempts,
+        }),
+        // The verdict: the block was checked and refused, so the record stands and the attempt is spent.
+        Err(ValidateError::ValidationFailed(..)) => Revalidation::StillRefused(BlockMetadata {
+            restore_attempts: stored.restore_attempts + 1,
             ..stored.clone()
-        },
+        }),
+        Err(ValidateError::Internal(e)) => Revalidation::Fault(e),
+        // `validate_checks` does not produce this — only the proposer's self-insert does — but if it
+        // ever did, it would be a fact about this node's view rather than about the block, which is
+        // the fault arm and not the verdict arm.
+        Err(ValidateError::SelfEquivocation) => Revalidation::Fault(
+            "a re-validation reported a self-equivocation, which only the proposer's own self-insert \
+             produces"
+                .to_string(),
+        ),
+    }
+}
+
+/// **The moment a node gives up on a block, made countable** (C249's R3 gap).
+///
+/// When a `Divergence` record's revalidation budget is spent and the record is *still* failed, the node
+/// has stopped trying: `restore_is_warranted` answers `false` for it from now on, so it refuses that
+/// block and every descendant of it for the process lifetime. Until now that transition was **silent** —
+/// the scan simply `continue`d — which is the disposition pass's finding at its far end: the failure
+/// upstream is loud, and the *state* it leaves has no surface and no inverse at all.
+///
+/// **This resets nothing, on purpose.** It detects, logs and counts, so an operator can see what a reset
+/// *would* act on before one ships. #287/#294 own the net-wide reconciliation; the per-node reset is a
+/// later unit, and shipping the detector first is what makes that unit reviewable against a real
+/// denominator rather than an argument.
+async fn note_unrestorable_if_exhausted(
+    dag: &dyn BlockDagStorage,
+    record: &BlockMetadata,
+    hash: &BlockHash,
+    source: LogSource,
+    log: &Arc<dyn Log>,
+) {
+    if !restore_budget_is_spent(record) {
+        return;
+    }
+    crate::interpreter_util::note_unrestorable(&hash.to_hex(), i64::from(record.seq_num));
+    log.error(
+        source,
+        &format!(
+            "cannot restore block {} (seq {}): its revalidation budget is spent after {} attempt(s) and \
+             it still fails against this node's DAG, so this node will refuse it and its descendants for \
+             the process lifetime. Nothing resets a running node yet — an operator's only way back is \
+             deleting the shard data dir, which is a comment and not code (AUDIT C249; #287/#294)",
+            hash.to_hex(),
+            record.seq_num,
+            record.restore_attempts,
+        ),
+    );
+    report_reset_dry_run(dag, hash, source, log).await;
+}
+
+/// **What a per-node reset would drop, computed and logged, and nothing dropped** (C249's R3).
+///
+/// The reset ships **dark**, deliberately: the primitive it would call exists
+/// (`BlockDagKeyValueStorage::drop_above`, and the runtime's own `reset` beside it), and an operator
+/// needs to see what it would act on — against a real denominator from a real node — before a build
+/// that acts exists. This is that denominator, printed at the one moment the condition is true: a
+/// divergence whose revalidation budget is spent.
+///
+/// It reports from the *view* (`DagRepresentation::rewind_plan`), so the count is a floor — the height
+/// map leaves out validation-failed blocks, and the reset itself works from the store. That direction
+/// is the safe one to be wrong in: the log under-states what a reset would drop rather than promising
+/// more than it would.
+///
+/// **The two arms are different findings and are not merged.** A view with a finalized fringe can
+/// name the block it would replay from; a view without one cannot name a safe state at all, and the
+/// number it prints is what a replay from genesis would redo. Reading the second as "nothing to drop"
+/// is exactly the confusion this separates.
+async fn report_reset_dry_run(
+    dag: &dyn BlockDagStorage,
+    refused: &BlockHash,
+    source: LogSource,
+    log: &Arc<dyn Log>,
+) {
+    let repr = dag.get_representation().await;
+    let plan = repr.rewind_plan();
+    match (plan.anchor, plan.anchor_height) {
+        (Some(anchor), Some(height)) => log.warn(
+            source,
+            &format!(
+                "a per-node reset would rewind to the last finalized block {} (height {}) and drop {} \
+                 block(s) above it, replaying from there. Nothing is dropped: this node keeps refusing \
+                 {} and its descendants (AUDIT C249; #287/#294 own the net-wide half)",
+                anchor.to_hex(),
+                i64::from(height) + 1,
+                plan.blocks_above,
+                refused.to_hex(),
+            ),
+        ),
+        // No fringe: a node this early in a chain has nothing to rewind *to*, which is not the same
+        // answer as having nothing to drop.
+        _ => log.warn(
+            source,
+            &format!(
+                "a per-node reset has no finalized block to rewind to yet, so it could not name a safe \
+                 state: the {} block(s) this node holds above genesis would have to be replayed from it. \
+                 Nothing is dropped (AUDIT C249)",
+                plan.blocks_above,
+            ),
+        ),
     }
 }
 
@@ -631,12 +843,20 @@ async fn restore_divergent_justifications<F, Fut>(
             continue;
         }
 
-        let Some(msg) = block_store
-            .get(&[*j])
-            .await
-            .ok()
-            .and_then(|mut v| v.pop().flatten())
-        else {
+        let msg = match block_store.get(&[*j]).await {
+            Ok(mut v) => v.pop().flatten(),
+            Err(e) => {
+                // **A read error does not say the block is gone.** The comment below describes a *pruned*
+                // store; this is a store that cannot answer, and the erasure made the two the same thing
+                // (C249's class). The budget is not spent either way — this only says which happened.
+                log.error(
+                    source,
+                    &format!("Failed to read block {} to restore: {e}", j.to_hex()),
+                );
+                None
+            }
+        };
+        let Some(msg) = msg else {
             // The record says the block failed here, but the block itself is gone (a pruned store).
             // There is nothing to re-validate, and the budget is for revalidations.
             continue;
@@ -656,8 +876,28 @@ async fn restore_divergent_justifications<F, Fut>(
             log,
         )
         .await;
-        let record = revalidated_record(&stored, outcome.ok());
-        let restored = !record.validation_failed;
+        let (record, restored) = match revalidated_record(&stored, outcome) {
+            Revalidation::Restored(record) => (record, true),
+            Revalidation::StillRefused(record) => (record, false),
+            // **The fault arm, and it is not a verdict** (C253's E3/E5). An internal failure says
+            // nothing about the block: writing it as a failure would refuse the block and everything
+            // above it for the process lifetime, and would spend one of the three attempts the record
+            // has. Left as it was, the next pass tries again with a working node.
+            Revalidation::Fault(e) => {
+                log.error(
+                    source,
+                    &format!(
+                        "could not re-validate justification {}: the failure is internal to this node \
+                         and not a verdict about the block, so its record is left as it was and no \
+                         attempt is spent (AUDIT C253)",
+                        j.to_hex()
+                    ),
+                );
+                log.error(source, &format!("  the internal failure was: {e}"));
+                continue;
+            }
+        };
+        note_unrestorable_if_exhausted(dag, &record, j, source, log).await;
 
         // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
         // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
@@ -1064,7 +1304,11 @@ mod newest_justification_tests {
 
 #[cfg(test)]
 mod restore_tests {
-    use super::{restore_is_warranted, revalidated_record, RESTORE_ATTEMPT_LIMIT};
+    use super::{
+        restore_budget_is_spent, restore_is_warranted, revalidated_record, Revalidation,
+        ValidateError, RESTORE_ATTEMPT_LIMIT,
+    };
+    use crate::block_status::BlockStatus;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::SlashSeverity;
     use rchain_models::block_metadata::{BlockMetadata, FailureCause};
@@ -1154,7 +1398,9 @@ mod restore_tests {
         };
         let fresh = meta(false, None, 0);
 
-        let record = revalidated_record(&stored, Some(fresh));
+        let Revalidation::Restored(record) = revalidated_record(&stored, Ok(fresh)) else {
+            panic!("a passing revalidation must restore the record");
+        };
         assert!(
             !record.validation_failed,
             "the restoring rule's whole point: the record is cleared"
@@ -1176,13 +1422,127 @@ mod restore_tests {
     #[test]
     fn a_failed_revalidation_keeps_the_record_and_spends_the_attempt() {
         let stored = meta(true, Some(FailureCause::Divergence), 1);
-        let record = revalidated_record(&stored, None);
+        let verdict =
+            ValidateError::ValidationFailed(stored.clone(), BlockStatus::InvalidStateHash);
+        let Revalidation::StillRefused(record) = revalidated_record(&stored, Err(verdict)) else {
+            panic!("a validation failure is a verdict and must keep the record");
+        };
 
         assert!(record.validation_failed, "still refused");
         assert_eq!(record.failure_cause, Some(FailureCause::Divergence));
         assert_eq!(record.restore_attempts, 2);
         // Everything else is untouched — the failure is the same failure it was.
         assert_eq!(record.block_hash, stored.block_hash);
+    }
+
+    /// **A fault is not a verdict** (C253's E3/E5) — the arm whose absence was the defect.
+    ///
+    /// Both restore sites built the argument with `outcome.ok()`, so `None` meant *both* "the block was
+    /// checked and refused" (a fact about the block, which the record must keep and which costs an
+    /// attempt) *and* "the check could not run" (a fact about **this node**, which says nothing about
+    /// the block and must cost nothing). A node that hit an internal error on a good block therefore
+    /// recorded the block as bad — permanently, and against its descendants too.
+    ///
+    /// So the falsifier is the arm itself: an internal failure produces *neither* a restored record
+    /// *nor* a refused one, which is exactly what leaves the caller with nothing to write and nothing
+    /// to count.
+    #[test]
+    fn an_internal_failure_is_a_fault_and_not_a_verdict() {
+        let stored = meta(true, Some(FailureCause::Divergence), 1);
+
+        match revalidated_record(
+            &stored,
+            Err(ValidateError::Internal(
+                "the store could not be read".into(),
+            )),
+        ) {
+            Revalidation::Fault(e) => {
+                assert_eq!(e, "the store could not be read", "the reason travels")
+            }
+            other => panic!("an internal failure is not a fact about the block: {other:?}"),
+        }
+
+        // `validate_checks` does not produce this one, but if it ever did it would be a fact about
+        // this node's view rather than about the block — the fault arm, not the verdict arm.
+        assert!(
+            matches!(
+                revalidated_record(&stored, Err(ValidateError::SelfEquivocation)),
+                Revalidation::Fault(_)
+            ),
+            "a self-equivocation is this node's race, not the block's fault"
+        );
+
+        // And the verdict arm is unchanged: a refusal still keeps the record and spends the attempt.
+        match revalidated_record(
+            &stored,
+            Err(ValidateError::ValidationFailed(
+                stored.clone(),
+                BlockStatus::InvalidStateHash,
+            )),
+        ) {
+            Revalidation::StillRefused(record) => {
+                assert_eq!(record.restore_attempts, 2, "a verdict spends the attempt")
+            }
+            other => panic!("a validation failure is still a verdict: {other:?}"),
+        }
+    }
+
+    /// **The moment the node gives up, and it is the *last* attempt, not the first.**
+    ///
+    /// `restore_budget_is_spent` is the far end of `restore_is_warranted`: the record's budget is
+    /// spent *and* it still fails. Both halves matter. A record with attempts left is one the rule
+    /// will still retry; a record that has been *restored* has attempts spent but is no longer
+    /// failed, and reporting it would be the surface crying wolf over a healthy block.
+    ///
+    /// The boundary is the load-bearing part: at `LIMIT - 1` the rule fires again, at `LIMIT` it does
+    /// not, and the count of blocks the node has given up on must be the second and not the first.
+    #[test]
+    fn the_budget_is_spent_at_the_limit_and_only_for_a_record_that_still_fails() {
+        assert!(
+            !restore_budget_is_spent(&meta(true, Some(FailureCause::Divergence), 0)),
+            "a first failure still has its whole budget"
+        );
+        assert!(
+            !restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT - 1
+            )),
+            "the last attempt before the limit is still one the rule will spend"
+        );
+        assert!(
+            restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "at the limit with the record still failed, the node has stopped trying"
+        );
+        assert!(
+            restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT + 1
+            )),
+            "and it stays spent — the count is monotone and cannot un-happen"
+        );
+        assert!(
+            !restore_budget_is_spent(&meta(
+                false,
+                Some(FailureCause::Divergence),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "a record that was restored has spent its attempts but is not refused — reporting it \
+             would be the surface crying wolf over a healthy block"
+        );
+        assert!(
+            !restore_budget_is_spent(&meta(
+                true,
+                Some(FailureCause::Attributable),
+                RESTORE_ATTEMPT_LIMIT
+            )),
+            "an attributable refusal never had a budget to spend"
+        );
     }
 }
 

@@ -6,6 +6,7 @@
 
 use rchain_models::comm::protocol::Packet;
 
+use crate::errors::CommErr;
 use crate::peer_node::PeerNode;
 use crate::rp::protocol_helper;
 use crate::rp::rp_conf::RPConf;
@@ -18,14 +19,19 @@ pub async fn stream1<T: TransportLayer + ?Sized>(transport: &T, peer: &PeerNode,
 }
 
 /// Send a packet to a peer, wrapped in a protocol message (port of `sendToPeer`).
+///
+/// **The error is returned rather than discarded** (C254's E6b). It used to be
+/// `let _ = transport.send(peer, msg).await`, which made a packet that never left this node — a peer
+/// that had gone, a TLS session that failed — indistinguishable from one that was delivered, at the
+/// one call site whose entire job is delivery.
 pub async fn send_to_peer<T: TransportLayer + ?Sized>(
     transport: &T,
     conf: &RPConf,
     peer: &PeerNode,
     packet: Packet,
-) {
+) -> CommErr<()> {
     let msg = protocol_helper::packet(&conf.local, &conf.network_id, packet);
-    let _ = transport.send(peer, msg).await;
+    transport.send(peer, msg).await
 }
 
 /// Stream a packet to a peer in chunks (port of `streamToPeer`).
@@ -47,9 +53,11 @@ pub async fn send_to_bootstrap<T: TransportLayer + ?Sized>(
     transport: &T,
     conf: &RPConf,
     packet: Packet,
-) {
-    if let Some(bootstrap) = &conf.bootstrap {
-        send_to_peer(transport, conf, bootstrap, packet).await;
+) -> CommErr<()> {
+    match &conf.bootstrap {
+        Some(bootstrap) => send_to_peer(transport, conf, bootstrap, packet).await,
+        // Nothing to do is not a failure: there is no peer that could have refused the packet.
+        None => Ok(()),
     }
 }
 
@@ -135,7 +143,9 @@ mod tests {
         let remote = peer("remote", 40401);
         let conf = conf(local.clone(), None);
 
-        send_to_peer(&transport, &conf, &remote, packet()).await;
+        send_to_peer(&transport, &conf, &remote, packet())
+            .await
+            .expect("the mock transport accepts a send");
 
         let sends = transport.sends.lock().unwrap();
         assert_eq!(sends.len(), 1, "exactly one send");
@@ -213,7 +223,9 @@ mod tests {
     async fn send_to_bootstrap_does_nothing_without_a_bootstrap_peer() {
         let transport = RecordingTransport::default();
         let conf = conf(peer("local", 40400), None);
-        send_to_bootstrap(&transport, &conf, packet()).await;
+        send_to_bootstrap(&transport, &conf, packet())
+            .await
+            .expect("nothing to send is not a failure");
         assert!(transport.sends.lock().unwrap().is_empty());
         assert!(transport.streams.lock().unwrap().is_empty());
     }
@@ -226,7 +238,9 @@ mod tests {
         let bootstrap = peer("bootstrap", 40403);
         let conf = conf(local.clone(), Some(bootstrap.clone()));
 
-        send_to_bootstrap(&transport, &conf, packet()).await;
+        send_to_bootstrap(&transport, &conf, packet())
+            .await
+            .expect("nothing to send is not a failure");
 
         let sends = transport.sends.lock().unwrap();
         assert_eq!(sends.len(), 1);

@@ -12,6 +12,7 @@ pub mod dag;
 pub mod debug;
 pub mod key_value_cache;
 pub mod language;
+pub mod lock;
 pub mod long_ops;
 pub mod matcher;
 pub mod maybe_cell;
@@ -31,6 +32,8 @@ pub mod throwable_ops;
 pub mod time;
 
 #[cfg(feature = "tokio")]
+pub mod chan;
+#[cfg(feature = "tokio")]
 pub mod compression;
 #[cfg(feature = "lmdb")]
 pub mod lmdb;
@@ -42,5 +45,7 @@ pub mod metrics;
 pub mod monixable;
 #[cfg(feature = "tokio")]
 pub mod store_manager;
+#[cfg(feature = "tokio")]
+pub mod supervise;
 #[cfg(feature = "tokio")]
 pub mod typed_store;

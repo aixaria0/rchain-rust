@@ -1,5 +1,6 @@
 //! Web API implementation (port of `WebApi.WebApiImpl`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -87,10 +88,7 @@ impl WebApiImpl {
                 path.display()
             ));
         }
-        let mut recovering = self
-            .recovering_faucet_drips
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut recovering = self.recovering_faucet_drips.lock().unpoison();
         recovering.extend(ledger.pending.keys().cloned());
         drop(recovering);
         self.faucet_ledger = Arc::new(Mutex::new(ledger));
@@ -159,7 +157,7 @@ impl WebApiImpl {
         expected: Option<&[u8]>,
         refund: bool,
     ) -> Result<(), BlockApiException> {
-        let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let mut ledger = self.faucet_ledger.lock().unpoison();
         let matches = ledger
             .pending
             .get(address)
@@ -174,7 +172,7 @@ impl WebApiImpl {
             *ledger = next;
             self.recovering_faucet_drips
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unpoison()
                 .remove(address);
         }
         Ok(())
@@ -1000,7 +998,22 @@ impl WebApi for WebApiImpl {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
         let health = self.block_api.proposer_health().await;
-        Ok(to_api_status(&status, &caps, &health))
+        // C249's F-U10-01: the merge's and finality's observations, which reached the log and nothing
+        // else — plus the poisoned-lock count, read from `rspace` because the poisoning is a
+        // storage-layer event and the count is process-wide (F-U9-03).
+        let finality = self.block_api.finality_health().await;
+        Ok(to_api_status(
+            &status,
+            &caps,
+            &health,
+            &finality,
+            rchain_rspace::lock::poison_recoveries(),
+            // C254: the supervisor's counters. Every long-lived background task is watched by
+            // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a
+            // probe can read rather than an absence an operator has to infer from the silence.
+            rchain_shared::supervise::tasks_panicked(),
+            rchain_shared::supervise::tasks_exited(),
+        ))
     }
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException> {
@@ -1035,7 +1048,7 @@ impl WebApi for WebApiImpl {
 
     async fn capabilities(&self) -> Result<NodeCapabilities, BlockApiException> {
         let caps = self.block_api.capabilities().await;
-        let ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let ledger = self.faucet_ledger.lock().unpoison();
         let remaining = FAUCET_TOTAL_BUDGET.saturating_sub(ledger.spent);
         // A dry faucet is not advertised: r-wallet can stop offering it without probing a write.
         let faucet =
@@ -1073,7 +1086,7 @@ impl WebApi for WebApiImpl {
         // Reconcile an earlier reservation before consulting durable eligibility. Submission is not
         // delivery: a replay-time failure refunds both the recipient reservation and the total budget.
         let pending = {
-            let ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+            let ledger = self.faucet_ledger.lock().unpoison();
             ledger.pending.get(address).cloned()
         };
         if let Some(pending) = pending {
@@ -1094,7 +1107,7 @@ impl WebApi for WebApiImpl {
                     let recovering = self
                         .recovering_faucet_drips
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
+                        .unpoison()
                         .contains(address);
                     if recovering {
                         let signed = SignedDeployData::from_bytes(&pending.signed)
@@ -1110,7 +1123,7 @@ impl WebApi for WebApiImpl {
                             .map_err(BlockApiException)?;
                         self.recovering_faucet_drips
                             .lock()
-                            .unwrap_or_else(|p| p.into_inner())
+                            .unpoison()
                             .remove(address);
                         return Ok(FaucetResponse {
                             deploy_id: base16::encode(&deploy_id),
@@ -1169,7 +1182,7 @@ impl WebApi for WebApiImpl {
         // Reserve atomically across the per-address in-flight gate and total allocation. This closes
         // the concurrent-request window while the chain outcome is still unknown.
         {
-            let mut ledger = self.faucet_ledger.lock().unwrap_or_else(|p| p.into_inner());
+            let mut ledger = self.faucet_ledger.lock().unpoison();
             if ledger.pending.contains_key(address) {
                 return Err(BlockApiException(format!(
                     "faucet: address {address} already has a drip reservation"
@@ -1181,8 +1194,13 @@ impl WebApi for WebApiImpl {
                 ));
             }
             let mut next = ledger.clone();
-            next.pending
-                .insert(address.to_string(), Some(signed.sig.clone()));
+            next.pending.insert(
+                address.to_string(),
+                PendingFaucetDeploy {
+                    sig: signed.sig.clone(),
+                    signed: signed.to_bytes(),
+                },
+            );
             next.spent = next.spent.saturating_add(faucet::FAUCET_AMOUNT);
             self.save_faucet_ledger(&next)?;
             *ledger = next;

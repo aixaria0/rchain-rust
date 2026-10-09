@@ -5,6 +5,10 @@
 //! (`eval(Send/Receive/New/Match/Bundle)`, `produce`/`consume`, `new` allocation), and the
 //! collection methods (`union`/`diff`/`add`/`delete`/`contains`/`slice`/`keys`).
 
+// Only the wasm32 reducer spawns through this door; the native one has no spawn shim to route.
+#[cfg(target_arch = "wasm32")]
+use rchain_shared::chan;
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -1089,17 +1093,98 @@ fn expr_to_string(method: &str, e: &Expr) -> Result<String, RholangError> {
     }
 }
 
+/// `bitAnd`/`bitOr`/`bitXor` (RCHIP #12). On `Int`s the result is an `Int` (these never leave
+/// the range); a `BigInt` operand promotes, in two's complement, as RCHIP #51's one integer domain
+/// does; two `ByteArray`s of equal length combine byte by byte.
+fn bitwise_binop(
+    method: &str,
+    l: Expr,
+    r: Expr,
+    cost: &CostAccounting,
+    word: fn(i64, i64) -> i64,
+    big: fn(&BigInt, &BigInt) -> BigInt,
+    byte: fn(u8, u8) -> u8,
+) -> Result<Expr, RholangError> {
+    match (l, r) {
+        (Expr::GInt(a), Expr::GInt(b)) => {
+            cost.charge(Costs::bitwise_int_cost(method))?;
+            Ok(Expr::GInt(word(a, b)))
+        }
+        (Expr::GByteArray(a), Expr::GByteArray(b)) => {
+            if a.len() != b.len() {
+                return Err(RholangError::ReduceError(format!(
+                    "Error: {method} on byte arrays of different lengths ({} and {})",
+                    a.len(),
+                    b.len()
+                )));
+            }
+            cost.charge(Costs::bitwise_cost(a.len() as i64, method))?;
+            Ok(Expr::GByteArray(
+                a.iter().zip(b.iter()).map(|(x, y)| byte(*x, *y)).collect(),
+            ))
+        }
+        (l, r) => match (as_integer(&l), as_integer(&r)) {
+            (Some(a), Some(b)) => {
+                cost.charge(Costs::bitwise_cost(
+                    Costs::big_int_size(&a).max(Costs::big_int_size(&b)),
+                    method,
+                ))?;
+                Ok(Expr::GBigInt(big(&a, &b)))
+            }
+            // The target is a type the method is defined on, so the argument is the misfit.
+            (Some(_), None) => Err(method_not_defined(method, &r)),
+            (None, _) if matches!(l, Expr::GByteArray(_)) => Err(method_not_defined(method, &r)),
+            (None, _) => Err(method_not_defined(method, &l)),
+        },
+    }
+}
+
+/// The shift count of `shiftLeft`/`shiftRight`/`shiftRightUnsigned`: a non-negative integer.
+fn shift_count(
+    method: &str,
+    p: &Par,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<u64, RholangError> {
+    let n = eval_to_long(p, env, cost)?;
+    u64::try_from(n)
+        .map_err(|_| RholangError::ReduceError(format!("Error: {method} by a negative count: {n}")))
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// **Bytes, never a character index** (AUDIT C252).
+///
+/// The old form took `&s[i..i + 2]` and handed each window to `from_str_radix`. `s.len()` counts
+/// *bytes*, so the window's arithmetic is right — but a slice of a `&str` must land on character
+/// boundaries, and a two-byte window over a string containing a multi-byte character need not. So a
+/// **deploy** could do this:
+///
+/// - `"aéa"` is four bytes (1 + 2 + 1), so the even-length check passes; the window `2..4` starts
+///   inside `é`, and the slice **panics** — a stranger kills the node with a deploy, which is what
+///   the audit observed;
+/// - the neighbouring window that *does* land on boundaries hands `from_str_radix` bytes that are not
+///   a hex digit any more, and the hex it parses is not the character the term contains.
+///
+/// `as_bytes` removes the class rather than the site: there is no slice to leave, because an index
+/// cannot step off a boundary it never asks about. `to_digit(16)` is the per-byte counterpart of
+/// `from_str_radix`, and it differs in **exactly one** place, stated rather than discovered — the
+/// radix parser accepts a leading `+` (`"+1"` parses as 1) and `to_digit` does not, so `"+1"` becomes
+/// `None`. `"+1"` is not hex, and the stricter answer is the right one.
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    let bytes = s.as_bytes();
+    if bytes.len() % 2 != 0 {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = char::from(pair[0]).to_digit(16)?;
+            let lo = char::from(pair[1]).to_digit(16)?;
+            u8::try_from((hi << 4) | lo).ok()
+        })
         .collect()
 }
 
@@ -1820,6 +1905,99 @@ fn eval_method(
             cost.charge(Costs::to_string_cost(out.chars().count() as i64))?;
             Ok(from_expr(Expr::GString(out)))
         }
+        // --- Bit operations (RCHIP #12 "Bitwise operators") -------------------------------
+        // Scala's `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>` as methods: `|` and `~` are already the
+        // grammar's par and connective negation. Integers are one exact domain (RCHIP #51): a
+        // left shift that leaves the `Int` range promotes to `BigInt` rather than wrapping, and a
+        // shift count is never masked (Scala's `1L << 64 == 1` is not preserved).
+        "bitAnd" | "bitOr" | "bitXor" => {
+            check_arity(method, 1, args.len())?;
+            let l = eval_single_expr(target, env, cost)?;
+            let r = eval_single_expr(&args[0], env, cost)?;
+            let out = match method {
+                "bitAnd" => {
+                    bitwise_binop(method, l, r, cost, |a, b| a & b, |a, b| a & b, |a, b| a & b)
+                }
+                "bitOr" => {
+                    bitwise_binop(method, l, r, cost, |a, b| a | b, |a, b| a | b, |a, b| a | b)
+                }
+                _ => bitwise_binop(method, l, r, cost, |a, b| a ^ b, |a, b| a ^ b, |a, b| a ^ b),
+            }?;
+            Ok(from_expr(out))
+        }
+        "bitNot" => {
+            check_arity("bitNot", 0, args.len())?;
+            match eval_single_expr(target, env, cost)? {
+                Expr::GInt(v) => {
+                    cost.charge(Costs::bitwise_int_cost("bitNot"))?;
+                    Ok(from_expr(Expr::GInt(!v)))
+                }
+                Expr::GBigInt(v) => {
+                    cost.charge(Costs::bitwise_cost(Costs::big_int_size(&v), "bitNot"))?;
+                    Ok(from_expr(Expr::GBigInt(!v)))
+                }
+                Expr::GByteArray(b) => {
+                    cost.charge(Costs::bitwise_cost(b.len() as i64, "bitNot"))?;
+                    Ok(from_expr(Expr::GByteArray(b.iter().map(|x| !x).collect())))
+                }
+                other => Err(method_not_defined("bitNot", &other)),
+            }
+        }
+        "shiftLeft" => {
+            check_arity("shiftLeft", 1, args.len())?;
+            let v = eval_single_expr(target, env, cost)?;
+            let n = shift_count("shiftLeft", &args[0], env, cost)?;
+            let Some(x) = as_integer(&v) else {
+                return Err(method_not_defined("shiftLeft", &v));
+            };
+            if let Expr::GInt(w) = v {
+                // `x * 2^n` stays an `Int` when it fits; `i128` holds any `i64 << 63`.
+                if w == 0 || n < 64 {
+                    let wide = if w == 0 { 0 } else { (w as i128) << n };
+                    if let Ok(r) = i64::try_from(wide) {
+                        cost.charge(Costs::bitwise_int_cost("shiftLeft"))?;
+                        return Ok(from_expr(Expr::GInt(r)));
+                    }
+                }
+            }
+            // Charged on the result's size *before* it is built, so an absurd count runs out of
+            // phlo rather than allocating.
+            let bytes = Costs::shift_left_result_size(x.magnitude().bits(), n);
+            cost.charge(Costs::bitwise_cost(bytes, "shiftLeft"))?;
+            let shift = usize::try_from(n).map_err(|_| {
+                RholangError::ReduceError(format!("Error: shiftLeft count out of range: {n}"))
+            })?;
+            Ok(from_expr(Expr::GBigInt(x << shift)))
+        }
+        "shiftRight" => {
+            // Arithmetic (sign-extending) shift: `floor(x / 2^n)`.
+            check_arity("shiftRight", 1, args.len())?;
+            let v = eval_single_expr(target, env, cost)?;
+            let n = shift_count("shiftRight", &args[0], env, cost)?;
+            match v {
+                Expr::GInt(w) => {
+                    cost.charge(Costs::bitwise_int_cost("shiftRight"))?;
+                    Ok(from_expr(Expr::GInt(w >> n.min(63))))
+                }
+                Expr::GBigInt(x) => {
+                    cost.charge(Costs::bitwise_cost(Costs::big_int_size(&x), "shiftRight"))?;
+                    let shift = usize::try_from(n).unwrap_or(usize::MAX);
+                    Ok(from_expr(Expr::GBigInt(x >> shift)))
+                }
+                other => Err(method_not_defined("shiftRight", &other)),
+            }
+        }
+        "shiftRightUnsigned" => {
+            // Logical (zero-filling) shift of the 64-bit two's-complement word — Scala's `>>>`,
+            // which has no meaning for an unbounded integer: a `BigInt` outside the `Int` range is
+            // refused rather than given a width.
+            check_arity("shiftRightUnsigned", 1, args.len())?;
+            let w = eval_to_long(target, env, cost)?;
+            let n = shift_count("shiftRightUnsigned", &args[0], env, cost)?;
+            cost.charge(Costs::bitwise_int_cost("shiftRightUnsigned"))?;
+            let r = if n >= 64 { 0 } else { ((w as u64) >> n) as i64 };
+            Ok(from_expr(Expr::GInt(r)))
+        }
         _ => Err(RholangError::ReduceError(format!(
             "Unimplemented method: {method}"
         ))),
@@ -2317,7 +2495,7 @@ fn spawn_reduce<T: std::marker::Send + 'static>(
 fn spawn_reduce<T: 'static>(fut: impl Future<Output = T> + 'static) -> ReduceTask<T> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = tx.send(fut.await);
+        chan::oneshot_send(tx, fut.await);
     });
     ReduceTask(rx)
 }
@@ -2413,14 +2591,14 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// the Law 24 per-commit certificate on the claim queue. Interior-mutable: the casper
     /// block path switches it around the per-deploy sequential fallback re-run.
     pub fn set_effect_mode(&self, mode: EffectMode) {
-        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+        *self.effect_mode.lock().unpoison() = mode;
         self.claims
             .set_validation_enabled(mode == EffectMode::RelaxedValidated);
     }
 
     /// The current effect-scheduler mode.
     pub fn effect_mode(&self) -> EffectMode {
-        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner())
+        *self.effect_mode.lock().unpoison()
     }
 
     /// Whether the current evaluation observed the S.3 enqueue window (a DFS-earlier claim landing
@@ -2479,7 +2657,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             // `mut` is needed by the host arm's `join_next`; the wasm arm consumes the set by value.
             #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
             let mut set = {
-                let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+                let mut guard = self.relaxed_tasks.lock().unpoison();
                 if guard.is_empty() {
                     return Ok(());
                 }
@@ -2860,7 +3038,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             Ok(fut) => fut,
             Err(e) => Box::pin(async move { Err(e) }),
         };
-        let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.relaxed_tasks.lock().unpoison();
         #[cfg(not(target_arch = "wasm32"))]
         guard.spawn(fut);
         #[cfg(target_arch = "wasm32")]
@@ -3086,7 +3264,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
 
     fn update_mergeable_channels(&self, chan: &SortedProc) {
         if self.is_mergeable_channel(chan) {
-            let mut chs = self.merge_chs.lock().unwrap_or_else(|p| p.into_inner());
+            let mut chs = self.merge_chs.lock().unpoison();
             if !chs.contains(chan) {
                 chs.push(chan.clone());
             }
@@ -3634,12 +3812,7 @@ mod tests {
                 "one effect per top-level term ({n} term(s))"
             );
             assert!(
-                interp
-                    .space
-                    .produced
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .is_empty(),
+                interp.space.produced.lock().unpoison().is_empty(),
                 "computing the closure must not touch the tuple space"
             );
         }
@@ -3673,11 +3846,7 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp
-            .space
-            .produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let produced = interp.space.produced.lock().unpoison();
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par().exprs, vec![Expr::GInt(1)]);
         assert_eq!(
@@ -3718,11 +3887,7 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp
-            .space
-            .produced
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let produced = interp.space.produced.lock().unpoison();
         assert_eq!(produced.len(), 64);
     }
 
@@ -3734,6 +3899,58 @@ mod tests {
         let bytes = eval_method("toUtf8Bytes", &target, &[], &e, &cost).unwrap();
         let hex = eval_method("bytesToHex", &bytes, &[], &e, &cost).unwrap();
         assert_eq!(hex, from_expr(Expr::GString("6162".to_string())));
+    }
+
+    /// **`hexToBytes` reads bytes, and a multi-byte character is a refusal rather than a panic**
+    /// (AUDIT C252).
+    ///
+    /// The falsifier for the byte-index defect, and it is the *panic* half that makes it one: `"aéa"`
+    /// is four bytes (1 + 2 + 1), so the even-length check passes and the old `&s[i..i + 2]` took a
+    /// window starting inside `é` — a slice off a character boundary, which **panics**. A stranger
+    /// could do that with a deploy, on any node, from the public deploy endpoint.
+    ///
+    /// The test asserts the *method's own refusal* rather than the absence of a crash, because "does
+    /// not panic" is satisfied by any wrong answer: the term is not hex, and the answer must say so in
+    /// the shape every other bad `hexToBytes` input gets.
+    #[test]
+    fn hex_to_bytes_reads_bytes_so_a_multibyte_character_is_refused_not_a_panic() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let call = |s: &str| {
+            eval_method(
+                "hexToBytes",
+                &from_expr(Expr::GString(s.to_string())),
+                &[],
+                &e,
+                &cost,
+            )
+        };
+
+        // Valid hex is unchanged, byte for byte — including upper case, which the radix parser
+        // accepted and `to_digit` accepts too.
+        assert_eq!(
+            call("6162").unwrap(),
+            from_expr(Expr::GByteArray(vec![0x61, 0x62]))
+        );
+        assert_eq!(
+            call("ABab").unwrap(),
+            from_expr(Expr::GByteArray(vec![0xab, 0xab]))
+        );
+
+        // The falsifier: this panicked before the fix.
+        let refused = call("aéa").expect_err("a multi-byte character is not hex");
+        assert!(
+            matches!(refused, RholangError::ReduceError(_)),
+            "and it is the method's own refusal, not a panic: {refused:?}"
+        );
+
+        // An odd *byte* length is still a refusal, and still not a panic.
+        assert!(call("abc").is_err(), "three bytes cannot be a byte string");
+
+        // The one behaviour difference the fix introduces, stated rather than discovered: the radix
+        // parser accepted a leading `+` and `to_digit` does not, so `"+1"` is now a refusal. It is not
+        // hex, and refusing it is the stricter and correct answer.
+        assert!(call("+1").is_err(), "a sign is not a hex digit");
     }
 
     /// **The four logical-connective bodies, and both short-circuits.** `EShortAnd`/`EShortOr` were
@@ -4155,6 +4372,139 @@ mod tests {
             }
             _ => panic!("expected a set"),
         }
+    }
+
+    /// **`shiftLeft` is charged on the full width of the integer it builds**, including when the
+    /// operand's top bits and the shift cross a byte boundary together: `0x7f << 1` is 8 bits, two
+    /// bytes by `big_int_size`, where `big_int_size(0x7f) + 1 / 8` said one.
+    #[test]
+    fn shift_left_is_charged_on_the_results_size() {
+        for x in [
+            0,
+            1_i64,
+            0x7f,
+            0x80,
+            0xff,
+            0x7fff,
+            -1,
+            -0x80,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            let big = BigInt::from(x);
+            for n in 0..=70_u64 {
+                assert_eq!(
+                    Costs::shift_left_result_size(big.magnitude().bits(), n),
+                    Costs::big_int_size(&(big.clone() << n as usize)),
+                    "x = {x}, n = {n}"
+                );
+            }
+        }
+        assert_eq!(Costs::shift_left_result_size(7, 1), 2);
+        assert_eq!(Costs::shift_left_result_size(7, 0), 1);
+        assert_eq!(Costs::shift_left_result_size(0, 8), 1);
+        assert_eq!(Costs::shift_left_result_size(0, u64::MAX), 1);
+
+        // At the call site: a `BigInt` operand takes the charged path, and is charged exactly the
+        // result's size.
+        let e = Env::new();
+        let charged = |x: &str, n: i64| {
+            let cost = CostAccounting::from_initial(Costs::unsafe_max());
+            let before = cost.total_charged();
+            let target = from_expr(Expr::GBigInt(x.parse::<BigInt>().unwrap()));
+            let out = eval_method("shiftLeft", &target, &[from_expr(Expr::GInt(n))], &e, &cost)
+                .expect("shiftLeft");
+            let Some(Expr::GBigInt(r)) = single_expr(&out) else {
+                panic!("expected a BigInt")
+            };
+            (cost.total_charged() - before, Costs::big_int_size(r))
+        };
+        for (x, n) in [
+            ("0", 8),
+            ("0", 1_000_000),
+            ("127", 1),
+            ("127", 9),
+            ("255", 1),
+            ("1", 7),
+            ("1", 8),
+            ("-128", 1),
+        ] {
+            let (paid, size) = charged(x, n);
+            assert_eq!(paid, size, "{x}.shiftLeft({n})");
+        }
+    }
+
+    #[test]
+    fn bit_operations_from_rchip_12() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let i = |v: i64| from_expr(Expr::GInt(v));
+        let n = |v: &str| from_expr(Expr::GBigInt(v.parse::<BigInt>().unwrap()));
+        let bytes = |v: &[u8]| from_expr(Expr::GByteArray(v.to_vec()));
+        let call = |m: &str, target: &Par, args: &[Par]| eval_method(m, target, args, &e, &cost);
+        let ok = |m: &str, target: &Par, args: &[Par]| call(m, target, args).expect(m);
+
+        // &, |, ^, ~ on Int
+        assert_eq!(ok("bitAnd", &i(0b1100), &[i(0b1010)]), i(0b1000));
+        assert_eq!(ok("bitOr", &i(0b1100), &[i(0b1010)]), i(0b1110));
+        assert_eq!(ok("bitXor", &i(0b1100), &[i(0b1010)]), i(0b0110));
+        assert_eq!(ok("bitNot", &i(0), &[]), i(-1));
+        assert_eq!(ok("bitAnd", &i(-1), &[i(0xff)]), i(0xff));
+        // a BigInt operand promotes, in two's complement
+        assert_eq!(ok("bitAnd", &n("-1"), &[i(0xff)]), n("255"));
+        assert_eq!(
+            ok("bitOr", &n("18446744073709551616"), &[i(1)]),
+            n("18446744073709551617")
+        );
+        assert_eq!(ok("bitNot", &n("5"), &[]), n("-6"));
+        // ByteArray: byte by byte, equal lengths only
+        assert_eq!(
+            ok("bitXor", &bytes(&[0xf0, 0x0f]), &[bytes(&[0xff, 0xff])]),
+            bytes(&[0x0f, 0xf0])
+        );
+        assert_eq!(
+            ok("bitNot", &bytes(&[0x00, 0xa5]), &[]),
+            bytes(&[0xff, 0x5a])
+        );
+        assert!(call("bitAnd", &bytes(&[1]), &[bytes(&[1, 2])]).is_err());
+        assert!(call("bitAnd", &bytes(&[1]), &[i(1)]).is_err());
+        assert!(call("bitAnd", &i(1), &[bytes(&[1])]).is_err());
+
+        // << is exact: it promotes rather than wrapping, and the count is never masked
+        assert_eq!(ok("shiftLeft", &i(1), &[i(10)]), i(1024));
+        assert_eq!(ok("shiftLeft", &i(-3), &[i(2)]), i(-12));
+        assert_eq!(ok("shiftLeft", &i(1), &[i(62)]), i(1 << 62));
+        assert_eq!(ok("shiftLeft", &i(1), &[i(63)]), n("9223372036854775808"));
+        assert_eq!(ok("shiftLeft", &i(1), &[i(64)]), n("18446744073709551616"));
+        assert_eq!(ok("shiftLeft", &i(-1), &[i(63)]), i(i64::MIN));
+        assert_eq!(ok("shiftLeft", &i(0), &[i(1_000_000)]), i(0));
+        assert!(call("shiftLeft", &i(1), &[i(-1)]).is_err());
+        // >> is arithmetic: floor(x / 2^n)
+        assert_eq!(ok("shiftRight", &i(1024), &[i(3)]), i(128));
+        assert_eq!(ok("shiftRight", &i(-7), &[i(1)]), i(-4));
+        assert_eq!(ok("shiftRight", &i(-7), &[i(200)]), i(-1));
+        assert_eq!(ok("shiftRight", &i(7), &[i(200)]), i(0));
+        assert_eq!(ok("shiftRight", &n("-7"), &[i(1)]), n("-4"));
+        assert_eq!(
+            ok("shiftRight", &n("18446744073709551616"), &[i(64)]),
+            n("1")
+        );
+        // >>> is the 64-bit logical shift
+        assert_eq!(ok("shiftRightUnsigned", &i(-1), &[i(60)]), i(0xf));
+        assert_eq!(ok("shiftRightUnsigned", &i(-1), &[i(64)]), i(0));
+        assert!(call("shiftRightUnsigned", &n("18446744073709551616"), &[i(1)]).is_err());
+
+        // the RCHIP's motivating case: floor(log2(x)) by shifting
+        let mut x = 1000_i64;
+        let mut log2 = -1;
+        while x > 0 {
+            x = match single_expr(&ok("shiftRight", &i(x), &[i(1)])) {
+                Some(Expr::GInt(v)) => *v,
+                _ => unreachable!(),
+            };
+            log2 += 1;
+        }
+        assert_eq!(log2, 9);
     }
 
     #[test]

@@ -5,7 +5,7 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->86 entries<!-- counts:end -->**: the calculus laws, and the rows covering the
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->88 entries<!-- counts:end -->**: the calculus laws, and the rows covering the
 surface a client writes, 4 for the Proof-of-Stake epoch, one for the fee consequence of a denied
 deploy, and one for what a matched deploy is charged), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
@@ -33,6 +33,7 @@ deploy, and one for what a matched deploy is charged), the ρ-calculus core
 | Run a validator (hardware requirements / sizing) | [Running a validator: hardware requirements](node/validator-requirements.md) |
 | Understand what a validator is **paid** and what it can **lose** (epoch pot, slashing, the draw) | [Validator economics](node/validator-economics.md) |
 | Know whether the node is **ready for outside validators** (the testnet gate and the falsifiers that decide it) | [Testnet acceptance specification](spec/testnet-acceptance.md) |
+| Know how the node **fails**, and what it does about it (the R1–R4 ladder, the silent paths, and the recovery that does not exist) | [Failure-mode HAZOP and disposition](spec/failure-hazop.md) |
 | Build an app against a running node (deploy rholang, read responses) | [Building applications on the local devnet](developer/building-apps.md) |
 | Understand the port (why Rust, module status) | [Part V](contributor/why-rust.md) |
 | Find the machine-checked proofs | [`spec/Rchain/`](../../spec/Rchain/) (Lean), [`spec/coq/`](../../spec/coq/) (Coq) |
@@ -82,5 +83,5 @@ lived there and **nothing errored**:
 | `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws.md` for what that cost) | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
-| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->65 laws and 86 entries<!-- counts:end -->) with source-of-truth + status | — |
+| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->65 laws and 88 entries<!-- counts:end -->) with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |

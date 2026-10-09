@@ -13,6 +13,7 @@
 //! both legs, so the sync attempt never finishes, `notify_when_restored` never fires, and the node
 //! sits in `NodeSyncing` for good **with a serving API and no error line**.
 
+use rchain_shared::chan;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -151,7 +152,7 @@ async fn process_block(
         save_block(st, block_store, block).await?;
     }
     // Trigger the request queue (without resending already-requested blocks).
-    let _ = request_tx.send(false).await;
+    chan::send(request_tx, false).await;
     Ok(())
 }
 
@@ -189,7 +190,7 @@ async fn request_next(
     }
 
     for h in &existing {
-        let _ = response_hash_tx.send(*h);
+        chan::unbounded_send(response_hash_tx, *h);
     }
     if !is_end && !missing.is_empty() {
         for h in &missing {
@@ -226,7 +227,7 @@ pub async fn request_blocks(
         tokio::sync::mpsc::unbounded_channel::<BlockHash>();
 
     // "Light the fire!" / start the first request for blocks.
-    let _ = request_tx.send(false).await;
+    chan::send(&request_tx, false).await;
 
     // Request loop: pull request triggers (or resend on idle timeout) and request next blocks,
     // terminating once all blocks are finished.
@@ -297,13 +298,18 @@ pub async fn request_blocks(
                 hash = response_hash_rx.recv() => {
                     match hash {
                         Some(hash) => {
-                            let block = block_store
-                                .get(&[hash])
-                                .await
-                                .unwrap_or_default()
-                                .into_iter()
-                                .flatten()
-                                .next();
+                            let block = match block_store.get(&[hash]).await {
+                                Ok(v) => v.into_iter().flatten().next(),
+                                Err(e) => {
+                                    // A read that fails is not "there is no such block" (C249's class):
+                                    // the loop below would move on believing the store had answered.
+                                    log.error(
+                                        source,
+                                        &format!("Failed to read block {}: {e}", hash.to_hex()),
+                                    );
+                                    None
+                                }
+                            };
                             if let Some(block) = block {
                                 log.info(
                                     source,
@@ -583,7 +589,7 @@ mod tests {
             };
             let hash = request.hash;
             if let Some(block) = self.blocks.get(&hash) {
-                let _ = self.incoming.send(block.clone()).await;
+                chan::send(&self.incoming, block.clone()).await;
             }
             Vec::new()
         }
@@ -1054,7 +1060,7 @@ mod tests {
             };
             if ask_count >= self.after {
                 if let Some(block) = self.blocks.get(&hash) {
-                    let _ = self.incoming.send(block.clone()).await;
+                    chan::send(&self.incoming, block.clone()).await;
                 }
             }
             Vec::new()

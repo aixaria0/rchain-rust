@@ -23,6 +23,7 @@
 //! need to send into it keep the [`SessionHandle`]. See `owner.rs` for the loop, the handle, and the
 //! crossed-hello rule that says which of two simultaneous sessions between the same peers dies.
 
+use rchain_shared::chan;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -822,7 +823,7 @@ impl Session {
                 let act = fut.await;
                 // A full queue loses the answer rather than the session (see
                 // `MAX_DEFERRED_ANSWERS`): the claim times out exactly as it did before the deferral.
-                let _ = tx.send((deliver, act)).await;
+                chan::send(&tx, (deliver, act)).await;
                 // The slot is released when the waiter ends, whichever way it ended — a task that
                 // never released it would close the session to claims one waiter at a time.
                 live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -1285,8 +1286,11 @@ async fn send_abort(conn: &mut Box<dyn NetConn>, reason: &str) {
     let abort = Abort {
         reason: reason.to_string(),
     };
-    // Best effort: the peer may already be gone.
-    let _ = conn.send(&abort.to_syrup().to_bytes()).await;
+    // Best effort: the peer may already be gone. **Named rather than silent** — this is the one place
+    // in the tree whose discard is not a channel send with a receiver that left first, and the name says
+    // what the shape would otherwise hide, which is the whole of what C254's E6b asks (the `discard`
+    // class in `tools/audit-type-system.sh` forbids the *silent* `let _ = …send(…)`, not the decision).
+    rchain_shared::chan::best_effort(conn.send(&abort.to_syrup().to_bytes())).await;
 }
 
 /// A connection-level failure.

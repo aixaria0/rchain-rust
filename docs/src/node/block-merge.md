@@ -25,7 +25,7 @@ longer re-executes other branches' deploys.
 |---|---|
 | conflict set (events back to the last finalized block) | the **merge scope** — `MergeScope { final_scope, conflict_scope }` built from the merge fringe and the final fringe (`casper/src/merging.rs`) |
 | per-deploy event log | `EventLogIndex` (`rspace/src/merger/event_log_index.rs`): the produces/consumes/joins a deploy touched, each classified (created / destroyed / copied by peek / existed in pre-state / touches a pre-state join), plus `NumberChannelsDiff` for mergeable channels |
-| a block's changes | `BlockIndex` → `Vec<DeployChainIndex>`; each chain carries its `StateChange` (the trie-level diff) and `EventLogIndex` |
+| a block's changes | `BlockIndex` → `Vec<DeployChainIndex>`; each chain carries its `StateChange` (the trie-level diff), its `EventLogIndex` **and its own `native_effects`** — the native writes of the deploys *it* carries, and of no other chain's (#280) |
 | denied deploys written into the block | `BlockMessage::rejected_deploys` (the `rejectedDeploys` field) |
 | apply the surviving changes to the base state | `MergeScope::compute_merged_state` → `StateChange::combine` → `compute_trie_actions` (`rspace/src/merger/state_change_merger.rs`) → `HotStoreTrieAction`s → one checkpoint on the base history |
 | "the deployer is not charged, the validator is not rewarded" | see *Open items* — the effects are excluded from the merged state; the accounting consequence is not implemented |
@@ -86,6 +86,17 @@ was honest. Both are required, and both are deterministic.
 - the merge scope, the conflict/dependency maps, the rejection options and the optimum are all
   functions of the DAG and the event logs — no clocks, no maps with undefined iteration order
   (`BTreeMap`/`BTreeSet` throughout);
+- **and a chain's fate does not move when the scope does** (#280). "A function of the DAG" is true
+  of the resolution and was not sufficient: the native relation used to be keyed on the *host block*,
+  so a chain was a conflict partner for a slot its block wrote and its rejection was closed over the
+  whole block. At an epoch boundary — where every block runs `close_block` — every concurrent pair
+  conflicted, and the same round resolved differently once the fringe advanced past it, which is how
+  a committed deploy's write came to be present at three heights and gone from the fourth on every
+  node at once (`spec/audit/evidence/n280-merge-loses-a-write-results.md`). The relation is now on
+  each chain's **own** native writes, the whole-block rule is deleted rather than narrowed, and the
+  acceptance of a chain that wrote no contended slot is the same in every scope it can appear in.
+  Its law is **17c** (`spec/INVENTORY.md`); the `tests/` half is
+  `casper/src/merging.rs::boundary_merge_tests`;
 - `StateChange::combine` is a **monoid** and the mergeable-channel sum is commutative (**Law 9**), so
   independent logs merge in any order;
 - the trie update is content-addressed (**Law 10**), so the merged state hash is a function of the

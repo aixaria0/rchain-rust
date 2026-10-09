@@ -136,6 +136,10 @@ fn build_scope_set(seed: u64) -> Vec<Arc<DeployChainIndex>> {
                 state_changes: StateChange::empty(),
                 cost_moves: std::collections::BTreeMap::new(),
                 executor: String::new(),
+                // This fixture is about the churn of `EventLogIndex`, not about native state, so the
+                // chain writes nothing — which is also the honest value now that effects are per chain.
+                native_effects: Vec::new(),
+                first_deploy_ordinal: 0,
             })
         })
         .collect()

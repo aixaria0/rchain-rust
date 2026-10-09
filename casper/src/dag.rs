@@ -18,7 +18,7 @@ use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeploy
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_shared::metrics::{Metrics, MetricsNop, Source};
-use rchain_shared::refined::SeqNum;
+use rchain_shared::refined::{BlockHeight, SeqNum};
 use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::block_metadata_store::BlockMetadataStore;
@@ -96,6 +96,32 @@ impl BlockDagKeyValueStorage {
         deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
         deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
     ) -> Result<Self, String> {
+        let representation =
+            Self::rebuild_representation(&block_metadata_store, &fringe_data_store).await?;
+        Ok(BlockDagKeyValueStorage {
+            representation: tokio::sync::RwLock::new(Arc::new(representation)),
+            lock: tokio::sync::Mutex::new(()),
+            block_metadata_store,
+            fringe_data_store,
+            deploy_index,
+            deploy_store,
+            metrics: Arc::new(MetricsNop),
+            equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
+            deployer_index: None,
+            deployer_indexed_from: AtomicI64::new(0),
+        })
+    }
+
+    /// Fold the stores into an in-memory DAG representation.
+    ///
+    /// A function of its own because [`Self::create`] is not the only caller any more: a reset
+    /// ([`Self::drop_above`]) rewinds the metadata and then has to produce the *same* representation
+    /// this produced at boot. Two implementations of that fold would be two chances for the rebuilt
+    /// view to differ from the booted one, and the view is what every dependency check reads.
+    async fn rebuild_representation(
+        block_metadata_store: &Arc<BlockMetadataStore>,
+        fringe_data_store: &Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>>,
+    ) -> Result<DagRepresentation, String> {
         let dag_set = block_metadata_store.dag_set().await;
         let child_map = block_metadata_store.child_map_data().await;
         let height_map = block_metadata_store.height_map().await;
@@ -156,26 +182,76 @@ impl BlockDagKeyValueStorage {
             }
         }
 
-        let representation = DagRepresentation {
+        Ok(DagRepresentation {
             dag_set,
             child_map,
             height_map,
             dag_message_state: dag_msg_state,
             fringe_states,
-        };
-
-        Ok(BlockDagKeyValueStorage {
-            representation: tokio::sync::RwLock::new(Arc::new(representation)),
-            lock: tokio::sync::Mutex::new(()),
-            block_metadata_store,
-            fringe_data_store,
-            deploy_index,
-            deploy_store,
-            metrics: Arc::new(MetricsNop),
-            equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
-            deployer_index: None,
-            deployer_indexed_from: AtomicI64::new(0),
         })
+    }
+
+    /// **Rewind the DAG to `height`** — the node-side reset (C249's third rung, #287).
+    ///
+    /// A node that cannot locally heal has exactly one way back today: an operator stops it and deletes
+    /// the shard data dir by hand, which exists as a comment and nowhere as code. This is that path as
+    /// code: everything above `height` goes, the representation is rebuilt from what survives, and the
+    /// node replays from the anchor.
+    ///
+    /// **The order is metadata, representation, indices**, and each step is there for a reason. The
+    /// metadata store's own rewind is store-first (AUDIT C172's shape): a failed delete leaves the
+    /// in-memory index alone, and the index is rebuilt from what the store actually holds rather than
+    /// edited down. The representation is then rebuilt by the *same* fold `create` uses, so a rewound
+    /// node sees what a rebooted one would. The derived indices are cleaned last because they are
+    /// derived: an entry pointing above the anchor answers "this deployer signed in block X" for a block
+    /// the node no longer has, and it is found by value, since both indices are keyed by deploy/deployer
+    /// rather than by block.
+    ///
+    /// **Held under the insert lock**, so a concurrent `insert` cannot land a block above the anchor
+    /// while the rewind is in flight. Without it the insert and the rebuild race, and the representation
+    /// keeps a block the store has just dropped — a node serving a block it cannot replay.
+    ///
+    /// **What this does not drop, stated rather than implied.** The block *messages* live in
+    /// `BlockStore`, which this type does not own, so the bodies stay on disk; and `fringe_data_store`
+    /// keeps its entries, which are keyed by fringe hash and read only for messages the map still holds,
+    /// so they are dead weight rather than a wrong answer. `deployer_indexed_from` also stays as it is:
+    /// its claim is "complete from this height **up to the tip**", and with the tip now at the anchor
+    /// that claim is still true of the shorter chain.
+    pub async fn drop_above(&self, height: BlockHeight) -> Result<Vec<BlockHash>, String> {
+        let _guard = self.lock.lock().await;
+
+        let dropped = self.block_metadata_store.drop_above(height).await?;
+        if dropped.is_empty() {
+            return Ok(dropped);
+        }
+
+        let rebuilt =
+            Self::rebuild_representation(&self.block_metadata_store, &self.fringe_data_store)
+                .await?;
+        *self.representation.write().await = Arc::new(rebuilt);
+
+        let gone: BTreeSet<Vec<u8>> = dropped.iter().map(|h| h.as_bytes().to_vec()).collect();
+        let deploys = self.deploy_index.to_map().await?;
+        let stale: Vec<DeployId> = deploys
+            .into_iter()
+            .filter(|(_, hash)| gone.contains(hash.as_bytes().as_slice()))
+            .map(|(id, _)| id)
+            .collect();
+        if !stale.is_empty() {
+            self.deploy_index.delete(&stale).await?;
+        }
+        if let Some(index) = &self.deployer_index {
+            let entries = index.to_map().await?;
+            let stale: Vec<Vec<u8>> = entries
+                .into_iter()
+                .filter(|(_, value)| gone.contains(value))
+                .map(|(key, _)| key)
+                .collect();
+            if !stale.is_empty() {
+                index.delete(&stale).await?;
+            }
+        }
+        Ok(dropped)
     }
 
     /// Attach the deployer index. From here on every inserted block is indexed. A store that has
@@ -923,6 +999,67 @@ mod tests {
 
     async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
         build_storage_over(empty_metadata_store().await).await
+    }
+
+    /// **A rewind takes the node back to the anchor, in the view every dependency check reads.**
+    ///
+    /// The DAG is built the way a *restart* finds one — blocks added to the metadata store, then a
+    /// storage created over it — because that is the state a node that cannot heal is actually in, and
+    /// because it makes the assertion about the rebuilt representation rather than about the insert
+    /// path. The blocks are a chain, so "above the anchor" is unambiguous.
+    ///
+    /// Falsifier: as with the metadata-store half, the capability is absent on the pre-fix tree and the
+    /// test does not build there. What the test then pins is the part a reboot would have caught: after
+    /// the rewind the *representation* — not just the store — no longer contains the dropped blocks,
+    /// which is what `has_all_deps` and the sync path read.
+    #[tokio::test]
+    async fn a_rewind_to_the_anchor_takes_the_tip_out_of_the_representation() {
+        let metadata = empty_metadata_store().await;
+        let mut parents: Vec<BlockHash> = Vec::new();
+        for n in 0..=4u8 {
+            let h = hash(n);
+            // One sender, so the sequence number is what keeps H-1's gate out of the way: a chain is
+            // the same proposer's blocks, and `meta`'s `seq_num: 0` would be an equivocation.
+            let mut m = meta(h, &parents, i64::from(n));
+            m.seq_num = i64::from(n).try_into().unwrap();
+            metadata
+                .add(m)
+                .await
+                .expect("the stored chain is contiguous");
+            parents = vec![h];
+        }
+        let storage = build_storage_over(Arc::clone(&metadata)).await;
+
+        assert!(
+            storage.get_representation().await.contains(&hash(4)),
+            "the node sees the tip to begin with"
+        );
+
+        let anchor = BlockHeight::try_from(2).unwrap();
+        let dropped = storage.drop_above(anchor).await.unwrap();
+        assert_eq!(
+            dropped.iter().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([hash(3), hash(4)])
+        );
+
+        let repr = storage.get_representation().await;
+        assert!(!repr.contains(&hash(4)), "the tip is gone from the view");
+        assert!(!repr.contains(&hash(3)));
+        assert!(
+            repr.contains(&hash(2)),
+            "the anchor survives — it is the state replayed from"
+        );
+        assert_eq!(
+            repr.latest_block_number(),
+            3,
+            "three blocks left, at heights 0, 1 and 2"
+        );
+        drop(repr);
+
+        assert!(
+            metadata.get(&hash(4)).await.unwrap().is_none(),
+            "and the store agrees, which is what the next boot reads"
+        );
     }
 
     #[tokio::test]

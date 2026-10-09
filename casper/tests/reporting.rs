@@ -32,7 +32,7 @@ use rchain_models::casper::protocol::casper_message::{
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::validator::Validator;
-use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
+use rchain_rholang::merging::{DeployMergeableDataCodec, NativeSidecarCodec};
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::reporting_runtime::create_reporting_rspace;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
@@ -91,7 +91,7 @@ async fn build_runtime_and_manager() -> (RuntimeManager, Arc<InMemoryStoreManage
             &*manager,
             "native-changes",
             Arc::new(BytesCodec),
-            Arc::new(NativeStoreActionsCodec),
+            Arc::new(NativeSidecarCodec),
         )
         .await
         .expect("native changes store"),

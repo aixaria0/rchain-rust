@@ -1,5 +1,6 @@
 //! Interpreter utilities (port of `rholang/InterpreterUtil.scala`).
 
+use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -230,6 +231,93 @@ static LAST_STALL_DESC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new
 /// How many heights may pass between two stall lines: one per hundred blocks keeps a stall that lasts
 /// hundreds of blocks to a readable number of lines (#70's measurement ran ~160 blocks at finality 44).
 const STALL_LOG_INTERVAL: i64 = 100;
+
+/// The last finality-stall reason this process observed, for the **machine-readable** surface — C249's
+/// F-U10-01, and the reason this cell is not `LAST_STALL_DESC`.
+///
+/// That one is the *log's* rate limiter: it holds the last line it let through, and it is only written
+/// when the limit allows one. A status surface reading it would report a stale reason for up to
+/// `STALL_LOG_INTERVAL` heights — precisely while an operator is looking. This is written on **every**
+/// observation, so it is the current reason or nothing at all, and a stall that ends clears it.
+static CURRENT_STALL_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// How many times this process has **entered** a finality stall (a not-stalled → stalled transition),
+/// monotone. Counting observations would count every block of a long stall, which is a different and
+/// less useful quantity; this one answers "has this node stalled, and how often".
+static STALL_EPISODES: AtomicU64 = AtomicU64::new(0);
+
+/// How many merges have returned a report that was not quiet (#280) — a dropped chain, or a violated
+/// invariant. The log carries the detail; this is what makes the event **countable**, which is the half
+/// the live incident lacked: `reject_whole_blocks` fired with no counter and no line anywhere moving.
+static NON_QUIET_MERGE_REPORTS: AtomicU64 = AtomicU64::new(0);
+
+/// Record one observation of the gate's verdict: the reason when finality is stalled, `None` when it is
+/// not. Called on every block's validation, so the surface follows the chain rather than the log.
+fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
+    let rendered = reason.map(describe_no_advance);
+    let mut current = CURRENT_STALL_REASON.lock().unpoison();
+    if rendered.is_some() && current.is_none() {
+        STALL_EPISODES.fetch_add(1, Ordering::Relaxed);
+    }
+    *current = rendered;
+}
+
+/// The reason finality is not advancing, as this node last observed it.
+///
+/// `None` means the last observation saw a merge that advanced — **not** "finality is healthy", which is
+/// a judgement the acceptance spec makes, not this accessor.
+pub fn finality_stall_reason() -> Option<String> {
+    CURRENT_STALL_REASON.lock().unpoison().clone()
+}
+
+/// How many finality stalls this process has entered (monotone).
+pub fn finality_stall_episodes() -> u64 {
+    STALL_EPISODES.load(Ordering::Relaxed)
+}
+
+/// How many non-quiet merge reports this process has logged (monotone).
+pub fn non_quiet_merge_reports() -> u64 {
+    NON_QUIET_MERGE_REPORTS.load(Ordering::Relaxed)
+}
+
+fn note_non_quiet_merge_report() {
+    NON_QUIET_MERGE_REPORTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// **How many blocks this node has given up on** — C249's R3 gap, made countable.
+///
+/// When a `Divergence` record's revalidation budget is spent and it is *still* failed, the node has
+/// stopped trying: it will refuse that block, and every descendant of it, for the process lifetime
+/// (`casper/src/multi_parent_casper.rs:restore_is_warranted`). That transition used to be silent — the
+/// scan simply `continue`d — which is the disposition pass's finding at its far end: the failure
+/// upstream is loud and the *state* it leaves has no surface, no count and no inverse.
+///
+/// **Nothing acts on this.** It is the denominator a reset would act on, shipped dark so an operator
+/// can see what a reset *would* have done before one is wired (#287/#294 own the net-wide half).
+static UNRESTORABLE_RECORDS: AtomicU64 = AtomicU64::new(0);
+
+/// The block this node last gave up on, as `<hash> (seq <n>)`. The count answers "has this happened";
+/// this answers "on what". An operator needs both, and the count alone is not actionably specific.
+static CURRENT_UNRESTORABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// How many blocks this node has given up on (monotone).
+pub fn unrestorable_records() -> u64 {
+    UNRESTORABLE_RECORDS.load(Ordering::Relaxed)
+}
+
+/// The last block this node gave up on, or `None` if it never has. **Not** a health verdict: a node
+/// that has given up on one block may still be serving, and this says what it is stuck on, not how
+/// bad that is.
+pub fn unrestorable_block() -> Option<String> {
+    CURRENT_UNRESTORABLE.lock().unpoison().clone()
+}
+
+/// Record that this node has given up on a block. See the caller in `multi_parent_casper.rs` for what
+/// that means and what it deliberately does not do.
+pub fn note_unrestorable(block_hex: &str, seq_num: i64) {
+    UNRESTORABLE_RECORDS.fetch_add(1, Ordering::Relaxed);
+    *CURRENT_UNRESTORABLE.lock().unpoison() = Some(format!("{block_hex} (seq {seq_num})"));
+}
 
 /// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
 /// height-gated: the instrument exists to be read off a *run*, and a run is measured in seconds. The
@@ -500,6 +588,10 @@ where
         // chain sat at finality 44 while the height ran to 202 and nothing in the logs said why (#70).
         // The reason comes back from the gate itself, so it cannot disagree with the decision it
         // explains, and it is rate-limited to one line per `STALL_LOG_INTERVAL` heights.
+        // **The surface's copy, written on every observation** (C249's F-U10-01). The line below is
+        // rate-limited so a long stall stays readable; a status surface that inherited that limit would
+        // report a stale reason for up to `STALL_LOG_INTERVAL` heights. This one is current or nothing.
+        note_finality_stall(pre_state.finality_stall.as_ref());
         if let Some(reason) = &pre_state.finality_stall {
             let tip = pre_state.max_block_num;
             // **Compare the rendered line, not the variant name.** The first version of this gate keyed on
@@ -509,7 +601,7 @@ where
             // …), and those are the diagnosis, so the line firing on any change is what makes it readable.
             let line = describe_no_advance(reason);
             let changed = {
-                let mut last = LAST_STALL_DESC.lock().unwrap_or_else(|p| p.into_inner());
+                let mut last = LAST_STALL_DESC.lock().unpoison();
                 let changed = last.as_deref() != Some(line.as_str());
                 if changed {
                     *last = Some(line.clone());
@@ -526,12 +618,22 @@ where
                 );
             }
         }
+        // **What the merge did, when it did anything at all** (#280). This is the line the live
+        // incident could not produce: a merge rejected a boundary chain, a user deploy died with it,
+        // and no counter and no line anywhere moved. `is_quiet` is the guard rather than a rate limit
+        // because a merge that rejects nothing is the ordinary case, and the interesting merges — the
+        // ones that drop a chain, or that violate an invariant — are exactly the ones worth a line.
+        if !pre_state.merge_report.is_quiet() {
+            note_non_quiet_merge_report();
+            log.warn(source, &pre_state.merge_report.describe());
+        }
         pre_state
     } else {
         // Genesis block: no parents.
         let genesis_pre_state_hash = empty_state_hash_fixed();
         ParentsMergedState {
             finality_stall: None,
+            merge_report: crate::merging::MergeReport::default(),
             justifications: Vec::new(),
             max_block_num: 0,
             max_seq_nums: BTreeMap::from([(block.sender, 0)]),
@@ -720,6 +822,7 @@ mod tests {
 
         let pre_state = ParentsMergedState {
             finality_stall: None,
+            merge_report: crate::merging::MergeReport::default(),
             justifications: vec![],
             max_block_num: 41,
             max_seq_nums: BTreeMap::new(),
@@ -893,5 +996,106 @@ mod tests {
         // All five must be *distinguishable*: a line that named only the kind would pass the assertions
         // above while leaving the four soft-failed variants reading alike.
         assert_eq!(lines.len(), cases.len(), "one line per variant: {lines:?}");
+    }
+
+    /// **The stall reason reaches a surface, and the surface follows the gate rather than the log**
+    /// (C249's F-U10-01).
+    ///
+    /// The line beside this one in the validation path is rate-limited to one per `STALL_LOG_INTERVAL`
+    /// heights so a long stall stays readable. A surface reading *that* cell would report a stale reason
+    /// for up to a hundred heights — precisely while an operator is looking — so the two are separate.
+    /// This pins the separate one: written on every observation, cleared when the gate stops reporting,
+    /// and counting **episodes** rather than blocks.
+    ///
+    /// Falsifier: before this change there was no cell and no accessor — the reason existed only as a
+    /// formatted log line, so a test could not ask for it at all. That is what "log-only" meant.
+    ///
+    /// The assertions are `>=`/`>` against a captured reading rather than exact deltas, because the
+    /// counters are process-wide and libtest runs this module's tests concurrently.
+    #[test]
+    fn the_stall_surface_follows_the_gate_and_counts_episodes() {
+        let before = finality_stall_episodes();
+
+        note_finality_stall(None);
+        assert_eq!(finality_stall_reason(), None, "no stall → no reason");
+        assert_eq!(
+            finality_stall_episodes(),
+            before,
+            "and a clear is not an episode"
+        );
+
+        // The gate's own rendering, numbers and all: the surface must not re-derive it, or it could
+        // disagree with the decision it explains.
+        let stalled = NoAdvance::Support {
+            supporting: 400,
+            total: 800,
+            full_partitions: 4,
+            candidates: 4,
+        };
+        note_finality_stall(Some(&stalled));
+        let reason = finality_stall_reason().expect("a stall is reported");
+        assert!(
+            reason.contains("400 of 800") && reason.contains("not a supermajority"),
+            "the reason carries the numbers that make it a diagnosis: {reason}"
+        );
+        let after_first = finality_stall_episodes();
+        assert!(after_first > before, "entering a stall is an episode");
+
+        // A second observation of the *same* stall is not a new episode: counting observations would
+        // count every block of a long stall, which is a different and less useful quantity.
+        note_finality_stall(Some(&stalled));
+        assert_eq!(
+            finality_stall_episodes(),
+            after_first,
+            "the same stall is one episode however many times it is observed"
+        );
+
+        // A clear ends it, so the next stall is a second episode.
+        note_finality_stall(None);
+        assert_eq!(finality_stall_reason(), None, "and the reason goes with it");
+        note_finality_stall(Some(&stalled));
+        assert!(
+            finality_stall_episodes() > after_first,
+            "a stall after a recovery is a new episode"
+        );
+    }
+
+    /// **A node that has given up on a block says so, and says where** — C249's R3 gap, counted.
+    ///
+    /// Falsifier: before this change the moment a node stopped trying was **silent** — the restore scan
+    /// simply `continue`d — so there was no cell, no accessor and no way for a test (or a probe) to ask
+    /// whether it had happened at all. That is the shape the disposition pass calls "fails loudly and
+    /// then does nothing", and this is the *doing nothing* half made legible.
+    ///
+    /// The assertions are `>`/`>=` against a captured reading and the value is matched by suffix, for
+    /// the same reason the stall test explains: the counters are process-wide and libtest runs this
+    /// module's tests concurrently.
+    #[test]
+    fn the_unrestorable_surface_names_the_block_it_gave_up_on() {
+        let before = unrestorable_records();
+
+        note_unrestorable("deadbeef", 42);
+
+        assert!(
+            unrestorable_records() > before,
+            "giving up on a block is counted ({before} -> {})",
+            unrestorable_records()
+        );
+        let named = unrestorable_block().expect("the block it gave up on is named");
+        assert!(
+            named.ends_with("deadbeef (seq 42)"),
+            "the name carries the hash and the sequence number an operator needs to act: {named}"
+        );
+
+        // Monotone: a later give-up replaces the *name* and adds to the count, so a node that has
+        // given up on two blocks reads 2 and names the second — never 1.
+        let after_first = unrestorable_records();
+        note_unrestorable("cafebabe", 7);
+        assert!(unrestorable_records() > after_first, "and again");
+        let named = unrestorable_block().expect("named");
+        assert!(
+            named.ends_with("cafebabe (seq 7)"),
+            "the surface names the most recent, not the first: {named}"
+        );
     }
 }

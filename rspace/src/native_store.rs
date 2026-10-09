@@ -8,6 +8,7 @@
 //! into the next checkpoint. This mirrors the `HotStore`/`HistoryRepository` split so native state
 //! stays content-addressed, replayable, and queryable at an arbitrary state hash.
 
+use rchain_shared::lock::Unpoison;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -107,20 +108,182 @@ impl NativeHistoryReader for NoopNativeReader {
     }
 }
 
-/// One overlay slot: the value it will hold, and **whether cost accounting is the only thing that
-/// wrote it in this block** (AUDIT C207).
+/// **Which deploy a native write belongs to** (#280).
 ///
-/// The second half is what lets a block's sidecar carry its *own* native effects without carrying
-/// the cost-accounting ones. That matters because cost accounting writes `pos:vault` from **every**
-/// user deploy, so a block that carries a deploy overlaps every concurrent sibling on that slot —
-/// and the merge resolves an overlap by rejecting a whole block, which silently took the deploy's own
-/// writes (a delegation, a bond, a trust) with it. Splitting the two lets cost accounting move to the
-/// granularity the tuple space already merges at — per accepted deploy — while every other native
-/// write keeps the whole-block rule, unchanged.
+/// The overlay records one of these per slot, so a block's native effects are attributable *by
+/// construction*: no consumer can be handed a set that belongs to "the block" as a whole, which is the
+/// representation that let the merge reject a chain for a slot it never wrote
+/// (`spec/audit/evidence/n280-merge-loses-a-write-results.md`).
+///
+/// There is no "unknown" arm and no "the block" arm. The one arm that is not a deploy is
+/// [`NativeWriter::OutsideAnyDeploy`], which exists for genesis installation and for direct store use
+/// outside block production — and which the **block path refuses** rather than attributing to the
+/// block (`BlockNativeEffects::from_drain`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NativeWriter {
+    /// The deploy at this **ordinal** in the block's list: `state.deploys` (user deploys, in their
+    /// given order) followed by `state.system_deploys`. The ordinal is the one name both the drain and
+    /// `BlockIndex::apply` have, and it is what maps a slot to the chain that must carry it.
+    Deploy(u32),
+    /// Cost accounting's window (`pre_charge` / `refund` / `pay_executor`). Re-derived by the merge
+    /// from the accepted deploys (AUDIT C207), so it never travels in a block's sidecar — but it is
+    /// *named* here rather than being "the other kind".
+    ///
+    /// It carries no ordinal because it does not need one: the window always lies inside the deploy
+    /// it charges (the stack makes that structural), and a slot whose only writer is cost accounting
+    /// is collected into the flat cost set rather than attributed.
+    CostAccounting,
+    /// **The genesis installation** — `install_genesis`, the vault balances and the registry aliases
+    /// `compute_genesis` writes before block 0's deploy list exists.
+    ///
+    /// It is a *named* arm and not an "unknown" one, and it is the only writer that is not a deploy.
+    /// It is deliberately **not carried in a sidecar**: what it writes is the block-0 configuration,
+    /// which is already in the state every node holds — a merge never asks the genesis block for its
+    /// native set, because the genesis is the merge's *base* rather than one of its conflict blocks.
+    /// If that ever stops being true, this is the line to re-read, and the day it does the arm is what
+    /// says so.
+    Genesis,
+    /// A write made outside any deploy's window, and outside the genesis installation too. Nothing in
+    /// block production should produce one, which is why `BlockNativeEffects::from_drain` refuses it
+    /// instead of filing it under the block.
+    OutsideAnyDeploy,
+}
+
+impl NativeWriter {
+    /// Whether this write is cost accounting's — the predicate the sidecar's split is made on, and the
+    /// one that used to be a bare `bool`.
+    pub fn is_cost(&self) -> bool {
+        matches!(self, NativeWriter::CostAccounting)
+    }
+}
+
+/// One overlay slot: the value it will hold, and **which deploy last wrote it** (AUDIT C207, #280).
+///
+/// The second half is what lets a block's sidecar carry its *own* native effects, attributed to the
+/// deploys that made them. That matters twice over. Cost accounting writes `pos:vault` from **every**
+/// user deploy, so a block that carries a deploy overlaps every concurrent sibling on that slot — and
+/// the merge resolves an overlap by rejecting a chain, which silently took the deploy's own writes (a
+/// delegation, a bond, a trust) with it. And at an epoch boundary every block runs `close_block`, so
+/// every block's *union* overlaps every sibling's, which took a whole deploy with a contention it had
+/// no part in. Splitting the two lets cost accounting move to the granularity the tuple space already
+/// merges at — per accepted deploy — and lets every other write be carried by the chain that made it.
 #[derive(Clone, Debug)]
 struct Slot {
+    /// Final value folded into the checkpoint.
     value: Option<Vec<u8>>,
-    cost_only: bool,
+    /// Lossless per-writer history for this slot since the last drain.  Merge attribution must not
+    /// be derived from only the last writer: a later deploy may be rejected while an earlier deploy
+    /// in the same block remains accepted (#280 review).
+    history: Vec<(NativeWriter, Option<Vec<u8>>)>,
+}
+
+/// **The overlay, drained, grouped by the deploy that last wrote each slot** (#280).
+///
+/// One drain, three views — the checkpoint wants every action, the sidecar wants the attributed ones,
+/// and the third arm is the one a block cannot carry. They are views of one drain rather than three
+/// passes because three passes is three chances for the attributions to drift.
+#[derive(Clone, Debug, Default)]
+pub struct NativeDrain {
+    /// The final checkpoint batch: exactly one action per slot.  This is intentionally separate from
+    /// `by_deploy`, which may contain historical writes by several deploys to the same slot.
+    final_actions: Vec<NativeStoreAction>,
+    /// The block's **own** writes, by deploy ordinal.  Each deploy keeps its own last write to a slot,
+    /// sidecar's shape. Cost accounting's writes are not here (AUDIT C207).
+    pub by_deploy: BTreeMap<u32, Vec<NativeStoreAction>>,
+    /// Cost accounting's writes, one flat set: the merge re-derives them from the accepted deploys.
+    pub cost: Vec<NativeStoreAction>,
+    /// Writes made outside any deploy's window. A block cannot attribute these, so the block path
+    /// refuses them **loudly** rather than filing them under the block.
+    pub unattributed: Vec<NativeStoreAction>,
+    /// The genesis installation's writes — folded into the checkpoint like every other action, and
+    /// deliberately not carried in a sidecar (see [`NativeWriter::Genesis`]).
+    pub genesis: Vec<NativeStoreAction>,
+}
+
+impl NativeDrain {
+    /// Every action, for the checkpoint that folds them — the union of the three views, and the only
+    /// place they are combined.
+    pub fn all(&self) -> Vec<NativeStoreAction> {
+        self.final_actions.clone()
+    }
+}
+
+/// **A block's native effects, keyed by the deploy that wrote them** (#280).
+///
+/// This is the sidecar's value type — what a `Vec<NativeStoreAction>` used to be. That flat type was
+/// the representation the defect lived in: a set belonging to *no* deploy, which the merge could only
+/// resolve at block granularity (`reject_whole_blocks`), and which therefore let a chain be rejected
+/// for a slot it never wrote. An unattributed, block-level set is now not a value at all.
+///
+/// Private field, no `Deref`, no getter — the discipline `shared/src/refined.rs` states and
+/// `tools/audit-type-system.sh` enforces (`spec/TYPE-SYSTEM.md` §1.7, "no type escape"). The ways out
+/// are [`BlockNativeEffects::of_deploy`] (a slice, borrowed) and [`BlockNativeEffects::into_map`] (a
+/// one-way discharge at the codec's boundary); neither hands the invariant back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockNativeEffects(BTreeMap<u32, Vec<NativeStoreAction>>);
+
+impl BlockNativeEffects {
+    /// Build from a drain, **refusing** a block that made a write outside any deploy's window.
+    ///
+    /// Such a block cannot attribute that write, and filing it under the block is precisely what this
+    /// type removes — so the refusal is an error, never a silent omission. (Genesis installation is the
+    /// legitimate producer of an unattributed write, and it does not build one of these.)
+    pub fn from_drain(drain: &NativeDrain) -> Result<Self, String> {
+        if !drain.unattributed.is_empty() {
+            return Err(format!(
+                "{} native write(s) outside any deploy's window: a block cannot attribute them, and \
+                 filing them under the block is the representation #280 removed",
+                drain.unattributed.len()
+            ));
+        }
+        Ok(BlockNativeEffects(drain.by_deploy.clone()))
+    }
+
+    /// A block that wrote nothing native — a *different* value from a block whose writes could not be
+    /// attributed ([`Self::from_drain`] answers that with an `Err`).
+    pub fn empty() -> Self {
+        BlockNativeEffects(BTreeMap::new())
+    }
+
+    /// The writes of the deploy at `ordinal` — empty when that deploy wrote nothing native.
+    pub fn of_deploy(&self, ordinal: u32) -> &[NativeStoreAction] {
+        self.0.get(&ordinal).map_or(&[], |v| v.as_slice())
+    }
+
+    /// Whether the block made no native write at all.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every ordinal this block has effects for, ascending.
+    pub fn ordinals(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.keys().copied()
+    }
+
+    /// One-way discharge for the codec and for a caller that must place **every** entry: a
+    /// `BTreeMap` leaves the domain. Paired with [`Self::from_map`], and neither is an escape: the
+    /// invariant this type carries is its **key type** — every effect is keyed by a deploy ordinal,
+    /// and there is no key that could mean "the block" — so a map of ordinals cannot express the
+    /// state #280 removed. What `from_drain` adds on top is the refusal of a write with *no* deploy
+    /// to key it by, which is a fact about a drain rather than about this type.
+    pub fn into_map(self) -> BTreeMap<u32, Vec<NativeStoreAction>> {
+        self.0
+    }
+
+    /// The decoder's and the accumulator's constructor: a map keyed by deploy ordinal, which is the
+    /// form the wire carries.
+    pub fn from_map(map: BTreeMap<u32, Vec<NativeStoreAction>>) -> Self {
+        BlockNativeEffects(map)
+    }
+
+    /// Union with a later drain of the same block — the runtime accumulates one drain per checkpoint.
+    /// Entries for one ordinal concatenate rather than replace, because the drains are disjoint (each
+    /// checkpoint clears the overlay) and a replacement would silently drop the earlier half.
+    pub fn merge(&mut self, other: BlockNativeEffects) {
+        for (ordinal, mut actions) in other.0 {
+            self.0.entry(ordinal).or_default().append(&mut actions);
+        }
+    }
 }
 
 /// Snapshot of the native-store overlay (for soft-checkpoint revert).
@@ -138,10 +301,15 @@ pub struct InMemNativeStore {
     /// Set once a non-noop reader is installed, so [`InMemNativeStore::live_entries`] can report that
     /// it is no longer looking at the whole state.
     has_history: AtomicBool,
-    /// **True while a cost-accounting system deploy is being evaluated.** Set around `pre_charge`,
-    /// `refund` and `pay_executor`, which run outside the deploy's own reduction, so every write made
-    /// while it is set is attributable to cost accounting and to nothing else.
-    cost_accounting: AtomicBool,
+    /// **The window the writes being made right now happen inside** — the deploy (or cost-accounting
+    /// step) whose reduction is running. Set by the runtime, which is the only place that knows the
+    /// deploy's ordinal; `None` means outside any window, which is genesis installation and direct
+    /// store use, and which the block path refuses rather than attributing to the block.
+    /// **A stack**, because the windows nest: a deploy's own reduction contains the cost-accounting
+    /// windows of its pre-charge and refund, and a caller that wraps a whole deploy must not have its
+    /// window closed by the inner one. The innermost open window is the writer; the empty stack is
+    /// "outside any deploy", which is genesis installation and direct store use.
+    writer: Mutex<Vec<NativeWriter>>,
 }
 
 impl InMemNativeStore {
@@ -150,27 +318,34 @@ impl InMemNativeStore {
             overlay: Mutex::new(BTreeMap::new()),
             reader: RwLock::new(reader),
             has_history: AtomicBool::new(false),
-            cost_accounting: AtomicBool::new(false),
+            writer: Mutex::new(Vec::new()),
         }
     }
 
-    /// Mark the writes that follow as cost accounting's, until [`Self::end_cost_accounting`].
+    /// Open the window the writes that follow belong to, until [`Self::end_writer`].
     ///
     /// `pre_charge`, `refund` and `pay_executor` are system deploys evaluated *outside* the deploy's
-    /// own reduction (`play_deploy_with_cost_accounting_once`), which is what makes this exact: no
-    /// user term can run between the two calls, so no user write can be misattributed.
-    pub fn begin_cost_accounting(&self) {
-        self.cost_accounting.store(true, Ordering::SeqCst);
+    /// own reduction (`play_deploy_with_cost_accounting_once`), which is what makes their window
+    /// exact: no user term can run between the two calls, so no user write can be misattributed. The
+    /// deploy's own reduction gets a window of its own, and the ordinal it is opened under is the name
+    /// the sidecar and the block index both use (#280).
+    pub fn begin_writer(&self, writer: NativeWriter) {
+        self.writer.lock().unpoison().push(writer);
     }
 
-    /// Stop marking writes as cost accounting's — see [`Self::begin_cost_accounting`].
-    pub fn end_cost_accounting(&self) {
-        self.cost_accounting.store(false, Ordering::SeqCst);
+    /// Close the innermost window — see [`Self::begin_writer`].
+    pub fn end_writer(&self) {
+        self.writer.lock().unpoison().pop();
     }
 
-    /// Whether the write being made right now is cost accounting's.
-    fn in_cost_accounting(&self) -> bool {
-        self.cost_accounting.load(Ordering::SeqCst)
+    /// Which deploy the write being made right now belongs to.
+    fn current_writer(&self) -> NativeWriter {
+        self.writer
+            .lock()
+            .unpoison()
+            .last()
+            .copied()
+            .unwrap_or(NativeWriter::OutsideAnyDeploy)
     }
 
     /// A store with no backing reader (reads return `None` until a reader is set).
@@ -181,72 +356,78 @@ impl InMemNativeStore {
     /// Read a native value, consulting the overlay first and falling through to the persisted trie.
     pub async fn get(&self, prefix: u8, key: &Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
         {
-            let overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
+            let overlay = self.overlay.lock().unpoison();
             if let Some(slot) = overlay.get(&(prefix, *key)) {
                 return Ok(slot.value.clone());
             }
         }
-        let reader = self
-            .reader
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let reader = self.reader.read().unpoison().clone();
         reader.get_native(prefix, *key).await
     }
 
     /// Write a native value into the overlay (and record a `Put` action).
     pub fn put(&self, prefix: u8, key: Blake2b256Hash, value: Vec<u8>) {
-        let cost = self.in_cost_accounting();
-        self.record(prefix, key, Some(value), cost);
+        let writer = self.current_writer();
+        self.record(prefix, key, Some(value), writer);
     }
 
     /// Delete a native value (record a `Delete` action via a tombstone).
     pub fn delete(&self, prefix: u8, key: &Blake2b256Hash) {
-        let cost = self.in_cost_accounting();
-        self.record(prefix, *key, None, cost);
+        let writer = self.current_writer();
+        self.record(prefix, *key, None, writer);
     }
 
-    /// The one place a slot is written, so the cost-accounting flag cannot be forgotten at a call
-    /// site. **A slot stops being cost-only as soon as anything else writes it**: a user term that
-    /// touches the same leaf (a `bond` debiting the deployer's own vault) makes the slot the user's,
-    /// and the block's sidecar must carry it.
-    fn record(&self, prefix: u8, key: Blake2b256Hash, value: Option<Vec<u8>>, cost: bool) {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
+    /// The one place a slot is written, so a window cannot be forgotten at a call site. **A slot
+    /// belongs to the last deploy that wrote it outside cost accounting**: cost accounting's writes are
+    /// re-derived by the merge from the accepted deploys, so a later charge must not take a user's slot
+    /// away from them — the C207 rule, which used to be a `bool` and is now the writer's name.
+    fn record(
+        &self,
+        prefix: u8,
+        key: Blake2b256Hash,
+        value: Option<Vec<u8>>,
+        writer: NativeWriter,
+    ) {
+        let mut overlay = self.overlay.lock().unpoison();
         if let Some(slot) = overlay.get_mut(&(prefix, key)) {
-            slot.value = value;
-            slot.cost_only &= cost;
+            slot.value = value.clone();
+            slot.history.push((writer, value));
             return;
         }
         overlay.insert(
             (prefix, key),
             Slot {
-                value,
-                cost_only: cost,
+                value: value.clone(),
+                history: vec![(writer, value)],
             },
         );
     }
 
     /// Drain the pending mutations, clearing the overlay (the caller folds the actions into a
-    /// checkpoint). This is **every** action; the sidecar wants only the block's own.
+    /// checkpoint). This is **every** action, whatever its writer; a caller that needs them attributed
+    /// wants [`Self::drain_native`].
     pub fn drain_changes(&self) -> Vec<NativeStoreAction> {
-        let (own, cost) = self.drain_changes_split();
-        let mut all = own;
-        all.extend(cost);
-        all
+        self.drain_native().all()
     }
 
-    /// Drain the pending mutations as **(the block's own, the cost-accounting ones)**.
+    /// Drain the pending mutations **attributed to the deploy that wrote each slot** (#280).
     ///
-    /// Both halves belong in the checkpoint — the block's own post-state is what it is — but only the
-    /// **first** belongs in the block's sidecar, because the second is re-derived by the merge from
-    /// the accepted deploys (AUDIT C207). Splitting here rather than at the sidecar's save keeps the
-    /// two from drifting: one drain, one attribution.
-    pub fn drain_changes_split(&self) -> (Vec<NativeStoreAction>, Vec<NativeStoreAction>) {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|p| p.into_inner());
-        let mut own = Vec::with_capacity(overlay.len());
-        let mut cost = Vec::new();
+    /// All three views belong in the checkpoint — the block's own post-state is what it is — but only
+    /// `by_deploy` belongs in the block's sidecar, because cost accounting's writes are re-derived by
+    /// the merge from the accepted deploys (AUDIT C207) and a write outside any window has no deploy to
+    /// travel under. One drain produces all three, so the attributions cannot drift from the actions
+    /// they name.
+    pub fn drain_native(&self) -> NativeDrain {
+        let mut overlay = self.overlay.lock().unpoison();
+        let mut drain = NativeDrain::default();
+        let mut by_deploy: BTreeMap<u32, BTreeMap<(u8, Blake2b256Hash), NativeStoreAction>> =
+            BTreeMap::new();
+        let mut cost: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+        let mut genesis: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+        let mut unattributed: BTreeMap<(u8, Blake2b256Hash), NativeStoreAction> = BTreeMap::new();
+
         for (&(prefix, key), slot) in overlay.iter() {
-            let action = match &slot.value {
+            let final_action = match &slot.value {
                 Some(v) => NativeStoreAction::Put {
                     prefix,
                     key,
@@ -254,35 +435,64 @@ impl InMemNativeStore {
                 },
                 None => NativeStoreAction::Delete { prefix, key },
             };
-            if slot.cost_only {
-                cost.push(action);
-            } else {
-                own.push(action);
+            drain.final_actions.push(final_action);
+
+            // Preserve every deploy's own last write to this slot.  The checkpoint still receives only
+            // the final action above, so RadixHistory's one-action-per-key invariant is unchanged.
+            for (writer, value) in &slot.history {
+                let action = match value {
+                    Some(v) => NativeStoreAction::Put {
+                        prefix,
+                        key,
+                        value: v.clone(),
+                    },
+                    None => NativeStoreAction::Delete { prefix, key },
+                };
+                match writer {
+                    NativeWriter::Deploy(ordinal) => {
+                        by_deploy
+                            .entry(*ordinal)
+                            .or_default()
+                            .insert((prefix, key), action);
+                    }
+                    NativeWriter::CostAccounting => {
+                        cost.insert((prefix, key), action);
+                    }
+                    NativeWriter::Genesis => {
+                        genesis.insert((prefix, key), action);
+                    }
+                    NativeWriter::OutsideAnyDeploy => {
+                        unattributed.insert((prefix, key), action);
+                    }
+                }
             }
         }
+        drain.by_deploy = by_deploy
+            .into_iter()
+            .map(|(ordinal, actions)| (ordinal, actions.into_values().collect()))
+            .collect();
+        drain.cost = cost.into_values().collect();
+        drain.genesis = genesis.into_values().collect();
+        drain.unattributed = unattributed.into_values().collect();
         overlay.clear();
-        (own, cost)
+        drain
     }
 
     /// Capture the current overlay for a soft-checkpoint rollback.
     pub fn snapshot(&self) -> NativeStoreState {
         NativeStoreState {
-            overlay: self
-                .overlay
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
+            overlay: self.overlay.lock().unpoison().clone(),
         }
     }
 
     /// Restore a previously captured overlay (soft-checkpoint rollback).
     pub fn revert(&self, state: NativeStoreState) {
-        *self.overlay.lock().unwrap_or_else(|p| p.into_inner()) = state.overlay;
+        *self.overlay.lock().unpoison() = state.overlay;
     }
 
     /// Point the store at a new history root (called on checkpoint/reset).
     pub fn set_reader(&self, reader: Arc<dyn NativeHistoryReader>) {
-        *self.reader.write().unwrap_or_else(|p| p.into_inner()) = reader;
+        *self.reader.write().unpoison() = reader;
         self.has_history.store(true, Ordering::SeqCst);
     }
 
@@ -306,7 +516,7 @@ impl InMemNativeStore {
     pub fn live_entries(&self, prefix: u8) -> Vec<(Blake2b256Hash, Vec<u8>)> {
         self.overlay
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unpoison()
             .iter()
             .filter_map(|(&(p, key), slot)| match (p == prefix, &slot.value) {
                 (true, Some(v)) => Some((key, v.clone())),
@@ -397,6 +607,141 @@ mod tests {
                 prefix: PREFIX_VAULT,
                 key
             }]
+        );
+    }
+
+    /// **A drained write names the deploy that made it, and cost accounting does not take it away**
+    /// (#280).
+    ///
+    /// This is the provenance the merge's native relation is built on, and the one thing the flat
+    /// sidecar this replaced could not say. The second half is the C207 rule — cost accounting writes
+    /// `pos:vault` from every deploy, and if a later charge took ownership of a slot the deploy had
+    /// written, the deploy's own write would travel as cost accounting's and never reach a sidecar.
+    #[tokio::test]
+    async fn a_drained_write_names_the_deploy_that_made_it() {
+        let store = InMemNativeStore::empty();
+        let key = Blake2b256Hash::from_bytes([11u8; 32]);
+        store.begin_writer(NativeWriter::Deploy(3));
+        store.put(PREFIX_POS, key, vec![1]);
+        store.end_writer();
+        // A later charge on the same slot: the slot stays the deploy's.
+        store.begin_writer(NativeWriter::CostAccounting);
+        store.put(PREFIX_POS, key, vec![2]);
+        store.end_writer();
+
+        let drain = store.drain_native();
+        assert_eq!(
+            drain.by_deploy.get(&3).map(Vec::len),
+            Some(1),
+            "the slot is attributed to deploy 3: {drain:?}"
+        );
+        assert_eq!(
+            drain.cost.len(),
+            1,
+            "the later charge keeps its own provenance without stealing the deploy's write: {drain:?}"
+        );
+        assert!(
+            drain.unattributed.is_empty(),
+            "and it is not lost: {drain:?}"
+        );
+        assert_eq!(
+            drain.all().len(),
+            1,
+            "the checkpoint folds it exactly once, whatever its writer: {drain:?}"
+        );
+    }
+
+    /// Two deploys may write the same native slot in one block.  The checkpoint needs only the final
+    /// value, but merge attribution must retain both deploy-local values so rejecting the later chain
+    /// cannot erase the earlier accepted transition.
+    #[test]
+    fn two_deploys_writing_one_slot_keep_their_own_writes() {
+        let store = InMemNativeStore::empty();
+        let key = Blake2b256Hash::from_bytes([14u8; 32]);
+
+        store.begin_writer(NativeWriter::Deploy(0));
+        store.put(PREFIX_POS, key, vec![1]);
+        store.end_writer();
+
+        store.begin_writer(NativeWriter::Deploy(1));
+        store.put(PREFIX_POS, key, vec![2]);
+        store.end_writer();
+
+        let drain = store.drain_native();
+        assert_eq!(
+            drain.by_deploy.get(&0),
+            Some(&vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key,
+                value: vec![1]
+            }]),
+            "deploy 0's transition must survive attribution: {drain:?}"
+        );
+        assert_eq!(
+            drain.by_deploy.get(&1),
+            Some(&vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key,
+                value: vec![2]
+            }]),
+            "deploy 1 keeps its own later transition: {drain:?}"
+        );
+        assert_eq!(
+            drain.all(),
+            vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key,
+                value: vec![2]
+            }],
+            "the checkpoint still folds exactly one final action per slot"
+        );
+    }
+
+    /// **A write outside any window is separated, and cannot be filed under the block** (#280).
+    ///
+    /// The arm exists for genesis installation and for direct store use, and the block path refuses it:
+    /// "the block's own native set" is the representation the defect lived in, so the type has no way
+    /// to hold one. The refusal is asserted here at the store's own boundary — the drain keeps it
+    /// apart, and `BlockNativeEffects::from_drain` is what turns it into an error.
+    #[tokio::test]
+    async fn a_write_outside_any_window_is_not_attributed_to_a_block() {
+        let store = InMemNativeStore::empty();
+        store.put(PREFIX_POS, Blake2b256Hash::from_bytes([12u8; 32]), vec![1]);
+        let drain = store.drain_native();
+        assert!(
+            drain.by_deploy.is_empty(),
+            "no deploy made it, so no deploy's map holds it: {drain:?}"
+        );
+        assert_eq!(drain.unattributed.len(), 1, "it is kept apart: {drain:?}");
+        assert!(
+            BlockNativeEffects::from_drain(&drain).is_err(),
+            "and a block cannot carry it — filing it under the block is the defect: {drain:?}"
+        );
+    }
+
+    /// The genesis installation is a **named** writer rather than an unattributed one, and it does not
+    /// travel in a sidecar (`NativeWriter::Genesis` says why): a merge never asks block 0 for its
+    /// native set, because block 0 is the merge's base and not one of its conflict blocks.
+    #[tokio::test]
+    async fn a_genesis_write_is_named_and_does_not_travel_in_a_sidecar() {
+        let store = InMemNativeStore::empty();
+        store.begin_writer(NativeWriter::Genesis);
+        store.put(PREFIX_POS, Blake2b256Hash::from_bytes([13u8; 32]), vec![1]);
+        store.end_writer();
+        let drain = store.drain_native();
+        assert_eq!(drain.genesis.len(), 1, "named, not unattributed: {drain:?}");
+        assert!(drain.unattributed.is_empty(), "{drain:?}");
+        assert_eq!(
+            drain.all().len(),
+            1,
+            "and the checkpoint still folds it: {drain:?}"
+        );
+        let effects = BlockNativeEffects::from_drain(&drain).expect("genesis is not refused");
+        assert!(
+            effects.is_empty(),
+            "and it does **not** travel in a sidecar: what it writes is the block-0 configuration, \
+             already in the state every node holds, and a merge asks the genesis for its *state* (it \
+             is the base) rather than for its native set"
         );
     }
 

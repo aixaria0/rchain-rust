@@ -103,6 +103,37 @@ pub struct ApiStatus {
     /// does not count toward the timer halt; it is reported so a node that never recovers from the race
     /// is still visible.
     pub stale_snapshot_self_equivocations: u64,
+    /// C249's F-U10-01: **why** finality is not advancing, as the merge gate last reported it. The
+    /// reason existed only on stderr — a node that had stopped advancing said so to whoever was reading
+    /// the log, and to nothing a probe could ask. `None` when the last observation saw a merge that
+    /// advanced; that is not "healthy", it is "the gate reported no reason".
+    pub finality_stall: Option<String>,
+    /// …and how many times this process has entered a stall, so a reader can tell "stalled now" from
+    /// "stalled and recovered" without watching.
+    pub finality_stall_episodes: u64,
+    /// #280's ledger, counted: merges that returned a report which was not quiet — a dropped chain, or a
+    /// violated invariant. The live incident produced no counter and no line anywhere moving; this is
+    /// the number it would have moved, and the log still carries the detail.
+    pub non_quiet_merge_reports: u64,
+    /// A poisoned lock was recovered from, which means a panic happened while shared state was held.
+    /// Monotone and process-wide, because the poisoning is: the panic happened in whichever thread held
+    /// the guard (`rspace::lock`). Counted rather than silently absorbed, which is F-U9-03.
+    pub poison_recoveries: u64,
+    /// **How many blocks this node has given up on** (C249's R3 gap): a divergence record whose
+    /// revalidation budget is spent and which still fails here, so the node refuses it and its
+    /// descendants for the process lifetime. Nothing resets a running node yet — this is the
+    /// denominator a reset would be reviewed against, shipped dark.
+    pub unrestorable_records: u64,
+    /// …and which block, as `<hash> (seq <n>)`. `None` when the node has never given one up.
+    pub unrestorable_block: Option<String>,
+    /// **How many supervised background tasks have panicked** (C254). The node has no supervisor: a
+    /// long-lived task was a bare `tokio::spawn` whose handle was dropped, so nothing could tell one
+    /// that was running from one that died at startup. A panic reached stderr; a plain early return
+    /// reached nothing at all.
+    pub tasks_panicked: u64,
+    /// …and how many have **returned**, which is the quieter death and the reason the two are counted
+    /// apart: a panic announces itself once, a return does not announce itself anywhere.
+    pub tasks_exited: u64,
 }
 
 /// The node's capabilities, returned by `GET /api/v1/capabilities` (the app-facing "can I propose /
@@ -228,6 +259,14 @@ mod tests {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             stale_snapshot_self_equivocations: 0,
+            finality_stall: None,
+            finality_stall_episodes: 0,
+            non_quiet_merge_reports: 0,
+            poison_recoveries: 0,
+            unrestorable_records: 0,
+            unrestorable_block: None,
+            tasks_panicked: 0,
+            tasks_exited: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

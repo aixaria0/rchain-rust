@@ -1,0 +1,20 @@
+# The `poison` class's probe. Not Rust, not compiled, not scanned as a crate source: this file
+# exists so a class with **no allow-list and no sites** can still show it is looking.
+#
+# `verify_poison_probe` in `tools/audit-type-system.sh` runs the class's pattern over this file and
+# fails the gate unless it matches exactly the three shapes below. The reason it is needed: every
+# other hard class is kept honest by something it can lose — `panic` has an allow-list whose stale
+# entries fail, `unsafe`/`silent`/`escape` have sites the tree is not allowed to have. This one's
+# correct steady state is zero sites, so a pattern that quietly stopped matching would print the
+# same green as a tree with nothing to find, for ever.
+#
+# If you change the pattern, change this file with it, and the count in POISON_PROBE_SHAPES.
+
+# 1. the tail
+mutex.lock().unwrap_or_else(|p| p.into_inner())
+
+# 2. the same recovery, written as a match arm
+Err(poisoned) => poisoned.into_inner()
+
+# 3. the explicit path
+mutex.lock().unwrap_or_else(PoisonError::into_inner)

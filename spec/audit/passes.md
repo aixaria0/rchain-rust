@@ -7842,3 +7842,675 @@ fixed; what remains is a fringe that cannot gather supermajority support at eigh
 100,100,50 --epoch-length 10` with eight stakes. So the reading is "N=8 with equal stakes", which is the
 closest measurement that exists; promoting it to A1.3's verdict wants that arm run at its own
 configuration. One host, one tree, 4 GiB per container, three attempts per arm.
+
+---
+
+## 73. The disposition pass: two silent paths, and the rung the tree does not have (C249, C250)
+
+**What was asked.** After #280/C248 — a merge that lost a committed deploy's write *unanimously, with no
+counter and no log line moving* — the target property was stated plainly: these failure modes should
+ideally be **unrepresentable**; where they are not they must **fail loudly and hard**, and then **hard
+reset to a safe state and catch up** — never wedge silently. This pass dispositions the node's deviations
+against that property, on a four-rung ladder: **R1** unrepresentable, **R2** fail loudly, **R3** hard
+reset then catch up, **R4** runbook.
+
+**What was built.** `docs/src/spec/failure-hazop.md` — a companion to the acceptance worksheet
+(`docs/src/spec/testnet-acceptance.md` §1), reusing its ten study nodes so a hazard appears once, and
+adding the axis the acceptance sheet does not have: for each deviation, its **class**
+(`Void`/`Terminal`/`Drift`/`Split`/`Historic`), its **current behaviour** with an anchor, its
+**disposition**, and a **falsifier**. Its guide-word grid is machine-read by
+`tools/check-hazop-worksheet.sh`, which refuses a guide word dispositioned nowhere, a row with no decided
+rung, a falsifier that is not an `owed:` marker or a `path::symbol` that exists **and occurs in that
+file**, and a debt count that disagrees with the page. Six negative controls were run against it (a
+removed word, a rotted count, an empty falsifier, an undecided `R1/R2` rung, a fabricated test name, a
+fabricated path) and every one is refused. The pass's own debt — **19 of 21 rows owe a falsifier; 45 of
+the 110 node×word cells are owed** — is a number on the page rather than a silence.
+
+**The finding, and it is not the one the programme expected (C249).** The ladder's *second* rung is
+largely **won**: the merge refusal is a `log.error` (`casper/src/blocks/block_processor.rs:172`), an I1/I2
+violation a non-rate-limited `log.warn` (`casper/src/interpreter_util.rs:535`), a finality stall a
+`log.warn` that re-fires on change (`:519`), an ingress drop a `log.warn`
+(`casper/src/engine/node_running.rs:664`). **Two paths are genuinely silent** and both are drops:
+`send_to_validate` reads the store with `.ok()` (`casper/src/blocks/block_receiver.rs:378`), so an
+unreadable block leaves the batch with no log, no re-queue and no counter; and `rlock`/`wlock`/`mlock`
+recover a **poisoned** lock with `PoisonError::into_inner` (`rspace/src/lock.rs:10`, `:16`, `:20`), so a
+torn state is used and the caller cannot tell it from a healthy lock. **The third rung does not exist at
+all.** A running node that diverges permanently never re-enters sync: `NodeSyncing::new` is called
+*exactly once*, in the boot guard's `else if repr.dag_set.is_empty()` (`casper/src/engine/node_launch.rs:265`);
+after that the node stays in `NodeRunning`, keeps serving, and permanently refuses the block and its
+descendants (`casper/src/multi_parent_casper.rs:883`). The one path back is an operator deleting the shard
+data dir — which exists as a **comment** (`casper/src/dag.rs:534`) and nowhere as code. The bounded inverse
+the model proves is law **53b** (`RESTORE_ATTEMPT_LIMIT = 3`, `casper/src/multi_parent_casper.rs:434`,
+`restore_is_warranted` at `:478`); what is absent for a *running* node is any inverse at all. So the
+programme's headline was wrong in a useful direction: **the node does not mostly wedge silently — it
+fails loudly and then does nothing.** R2 is largely won; R3 is entirely unbuilt.
+
+**Where R3 is owed.** The net-wide half has an owner: **#287**, the reconciliation utility ("bring a
+busted network back to one chain without a genesis"), whose design and acceptance drill are stated there
+and whose falsifier is a network in the four-head state converging to one head with agreeing block hashes.
+The *per-node* half — a node that detects its own unrecoverable divergence and resets — is not yet
+anyone's, and is named as F-U5-01 in the worksheet rather than left implied.
+
+**The record, corrected (C250).** The #280 capture is a reading of **node A alone** and says so: only A
+was reachable through the public endpoint. The register's C248 row drew a conclusion wider than that
+reading — *"It is not C215: no two-node divergence, no `InvalidPreStateHash` between peers"* — and the
+**TE-1 witness** for the same incident (`spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md`, on
+branch `spec/te-1-witness`) records the opposite *above* the write loss: `state-hash disagreement on
+pre-state: block #104` with **three different `#104` hashes** cited by three peers, four distinct `#106`
+blocks, finality frozen at 101 for over thirteen hours, and two restart experiments that restored
+*production* and added two more heads. The clause is **true of the write-loss mechanism** (unanimous
+agreement at 103, which is why no peer refused a block there) and **false as a statement about the
+incident**, which also carries C215's shape — law **17a**. The witness likewise supplies the node-A log
+C248's residue clause 4 asked for (`ERROR Self-created block #106 (seq 106) failed validation: the block's
+rejected-deploy set does not match its parent`), so that residue is narrower than the register reads. Two
+defects in the witness itself are recorded because it is about to merge: it cites the reconciliation issue
+as **#283** (which is the #144 soft-checkpoint issue — the reconciliation utility is **#287**), and it
+labels the validators with letters rotated against the #280 capture's, so its "A and D share a host"
+conclusion is about `0410b8c5` and `04dce59b`. **Not claimed**: that the divergent heads and the write
+loss are one mechanism. The witness says the opposite is possible, #280 remains open, and the falsifier
+that would settle it is the four nodes' logs read together.
+
+**The seed catalogue, refuted in one place.** The programme's reconnaissance listed *"Unbounded
+merge-scope search — measured but not bounded"* as an R1/R2 candidate. The measurement is real and **the
+bound is too**: `SearchBudget::NODE` (10,000,000 steps / 1,000,000 options,
+`sdk/src/dag/merging.rs:280`) is applied at `casper/src/merging.rs:1825`, and *exceeding* it is exactly the
+drop the worksheet's F-U4-01 rows. What is unbounded is the **neighbouring fold** —
+`fold_rejection`/`traverse_tree` take no budget and `traverse_tree` walks with no visited set — which the
+acceptance sheet already records as H-U4-04. The seed's conclusion was right about the node and wrong
+about the site.
+
+**What is owed.** The worksheet's `owed` cells (its debt line, checked by the tool): the two silent paths'
+fixes and falsifiers, the per-node reset (F-U5-01), and 17 further rows that name a deviation and a rung
+but not yet a proof.
+
+**Provenance.** `read:` at `410af4cbf` — `casper/src/{merging.rs, dag.rs, multi_parent_casper.rs,
+interpreter_util.rs, validate.rs}`, `casper/src/blocks/{block_processor.rs, block_receiver.rs,
+block_retriever.rs}`, `casper/src/blocks/proposer/proposer.rs`, `casper/src/engine/{node_launch.rs,
+node_running.rs, node_syncing.rs}`, `casper/src/api/block_api.rs`, `casper/src/protocol/comm_util.rs`,
+`block-storage/src/dag/{finalizer.rs, liveness.rs}`, `node/src/{main.rs, api/dto.rs, api/conversion.rs,
+runtime/node_runtime.rs, runtime/node_main.rs}`, `sdk/src/dag/merging.rs`, `rspace/src/{lock.rs,
+hot_store.rs, rspace.rs, history/radix_tree.rs, history/instances/radix_history.rs}`,
+`spec/Rchain/Casper/Stranding.lean`, `spec/TYPE-SYSTEM.md` §1.7, `docs/src/formal/progress.md`,
+`docs/src/spec/testnet-acceptance.md` §1–§2, `spec/laws.tsv` (17a, 53a, 53b), the #280 capture, and the
+TE-1 witness on its branch. `ran:` `git rev-parse`, `git fetch`, `git show origin/spec/te-1-witness:<path>`,
+`grep`/`sed`/`ls`, and `tools/check-hazop-worksheet.sh` with six negative controls. `not read:` the whole
+of `merging.rs`/`dag.rs`/`multi_parent_casper.rs` (the named functions only). Every `file:line` in the
+worksheet was re-derived in this pass: the programme's plan lost its line numbers between sessions, and a
+citation is re-derived, never remapped by a delta.
+
+---
+
+## 74. The rule that F-U8-01 motivated, and the five sites it found (C251)
+
+**What prompted it.** The worksheet's F-U8-01 was one store read whose error had been erased into an
+absence — `block_store.get(..).await.ok()` — and the loud leg's first unit fixed it (C249). The next
+question is whether that shape is unique, and the answer to "is this shape unique" is a *check*, not a
+hand-grep.
+
+**The measurement, before writing the rule — and it is the whole reason the rule is narrow.** The broad
+candidates are unusable: `.ok()` appears **81** times in production code, `unwrap_or_default()` **86**,
+`let _ =` **166**. A rule over those needs 333 allow-list entries, which is the "gate satisfied by
+bookkeeping" that the deleted 78-second register gate was. The narrow shape is sharp: **an awaited call
+whose error is erased into an absence**, `\.await…\.ok\(\)` and `\.await…\.unwrap_or_default\(\)`. It
+must scan across lines, because the defect's own `.await` and `.ok()` were on separate lines and a
+single-line grep misses it — the same reason the class already reads whole files through
+`scan_spanning` (AUDIT C126). Measured against this tree it matched **five production sites** and nothing
+else.
+
+**The five, and why the same fix.** Each is the same decision taken silently — "the store could not
+answer" recorded as "there is nothing here":
+
+- `casper/src/blocks/block_receiver.rs` — `contains(..).unwrap_or_default()`, read as "not stored";
+- `casper/src/engine/lfs_block_requester.rs` — a `get` in the LFS pump, read as "no such block";
+- `casper/src/engine/node_running.rs` — the genesis read whose whole purpose is to stop a joining
+  validator ending up unbonded with an empty DAG, read as "no genesis";
+- `casper/src/multi_parent_casper.rs` ×2 — the stale-snapshot scan, and the **restore** rule, whose own
+  comment reads *"the block itself is gone (a pruned store)"* while the code also meant *"the store is
+  broken"*. Those are different facts and the erasure made them one.
+
+Each is fixed the same way, and for the same reason: **log the error and keep the branch.** What the
+branch should *do* is the call site's own policy — the finding is about the *silence*, not the policy —
+and re-deciding five failure policies in one pass would be inventing policy rather than reporting it.
+Where the branch is genuinely ambiguous (`restore`'s "gone"), the log is what tells an operator which
+happened.
+
+**The rule gates now.** Both patterns are in `tools/audit-type-system.sh`'s `silent` class, and the hard
+classes have no allow-list by design — so the class is empty because the sites are *fixed*, not because
+they are excused. Negative control, run rather than asserted: with the fix reverted the pattern matches
+exactly those five sites and the gate fails; with it, `silent` reports nothing and the gate exits green.
+C251's row records the sweep and its falsifier is the gate, which CI runs on every change.
+
+**And the lesson, because it is the second time.** Four of these five were invisible to the disposition
+pass: it read *behaviour* — what a node does when a store fails — and the erasure is a **shape**, visible
+only by reading the call. `docs/src/spec/failure-hazop.md` §6 item 6 records the first instance
+(F-U4-05's `Ord`/`Eq` disagreement); this is the argument for the pass the worksheet still owes.
+
+---
+
+## 75. The type-safety audit: the census, the classification, and the rules it yields (C252, C253)
+
+**What was asked.** A **multi-agent audit** of every non-type-safe construct in the port — the `unwrap`
+family (`expect`, `unwrap_or*`, `.ok()`, `let _ =`) and its relatives (`as` casts, slicing, arithmetic,
+`Deref`/`get`/`into_inner` escapes, lock poisoning, ignored `JoinHandle`s) — producing a classified
+inventory and, for every class that survives, a rule that **fails the build** rather than a paragraph that
+reads well.
+
+**Why it needed doing, in the repository's own words.** `docs/src/node/security-audit.md` §5: *"The computed
+gates are weaker than they read. The type-system gate's counted classes — `cast`, `lax`, `get`, `index`,
+`div`, `overflow` — are reported and **not enforced**; the ratchet that once failed the build is no longer
+wired. … Nothing in the register asks what an attacker pays."*
+
+**The method, taken unchanged** from that same page §1 — three stages (lenses that must produce a
+reproduction or nothing; a *second* agent per candidate instructed to refute; grading with a falsifier),
+three verdicts (`CONFIRMED` / `NOT-RE-ESTABLISHED` / `REFUTED`, where only `REFUTED` removes a finding and it
+must carry a **positive artifact**) — with the artifact form from `spec/audit/evidence/n117-audit.md`.
+
+**Stage 0 — the census was *taken*, not re-derived** (`spec/audit/evidence/type-safety-audit/census.txt`,
+973 lines, `tools/audit-type-system.sh --sites`). The gate already enumerates ~880 counted rows keyed on site
+text; a lens that "discovers" a `.unwrap` the `panic` class names has spent an agent to rebuild an artifact
+the repository owns. **Three instrument findings came out of the census itself, and a fourth was refuted:**
+
+- **(I1)** — the baseline is stale by 128 sites and read by nothing.** `tools/type-system-baseline.tsv` says
+  `cast` 331 / `index` 316 / `div` 54; the gate measures **358 / 397 / 74**. The ratchet was deleted
+  2026-09-27, `ratchet_failures` is declared and never incremented, and the run says *"count that moved is
+  worth a look"* to nobody.
+- **(I2)** — the `panic` zero is an allow-list.** 30 sites, 29 entries. C97 is the gate's own record of why that
+  is not "no reachable panic": four sites were green *"because an allowlist entry keyed on the *site* cannot
+  see whether a caller supplies wire bytes."*
+- **(I3)** — the site key is coarser than a site.** The gate keys on `(path, text)`; a site is a line; **59 keys
+  are shared by two or more rows** (`blake2b512_random.rs:42` and `:240` are the same text, 198 lines apart).
+  An allow-list entry's evidence window (`[line−25, line+8]`) is around *one* line, so for the second row it
+  can read as evidenced while never being checked.
+- **TSA-5 — refuted by the auditor.** The listing/count gap of 3 is **not** an instrument defect of the
+  `SITE_AWK`-vs-`COUNT_AWK` class: three census rows have no space after the colon
+  (`models/src/murmur_hash3.rs:7:const PRODUCT_SEED: …`), and 355 + 3 = 358. Recorded because the next
+  reader will make the same mistake, and because a claim about an instrument needs the instrument's own
+  output as its artifact.
+
+*The `(I#)` and `(E#)` labels below are this pass's own finding names, not register C-numbers — the
+register rows are C252–C256, and the gate that refuses an undeclared register row is right to refuse a
+bullet shaped like one.*
+
+**Stage 1 — six lenses, 57 candidates.** Panics and the counted mass (1); silent defaulting and erasure
+(15); numeric conversion and width (9); refinement escape hatches (6); concurrency partiality (18); the
+wasm32 target (8). Each stated its own input domain, and three of the six ended in a **hole in a boundary**
+rather than a defect in a site: the escape gate's roster (L4), the absence of any supervisor for a detached
+task (L5), and whether a second compilation target ships (L3/L6).
+
+**Stage 2 — seven refutations, and they narrowed more than they confirmed.**
+
+- The **wasm32 target is executed**, not merely compiled (CI's `Reducer wasm32 tests` step runs the reducer
+  on the target under a configured `wasm-bindgen-test-runner`, and `rholang/tests/wasm_reduce.rs` drives
+  `rt.evaluate(…)`), so the width family is **live** and its dispositions stay R1 — with the caveat that the
+  corpus *reaches* the four bypassed methods without calling them.
+- The **poison-accounting count is 77**, not 8 (L5) and not 49 (L2): both used the narrow inline
+  `.lock().unwrap_or_else(|p| …)` spelling and L5 additionally scoped to `rspace`; L2's own breakdown sums to
+  50 while its headline says 49, and it has no `comm` rows at all. **No site is counted** — `rlock`/`wlock`/
+  `mlock` are `pub(crate)`, so no non-`rspace` site *can* increment. Reachability at the named sites is
+  `NOT-RE-ESTABLISHED`, deliberately **not** folded into the confirmed row (their in-guard bodies are pure
+  in-memory operations with no panic source).
+- **(E3)** — `revalidated_record(&stored, outcome.ok())` — **CONFIRMED**: `ValidateError::Internal` is
+  constructible **four ways** (`multi_parent_casper.rs:855`, `:865`, `:894`, `:907`), none of those helpers
+  logs before returning, and the `None` arm (`:640`) provably carries `validation_failed: true`. One clause
+  **narrowed**: "the reason is never logged" fails for the replay sub-case, whose cause is logged at
+  `interpreter_util.rs:685`.
+- **(E4)** — the genesis bonds/private-key write discard — **CONFIRMED and scoped narrower than the lens
+  claimed**: the fresh-key hazard belongs to the **standalone/ceremony** node (`conf.standalone`); a
+  non-ceremony node is protected twice (`genesis/mod.rs:128`, `:130`).
+- **(E6)** — of 13 claimed silent task deaths, **7 have a named observer** (the block pipeline's queue-observer
+  Drop guard, the router's and the shard's ingress WARNs, the propose queue's) and **6 stand**; the
+  structural claim is the one that matters and it **stands** — no `JoinSet` (outside a local accept-set and
+  the reducer), no registry, no `is_finished()` outside tests, no hook, no production `catch_unwind`.
+- **(E5)** — the `silent` rule is narrower than the class it names**, and the refuter **specified the
+  extension**: `let\s+([A-Za-z_]\w*)\s*=[^;]*\.await(?:\s|\d+\t)*;[\s\S]*?\b\1\.ok\(\)`, a backreference that
+  keeps `.await` provenance, additive to the chain form and matching **none** of the other ~60 production
+  `.ok()` sites — so it needs **no allow-list**.
+- **(E1)** — observed, not argued.** A probe reduced `"aéa".hexToBytes()` through the real evaluator and panicked
+  at `rholang/src/reduce.rs:1102:39`, *"end byte index 2 is not a char boundary"*, unwinding out of a
+  `Result`-returning path with nothing catching it. The trace is complete to the deploy term, and **neither
+  gas nor arity guards it**.
+
+**The confirmed defects, and what each implies.** **E1** — an ingress panic (a deploy kills the node); R1,
+because `hex_decode` can read `s.as_bytes()` instead of slicing, which makes the panic unrepresentable and
+lands on the function's own `ReduceError` arm. **E2** — the surface added to end the poison silence sees
+**0 of 77** recoveries, so the fix must route them through the accessors *before* a rule forbids the raw
+pattern. **E3** — an internal fault recorded as a validation verdict, on the validation and restore paths.
+**E4** — a ceremony hazard. **E6/E6a** — six silent task deaths and **no supervisor at all**; and the sharpest
+detail the audit found: whether a dead downstream is *noticed* is a **per-edge accident** of whether the
+author wrote `is_err()` or `let _ =`, with sibling producers discarding the identical error.
+
+**What the audit's rules can and cannot do.** Adoptable now: the raw poison pattern (after routing), the
+escape gate's **roster scope** (`G2` derives brace-form refinements in roster files only — which is how
+`NodeIdentifier` and `Blake2b512Block` stayed invisible), and the erasure rule's **specified** binding-form
+extension. **One class cannot be text-gated at all**, and the audit says so rather than shipping a rule that
+fails open: `.unwrap_or_default()` / `.unwrap_or(…)` / `let _ = ` on a `Result`, because `unwrap_or` on an
+`Option` is total and only the *type* separates them — L2 removed ~220 of 270 candidates by reading each
+receiver. For that class the levers are the **compiler's own lints** (`unwrap_used`,
+`clippy::let_underscore_must_use` — enabled nowhere in this tree and never told to look away) or per-site
+adjudication, which is what the artifact is. Every rule gets a **probe pair** run by an agent that did not
+write it.
+
+**What this pass cannot claim.** ~520 "contained" verdicts are **readings of guards, not runs** — one
+artifact in the audit is a run (E1's probe) and the rest is read code. `dead` vs `config` is unresolved for
+three rows because `-A dead-code` is workspace-wide and a green build says nothing about whether a knob is
+wired. Nothing was driven live: no peer socket, no corrupted store, no hostile host, no browser tab.
+
+**Provenance.** `read:` the gate and its baseline, `spec/TYPE-SYSTEM.md` §1.6/§1.7/§3.2, the register, the
+worksheet, `security-audit.md` §1/§5, `n117-audit.md`, ~380 production files across 13 crates.
+`ran:` `tools/audit-type-system.sh` (report and `--sites`), the census capture, and **one probe test** (E1,
+removed afterwards; `git status` clean). `not read:` the whole of `rholang/src/reduce.rs`,
+`casper/src/multi_parent_casper.rs`, and the ~200 method arms L1 sampled.
+
+**Addendum — the last refutation, and it found a dormancy.** L3's rows 1–2 (a `u16` mergeable-length prefix
+that truncates into a silent partial merge) were **REFUTED**, and not by economics: the **outer** count is
+bounded by `MAX_BLOCK_DEPLOYS = 255` and **the inner count is identically 0**. The reason is the finding —
+`EvaluateResult.mergeable` is `BTreeSet::new()` at every one of its 15 construction sites and never mutated,
+and the reducer's own collection (`merge_chs`, `rholang/src/reduce.rs:3089`) is **written and never read
+anywhere in the workspace**: the mergeable-channel mechanism is **inert**, a divergence from the Scala
+oracle whose reducer returns `mergeableChannels`. So the codec's missing trailing-bytes check is a live trap
+behind a dormant feature — wiring the collection up makes 65 536 channels affordable (the refuter's
+arithmetic: ≥ 389 099 phlo per channel would be needed to hold it out at `MAX_BLOCK_PHLO`) and the
+truncation silent. Recorded as **C256** (`todo`, with the decision as its close condition). It is also the
+cleanest example of why the refutation stage exists: the lens graded the row **R1** in good faith, and the
+refuter's answer was neither "confirmed" nor "refuted for the reason you gave" but *"the mechanism you are
+reasoning about is not wired"*.
+
+---
+
+## 76. The genesis replay closed its writer window before the loop it had to span (C257, #293)
+
+**Who found it, and that is the finding's first fact.** Not a lens and not the worksheet: a **live run**.
+A fresh four-validator genesis on `dev@256a931b7` could not produce a single block — every propose failed
+on the proposer path with
+
+    failed to regenerate mergeable channels … 17 native write(s) outside any deploy's window
+
+while the height pinned at 4 and finality never started (#293). It is the third time in this programme
+that the reading passes found *shapes* while the running node found the *blocker*
+(`docs/src/spec/failure-hazop.md` §6, the audit's §7).
+
+**The defect is one window.** `runtime_replay.rs`'s `replay_deploys` attributes the genesis block's own
+installation correctly — it names the window `NativeWriter::Genesis`, which is #280's work — but it
+closed that window **before** the user-deploy loop. And the registry and `rgov` aliases are re-seeded
+*after every deploy*: not incidentally, `compute_genesis` (`runtime_manager.rs:811`) does exactly the
+same, because `MakeMint` resolves `rho:lang:nonNegativeNumber` **during** its deploy, so the alias has to
+exist by then. Those re-seeds are genesis state, and with the window already popped they landed with no
+writer at all. `BlockNativeEffects::from_drain` (`rspace/src/native_store.rs:230`) refuses a block with
+an unattributed write — the type doing precisely its job; the replay was the one producing the write.
+
+**The fix is spelled by the play path.** `compute_genesis` opens one `Genesis` window and holds it across
+its whole loop, so the replay must hold its own across the same span. It can: the store's writer is a
+**stack** (`begin_writer` pushes, `end_writer` pops, `current_writer()` reads the innermost), so a
+deploy's own writes still attribute to its `Deploy(ordinal)` window while the seeds attribute to
+`Genesis`. The window is popped after the user-deploy loop, under the same `!with_cost_accounting` guard
+that opened it, so the cost-accounting path is byte-identical.
+
+**Why every existing test passed, which is the transferable part.** Every genesis-replay test in the tree
+uses a genesis whose deploys register nothing —
+`a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis` uses `@"chan"!(42)`. Both seeding
+functions are **idempotent**: with nothing new registered by the deploy, the post-deploy re-seed writes
+nothing, the unattributed set stays empty, and the replay succeeds. The defect needs a deploy that
+*registers* something, so it needs the **blessed** genesis — the one a real chain has — and the falsifier
+is written in `genesis_registry.rs`, where the blessed terms already live.
+
+**Falsifier (a), one commit with the fix.** `the_genesis_replays_to_itself` plays the blessed genesis and
+replays it as `merging.rs` does. Witnessed both ways: red on the pre-fix tree with the production error
+verbatim and the same count, green with the fix, and the replayed post-state equals the played one.
+
+**Falsifier (b), #293's own close condition.**
+`spec/audit/evidence/n293-genesis-replay-window/` — a fresh four-validator genesis, epoch length 10,
+which **included a deploy at block 28** (its post-state hash moved), produced blocks, and **finalised past
+both boundaries** (24, then advancing to 31), with the error counted **0 on all four nodes**.
+
+**The rule this yields, and it is the one that would have caught it by reading.** *A window opened for a
+loop must be closed after it* — and `compute_genesis` is the reference for what the genesis's own span
+is. A window closed early does not fail loudly; it silently re-labels the writes that follow, and the
+refusal only arrives much later, in a different subsystem, naming a count rather than a cause.
+
+---
+
+## 77. The node that gives up, counted — C249's detect-and-log half, shipping dark (C249, #287)
+
+**What C249 left.** The disposition pass found R3 — *reset a node that cannot heal* — absent from the
+tree: a node whose divergence survives its restore budget stays in `NodeRunning`, keeps serving, and
+refuses the block and every descendant for the process lifetime, with the only way back an operator
+deleting the shard data dir. That path exists as a **comment** (`casper/src/dag.rs:534`) and nowhere as
+code.
+
+**Why the reset is not in this commit.** It is the half that acts, and acting without knowing the
+denominator would be inventing policy. What this pass lands is the denominator: the moment a node stops
+trying becomes **observable**, and nothing resets.
+
+**The moment, stated once.** `restore_is_warranted` already decides whether a record may be retried;
+`restore_budget_is_spent` is its far end — the record is still failed, the cause is still
+`Divergence`, and the attempts are at `RESTORE_ATTEMPT_LIMIT`. It is a separate predicate rather than a
+second spelling of the condition inside the reporter, so the report and the test read one rule.
+
+**The surface.** Both restore sites — the scan of an incoming block's justifications and the node's own
+failure record (`clear_own_failure_record`) — call `note_unrestorable_if_exhausted`, which logs at
+`error` with the hash and the sequence number and moves `unrestorableRecords` /
+`unrestorableBlock` onto `/api/status` beside `finalityStall` and `nonQuietMergeReports`. The value is
+`<hash> (seq <n>)` because the count alone answers "has this happened" and not "on what", and only the
+second is actionable.
+
+**Falsifier, and why it is the right one for an R2 rung.** The observable did not exist: before this,
+nothing could ask whether a node had given up — no cell, no accessor, and no line — so the failure was
+*"loud and then nothing"* and the nothing-half was invisible. `the_budget_is_spent_at_the_limit_and_only_
+for_a_record_that_still_fails` pins the boundary (the limit is where the node stops, and a *restored*
+record must not be reported as given-up-on) and
+`the_unrestorable_surface_names_the_block_it_gave_up_on` pins that the name carries what an operator
+needs.
+
+**What remains, named so this is not read as more.** The reset primitive (`drop_above(height)`), the
+persisted rewind anchor, and the detector that *acts* are the rest of F-U5-01; the falsifier for those
+is the drill the programme names — a planted unrecoverable divergence resets and rejoins, a restorable
+one restores in place and does not reset. #287/#294 own the net-wide reconciliation; this is the
+node-side counter they will be reviewed against.
+
+---
+
+## 78. Six detached tasks, and the two deaths — one of which nothing announced (C254, E6/E6a)
+
+**What the audit found.** The node has **no supervisor**. Every long-lived background task is a bare
+`tokio::spawn` whose `JoinHandle` is dropped, so nothing can tell a task that is running from one that
+died at startup. A panic reaches stderr through the runtime's default hook and is at least visible once;
+a plain early `return` — the loop that exits on its first error, the future that completes when its
+channel closes — produces **no line anywhere**, and the node serves on with that subsystem gone.
+
+**What lands.** `rchain_shared::supervise::spawn_supervised(name, fut)`: spawn the work, and spawn one
+watcher that awaits its handle and reports what it finds. `Ok` is a **return** — counted and printed at
+`warn`, because it is the quieter death and nothing else announces it. A panic is counted apart and
+printed with its payload. The two counters reach `/api/status` as `tasksPanicked` / `tasksExited`
+beside `finalityStall`.
+
+**The six sites, and the seventh that is deliberately not one.** The five in
+`node/src/runtime/node_runtime.rs` (kademlia-serve, peer-discovery, clear-connections,
+block-retriever, autopropose-timer) and the TLS accept loop in
+`comm/src/transport/grpc_transport_receiver.rs`. The **per-connection** handshake spawn in that same
+function is **not** supervised, and that is a decision rather than an omission: every handshake *ends*,
+so counting its returns would flood the surface with lines about healthy connections and the counter
+would stop meaning "a subsystem died". The long-lived accept loop above it is the task whose death is a
+real loss, and it is the one watched.
+
+**Falsifier.** The two events had no counter, so a probe could not ask whether a subsystem had died.
+`a_panicking_task_and_a_returning_task_are_counted_apart` pins both, and pins that they are **different
+facts** — conflating them would lose the one that nothing else reports.
+
+**What remains.** The closed-channel half (E6b): a `let _ = tx.send(…)` on a shutdown channel is the
+same silence in a different shape, ~18 sites plus the lint decision, and it is not in this commit.
+
+---
+
+## 79. A merge had two commit points, and a crash between them landed on an ancestor (C258, L2)
+
+**What the programme's L2 named**, and what measuring it found. The entry claim was that
+`record_root` (`rspace/src/history/roots_store.rs`) writes `root → ROOT_TAG` and
+`CURRENT_ROOT → root` as two `put`s and that `shared/src/lmdb.rs` opens one transaction per call — so a
+crash between them leaves `CURRENT_ROOT` naming a root the store does not hold. That is true, and it is
+the **smaller** half: the two pairs are now one call, which is one transaction, which makes the pair
+atomic rather than merely adjacent.
+
+**The larger half is the merge, and it is not in that file.** `HistoryRepository::reset` calls
+`validate_and_set_current_root(root)` and then resets the history — so a reset *publishes* the root it
+resets to. That is right for a caller whose new root **is** its base: a rewind, a rejoin, a replay.
+It is wrong for the merge, which is `reset(base)` and then real work — the mergeable-channel overrides,
+`compute_trie_actions`, and only then `do_checkpoint_with_native`, where the merged trie finally exists.
+With `reset`, `CURRENT_ROOT` had already advanced to the base before any of that began. **A crash
+between the two commit points left the node naming an ancestor** — neither the pre-merge nor the
+post-merge state, and no record anywhere that a merge had been in flight.
+
+**The fix is the split, and it keeps the check.** `reset_volatile` performs the same refusal `reset`
+gives an unknown root (`validate_known_root` → `RootsStore::is_known_root`) and does not write. The
+merge resets through it, so it has **one** commit point, and it is the one where the merged state is
+real. Nothing about the ordinary path changes.
+
+**Falsifier, at the level where the difference is observable.**
+`root_repository::tests::validate_known_root_refuses_without_publishing`: two recorded roots make
+"the current root did not move" a real assertion, which a fresh repository (knowing exactly one root)
+cannot. `a_volatile_reset_still_validates_and_still_moves_the_view` pins that the volatile reset is a
+reset and not a no-op. The restart-shaped test the design review asked for — checkpoint, drop and
+rebuild the manager the way boot does — is **owed**: the in-memory manager a unit test can build
+hands back the same store object, so "rebuild the manager" is not a restart there, and doing it
+honestly needs the LMDB manager.
+
+---
+
+## 80. The gate's three instrument findings: what was deleted, what is now printed, what is decided (C255)
+
+**The audit's instrument findings were about the *gate*, not the code**, and they are the reason its
+green result was weaker than it read. Three of them, and C255's `owes` enumerates them; this pass
+closes two and decides a third.
+
+**(I1 → B1) The baseline is deleted, not wired back.** `tools/type-system-baseline.tsv` had drifted
+**128 sites** below what the gate measures (its own header records AUDIT F-16 and the reason it was
+abandoned as a ratchet), and nothing read it for a verdict — so its only remaining effect was to print
+a comparison against a number that was wrong. A record that cannot be right and is not checked is worse
+than no record: it reads as a ratchet to anyone who does not read the code. Deleted, with the reason in
+the gate where the decision lives, and the dead `ratchet_failures` counter with it. `ratchet()` is now
+a pure "measured N sites" print.
+
+**(I2 → B2) The panic class's limit is printed on every run.** A green panic class is evidence about
+the **sites the allow-list lists**, never about the ingress discipline that keeps each one unreachable.
+The audit's L1 found that limit by re-walking all 29 entries with C97's question; no run on a later day
+could have found it. The caveat lived in the file's header, where a reader looking at a green build
+does not go, and it is now two lines in the summary of every run.
+
+**(I3 → B3) The key's coarseness is now stated rather than silently assumed.** An entry is keyed on
+`file;;regex` — on *text*, never on a line number, because a line-keyed entry fails **open** — so one
+entry can cover several sites of identical text in one file. The run now says so, and says what the
+staleness check does and does not prove: each key claimed at least one site, not exactly one. The
+per-entry half (an entry *stating* that it covers a shape) is not done; the class's limit is.
+
+**(Clause four, decided rather than left unassessed.)** `unwrap_used` is **redundant with the panic
+class**, and strictly weaker: that class already fails the build on any production `.unwrap()` outside
+its 29 entries, so a lint that flags the same shape adds a second gate over the same sites. The
+`let_underscore_must_use` option is **not redundant** — it is the closed-channel silence of C254's E6b
+(`let _ = tx.send(…)`), a different class, and it belongs with that unit's remaining half rather than
+here.
+
+**Negative control, run rather than asserted.** A production `.unwrap()` appended to
+`shared/src/string_ops.rs` makes the gate print `FAIL: 1 hard violation(s) (panic/unsafe/silent/escape)
+in production code` and exit non-zero; removed, it is green.
+
+---
+
+## 81. Every poison recovery is counted, and the un-counted spelling is now a gate failure (C253 E2)
+
+**What C249/F-U9-03 landed and what it did not.** The counter exists — `poison_recoveries()`, published
+as `poisonRecoveries` on `/api/status` — and it was wired to three accessors (`rlock`/`wlock`/`mlock`)
+that most of the tree does not use. The refutation adjudicated the raw population at **77 production
+sites**, and the reason the surface could still read 0 is sharper than "some sites are missed": the
+accessors were `pub(crate)` to `rspace`, so **no site outside `rspace` could increment them at all**,
+and the crates that hold most of the sites — `rholang` (52 tails), `node` (28), `ocapn` (18) — do not
+depend on `rspace`.
+
+**Measured on this tree: 136 raw tails across 32 files.** Six commits, one per crate, each compiling
+before it was committed: `shared`+`comm` 11, `ocapn` 18, `casper` 10, `rspace` 14, `node` 28,
+`rholang` 52 — plus `sync_var`'s three (a local `lock` helper and the two `Condvar` waits), which were
+the unit's first falsifier.
+
+**The mechanism is not the one the plan named, and the reason is recorded because the plan's one was
+tried and failed.** The plan said: route the sites through `rlock`/`wlock`/`mlock`. That requires
+naming the receiver, and at most sites the receiver is an **expression**:
+
+```rust
+self.writermlock(self.writer).lock().unwrap_or_else(|p| p.into_inner())
+```
+
+`mlock(&self.writermlock(self.writer))` borrows a temporary, so the guard would dangle. The first
+attempt at mechanically rewriting these sites produced a broken receiver — the accessor's call
+swallowed by the very expression it was meant to wrap — at **30 files and 31 compile errors**, and the
+tree had to be restored. The module now carries a second, receiver-free mechanism: `Unpoison::unpoison`
+is a method on the `LockResult` itself, so the substitution is the **tail only** and the receiver is
+never touched. Both doors count, through one `note_poison`.
+
+**The falsifier is a production path, not a fixture.** `shared/src/sync_var.rs`'s `take()` recovered a
+poison through the raw tail; the test poisons the cell's mutex, calls `take()` and asserts the counter
+moved. Red on the pre-fix tree:
+
+```
+thread '…' panicked at shared/src/sync_var.rs:98:
+…and invisible no longer (0 -> 0)
+```
+
+The guard came back — the test's first assertion, `take() == 1`, passed — and the counter did not move.
+That is the defect in one line. (The test is run alone: the counter is process-wide, so a concurrent
+test's recovery is a legitimate increment and `>` would otherwise be trivially true.)
+
+**The rule, and why it has no allow-list.** A hard `poison` class now forbids three spellings — the
+`unwrap_or_else` tail, the explicit `PoisonError::into_inner` path, and the same recovery as a match
+arm. Read whole like `silent`, because a chain rustfmt wrapped is the same recovery. **Its pattern is
+the tail only, never the receiver** — the lesson above, encoded.
+
+Every other hard class is kept honest by something it can lose: `panic` by an allow-list whose stale
+entries fail, the rest by sites the tree may not have. **This one's correct steady state is zero
+sites**, so nothing would notice if its pattern quietly stopped matching — it would print the same
+green as a tree with nothing to find, for ever. So it carries a probe:
+`tools/audit-poison-probe.txt` holds one of each spelling and `verify_poison_probe` fails the gate
+unless the pattern matches exactly three of them.
+
+**Both halves shown to bite, run rather than asserted.** A planted site
+(`shared/src/zz_probe_poison.rs`, three spellings) printed all three and failed the gate; a
+deliberately broken pattern printed
+
+```
+/…/tools/audit-poison-probe.txt:-: the pattern matched 0 of the 3 probe shape(s) — a class that
+stopped matching reports the same green as a class with nothing to find
+```
+
+`scan_spanning` now drops comment lines before matching — the rule `scan_panic` has always had, and for
+the same reason, which this unit made concrete: the new module's docs explain the banned tail *by
+writing it out*. The full gate is green with the filter in place.
+
+**What closes and what that leaves.** With (a) landed, C253's four clauses are all closed — (b) the
+three-way `Revalidation` (§78's sibling, `5c4aabbd7`), (c) the two checked genesis writes
+(`19300bad1`), (d) the binding-form extension to `silent` (C251's rule) — and the row moves to `done`.
+The deviation from (a)'s letter, stated rather than glossed: the sites route through a receiver-free
+trait rather than the free accessors, and the class has **no allow-list** because it has nothing to
+allow. Both deviations are this pass's subject, not an omission from it.
+
+---
+
+## 82. The node-side reset: the primitive, and the dry run that ships dark (C249, #287)
+
+**What C249's R3 gap is, in one line**: a running node that cannot locally heal has no inverse. It keeps
+serving, refuses the block and its descendants for the process lifetime, and the only way back is an
+operator deleting the shard data dir — a path that exists as a comment (`casper/src/dag.rs`) and nowhere
+as code. The plan's unit for it ships **dark**, and the reason is in the plan: the detector's output has
+to be reviewable against a real denominator from a real node before a build that acts exists. This pass
+lands the primitive and the denominator; the runtime reset and the wiring that acts are the unit's
+remaining half, deliberately.
+
+**The primitive: `drop_above`, in two layers.** `BlockMetadataStore::drop_above(height)` rewinds the
+persisted metadata and rebuilds the in-memory index from what survives — store first, index second, the
+order `add` uses and for `add`'s reason (AUDIT C172). The rebuild is a *rebuild* rather than an edit, so
+the two agree by construction, and `recreate_in_memory_state` re-runs the height-map contiguity check on
+the way, so a rewind that would leave a gap is refused rather than published. It returns the dropped
+hashes, because the reset is not the only thing that has to be rewound.
+
+`BlockDagKeyValueStorage::drop_above(height)` then rebuilds the representation by the **same** fold
+`create` uses — extracted to `rebuild_representation` for exactly that reason — and cleans the deploy and
+deployer indices of entries pointing above the anchor, found by value since both are keyed by
+deploy/deployer rather than by block. It holds the insert lock, so a concurrent insert cannot land a
+block above the anchor mid-rewind and leave the view holding a block the store has dropped.
+
+What it does not drop is stated in the method's doc rather than implied: block *messages* live in
+`BlockStore`, which this type does not own, so bodies stay on disk; `fringe_data_store` keeps its entries
+(keyed by fringe hash, read only for messages the map still holds); and `deployer_indexed_from` stays,
+because its claim is *complete from this height up to the tip* and the tip is now the anchor.
+
+**The denominator: `DagRepresentation::rewind_plan`.** The anchor is the tree's existing last finalized
+block — the highest block in the latest fringe — and `blocks_above` counts what sits above it. The two
+arms are **not merged**: a view with a fringe can name the block it would replay from, and a view
+*without* one cannot name a safe state at all — the number it prints is what a replay from genesis would
+redo. Reading the second as "nothing to drop" is the confusion the split exists to prevent; the falsifier
+is the same three blocks with different fringes and different answers (2 above genesis vs 0 above the
+anchor), which is how the first draft's fixture was caught (it put the fringe on `seen`, where
+`latest_fringe` does not read it). The count comes from the height map, so it is a **floor** —
+validation-failed blocks are not in it, and `drop_above` works from the store and takes those too. That
+is the safe direction to be wrong in.
+
+`note_unrestorable_if_exhausted` becomes async and takes the DAG, so the give-up report and the dry run
+are one function rather than two calls that could drift; both call sites pass the DAG they already have.
+Nothing is dropped, and the log line says so.
+
+**Falsifier form, stated because it is the weaker rung.** Both the primitive and the plan are *absent*
+capabilities on the pre-fix tree, so their red-before is the R1 form — a compile failure, captured
+verbatim for the metadata store:
+
+```
+error[E0599]: no method named `drop_above` found for struct `BlockMetadataStore`
+```
+
+What the tests then pin is *behavioural*: the store loses heights 3 and 4 and a **fresh** index over the
+same store sees the rewound chain (a rewind that lived only in memory would be undone by the next boot);
+the representation loses the tip and keeps the anchor; and the plan's two arms differ. This is weaker
+than a red-before on a running defect and is recorded as such rather than dressed up: the defect here is
+an absent capability, and the artifact of an absent capability is that the code does not build.
+
+**Not done, and owned elsewhere**: #287/#294 own the net-wide reconciliation, and the runtime's own
+`RhoRuntime::reset` (`rholang/src/runtime.rs:440`) plus the wiring that calls `drop_above` on a spent
+budget are the acting half, which ships after an operator has seen the denominator.
+
+---
+
+## 83. The discarded send: a counted door, and a class instead of a lint (C254's E6b)
+
+**The shape and why it is a finding.** `let _ = tx.send(v)` is the shape of a *decision* — "the receiver
+may already be gone, and that is fine" — and it reads exactly like a dropped error. On a shutdown path the
+decision is usually right: the node is going down and the consumer left first. The problem is the evidence:
+a node that dropped work during a shutdown and a node that shut down cleanly produced the same amount of
+it, which was none. That is C249's class arriving in a second shape, and the row is the audit's own
+observation rather than this pass's.
+
+**A door per shape of sender.** `rchain_shared::chan` — `send` (blocking `mpsc`), `try_send`,
+`unbounded_send`, `oneshot_send`, `watch_send`, and `best_effort` for the sinks those do not cover (a
+`futures` sink, a connection). Each keeps the decision — the value is still discarded — and counts the
+event. **One door carries a distinction the raw shape erased**: `try_send` fails *either* because the
+receiver is gone *or* because the buffer is full, and only the first is this module's business. A full
+buffer drops the value too, but the peer is still there, and counting it would make the counter mean
+something else, so `try_send` counts `Closed` and passes `Full` through as a plain `false`.
+
+**`best_effort` was `f.await.ok()` for one revision, and the `silent` class rejected it.** That class
+exists to stop "an I/O call's error erased into an absence", and a helper whose entire point is that
+erasure is the worst place to make an exception — every caller would inherit the silence the class was
+written for. It records through the same counter instead. The gate earned its keep on the person writing
+the door, which is the second time in two days (C255's audit made the first case out of a different
+question) and is worth recording as such.
+
+**The shape is forbidden by a class, not a crate-wide lint, and the reason is measured.** The first draft
+added `#![deny(clippy::let_underscore_must_use)]` to six crate roots. It fired on `let _ =
+thread::scope(..)` in `shared`'s own lock tests and `let _ = fs::remove_dir_all(..)` in its LMDB tests —
+six sites in one crate — none of which has anything to do with sends. The proportionate mechanism is
+`tools/audit-type-system.sh`'s new hard `discard` class: scoped to production code (the stripper drops
+`#[cfg(test)]` blocks), matching `let _ = …send(…)` and nothing else, with no allow-list and a probe
+because its steady state is zero sites. The lint's own virtue — that the compiler checks it — is what made
+it unsuitable: it is a lint about a *pattern*, and the pattern it matches is broader than the finding.
+
+**Two sites were not channels, and both are now loud.** `comm`'s `send_to_peer`/`send_to_bootstrap`
+**return** their `CommErr` rather than discarding it (four call sites now log or propagate, two of which
+is where the change is visible on a running node), and `ocapn`'s `send_abort` — whose thirteen callers all
+already return an error naming the reason, so there is nothing for it to do with a failure — goes through
+`chan::best_effort`, whose *name* states the decision the `let _ =` hid. The named door is the honest
+exception to a class with no allow-list, and it is written down as one: what the class forbids is the
+silent shape, not the decision.
+
+**Falsifiers.** `chan::tests::a_send_to_a_gone_receiver_moves_the_counter_and_the_old_shape_does_not` runs
+the old shape **beside** the new door inside one test: the old one drops the value and moves the counter
+not at all, the door moves it once for the same event. That control is kept in the tree rather than
+described. `a_full_buffer_drops_the_value_without_counting_a_receiver_that_still_listens` pins the
+distinction above. The class was shown to bite both ways — three findings on a planted site, and its own
+probe's failure on a deliberately broken pattern:
+
+```
+/…/tools/audit-discard-probe.txt:-: the pattern matched 0 of the 2 probe shape(s) — a class that stopped
+matching reports the same green as a class with nothing to find
+```
+
+`cargo test --lib` is green across all seven touched crates (100/135/119/56/408/317/239, 0 failed);
+clippy with CI's allow-list is clean; the full gate is green.
+
+**What is not here.** The counter is the **source half**, exactly as C249's F-U9-03 was when it landed:
+readable in process, not yet on `/api/status`. That is the next increment, and until it lands "counted but
+not yet published" is the honest description — the same sentence, and the same owed step, that the lock
+module carries.
