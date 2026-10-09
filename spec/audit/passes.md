@@ -8388,3 +8388,66 @@ three-way `Revalidation` (§78's sibling, `5c4aabbd7`), (c) the two checked gene
 The deviation from (a)'s letter, stated rather than glossed: the sites route through a receiver-free
 trait rather than the free accessors, and the class has **no allow-list** because it has nothing to
 allow. Both deviations are this pass's subject, not an omission from it.
+
+---
+
+## 82. The node-side reset: the primitive, and the dry run that ships dark (C249, #287)
+
+**What C249's R3 gap is, in one line**: a running node that cannot locally heal has no inverse. It keeps
+serving, refuses the block and its descendants for the process lifetime, and the only way back is an
+operator deleting the shard data dir — a path that exists as a comment (`casper/src/dag.rs`) and nowhere
+as code. The plan's unit for it ships **dark**, and the reason is in the plan: the detector's output has
+to be reviewable against a real denominator from a real node before a build that acts exists. This pass
+lands the primitive and the denominator; the runtime reset and the wiring that acts are the unit's
+remaining half, deliberately.
+
+**The primitive: `drop_above`, in two layers.** `BlockMetadataStore::drop_above(height)` rewinds the
+persisted metadata and rebuilds the in-memory index from what survives — store first, index second, the
+order `add` uses and for `add`'s reason (AUDIT C172). The rebuild is a *rebuild* rather than an edit, so
+the two agree by construction, and `recreate_in_memory_state` re-runs the height-map contiguity check on
+the way, so a rewind that would leave a gap is refused rather than published. It returns the dropped
+hashes, because the reset is not the only thing that has to be rewound.
+
+`BlockDagKeyValueStorage::drop_above(height)` then rebuilds the representation by the **same** fold
+`create` uses — extracted to `rebuild_representation` for exactly that reason — and cleans the deploy and
+deployer indices of entries pointing above the anchor, found by value since both are keyed by
+deploy/deployer rather than by block. It holds the insert lock, so a concurrent insert cannot land a
+block above the anchor mid-rewind and leave the view holding a block the store has dropped.
+
+What it does not drop is stated in the method's doc rather than implied: block *messages* live in
+`BlockStore`, which this type does not own, so bodies stay on disk; `fringe_data_store` keeps its entries
+(keyed by fringe hash, read only for messages the map still holds); and `deployer_indexed_from` stays,
+because its claim is *complete from this height up to the tip* and the tip is now the anchor.
+
+**The denominator: `DagRepresentation::rewind_plan`.** The anchor is the tree's existing last finalized
+block — the highest block in the latest fringe — and `blocks_above` counts what sits above it. The two
+arms are **not merged**: a view with a fringe can name the block it would replay from, and a view
+*without* one cannot name a safe state at all — the number it prints is what a replay from genesis would
+redo. Reading the second as "nothing to drop" is the confusion the split exists to prevent; the falsifier
+is the same three blocks with different fringes and different answers (2 above genesis vs 0 above the
+anchor), which is how the first draft's fixture was caught (it put the fringe on `seen`, where
+`latest_fringe` does not read it). The count comes from the height map, so it is a **floor** —
+validation-failed blocks are not in it, and `drop_above` works from the store and takes those too. That
+is the safe direction to be wrong in.
+
+`note_unrestorable_if_exhausted` becomes async and takes the DAG, so the give-up report and the dry run
+are one function rather than two calls that could drift; both call sites pass the DAG they already have.
+Nothing is dropped, and the log line says so.
+
+**Falsifier form, stated because it is the weaker rung.** Both the primitive and the plan are *absent*
+capabilities on the pre-fix tree, so their red-before is the R1 form — a compile failure, captured
+verbatim for the metadata store:
+
+```
+error[E0599]: no method named `drop_above` found for struct `BlockMetadataStore`
+```
+
+What the tests then pin is *behavioural*: the store loses heights 3 and 4 and a **fresh** index over the
+same store sees the rewound chain (a rewind that lived only in memory would be undone by the next boot);
+the representation loses the tip and keeps the anchor; and the plan's two arms differ. This is weaker
+than a red-before on a running defect and is recorded as such rather than dressed up: the defect here is
+an absent capability, and the artifact of an absent capability is that the code does not build.
+
+**Not done, and owned elsewhere**: #287/#294 own the net-wide reconciliation, and the runtime's own
+`RhoRuntime::reset` (`rholang/src/runtime.rs:440`) plus the wiring that calls `drop_above` on a spent
+budget are the acting half, which ships after an operator has seen the denominator.
