@@ -1501,7 +1501,7 @@ def laws : List Law := [
       "block-storage/src/property_tests.rs:law18_a_missing_lowest_height_is_not_a_hole",
       "block-storage/src/property_tests.rs:law18_the_empty_dag_and_a_lone_block_are_contiguous",
       "block-storage/src/property_tests.rs:law18_the_state_does_not_depend_on_insertion_order",
-      "models/src/fringe_data.rs:law18_fringe_hash_is_order_independent"],
+      "models/src/block_metadata.rs:law18_fringe_hash_is_order_independent"],
     statement := "The store's own invariants: the height map is **contiguous** — no holes in block \
       heights — and the fringe identity is **order-independent**, because what the code keys on is a \
       `BTreeSet`, not a list",
@@ -1511,7 +1511,7 @@ def laws : List Law := [
       `Rchain.fringeId, `Rchain.fringeId_perm,
       `Rchain.fringe_identity_order_independent_is_false],
     axioms := [],
-    rust := ["block-storage/src/dag/metadata_store.rs", "models/src/fringe_data.rs",
+    rust := ["block-storage/src/dag/metadata_store.rs", "models/src/block_metadata.rs",
       "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.height_map_universal_is_false, `Rchain.fringe_identity_order_independent_is_false, `Rchain.contiguous_skip_leaves_hole, `Rchain.fringeId_perm],
     falsifiable := some "`contiguous_skip_leaves_hole` is the negative case the store's check exists for: \
@@ -1519,7 +1519,7 @@ def laws : List Law := [
       `validate_dag_state` reports, `metadata_store.rs:83-86`) — and the store **cannot derive** the \
       positive direction for itself, since it inspects only the keys it is handed: that step runs through \
       Law 16a's block-number check. `fringeId_perm` fails for an identity that dropped the sort, which \
-      is what `fringe_hash_of` would be without its `BTreeSet` input (`models/src/fringe_data.rs:38-43`), \
+      is what `fringe_hash_of` would be without its `BTreeSet` input (`models/src/block_metadata.rs:31-34`), \
       and `height_map_universal_is_false` / `fringe_identity_order_independent_is_false` publish the \
       refutations of the two axioms this row replaces",
     note := "**two axioms gone, and neither was a law.** `height_map_contiguous` claimed a property of \
@@ -3763,10 +3763,13 @@ def laws : List Law := [
       costs: a writer that had computed the other value finds its own block failing its own validation \
       (C270, measured)",
     status := .provedModel,
-    declarations := [`Rchain.the_fringe_only_key_is_incomplete, `Rchain.the_join_rewrites_a_writers_value],
+    declarations := [`Rchain.the_state_is_named_by_a_block, `Rchain.a_disagreement_is_visible,
+      `Rchain.claimsOf, `Rchain.the_fringe_only_key_is_incomplete,
+      `Rchain.the_join_rewrites_a_writers_value],
     axioms := [],
-    rust := ["models/src/fringe_data.rs", "casper/src/dag.rs", "casper/src/multi_parent_casper.rs"],
-    witness := [`Rchain.the_fringe_only_key_is_incomplete],
+    rust := ["models/src/block_metadata.rs", "casper/src/dag.rs",
+      "casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.the_state_is_named_by_a_block],
     falsifiable := "Two honest writers whose merges started from different bases, reaching one fringe: \
       their records share the key and disagree about `stateHash`. The measured instance is the four-key \
       divergence in `spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`.",
@@ -3786,7 +3789,18 @@ def laws : List Law := [
       fringe's state cannot name which base the record it wants was written under. The design chosen \
       afterwards (2026-10-10) is that the **value drops the derived state**: the record keeps the \
       contributions and the reader derives, which makes the store append-only — the property Law 68 \
-      proves is what makes a read a function of its version." },
+      proves is what makes a read a function of its version. **Delivered 2026-10-10, and the row now
+      states what the code does.** The store, the type, the join and the tie-break have retired: the
+      claim travels with the block that made it (`BlockMetadata.fringe_state_hash`, written once) and
+      the readers derive. `the_state_is_named_by_a_block` is the version rule they rely on, and
+      `a_disagreement_is_visible` is this refutation's positive counterpart, which is why the
+      refutation is kept rather than deleted. The readers take the claim of the block that **finalised**
+      the fringe — the parent whose own `fringe` field is that set — and not the claims of the fringe's
+      members, which are one fringe earlier: the first cut read the members, and a live four-validator
+      devnet stalled at height 20 with `active-bonds leaf not found in state` until the drill caught it.
+      With the correction the same rig runs level and advancing — 218 heights in seven minutes, all four
+      within two heights of each other, zero self-rejections, zero `active-bonds` failures
+      (`spec/audit/evidence/n-anchor-drill/divergence-fixed.txt`; `passes.md` §96)." },
 
   { number := 67, layer := "Casper",
     statement := "**The record join is a commutative idempotent semigroup at one key, so the value at a \
@@ -3796,7 +3810,7 @@ def laws : List Law := [
       no identity, which the model proves absent rather than fabricating. The sharpening is the one that \
       matters: order-independence does not come from the arrivals agreeing — `min` is commutative, so two \
       records that **disagree** still fold to one, which is why a divergence was invisible in the store",
-    status := .provedModel,
+    status := .retired,
     declarations := [`Rchain.joinRecord_assoc, `Rchain.joinRecord_comm, `Rchain.joinRecord_idempotent,
       `Rchain.joinRecord_fold_perm, `Rchain.the_joined_value_is_a_function_of_the_set,
       `Rchain.the_join_changes_nothing_iff_the_report_adds_nothing],
@@ -3814,7 +3828,12 @@ def laws : List Law := [
       as Law 66's positive half — and their premise, that a caller can *form* a `writeKey`, is exactly \
       what the review refuted. One honesty note the review added: `joinRecord_not_commutative`'s witness \
       violates the model's own `fringeHash = fringeHashOf fringe` invariant, so it is a non-vacuity \
-      check and not a pair the store can hold." },
+      check and not a pair the store can hold. **RETIRED 2026-10-10 with the map it describes.** There
+      is no record join left to be a semigroup: the claims are per block and the 'join' is a union of
+      them. The row is kept, as the register's ``retired`` status intends, because its finding is the
+      reason the store went — order-independence did *not* come from the arrivals agreeing, which is
+      why a divergence could hide in the store — and because a reader of the old design deserves to
+      find that argument where the join used to be." },
 
   { number := 68, layer := "Casper",
     statement := "**A read is a function of the version it names, and what a store must be for that to \
@@ -3826,9 +3845,10 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.two_content_addressed_reads_of_one_version_agree,
       `Rchain.a_read_of_an_append_only_store_is_stable,
+      `Rchain.a_read_of_a_blocks_claim_is_stable,
       `Rchain.a_non_content_addressed_read_is_not_a_function_of_its_version],
     axioms := [],
-    rust := ["rspace/src/history/radix_tree.rs", "models/src/fringe_data.rs",
+    rust := ["rspace/src/history/radix_tree.rs", "models/src/block_metadata.rs",
       "tools/reconcile-network.sh"],
     witness := [`Rchain.a_read_of_an_append_only_store_is_stable],
     falsifiable := "Two stores that differ only in the base of the record at one key, read at that key: \
@@ -3844,7 +3864,11 @@ def laws : List Law := [
       *content-addressed* store cannot violate a read for any key it holds whole, so the fiat is needed \
       only for the non-append-only half. That module's header claim — that the composite key would bring \
       the record store into the safe class — is unproved and, as Law 66 records, inexpressible; the \
-      chosen design gets there another way." },
+      chosen design gets there another way. **Since 2026-10-10 it holds for the fringe state**, which
+      is the point of the redesign: a claim is written once, at the block that made it, so
+      `a_read_of_a_blocks_claim_is_stable` is this law's positive half instantiated at the claim store
+      rather than a new law. The tool's fiat still applies to the chain-state *directories*, which are
+      not where the claims live." },
 
   { number := 69, layer := "Sync",
     statement := "**A joiner's state-page walk need not terminate, and with a give-up rule it is paced.** \

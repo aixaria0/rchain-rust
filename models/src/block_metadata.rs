@@ -458,4 +458,30 @@ mod tests {
         );
         assert!(!meta.validated);
     }
+
+    /// **Law 18's witness, moved here with `fringe_hash_of` — and the move was forced, not chosen.**
+    ///
+    /// This test lived in `fringe_data.rs`, which the record redesign deleted (Law 66: the store, the
+    /// type and the join retired, because the claim travels with its block). Deleting the module took the
+    /// witness with it, and the register's own check refused the anchor that then pointed at nothing —
+    /// which is the check earning its keep, since nothing else in the tree would have noticed a law
+    /// losing its only test.
+    ///
+    /// The property: a fringe's identity is its *sorted* members, so two sets built in different
+    /// insertion orders are one key. `fringe_hash_of` iterates its `BTreeSet` input, so this is also the
+    /// statement that the key does not depend on how the set was assembled.
+    #[test]
+    fn law18_fringe_hash_is_order_independent() {
+        let mut one = BTreeSet::new();
+        one.insert(block_hash(1));
+        one.insert(block_hash(2));
+        let mut two = BTreeSet::new();
+        two.insert(block_hash(2));
+        two.insert(block_hash(1));
+        assert_eq!(
+            fringe_hash_of(&one),
+            fringe_hash_of(&two),
+            "one fringe, one key, whatever order it was built in"
+        );
+    }
 }
