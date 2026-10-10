@@ -9679,16 +9679,35 @@ only one of the pair, and the scan must aggregate the endpoints and verify the t
 first defect is the class F-U10-03 names (a diagnostic on the wrong surface); the second is a property of
 the protocol that a stubbed fixture cannot show.
 
-**The fourth arm — a live proven equivocation — was staged and did not run, and the reason is worth more
-than a green line would have been.** The cheap way to arm `--equivocation-injection` is at a node's start,
-and `tools/devnet.sh reset <n>` is the only path that recreates a container with new flags — but `reset`
-also wipes the node's store, so the armed validator rejoins an empty store against a producing master. On
-this rig it never caught up: 25 minutes in, it was still in the LFS phase at height 0 while the master had
-run to **678**, because the chain keeps growing while it hydrates (the same "a joiner against a producing
-master" shape C268 and C259 record, and the reason the windowed catch-up exists at all). So the arm is
-**staged and not run**: the right staging is the injection armed on a validator *when the net is created*,
-which needs a fresh devnet rather than a reset — that is the next thing to run, and it is named here rather
-than left as an implication that the proof has been seen live. What *is* exercised is the arithmetic: three
-fixture cases (a proven equivocator leaving both sides of the fraction, the proof named with the pool it
-shrinks, and the equivocator's attestation not being allowed to set the meet) plus the aggregation fix the
-live run forced.
+**The fourth arm — a live proven equivocation — was attempted four times and did not run, and the two
+reasons are worth more than a green line would have been.** It is recorded here at the length it took,
+because the next person to try it should start from where this got to rather than from the start.
+
+*First obstacle — `reset` cannot arm a node cheaply.* The obvious way to add `--equivocation-injection` to a
+running net is `tools/devnet.sh reset <n>`, which is the only path that recreates a container with new
+flags — but `reset` also wipes that node's store, so the armed validator rejoins empty against a producing
+master. It never caught up: 25 minutes in it was still in the LFS phase at height 0 while the master had run
+to **678**, because the chain keeps growing while it hydrates (the "a joiner against a producing master"
+shape C268 and C259 record, and the reason the windowed catch-up exists).
+
+*Second obstacle — arming it at creation is not sufficient, because the armed validator must also be
+**drawn**.* The injection was then armed on a node at `up` time — three attempts, once on a validator and
+twice on whichever node the log showed proposing — and in every attempt the armed node turned out to be the
+one the epoch's **active-set draw** left out. A validator outside the active set does not propose at all: its
+own log says *"not proposing: … is not in the active set this node reads, which is the newest block's bond
+cache — either it is not bonded, or the draw left it out for this epoch"*. No proposal, no twin, no
+equivocation. `--active-validators 4` did **not** force the set (each of the three nets read
+`active=3` of 4 bonded), so the staging that remains is to give the armed validator a dominant stake
+(`--stakes`) so the stake-weighted draw picks it, or to pin the draw — a devnet-tooling question, not a tool
+question.
+
+*One useful observation fell out of the failed attempts.* The net routinely runs with **3 of 4** bonded
+validators in the active set, and the meet still computed **400 of 400** in the lockstep arm: every bonded
+validator attests, including ones that are not proposing, because attesting needs a *finalised block* and not
+a turn at proposing. That is the property the meet's arithmetic assumes, and it now has a live witness
+rather than an argument.
+
+What *is* exercised for obligation 4 is the arithmetic: three fixture cases (a proven equivocator leaving
+both sides of the fraction, the proof named with the pool it shrinks, and the equivocator's attestation not
+being allowed to set the meet) plus the aggregation fix the live run forced — a scan that reads one endpoint
+cannot see a pair a node refuses to hold.
