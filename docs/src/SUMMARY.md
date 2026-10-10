@@ -47,6 +47,7 @@
 # Part IV — Building applications
 
 - [Building applications on the local devnet](developer/building-apps.md)
+- [Rholox: public-testnet application](developer/rholox.md)
 - [Porting an app from rnode](developer/porting-a-client.md)
 
 # Part V — Contributor / port
