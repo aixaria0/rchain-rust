@@ -243,9 +243,17 @@ where
     // longer a store to log it (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt` is the measured
     // case). The report goes to stderr because this function takes no `Log`: it is called from paths that
     // hold one, and threading it here is the follow-up that removes this wart.
+    // **The finalisers are the parents: the ones whose own `fringe` field is this very set.**
+    //
+    // The drill caught the first cut of this reading the *members* of the fringe instead, and the
+    // difference is exactly one fringe. A member's `fringe_state_hash` is the state at the fringe *it*
+    // finalises — the state before this one — so the base came out one step early: the empty state, early
+    // enough to carry no bonds leaf, and the chain stalled at height 20 with `propose failed … active-bonds
+    // leaf not found in state`. A block's own `fringe_state_hash` is the state **at** the set it finalises,
+    // which is what the retired record held (that same block wrote it) and what the merge must start from.
     let mut claims: Vec<(i64, BlockHash, Blake2b256Hash)> = Vec::new();
     let mut prev_fringe_rejected_deploys: BTreeSet<Vec<u8>> = BTreeSet::new();
-    for m in &prev_fringe {
+    for m in parents.iter().filter(|m| m.fringe == prev_fringe_hashes) {
         let meta = dag.lookup(&m.id).await?.ok_or_else(|| {
             format!(
                 "missing fringe block {} in the metadata store: the fringe {:?} names a block this node \
@@ -298,14 +306,18 @@ where
     }
     let prev_fringe_state = match claims.into_iter().max_by_key(|(h, id, _)| (*h, *id)) {
         Some((_, _, state)) => state,
-        // **The empty previous fringe is the genesis claim, not an error.** A block whose parents have
-        // finalised nothing yet — the first block after genesis, and *every* block while no round has
-        // finalised — merges from the empty state. The retired store held exactly that under
-        // `fringe_hash_of(∅)`, written by the genesis insert; the model says the same thing, and this is
-        // the boundary at which the claim has to be *supplied* rather than read, because an empty fringe
-        // names no block to carry it (Law 66; the genesis arm of `interpreter_util` derives the same
-        // value, `genesis_pre_state_hash`).
-        None => crate::interpreter_util::empty_state_hash_fixed(),
+        // **A parent set always has a finaliser**: `latest_fringe` returns the max-fringe parent's own
+        // `fringe`, so that parent is itself in the set this loop filters for. An empty set therefore
+        // means the message map and the metadata store disagree about the parents — not that the fringe
+        // is empty, which is a case with a finaliser like any other (a parent that finalised nothing has
+        // `fringe = ∅`, and is its own finaliser).
+        None => {
+            return Err(format!(
+                "no parent finalises the previous fringe {:?}: the parent set {:?} and the message map \
+                 disagree",
+                prev_fringe_hashes, parent_hashes
+            ))
+        }
     };
     // Captured here rather than at the struct literal, because `prev_fringe_hashes` is moved into
     // `new_fringe` below (#139). These two are what a state disagreement is reported with: the fringe

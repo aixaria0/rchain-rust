@@ -876,21 +876,24 @@ async fn two_honest_siblings_contribute_one_value_to_the_fringe_they_share() {
         );
     }
 
-    // **The control.** The same blocks, **one claim changed**: `g` — the block the derivation reads
-    // the base state from — carries `x_post` instead of the genesis post-state, so the derivation's
-    // answer moves. If it did not, the equality above would be a fact about a constant rather than
-    // about two honest siblings.
+    // **The control.** The same blocks, **one claim changed**: `x` — the block the derivation reads the
+    // base state from, because it is the parent whose own `fringe` field *is* this set (`{g}`), i.e. the
+    // fringe's **finaliser** — carries `x_post` instead of the genesis post-state, so the derivation's
+    // answer moves. If it did not, the equality above would be a fact about a constant rather than about
+    // two honest siblings.
     //
-    // (The original control set `x`'s *fringe* to the **empty** set — one record changed, one
-    // different base — which is the sharpest lever on the same knob. It is not used here: the reader
-    // that replaced the store treats an empty `prev_fringe` as an *error* rather than as the empty
-    // fringe's claim, so that perturbation reaches a path this test does not own. That the empty case
-    // has no answer is a finding of its own, recorded rather than hidden.)
+    // **Why the lever is the finaliser and not a member of the fringe.** The retired store held the
+    // value the *finaliser* wrote — that block's own `fringe_state_hash` is the state **at** the set it
+    // finalises. A member of the fringe carries the state at the fringe *it* finalised, one step
+    // earlier: reading the members was the first cut of this change, it merged from a state one fringe
+    // early, and a live devnet stalled at height 20 with `active-bonds leaf not found in state`. Which
+    // makes the lever worth its comment — perturbing `g` moves nothing now, so a control still aimed
+    // there would have gone on passing while the semantics were wrong.
     let moved = build_storage().await;
-    insert(&moved, meta_state(&g, &BTreeSet::new(), &x_post), g.clone()).await;
+    insert(&moved, meta_state(&g, &BTreeSet::new(), &genesis_pre), g.clone()).await;
     insert(
         &moved,
-        meta_state(&x, &BTreeSet::from([g.block_hash]), &genesis_post),
+        meta_state(&x, &BTreeSet::from([g.block_hash]), &x_post),
         x.clone(),
     )
     .await;
