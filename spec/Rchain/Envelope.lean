@@ -70,7 +70,7 @@ def envelopeCatalog : List EnvelopeRow :=
         "staleSnapshotSelfEquivocations", "finalityStall", "finalityStallEpisodes",
         "nonQuietMergeReports", "poisonRecoveries", "unrestorableRecords", "unrestorableBlock", "tasksPanicked", "tasksExited"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
-      keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet"] }
+      keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet", "faucetRemaining"] }
   , { name := "LightBlockInfo", endpoint := "the `block` field of most responses",
       keys := ["version", "shardId", "blockHash", "blockNumber", "sender", "seqNum", "preStateHash",
         "postStateHash", "justifications", "bonds", "sigAlgorithm", "sig", "blockSize", "deployCount",
@@ -90,7 +90,7 @@ def envelopeCatalog : List EnvelopeRow :=
   , { name := "PooledDeploys", endpoint := "GET /api/v1/deploys",
       keys := ["deploys"] }
   , { name := "FaucetResponse", endpoint := "POST /api/v1/faucet",
-      keys := ["deployId", "amount", "to"] }
+      keys := ["deployId", "amount", "to", "status", "deployError"] }
   , { name := "DeployExecStatus", endpoint := "the `deployResult` body of a deploy response",
       keys := [],
       variants :=

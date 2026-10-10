@@ -1086,7 +1086,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "manualPropose": { "type": "boolean" },
           "adminHttp": { "type": "boolean" },
           "devMode": { "type": "boolean" },
-          "faucet": { "type": "boolean" }
+          "faucet": { "type": "boolean" },
+        "faucetRemaining": { "type": "integer", "format": "int64" }
         }
       },
       "PooledDeploy": {
@@ -1112,7 +1113,9 @@ pub const OPENAPI_JSON: &str = r##"{
         "properties": {
           "deployId": { "type": "string" },
           "amount": { "type": "integer", "format": "int64" },
-          "to": { "type": "string" }
+          "to": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "resubmitted", "failed"] },
+          "deployError": { "type": ["string", "null"] }
         }
       }
     }

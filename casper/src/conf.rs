@@ -145,6 +145,28 @@ pub struct CasperConf {
     /// It is *self-harm* on a real network and it says so: the twin is equally signed, so every peer
     /// records the node as having equivocated, and it is the node's own bond the peers will take.
     pub equivocation_injection: bool,
+    /// **Perturb this node's fringe records, so its merge answers differently from its peers'** (default
+    /// `0` = off). A devnet-only injection, and the instrument the reconciliation drill needs: it makes
+    /// the `fringe_states` ambiguity — a map keyed by the fringe *set* whose value the set does not
+    /// determine (C215) — bite on every arrival order rather than only when honest nodes happen to
+    /// disagree, which is what four divergent heads and a frozen chain were made of.
+    ///
+    /// It refuses to arm without `--dev-mode` (`check_merge_divergence_injection`), and every perturbed
+    /// write prints a line saying so. See `BlockDagKeyValueStorage::with_merge_divergence_injection` for
+    /// what it does and does not fabricate.
+    pub merge_divergence_injection: u8,
+    /// **An operator-named block to sync to, instead of a finalised fringe** (default `None`).
+    ///
+    /// The recovery path a frozen chain needs, and the one #287's design assumes exists: a wiping joiner
+    /// asks a peer for a `FinalizedFringe`, and a peer with no fringe answers with **genesis**
+    /// (`node_running.rs`), so the joiner syncs to block 0 and can never re-enter sync — the state
+    /// C259 records. The block the operator names is the meet the reconciliation tool computed: the
+    /// deepest height a strict supermajority of stake agrees on, which is what makes it a safe anchor
+    /// rather than a tip someone picked.
+    ///
+    /// Only consulted when this node's DAG is empty (the boot path that would otherwise request a
+    /// fringe). Empty means the ordinary path, unchanged.
+    pub sync_anchor: Option<String>,
     /// The effect-scheduler mode (Laws 20–25): `dfs` (default), `gate`, `relaxed`, or
     /// `relaxed-validated`. Parsed via `FromStr` at consumption (`EffectMode`); the block paths
     /// hard-reject `relaxed` (off-chain only) and accept `relaxed-validated` with

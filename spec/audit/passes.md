@@ -8514,3 +8514,295 @@ clippy with CI's allow-list is clean; the full gate is green.
 readable in process, not yet on `/api/status`. That is the next increment, and until it lands "counted but
 not yet published" is the honest description — the same sentence, and the same owed step, that the lock
 module carries.
+
+---
+
+## 84. The recovery path's trigger state closes the path (C259)
+
+**What was run.** The reconciliation utility's own drill, against a divergence staged on demand: four
+validators, `--epoch-length 10 --no-autopropose --fresh`, the C215 divergence injection armed so the net
+reaches four mutually rejecting heads with finality frozen. The tool's **plan phase** is verified against
+that state — it finds no equivocation, reaches the meet at genesis at 400 of 400, enumerates the writes
+above the point and exits 0 without touching anything (`spec/audit/evidence/n-reconcile-drill/results.md`).
+This pass is about its **recovery**, which does not work in exactly the state the tool exists for.
+
+**The finding, and it is a closure rather than a bug.** #287's recovery is *wipe the non-master nodes and
+resync them from the finalised fringe*. Four divergent heads with frozen finality means **no node has a
+finalised fringe** — all four answer `"Finalized fringe is not available."` — so a wiped joiner asks a peer
+for a `FinalizedFringe`, the responder cannot build one, and it **substitutes the genesis block**
+(`node_running.rs:819-853`). That branch exists for a good reason ("a fresh shard must not leave a joiner
+unbonded") and it cannot tell that state from this one, because **both are an empty `latest_fringe`**. The
+joiner therefore syncs *to block 0*, enters `NodeRunning`, fetches head blocks by hash — which works, and
+`BlockRetriever` says so — and rejects every one against a genesis-only DAG, permanently, by the neglect
+rule. **The recovery's trigger state closes the recovery.**
+
+One correction to the obvious reading of that, because the first draft of it was wrong: the wiped joiner
+*does* enter the sync path (its DAG is empty, so the boot guard's arm runs). The boot guard's one-shot
+dispatch is what strands a *partial*-DAG node; the wiped joiner is stranded by what the responder answers
+and by what the receiving side then does with the blocks it fetches.
+
+**Two facts from the same reading, both load-bearing for the fix.**
+
+- **`get_approved_block` has zero production callers.** The approved store is written by the genesis master
+  and by a successful sync, and read by nobody: a persisted anchor that nothing consults is not an anchor,
+  and it is the first place a fringe-free restore would look.
+- **`request_blocks` is hash-seeded, not fringe-typed.** It takes a `FinalizedFringe` and uses **only
+  `fringe.hashes`** as the walk's root (`lfs_block_requester.rs:207-222`). So a *fringe* is not required —
+  a set of agreed block hashes is. That is what makes the protocol-level fix small: an anchor is a
+  configuration field, a bounded request field and a boot-path branch, not new sync machinery.
+
+**And the limit that decides how many units this takes.** On a net with **no finality at all** the meet is
+*genesis*, so an anchor-based restore lands a joiner exactly where the responder already sends it. The
+anchor therefore closes every divergence that still has some finality left — the partial case, and the
+common one — and the full four-heads case needs a store-level transfer of the survivor's DAG, which is not
+a sync at all and is documented as a stopgap. Neither is presented as the general answer.
+
+**Falsifiers.** The red is measured and committed: the same rig, with the tool's wipe-and-resync, leaves
+every joiner at genesis rejecting every block (`why-no-resync.txt`). Green is #287's acceptance — one head,
+agreeing block hashes per height, finality past the point, without a genesis — asserted by the tool's own
+sections 9 and 10, for the store-level path and again for the anchor path.
+
+**What this does not show.** The drill's staging has its own limit, already recorded on the staging file
+(`c215-divergence-staging/run.md`): the injection reaches *block content*, so an injected node's blocks are
+un-validatable by a clean node. That makes the copy path demonstrable and an anchor path **not** — a green
+drill under the injection would prove the copy, not a sync — so the anchor's drill needs a staging where
+the joiners' blocks stay valid to a clean node, which is work the instrument still owes.
+
+## 85. The record at a fringe key is a function of that key — the negative result overturned (C215)
+
+**What §84 could not do, this does.** The close-out recorded C215 as a fix with **no falsifier**: the
+storage-level reproduction existed (two arrival orders left two `FringeState` records at one key) and a
+unit test of the read consumed it, but the full-path test the #299 review asked for **passed on the
+unfixed tree** — two orders, one outcome, nothing rejected — so the claim that the merge's *outcome*
+depended on arrival order was withdrawn and the fix withheld. It is withdrawn no longer.
+
+**Why it passed, found by instrumenting the merge rather than by reading it.** The collision reached
+`rejections_for` and did flip `accepted_finally`/`rejected_finally` — 1/0 on one node, 0/1 on the other —
+and the resolution still returned `to_merge=2, rejected=0` on both. `incompatible_with_final` is the only
+consumer of those two sets, and it is **asymmetric**: an accepted-finally chain `x` rejects the conflict
+chains that *conflict with* it (`conflicts_map[x]`), a rejected-finally `x` rejects the ones that *depend
+on* it (`dependency_map[x]`). In the old construction `x` was related to neither `y` nor `z`, so both
+branches of the asymmetry were empty and the flip changed nothing.
+
+**The construction therefore has to choose the relation deliberately.** A probe over candidate term pairs
+(`DeployChainIndex::depends` / `deploys_are_conflicting` on chains the runtime built) gave the one that
+works: **`x` produces an event and `y` consumes it** — `depends(y, x) = true`, `conflicts(y, x) = false`.
+With that, the same validated blocks merged to two different states (`c337791b…` and `2a9dff46…`) and two
+different rejected sets, one `y` apiece — **red on the unfixed tree**, green after the join.
+
+The probe's own first run read `false/false` for every pair, including ones that are plainly related.
+That was the instrument, not the subject: `BLOCK_INDEX_CACHE` is process-global and keyed by block hash
+alone, so a probe reusing one hash handed every later pair the first pair's chains. It is the same
+cache the plan's C249 note already names, met from the other side.
+
+**The fix.** `insert` joins a record already stored at a fringe key with the incoming one instead of
+overwriting it: the rejection sets and `fringe_diff` by **union** — monotone, so the merges that read them
+can only reject more of what some finalising block rejected, the fail-closed direction — and `state_hash`
+by a deterministic tie-break, because a hash cannot be joined. The join is commutative, associative and
+idempotent, so every arrival order reaches one record. That restores the invariant the type already
+states: `FringeData`'s `Hash` impl hashes **only** `fringe_hash`, and its own doc says it "is uniquely
+identified by the hash of its fringe hashes", so a map from key to record must hold `value(key)`.
+
+**Falsifiers, both measured red-before-green-after on one tree** (the join reverted for the second run):
+`casper/tests/merge_determinism.rs::two_arrival_orders_of_one_block_set_leave_one_fringe_cache` (the
+storage, through the production `insert`) and
+`casper/tests/merge_determinism.rs::the_same_validated_blocks_merge_identically_in_both_arrival_orders`
+(the merge's own entry point, with states the runtime computes).
+
+**What remains open, and is stated in the test file rather than implied.** The colliding pair needs two
+blocks that **disagree about one fringe** — genuinely different content, which is the shape the row's
+original note said the difference had to be. Whether two honest nodes holding the *same* block set can
+produce such a pair is not settled here: the argument that they cannot — the merge for a fringe is a
+function of the DAG, so same-DAG nodes compute the same report, and the divergence is propagated rather
+than created at this level — is a reason to expect the incident's four heads to have been *caused*
+somewhere else and merely *carried* by this map. That is C250's question, not this fix's. What the join
+settles is that the map can no longer be a carrier: whatever two nodes disagree about, they cannot
+disagree about what a fringe key holds.
+
+## 86. The close-out: what ended, what was filed, and the negative result that stopped a fix (C215, C259)
+
+**§85 superseded this pass's C215 half, and merged after it was written.** §85 found *why* the
+full-path test described below passed on the unfixed tree and made the fix real, so the paragraph on
+C215's missing falsifier is the state of play at the time of writing rather than the end of it. What
+stands unchanged is the other half: what was filed, and where.
+
+**The programme ends here, and this pass records why each of the two remaining code units did not land as a
+fix.**
+
+**C215's fix has no falsifier, and the attempt to build one is the evidence.** Review of #299 asked for the
+collision to be shown through the merge's own entry point rather than as a storage-level counterexample.
+That test was built — two blocks per height whose post-states the runtime computes, a finalised fringe they
+share, two arrival orders, and `MergeScope::merge` over each comparing `MergeOutcome::state` and
+`rejected_deploys` — and **it passes on the unfixed tree**: two orders, one outcome, nothing rejected. The
+collision the storage-level test asserts is real and is asserted first; it simply does not reach this
+merge's decision, and why is not established. So the fix is not written. The storage-level counterexample
+stands, the mechanism stands, and the claim that the merge's *outcome* depends on arrival order is
+**withdrawn** until a construction exists where the final-scope rejection fires. The shortfall is between
+`rejections_for`'s read and `rejected_finally`, not in the setup.
+
+**A gap found on the way, and it is worth more than the test.** `MergeReport`'s `conflict_chains`,
+`kept_chains` and `rejected_chains` are `conflict_set.len()` and friends (`merging.rs:1934`; the struct's own
+doc says "Chains in the conflict scope"), so **a merge that drops a *finalised* chain reports
+`rejected_chains: 0` and says nothing about it**. `rejected_deploys` does cover those chains — which is the
+only reason the negative result above is visible at all — but the report an operator reads does not.
+
+**C259(a)'s mechanism, from reading after the drill.** The anchor seed is built with `ancestry: Vec::new()`
+(`node_launch.rs`), which **bypasses exactly the #139 fix** that makes a restored block replayable, and the
+sidecar stores a merge needs (`mergeable-channel-cache`, `native-changes-cache`, `storage.rs:71,77`) are
+**not part of the state a sync transfers**. So a node restored to an anchor reaches it and stops — silently
+near the tip (the single-parent arm reads the parent's post-state and never calls `block_index`, so one hop
+works while the multi-parent suffix never validates), and loudly far back (`regenerated mergeable channels`
+on the suffix's epoch-boundary blocks, which is C188). **Two halves in order**: carry the anchor's ancestry
+(reusing `collect_fringe_ancestry`, `node_running.rs:333`) rather than fabricating an empty one; then sync,
+or bound a one-time replay of, the sidecars for the restored range.
+
+**What the operator gets instead, and it is the case that matters.** `--sync-anchor` lands **without**
+either half, with its limit in the flag's own help text — a flag that stalls a node should say so where the
+operator meets it. And `docs/src/node/testnet.md` §Recovery, which listed restart, wait and
+rebuild-from-genesis and nothing else, gains the store-level restore: it is the **only** mechanism
+demonstrated to bring a frozen chain back (one head, identical block hashes at every height, no genesis,
+finality resumed), and the page now says what it does, that it is a fiat the tool prints before applying,
+and that it is not the protocol answer.
+
+## 87. The anchor names its root in the request, so its ancestry travels (C259a)
+
+**What §84 left, and this closes.** C259(a) was filed as two halves; this is the first, the anchor's
+ancestry. The *restore* half already worked — a node pointed at an anchor restored that block's state —
+and the node then **stopped there**: silently near the tip, loudly (with `regenerated mergeable channels`)
+on an older one. §84 named the mechanism: the seed carried `ancestry: Vec::new()`, which is the #139 fix
+bypassed.
+
+**Why an empty ancestry stalls a restore.** A block's fringe state is the *receiver's* own recomputation,
+not a field on the wire — that is why #139 added `ancestry` and why `dag.rs` needs it to index a restored
+block. With nothing carried, the joiner derives its own; the derivation needs a mergeable-channel sidecar
+that the LFS state transfer does not send; the derivation fails; and the block above the anchor cannot be
+validated. Near the tip the failure is **silent** because the single-parent arm reads the parent's
+post-state and never calls `block_index`, so one hop works while the multi-parent suffix never validates.
+
+**Why it could not be fixed at the joiner.** `collect_fringe_ancestry` walks a DAG, and the joiner's DAG is
+empty — that is *why* it is syncing. The ancestry has to come from a peer, so the joiner has to be able to
+say *which block* it wants an ancestry for. The old path fetched the block with `request_for_block` and
+patched a fringe together locally, which can supply the root and nothing under it.
+
+**The change, one bounded field.** `FinalizedFringeRequest` gains `anchor: Option<BlockHash>` (the #139
+pattern: a responder that does not know the field reads the request as an ordinary one, so a mixed pair
+degrades rather than failing), the joiner sends its anchor in the request, and the responder builds the
+fringe — and the whole ancestry — from that block. The response construction moves out of `handle`'s match
+arm into `finalized_fringe_response`, which is what gives the choice a test that needs no engine.
+
+**An anchor the responder does not hold is answered with nothing.** Not with its own latest fringe: on a
+net with finality frozen that is the genesis block, which is precisely the substitution C259 is about — the
+joiner would sync to block 0, reject everything after it, and never re-enter the sync path, with the
+operator's anchor silently ignored. Silence is retryable, names itself in both logs, and a sync that
+cannot be answered lands on the terminal state #125 added rather than on a chain the node never synced.
+The distinction that matters is between a responder that *knows the field and lacks the block* (refuses)
+and one that *does not know the field* (degrades to the ordinary answer, which no requester can prevent).
+
+**Falsifier.** `engine::node_running::tests::an_anchored_fringe_request_is_answered_with_that_block_and_its_ancestry`
+— red with the anchored branch disabled (the response root is the genesis block, not the anchor), green
+with it — over a three-block chain whose per-block fringe state is asserted to travel, plus the refusal
+above. The request's field is pinned at the wire in `models`: an anchor round-trips, `None` is not the
+zero hash, and a 31-byte one is **refused** rather than read as an absent anchor.
+
+**What this does not establish.** The end-to-end recovery — a net in the no-finality state converging to
+one head without a genesis, which is C259's close condition — is not run here. What is now in place is the
+mechanism that makes it reachable: the joiner's restored blocks carry the fringe state they were merged
+with, so the catch-up above the anchor has something to validate against. The drill that shows a wiped
+joiner reaching the tip from an anchor is the next run, and the flag's own help says what it still depends
+on instead of claiming the acceptance.
+
+## 88. C250's answer: two honest siblings cannot collide — and the three gaps that go round it
+
+**What was asked, and what "settled" turned out to mean.** Three carriers closed on 2026-10-09, each with a
+red-before test: C215's `fringe_states` record (#304), a recovery meet that fabricated a quorum (#305), a
+faucet that answered success while delivering nothing (#306). None of them named the *cause* of the
+2026-10-08 incident — four peers that disagreed about a pre-state and froze finality at 101 for thirteen
+hours. C250's close condition asked for something the register could not get: the four nodes' logs read
+together, from a capture tarball it names only by digest. **That tarball exists in one place, and it is not
+anywhere this programme can reach** — `/home/jimscarver/testnet-stall-20261009.tar.gz` on the reporting
+machine, never attached to #280, absent from git history and from LFS. A close condition naming an
+unreachable input is not an open row; it is a blocked one, and this pass separates the two.
+
+**The answer, and it is from the code rather than from the logs.** The question C215's own residue left was
+whether the colliding pair — two blocks that finalise **the same fringe set** and disagree about its value
+— can be produced by two honest nodes holding the same DAG. It cannot, for the shape #304's tests build,
+and the reason is a field identity rather than a probabilistic argument:
+
+- a block's `rejected_deploys` is **not** its own conflict scope's resolution. It is
+  `pre_state.fringe_rejected_deploys` (`casper/src/blocks/proposer/block_creator.rs:90`) — the **fringe**
+  merge's rejections, computed from the block's justifications;
+- its `fringe` and `fringe_state_hash` are not on the wire at all (`models/src/block_metadata.rs:323`
+  zeroes them; `proto_util.rs:95-97` leaves `rejected_blocks`/`rejected_senders` empty) — they are the
+  receiver's derivation in `interpreter_util.rs:766-767`, from the same merge;
+- and the whole derivation, `get_pre_state_for_parents(dag, block_store, runtime, parent_hashes,
+  block_index)`, takes **no argument for the block being built** (`multi_parent_casper.rs:105`). Two
+  siblings justify one parent set, so there is nothing left for them to differ on.
+
+What a sibling's own conflict scope resolves is a *different field* — `ParentsMergedState::rejected_deploys`
+(`multi_parent_casper.rs:307-310`) — and its only consumer in the tree is a log line
+(`proposer.rs:890`). It never reaches a block and never reaches a record. So #299's reading was right in
+the sense that matters and wrong in its conclusion: the collision is not "ordinary multi-proposer
+behaviour"; it is not honest behaviour at all, and the construction that showed it was *assigning* the
+disagreement rather than deriving it. **#304 therefore removed a carrier, not a cause.** Whatever made
+those four peers disagree happened above this map, and this pass says so rather than leaving the fix to
+take credit for a cause it never addressed.
+
+**The test that pins it.** `casper/tests/merge_determinism.rs::two_honest_siblings_contribute_one_value_to_the_fringe_they_share`
+takes the same pair of siblings — two consumers racing for the single produce `x` leaves on `@"c"`, so
+their content genuinely differs — and asks the production derivation what each would write. Both get one
+fringe, one state and one rejection set, and both records land on one key with one value in either arrival
+order. Its control is the other half: a second DAG changes a single record and the derivation **moves**, so
+the equality is a fact about two honest siblings over one DAG rather than arithmetic on a constant. The
+test's own doc comment records the rig's limit — the fringe does not advance past genesis there, so the
+shared key is the genesis fringe's, and what is exercised is the derivation's *inputs* rather than an
+advancing walk.
+
+**The residue, and it is real.** The record's key is `FringeData::fringe_hash_of(fringe)` while its value
+depends on the **base** the merge started from: `prev_fringe` supplies both `base_state` and the scope
+(`multi_parent_casper.rs:156-166, 226-238`), and the key does not name it. Two *non*-sibling blocks that
+reach one fringe set from two different bases would therefore still write two values at one key. Nothing in
+this pass excludes that, and the derivation's sensitivity to the DAG — the control above — is exactly what
+would make such a pair differ. What it would *not* be, on today's tree, is a divergence: post-#304 the join
+is commutative, associative and idempotent, so both nodes converge on one record either way; the
+consequence would be a `.min()` tie-break standing in for a real state hash rather than a fork. Stated here
+as unproduced and unrefuted, with what would decide it: a construction in which two honest blocks share a
+final fringe and differ in `prev_fringe`.
+
+**The four-log reading, and it now has a route rather than a wish.** C250's second half is carried by a row
+of its own, **C263**, whose condition names the observable (the logs read together from that tarball) and
+the route (Jim's offer, on #280, to attach it or to commit the redacted directory under
+`spec/audit/evidence/n280-merge-loses-a-write/`). Its request is posted. A blocked row that names its
+blocker is a different object from an open row nobody is on, and the register should be able to tell them
+apart at a glance.
+
+**The meet and the equivocation check, which #305 left half-accounted for.** `tools/reconcile-network.sh`
+now asks every node for the same explicitly reported finalised block and refuses when they differ; it
+computes no meet, infers no quorum from block producers, and prints no stake fraction. §2 flags a sender
+with two distinct blocks at one height — from the block API's own `sender` field, with **no signature
+check** — so it is one endpoint's word: a suspicion, not an attributable artefact, and nothing consumes it.
+The four obligations that would make a real meet honest (an authenticated endpoint→validator binding, a
+signed vote, verified ancestry, and equivocation that moves both numerator and denominator *by proof*) live
+on #287; the denominator rule is #290's part 1, where the proof and the slash belong to the node. Latent
+today because there is no denominator, live the moment one returns — **C261**.
+
+**And three documents that outlived their mechanism** — the class this programme keeps meeting. #305 changed
+§3 of the tool and left the tool's own header advertising a "stake-weighted **meet**", a validator dropped
+"**provably** … before weighing stake", and "the stake arithmetic"; left §2's banner describing a check
+"before any stake is weighed"; and left `docs/src/node/testnet.md` — the page an operator reads — still
+explaining that "the meet is computed, not chosen … a strict supermajority of stake (`stake * 3 > total *
+2`), with a provably equivocating validator's stake removed from both the numerator and the denominator".
+Found by this reconnaissance, not recorded anywhere before it. Separately, `spec/TYPE-SYSTEM.md:109-111`
+still claimed the counted classes are "compared in both directions against `tools/type-system-baseline.tsv`
+— a rise or a fall fails the build", a file C255 deleted in §80 and nothing replaces. Both corrected here.
+
+**The formal gate's cadence, resolved rather than noted.** `tools/check-lean-conformance.sh` runs only in
+`nightly.yml`, which is why the envelope row moved by hand. A per-push run of the whole gate is not
+affordable (a 16-minute cold Lean build behind ~104 serial `cargo test` invocations), but the *hole* is
+narrow: it needs the specification or the surfaces the corpora pin to move. `.github/workflows/formal-on-change.yml`
+runs the same single entry point on exactly those paths, so the two cadences cannot disagree about what
+"the specification holds" means. The nightly remains the backstop for everything else — **C262** records
+both the hole and the decision.
+
+**What this pass does not do.** It does not read the four logs (C263 is blocked on the artefact), and it
+does not claim the incident's cause is now known — only that C215's map is not it, in the sibling shape, and
+that the map cannot be a carrier either way. C249, C254, C256, C259 and C260 stay open and owned elsewhere.

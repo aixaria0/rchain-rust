@@ -135,6 +135,14 @@ The corrected rerun on `3b6d7c74a480a27502786fe7db8d44ef025df9c1` processed **20
 
 By the frozen rule above, **candidate 1 earns the first behavior-preserving ablation**. Raw JSON, compressed node logs and the mechanically-derived summary are preserved under `spec/audit/evidence/n144-soft-checkpoint/3b6d7c74a4-20261009T050515Z/`.
 
+## Measurement caveat (post-review clarification)
+
+The checkpoint timers include clock-reading overhead, and publishing the census gauges adds work
+to the DAG insert path. This observer effect has not been measured separately: the reported
+checkpoint fractions describe the instrumented runtime, rather than an exact decomposition of
+uninstrumented execution time. This clarification changes no campaign threshold, void condition,
+or archived result.
+
 ## What this does not claim
 
 - It is not a production TPS number or a multi-validator capacity plan.

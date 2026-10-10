@@ -433,6 +433,13 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
             Some(v) => to_bool(v)?,
             None => false,
         },
+        // The same rule as its neighbour above: absent means 0, i.e. a node that injects nothing.
+        merge_divergence_injection: match get_opt(h, "merge-divergence-injection") {
+            Some(v) => u8::try_from(to_i64(v)?)
+                .map_err(|_| "merge-divergence-injection must be 0..=255 (0 = off)".to_string())?,
+            None => 0,
+        },
+        sync_anchor: to_optional_string(h, "sync-anchor")?,
         effect_mode: to_optional_string(h, "effect-scheduler")?
             .unwrap_or_else(|| "dfs".to_string()),
     })

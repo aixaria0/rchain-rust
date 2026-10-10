@@ -243,6 +243,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+
+      # **A source install, not the Docker action this job used to run** (2026-10-09). That action is a
+      # container action: every run pulled `rust:1.85.0-alpine3.20` from Docker Hub anonymously, and the
+      # runner fleet's shared anonymous pull quota is not ours to rely on — it exhausted on 2026-10-09
+      # and the job failed at *image resolve* (`429 Too Many Requests … toomanyrequests`), before the
+      # repository was even checked out, on a pull request that changed no dependencies. The audit
+      # itself is unchanged; `cargo-deny` is the same tool at the version that action pinned
+      # (`deny_version="0.20.2"` in its Dockerfile), and `cache-bin` (on by default) keeps the install
+      # from being rebuilt on every run.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny --version 0.20.2
+
       - name: Audit Rust dependencies
         # `check` and not `check advisories` (AUDIT F-12). The narrower command ran only the
         # RustSec advisory check, which left every other policy in `deny.toml` — the copyleft
@@ -250,6 +269,4 @@ jobs:
         # source could arrive unnoticed. Running the whole policy immediately found `foldhash`'s
         # Zlib, which had been reaching the tree unlisted; that is now allowed by name, with its
         # reason, in `deny.toml`.
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
-        with:
-          command: check
+        run: cargo deny check

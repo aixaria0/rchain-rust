@@ -25,8 +25,8 @@ mod common;
 
 use rchain_models::casper::protocol::deploy_service::{BondInfo, DeployInfo, LightBlockInfo};
 use rchain_node::api::dto::{
-    ApiStatus, ExploratoryDeployResponse, FaucetResponse, NodeCapabilities, PooledDeploys,
-    RhoDataResponse, VersionInfo,
+    ApiStatus, ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, NodeCapabilities,
+    PooledDeploys, RhoDataResponse, VersionInfo,
 };
 use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
@@ -282,6 +282,7 @@ fn dto_by_name(name: &str) -> Value {
             admin_http: false,
             dev_mode: false,
             faucet: false,
+            faucet_remaining: 0,
         }),
         "LightBlockInfo" => to_json(&light_block()),
         "DeployInfo" => to_json(&DeployInfo {
@@ -316,6 +317,8 @@ fn dto_by_name(name: &str) -> Value {
             deploy_id: "0".into(),
             amount: 0,
             to: "0".into(),
+            status: FaucetDripStatus::Pending,
+            deploy_error: None,
         }),
         other => panic!("no DTO arm for the catalog row {other:?}"),
     }

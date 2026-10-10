@@ -53,6 +53,60 @@ pub fn message_from_block_metadata(
     })
 }
 
+/// **A fringe record is a function of its fringe key** (C215).
+///
+/// `FringeData`'s identity *is* its key: its `Hash` impl hashes `fringe_hash` and nothing else, and
+/// the Scala it mirrors says the same ("uniquely identified by the hash of its fringe hashes"). The
+/// store is therefore `key → value(key)` — and `insert` wrote it last-write-wins, so two blocks that
+/// finalise **the same fringe set** and arrive carrying different reports left a record decided by
+/// arrival order. Two nodes holding the same blocks then read different values:
+/// `merging.rs::rejections_for` turns the difference into different `accepted_finally` sets (so the
+/// merge's own outcome differs — `casper/tests/merge_determinism.rs`), and
+/// `multi_parent_casper.rs::get_pre_state_for_parents` reads `state_hash` straight into a block's
+/// pre-state, which is the `state-hash disagreement on pre-state` the TE-1 incident logged.
+///
+/// The join below is commutative, associative and idempotent, so **every arrival order reaches the
+/// same record**:
+///
+/// - the rejection sets and `fringe_diff` are **unioned** — monotone, so the merges that read them
+///   can only ever reject *more* of what some finalising block rejected, which is the fail-closed
+///   direction;
+/// - `state_hash` cannot be joined, so it is settled deterministically by taking the **smaller**. A
+///   disagreement is not a correction but two claims about one fringe, i.e. a divergence already in
+///   progress: the caller reports it, and the value carries no meaning once they differ — what
+///   matters is that every node holding these blocks reaches the same one.
+///
+/// Both arguments are records for one key: the caller reads `existing` out of the store *by* the key
+/// `incoming` was built for, so `fringe` and `fringe_hash` agree by construction and are taken from
+/// the existing record without a check.
+fn join_fringe_records(existing: &FringeData, incoming: &FringeData) -> FringeData {
+    FringeData {
+        fringe_hash: existing.fringe_hash,
+        fringe: existing.fringe.clone(),
+        fringe_diff: existing
+            .fringe_diff
+            .union(&incoming.fringe_diff)
+            .copied()
+            .collect(),
+        state_hash: existing.state_hash.min(incoming.state_hash),
+        rejected_deploys: existing
+            .rejected_deploys
+            .union(&incoming.rejected_deploys)
+            .cloned()
+            .collect(),
+        rejected_blocks: existing
+            .rejected_blocks
+            .union(&incoming.rejected_blocks)
+            .copied()
+            .collect(),
+        rejected_senders: existing
+            .rejected_senders
+            .union(&incoming.rejected_senders)
+            .cloned()
+            .collect(),
+    }
+}
+
 /// The concrete block DAG storage (port of `BlockDagKeyValueStorage`). Fringe pruning (the
 /// `BlockIndex` cache) and deploy-pool expiry run on finalization.
 pub struct BlockDagKeyValueStorage {
@@ -81,6 +135,9 @@ pub struct BlockDagKeyValueStorage {
     /// The height at and above which every inserted block has been indexed (see
     /// [`DeployerLookup::indexed_from`]); persisted under [`DEPLOYER_INDEXED_FROM_KEY`].
     deployer_indexed_from: AtomicI64,
+    /// **A devnet-only injection**: make this node's own fringe records disagree with its peers'
+    /// (default `0` = off). See [`Self::with_merge_divergence_injection`].
+    merge_divergence_injection: u8,
 }
 
 /// The deployer index's one non-key entry: the `indexed_from` height, big-endian `i64`. Deployer
@@ -109,6 +166,7 @@ impl BlockDagKeyValueStorage {
             equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
             deployer_index: None,
             deployer_indexed_from: AtomicI64::new(0),
+            merge_divergence_injection: 0,
         })
     }
 
@@ -341,6 +399,35 @@ impl BlockDagKeyValueStorage {
     ///
     /// The publish is on attach as well as per insert: a restart has a whole chain to report before
     /// it accepts its first block, and `/metrics` should say so.
+    /// **Perturb this node's own fringe records, so the merge here answers differently from its peers'**
+    /// — a devnet-only injection, and the instrument the reconciliation drill needs.
+    ///
+    /// **What it stages.** `fringe_states` is keyed by `fringe_hash_of(fringe_set)` and carries
+    /// per-block values, so two blocks that finalise the same fringe set and disagree about that set are
+    /// one key with one winner, last write first (`insert` below). On an honest net the records agree, the
+    /// winner does not matter, and that is why the ambiguity was never noticed; when two blocks *do*
+    /// disagree, the node that saw one of them last reads that one's rejections and the node that saw the
+    /// other last reads the other's, and their merges produce different states. That is C215, reproduced
+    /// in process by `casper/tests/merge_determinism.rs::two_arrival_orders_of_one_block_set_leave_different_fringe_caches`
+    /// and `merging::tests::two_caches_of_one_block_set_reject_differently`.
+    ///
+    /// **What it injects.** With `n > 0`, every fringe record this node writes gains one synthetic
+    /// rejected-deploy id derived from `n` — so four nodes with four values hold four *different* records
+    /// at any key they share, the collision bites on every arrival order rather than only when honest
+    /// nodes happen to disagree, and four different merged states follow at the first height where the
+    /// merge reads them. It is the *cause* that is injected, not the symptom: nothing fabricates a state
+    /// hash or a block, and the divergence that follows is computed by the real merge from real records.
+    ///
+    /// **It is self-disclosing.** Every perturbed write prints a line naming the block and the key, so a
+    /// node that has been asked to do this cannot be mistaken for one that has gone wrong on its own —
+    /// the same standard the equivocation injection holds itself to. The node refuses to arm it without
+    /// `--dev-mode` (see `node/src/configuration`), because a chain that forks on purpose on a real
+    /// network is indistinguishable, from every other node's side, from one that forked by accident.
+    pub fn with_merge_divergence_injection(mut self, injection: u8) -> Self {
+        self.merge_divergence_injection = injection;
+        self
+    }
+
     pub fn with_metrics(mut self, metrics: Arc<dyn Metrics + Send + Sync>) -> Self {
         self.metrics = metrics;
         // Synchronous, and no guard is held here — `try_read` rather than an await, because this is
@@ -510,16 +597,21 @@ impl BlockDagKeyValueStorage {
         }
     }
 
-    /// Expire deploys from the pool whose `valid_after_block_number` is older than the deploy
-    /// lifespan (port of `removeExpiredFromPool`). Without this the pool grows without bound and
-    /// stale deploys are re-proposed.
+    /// Expire deploys the current tip already rejects (`valid_after <= latest - lifespan`).
+    /// The proposer applies the same predicate at the *next* candidate height, so a deploy may remain
+    /// in the pool for one final height while still being excluded from a block that would reject it.
+    /// Keeping the pool GC conservative avoids deleting a deploy before the validator considers it
+    /// expired; proposer selection is the actual next-block gate.
     async fn expire_deploys(&self, latest_block_number: i64) -> Result<(), String> {
         let pooled = self.deploy_store.to_map().await?;
         let expired: Vec<DeployId> = pooled
             .iter()
             .filter(|(_, d)| {
-                latest_block_number - d.data.valid_after_block_number
-                    > crate::multi_parent_casper::DEPLOY_LIFESPAN
+                crate::validate::deploy_expired_at_block(
+                    d.data.valid_after_block_number,
+                    latest_block_number,
+                    crate::multi_parent_casper::DEPLOY_LIFESPAN,
+                )
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -695,7 +787,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             fringe_seen.difference(&prev_seen).copied().collect()
         };
 
-        let fringe_data = FringeData {
+        let mut fringe_data = FringeData {
             fringe_hash,
             fringe: block_metadata.fringe.clone(),
             fringe_diff: fringe_diff.clone(),
@@ -705,6 +797,53 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             rejected_deploys: block.rejected_deploys.clone(),
             rejected_blocks: block.rejected_blocks.clone(),
             rejected_senders: block.rejected_senders.clone(),
+        };
+
+        // **The injection** — see `with_merge_divergence_injection`. One synthetic rejected deploy, its
+        // one byte the injection number, added to every record this node writes: records that would
+        // otherwise agree now differ, so the `fringe_states` collision below bites on every arrival order
+        // instead of only when honest nodes happen to disagree. The id is a function of the injection
+        // alone, so the perturbation is deterministic and every node is distinguishable in the log.
+        if self.merge_divergence_injection > 0 {
+            fringe_data
+                .rejected_deploys
+                .insert(vec![0xd1, self.merge_divergence_injection]);
+            eprintln!(
+                "[merge-divergence-injection {}] perturbed the fringe record for block {} at key {:?}: \
+                 one synthetic rejected deploy added, so this node's merge answers differently from a peer \
+                 that saw a different block finalising the same fringe last (C215's staging instrument)",
+                self.merge_divergence_injection,
+                block.block_hash.to_hex(),
+                fringe_hash
+            );
+        }
+        // **C215: the value at a fringe key must be a function of that key.** A record already stored
+        // under this key is joined with, not overwritten — see `join_fringe_records`. Read from the
+        // store rather than from the in-memory map because the store is the single source of truth
+        // (`rebuild_representation` reloads from it), and the two are otherwise identical.
+        let fringe_data = match self
+            .fringe_data_store
+            .get(&[fringe_hash])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+        {
+            Some(existing) if existing != fringe_data => {
+                if existing.state_hash != fringe_data.state_hash {
+                    eprintln!(
+                        "[fringe-divergence] block {} finalises a fringe already recorded with a \
+                         different state {} vs {} — two blocks disagree about one fringe's state. \
+                         The smaller is kept so that every node holding these blocks holds the same \
+                         record, and the rejection sets are unioned (C215)",
+                        block.block_hash.to_hex(),
+                        existing.state_hash.to_hex(),
+                        fringe_data.state_hash.to_hex(),
+                    );
+                }
+                join_fringe_records(&existing, &fringe_data)
+            }
+            _ => fringe_data,
         };
         self.fringe_data_store
             .put(&[(fringe_hash, fringe_data.clone())])
@@ -1247,6 +1386,27 @@ mod tests {
             sig: id.to_le_bytes().to_vec(),
             sig_algorithm: "secp256k1".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn pool_drops_a_deploy_before_the_first_block_that_would_reject_it() {
+        let storage = build_storage().await;
+        let mut deploy = deploy_with_id(1);
+        deploy.data.valid_after_block_number = 1;
+        let id = deploy.sig.clone();
+        storage.add_deploy(deploy).await.unwrap();
+
+        storage.expire_deploys(50).await.unwrap();
+        assert!(
+            storage.contains_deploy_in_pool(&id).await.unwrap(),
+            "the deploy is still valid for block 50"
+        );
+
+        storage.expire_deploys(51).await.unwrap();
+        assert!(
+            !storage.contains_deploy_in_pool(&id).await.unwrap(),
+            "block 51 validation rejects valid_after=1 at lifespan 50, so the proposer pool must remove it before block 51 can select it"
+        );
     }
 
     #[tokio::test]

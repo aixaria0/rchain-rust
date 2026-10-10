@@ -1,0 +1,16 @@
+== after the store restore: heights, finality, and the per-height hashes ==
+40403: h 3 stall none
+41403: h 3 stall none
+42403: h 3 stall none
+43403: h 3 stall none
+
+== last-finalised-block on each ==
+40403: "Finalized fringe is not available."
+41403: "Finalized fringe is not available."
+42403: "Finalized fringe is not available."
+43403: "Finalized fringe is not available."
+
+== hashes per height, all four ==
+h=0: c01a6091 | c01a6091 | c01a6091 | c01a6091 | 
+h=1: 116d0679 | 116d0679 | 116d0679 | 116d0679 | 
+h=2: 9967518a | 9967518a | 9967518a | 9967518a | 

@@ -1362,12 +1362,15 @@ pub async fn setup_node_program(
             }
             _ => Vec::new(),
         };
-    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
-        routing.clone(),
-        primary_parts.transaction_api.clone(),
-        faucet_deployer_key,
-        primary_id.to_string(),
-    ));
+    let web_api: Arc<dyn WebApi> = Arc::new(
+        WebApiImpl::new(
+            routing.clone(),
+            primary_parts.transaction_api.clone(),
+            faucet_deployer_key,
+            primary_id.to_string(),
+        )
+        .with_persistent_faucet_ledger(conf.storage.data_dir.join("faucet-ledger.json"))?,
+    );
     // The PoS read (AUDIT C148): the primary shard's live native state through the runtime manager
     // that owns it, plus the status API for the head's height — one definition of "latest block".
     let pos_read: Arc<dyn PosReadApi> = Arc::new(ShardPosRead::new(
@@ -1862,6 +1865,7 @@ async fn setup_shard_runtime(
         incoming_blocks_tx,
         spec.clone(),
         !conf.protocol_client.disable_lfs,
+        conf.casper.sync_anchor.clone(),
         conf.protocol_server.disable_state_exporter,
         parts.validator_identity_opt.clone(),
         conf.standalone,
@@ -2065,6 +2069,9 @@ pub async fn setup_shard(
         .map_err(|e| e.to_string())?
         // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
         .with_metrics(metrics)
+        // `0` (the default, and the only value a non-dev node can hold — see
+        // `check_merge_divergence_injection`) injects nothing.
+        .with_merge_divergence_injection(conf.casper.merge_divergence_injection)
         .with_deployer_index(deployer_index)
         .await?,
     );

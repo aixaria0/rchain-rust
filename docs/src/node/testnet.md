@@ -97,14 +97,28 @@ both sign the same `revVault` transfer.
 
 ```
 POST https://<node>/api/faucet   {"address": "<your REV address>"}
-→ {"deployId":"3045…","amount":30000000,"to":"1111…"}        # 30,000,000 drops = 0.3 REV
+→ {"deployId":"3045…","amount":30000000,"to":"1111…",
+   "status":"pending","deployError":null}                    # 30,000,000 drops = 0.3 REV
 ```
+
+**Read `status`.** A submission is not a delivery, and the response now says which it is: `pending`
+(a deploy was submitted, outcome not yet known — poll `deploy-status/{deployId}`), `resubmitted` (the
+same, except it is the original signed drip replayed after a crash, so the ID is unchanged), or
+`failed` — the drip named by `deployId` was processed **with an error** and nothing was delivered, with
+the reason in `deployError`. A `failed` response has submitted nothing new, so call again to retry; the
+allocation was refunded either way. This is the field that would have made an **unfunded** signing key
+visible: signing with a key whose vault is empty produces a deploy that is accepted and then fails the
+phlo pre-charge, which used to be indistinguishable from a drip on its way.
 
 That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
 needs to fund a fresh address. It is a **dev-mode** endpoint: the node must be started with
 `--dev-mode --deployer-private-key`, and it signs the transfer from that key's vault. **Without the key
-the route is not mounted at all, so a keyless node answers `404`** — not a 400 with a message — and it
-reports `faucet: false` in its capability list.
+the route is not mounted at all, so a keyless node answers `404`**, and it reports `faucet: false` in
+its capability list. `faucetRemaining` reports the remaining allocation in drops, and a dry faucet
+reports `faucet: false`. The 10,000 REV allocation and unresolved deploy reservations
+are stored in the node's data directory so ordinary process restarts preserve both. After a crash,
+an unresolved drip is retried with its original signed deploy and deploy ID; the reservation remains
+until its chain outcome can be reconciled.
 
 | node | faucet |
 |---|---|
@@ -118,7 +132,8 @@ error); and a drip is only visible in a **finalised** block, so read the recipie
 two quick requests earn `HTTP 429 "faucet rate limit exceeded"`.
 **This net's faucet was off until 2026-10-06, and this table said so**; it is on now, signed by a key whose
 vault holds REV ([#247](https://github.com/rchain-community/rchain-rust/issues/247) is the story of the one
-that was not).
+that was not). This row describes the currently deployed ten-drips-per-process policy; #246 changes
+eligibility to require the recipient's finalized balance to remain below one drip.
 
 **In a room: `/facil faucet`.**
 
@@ -128,8 +143,9 @@ A quantum-os facilitator started with `--key <funded deploy key>` answers
 /facil faucet <your REV address>     # or just /facil faucet, once it has remembered your address
 ```
 
-and signs a fixed **10 REV** transfer to it. It remembers the address per peer, has no rate limit — a
-faucet on a test system is meant to be asked repeatedly — and refuses to move anything if it was started
+and signs a fixed **10 REV** transfer to it. This facilitator surface is separate from the node HTTP
+faucet; do not describe the node faucet as unlimited: its public HTTP surface has a fixed-window rate
+limiter and its own address/total budgets. The facilitator refuses to move anything if it was started
 without a key. Plain English works too: `/facil ask give me some test rev` routes to the same function,
 never to an LLM decision to move funds.
 
@@ -294,6 +310,40 @@ the others are arithmetic on the same numbers, and are labelled as such.
 | **two** validators (50 %) | *arithmetic, not yet run:* 500 of 1000 is not `> ⅔`, so the fringe cannot advance however many blocks are produced | **one** of the two coming back restores 75 % and the chain finalises again. Nothing is lost while they are away: the state is on disk, and the pool still counts their stake |
 | **all four** | production stops; every node's state sits unchanged on disk | stop and start all four: each replays its own store and the chain resumes with no loss (this exact restart was measured on the previous shape on 2026-10-04: h 59 → 78, finality 53 → 72 after all nodes were restarted) |
 | a validator's **key or host** permanently | as above, while its stake still sits in the pool | restore that validator's `validator.key` and data directory, or its host from the provider's backup. Because no stake exceeds a quarter, **no single loss is fatal** — but two simultaneous permanent losses are, since 50 % can never reach a quorum |
+| the chain **diverges** — several heads, finality frozen | nothing in-protocol recovers it: `docs/src/spec/testnet-acceptance.md` §TE-1 states the verdict as *"Recovery from the divergent finality itself: none."*, and the live occurrence is witnessed at `spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md` | **the store-level restore** — see below. It is the only recovery demonstrated for this state |
+
+### Recovering a diverged chain
+
+The last row is the one recovery demonstrated for a chain whose finality has frozen, and it is worth
+stating what it does and does not do, because **it is not a sync**.
+
+- **It copies state.** `tools/reconcile-network.sh --restore-from-master` stops the whole network — the
+  survivor included, because a filesystem-level copy of a live LMDB is a torn snapshot — and copies the
+  survivor's *chain state* (`blockstorage`, `dagstorage`, `rspace/history`, `rspace/cold`) onto the other
+  nodes. It **never copies identity**: a joiner holding the survivor's key would be an equivocator, and no
+  agreement check would see it until the two later signed conflicting blocks.
+- **It is a fiat, and the tool prints that before it applies.** The joiners adopt the survivor's view of the
+  chain, including the blocks above the agreed anchor that only the survivor accepted — so running it is the
+  operator choosing a winner. That is why the plan is printed first, why `--apply` is required, and why the
+  tool refuses outright when its nodes do not already agree: a node with no usable finalised block, or nodes
+  reporting different heights or hashes, stop it at the plan phase.
+- **The anchor is required, not computed.** Every listed node must report the **same** finalised block —
+  height *and* hash — or the tool refuses and says what differs. That is deliberate, and it is a limit
+  rather than a design flourish: a block producer is not a validator vote, and the heights API cannot prove
+  stake-weighted finalised ancestry, so no quorum is inferred from it. A stake-weighted meet would need
+  reports authenticated to bonded validators, carrying a signed vote, with verified ancestry — issue
+  [#287](https://github.com/rchain-community/rchain-rust/issues/287)'s design, which is not implemented here.
+- **Its equivocation check is a report, not a proof.** The tool's section 2 flags a sender with two distinct
+  blocks at one height, read from the block API's own `sender` field. It verifies no signature and binds no
+  endpoint to a bonded key, so what it prints is a suspicion to chase; nothing is dropped or reweighted on
+  it, and the proof — and the slash — belong to the node ([#290](https://github.com/rchain-community/rchain-rust/issues/290)'s
+  part 1). A validator that is merely quiet, slow or absent keeps its weight: silence is not evidence.
+- **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated per block
+  with their signatures, and their owners re-submit. It is also **not** the protocol answer — a node-side
+  path that syncs to an agreed anchor exists in part (`--sync-anchor`) and does not yet catch up
+  (register row **C259**(a)); until it does, this is the mechanism an operator has.
+- **Nothing is deleted.** Data directories are moved aside or tarred before anything is removed, and the
+  genesis inputs are preserved across it — a joiner without them cannot validate what it pulls.
 
 What this shape gives up is nothing structural: with no stake above a quarter, the tolerance is
 symmetric — the property a validator set needs before the *join and leave* questions can be answered on
@@ -377,7 +427,7 @@ the `deployer` key is **not** among them, and its vault reads `0`.
 | the developer keys in `scripts/localnet/pk.txt` | funded accounts for tooling; not part of the net's operation |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
-here — they get REV from the faucet; this table is the answer to "which address funds them".
+here — they get REV from the faucet.
 
 ## Operating the nodes
 

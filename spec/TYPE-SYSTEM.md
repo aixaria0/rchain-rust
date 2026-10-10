@@ -106,10 +106,12 @@ without being compared to anything — so **variable indexing, slice ranges and 
 all**, and a green run was evidence about four classes being read as evidence about totality. The
 classes now include `index` (variable indexing and slice ranges), `div`, and `overflow` (unguarded
 arithmetic, scoped to the refinement files, where an unchecked operation is a refinement leaving its
-own domain rather than a design choice), and every counted class is compared in both directions
-against `tools/type-system-baseline.tsv` — a rise or a fall fails the build until the same commit says
-so. **The counts are not repeated here**: they are the baseline file's, by construction, and a count
-written twice is a count checked once. Two limits are worth stating rather than implying: a counted class is a **census, not a
+own domain rather than a design choice). The counted classes are **reported, not enforced**: from
+2026-09-27 the ratchet stopped failing the build, and on 2026-10-09 its baseline
+(`tools/type-system-baseline.tsv`) was **deleted** — it had drifted 128 sites below what the gate
+measures, nothing read it for a verdict, and its only effect was to print a comparison against a
+number that was wrong (AUDIT **C255**, pass §80). The run now prints each class's measured count, and
+says what that print does and does not prove. Two limits are worth stating rather than implying: a counted class is a **census, not a
 judgement** (it says a site arrived, not that it is wrong — the `EDiv`/`EMod` arms it flagged on its
 first run are guarded one line above), and the unscoped overflow question belongs to
 `clippy::arithmetic_side_effects`, not to a grep. `#print axioms` on the Lean side is the other half of

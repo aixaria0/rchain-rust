@@ -1,0 +1,95 @@
+# The formal gate, on the change that can make it stale.
+#
+# `tools/check-lean-conformance.sh` runs in `nightly.yml` — it is a Lean build (16 minutes cold), a Coq
+# `make`, and ~104 serial `cargo test` invocations, which is why it is not a step of every push. The hole
+# that leaves is narrow and real, and it was measured: on 2026-10-09 an envelope row moved
+# (`FaucetResponse` gained two keys) and the corpora had to be re-emitted **by hand**, because nothing in
+# the per-push path compares `spec/conformance/*.tsv` against the Lean that emits it. If that hand-run is
+# forgotten, the branch merges green and the corpus is stale until the next 03:37 — and the failure then
+# arrives detached from the change that caused it.
+#
+# So this workflow runs the *same single entry point* on the pull requests that can invalidate it: the
+# checked surface of the specification, the corpora, the Rust surfaces the corpora pin, and the gate's own
+# tooling — **not** the audit's register, which cannot make a corpus stale. Everything else is still
+# covered by `nightly.yml` on its schedule; this one deliberately does not try to be that backstop, and it
+# does not list itself, because a 30-minute run per YAML tweak is the cost it exists to avoid.
+#
+# Why these paths, and nothing wider: the gate re-emits each corpus from its Lean definition and refuses
+# a stale one, then runs the mapped Rust consumer 1:1 (`check-lean-conformance.sh`'s layer → test table).
+# So the surface is (a) `spec/` in full, (b) the consumer tests, and (c) the node surfaces whose shape the
+# envelope layer pins — a change there without the Lean and the corpus moving is exactly the drift this
+# exists to catch.
+name: Formal gate on the changed surface
+
+on:
+  pull_request:
+    # **The formal surface, not the whole of `spec/`.** `spec/audit/**`, `spec/findings.tsv` and
+    # `spec/AUDIT.md` are the audit's own record: editing a register row cannot make a corpus stale, and
+    # most changes in this repository are exactly that. `spec/**` made this job fire on nearly every pull
+    # request and spend 30 minutes proving nothing about it (found on #308, where it fired for a
+    # register-only diff). What is listed is what the gate reads or re-emits.
+    paths:
+      - "spec/Rchain/**"
+      - "spec/conformance/**"
+      - "spec/coq/**"
+      - "spec/laws.tsv"
+      - "spec/LAWS.md"
+      - "spec/lean-toolchain"
+      - "spec/lakefile.lean"
+      - "tools/check-lean-conformance.sh"
+      - "tools/emit-lean-corpus.sh"
+      - "Makefile"
+      - "node/tests/lean_*.rs"
+      - "rholang/tests/lean_*.rs"
+      - "node/src/api/**"
+      - "node/src/web/**"
+  workflow_dispatch:
+
+permissions:
+  # Least privilege, stated rather than defaulted (AUDIT C137).
+  contents: read
+
+concurrency:
+  group: formal-on-change-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  formal:
+    # The oracle is the mathematical specification (`AGENTS.md`'s *Prime directive*). This job is the
+    # per-PR half of the same gate `nightly.yml` owns on a schedule: one implementation, two cadences,
+    # so the two cannot disagree about what "the specification holds" means.
+    name: Formal specification (Lean, Coq, conformance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Coq
+        # **Bounded, because an unbounded apt holds the job.** On 2026-10-09 this step stalled for 21
+        # minutes on a pull request while the identical step of the scheduled run completes in 20
+        # seconds: a runner whose `apt-get` hangs burns the job's whole 60-minute timeout, and the run
+        # then reads as "the Lean build is slow" rather than "a runner is stuck". A timeout turns that
+        # into a named failure in minutes, which is the difference between a diagnosis and a mystery.
+        run: sudo timeout 300 apt-get update && sudo timeout 900 apt-get install --no-install-recommends -y coq
+
+      - name: Install protobuf compiler
+        run: sudo timeout 300 apt-get update && sudo timeout 900 apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+
+      - name: Install elan (the Lean toolchain comes from spec/lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the mathlib cache
+        working-directory: spec
+        run: lake exe cache get
+
+      - name: Formal gate
+        run: tools/check-lean-conformance.sh

@@ -1008,6 +1008,16 @@ pub struct FinalizedFringeRequest {
     /// node cannot derive for itself (#139). A responder that does not know the field ignores it, so
     /// a mixed pair degrades to the pre-#139 behaviour rather than failing.
     pub include_fringe_metadata: bool,
+    /// **The block the requester named as the sync's root** (C259). `None` is an ordinary fringe
+    /// request. `Some` asks the responder to build the fringe — and its `ancestry` — from *that*
+    /// block rather than from its own latest fringe, which is what a recovery sync needs: a peer with
+    /// finality frozen has no fringe to offer, and the answer to an ordinary request in that state is
+    /// the genesis block, so a joining node would sync to block 0 and reject everything after it.
+    ///
+    /// The field is a bounded addition in the #139 shape: a responder that does not know it decodes
+    /// the request as an ordinary one and answers with its latest fringe (or genesis on a frozen
+    /// net), which is the pre-C259 behaviour rather than a failed sync.
+    pub anchor: Option<BlockHash>,
 }
 
 /// A fork-choice tip request (port of `ForkChoiceTipRequest`).
@@ -1046,18 +1056,30 @@ pub struct BlockHashMessage {
 }
 
 impl FinalizedFringeRequest {
-    pub fn from_proto(m: &FinalizedFringeRequestProto) -> Self {
-        FinalizedFringeRequest {
+    /// Fallible because `anchor` is a [`BlockHash`] refinement: a wire value that is not 32 bytes is
+    /// refused here rather than silently read as "no anchor", which would turn a corrupt request into
+    /// a different request instead of an error.
+    pub fn from_proto(m: &FinalizedFringeRequestProto) -> Result<Self, crate::errors::ModelsError> {
+        Ok(FinalizedFringeRequest {
             identifier: m.identifier.clone(),
             trim_state: m.trim_state,
             include_fringe_metadata: m.include_fringe_metadata,
-        }
+            anchor: if m.anchor.is_empty() {
+                None
+            } else {
+                Some(BlockHash::try_from(m.anchor.as_slice())?)
+            },
+        })
     }
     pub fn to_proto(&self) -> FinalizedFringeRequestProto {
         FinalizedFringeRequestProto {
             identifier: self.identifier.clone(),
             trim_state: self.trim_state,
             include_fringe_metadata: self.include_fringe_metadata,
+            anchor: self
+                .anchor
+                .map(|h| h.as_bytes().to_vec())
+                .unwrap_or_default(),
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1066,7 +1088,7 @@ impl FinalizedFringeRequest {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
         let proto = FinalizedFringeRequestProto::decode(bytes)
             .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
-        Ok(FinalizedFringeRequest::from_proto(&proto))
+        FinalizedFringeRequest::from_proto(&proto)
     }
 }
 
@@ -1378,11 +1400,7 @@ impl CasperMessage {
                 FinalizedFringe::from_proto(m)?,
             )),
             CasperMessageProto::FinalizedFringeRequest(m) => Ok(
-                CasperMessage::FinalizedFringeRequest(FinalizedFringeRequest {
-                    identifier: m.identifier.clone(),
-                    trim_state: m.trim_state,
-                    include_fringe_metadata: m.include_fringe_metadata,
-                }),
+                CasperMessage::FinalizedFringeRequest(FinalizedFringeRequest::from_proto(m)?),
             ),
             CasperMessageProto::StoreItemsMessageRequest(m) => Ok(
                 CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest::from_proto(m)?),
@@ -1410,11 +1428,7 @@ impl CasperMessage {
             }
             CasperMessage::FinalizedFringe(m) => CasperMessageProto::FinalizedFringe(m.to_proto()),
             CasperMessage::FinalizedFringeRequest(m) => {
-                CasperMessageProto::FinalizedFringeRequest(FinalizedFringeRequestProto {
-                    identifier: m.identifier.clone(),
-                    trim_state: m.trim_state,
-                    include_fringe_metadata: m.include_fringe_metadata,
-                })
+                CasperMessageProto::FinalizedFringeRequest(m.to_proto())
             }
             CasperMessage::StoreItemsMessageRequest(m) => {
                 CasperMessageProto::StoreItemsMessageRequest(m.to_proto())
@@ -1544,6 +1558,7 @@ mod tests {
                 identifier: "peer-1".to_string(),
                 trim_state: true,
                 include_fringe_metadata: true,
+                anchor: None,
             }),
             CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest {
                 start_path: vec![(Blake2b256Hash::from_bytes([4u8; 32]), Some(2))],
@@ -1754,19 +1769,50 @@ mod tests {
             identifier: "joiner".to_string(),
             trim_state: false,
             include_fringe_metadata: true,
+            anchor: Some(block_hash(5)),
         };
         let decoded = FinalizedFringeRequest::from_bytes(&req.to_bytes()).unwrap();
         assert_eq!(decoded, req, "and so must the flag that asks for it");
+        assert_eq!(
+            decoded.anchor,
+            Some(block_hash(5)),
+            "and the anchor the recovery sync names (C259)"
+        );
 
-        // The default is **off**: a requester that does not know the field sends `false`, and the
-        // responder then sends no ancestry — which is what makes this a non-breaking addition rather
-        // than a change every node has to make at once.
+        // A **request without an anchor** round-trips as one: the two states are distinct on the wire,
+        // so an ordinary fringe request cannot be read as a recovery sync that named block 0.
+        let plain = FinalizedFringeRequest {
+            anchor: None,
+            ..req.clone()
+        };
+        let decoded = FinalizedFringeRequest::from_bytes(&plain.to_bytes()).unwrap();
+        assert_eq!(decoded.anchor, None, "no anchor is not the zero hash");
+
+        // **An anchor that is not a block hash is refused, not read as an absent one.** `anchor` is a
+        // refinement, and a 31-byte value is a corrupt request rather than an ordinary one — reading it
+        // as `None` would silently answer a different question (C259's whole failure mode).
+        let short = FinalizedFringeRequestProto {
+            identifier: "old".to_string(),
+            trim_state: false,
+            anchor: vec![0u8; 31],
+            ..Default::default()
+        };
+        assert!(
+            FinalizedFringeRequest::from_proto(&short).is_err(),
+            "a malformed anchor must not decode as an ordinary fringe request"
+        );
+
+        // The defaults are **off**: a requester that does not know either field sends `false`/empty,
+        // and the responder then sends no ancestry and answers from its own latest fringe — which is
+        // what makes these non-breaking additions rather than a change every node makes at once.
         let proto = FinalizedFringeRequestProto {
             identifier: "old".to_string(),
             trim_state: false,
             ..Default::default()
         };
-        assert!(!FinalizedFringeRequest::from_proto(&proto).include_fringe_metadata);
+        let old = FinalizedFringeRequest::from_proto(&proto).expect("an ordinary request");
+        assert!(!old.include_fringe_metadata);
+        assert_eq!(old.anchor, None);
     }
 
     #[test]

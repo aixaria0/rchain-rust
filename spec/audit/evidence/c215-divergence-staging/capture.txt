@@ -1,0 +1,28 @@
+== node version ==
+{'api': '1', 'node': 'RChain Node 0.1.0 (da032f9e7307e3bb26d9382e4399a1d9de37fee0)'}
+
+== heights ==
+40403 h 4 stall a layer exists but its supporting stake is not a supermajority — 0 of 400 (0 full partition(s) among 0 candidate(s))
+41403 h 3 stall a layer exists but its supporting stake is not a supermajority — 0 of 400 (0 full partition(s) among 0 candidate(s))
+42403 h 3 stall a layer exists but its supporting stake is not a supermajority — 0 of 400 (0 full partition(s) among 0 candidate(s))
+43403 h 3 stall a layer exists but its supporting stake is not a supermajority — 0 of 400 (0 full partition(s) among 0 candidate(s))
+
+== the injection line, per node ==
+devnet-bootstrap       merge-divergence-injection 1] perturbed the fringe record for block c01a6091fbde1a1098e7791d29818e3da81380da87f142cc74c98b2ae5d2face
+devnet-validator-1     merge-divergence-injection 2] perturbed the fringe record for block c01a6091fbde1a1098e7791d29818e3da81380da87f142cc74c98b2ae5d2face
+devnet-validator-2     merge-divergence-injection 3] perturbed the fringe record for block c01a6091fbde1a1098e7791d29818e3da81380da87f142cc74c98b2ae5d2face
+devnet-validator-3     merge-divergence-injection 4] perturbed the fringe record for block c01a6091fbde1a1098e7791d29818e3da81380da87f142cc74c98b2ae5d2face
+
+== the disagreements, per node (first and last) ==
+--- devnet-bootstrap (9 total)
+2026-10-09T16:12:40.815Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 3301c6cef62ba1a62986533f18c15dbdac6e9409a3d704c31023b1afcadf0492 by 04dbe32c — this node's merge comput
+2026-10-09T16:12:47.006Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 eeb291945fa962ca0761ab5f6104bc2b8ca6c21e0d3ce55399ada6769680c70a by 04d8b6c3 — this node's merge comput
+--- devnet-validator-1 (5 total)
+2026-10-09T16:12:08.821Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 195ddc5ec5a418fc6e4f7c81ec74b8a09142dafc6cb88fa16a70c9a863c713f2 by 04f700a4 — this node's merge comput
+2026-10-09T16:13:15.477Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 195ddc5ec5a418fc6e4f7c81ec74b8a09142dafc6cb88fa16a70c9a863c713f2 by 04f700a4 — this node's merge comput
+--- devnet-validator-2 (5 total)
+2026-10-09T16:12:08.779Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 195ddc5ec5a418fc6e4f7c81ec74b8a09142dafc6cb88fa16a70c9a863c713f2 by 04f700a4 — this node's merge comput
+2026-10-09T16:13:15.438Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 195ddc5ec5a418fc6e4f7c81ec74b8a09142dafc6cb88fa16a70c9a863c713f2 by 04f700a4 — this node's merge comput
+--- devnet-validator-3 (5 total)
+2026-10-09T16:12:08.738Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 195ddc5ec5a418fc6e4f7c81ec74b8a09142dafc6cb88fa16a70c9a863c713f2 by 04f700a4 — this node's merge comput
+2026-10-09T16:13:15.403Z WARN  [casper.interpreter.validate] state-hash disagreement on rejected-deploys: block #1 195ddc5ec5a418fc6e4f7c81ec74b8a09142dafc6cb88fa16a70c9a863c713f2 by 04f700a4 — this node's merge comput
