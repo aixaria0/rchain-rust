@@ -43,7 +43,10 @@ left blank, and the debt is counted in §7 where a check reads it.
   `casper/src/merging.rs:274`) and `NoAdvance<S>` + `describe_no_advance`
   (`block-storage/src/dag/finalizer.rs:61`, `casper/src/interpreter_util.rs:428`) are the shape.
 - **R3 — hard reset, then catch up.** Detect a node that cannot self-heal, say so, then reset to a
-  known-safe state and re-sync. **This rung does not exist in this tree for a running node** — see §5.
+  known-safe state and re-sync. **The rung landed 2026-10-10 for the per-node case** (#320, register
+  C274): behind `casper.self-reset`, a spent restore budget rewinds to the last finalised block, drops
+  the bodies, resets the runtime and restarts the catch-up walk. The net-wide case is the reconciliation
+  utility (§5). What is still owed on the rung is named in F-U5-01's row and C274.
 - **R4 — runbook.** Nothing better is affordable yet; the operator step is documented and made
   observable.
 
@@ -165,13 +168,25 @@ for a second pass for exactly that reason. The folds are its folds. **This node 
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U5-01** | NO | **There is no reset-and-resync path for a running node.** `NodeSyncing` is entered only at boot, when the DAG is empty; once running, a permanent divergence has no way back but deleting the shard data dir by hand | the boot guard is an `if` chain — `repr.dag_set.is_empty() && standalone` → genesis, `else if repr.dag_set.is_empty()` → `NodeSyncing::new` (`casper/src/engine/node_launch.rs:249`, `:265`), `else` → straight to `NodeRunning` (`:316`) — and `NodeSyncing::new` is called **nowhere else**; a running node that diverges stays in `NodeRunning` and permanently refuses the block and its descendants (`casper/src/multi_parent_casper.rs:883`, neglected-invalid rule), while `populate_dag` is reachable only from the sync task the boot branch starts (`casper/src/engine/node_syncing.rs:515`) | loud (`log.warn` per refused block) and **permanent** — the node keeps serving and never rejoins the chain | Terminal / Unrestorable | **R3** (owner: **#320**) | owed: a test that a diverged running node re-enters sync |
+| **F-U5-01** | NO | **There is no reset-and-resync path for a running node.** `NodeSyncing` is entered only at boot, when the DAG is empty; once running, a permanent divergence has no way back but deleting the shard data dir by hand | the boot guard is an `if` chain — `repr.dag_set.is_empty() && standalone` → genesis, `else if repr.dag_set.is_empty()` → `NodeSyncing::new` (`casper/src/engine/node_launch.rs:249`, `:265`), `else` → straight to `NodeRunning` (`:316`) — and `NodeSyncing::new` is called **nowhere else**; a running node that diverges stays in `NodeRunning` and permanently refuses the block and its descendants (`casper/src/multi_parent_casper.rs:883`, neglected-invalid rule), while `populate_dag` is reachable only from the sync task the boot branch starts (`casper/src/engine/node_syncing.rs:515`) | loud (`log.warn` per refused block) and **permanent** — unless the node resets itself. **The acting half landed 2026-10-10 (#320, register C274)**: with `casper.self-reset` on, a spent restore budget raises a reset — rewind to the last finalised block, remove the dropped bodies, reset the runtime to that state, restart the catch-up walk from the anchor (row 168's numbers are the dry run's, now also the action's). It refuses where it cannot name a height, and stays off by default. **Still owed**: the engine-level test (no harness drives `apply`), the persisted marker that closes the crash window between the rewind and the re-sync, and the Lean `rewindStep` + companion theorem | Terminal / Unrestorable | **R3** (owner: **#320**) | owed: a test that a diverged running node re-enters sync, and the marker that survives a restart |
 | **F-U5-02** | REVERSE | **The divergence has no inverse.** The refusal rules are absorbing: the only local undo is capped at three attempts and then the refusal is permanent for the process lifetime | `restore_is_warranted` requires `stored.restore_attempts < RESTORE_ATTEMPT_LIMIT` (`casper/src/multi_parent_casper.rs:478`, the constant `= 3` at `:434`), the count is persisted so it survives restart (`:430`), and `restore_divergent_justifications` (`:652`) is the only rule that could clear the refusal — after three it never fires again | loud, bounded, and then **absorbing** (C173's shape: `Persistent`) | Terminal / Persistent | **R3** | spec/Rchain/Casper/Stranding.lean::the_refusal_is_persistent — *the guard on the fix*: the theorem is stated over the rule set **without** a restoring rule, so adding one (which is what R3 is) reddens it by construction |
 
 **F-U5-02 is the programme's sharpest instrument.** The Lean module is named `Stranding.lean`, and its
 own comment records that `the_refusal_is_persistent` is *false by construction* once a step unmarks in
 the relation. So the R3 fix has a falsifier that is red on the old behaviour **before it is written** —
 which is the plan's verification requirement, already satisfied.
+
+**Corrected 2026-10-10 (#320).** The sentence above was written as though R3's *first* fix would do the
+reddening. It did not, and it cannot: the reddening came from **#125's restoring rule**
+(`restore_divergent_justifications`, modelled as `restoreStep`, the exact inverse of `strandStep`), and
+`the_refusal_is_not_persistent_once_a_rule_restores` is that falsifier *already fired*. **#320's step is
+not an unmark** — a reset does not clear a refusal, it discards the state the refusal was about and
+re-enters sync below it — so on the `Strand` model (`failed : List Nat`) it is a **prefix** step, a
+coarsening, not the inverse. Reddening `the_refusal_is_persistent` by adding a rewind would therefore be
+a false falsifier: it would assert a rule the port does not have for that hash. What the model owes for
+#320 is a step **and** a theorem of its own (`rewindStep`, `the_refusal_is_not_persistent_once_a_rule_
+rewinds`), **guarded by the anchor precondition** — because an unguarded `rewindStep` would certify a
+relief the port deliberately withholds in one of its two arms. Recorded in register row **C274** as owed.
 
 ### U6 — Bonding, epoch boundary, PoS
 
@@ -353,6 +368,13 @@ budget) and the reset primitive; they do not share a deliverable, and F-U5-01's 
 **Ships dark.** A reset is destructive. If F-U5-01 is built, it ships detect + log + count first, so an
 operator sees what it *would* have done before it is allowed to do it — and F-U10-01's stall-reason
 surface is the prerequisite, not a nicety.
+
+**Built, 2026-10-10 (#320, register C274).** Dark first was the rule and it was kept: the detector, the
+`unrestorableRecords` count and the dry run shipped in §82, and the acting half came after, **off by
+default** behind `casper.self-reset` — so the two-key shape this paragraph asks for is what landed (the
+node detects, counts and logs; the operator consents). The prerequisite is in the tree too
+(F-U10-01's surface, refined by #318). See F-U5-01's row for what the rung still owes (the engine-level
+test, the restart-surviving marker, and the Lean step + companion theorem).
 
 ## 6. What this pass corrects in the record
 

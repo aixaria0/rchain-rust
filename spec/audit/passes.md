@@ -9784,3 +9784,68 @@ licence to treat a non-null reason as a fault.
 know is that the counter it exposed would count partial layers. Its cell now carries the refinement and
 points here, and its stale falsifier citation (the test was renamed by this pass) is corrected to the
 re-derived line numbers and the new test name.
+
+---
+
+## 100. The node resets itself: the third rung, and the residue reading found (C274, #320)
+
+**The rung, and why it waited.** The disposition ladder's third rung — *detect a node that cannot heal,
+say so, then reset to a known-safe state and catch up* — was recorded as **entirely unbuilt** for a running
+node, and the page's own headline said so: the node does not mostly wedge silently, it *fails loudly and
+then does nothing*. §82 built the dark half on purpose (the detector, `unrestorableRecords`, the dry run,
+and the primitive `drop_above` with its denominator `rewind_plan`), so that when the acting half landed
+there would be a real numerator to judge it against. This is that half.
+
+**The shape, and the alternative that was rejected.** A reset could have re-entered `NodeSyncing` — the
+boot-only machine. It should not: that machine is bulk LFS sync, its importer is *moved* into a spawned
+task, and a rewound node is in exactly the shape `--sync-anchor` already handles — it holds a chain up to
+a finalised anchor and needs everything above it. The catch-up walk does that, and it runs in the
+**running** phase. So the reset is a rewind, a body purge, a runtime root reset and a walk restarted from
+the anchor, and the node never leaves `NodeRunning`. The decision was made *before* any code, from the
+engine's own structure, which is what kept the unit reviewable.
+
+**The decision is pure and the arms are not merged.** `reset_decision` takes `rewind_plan`'s three shapes
+and returns one of three answers; only the shape with an anchor **and** its height acts. The middle shape —
+a finalised block the view cannot place, because the height map leaves out validation-failed blocks — had
+been logged by the dry run with the *no-anchor* sentence, which is false of it, and `drop_above` takes a
+*height*, so acting there would have handed it genesis. The two refusals are different facts and are now
+different answers, which is the same separation the plan's two arms were introduced for. The fourth shape
+the type system demands (`(None, Some)`) is folded in, named, and unreachable — `rewind_plan` derives the
+height from the anchor.
+
+**The residue, and this is the part worth carrying forward.** `drop_above` rewinds the DAG and leaves
+`BlockStore` alone (it does not own it). A node that kept the bodies would keep *serving* blocks it can no
+longer replay — and, worse, its receiver reads a body that is stored but absent from the DAG as **"stored
+but not yet validated"** (`block_receiver::not_validated`), adds it to `parents_to_validate`, and
+`send_to_validate` puts it back on the incoming queue. So the next child of a dropped block arriving would
+**re-insert the dropped block above the anchor and undo the reset** — the node's own pipeline restoring
+what the node deliberately discarded. The fix is not a guard: the reset deletes the bodies `drop_above`
+returns, which is what those hashes were returned for, so the rewound state is **unrepresentable** — there
+is nothing left to serve or to re-inject. R1, reached by reading rather than by a rig.
+
+**What the rung still owes, named rather than implied.**
+
+1. **The engine-level test.** No harness drives `apply` — only `node_runtime` calls it — so the running
+   loop's third exit is pinned by reading, not by a run. The row's own owed falsifier (*a diverged running
+   node re-enters sync*) needs an `apply`-level fixture, and the devnet arm is blocked: the divergence
+   staging instrument retired, and an injected node's blocks are un-validatable by a clean node anyway.
+   What *is* tested is the decision (four shapes, one unreachable) and the gate (off, on, refused-
+   standalone).
+2. **The persisted marker.** The rewind and the body purge are two store operations. A process that dies
+   between them leaves bodies with no DAG entries, which the re-insertion arm reads as awaiting validation
+   again — so the crash window needs the node to know, across a restart, that it is rewound.
+3. **The Lean step.** `Stranding.lean` already carries both halves of its own story —
+   `the_refusal_is_persistent` (over the rule set without a restoring rule) and
+   `the_refusal_is_not_persistent_once_a_rule_restores`, the falsifier already fired. **That reddening came
+   from #125's restoring rule, not from this one**, and a rewind is not an unmark: on the `Strand` model it
+   is a *prefix* step, a coarsening. Reddening the persistence theorem with it would be a false falsifier,
+   asserting a rule the port does not have for that hash. So the model owes `rewindStep` and a theorem of
+   its own, **guarded by the anchor precondition** — an unguarded one would certify the relief the port
+   withholds in its middle arm. The worksheet's F-U5-02 cell credited R3 with the existing reddening and is
+   corrected.
+
+**And the switch.** `casper.self-reset`, **off by default**, refused at config load on a standalone node
+(a rewind puts the node deliberately behind its peers and the blocks above the anchor are re-requested from
+a peer, so a node with nobody to ask would trade a refusal for a truncated DAG). Not gated on `--dev-mode`:
+that guard is for effects indistinguishable from a fault, and this one counts, logs and acts only on a
+spent budget — a stranded production validator is exactly who needs it.
