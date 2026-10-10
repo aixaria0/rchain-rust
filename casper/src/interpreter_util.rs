@@ -918,6 +918,64 @@ mod tests {
         Blake2b256Hash::from_bytes([byte; 32])
     }
 
+    /// **The reset request's contract, which the engine's running loop depends on** (#320).
+    ///
+    /// Three properties, and each is load-bearing for the loop rather than decorative:
+    ///
+    /// * **the first request wins.** A single validation pass can give up on several blocks, and the
+    ///   reset it needs is one reset — so a second request while one is pending must not replace the
+    ///   anchor the driver is about to rewind to;
+    /// * **taking it consumes it.** The loop takes exactly once, which is what makes acting idempotent
+    ///   under a burst of refusals;
+    /// * **the waker fires**, or a loop parked on the packet stream would never look — the whole reason
+    ///   the request travels through a cell instead of the validator path performing the reset itself.
+    ///
+    /// One test rather than three, for the same reason the stall surface's is one: the statics are
+    /// process-wide and libtest runs a module's tests concurrently.
+    #[tokio::test]
+    async fn a_reset_request_is_raised_once_taken_once_and_wakes_the_driver() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        install_reset_waker(notify.clone());
+        // Whatever a previous test left: this test owns the cell from here.
+        let _ = take_reset_request();
+
+        let first = ResetRequest {
+            anchor: BlockHash::new([1u8; 32]),
+            anchor_height: BlockHeight::try_from(10i64).expect("a height"),
+            blocks_above: 3,
+            refused: BlockHash::new([2u8; 32]),
+        };
+        let second = ResetRequest {
+            anchor: BlockHash::new([9u8; 32]),
+            ..first.clone()
+        };
+
+        assert!(
+            request_reset(first.clone()),
+            "the first request is recorded"
+        );
+        assert!(
+            !request_reset(second),
+            "a second request while one is pending is refused rather than replacing it"
+        );
+        assert_eq!(
+            reset_request().as_ref(),
+            Some(&first),
+            "the anchor the driver will rewind to is the first one asked for"
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("the request wakes a driver parked on the packet stream");
+
+        assert_eq!(take_reset_request(), Some(first), "the driver takes it");
+        assert_eq!(
+            take_reset_request(),
+            None,
+            "and takes it exactly once — a burst of refusals is one reset"
+        );
+    }
+
     /// **The disagreement line names both hashes, the predicate, and whether a `CloseBlock` is
     /// present** (#139). Those three are the whole of what the issue's close condition asks a
     /// reproduction to produce, so the line that carries them is pinned rather than assumed: a later

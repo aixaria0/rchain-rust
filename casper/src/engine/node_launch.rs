@@ -609,22 +609,11 @@ async fn perform_reset(
                 request.anchor.to_hex()
             )
         })?;
-    let dropped = dag.drop_above(request.anchor_height).await.map_err(|e| {
-        format!(
-            "the reset's rewind failed: {e}. This is fatal on purpose — the store may have been \
-                 rewound under a view that was not rebuilt, so the node must not keep serving"
-        )
-    })?;
-    // **The bodies go too, and that is what the returned hashes are for.** `drop_above` rewinds the DAG
-    // and deliberately leaves `BlockStore` alone — it does not own it — and a node that kept the bodies
-    // would keep *serving* blocks it can no longer replay (`block_is_known` asks the store) and, worse,
-    // its receiver reads a body that is stored but absent from the DAG as **"stored but not yet
-    // validated"** and re-injects it (`block_receiver::not_validated` + `send_to_validate`) — so the node
-    // would re-insert the very blocks it just rewound away from, undoing the reset the next time a child
-    // of one arrived. Deleting them makes the rewound state **unrepresentable rather than guarded**:
-    // there is nothing left to serve or to re-insert, and everything above the anchor is re-fetched from
-    // peers, which is the whole of what a rewind means.
-    let deleted = block_store.delete(&dropped).await?;
+    // The durable half: the DAG rewinds, and the bodies it dropped go with it. Both, in one call, so
+    // the re-insertion window the receiver opens on stored-but-unknown blocks cannot outlive it — see
+    // `engine::reset`'s module doc for what leaving the bodies costs.
+    let (rewound, removed) =
+        crate::engine::reset::rewind_and_purge(dag, block_store, request.anchor_height).await?;
     runtime_manager
         .runtime()
         .reset(Blake2b256Hash::from_byte_array(
@@ -634,11 +623,9 @@ async fn perform_reset(
     log.warn(
         source,
         &format!(
-            "rewound {} block(s) above height {} — {} body(ies) removed from the block store so they \
-             cannot be served or re-inserted — and reset the runtime to that state (#320)",
-            dropped.len(),
+            "rewound {rewound} block(s) above height {} — {removed} body(ies) removed from the block \
+             store so they cannot be served or re-inserted — and reset the runtime to that state (#320)",
             i64::from(request.anchor_height),
-            deleted,
         ),
     );
     Ok(())
