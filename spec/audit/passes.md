@@ -9436,3 +9436,85 @@ missing capabilities* — slashing by proof and a bounded denominator (#290), th
 its live venue (#287), post-quantum signatures (#274), a process item (#51) — not because a defect was
 filed against an older build. #315 is the single case where "reported against an older version" could
 hold, which is why the rig tests it instead of assuming either way.
+
+### §97's rig: the frozen net, the return, and the anchor (C259, C269, #315)
+
+**One devnet session, four phases, and it settles more than the pass asked it to.** The rig is
+`tools/devnet.sh up --validators 4 --fresh` — four bonded validators at 100 each, autopropose — and the
+state worked for is a net whose **finality is frozen while the tip keeps moving**, which is what C259 and
+C269 both wait on. It needs no instrument: **stopping two of the four leaves 200 of 400**, under the
+strict two-thirds finality needs. (The divergence injection retired with the store it perturbed, and
+nothing had to replace it — the state arises on its own.) Raw capture:
+`spec/audit/evidence/n-anchor-drill/frozen-finality-recovery.txt`.
+
+**The frozen state, measured.** Before the stops: h=68/69/67/67 with last-finalised 52 — a gap of 16.
+Sixty seconds after `stop 2` and `stop 3`: the survivors at **h=125/125 with f=54**, so the tip moved
+**57 heights while finality moved 2**, `autoproposeHalted=false` on both, and the gate's own reason:
+
+```
+finalityStall: a layer exists but its supporting stake is not a supermajority —
+               200 of 400 (2 full partition(s) among 2 candidate(s))
+```
+
+That is `NoAdvance::Support` firing with the arithmetic this rig is built on — **the second arm #318
+asked for**, and the first reading of that arm on a net where the freeze is *by construction* rather than
+incidental.
+
+**#315's question, answered on the current build: it resumes.** With the net frozen, `start 2` returned
+the validator and finality moved **54 → 102**. #315's mechanism was that a returning validator "has not
+*sent* a block since restarting", so the peers' latest-message views still held its pre-outage messages
+and `quorum_reachable` stayed false — and that is not reproducible here. The stated prediction before the
+run was that it would resume; it did. What that does **not** settle is the live incident's own history (a
+partition, then a rebuild of the instance), which is a state this box cannot reach — so the issue gets the
+result and the distinction rather than a close it has not earned.
+
+**C259's owed clause, met: the walk completes on a net whose finality is frozen.** The trick is *which*
+validator to wipe: **a survivor** — its stake is bonded whether or not its node is serving, so wiping
+validator 1 keeps the net at 200 of 400 and frozen, while wiping a *stopped* one would return its stake
+and unfreeze the net (which is #315's question, not this one). Validator 1, wiped and started with
+`--sync-anchor <the anchor at height 52>`, logs its own path:
+
+```
+Syncing to the operator-named anchor a5655cd4… rather than to a fringe a peer offers: with finality
+  frozen no peer has one, and the answer to an ordinary fringe request would be the genesis block
+LFS state is successfully restored.
+catch-up against devnet-bootstrap: this node's frontier is height 52, walking outward in windows of 8
+```
+
+— with the master at h=182, f=110, still reporting the `Support` stall. So the walk the row owed, on the
+state it owed it on, completes.
+
+**C269's owed run: the tool names the operator's block.** With all four nodes readable,
+`RECONCILE_ANCHOR=<the same hash> tools/reconcile-network.sh` exits **0** and prints:
+
+```
+== 3. the anchor ==
+  the operator's anchor: height 52, hash a5655cd4f219aca6c40247ddf61a6d868987d9f6c7572667aa6fd0712f5b929b
+  This is **your** root, not a computed meet: this tool has verified that devnet-bootstrap holds the block
+== 4. what is above the point ==
+```
+
+which is the row's close condition word for word: the anchor stated as the operator's choice rather than
+a computed meet, the nodes' disagreement reported rather than resolved, and what is above the point
+enumerated. **The honest limit, unchanged from the plan**: this net keeps a *usable* last-finalised
+block, so the tool's computed-meet path would have accepted it too — what the run exercises is the
+operator-named path, not the refusal it was built for.
+
+**C268's close condition, met on demand — after a staging of the same rig looked stuck.** The
+frozen-finality session ended with a plain `reset 3` against a producing master at h=265, and at t+45 s
+the joiner had **385 requests and no restore, height 0** — which reads like the row's shape. It is not
+evidence of it, and the reason is the row's own discriminator: that capture counted *requests* and not
+*paths*. Re-running the same staging with the discriminator
+(`spec/audit/evidence/n-anchor-drill/c268-fourth-staging.txt`) is unambiguous:
+
+```
+t+ 40s  requests=48   distinct-paths=48
+t+ 60s  requests=172  distinct-paths=171
+t+100s  requests=184  distinct-paths=171  restored=1  joiner h=86  master h=182
+```
+
+**171 distinct paths out of 172 requests**, the count inside the recorded healthy control's range
+(153–226), and `LFS state is successfully restored` with the joiner climbing from 0 to 86. The cursor
+advances through distinct paths and never repeats a slice — which is what "the page walk advances" means,
+and it is the row's own close condition rather than an argument from absence. The phase-F count is
+recorded in the capture as what it is: a walk still in progress when the window closed.
