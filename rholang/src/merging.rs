@@ -218,6 +218,12 @@ pub fn encode_mergeable_key(state_hash: &Blake2b256Hash, creator: &[u8], seq_num
 }
 
 /// Encode a deploy's mergeable-channel data (port of `deployMergeableDataCodec`).
+///
+/// **The `u16` count here is always zero in practice** (AUDIT C256): the collection that would fill
+/// `data.channels` is inert (`rholang/src/reduce.rs`'s `merge_chs`, and the deviation is in
+/// `spec/audit/passes.md` §6), so this prefix encodes `0` for every deploy. It is kept, and kept
+/// `u16`, because it is the wire shape the oracle defines — a live mechanism needs both the bound this
+/// width implies and the truncation check it does not have.
 pub fn encode_deploy_mergeable_data(data: &DeployMergeableData) -> Vec<u8> {
     let mut out = uint16_be(data.channels.len() as u16).to_vec();
     for ch in &data.channels {
