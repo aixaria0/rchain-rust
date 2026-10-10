@@ -890,7 +890,12 @@ async fn two_honest_siblings_contribute_one_value_to_the_fringe_they_share() {
     // makes the lever worth its comment — perturbing `g` moves nothing now, so a control still aimed
     // there would have gone on passing while the semantics were wrong.
     let moved = build_storage().await;
-    insert(&moved, meta_state(&g, &BTreeSet::new(), &genesis_pre), g.clone()).await;
+    insert(
+        &moved,
+        meta_state(&g, &BTreeSet::new(), &genesis_pre),
+        g.clone(),
+    )
+    .await;
     insert(
         &moved,
         meta_state(&x, &BTreeSet::from([g.block_hash]), &x_post),
@@ -942,7 +947,12 @@ async fn an_empty_previous_fringe_is_the_genesis_claim() {
     // The genesis block's *own* claim: it finalises nothing (empty fringe) and its fringe state is the
     // state it began from — which is what `insert_genesis` records and what the reader must now supply.
     let dag = build_storage().await;
-    insert(&dag, meta_state(&g, &BTreeSet::new(), &genesis_pre), g.clone()).await;
+    insert(
+        &dag,
+        meta_state(&g, &BTreeSet::new(), &genesis_pre),
+        g.clone(),
+    )
+    .await;
 
     let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
         in_memory(),

@@ -43,12 +43,42 @@ use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_models::casper::protocol::casper_message::{BlockRange, BlockRangeRequest};
 use rchain_shared::log::{Log, LogSource};
 
+use crate::engine::node_running::{MAX_BLOCK_RANGE, MAX_PENDING_BLOCKS};
 use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
 
 /// How many heights one window covers. A four-validator shard holds at most four blocks per height, so
 /// one window is at most 32 blocks — far below `MAX_PENDING_BLOCKS`, which is the whole point: the
-/// pending set has to hold a window, never a gap.
+/// pending set has to hold a window, never a gap. See [`MAX_SHARD_WIDTH`] for where that stops being
+/// true.
 pub const WINDOW_HEIGHTS: i64 = 8;
+
+/// **The stated bound (Law 71): the widest shard one window may span before the pending bound, not the
+/// window, is what decides the node's fate.**
+///
+/// Law 71 says a catch-up window bounds what a joiner holds, independently of the tip. It bounds
+/// *heights*; the bound it has to stay under — `MAX_PENDING_BLOCKS` — counts *blocks*. The two are
+/// related by the shard's width: a shard produces at most one block per bonded validator per height, so
+/// one window pends at most `WINDOW_HEIGHTS × width` blocks. At a width of four (the rig every
+/// measurement here ran on) that is 32 of 1024; the relation turns over at
+/// `MAX_PENDING_BLOCKS ÷ WINDOW_HEIGHTS` = **128 bonded validators**, and past it a single window alone
+/// can saturate the pending set — which is the drop path C267 measured, arriving by a different route.
+///
+/// **Why it is a constant and not only a comment.** The width is a property of the *shard*, not of this
+/// crate, so it cannot be asserted where the windows are built; naming the turnover is what lets the
+/// driver compare itself against it (below) and what turns "far below the bound" into a number a
+/// reviewer can check.
+pub const MAX_SHARD_WIDTH: usize = MAX_PENDING_BLOCKS / WINDOW_HEIGHTS as usize;
+
+// **The coupling that *is* known here, and the drift it catches.** The responder clamps a
+// `BlockRangeRequest` to `MAX_BLOCK_RANGE` (`node_running.rs`), so a window wider than the responder's
+// range leaves the walk waiting — in `wait_for_frontier` — for heights nobody was ever asked for. That
+// is a self-inflicted stall of exactly the shape C267 measured, and it is one constant edit away: raise
+// `WINDOW_HEIGHTS` alone and it fails the build rather than the network.
+const _: () = assert!(
+    (WINDOW_HEIGHTS as usize) <= MAX_BLOCK_RANGE,
+    "WINDOW_HEIGHTS must not exceed MAX_BLOCK_RANGE: the responder clamps to the range, so a wider \
+     window makes the walk wait for heights it never asked for"
+);
 
 /// How long one window may take before the walk gives up and hands the node back to the ordinary
 /// ingest. Bounded so a silent or stalling peer cannot hold the gate shut — the node is never *worse*
@@ -135,6 +165,25 @@ pub async fn run_catchup(
             peer.endpoint.host, frontier, window.width
         ),
     );
+    // **The shard check (Law 71).** The window's whole claim is that one window's blocks fit inside the
+    // pending bound, and that is a relation between `WINDOW_HEIGHTS` and the *shard's* width — which no
+    // compile-time constant can carry, so it is read here, off the frontier this node is holding. The
+    // check does not stop the walk: a catch-up that refuses to run leaves the node with no recovery at
+    // all, while one that runs too wide is no worse than the ingest was before it. What it does is name
+    // the state loudly, so a shard past the turnover is a line in the log rather than drops C267 taught
+    // us to read backwards.
+    let shard_width = dag.get_representation().await.latest_fringe().len();
+    if shard_width > MAX_SHARD_WIDTH {
+        log.warn(
+            source,
+            &format!(
+                "[catchup-window-too-wide] this node's frontier is {shard_width} block(s) wide, over \
+                 the {MAX_SHARD_WIDTH} a {WINDOW_HEIGHTS}-height window can pace within the \
+                 {MAX_PENDING_BLOCKS}-block pending bound: one window alone may saturate it, and the \
+                 ingest's drop path binds before this walk's pace does"
+            ),
+        );
+    }
     let mut walked: u32 = 0;
     loop {
         if walked >= MAX_WINDOWS {
@@ -305,5 +354,35 @@ mod tests {
             "the frontier itself is always admitted"
         );
         assert!(w.admits(i64::MAX), "saturating, not wrapping");
+    }
+
+    /// **Law 71's bound, as arithmetic a reviewer can check rather than a claim in a comment.**
+    ///
+    /// The window pends at most `WINDOW_HEIGHTS × shard width` blocks and the pending bound is
+    /// `MAX_PENDING_BLOCKS`, so `MAX_SHARD_WIDTH` is *defined* by the relation — and the two facts worth
+    /// pinning are that it is at least the width the rigs here actually run at (four bonded validators,
+    /// and thirty-two, and sixty-four), and that it is the **largest** width for which the relation
+    /// holds. The second is what stops the constant drifting into decorative: one validator wider and a
+    /// single window alone can saturate the pending set.
+    #[test]
+    fn the_window_fits_the_pending_bound_up_to_the_stated_shard_width() {
+        for width in [1usize, 4, 32, 64, MAX_SHARD_WIDTH] {
+            assert!(
+                (WINDOW_HEIGHTS as usize) * width <= MAX_PENDING_BLOCKS,
+                "a {width}-wide shard pends {} blocks in one window, over the {MAX_PENDING_BLOCKS} the \
+                 ingest will hold",
+                (WINDOW_HEIGHTS as usize) * width
+            );
+        }
+        assert!(
+            (WINDOW_HEIGHTS as usize) * (MAX_SHARD_WIDTH + 1) > MAX_PENDING_BLOCKS,
+            "MAX_SHARD_WIDTH is not the largest width the window fits: {} is over the bound too",
+            (WINDOW_HEIGHTS as usize) * (MAX_SHARD_WIDTH + 1)
+        );
+        assert_eq!(
+            MAX_SHARD_WIDTH, 128,
+            "the turnover is 128 bonded validators at a window of 8 heights and a 1024-block pending \
+             bound; a change here changes what the driver's shard warning means"
+        );
     }
 }
