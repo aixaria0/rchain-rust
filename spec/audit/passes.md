@@ -9834,15 +9834,7 @@ is nothing left to serve or to re-inject. R1, reached by reading rather than by 
 2. **The persisted marker.** The rewind and the body purge are two store operations. A process that dies
    between them leaves bodies with no DAG entries, which the re-insertion arm reads as awaiting validation
    again — so the crash window needs the node to know, across a restart, that it is rewound.
-3. **The Lean step.** `Stranding.lean` already carries both halves of its own story —
-   `the_refusal_is_persistent` (over the rule set without a restoring rule) and
-   `the_refusal_is_not_persistent_once_a_rule_restores`, the falsifier already fired. **That reddening came
-   from #125's restoring rule, not from this one**, and a rewind is not an unmark: on the `Strand` model it
-   is a *prefix* step, a coarsening. Reddening the persistence theorem with it would be a false falsifier,
-   asserting a rule the port does not have for that hash. So the model owes `rewindStep` and a theorem of
-   its own, **guarded by the anchor precondition** — an unguarded one would certify the relief the port
-   withholds in its middle arm. The worksheet's F-U5-02 cell credited R3 with the existing reddening and is
-   corrected.
+3. **The Lean step — closed in the same unit, as law 53 clause c.** `Stranding.lean` now models the port's *second* inverse: `rewindStep` (a **prefix** drop, not the unmark `restoreStep` is — a rewind discards the state the refusal was about, it does not clear the refusal), `strandSystemRewinding`, and two theorems — `the_refusal_is_not_persistent_once_a_rule_rewinds` (the falsifier fired a second time) and `a_rewind_is_not_available_without_an_anchor`, which is the **guard** and the reason the step is stated over a state that carries the precondition rather than over the list alone. That last theorem is the one that could have been wrong: the port rewinds only where `rewind_plan` answers with an anchor *and* its height, and a model without the guard would have certified a relief the port withholds in two of its three states. **And the worksheet's falsifier was credited to the wrong fix**: it said R3 reddens `the_refusal_is_persistent`, and that reddening came from #125's restoring rule (clause b). F-U5-02's cell carries the correction. Three Rust witnesses ride with the clause — the decision's four shapes, the durable half, and the signal's contract — taking the gate's registry from 166 to **169, all passing**.
 
 **And the switch.** `casper.self-reset`, **off by default**, refused at config load on a standalone node
 (a rewind puts the node deliberately behind its peers and the blocks above the anchor are re-requested from
