@@ -9324,6 +9324,13 @@ intermittently non-null on this rig — `"a layer exists but its supporting stak
 i.e. the gate enters a stall on the order of once per block and recovers. So finality is **advancing
 slowly and jerkily, not smoothly**, and this pass does not explain why. The rig only ever needed to
 answer one question — does a node still stall itself on a fringe-key disagreement? — and it answers it.
+
+*Answered by **§99/C273** (2026-10-10, #318): the reason string was the ordinary mid-round state of a
+producing chain — a block justifies only the messages that existed when it was built, so the stake gate
+sees a partial layer — and the episode counter was counting those rather than stalls. The reason now
+names the partition it was partial against and an episode is a sustained run, so the reading this
+paragraph could not explain no longer appears; the jerkiness it describes was the surface, not the
+chain.*
 The gate's stall/advance cadence on a four-validator autopropose net is a **separate** measured
 property, it is the same rig that produced the pre-fix `200 of 400` reading in C268's row, and it belongs
 to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rchain-community/rchain-rust/issues/318)**,
