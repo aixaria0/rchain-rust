@@ -36,11 +36,24 @@ on:
       - "spec/LAWS.md"
       - "spec/lean-toolchain"
       - "spec/lakefile.lean"
+      - "spec/API-SCHEMA.md"
+      # The tools the gate *runs*, not only the one it is — a change to any of them moves what the
+      # gate checks, and the list used to name only `check-lean-conformance.sh` and
+      # `emit-lean-corpus.sh` while the gate also runs these three (C262).
       - "tools/check-lean-conformance.sh"
       - "tools/emit-lean-corpus.sh"
+      - "tools/emit-lean-laws.sh"
+      - "tools/emit-lean-counts.sh"
+      - "tools/check-rust-witnesses.sh"
       - "Makefile"
       - "node/tests/lean_*.rs"
       - "rholang/tests/lean_*.rs"
+      # **A corpus consumer outside `tests/`.** `rholang/src/system_processes.rs`'s test module reads
+      # `spec/conformance/protocol.tsv` to check the installed reply urn table against the catalog,
+      # so it is a consumer like the `lean_*_corpus.rs` files — it was simply outside a list that
+      # assumes consumers live under `tests/` (found by `check-lean-conformance.sh`'s own trigger
+      # check, which greps for them rather than trusting this list; C262).
+      - "rholang/src/system_processes.rs"
       - "node/src/api/**"
       - "node/src/web/**"
   workflow_dispatch:

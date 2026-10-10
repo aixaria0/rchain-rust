@@ -272,10 +272,28 @@ impl DeployIndex {
 /// before it, so even the merge-work gauges never saw it. This is that missing ledger.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeReport {
-    /// Chains in the conflict scope, and how they resolved.
+    /// Chains in the **conflict** scope, and how they resolved. **This qualifier is load-bearing**
+    /// (C260): the final scope's own rejections are the `final_scope_rejected_chains` field below, and
+    /// until it existed nothing distinguished a rejection of one from a rejection of the other.
     pub conflict_chains: usize,
     pub kept_chains: usize,
     pub rejected_chains: usize,
+    /// **The final scope's rejections — the ledger's missing row** (C260). A chain of a *finalised*
+    /// block whose block's derived rejection set names its first deploy: the event is a fringe's own
+    /// finalisers having recorded a rejection reaching a block they finalised, which honest siblings
+    /// cannot produce (measured: `two_honest_siblings_contribute_one_value_to_the_fringe_they_share`).
+    ///
+    /// **It was visible nowhere.** Not in `rejected_chains` (conflict scope), not in the merge's
+    /// `rejected_deploys` (`rejected_ids` is built from the conflict scope), not in `describe()`, and
+    /// not in `nonQuietMergeReports` — `is_quiet()` could not see it, so the counter that exists to
+    /// make a non-quiet merge visible never moved. I1 could not catch it either: its own filter
+    /// exempts final-scope chains by construction (`conflict_set.contains`).
+    ///
+    /// **What it does not mean.** The finalised chain is not dropped and no write is lost: a
+    /// final-scope rejection cascades only to its *conflict-scope dependents* (`incompatible_with_final`
+    /// in `sdk/src/dag/merging.rs`), and the finalised chain's own effects are already in the base
+    /// state. This is the ledger's missing row, not a lost write.
+    pub final_scope_rejected_chains: usize,
     /// The native slots the **rejected** chains would have written, with the host that wrote each:
     /// the effects of a rejection, named. They had no name before this.
     pub dropped_native_slots: Vec<(Blake2b256Hash, (u8, Blake2b256Hash))>,
@@ -296,8 +314,15 @@ pub struct MergeReport {
 
 impl MergeReport {
     /// Whether there is anything here an operator should see.
+    ///
+    /// **The final scope's rejections are part of the answer** (C260). They are reachable only from a
+    /// fringe's own finalisers recording a rejection of a block they finalised — honest siblings cannot
+    /// produce one — so this does not make ordinary merges loud; it makes *this* merge loud, which is
+    /// the whole point: the counter beside this (`nonQuietMergeReports`) is what an operator's surface
+    /// reads, and it could not see a final-scope rejection at all.
     pub fn is_quiet(&self) -> bool {
         self.rejected_chains == 0
+            && self.final_scope_rejected_chains == 0
             && self.rejections_without_a_conflict.is_empty()
             && self.unapplied_kept_writes.is_empty()
     }
@@ -312,6 +337,16 @@ impl MergeReport {
             self.rejected_chains,
             self.rejected_cost_accounted_chains
         );
+        // Named where a reader of the line meets it, and named as what it is: not a lost write — the
+        // finalised chain's effects are in the base state — but a rejection only a divergent finaliser
+        // could have put there (C260).
+        if self.final_scope_rejected_chains > 0 {
+            line.push_str(&format!(
+                "; **{} chain(s) of the final scope rejected**: a rejection the fringe's own finalisers \
+                 recorded reaching a block they finalised, which honest siblings cannot produce (C260)",
+                self.final_scope_rejected_chains
+            ));
+        }
         if !self.dropped_native_slots.is_empty() {
             line.push_str(&format!(
                 "; {} native slot(s) went unwritten ({})",
@@ -1956,6 +1991,10 @@ impl MergeScope {
             conflict_chains: conflict_set.len(),
             kept_chains: to_merge.len(),
             rejected_chains: rejected.len(),
+            // The other scope's ledger (C260): chains of *finalised* blocks whose derived rejection set
+            // names them. Computed in the loop over `final_indices` above, and until this field existed
+            // the set was handed to `resolve_conflict_set_with_census` and reported by nothing.
+            final_scope_rejected_chains: rejected_finally.len(),
             dropped_native_slots: rejected
                 .iter()
                 .flat_map(|c| {

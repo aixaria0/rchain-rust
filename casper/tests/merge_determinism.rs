@@ -462,10 +462,13 @@ async fn validated(
 /// still *disagree* is asserted below — the disagreement is visible on the blocks, which is the whole of
 /// what the new shape promises.
 ///
-/// **A gap it exposed**: `MergeReport`'s `conflict_chains`/`kept_chains`/`rejected_chains` count the
-/// **conflict scope only** (`conflict_set.len()`, `merging.rs:1934`), so a merge that drops a *finalised*
-/// chain reports `rejected_chains: 0` and says nothing about it. `rejected_deploys` does cover it, but
-/// the report an operator reads does not (AUDIT C260).
+/// **The gap it exposed, and that this test now closes** (AUDIT C260). `MergeReport`'s
+/// `conflict_chains`/`kept_chains`/`rejected_chains` counted the **conflict scope only**, so a merge
+/// that rejected a *finalised* chain reported `rejected_chains: 0` and said nothing about it — and
+/// nothing else said anything either: `rejected_deploys` is built from the conflict scope, `describe()`
+/// never mentioned it, and `is_quiet()` could not see it, so the `nonQuietMergeReports` counter an
+/// operator reads never moved. The field `final_scope_rejected_chains` is that missing row, and the
+/// assertions at the end of the test drive it: this construction is the case that makes it non-zero.
 #[tokio::test]
 async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
     let rm = common::build_runtime_manager().await;
@@ -657,6 +660,26 @@ async fn the_same_validated_blocks_merge_identically_in_both_arrival_orders() {
     assert_eq!(
         outcome_one.rejected_deploys, outcome_two.rejected_deploys,
         "…and rejected different deploys, from the same set"
+    );
+    // **And the final scope's own ledger, which nothing could read before C260.** The construction is
+    // the case that makes it non-zero — `y` records `x`'s deploy as rejected while `z` records nothing,
+    // so the fringe's finalisers name a deploy riding on a block of the fringe they finalised — and two
+    // nodes holding the same blocks must count it the same, or the *report* becomes arrival-order
+    // dependent while the state stays right. This is the first test to drive the field.
+    assert_eq!(
+        outcome_one.report.final_scope_rejected_chains,
+        outcome_two.report.final_scope_rejected_chains,
+        "the two nodes counted the final scope's rejections differently"
+    );
+    assert!(
+        outcome_one.report.final_scope_rejected_chains > 0,
+        "the construction rejects a chain of the final scope, and the report says it rejected none"
+    );
+    // **And the report is no longer quiet about it.** `is_quiet()` is what moves the operator's
+    // counter, so a final-scope rejection that left it quiet is the defect the field exists for.
+    assert!(
+        !outcome_one.report.is_quiet(),
+        "a merge that rejected a chain of the final scope reported itself quiet"
     );
 }
 
