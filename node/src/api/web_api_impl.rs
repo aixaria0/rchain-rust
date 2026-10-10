@@ -16,7 +16,8 @@ use rchain_crypto::private_key::PrivateKey;
 use rchain_models::ast::Expr;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::casper::protocol::deploy_service::{
-    BlockInfo, DeployExecStatus as CasperDeployExecStatus, LightBlockInfo,
+    BlockInfo, DeployExecStatus as CasperDeployExecStatus, FinalityAttestation, LightBlockInfo,
+    RawBlock,
 };
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::base16;
@@ -1332,6 +1333,23 @@ impl WebApi for WebApiImpl {
     async fn get_block(&self, hash: &str) -> Result<BlockInfo, BlockApiException> {
         self.block_api
             .get_block(hash)
+            .await
+            .map_err(BlockApiException)
+    }
+
+    async fn raw_block(&self, hash: &str) -> Result<RawBlock, BlockApiException> {
+        self.block_api
+            .get_raw_block(hash)
+            .await
+            .map_err(BlockApiException)
+    }
+
+    async fn finality_attestation(
+        &self,
+        nonce: &str,
+    ) -> Result<FinalityAttestation, BlockApiException> {
+        self.block_api
+            .finality_attestation(nonce)
             .await
             .map_err(BlockApiException)
     }

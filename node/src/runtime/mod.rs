@@ -4,6 +4,7 @@ pub mod node_call_ctx;
 pub mod node_environment;
 pub mod node_main;
 pub mod node_runtime;
+pub mod recovery_verify;
 pub mod repl_runtime;
 pub mod shutdown;
 

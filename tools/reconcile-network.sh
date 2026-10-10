@@ -6,19 +6,30 @@
 # it exists for: spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md.
 #
 # What it does
-#   1. reads every node's explicitly reported finalised block and requires them to **agree** — the same
-#      height *and* the same hash on every listed node — or refuses, naming what differs. A block producer
-#      is not a validator vote and the heights API cannot prove stake-weighted finalized ancestry, so this
-#      equality is the whole of the computed anchor: no quorum is inferred, and no stake fraction is
-#      printed. When no node has a usable finalised block at all — the state this tool's own recovery
-#      exists for — the operator may **name** the anchor instead (`RECONCILE_ANCHOR=<hash>`), and the tool
-#      states that it is the operator's root rather than a meet it computed (C269);
-#   2. **reports** suspected equivocation from the block API's own `sender` field (two distinct blocks by
-#      one sender at one height). It is one endpoint's word — this script checks no signature and binds no
-#      endpoint to a bonded key — so it is a suspicion worth a human's attention, never an attributable
-#      artefact, and **nothing is dropped, reweighted or decided on it** (§2);
-#   3. states the anchor — **which** anchor it is, computed or operator-named — and what each node
-#      reported, rather than implying a quorum it did not compute;
+#   1. **computes the meet**, and the arithmetic is over artefacts rather than over what a node says: every
+#      node is asked to *attest* its own finalised block, signed by its validator key
+#      (`/api/finality-attestation`, bound to a nonce this run draws), and every block the tool touches is
+#      fetched as the **preimage of its hash** (`/api/block/{h}/raw`) and verified — the bytes must hash to
+#      the claimed hash and the signature must verify under the claimed sender, both checked with this
+#      node's own rules (`rnode verify-block` / `rnode verify-attestation`). The anchor is the **deepest
+#      block a strict supermajority of stake has finalised** (`3 * stake > 2 * total`, on integers —
+#      exactly two thirds is not one), which tolerates the ordinary lag between honest nodes and still
+#      cannot be dragged back by a laggard or vetoed by one. Every refusal is named, and a state the tool
+#      cannot prove is a state it does not act on. When no node can attest anything — a net with no
+#      finality left, which is the state this tool's own recovery exists for — the operator may **name**
+#      the anchor instead (`RECONCILE_ANCHOR=<hash>`), and the tool states that it is the operator's root
+#      rather than a meet it computed (C269);
+#   2. **proves** equivocation where the artefacts reach: two distinct blocks by one sender at one height,
+#      *each fetched and verified*, is an offence anyone can re-derive — and a proven equivocator's stake
+#      leaves the numerator **and** the denominator, which is the only way a pool may legitimately shrink
+#      (never by silence: a threshold that drops when a validator goes quiet would let whoever can silence
+#      honest nodes finalise with a minority). The proof scans a bounded window of heights around the
+#      deepest attested block and prints which, so absence of a proof in it reads as a bound rather than a
+#      clean bill of health. §2 still **reports** the whole chain from the block API's own `sender` field
+#      — one endpoint's word, deciding nothing;
+#   3. states the anchor — **which** anchor it is, computed or operator-named — with the fraction it
+#      computed, the subset it counted, the nodes it left out and why, rather than implying a quorum it
+#      did not compute;
 #   4. enumerates what is above the point, per **unique** block — the nodes that served it, its accepted
 #      deploy count, and the signatures of the deploys its merge rejected — and never drops it silently;
 #   5. (`--apply`) stops every non-master node, moves each data directory aside — **never deleting** —
@@ -33,8 +44,10 @@
 #
 # What it never does
 #   * treat an unfinalised block as the truth;
-#   * infer a stake quorum from block producers, or print a stake fraction it has not verified (1-2);
-#     there is no denominator here to shrink;
+#   * weigh a report it has not verified, count one validator twice (two endpoints attesting one bond is
+#     a refusal — that is how a single stake is read as a supermajority), or print a stake fraction it
+#     has not computed: a meet it cannot prove is refused, never approximated;
+#   * shrink the denominator by silence — only a *proven* equivocation moves it;
 #   * touch the master's data directory;
 #   * run without `--apply` — the default prints the plan and exits 0;
 #   * report a height as converged (four nodes at height 0 are equal).
@@ -49,11 +62,16 @@
 #
 # Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh \
 #           [--apply | --restore-from-master] [--master NAME]
-#   and, when the nodes cannot agree on a finalised block because none has one:
+#   and, when no node has a finalised block to attest at all:
 #         RECONCILE_ANCHOR=<block hash> ... reconcile-network.sh [--apply]
 #   The hash is the block the net last agreed on (the operator's call, not this tool's). The joiners must
 #   be configured with `--sync-anchor <the same hash>` for the wipe path to resync there; `--restore-from-
 #   master` does not need it, because it copies the master's chain state.
+#
+# The meet needs a verifier: `rnode` on `PATH`, in `./target/{release,debug}/`, or at `RECONCILE_RNODE`.
+# `RECONCILE_EQUIV_WINDOW` (default 16) is the height window the equivocation proof scans, counted back
+# from the deepest attested block; 0 skips it and says so. `RECONCILE_MAX_WALK` (default 512) bounds the
+# ancestry walk and the descent below a divergent subset — hitting either is a refusal, not a guess.
 
 set -uo pipefail
 
@@ -67,6 +85,17 @@ if [ -n "${RECONCILE_NODES:-}" ]; then NODES="$(cat "$RECONCILE_NODES")"; else N
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_droplet}
 SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
 CONTROL=${RECONCILE_CONTROL:-systemd}
+# The ancestry walk's bound, in steps. Every step is a block this tool has verified, so the bound is
+# what keeps a pathological DAG from turning a refusal into a hang — and hitting it is a refusal, with
+# the step count named, not a point guessed below it (`is_ancestor_of`).
+MAX_WALK=${RECONCILE_MAX_WALK:-512}
+# The heights the equivocation **proof** scans, counted back from the deepest block any node attested.
+# 0 skips the scan, which the tool then says out loud rather than leaving the omission silent.
+EQUIV_WINDOW=${RECONCILE_EQUIV_WINDOW:-16}
+# Scratch for the verified-block cache (`verified_block`). A directory rather than an array because the
+# callers read through command substitutions, and a subshell's assignments do not come back.
+CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/reconcile-cache.XXXXXX" 2>/dev/null || true)
+[ -n "$CACHE_DIR" ] && trap 'rm -rf "$CACHE_DIR"' EXIT
 APPLY=0; MASTER=A; RESTORE=0
 while [ $# -gt 0 ]; do case "$1" in
   --apply) APPLY=1;;
@@ -341,18 +370,221 @@ if [ "${#REPORTED[@]}" -eq 0 ]; then
 else
   for s in "${!REPORTED[@]}"; do echo "  REPORTED ${s:0:16}… — ${REPORTED_WHY[$s]}"; done
   for e in "${EQUIV_LINES[@]}"; do echo "    $e"; done
-  echo "  A report only: the sender fields are unverified, and no stake is weighed, dropped or decided."
+  echo "  A report only: these sender fields are the endpoints' word. §3 *proves* what it can from"
+  echo "  verified blocks and removes a proven equivocator's stake from both sides of the fraction."
 fi
 
-# --- 3. the anchor: computed by agreement, or named by the operator -----------
-# A block producer is not a validator vote for the block. The heights API
-# cannot prove stake-weighted finalized ancestry. So the anchor is either what the
-# nodes **report identically** — no quorum inferred, nothing fabricated — or, when
-# they cannot agree because a net's finality is frozen and no node has a usable
-# finalised block at all, the block the **operator** names (`RECONCILE_ANCHOR`).
-# The two are different answers and the tool says which one it has: a refusal when
-# it cannot compute a meet, and an operator's root when nobody can (C269). What it
-# never does is present the operator's choice as a computed one.
+# --- the meet's artefacts, and the verifier they are checked with -------------
+#
+# A meet over what nodes *say* is not a meet. An endpoint reporting its last finalised block binds no
+# stake to anything (the report is not signed and need not come from a validator at all), and the block
+# it names is a *summary*: `LightBlockInfo` carries the fields but not the bytes they came from, so a
+# client cannot recompute the hash and every field it reads is the node's word. C261 is the register row
+# for both, and this is the arithmetic that replaces the guesses.
+#
+# So §3 works over artefacts instead:
+#
+#   * every node is asked to **attest** (`GET /api/finality-attestation?nonce=…`) — its own finalised
+#     block signed by its validator key over `blake2b256("rchain-finality-attestation-v1" || nonce ||
+#     hash)`. The nonce is *this run's*, and it is signed, so an answer captured from an earlier run is
+#     not an answer to this one;
+#   * every block the tool touches is fetched as its **preimage** (`GET /api/block/{h}/raw`) and
+#     hashed: bytes that do not hash to the claimed hash, or a signature that does not verify under the
+#     claimed sender, is refused rather than used.
+#
+# Both checks are the **node's own rules**, reached through `rnode verify-attestation` / `rnode
+# verify-block` (`casper::validate::block_signature`, `casper::proto_util::hash_block`,
+# `casper::validator_identity::attestation_prehash`), and the attestation *is* the node's finaliser's
+# own verdict — nothing here re-derives a rule the node owns. Two implementations of one rule can
+# disagree (`Split`, law 51b), and a recovery tool is the last place that should be discovering it.
+#
+# **What this replaced, and why the old gate could not be repaired.** Until 2026-10-10 this section
+# required every node to report the *identical* finalised height and hash, and refused otherwise. That
+# was honest — it can only refuse, never fabricate — and unusable in the state the tool exists for: on
+# a four-validator net with two validators stopped, the three survivors read finalised 102 / 97 / 110
+# (`spec/audit/evidence/n-anchor-drill/frozen-finality-recovery.txt`), which is an ordinary producing
+# chain, not a disagreement. Unanimity is not a property a producing chain has, so the gate refused
+# exactly where recovery was needed. The meet below tolerates the lag, and cannot be dragged back or
+# vetoed by it: it takes the **deepest** block a strict supermajority of **stake** has attested, and a
+# node that has finalised less simply has fewer ancestors to prove.
+
+RNODE_BIN_CACHE=""
+rnode_bin() { # the verifier: $RECONCILE_RNODE, else `rnode` on PATH, else the build tree
+  if [ -n "$RNODE_BIN_CACHE" ]; then printf '%s' "$RNODE_BIN_CACHE"; return 0; fi
+  local candidate
+  for candidate in "${RECONCILE_RNODE:-}" "$(command -v rnode 2>/dev/null || true)" \
+                   ./target/release/rnode ./target/debug/rnode; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      RNODE_BIN_CACHE="$candidate"; printf '%s' "$candidate"; return 0
+    fi
+  done
+  return 1
+}
+
+# Refuse, naming the reason and what it means — the tool's whole contract is that a state it cannot
+# prove is a state it does not act on. Exit 4 is "the anchor could not be established", which §3 has
+# always used for that.
+refuse() { # reason [more lines...]
+  echo "  REFUSING: $1" >&2; shift
+  local line
+  for line in "$@"; do echo "            $line" >&2; done
+  exit 4
+}
+
+jfield() { # a python expression over `b`, the JSON on stdin
+  python3 -c "
+import json,sys
+try:
+    b=json.load(sys.stdin)
+    print($1)
+except Exception:
+    print('')"
+}
+
+# The signed statement from one node, verified, on stdout as JSON — or a refusal. The verification
+# happens here rather than at the point of use so that **no unverified hash ever enters the arithmetic**:
+# `ATT_HASH` and `ATT_KEY` are read from this verdict and nowhere else.
+#
+# **`2>/dev/null`, deliberately, and it is not cosmetic.** `rnode`'s stderr is not empty: jemalloc is
+# built with `stats_print:true` for the memory work (`.cargo/config.toml`, issue #117) and writes ~190 KB
+# of allocator statistics at process exit. Merging the two streams would put that in the middle of the
+# JSON this function parses — which is exactly what happened on the first live run of this meet, and why
+# the verdict is on stdout alone. The verifier prints its refusal to *stdout* (`main.rs``'s error path
+# `println!``s it), so nothing is lost by dropping stderr.
+attestation_of() { # host port nonce name
+  local ra raw verdict rc
+  ra=$(rnode_bin) || refuse "no verifier: rnode not found" \
+    "The meet is computed over artefacts this tool *verifies*, and the verification is the node's own" \
+    "rules, so it needs the binary. Set RECONCILE_RNODE=/path/to/rnode, or build it."
+  raw=$(api "$1" "$2" "/api/finality-attestation?nonce=$3")
+  if [ -z "$raw" ]; then
+    refuse "$4 did not answer the attestation request" \
+      "The meet needs a signed statement from every node (C261). A node that does not answer cannot be" \
+      "weighed, and silence is not agreement." \
+      "(A node built before this route existed answers 404; recovering without it means naming the" \
+      "anchor yourself: RECONCILE_ANCHOR=<hash>.)"
+  fi
+  verdict=$(printf '%s' "$raw" | "$ra" verify-attestation --nonce "$3" 2>/dev/null); rc=$?
+  [ $rc -eq 0 ] || refuse "$4's attestation did not verify" "${verdict:-the verifier printed nothing}"
+  printf '%s' "$verdict"
+}
+
+declare -A VERIFIED_JSON
+# A block's preimage, verified, on stdout as JSON — memoised **on disk**, keyed by hash, because the
+# ancestry walk revisits the same block from several directions and the identity of a block is its
+# hash. On disk rather than in an array because most of the callers read it through `$( )`, and an
+# assignment inside a command substitution happens in a subshell that is gone by the time the parent
+# looks at the array — a memo an array cannot hold.
+verified_block() { # host port hash
+  local cache="${CACHE_DIR:+$CACHE_DIR/}$3.json" ra raw verdict rc
+  if [ -n "$CACHE_DIR" ] && [ -s "$cache" ]; then cat "$cache"; return 0; fi
+  ra=$(rnode_bin) || refuse "no verifier: rnode not found"
+  raw=$(api "$1" "$2" "/api/block/$3/raw")
+  if [ -z "$raw" ]; then
+    refuse "$1:$2 did not answer for block ${3:0:16}…" \
+      "The meet walks block ancestry, and every step has to be a block this tool has verified."
+  fi
+  verdict=$(printf '%s' "$raw" | "$ra" verify-block 2>/dev/null); rc=$?
+  [ $rc -eq 0 ] || refuse "block ${3:0:16}… did not verify" "${verdict:-the verifier printed nothing}"
+  [ -n "$CACHE_DIR" ] && printf '%s' "$verdict" > "$cache"
+  printf '%s' "$verdict"
+}
+
+# The same, but *without* refusing: empty output and a non-zero status when the block cannot be fetched
+# or does not verify. Two callers need the weak form, and both need it for the same reason — a refusal
+# there would end a run over something that is not a finding: the equivocation scan (an unverifiable
+# block is a *report*, not a proof, and the run continues without the exclusion) and the descent's step
+# downward (a parent that cannot be read leaves the walk where it was, bounded).
+verified_block_opt() { verified_block "$1" "$2" "$3" 2>/dev/null; }
+
+# **The proven equivocations in a height window**, one `<height> <sender> <hashA> <hashB>` per line.
+#
+# §2 *reports* an equivocation from the block API's own `sender` field, which is the endpoint's word.
+# This *proves* one the way the node's own rule does (`casper::validate::equivocation_is_proved`): two
+# distinct blocks by one sender at one height, **each fetched and verified**, so the offence is
+# re-derived from artefacts instead of asserted by an endpoint. The sender is taken from the verified
+# bytes, not from the summary that suggested where to look.
+#
+# **The window is a bound and the tool says so.** Proving an equivocation needs both blocks, so the
+# scan costs a pass over the heights it covers; a full-chain pass on a long net is not something an
+# emergency tool should do by default. Absence of a proof *within the window* is not absence of
+# equivocation, which is why every run prints the window it looked at.
+# **The scan is across the endpoints, not within one of them, and the reason is a property of the
+# protocol rather than a convenience.** A node refuses the *second* block a sender offers at a height
+# (`insert`'s H-1 gate), so the pair that proves the offence is almost never held by one endpoint —
+# each holds one of the twins. A per-node scan therefore looks precisely where the evidence is not.
+# Aggregating the endpoints' answers and verifying the pair is what makes the proof reachable at all;
+# it also stays honest, because both blocks are fetched and verified before anything is called proved.
+proven_equivocations() { # from_height to_height
+  local h n hash sender rest key a b sender_a sender_b
+  declare -A FIRST_HASH FIRST_FROM SECOND_HASH SECOND_FROM
+  for (( h=$1; h<=$2; h++ )); do
+    for n in "${NAMES[@]}"; do
+      while read -r hash sender rest; do
+        [ -n "$hash" ] || continue
+        key="$h $sender"
+        if [ -z "${FIRST_HASH[$key]:-}" ]; then
+          FIRST_HASH[$key]="$hash"; FIRST_FROM[$key]="$n"; continue
+        fi
+        [ "${FIRST_HASH[$key]}" = "$hash" ] && continue
+        SECOND_HASH[$key]="$hash"; SECOND_FROM[$key]="$n"
+      done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")
+    done
+  done
+  for key in "${!SECOND_HASH[@]}"; do
+    read -r h sender <<< "$key"
+    a=$(verified_block_opt "${HOST[${FIRST_FROM[$key]}]}" "${PORT[${FIRST_FROM[$key]}]}" "${FIRST_HASH[$key]}")
+    b=$(verified_block_opt "${HOST[${SECOND_FROM[$key]}]}" "${PORT[${SECOND_FROM[$key]}]}" "${SECOND_HASH[$key]}")
+    [ -n "$a" ] && [ -n "$b" ] || continue
+    sender_a=$(printf '%s' "$a" | jfield "b['sender']")
+    sender_b=$(printf '%s' "$b" | jfield "b['sender']")
+    # The two blocks have to agree that they are one sender's, verified — the summary's claim is only
+    # what told us where to look.
+    [ -n "$sender_a" ] && [ "$sender_a" = "$sender_b" ] || continue
+    printf '%s %s %s %s\n' "$h" "$sender_a" "${FIRST_HASH[$key]}" "${SECOND_HASH[$key]}"
+  done
+}
+
+# Is `cand` (at height `cand_h`) an ancestor of the block `from` on that node's chain? 0 = yes, 1 = no.
+#
+# Walked rather than looked up, because there is no ancestor endpoint and the walk is the *proof*: each
+# step is a verified block, and its justifications are parents the block itself signed over. A descent
+# that falls below the candidate's height has passed it without meeting it, which answers no.
+is_ancestor_of() { # node cand_hash cand_h from_hash from_h
+  local node=$1 cand=$2 cand_h=$3 cur=$4 cur_h=$5 step=0 next next_h parent ph parents verdict
+  while :; do
+    if [ "$cur" = "$cand" ]; then return 0; fi
+    if [ "$cur_h" -lt "$cand_h" ]; then return 1; fi
+    if [ "$step" -ge "$MAX_WALK" ]; then
+      refuse "the ancestry walk hit its bound (RECONCILE_MAX_WALK=$MAX_WALK steps)" \
+        "A chain this long without reaching ${cand:0:16}… is not a shape this tool can rule on, and" \
+        "guessing a point below it is exactly what it must not do."
+    fi
+    verdict=$(verified_block "${HOST[$node]}" "${PORT[$node]}" "$cur") || return 1
+    parents=$(printf '%s' "$verdict" | jfield "' '.join(b['justifications'])")
+    next=""; next_h=""
+    for parent in $parents; do
+      ph=$(verified_block "${HOST[$node]}" "${PORT[$node]}" "$parent" | jfield "b['blockNumber']")
+      if [ "$parent" = "$cand" ]; then return 0; fi
+      # Descend by the highest parent below the current block: it is the shortest way down, and the
+      # bound is on steps rather than on heights.
+      if [ -n "$ph" ] && [ "$ph" -lt "$cur_h" ]; then
+        if [ -z "$next_h" ] || [ "$ph" -gt "$next_h" ]; then next="$parent"; next_h="$ph"; fi
+      fi
+    done
+    if [ -z "$next" ]; then return 1; fi
+    cur="$next"; cur_h="$next_h"; step=$((step + 1))
+  done
+}
+
+# --- 3. the anchor: the meet, computed over verified artefacts, or named by the operator -----------
+# Every node attests what it has finalised, this tool verifies each attestation and each block it
+# touches, and the anchor is the **deepest block a strict supermajority of stake has finalised**
+# (`3 * stake > 2 * total`, on integers — exactly two thirds is not a supermajority). Where the net has
+# no finality left at all, no node can attest anything, and the block the **operator** names is the
+# answer (`RECONCILE_ANCHOR`). The two are different answers and the tool says which one it has: a
+# computed meet, or a root it labels as the operator's and verifies no further (C269). What it never
+# does is present the operator's choice as a computed one.
 echo "== 3. the anchor =="
 ANCHOR=${RECONCILE_ANCHOR:-}
 MEET=""; MEET_HASH=""
@@ -377,24 +609,225 @@ if [ -n "$ANCHOR" ]; then
   echo "  If they disagree, that is the state you are recovering from; the block you named is the point"
   echo "  this recovery starts at, and every block above it is validated rather than installed."
 else
+  # --- what each node attests, verified ----------------------------------------------------------
+  #
+  # The nonce is this run's, drawn fresh: an attestation is a signature over
+  # `tag || nonce || blockHash`, so a reply captured from an earlier run verifies against *that* run's
+  # nonce and not this one, and `verify-attestation` is handed the nonce we asked for rather than the
+  # one that came back.
+  NONCE=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  echo "  this run's nonce: ${NONCE:0:16}… (signed, so no earlier run's answer can be replayed into it)"
+  declare -A ATT_HASH ATT_KEY ATT_H ATT_BONDS SEEN_KEY
   for n in "${NAMES[@]}"; do
-    h="${LFB[$n]:-}"; bh="${LFH[$n]:-}"
-    if ! [[ "$h" =~ ^[0-9]+$ ]] || [ -z "$bh" ]; then
-      echo "  REFUSING: $n has no usable finalized block (height/hash)." >&2
-      echo "            Nothing to compute a meet from. If you know the block this net last agreed on," >&2
-      echo "            name it: RECONCILE_ANCHOR=<hash> (the operator's root, stated as yours, not ours)." >&2
-      exit 4
+    verdict=$(attestation_of "${HOST[$n]}" "${PORT[$n]}" "$NONCE" "$n"); rc=$?
+    [ $rc -eq 0 ] || exit $rc
+    ATT_HASH[$n]=$(printf '%s' "$verdict" | jfield "b['blockHash']")
+    ATT_KEY[$n]=$(printf '%s' "$verdict" | jfield "b['sender']")
+    if [ -z "${ATT_HASH[$n]}" ] || [ -z "${ATT_KEY[$n]}" ]; then
+      refuse "$n's attestation verified but carried no block or no signer" \
+        "A verdict without both halves is not something to weigh stake on."
     fi
-    if [ -z "$MEET" ]; then MEET="$h"; MEET_HASH="$bh"
-    elif [ "$h" != "$MEET" ] || [ "$bh" != "$MEET_HASH" ]; then
-      echo "  REFUSING: finalized heads differ; block observations cannot prove a stake quorum." >&2
-      echo "            The nodes do not agree on a point, so this tool cannot compute one. If you know" >&2
-      echo "            the block this net last agreed on, name it: RECONCILE_ANCHOR=<hash>." >&2
-      exit 4
+    # **One validator, one weight.** Two endpoints attesting as the same validator is either a
+    # duplicated entry in the node file or one validator running twice — and either way, counting the
+    # bond twice is how a single stake is read as a supermajority. This is #302's class caught on the
+    # artefact instead of on the total: the first meet summed a proposer's stake once per *observation*
+    # of a block, so a block four nodes held counted 4× and printed "400 of 400 = 100%".
+    if [ -n "${SEEN_KEY[${ATT_KEY[$n]}]:-}" ]; then
+      refuse "$n and ${SEEN_KEY[${ATT_KEY[$n]}]} both attested as ${ATT_KEY[$n]:0:16}…" \
+        "One bond is one weight. Two endpoints claiming it would let a single stake pass the strict" \
+        "supermajority on its own, which is the arithmetic this meet exists to refuse."
+    fi
+    SEEN_KEY[${ATT_KEY[$n]}]="$n"
+    # The block the attestation names, from its own bytes: the height, the ancestry and the bond map
+    # all come from a preimage this tool hashed, not from the summary the heights route returns.
+    block=$(verified_block "${HOST[$n]}" "${PORT[$n]}" "${ATT_HASH[$n]}"); rc=$?
+    [ $rc -eq 0 ] || exit $rc
+    ATT_H[$n]=$(printf '%s' "$block" | jfield "b['blockNumber']")
+    ATT_BONDS[$n]=$(printf '%s' "$block" | jfield "json.dumps(sorted((x['validator'].lower(), x['stake']) for x in b['bonds']))")
+    printf "    %-2s attests height %-5s %s by %s\n" \
+      "$n" "${ATT_H[$n]}" "${ATT_HASH[$n]:0:16}…" "${ATT_KEY[$n]:0:12}…"
+  done
+
+  # --- the denominator ---------------------------------------------------------------------------
+  #
+  # The bond map, read off a block this tool verified, and required to be the **same** map on every
+  # node. Two different maps is not a matter of arithmetic: the nodes are not agreeing about who the
+  # validators are, which is state divergence wearing a quorum's clothes — the case the design says to
+  # stop on rather than resolve.
+  ref_bonds=""; ref_node=""
+  for n in "${NAMES[@]}"; do
+    if [ -z "$ref_bonds" ]; then ref_bonds="${ATT_BONDS[$n]}"; ref_node="$n"
+    elif [ "$ref_bonds" != "${ATT_BONDS[$n]}" ]; then
+      refuse "the nodes disagree on the bond set ($ref_node vs $n)" \
+        "A denominator that differs is not a denominator. Nothing here can decide which pool is the" \
+        "chain's, and choosing one would be the operator picking a winner by hand."
     fi
   done
-  echo "  unanimously reported finalized anchor: height $MEET, hash $MEET_HASH"
-  echo "  No stake-weighted quorum or finalized ancestry is inferred from block producers."
+  TOTAL=$(printf '%s' "$ref_bonds" | python3 -c "import json,sys; print(sum(s for _,s in json.load(sys.stdin)))")
+  if ! [[ "$TOTAL" =~ ^[0-9]+$ ]] || [ "$TOTAL" -le 0 ]; then
+    refuse "the verified bond map has no stake in it" \
+      "A meet against an empty denominator is arithmetic about nothing."
+  fi
+
+  # --- proven equivocation: the validator leaves the numerator *and* the denominator --------------
+  #
+  # The rule the issue states ("equivocators removed from numerator and denominator **by proof**") and
+  # the one #290's slash is the on-chain form of. It is the only way a pool may legitimately shrink:
+  # never by silence — a threshold that drops when a validator goes quiet would let whoever can silence
+  # honest nodes finalise with a minority — but by an offence anyone can re-derive from two signed
+  # blocks. §2 has *reported* equivocations since #308 and nothing consumed the report; this consumes
+  # one, and says which heights it looked at so the absence of a proof is read as a bound rather than
+  # as a clean bill of health.
+  declare -A NO_WEIGH
+  deepest=0
+  for n in "${NAMES[@]}"; do [ "${ATT_H[$n]}" -gt "$deepest" ] && deepest="${ATT_H[$n]}"; done
+  if [ "$EQUIV_WINDOW" -gt 0 ]; then
+    from=$(( deepest - EQUIV_WINDOW )); [ "$from" -lt 0 ] && from=0
+    echo "  proven equivocation, over heights $from..$deepest (RECONCILE_EQUIV_WINDOW=$EQUIV_WINDOW):"
+    proven=$(proven_equivocations "$from" "$deepest")
+    if [ -z "$proven" ]; then
+      echo "    none proved in the window — which bounds the claim, and does not make it universal"
+    fi
+    while read -r ph pkey pfirst psecond; do
+      [ -n "$pkey" ] || continue
+      pstake=$(printf '%s' "$ref_bonds" | python3 -c "
+import json,sys
+keys = {v.lower(): s for v, s in json.load(sys.stdin)}
+print(keys.get('$pkey'.lower(), 0))")
+      if [ "${pstake:-0}" -le 0 ]; then
+        echo "    PROVED at height $ph: $pkey equivocated (${pfirst:0:16}… / ${psecond:0:16}…) — and holds no"
+        echo "      bond in the verified map, so it was never in the fraction"
+        continue
+      fi
+      NO_WEIGH[$pkey]=1
+      TOTAL=$(( TOTAL - pstake ))
+      echo "    PROVED at height $ph: $pkey equivocated — ${pfirst:0:16}… and ${psecond:0:16}…, both verified."
+      echo "      Its stake ($pstake) leaves the numerator and the denominator: the pool is now $TOTAL."
+    done <<< "$proven"
+  else
+    echo "  proven equivocation: skipped (RECONCILE_EQUIV_WINDOW=0) — no validator was removed by proof,"
+    echo "  and no claim is made that none equivocated"
+  fi
+  if [ "$TOTAL" -le 0 ]; then
+    refuse "the whole bonded pool is proven to have equivocated" \
+      "With every bond removed there is no denominator left, and a fraction over nothing is not a meet."
+  fi
+
+  # Each attesting node's stake, by the key it attested with. **Counted once per validator**, keyed on
+  # the key — which is the defect that deleted the first meet (#302): its predecessor summed a
+  # proposer's stake once per *observation* of the block, so a block four nodes held counted 4×, and
+  # it printed "100%" for one validator's 100 of 400.
+  declare -A STAKE
+  for n in "${NAMES[@]}"; do
+    if [ -n "${NO_WEIGH[${ATT_KEY[$n]}]:-}" ]; then
+      STAKE[$n]=0
+      echo "    $n attests as ${ATT_KEY[$n]:0:16}…, proved to have equivocated: not weighed, either side"
+      continue
+    fi
+    STAKE[$n]=$(printf '%s' "$ref_bonds" | python3 -c "
+import json,sys
+keys = {v.lower(): s for v, s in json.load(sys.stdin)}
+print(keys.get('${ATT_KEY[$n]}'.lower(), 0))")
+    if [ "${STAKE[$n]:-0}" -le 0 ]; then
+      refuse "$n attests as ${ATT_KEY[$n]:0:16}…, which the bond set does not bond" \
+        "An attestation from a key with no stake weighs nothing, and a node whose validator key is not" \
+        "in the pool the chain is running on is not a node this meet can count."
+    fi
+  done
+
+  # --- the meet: the deepest block a strict supermajority of stake has finalised ----------------
+  #
+  # Order the attesting nodes by the height of the block each finalised, deepest first, and accumulate
+  # until the stake **strictly** exceeds two thirds. Adding a node can only lower the meet (the meet is
+  # a common ancestor, so it is at most the shallowest member's block), so the first subset that
+  # reaches the threshold is the best one — and the ones left out are the laggards, named below rather
+  # than silently dropped. This is Jim's rule as the issue states it: a lagging or faulting node must
+  # neither drag the network back nor veto its recovery.
+  order=$(for n in "${NAMES[@]}"; do printf '%s %s\n' "${ATT_H[$n]}" "$n"; done | sort -k1,1rn | awk '{print $2}')
+  ACC=0; PREFIX=(); EXCLUDED=(); last_h=""
+  for n in $order; do
+    # A node with no weight left is not in the subset at all — and it must not be, because the meet is
+    # the *shallowest* block in the subset, so a proven equivocator's attestation at a low height would
+    # otherwise decide the point. It was excluded by proof, and the proof was printed above.
+    [ "${STAKE[$n]}" -le 0 ] && continue
+    # Once the threshold is crossed, a node is out only if it is *below* the height that crossed it: a
+    # node at the same height cannot lower the meet, and dropping it would report a laggard that is not
+    # one — which is the kind of reading this tool's output must not invite.
+    if [ $(( ACC * 3 )) -gt $(( TOTAL * 2 )) ] && [ "${ATT_H[$n]}" != "$last_h" ]; then
+      EXCLUDED+=("$n"); continue
+    fi
+    PREFIX+=("$n"); ACC=$(( ACC + STAKE[$n] )); last_h="${ATT_H[$n]}"
+  done
+  if [ $(( ACC * 3 )) -le $(( TOTAL * 2 )) ]; then
+    refuse "no strict supermajority of stake attested a finalised block ($ACC of $TOTAL)" \
+      "Exactly two thirds is not a supermajority (the protocol's own rule is 3 * stake > 2 * total on" \
+      "integers), and a threshold a silent validator can move is not a quorum."
+  fi
+
+  # The candidate: the **shallowest** attested block in the subset, because every member finalised it
+  # only if it is on every member's chain — and each member's finalised set is the ancestry of the
+  # block it attested. When it is not an ancestor of some member the two are on divergent branches, and
+  # the meet is *below* it: the common ancestor is finalised by both (finality is transitive over
+  # ancestry), so the walk steps the candidate down its own chain, each step verified, until it is an
+  # ancestor of every member. Bounded, and a refusal at the bound rather than a point guessed below it.
+  cand=""; cand_h=""; cand_node=""
+  for n in "${PREFIX[@]}"; do
+    if [ -z "$cand_h" ] || [ "${ATT_H[$n]}" -lt "$cand_h" ]; then
+      cand="${ATT_HASH[$n]}"; cand_h="${ATT_H[$n]}"; cand_node="$n"
+    fi
+  done
+  descend=0
+  while :; do
+    missing=""
+    for n in "${PREFIX[@]}"; do
+      [ "$n" = "$cand_node" ] && continue
+      if ! is_ancestor_of "$n" "$cand" "$cand_h" "${ATT_HASH[$n]}" "${ATT_H[$n]}"; then missing="$n"; break; fi
+    done
+    if [ -z "$missing" ]; then break; fi
+    if [ "$descend" -ge "$MAX_WALK" ]; then
+      refuse "the meet's descent hit its bound (RECONCILE_MAX_WALK=$MAX_WALK blocks below height $cand_h)" \
+        "$missing's chain does not meet $cand_node's within the bound, so the depth of their common" \
+        "finalised ancestor is not established — and a point below the bound would be a guess."
+    fi
+    parents=$(verified_block "${HOST[$cand_node]}" "${PORT[$cand_node]}" "$cand" | jfield "' '.join(b['justifications'])")
+    # The candidate's parents are in the verified preimage; take the *deepest* (highest) one below it,
+    # which is the shortest way down. Each parent is verified before it is used, because a walk over
+    # unverified links would prove nothing.
+    next=""; next_h=""
+    for parent in $parents; do
+      ph=$(verified_block "${HOST[$cand_node]}" "${PORT[$cand_node]}" "$parent" | jfield "b['blockNumber']")
+      if [ -n "$ph" ] && [ "$ph" -lt "$cand_h" ] && { [ -z "$next_h" ] || [ "$ph" -gt "$next_h" ]; }; then
+        next="$parent"; next_h="$ph"
+      fi
+    done
+    if [ -z "$next" ]; then
+      refuse "the candidate at height $cand_h has no parent below it" \
+        "Every block above genesis has justifications; a block without one means this walk has reached" \
+        "something that is not a chain, and the meet cannot be computed from it."
+    fi
+    echo "    the subset's blocks do not meet at ${cand_h} — stepping down to ${next_h} (${next:0:16}…)"
+    cand="$next"; cand_h="$next_h"; descend=$((descend + 1))
+  done
+  MEET="$cand_h"; MEET_HASH="$cand"
+  echo "  the meet: height $MEET, hash $MEET_HASH"
+  echo "  Written out rather than implied: the deepest block a strict supermajority of stake finalised,"
+  echo "  over attestations this tool verified, with each validator's stake counted exactly once."
+  printf "  stake: %s of %s = %s%% — a strict supermajority (>66.6%%, 3*stake > 2*total on integers)\n" \
+    "$ACC" "$TOTAL" "$(( ACC * 100 / TOTAL ))"
+  printf "  the subset: %s\n" "${PREFIX[*]}"
+  if [ "${#EXCLUDED[@]}" -gt 0 ]; then
+    printf "  not in the subset (lagging, not vetoing): %s\n" "${EXCLUDED[*]}"
+    echo "  Each one is rewound onto the master's DAG like any other joiner; none of them was asked to"
+    echo "  agree before this could proceed."
+  fi
+  echo "  What every node attested, for the record:"
+  for n in "${NAMES[@]}"; do
+    printf "    %-2s height %-5s %s\n" "$n" "${ATT_H[$n]}" "${ATT_HASH[$n]:0:44}"
+  done
+  if [ "$descend" -gt 0 ]; then
+    echo "  The subset's attested blocks were not on one branch; the meet is $descend block(s) below the"
+    echo "  shallowest of them, which is the divergence this recovery is rewinding past."
+  fi
 fi
 
 # --- 4. what is above the point ----------------------------------------------

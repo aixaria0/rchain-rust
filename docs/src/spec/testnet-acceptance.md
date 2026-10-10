@@ -1144,9 +1144,23 @@ What reduces severity *after* the top event:
 - **The exactness differential detects a quotient that drops an option before it ships** —
   `sdk/src/property_tests.rs:rejection_options_match_a_literal_enumeration`; the property is committed and
   passes on both symmetric and arbitrary directed maps.
-- **Recovery from the divergent finality itself: none.** No mechanism drops a divergent prefix or re-homes
-  a fragment; finality undo is a stated deferral. The only "recovery" documented is the operator restarting
-  onto a chain it never synced (H-U5-04), which is not recovery but a second entry into T5.
+- **Recovery from the divergent finality itself: an operator tool, and a stopgap — not the node.**
+  *Corrected 2026-10-10 (§98; this cell read "none" until then, and that was true when it was written).*
+  `tools/reconcile-network.sh` now brings a broken network back to **one chain without a genesis**: it
+  attests each node's finalised block, verifies every block it touches from the preimage of its hash,
+  computes the deepest block a strict supermajority of stake has finalised as the point to rewind to,
+  enumerates what is above it per unique block (with the signatures of the deploys the merges rejected),
+  and asserts converging block hashes *and* finality past the point or exits 9. Its operator path is
+  exercised on a four-validator net whose finality is frozen by arithmetic
+  (`spec/audit/evidence/n-anchor-drill/frozen-finality-recovery.txt`) and its four clauses on a staged
+  divergence (`spec/audit/evidence/n-reconcile-drill/run-4-restore.txt`); the live-testnet venue is
+  **owed** and named (this box holds no root key, and the live build predates the routes the meet needs).
+  What it does *not* do is re-home a fragment: where nothing is finalised there is nothing to compute a
+  point from, and the store-level restore (`--restore-from-master`) adopts the survivor's state wholesale
+  — an operator asserting a winner, labelled as such and printed before it runs. **The node still has no
+  inverse**: a running node that diverges cannot reset itself (F-U5-01, owed as #320), which is what makes
+  an operator necessary rather than merely convenient. The operator restarting onto a chain it never
+  synced (H-U5-04) is still not recovery but a second entry into T5.
 
 ---
 

@@ -23,7 +23,9 @@
 
 mod common;
 
-use rchain_models::casper::protocol::deploy_service::{BondInfo, DeployInfo, LightBlockInfo};
+use rchain_models::casper::protocol::deploy_service::{
+    BondInfo, DeployInfo, FinalityAttestation, LightBlockInfo, RawBlock,
+};
 use rchain_node::api::dto::{
     ApiStatus, ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, NodeCapabilities,
     PooledDeploys, RhoDataResponse, VersionInfo,
@@ -32,7 +34,7 @@ use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
 
 /// The catalog's declared size (`Rchain/Envelope.lean`'s `envelopeCaseCount`).
-const ENVELOPE_CASES: usize = 9;
+const ENVELOPE_CASES: usize = 11;
 
 #[tokio::test]
 async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
@@ -321,6 +323,24 @@ fn dto_by_name(name: &str) -> Value {
             to: "0".into(),
             status: FaucetDripStatus::Pending,
             deploy_error: None,
+        }),
+        // The two rows AUDIT C261's review added. What they carry is deliberately short: the
+        // attestation holds only what is signed (`blockHash`, `nonce`) plus who signed it, because a
+        // height or a seq_num asserted here would be a second, weaker source for a fact the client
+        // reads off the block it verified.
+        "RawBlock" => to_json(&RawBlock {
+            block_hash: "0".into(),
+            encoded: "0".into(),
+            sender: "0".into(),
+            sig_algorithm: "0".into(),
+            sig: "0".into(),
+        }),
+        "FinalityAttestation" => to_json(&FinalityAttestation {
+            block_hash: "0".into(),
+            nonce: "0".into(),
+            sender: "0".into(),
+            sig_algorithm: "0".into(),
+            sig: "0".into(),
         }),
         other => panic!("no DTO arm for the catalog row {other:?}"),
     }

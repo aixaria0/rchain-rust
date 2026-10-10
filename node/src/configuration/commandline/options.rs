@@ -216,6 +216,18 @@ pub enum Commands {
     },
     /// Get RNode status information.
     Status,
+    /// Verify a block's raw preimage from a node's `/api/block/{hash}/raw` response on stdin, printing
+    /// the fields it proves (AUDIT C261). The reconciliation tool calls this rather than re-deriving
+    /// the node's hash and signature rules itself.
+    VerifyBlock,
+    /// Verify a node's `/api/finality-attestation` response on stdin against the nonce this run asked
+    /// for, printing the block and signer it proves (AUDIT C261).
+    VerifyAttestation {
+        /// The nonce this run asked for, hex. It is *not* read from the response: a verifier that
+        /// took it from there would accept a captured attestation replayed from an earlier run.
+        #[arg(long = "nonce", required = true)]
+        nonce: String,
+    },
 }
 
 /// The `run` subcommand options (port of `Options.run`).

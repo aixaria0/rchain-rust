@@ -1,0 +1,28 @@
+== the meet when a listed node does not answer at all ==
+build: 152a808d4 — image rnode:local rebuilt from it
+staging: tools/devnet.sh stop devnet-validator-2 / devnet-validator-3, ~60 s of production after
+command: the same, with all four nodes still listed
+
+What it shows: the two survivors attest the same finalised block (height 83, one hash) and the
+tool still refuses, because a node with no attestation cannot be weighed and silence is not
+agreement. The refusal names the node and the way out (the node file, or RECONCILE_ANCHOR).
+This is the operator action the runbook documents for a dead node — excluding it is the
+operator's call, printed by them, not inferred by the tool.
+
+==== tool transcript ====
+== 1. what each node is showing ==
+  A  h=160    finalised=83     3095a026fa9125f08041c0e69ccd4e94c3794e220c0f
+  V1 h=160    finalised=83     3095a026fa9125f08041c0e69ccd4e94c3794e220c0f
+  V2 h=?      finalised=?      
+  V3 h=?      finalised=?      
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..160) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. the anchor ==
+  this run's nonce: b43afb6cec4ad689… (signed, so no earlier run's answer can be replayed into it)
+    A  attests height 83    3095a026fa9125f0… by 04f700a41775…
+    V1 attests height 83    3095a026fa9125f0… by 04dbe32c2062…
+  REFUSING: V2 did not answer the attestation request
+            The meet needs a signed statement from every node (C261). A node that does not answer cannot be
+            weighed, and silence is not agreement.
+            (A node built before this route existed answers 404; recovering without it means naming the
+            anchor yourself: RECONCILE_ANCHOR=<hash>.)

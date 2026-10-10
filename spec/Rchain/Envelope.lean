@@ -98,6 +98,15 @@ def envelopeCatalog : List EnvelopeRow :=
         [ ("ProcessedWithSuccess", ["deployResult", "block"])
         , ("ProcessedWithError", ["deployError", "block"])
         , ("NotProcessed", ["status"]) ] }
+  -- The two rows AUDIT C261's review added: the recovery tool needs artefacts it can *verify*, and
+  -- neither existed. `LightBlockInfo` is a summary a client cannot recompute a block's hash from, so
+  -- every field in it is the node's word; `RawBlock` is the preimage the hash *is* taken over, so the
+  -- client can hash it and read the fields off what it verified. `FinalityAttestation` replaces a
+  -- node-local claim with a statement a validator signs, which is what lets a report carry weight.
+  , { name := "RawBlock", endpoint := "GET /api/v1/block/{hash}/raw",
+      keys := ["blockHash", "encoded", "sender", "sigAlgorithm", "sig"] }
+  , { name := "FinalityAttestation", endpoint := "GET /api/v1/finality-attestation",
+      keys := ["blockHash", "nonce", "sender", "sigAlgorithm", "sig"] }
   ]
 
 /-- The catalog is well-formed, `decide`d: names unique, endpoints named, and every row's keys or
@@ -110,7 +119,7 @@ theorem envelopeCatalog_decide :
   decide
 
 /-- The count the Rust consumer asserts it read. -/
-def envelopeCaseCount : Nat := 9
+def envelopeCaseCount : Nat := 11
 
 /-- The catalog carries exactly `envelopeCaseCount` rows. -/
 theorem envelopeCatalog_length : envelopeCatalog.length = envelopeCaseCount := by decide

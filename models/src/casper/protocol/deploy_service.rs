@@ -65,6 +65,52 @@ pub struct BlockInfo {
     pub deploys: Vec<DeployInfo>,
 }
 
+/// **The preimage of a block's own hash** — `GET /api/block/{hash}/raw` (law 43's catalog).
+///
+/// A `LightBlockInfo` is a *summary*: it carries `height`, `seqNum`, `bonds`, `justifications` and
+/// `postStateHash`, but it is produced by mapping a stored block, and the canonical protobuf it came
+/// from is not reconstructible out of it (a deploy loses its raw encoding, `state.system_deploys` is
+/// dropped). So a client reading a `LightBlockInfo` cannot recompute the block's hash from it, which
+/// means every field it reads is the *node's word* — and a recovery decision built on a node's word is
+/// the class of error AUDIT C261 exists for.
+///
+/// `encoded` is the base16 of `BlockMessage::to_bytes_cleared()` — **exactly the bytes
+/// `proto_util::hash_block` hashes** — so a client can hash the preimage, compare it to `blockHash`,
+/// and then read every field off the bytes it verified. `sig` is over the 32 bytes of `blockHash` (not
+/// over `encoded`), which is why it travels beside the preimage rather than inside it: the cleared form
+/// empties `sig` and zeroes the hash by construction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawBlock {
+    pub block_hash: String,
+    pub encoded: String,
+    pub sender: String,
+    pub sig_algorithm: String,
+    pub sig: String,
+}
+
+/// **A validator's signed statement about the block it has finalised** — `GET /api/finality-attestation`
+/// (law 43's catalog).
+///
+/// The signed prehash is `blake2b256("rchain-finality-attestation-v1" || nonce || blockHash)`
+/// (`casper::validator_identity::attestation_prehash`, the one implementation both the signer and
+/// `rnode verify-attestation` call). The domain tag keeps a signature over 32 bytes from being
+/// reusable as a block signature over a *different* 32 bytes, and the caller's nonce makes the
+/// statement fresh — an attestation captured from an earlier run cannot be replayed into a later one.
+///
+/// It carries no height or seq_num because it does not need to: `blockHash` determines them, and the
+/// client reads them off the block after verifying it. A field that is verifiable elsewhere and
+/// asserted here would only be a second, weaker source for the same fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalityAttestation {
+    pub block_hash: String,
+    pub nonce: String,
+    pub sender: String,
+    pub sig_algorithm: String,
+    pub sig: String,
+}
+
 /// Post-block data plus the block it belongs to (port of `DataWithBlockInfo`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataWithBlockInfo {
