@@ -2,7 +2,7 @@
 
 use rchain_shared::lock::Unpoison;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -231,42 +231,115 @@ static LAST_STALL_DESC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new
 /// hundreds of blocks to a readable number of lines (#70's measurement ran ~160 blocks at finality 44).
 const STALL_LOG_INTERVAL: i64 = 100;
 
-/// The last finality-stall reason this process observed, for the **machine-readable** surface — C249's
+/// The last finality verdict this process observed, for the **machine-readable** surface — C249's
 /// F-U10-01, and the reason this cell is not `LAST_STALL_DESC`.
 ///
 /// That one is the *log's* rate limiter: it holds the last line it let through, and it is only written
 /// when the limit allows one. A status surface reading it would report a stale reason for up to
 /// `STALL_LOG_INTERVAL` heights — precisely while an operator is looking. This is written on **every**
-/// observation, so it is the current reason or nothing at all, and a stall that ends clears it.
+/// observation, so it is the current verdict or nothing at all, and an observation that advanced
+/// clears it.
+///
+/// **It is the per-observation verdict, not an alarm.** On a producing chain most blocks are refused by
+/// the stake gate, because a block justifies only the messages that existed when it was built (#318);
+/// what makes a *stall* is that the refusals keep coming, which is [`CURRENT_STALL_SUSTAINED`] and
+/// [`STALL_EPISODES`]. The description on the wire says so; before #318 it read as "why finality is not
+/// advancing", which is what made a healthy net look broken.
 static CURRENT_STALL_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Refusals seen **consecutively** since the derivation last advanced. Reset by an advance, and by a
+/// verdict that is not a refusal at all (see [`note_finality_stall`]).
+static CONSECUTIVE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the run above has reached the threshold — i.e. whether this node is stalled **now**, as
+/// opposed to having been refused on the block it is validating this instant.
+static CURRENT_STALL_SUSTAINED: AtomicBool = AtomicBool::new(false);
+
 /// How many times this process has **entered** a finality stall (a not-stalled → stalled transition),
-/// monotone. Counting observations would count every block of a long stall, which is a different and
-/// less useful quantity; this one answers "has this node stalled, and how often".
+/// monotone, where "stalled" is the sustained state [`stall_threshold`] defines and not a single
+/// refusal. Counting observations would count every block of a long stall; counting *single* refusals
+/// counts the ordinary partial layers of a producing round, which is what #318 measured (a
+/// four-validator net "entered a stall" 136-152 times over ~212 blocks while its finality advanced).
 static STALL_EPISODES: AtomicU64 = AtomicU64::new(0);
+
+/// **How many consecutive refusals make a stall.** Not a tuned constant: the derivation advances at
+/// least once per round on a healthy net — that is what a round *is*, every bonded sender speaks and
+/// the layer completes — so the longest run of refusals a healthy net can show is bounded by the
+/// partition, one per block that arrives before the round completes. **Twice the partition** is
+/// therefore a run no healthy net reaches, and it scales with the net instead of with a rig: eight
+/// bonded validators move the threshold, rather than quietly making every stall look like pacing.
+///
+/// The partition comes from the refusal itself ([`NoAdvance::Coverage`]/[`NoAdvance::Support`] carry
+/// it), so the rule reads the gate's own arithmetic rather than a second copy of it (`Split`, law 51b).
+fn stall_threshold(partition: usize) -> u64 {
+    2 * partition.max(1) as u64
+}
+
+/// The partition a verdict was taken against, when it carries one.
+fn verdict_partition(reason: &NoAdvance<Validator>) -> Option<usize> {
+    match reason {
+        NoAdvance::Coverage { partition, .. } | NoAdvance::Support { partition, .. } => {
+            Some(*partition)
+        }
+        // The progress guard is not a refusal at all: the derivation would publish what is already
+        // finalised, so there is nothing to advance *to*. It carries no partition because it decided
+        // nothing about one.
+        NoAdvance::AlreadyPublished => None,
+    }
+}
 
 /// How many merges have returned a report that was not quiet (#280) — a dropped chain, or a violated
 /// invariant. The log carries the detail; this is what makes the event **countable**, which is the half
 /// the live incident lacked: `reject_whole_blocks` fired with no counter and no line anywhere moving.
 static NON_QUIET_MERGE_REPORTS: AtomicU64 = AtomicU64::new(0);
 
-/// Record one observation of the gate's verdict: the reason when finality is stalled, `None` when it is
-/// not. Called on every block's validation, so the surface follows the chain rather than the log.
+/// Record one observation of the gate's verdict: the reason when the derivation was refused, `None` when
+/// it advanced. Called on every block's validation, so the surface follows the chain rather than the log.
+///
+/// Three outcomes, and the middle one is why this function is not two lines:
+///
+/// * **advanced** (`None`) — the run resets, the sustained flag clears;
+/// * **refused** (`Coverage`/`Support`) — the run grows, and once it reaches [`stall_threshold`] the
+///   node is *stalled*: the flag sets and, on the transition, an episode is counted;
+/// * **nothing to publish** (`AlreadyPublished`) — neither. The derivation has no fringe to publish
+///   because the published one is current, which is the state a chain that is not moving *backwards*
+///   lands in; counting it as a refusal would make a quiet net look stalled.
 fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
     let rendered = reason.map(describe_no_advance);
-    let mut current = CURRENT_STALL_REASON.lock().unpoison();
-    if rendered.is_some() && current.is_none() {
-        STALL_EPISODES.fetch_add(1, Ordering::Relaxed);
+    let partition = reason.and_then(verdict_partition);
+    let sustained = CURRENT_STALL_SUSTAINED.load(Ordering::Relaxed);
+    match partition {
+        None => {
+            CONSECUTIVE_REFUSALS.store(0, Ordering::Relaxed);
+            CURRENT_STALL_SUSTAINED.store(false, Ordering::Relaxed);
+        }
+        Some(partition) => {
+            let run = CONSECUTIVE_REFUSALS.fetch_add(1, Ordering::Relaxed) + 1;
+            let stalled = run >= stall_threshold(partition);
+            CURRENT_STALL_SUSTAINED.store(stalled, Ordering::Relaxed);
+            if stalled && !sustained {
+                STALL_EPISODES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
-    *current = rendered;
+    *CURRENT_STALL_REASON.lock().unpoison() = rendered;
 }
 
-/// The reason finality is not advancing, as this node last observed it.
+/// The reason the gate last refused the derivation, as this node observed it.
 ///
 /// `None` means the last observation saw a merge that advanced — **not** "finality is healthy", which is
-/// a judgement the acceptance spec makes, not this accessor.
+/// a judgement the acceptance spec makes, not this accessor. On a producing chain this is usually
+/// `Some(..)` while the chain is perfectly healthy; read [`finality_stall_sustained`] for the distinction.
 pub fn finality_stall_reason() -> Option<String> {
     CURRENT_STALL_REASON.lock().unpoison().clone()
+}
+
+/// **Whether this node is stalled right now** — the derivation has been refused
+/// [`stall_threshold`] times in a row, so the run of refusals has outlasted a round. This is what
+/// `finalityStallEpisodes` counts, and what an operator should alarm on; the reason string beside it is
+/// the diagnosis for whichever state the node is in.
+pub fn finality_stall_sustained() -> bool {
+    CURRENT_STALL_SUSTAINED.load(Ordering::Relaxed)
 }
 
 /// How many finality stalls this process has entered (monotone).
@@ -514,9 +587,13 @@ fn describe_replay_failure(failure: &ReplayFailure) -> String {
 
 fn describe_no_advance(reason: &NoAdvance<Validator>) -> String {
     match reason {
-        NoAdvance::Coverage { missing, senders } => format!(
-            "the unfinalized region has no layer covering the partition — {} of its senders have a \
-             minimum message and {} do not ({})",
+        NoAdvance::Coverage {
+            missing,
+            senders,
+            partition,
+        } => format!(
+            "the unfinalized region has no layer covering the partition — {} of its {partition} \
+             senders have a minimum message and {} do not ({})",
             senders.len(),
             missing.len(),
             missing
@@ -530,9 +607,11 @@ fn describe_no_advance(reason: &NoAdvance<Validator>) -> String {
             total,
             full_partitions,
             candidates,
+            partition,
         } => format!(
             "a layer exists but its supporting stake is not a supermajority — {supporting} of {total} \
-             ({full_partitions} full partition(s) among {candidates} candidate(s))"
+             ({full_partitions} full partition(s) among {candidates} candidate(s) of a {partition}-sender \
+             partition)"
         ),
         NoAdvance::AlreadyPublished => {
             "the derivation would publish the fringe that is already finalized".to_string()
@@ -1011,51 +1090,118 @@ mod tests {
     ///
     /// The assertions are `>=`/`>` against a captured reading rather than exact deltas, because the
     /// counters are process-wide and libtest runs this module's tests concurrently.
+    /// **The whole contract in one test, deliberately.** These statics are process-wide and libtest runs
+    /// a module's tests concurrently, so a second test touching them would make both flaky — the
+    /// assertions below are about a *sequence* (refuse, refuse, advance, refuse), and a sequence cannot
+    /// be split across parallel tests.
+    ///
+    /// What it pins, in #318's terms: a single refusal on a producing chain is **pacing**, not a stall —
+    /// the derivation advances at least once per round, so a run shorter than twice the partition is
+    /// what a healthy net shows and what used to be counted here.
     #[test]
-    fn the_stall_surface_follows_the_gate_and_counts_episodes() {
+    fn a_stall_is_a_run_of_refusals_and_the_run_scales_with_the_partition() {
+        // The measurement #318 recorded, as a verdict: one validator's candidate, seen by the whole
+        // partition, on a four-sender net. On the surface this is "100 of 400" — the ordinary state
+        // between the first and the last block of a round.
+        let partial = |partition: usize, total: i128| NoAdvance::Support {
+            supporting: 100,
+            total,
+            full_partitions: 1,
+            candidates: 1,
+            partition,
+        };
+
+        note_finality_stall(None);
+        assert_eq!(
+            finality_stall_reason(),
+            None,
+            "an advance clears the verdict"
+        );
+        assert!(!finality_stall_sustained());
         let before = finality_stall_episodes();
 
-        note_finality_stall(None);
-        assert_eq!(finality_stall_reason(), None, "no stall → no reason");
-        assert_eq!(
-            finality_stall_episodes(),
-            before,
-            "and a clear is not an episode"
-        );
-
-        // The gate's own rendering, numbers and all: the surface must not re-derive it, or it could
-        // disagree with the decision it explains.
-        let stalled = NoAdvance::Support {
-            supporting: 400,
-            total: 800,
-            full_partitions: 4,
-            candidates: 4,
-        };
-        note_finality_stall(Some(&stalled));
-        let reason = finality_stall_reason().expect("a stall is reported");
+        // Seven refusals on a four-sender net: below `2 * 4`. Pacing, and the counter must not move —
+        // this is the assertion the old definition failed, where each round added an "episode".
+        for _ in 0..7 {
+            note_finality_stall(Some(&partial(4, 400)));
+            assert!(
+                !finality_stall_sustained(),
+                "a run shorter than two rounds is not a stall"
+            );
+            assert_eq!(
+                finality_stall_episodes(),
+                before,
+                "and it is not an episode: this is #318's defect"
+            );
+        }
+        // The verdict is still reported while the run is short — the surface shows the *diagnosis*
+        // whether or not the state has become a stall, which is what F-U10-01 asked of it.
+        let reason = finality_stall_reason().expect("the per-observation verdict is reported");
         assert!(
-            reason.contains("400 of 800") && reason.contains("not a supermajority"),
-            "the reason carries the numbers that make it a diagnosis: {reason}"
+            reason.contains("100 of 400") && reason.contains("of a 4-sender partition"),
+            "the reason carries the layer and the partition it was measured against: {reason}"
         );
-        let after_first = finality_stall_episodes();
-        assert!(after_first > before, "entering a stall is an episode");
 
-        // A second observation of the *same* stall is not a new episode: counting observations would
-        // count every block of a long stall, which is a different and less useful quantity.
-        note_finality_stall(Some(&stalled));
+        // The eighth consecutive refusal reaches `2 * 4`, and *that* is the stall.
+        note_finality_stall(Some(&partial(4, 400)));
+        assert!(finality_stall_sustained(), "the run has outlasted a round");
+        let first_episode = finality_stall_episodes();
+        assert!(first_episode > before, "entering a stall is one episode");
+
+        // Further refusals are the same stall, however many.
+        for _ in 0..20 {
+            note_finality_stall(Some(&partial(4, 400)));
+        }
         assert_eq!(
             finality_stall_episodes(),
-            after_first,
-            "the same stall is one episode however many times it is observed"
+            first_episode,
+            "one stall is one episode however many observations it takes"
         );
 
-        // A clear ends it, so the next stall is a second episode.
+        // An advance ends it, and the next run is a second episode.
         note_finality_stall(None);
+        assert!(!finality_stall_sustained(), "an advance is a recovery");
         assert_eq!(finality_stall_reason(), None, "and the reason goes with it");
-        note_finality_stall(Some(&stalled));
+        for _ in 0..8 {
+            note_finality_stall(Some(&partial(4, 400)));
+        }
         assert!(
-            finality_stall_episodes() > after_first,
+            finality_stall_episodes() > first_episode,
             "a stall after a recovery is a new episode"
+        );
+
+        // **The threshold is the net's, not the rig's.** Eight refusals are a stall on four senders and
+        // pacing on thirty, because a round on thirty is longer — the number the rule reads is the
+        // gate's own partition, so this needs no constant to be right about both.
+        note_finality_stall(None);
+        for _ in 0..8 {
+            note_finality_stall(Some(&partial(30, 3000)));
+        }
+        assert!(
+            !finality_stall_sustained(),
+            "eight refusals on a thirty-sender net are still inside a round"
+        );
+
+        // **`AlreadyPublished` is neither a refusal nor an advance**: the derivation has nothing to
+        // publish because what is published is current. Counting it would make a quiet chain look
+        // stalled, and it carries no partition because it decided nothing about one.
+        let before_guard = finality_stall_episodes();
+        note_finality_stall(None);
+        for _ in 0..50 {
+            note_finality_stall(Some(&NoAdvance::AlreadyPublished));
+        }
+        assert!(
+            !finality_stall_sustained(),
+            "nothing to publish is not a stall"
+        );
+        assert_eq!(
+            finality_stall_episodes(),
+            before_guard,
+            "and the progress guard counts no episode"
+        );
+        assert!(
+            finality_stall_reason().is_some(),
+            "the guard's verdict is still the last verdict observed"
         );
     }
 

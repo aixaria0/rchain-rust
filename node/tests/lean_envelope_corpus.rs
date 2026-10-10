@@ -269,6 +269,7 @@ fn dto_by_name(name: &str) -> Value {
             autopropose_timer_halted: false,
             stale_snapshot_self_equivocations: 0,
             finality_stall: None,
+            finality_stalled: false,
             finality_stall_episodes: 0,
             non_quiet_merge_reports: 0,
             sync: None,

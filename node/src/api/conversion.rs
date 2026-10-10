@@ -60,6 +60,7 @@ pub fn to_api_status(
         autopropose_timer_halted: health.autopropose_timer_halted,
         stale_snapshot_self_equivocations: health.stale_snapshot_self_equivocations,
         finality_stall: finality.stall_reason.clone(),
+        finality_stalled: finality.stall_sustained,
         finality_stall_episodes: finality.stall_episodes,
         non_quiet_merge_reports: finality.non_quiet_merge_reports,
         // Law 69's other half: the sync task's own state, threaded in by the caller exactly as
@@ -258,6 +259,7 @@ mod tests {
             stall_reason: Some(
                 "a layer exists but its supporting stake is not a supermajority".to_string(),
             ),
+            stall_sustained: true,
             stall_episodes: 7,
             non_quiet_merge_reports: 2,
             unrestorable_records: 1,
@@ -285,7 +287,10 @@ mod tests {
             api.finality_stall.as_deref(),
             Some("a layer exists but its supporting stake is not a supermajority")
         );
-        // …with the episode count beside it, so "stalled now" is distinguishable from "recovered".
+        // …with the sustained flag and the episode count beside it, so "stalled now" is
+        // distinguishable from "recovered" — and, since #318, from the ordinary per-round refusal a
+        // healthy producing chain reports through the reason above.
+        assert!(api.finality_stalled);
         assert_eq!(api.finality_stall_episodes, 7);
         // #280's ledger, counted: the number the live incident would have moved, and now a fifth source
         // rather than the third — the merge's own report, not the proposer's health.

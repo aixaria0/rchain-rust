@@ -134,12 +134,18 @@ impl ProposeHealth {
 /// that back them live beside their writers in `crate::interpreter_util`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalityHealth {
-    /// The reason finality is not advancing, as last observed — `None` when the last observation saw a
-    /// merge that advanced. **Not** a health verdict: it reports the gate's own reason when there is
-    /// one, and says nothing when there is not.
+    /// The gate's verdict on the **last block validated**, rendered — `None` when that derivation
+    /// advanced. **Not** a health verdict, and not an alarm: on a producing chain this is usually
+    /// `Some(..)` while the chain is perfectly healthy, because a block justifies only the messages
+    /// that existed when it was built (#318). Read [`stall_sustained`](Self::stall_sustained) for the
+    /// distinction.
     pub stall_reason: Option<String>,
-    /// How many times this process has **entered** a stall, monotone — so a reader can tell "stalled
-    /// now" from "stalled and recovered" without watching.
+    /// **Whether the derivation has been refused long enough to be stalled** — a run of refusals
+    /// reaching twice the partition, so it has outlasted a round. This is the state to alarm on; the
+    /// reason beside it is the diagnosis for whichever state the node is in.
+    pub stall_sustained: bool,
+    /// How many times this process has **entered** a stall — the sustained state above, monotone — so a
+    /// reader can tell "stalled now" from "stalled and recovered" without watching.
     pub stall_episodes: u64,
     /// Merges whose report was not quiet: a dropped chain, or an invariant violation (#280). The log
     /// carries the detail; this is the number the live incident would have moved.
@@ -207,6 +213,7 @@ pub trait BlockApi: Send + Sync {
     async fn finality_health(&self) -> FinalityHealth {
         FinalityHealth {
             stall_reason: crate::interpreter_util::finality_stall_reason(),
+            stall_sustained: crate::interpreter_util::finality_stall_sustained(),
             stall_episodes: crate::interpreter_util::finality_stall_episodes(),
             non_quiet_merge_reports: crate::interpreter_util::non_quiet_merge_reports(),
             unrestorable_records: crate::interpreter_util::unrestorable_records(),
