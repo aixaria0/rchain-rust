@@ -37,6 +37,7 @@ pub fn to_api_status(
     poison_recoveries: u64,
     tasks_panicked: u64,
     tasks_exited: u64,
+    undelivered_sends: u64,
 ) -> ApiStatus {
     ApiStatus {
         version: VersionInfo {
@@ -74,6 +75,7 @@ pub fn to_api_status(
         unrestorable_block: finality.unrestorable_block.clone(),
         tasks_panicked,
         tasks_exited,
+        undelivered_sends,
     }
 }
 
@@ -263,7 +265,7 @@ mod tests {
         };
         // The sync reading is a parameter like `finality`, and the `None` arm is the ordinary one:
         // this process's sync task has returned.
-        let api = to_api_status(&status, &caps, &health, &finality, None, 11, 2, 40);
+        let api = to_api_status(&status, &caps, &health, &finality, None, 11, 2, 40, 7);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
@@ -299,6 +301,10 @@ mod tests {
         // return are different facts — the return is the one nothing else reports.
         assert_eq!(api.tasks_panicked, 2);
         assert_eq!(api.tasks_exited, 40);
+        // C254's other residual: the closed-channel door's count reaches the surface. The door has
+        // counted every undelivered send since it landed and nothing published the count, so this is
+        // the increment its own module doc named — the assertion is that the parameter travels.
+        assert_eq!(api.undelivered_sends, 7);
         // Law 69's other half: a `None` reading travels as a null `sync`, which is what an operator
         // sees on a node that is not syncing — the ordinary reading, and the one that must not be
         // confused with "synced fine". The `Some` shape needs a running sync task, and its decision is

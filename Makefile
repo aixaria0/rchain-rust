@@ -65,6 +65,7 @@ check-register:
 	tools/check-workflow-pins.sh
 	tools/check-review-ledger.sh --gate
 	tools/check-hazop-worksheet.sh --gate
+	tools/check-spawn-observability.sh --gate
 
 # The formal gate: build the Lean and Coq specifications, refuse a stale or un-consumed conformance
 # corpus, and check the Rust 1:1 against it. `spec` (below) is only the Lean half — this is what CI

@@ -944,7 +944,8 @@ pub const OPENAPI_JSON: &str = r##"{
           "unrestorableRecords": { "type": "integer", "format": "int64", "description": "Blocks this node has given up on: a divergence record whose revalidation budget is spent and which still fails here, so the node refuses it and its descendants for the process lifetime. Nothing resets a running node yet; this is the counter a reset would act on" },
           "unrestorableBlock": { "type": "string", "nullable": true, "description": "The block the node last gave up on, as '<hash> (seq <n>)'. Null when it never has" },
           "tasksPanicked": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have panicked. Before the supervisor these deaths were invisible: a bare tokio::spawn whose handle was dropped" },
-          "tasksExited": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have returned normally, counted apart from panics because a return is the quieter death — nothing announces it anywhere" }
+          "tasksExited": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have returned normally, counted apart from panics because a return is the quieter death — nothing announces it anywhere" },
+          "undeliveredSends": { "type": "integer", "format": "int64", "description": "Sends a closed channel swallowed. Every production send goes through rchain_shared::chan, which keeps the decision and counts it; monotone and process-wide, so a message dropped into a closed channel is a number a probe can read rather than a silence" }
         }
       },
       "DeployData": {
@@ -1577,6 +1578,7 @@ mod tests {
             unrestorable_block: None,
             tasks_panicked: 0,
             tasks_exited: 0,
+            undelivered_sends: 0,
         }
     }
 

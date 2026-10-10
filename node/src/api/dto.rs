@@ -173,6 +173,12 @@ pub struct ApiStatus {
     /// …and how many have **returned**, which is the quieter death and the reason the two are counted
     /// apart: a panic announces itself once, a return does not announce itself anywhere.
     pub tasks_exited: u64,
+    /// **How many sends a closed channel swallowed** (C254). Every production `send` goes through
+    /// `rchain_shared::chan`, which keeps the decision *and* counts it, so the count is the other half
+    /// of the closed-channel door — the door made the event loud at the call site, this makes it
+    /// countable on a surface. Monotone and process-wide. It was counted from the day the door landed
+    /// and published by nothing, which its own module doc said out loud.
+    pub undelivered_sends: u64,
 }
 
 /// The LFS sync task's state, carried under `sync` on the status response (law 69's other half).
@@ -320,6 +326,7 @@ mod tests {
             unrestorable_block: None,
             tasks_panicked: 0,
             tasks_exited: 0,
+            undelivered_sends: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

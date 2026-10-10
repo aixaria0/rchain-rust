@@ -1063,6 +1063,11 @@ impl WebApi for WebApiImpl {
             // probe can read rather than an absence an operator has to infer from the silence.
             rchain_shared::supervise::tasks_panicked(),
             rchain_shared::supervise::tasks_exited(),
+            // C254's other residual: `rchain_shared::chan` counts every send a closed channel
+            // swallowed, and nothing published the count — its own module doc said "the surface beside
+            // `poisonRecoveries` … is the next increment". Same shape as the two above: process-wide,
+            // monotone, and the number a silently dropped message would have moved.
+            rchain_shared::chan::undelivered_sends(),
         ))
     }
 
