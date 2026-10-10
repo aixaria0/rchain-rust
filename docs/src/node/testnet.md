@@ -323,33 +323,46 @@ stating what it does and does not do, because **it is not a sync**.
   nodes. It **never copies identity**: a joiner holding the survivor's key would be an equivocator, and no
   agreement check would see it until the two later signed conflicting blocks.
 - **It is a fiat, and the tool prints that before it applies.** The joiners adopt the survivor's view of the
-  chain, including the blocks above the agreed anchor that only the survivor accepted — so running it is the
-  operator choosing a winner. That is why the plan is printed first, why `--apply` is required, and why the
-  tool refuses outright when its nodes do not already agree: a node with no usable finalised block, or nodes
-  reporting different heights or hashes, stop it at the plan phase.
-- **The anchor is required, not computed.** Every listed node must report the **same** finalised block —
-  height *and* hash — or the tool refuses and says what differs. That is deliberate, and it is a limit
-  rather than a design flourish: a block producer is not a validator vote, and the heights API cannot prove
-  stake-weighted finalised ancestry, so no quorum is inferred from it. A stake-weighted meet would need
-  reports authenticated to bonded validators, carrying a signed vote, with verified ancestry — issue
-  [#287](https://github.com/rchain-community/rchain-rust/issues/287)'s design, which is not implemented here.
-  This gate is **the design as it stands**, not a placeholder for one (register row **C261**), and its
-  consequence is worth stating plainly: a divergence whose four heads share no agreed anchor is **refused**,
-  not resolved, because there is nothing this API can prove about which of them the network committed to.
-- **When nothing can be computed, you name the block.** The state this tool exists for — heads that
-  disagree *and* no node holding a usable finalised block — is exactly the state where a computed anchor is
-  impossible, and until 2026-10-10 the tool refused there and stopped, which left its own recovery path
-  unreachable (register row **C269**). It now takes `RECONCILE_ANCHOR=<block hash>`: the block you know the
-  net last agreed on. The tool checks only that your master holds it, says in the plan that this is **your**
-  root and not a meet it computed, reports what each node claimed rather than resolving it, and enumerates
-  what is above your point. Configure the joiners with `--sync-anchor <the same hash>` and the wipe path
-  resyncs to it; `--restore-from-master` does not need the flag, because it copies the master's chain state.
-  Nothing above your anchor is taken on trust either way: every block above it is validated, not installed.
-- **Its equivocation check is a report, not a proof.** The tool's section 2 flags a sender with two distinct
-  blocks at one height, read from the block API's own `sender` field. It verifies no signature and binds no
-  endpoint to a bonded key, so what it prints is a suspicion to chase; nothing is dropped or reweighted on
-  it, and the proof — and the slash — belong to the node ([#290](https://github.com/rchain-community/rchain-rust/issues/290)'s
-  part 1). A validator that is merely quiet, slow or absent keeps its weight: silence is not evidence.
+  chain, including the blocks above the reconciliation point that only the survivor accepted — so running it is
+  the operator choosing a winner. That is why the plan is printed first, why `--apply` is required, and why the
+  tool refuses outright where it cannot **prove** its point: an attestation that does not verify, an ancestry
+  walk that does not close, or a stake fraction that is not a strict supermajority all stop it at the plan
+  phase.
+- **The anchor is computed: the meet.** Every listed node is asked to **attest** the block it has finalised
+  (`/api/v1/finality-attestation`, bound to a nonce the tool draws for the run, signed by the node's validator
+  key), and every block the tool touches is fetched as the **preimage of its hash**
+  (`/api/v1/block/{hash}/raw`) and verified: the bytes must hash to the claimed hash, and the signature must
+  verify under the claimed sender. Both checks are the node's own rules, reached through
+  `rnode verify-block` / `rnode verify-attestation`, so nothing here re-derives a rule the node owns — a
+  second implementation that disagrees with the first is its own failure class. The reconciliation point is
+  then **the deepest block a strict supermajority of stake has finalised** (`3 * stake > 2 * total` on
+  integers, so exactly two thirds is not one), which tolerates the ordinary lag between honest nodes —
+  measured on this net: three survivors reading finalised 102 / 97 / 110 — and can neither be dragged back by
+  a laggard nor vetoed by one. Ancestry is checked by walking **verified** justifications; where the counted
+  nodes' blocks are not on one branch, the walk steps down until they meet, bounded, and refuses at the bound
+  rather than guessing below it. The tool prints the fraction it computed, the nodes it counted, and the ones
+  it left out and why (register row **C272**; before this it required every node to report the *identical*
+  finalised block, which is not a property a producing chain has).
+- **Where nothing is finalised, you name the block.** A net with no usable finalised block anywhere is
+  exactly the state where a computed anchor is impossible — there is nothing to meet *on* — and until
+  2026-10-10 the tool refused there and stopped, which left its own recovery path unreachable (register row
+  **C269**). It takes `RECONCILE_ANCHOR=<block hash>`: the block you know the net last agreed on. The tool
+  checks only that your master holds it, says in the plan that this is **your** root and not a meet it
+  computed, reports what each node claimed rather than resolving it, and enumerates what is above your point.
+  Configure the joiners with `--sync-anchor <the same hash>` and the wipe path resyncs to it;
+  `--restore-from-master` does not need the flag, because it copies the master's chain state. Nothing above
+  your anchor is taken on trust either way: every block above it is validated, not installed.
+- **Its equivocation check proves what it can.** Section 2 still **reports** a sender with two distinct blocks
+  at one height, read from the block API's own `sender` field — one endpoint's word, and nothing is decided on
+  it. Section 3 **proves** an equivocation where the artefacts reach: two distinct blocks by one sender at one
+  height, *each fetched and verified*, with the sender read from the verified bytes rather than from the
+  summary that suggested where to look. A proven equivocator's stake leaves the numerator **and** the
+  denominator, which is the only way a pool may legitimately shrink — never by silence, because a threshold
+  that drops when a validator goes quiet would let whoever can silence honest nodes finalise with a minority.
+  The proof scans a bounded window of heights around the deepest attested block and says which, so the absence
+  of a proof is read as a bound rather than a clean bill of health. A validator that is merely quiet, slow or
+  absent keeps its weight: silence is not evidence. The on-chain slash is still the node's
+  ([#290](https://github.com/rchain-community/rchain-rust/issues/290)'s part 1).
 - **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated **one record
   per unique block** — the block's own hash, the endpoints that served it, its accepted deploy count, and the
   **signatures of the deploys its merge rejected** (`rejectedDeploys`, base16; a deploy's id *is* its

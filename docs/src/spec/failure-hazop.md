@@ -165,7 +165,7 @@ for a second pass for exactly that reason. The folds are its folds. **This node 
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U5-01** | NO | **There is no reset-and-resync path for a running node.** `NodeSyncing` is entered only at boot, when the DAG is empty; once running, a permanent divergence has no way back but deleting the shard data dir by hand | the boot guard is an `if` chain — `repr.dag_set.is_empty() && standalone` → genesis, `else if repr.dag_set.is_empty()` → `NodeSyncing::new` (`casper/src/engine/node_launch.rs:249`, `:265`), `else` → straight to `NodeRunning` (`:316`) — and `NodeSyncing::new` is called **nowhere else**; a running node that diverges stays in `NodeRunning` and permanently refuses the block and its descendants (`casper/src/multi_parent_casper.rs:883`, neglected-invalid rule), while `populate_dag` is reachable only from the sync task the boot branch starts (`casper/src/engine/node_syncing.rs:515`) | loud (`log.warn` per refused block) and **permanent** — the node keeps serving and never rejoins the chain | Terminal / Unrestorable | **R3** (owner: #287) | owed: a test that a diverged running node re-enters sync |
+| **F-U5-01** | NO | **There is no reset-and-resync path for a running node.** `NodeSyncing` is entered only at boot, when the DAG is empty; once running, a permanent divergence has no way back but deleting the shard data dir by hand | the boot guard is an `if` chain — `repr.dag_set.is_empty() && standalone` → genesis, `else if repr.dag_set.is_empty()` → `NodeSyncing::new` (`casper/src/engine/node_launch.rs:249`, `:265`), `else` → straight to `NodeRunning` (`:316`) — and `NodeSyncing::new` is called **nowhere else**; a running node that diverges stays in `NodeRunning` and permanently refuses the block and its descendants (`casper/src/multi_parent_casper.rs:883`, neglected-invalid rule), while `populate_dag` is reachable only from the sync task the boot branch starts (`casper/src/engine/node_syncing.rs:515`) | loud (`log.warn` per refused block) and **permanent** — the node keeps serving and never rejoins the chain | Terminal / Unrestorable | **R3** (owner: **#320**) | owed: a test that a diverged running node re-enters sync |
 | **F-U5-02** | REVERSE | **The divergence has no inverse.** The refusal rules are absorbing: the only local undo is capped at three attempts and then the refusal is permanent for the process lifetime | `restore_is_warranted` requires `stored.restore_attempts < RESTORE_ATTEMPT_LIMIT` (`casper/src/multi_parent_casper.rs:478`, the constant `= 3` at `:434`), the count is persisted so it survives restart (`:430`), and `restore_divergent_justifications` (`:652`) is the only rule that could clear the refusal — after three it never fires again | loud, bounded, and then **absorbing** (C173's shape: `Persistent`) | Terminal / Persistent | **R3** | spec/Rchain/Casper/Stranding.lean::the_refusal_is_persistent — *the guard on the fix*: the theorem is stated over the rule set **without** a restoring rule, so adding one (which is what R3 is) reddens it by construction |
 
 **F-U5-02 is the programme's sharpest instrument.** The Lean module is named `Stranding.lean`, and its
@@ -299,7 +299,7 @@ contested there in CH-U10-03 and this pass does not reopen it). The folds are it
                 path once running  to restore from, and    the three
                      │             F-U5-01's absence is    unbounded ones
                    ── R3 ──        what makes it permanent  are the whole
-                (owner: #287)             │                 finding
+                (owner: #320)             │                 finding
                                       ── R3 ──
                                    (owner: #287)
 ```
@@ -317,19 +317,38 @@ down — as a *comment*, in `casper/src/dag.rs:534` ("the only way back is delet
 path at all: the 2026-10-08 witness recorded four divergent heads, one restart experiment on two nodes
 (which restored production and added two more heads), and finality frozen at 101 throughout.
 
-**The owner.** The reconciliation utility is **#287** — "bring a busted network back to one chain without
-a genesis". Its design is the R3 rung stated as an operator tool: read `last-finalized-block` from every
-node and **stop if they disagree**; extract the deploys above it through the block APIs; stop the nodes,
-wipe, resync from the finalised fringe; re-submit the extracted deploys in order and report every one
-that fails; verify that all nodes agree on height **and block hashes**. Its invariants are this page's
-TE-5/TE-6 separation in one line: *never* treat an unfinalised block as the truth, and *never* drop a
-deploy silently.
+**The owner, and what it became.** The reconciliation utility is **#287** — "bring a busted network back
+to one chain without a genesis" — and its design has been corrected twice by measurement since this page
+was written, which is why the paragraph here describes what it *does* rather than what it was first asked
+for:
+
+- the first form was "read `last-finalized-block` from every node and **stop if they disagree**", which
+  the issue replaced with a **meet** — the deepest block a strict supermajority of *stake* has finalised,
+  because stopping leaves the operator to choose a winner by hand and an operator choosing is how a stall
+  becomes a lie;
+- the second form was a **unanimous-anchor gate** (identical finalised height *and* hash on every node),
+  which is honest and unusable where the tool is needed: on a four-validator net with two stopped, the
+  three survivors read finalised 102 / 97 / 110, which is an ordinary producing chain rather than a
+  disagreement. That gate was #287's design "as it stands" for a while, and the tool said so everywhere it
+  printed;
+- what is in the tree now (§98) is the **meet over artefacts**: every node *attests* its finalised block
+  (`/api/finality-attestation`, signed by its validator key and bound to the run's nonce), every block the
+  tool touches is verified from the preimage of its hash (`/api/block/{hash}/raw`), the point is the
+  deepest block a strict supermajority of stake has finalised, and a *proven* equivocator's stake leaves
+  both sides of the fraction. Where nothing is finalised at all there is nothing to meet on, and the
+  operator names the block (`RECONCILE_ANCHOR`), which the tool labels as their root rather than a meet it
+  computed.
+
+Its invariants are this page's TE-5/TE-6 separation in one line: *never* treat an unfinalised block as the
+truth, and *never* drop a deploy silently — and, after §98, a third: *never* weigh a report it has not
+verified.
 
 **What stays in the tree when #287 lands.** The utility is the operator's tool (R4's runbook, made
-executable). The *node-side* rung — a running node that detects its own unrecoverable divergence and
-resets itself — is F-U5-01, and it is a separate unit: #287 repairs a chain from outside, while F-U5-01
-would let a node rejoin one from inside. They share the detection (a divergence record that exhausts its
-restore budget) and the reset primitive; they do not share a deliverable.
+executable), and it is delivered — the operator path exercised on a frozen net, the meet exercised on a
+devnet. The *node-side* rung — a running node that detects its own unrecoverable divergence and resets
+itself — is F-U5-01, and it is a separate unit: #287 repairs a chain from outside, while F-U5-01 would let
+a node rejoin one from inside. They share the detection (a divergence record that exhausts its restore
+budget) and the reset primitive; they do not share a deliverable, and F-U5-01's acting half is **#320**.
 
 **Ships dark.** A reset is destructive. If F-U5-01 is built, it ships detect + log + count first, so an
 operator sees what it *would* have done before it is allowed to do it — and F-U10-01's stall-reason

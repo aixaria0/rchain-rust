@@ -9403,8 +9403,10 @@ the same gap behind them.
   field that closes it is `MergeReport::final_scope_rejected_chains`.
 - **C249 was a finding wrapped around a rung.** Its defect half is closed (both silent paths are loud,
   with counters on `/api/status`); the reset rung it also names is **F-U5-01 on the failure-HAZOP
-  worksheet**, dispositioned R3, **owned by #287**, with its owed test and its ship-dark rule written
-  down. Closing the row de-duplicates the register rather than dropping the work.
+  worksheet**, dispositioned R3, with its owed test and its ship-dark rule written down. This pass wrote
+  "owned by #287" here, and **§98 corrects that**: the worksheet's own §5, C249's close cell and pass §73
+  all say the per-node reset is a *separate unit* from the net-wide operator tool, so it was given an
+  owner of its own (**#320**) rather than left attributed to an issue that is closing.
 - **C254 landed its two residuals**: the source check `tools/check-spawn-observability.sh` (30 sites in
   eight ingress files — 6 supervised, 7 held, 17 bare-with-a-reason, both directions of staleness
   checked, negative control run) and the closed-channel count on the status surface.
@@ -9518,3 +9520,175 @@ t+100s  requests=184  distinct-paths=171  restored=1  joiner h=86  master h=182
 advances through distinct paths and never repeats a slice — which is what "the page walk advances" means,
 and it is the row's own close condition rather than an argument from absence. The phase-F count is
 recorded in the capture as what it is: a walk still in progress when the window closed.
+
+---
+
+## 98. The meet, and the two artefacts it needed (C272, #287)
+
+**What this pass is.** `#287` — the reconciliation utility — has held two things open since §89: the
+**meet** and the **venue**. The venue is a live-testnet drill this box cannot run (no droplet key) and is
+recorded as owed below. This pass is the other half: the user's ruling was to **build the meet properly**
+rather than re-scope it away, and doing that turned out to require something the tree did not have.
+
+### The two facts that decided the design, neither of which was in the issue
+
+**1. There is no artefact by which a report can be attributed to a bonded validator.** The whole route
+table (`node/src/web/http.rs`) has no `sign`, `nonce`, `challenge`, `identity` or `publicKey` endpoint,
+and `ValidatorIdentity` (`casper/src/validator_identity.rs`) is never serialised. So obligations 1 and 2 —
+"an endpoint bound to a bonded validator" and "a signed vote" — did not exist to be read.
+
+**2. And the block API could not be self-verified either, which is the deeper one.** `LightBlockInfo`
+carries `sender`, `sig`, `sigAlgorithm`, `justifications`, `bonds`, `blockNumber`, `seqNum` and
+`postStateHash` — everything a meet needs — but `construct_light_block_info`
+(`casper/src/api/block_api.rs`) maps a stored `BlockMessage` *into* it, and the canonical protobuf the
+hash is taken over is not reconstructible from it: deploys lose their raw encoding and
+`state.system_deploys` is dropped outright. A client could therefore prove *"key S signed the 32-byte
+value H"* and could not prove *"H is the hash of the block whose height, seq_num, bonds and
+justifications are these"*. Every field a recovery decision rested on was the node's word — which is
+exactly why weighting reports would have been "another inferred quorum", the error class #302 already
+paid for once (a proposer's stake summed once per *observation*, printing "400 of 400" for one
+validator's 100 of 400).
+
+**And one path was closed rather than taken.** The tool could have re-derived the finality rule client-side
+— walk `justifications`, compute the supporting stake, decide "finalised". It must not: the codebase's own
+note on `NoAdvance` (`block-storage/src/dag/finalizer.rs`) says two implementations of one rule can
+disagree (`Split`, law 51b), and a recovery tool is the last place that should be discovering a second
+implementation that disagrees with the first. So the split is deliberate: **the finality rule stays in the
+node; only the two checks a client genuinely needs move out, and they move as the node's own functions.**
+
+### What landed
+
+**The node's artefacts (C272).** Two read-only additions, both in law 43's catalog:
+
+- `GET /api/block/{hash}/raw` (`RawBlock`) answers with `to_bytes_cleared()` — *exactly* the preimage
+  `hash_block` hashes — plus the signature over that hash. A client hashes the bytes, compares to the
+  claimed hash, verifies `sig` under `sender`, and then reads the height, the seq_num, the justifications
+  and the bond map off bytes it verified.
+- `GET /api/finality-attestation?nonce=…` (`FinalityAttestation`) answers with the node's finalised block
+  signed by its validator key over `blake2b256("rchain-finality-attestation-v1" || nonce || blockHash)`
+  (`attestation_prehash`, one function shared by the signer and the verifier). The domain tag keeps a
+  signature over 32 bytes from being reusable as another statement over 32 bytes; the caller's nonce is
+  *signed*, so a reply captured from an earlier run is not an answer to a later one; and the signature is
+  what makes a false finality claim attributable rather than anonymous.
+- `rnode verify-block` / `rnode verify-attestation` are the verifiers, as subcommands rather than shell
+  code, so the checks are `casper::proto_util::hash_block` and `casper::validate::block_signature` — the
+  node's rules, called once.
+
+**The meet (`tools/reconcile-network.sh` §3).** Every node attests; every block the tool touches is
+verified; the anchor is the **deepest block a strict supermajority of stake has finalised**
+(`3 * stake > 2 * total` on integers — exactly two thirds is not one). Nodes are ordered by the height
+they attested and accumulated until the stake clears the threshold, so a lagging node neither drags the
+point back nor vetoes the recovery; nodes *at* the crossing height are kept, because dropping them would
+name a laggard that is not one; and the ones left out are printed. Where the subset's attested blocks are
+not on one branch, the candidate is the shallowest and is walked down its own **verified** ancestry until
+it is an ancestor of every member — bounded, and a refusal at the bound rather than a point guessed below
+it.
+
+**Obligation 4 stopped being decorative.** §2 has *reported* equivocation since #308 from the block API's
+own `sender` field — one endpoint's word — and nothing consumed it; C261 called that out as the second of
+its two guesses. §3 now **proves** what it can: two distinct blocks by one sender at one height, *each
+fetched and verified*, with the sender taken from the verified bytes. A proven equivocator's stake leaves
+the numerator **and** the denominator, which is the only way a pool may legitimately shrink, and never by
+silence: a threshold that drops when a validator goes quiet would let whoever can silence honest nodes
+finalise with a minority. The proof scans a bounded window of heights around the deepest attested block
+and prints which, so the absence of a proof reads as a bound rather than a clean bill of health.
+
+**Three refusals are new, and each is a shape the old gate could not see**: two endpoints attesting as one
+validator (one bond is one weight — counting it twice is how a single stake passes the threshold), a node
+attesting as a key the pool does not bond, and nodes whose verified bond maps differ (different
+denominators are not arithmetic; they are the state divergence the design says to stop on).
+
+### What the old gate was, and why it could not simply be repaired
+
+Until this pass §3 required every node to report the **identical** finalised height and hash. That was
+honest — it can only refuse, never fabricate — and unusable in the state the tool exists for. The
+measurement is in the tree: on a four-validator net with two stopped, the three survivors read finalised
+**102 / 97 / 110** (`spec/audit/evidence/n-anchor-drill/frozen-finality-recovery.txt`). That is an
+ordinary producing chain, not a disagreement — unanimity is not a property a producing chain has — so the
+gate refused precisely where recovery was needed, and the operator's only way through was to name the
+anchor themselves (`RECONCILE_ANCHOR`), which is a **root the tool must not present as computed**. The
+meet keeps that path for the state it is still needed in — a net with no finality left — and lifts the
+refusal from the ordinary case.
+
+### The record, corrected
+
+- **C272** is the new row: *the block API answered with a summary a client cannot verify*, closed on the
+  two routes and the verifier, with the class named as the reason C261's obligations existed.
+- **C261's close cell** said the four obligations "stay on #287, which stays open as the meet's issue".
+  They do not stay anywhere: the meet landed, which was C261's *first* alternative, after it closed on the
+  second (the anchor gate stated as the design, which was right for the tool as it then was).
+- **The runbook** (`docs/src/node/testnet.md`) said "a stake-weighted meet … issue #287's design, **which
+  is not implemented here**". It is implemented now, and the page describes what the tool computes.
+- **`docs/src/spec/failure-hazop.md` §5** still quoted #287's *superseded* design ("read
+  `last-finalized-block` from every node and **stop if they disagree**") — the rule the issue corrected on
+  2026-10-09 and this pass replaced. And **F-U5-01's owner cell** said `(owner: #287)` while §5 of the same
+  page, C249 and §73 all say the per-node reset is a *separate unit* that is "not yet anyone's", and §97
+  said "owned by #287". Adjudicated to §5: the per-node acting half is not #287's, and §287's close would
+  otherwise leave an R3 rung unowned, so it gets an owner of its own.
+- **`docs/src/spec/testnet-acceptance.md`** recorded "**Recovery from the divergent finality itself:
+  none** … the only 'recovery' documented is the operator restarting onto a chain it never synced". That
+  was true when it was written and is not any more: the utility exists, its operator path is exercised on
+  a frozen net, and its meet is exercised on a devnet. The clause now cites those runs.
+
+### What this pass does not close
+
+**The venue stays owed.** The acceptance names a live-testnet drill; this box has no `~/.ssh/id_droplet`,
+and the tool's non-local rows drive `curl`, `systemctl` and `tar` over SSH, so the apply half is not
+runnable here. The live net also runs `b4f1cbfdb`, which has neither new route, so the *new* meet cannot be
+exercised against it either until the live build moves. The read/plan half *is* runnable over plain HTTP
+and is recorded as far as it goes — named as a bound rather than reworded into a pass.
+
+**And the meet does not close C259.** Where nothing is finalised there is no block to meet *on*: the
+store-level restore remains the mechanism for that state, and `--restore-from-master` remains a labelled
+stopgap rather than a sync.
+
+### §98's rig: the meet on four real validators
+
+One devnet session (`tools/devnet.sh up --validators 4 --fresh`, autopropose, image rebuilt from this
+branch), three arms. The transcripts are `spec/audit/evidence/n-reconcile-drill/meet-*.txt`.
+
+**1. Lockstep — the meet computes.** `meet-lockstep.txt`. Every node attests, every attestation and every
+block verifies, the four bond maps agree, the strict supermajority is 400 of 400, and the point is the
+deepest block all four finalised (height 71). Exit 0 in plan mode. Two readings worth keeping: §1's
+`/api/last-finalized-block` readings already differ (63/63/63/62) while the *attested* blocks agree — the
+summary reading and the validated finalised block are not the same thing, which is part of why the meet
+attests rather than reads — and the mean per-height block count above the point is 3.5 (four siblings per
+height, one per validator), which is the DAG's normal shape and not a divergence.
+
+**2. A lagging validator — the case the gate could never handle, and the reason this pass exists.**
+`meet-lagging-validator.txt`. Validator 3 was stopped while the other three ran, then restarted while it was
+still catching up. Immediately: §1 shows four *different* finalised readings (273 / 273 / 273 / 94), which
+is the state the unanimous gate refuses by construction. The meet accepts — the three live validators
+attest the same block at height 285, the returning one attests height 97, the fraction is **300 of 400 =
+75 %**, the subset is the three, and V3 is printed as **"not in the subset (lagging, not vetoing)"**. That
+is Jim's correction working as the issue states it, on a real net: the laggard neither drags the point back
+to its own height nor vetoes the recovery, and it is rewound onto the master's DAG like any other joiner.
+
+**3. A node that does not answer — silence stays silence.** `meet-node-down.txt`. With two validators
+stopped, the two survivors attest the same block and the tool still refuses, because an unweighed node is
+not an agreeing node: *"REFUSING: V2 did not answer the attestation request"*, with the way out named (the
+node file, or `RECONCILE_ANCHOR`). Excluding a dead node is the operator's call and stays printed as theirs;
+the tool does not infer it.
+
+**And the live arms found two defects the offline fixture could not**, both now fixed and both recorded in
+that commit: the verifier's verdict was being read through `rnode`'s **stderr** — which is not empty, since
+jemalloc writes ~190 KB of allocator statistics there at exit (`stats_print:true`, `.cargo/config.toml`),
+so merging the streams put the dump in the middle of the JSON the tool parses — and the equivocation scan
+was looking **inside one endpoint**, where the evidence is not: a node refuses its peer's twin, so it holds
+only one of the pair, and the scan must aggregate the endpoints and verify the two blocks it finds. The
+first defect is the class F-U10-03 names (a diagnostic on the wrong surface); the second is a property of
+the protocol that a stubbed fixture cannot show.
+
+**The fourth arm — a live proven equivocation — was staged and did not run, and the reason is worth more
+than a green line would have been.** The cheap way to arm `--equivocation-injection` is at a node's start,
+and `tools/devnet.sh reset <n>` is the only path that recreates a container with new flags — but `reset`
+also wipes the node's store, so the armed validator rejoins an empty store against a producing master. On
+this rig it never caught up: 25 minutes in, it was still in the LFS phase at height 0 while the master had
+run to **678**, because the chain keeps growing while it hydrates (the same "a joiner against a producing
+master" shape C268 and C259 record, and the reason the windowed catch-up exists at all). So the arm is
+**staged and not run**: the right staging is the injection armed on a validator *when the net is created*,
+which needs a fresh devnet rather than a reset — that is the next thing to run, and it is named here rather
+than left as an implication that the proof has been seen live. What *is* exercised is the arithmetic: three
+fixture cases (a proven equivocator leaving both sides of the fraction, the proof named with the pool it
+shrinks, and the equivocator's attestation not being allowed to set the meet) plus the aggregation fix the
+live run forced.

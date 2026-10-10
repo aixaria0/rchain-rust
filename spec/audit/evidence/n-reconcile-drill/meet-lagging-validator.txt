@@ -1,0 +1,69 @@
+== the meet on a four-validator devnet with one validator lagging ==
+build: 152a808d4 — image rnode:local rebuilt from it
+staging: tools/devnet.sh stop devnet-validator-3; the other three ran ~100 s; start it back;
+         the tool run started ~6 s after the restart, while V3 was still LFS-syncing
+command: RECONCILE_NODES=target/drill287/nodes.txt RECONCILE_CONTROL=docker \
+           RECONCILE_RNODE=./target/debug/rnode tools/reconcile-network.sh
+
+What it shows, and it is the case the unanimous-anchor gate could never handle: the four nodes
+report DIFFERENT finalised heights in section 1 (273/273/273/94) and the returning node attests
+a different block (height 97) from the three live ones (285). The meet still computes: 300 of
+400 is a strict supermajority, the point is the deepest block the three have finalised, and the
+lagging node is named as excluded rather than asked to agree. Exit 0.
+
+==== tool transcript ====
+== 1. what each node is showing ==
+  A  h=298    finalised=273    3c0098051f90b6d56ed9fd7de4ec6e136dbd68aecbdc
+  V1 h=295    finalised=273    3c0098051f90b6d56ed9fd7de4ec6e136dbd68aecbdc
+  V2 h=301    finalised=273    3c0098051f90b6d56ed9fd7de4ec6e136dbd68aecbdc
+  V3 h=177    finalised=94     f4e2067b40f6b618a2f799e5a71d849504017aefb5f2
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..301) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. the anchor ==
+  this run's nonce: df0b052e90105a56… (signed, so no earlier run's answer can be replayed into it)
+    A  attests height 285   dd814eddc050735c… by 04f700a41775…
+    V1 attests height 285   dd814eddc050735c… by 04dbe32c2062…
+    V2 attests height 285   dd814eddc050735c… by 04d8b6c325ae…
+    V3 attests height 97    efef481d74a0bf22… by 04ea3ce04abb…
+  proven equivocation, over heights 269..285 (RECONCILE_EQUIV_WINDOW=16):
+    none proved in the window — which bounds the claim, and does not make it universal
+  the meet: height 285, hash dd814eddc050735ce9fb4357347d0e02b0c695e383ae179f9fabcdda326e98da
+  Written out rather than implied: the deepest block a strict supermajority of stake finalised,
+  over attestations this tool verified, with each validator's stake counted exactly once.
+  stake: 300 of 400 = 75% — a strict supermajority (>66.6%, 3*stake > 2*total on integers)
+  the subset: A V1 V2
+  not in the subset (lagging, not vetoing): V3
+  Each one is rewound onto the master's DAG like any other joiner; none of them was asked to
+  agree before this could proceed.
+  What every node attested, for the record:
+    A  height 285   dd814eddc050735ce9fb4357347d0e02b0c695e383ae
+    V1 height 285   dd814eddc050735ce9fb4357347d0e02b0c695e383ae
+    V2 height 285   dd814eddc050735ce9fb4357347d0e02b0c695e383ae
+    V3 height 97    efef481d74a0bf2283290b962dd6f0d0dcc82ae5c3b9
+== 4. what is above the point ==
+  The survivor is A's DAG, not a chain: every validator proposes its own block each round, so
+  a height legitimately holds one sibling per validator and there is no single line to extract. The
+  joiners resync onto this DAG; the writers re-submit what they can see is missing.
+  #286: 3 unique block(s) from 9 answer(s)
+  #287: 3 unique block(s) from 9 answer(s)
+  #288: 3 unique block(s) from 9 answer(s)
+  #289: 3 unique block(s) from 9 answer(s)
+  #290: 3 unique block(s) from 9 answer(s)
+  #291: 3 unique block(s) from 9 answer(s)
+  #292: 3 unique block(s) from 9 answer(s)
+  #293: 3 unique block(s) from 9 answer(s)
+  #294: 3 unique block(s) from 9 answer(s)
+  #295: 3 unique block(s) from 9 answer(s)
+  #296: 3 unique block(s) from 9 answer(s)
+  #297: 3 unique block(s) from 9 answer(s)
+  #298: 3 unique block(s) from 9 answer(s)
+  #299: 3 unique block(s) from 9 answer(s)
+  #300: 3 unique block(s) from 9 answer(s)
+  #301: 3 unique block(s) from 9 answer(s)
+  48 deploy(s) above the point across 48 unique block(s); the per-block record is /tmp/reconcile-deploys.jsonl
+  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights
+   route carries counts. The owners re-submit; this tool does not claim to replay them.)
+== plan only ==
+  would: stop every non-master node, move each data directory aside (never delete), restart them to
+        resync onto A's DAG, then verify block hashes per height.
+  re-run with --apply to execute. A's data directory is never touched.

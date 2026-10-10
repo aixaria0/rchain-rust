@@ -1,0 +1,62 @@
+== the meet on a four-validator devnet, all four in lockstep ==
+build: 152a808d4 (the branch) — image rnode:local rebuilt from it
+command: RECONCILE_NODES=target/drill287/nodes.txt RECONCILE_CONTROL=docker \
+           RECONCILE_RNODE=./target/debug/rnode tools/reconcile-network.sh
+rig: tools/devnet.sh up --validators 4 --fresh, autopropose on, run ~60 s later
+
+What it shows: every node attests, every attestation and block verifies, the bond map agrees,
+the strict supermajority is computed over ONE weight per validator, and the point is the deepest
+block all four finalised. Exit 0 in plan mode (--apply is not run: this net is healthy).
+Note that section 1 already shows the four nodes disagreeing on /api/last-finalized-block
+(63/63/63/62) while the attested blocks agree — the summary reading and the validated finalised
+block are not the same thing, which is part of why the meet attests rather than reads.
+
+==== tool transcript ====
+== 1. what each node is showing ==
+  A  h=81     finalised=63     772168145ba794f95db669eea55f56ac04b3a4722d17
+  V1 h=83     finalised=63     772168145ba794f95db669eea55f56ac04b3a4722d17
+  V2 h=81     finalised=63     772168145ba794f95db669eea55f56ac04b3a4722d17
+  V3 h=82     finalised=62     116233c732262e1b21c35d1d4f56355804421fc4bb81
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..83) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. the anchor ==
+  this run's nonce: 95c36972d3ab0a2d… (signed, so no earlier run's answer can be replayed into it)
+    A  attests height 71    d89eeda5c4c1aed0… by 04f700a41775…
+    V1 attests height 71    d89eeda5c4c1aed0… by 04dbe32c2062…
+    V2 attests height 71    d89eeda5c4c1aed0… by 04d8b6c325ae…
+    V3 attests height 71    d89eeda5c4c1aed0… by 04ea3ce04abb…
+  proven equivocation, over heights 55..71 (RECONCILE_EQUIV_WINDOW=16):
+    none proved in the window — which bounds the claim, and does not make it universal
+  the meet: height 71, hash d89eeda5c4c1aed05ffd1af3d6d56cf2654e30666cb55df3a07a9c36d539940a
+  Written out rather than implied: the deepest block a strict supermajority of stake finalised,
+  over attestations this tool verified, with each validator's stake counted exactly once.
+  stake: 400 of 400 = 100% — a strict supermajority (>66.6%, 3*stake > 2*total on integers)
+  the subset: A V1 V2 V3
+  What every node attested, for the record:
+    A  height 71    d89eeda5c4c1aed05ffd1af3d6d56cf2654e30666cb5
+    V1 height 71    d89eeda5c4c1aed05ffd1af3d6d56cf2654e30666cb5
+    V2 height 71    d89eeda5c4c1aed05ffd1af3d6d56cf2654e30666cb5
+    V3 height 71    d89eeda5c4c1aed05ffd1af3d6d56cf2654e30666cb5
+== 4. what is above the point ==
+  The survivor is A's DAG, not a chain: every validator proposes its own block each round, so
+  a height legitimately holds one sibling per validator and there is no single line to extract. The
+  joiners resync onto this DAG; the writers re-submit what they can see is missing.
+  #72: 4 unique block(s) from 16 answer(s)
+  #73: 4 unique block(s) from 16 answer(s)
+  #74: 4 unique block(s) from 16 answer(s)
+  #75: 4 unique block(s) from 16 answer(s)
+  #76: 4 unique block(s) from 16 answer(s)
+  #77: 4 unique block(s) from 16 answer(s)
+  #78: 4 unique block(s) from 16 answer(s)
+  #79: 4 unique block(s) from 16 answer(s)
+  #80: 4 unique block(s) from 16 answer(s)
+  #81: 3 unique block(s) from 12 answer(s)
+  #82: 4 unique block(s) from 16 answer(s)
+  #83: 3 unique block(s) from 12 answer(s)
+  46 deploy(s) above the point across 46 unique block(s); the per-block record is /tmp/reconcile-deploys.jsonl
+  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights
+   route carries counts. The owners re-submit; this tool does not claim to replay them.)
+== plan only ==
+  would: stop every non-master node, move each data directory aside (never delete), restart them to
+        resync onto A's DAG, then verify block hashes per height.
+  re-run with --apply to execute. A's data directory is never touched.
