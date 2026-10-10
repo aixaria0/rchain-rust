@@ -1,0 +1,34 @@
+== C268's discriminator: a wiped joiner against a producing master, fourth staging ==
+
+rig: `tools/devnet.sh up --validators 3 --fresh` (autopropose), the master allowed to build, then
+`tools/devnet.sh reset 1` — a wiped joiner with no anchor, which is the ordinary sync path.
+
+== the build ==
+ebfb845fc
+
+master before the wipe: h=88
+
+== the joiner, every 20 s: requests, distinct paths among them, and its height ==
+   (a healthy walk: distinct cursors, ~150-230 requests, then 'LFS state is successfully restored')
+   (the stuck shape: the same slice repeating, height 0)
+  t+20s  requests=0  distinct-paths=0  restored=0  joiner h=?  master h=88
+  t+40s  requests=48  distinct-paths=48  restored=0  joiner h=0  master h=118
+  t+60s  requests=172  distinct-paths=171  restored=0  joiner h=0  master h=143
+  t+80s  requests=172  distinct-paths=171  restored=0  joiner h=0  master h=166
+  t+100s  requests=184  distinct-paths=171  restored=1  joiner h=86  master h=182
+
+== the joiner's own lines, tail ==
+  2026-10-10T19:06:36.075Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:36.107Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:36.189Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:36.236Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:36.284Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:36.289Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:36.337Z INFO  [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://76d7da26fae9d68765093487967d38b83b217fbb@devnet-bootstrap?protocol=40400&discovery=40404.
+  2026-10-10T19:06:43.563Z INFO  [casper.engine.NodeSyncing] LFS state is successfully restored.
+
+== and the last four paths it asked for, verbatim (the discriminator) ==
+  Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([247, 113, 176, 113, 176, 103, 252, 105, 182, 86, 48, 225, 87, 110, 134, 61, 9
+  Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([247, 116, 102, 122, 119, 69, 47, 116, 161, 230, 251, 246, 254, 191, 217, 207,
+  Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([250, 150, 197, 130, 88, 194, 115, 8, 121, 150, 83, 186, 96, 157, 11, 62, 203,
+  Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([252, 248, 171, 4, 67, 82, 174, 243, 183, 36, 33, 11, 101, 112, 165, 78, 147, 

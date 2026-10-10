@@ -1,0 +1,69 @@
+== the frozen-finality rig: the sub-quorum state, the return, and the operator-named anchor ==
+
+rig: `tools/devnet.sh up --validators 4 --fresh` (autopropose, four bonded validators at 100 each),
+then two validators stopped so the bonded stake supporting finality is 200 of 400 — under the strict
+two-thirds a finality needs — while the survivors keep producing.
+
+== the build the devnet ran ==
+ebfb845fc
+
+== A. the net before the outage ==
+40403: h=68 f=52  41403: h=69 f=52  42403: h=67 f=52  43403: h=67 f=52  
+the anchor: last-finalised height 52, hash a5655cd4f219aca6c40247ddf61a6d868987d9f6c7572667aa6fd0712f5b929b
+
+== B. the sub-quorum state: does the tip keep moving with finality frozen? ==
+  (heights and last-finalised, sixty seconds after the stops)
+40403: h=125 f=54  41403: h=125 f=54  42403: h= f=  43403: h= f=  
+  the survivors' own readings:
+  devnet-bootstrap: h=125 f=54 stall="a layer exists but its supporting stake is not a supermajority — 200 of 400 (2 full partition(s) among 2 candidate(s))" episodes=44 autoproposeHalted=false
+  devnet-validator-1: h=125 f=54 stall="a layer exists but its supporting stake is not a supermajority — 200 of 400 (2 full partition(s) among 2 candidate(s))" episodes=42 autoproposeHalted=false
+  devnet-validator-2: h= f= stall= episodes= autoproposeHalted=
+  devnet-validator-3: h= f= stall= episodes= autoproposeHalted=
+
+== C. #315's question: after a validator returns, does the chain resume? ==
+  last-finalised on the master before the return: 54
+40403: h=172 f=102  41403: h=172 f=97  42403: h=156 f=110  43403: h= f=  
+  the survivors' own readings:
+  devnet-bootstrap: h=172 f=102 stall="a layer exists but its supporting stake is not a supermajority — 200 of 400 (2 full partition(s) among 2 candidate(s))" episodes=54 autoproposeHalted=false
+  devnet-validator-1: h=172 f=97 stall="a layer exists but its supporting stake is not a supermajority — 200 of 400 (2 full partition(s) among 2 candidate(s))" episodes=51 autoproposeHalted=false
+  devnet-validator-2: h=156 f=110 stall="a layer exists but its supporting stake is not a supermajority — 200 of 400 (2 full partition(s) among 2 candidate(s))" episodes=15 autoproposeHalted=false
+  devnet-validator-3: h= f= stall= episodes= autoproposeHalted=
+  **it resumed**: finality moved 54 -> 102 after the returning validator came back.
+
+== D. the walk on a net whose finality is frozen (C259's owed clause) ==
+
+  validator 1 is wiped and re-anchored **while the net stays frozen**: its stake is bonded whether
+  or not its node is serving, so wiping a *survivor* is what keeps 200 of 400 under quorum — wiping a
+  stopped one would return its stake and unfreeze the net, which is #315's question, not this one.
+
+  validator 1's own lines:
+    2026-10-10T18:57:22.244Z INFO  [casper.engine.NodeLaunch] Syncing to the operator-named anchor a5655cd4f219aca6c40247ddf61a6d868987d9f6c7572667aa6fd0712f5b929b rather than to a fringe a peer offers: with finality frozen no peer has one, and the answer to an ordinary fringe request would be the genesis block (C259)
+    2026-10-10T18:57:40.772Z INFO  [casper.engine.NodeSyncing] LFS state is successfully restored.
+    2026-10-10T18:57:40.772Z INFO  [casper.engine.Catchup] catch-up against devnet-bootstrap: this node's frontier is height 52, walking outward in windows of 8 heights (nothing above the anchor is installed — every window is validated)
+
+  its height and the master's, after the walk:
+    devnet-validator-1: h=57
+    devnet-bootstrap: h=182
+  finality across the net (still frozen, and the master's own reading):
+    master: h=182 f=110 stall="a layer exists but its supporting stake is not a supermajority — 200 of 400 (2 full partition(s) among 2 candidate(s))"
+    before the reset it was f=; the anchor is height 52
+
+== E. the anchor on the status surface, and the reconcile tool naming it ==
+  after the return, every node readable again:
+40403: h=225 f=152  41403: h=60 f=44  42403: h=224 f=152  43403: h= f=  
+
+  the sync fields on validator 1 (this branch adds them):
+    sync=null
+
+  exit 0 — the sections that name the anchor:
+    == 3. the anchor ==
+      the operator's anchor: height 52, hash a5655cd4f219aca6c40247ddf61a6d868987d9f6c7572667aa6fd0712f5b929b
+      This is **your** root, not a computed meet: this tool has verified that devnet-bootstrap holds the block
+    == 4. what is above the point ==
+
+== F. the joiner's walk against a producing master (C268's discriminator, staged once more) ==
+  validator 3: 385 StoreItemsRequest line(s), 0 'LFS state is successfully restored'
+    (the recorded control: a healthy walk is 153-226 requests with distinct cursors, then restored;
+     the stuck shape is 443 requests in 90 s repeating one slice)
+    height: 0 against the master's 265
+

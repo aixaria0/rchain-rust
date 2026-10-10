@@ -186,6 +186,15 @@ jobs:
         # when it regresses rather than in the tree waiting to be run.
         run: tools/check-bounded-ingress-queues.sh --gate
 
+      - name: Spawn-observability gate
+        # A detached task whose `JoinHandle` is dropped stops with no line anywhere, and the node then
+        # serves with that subsystem gone (AUDIT C254). The six sites the audit named are supervised;
+        # what a fix at six sites does not do is stop the seventh, so this lists every detached task on
+        # the ingress path as supervised, held, or bare-with-a-reason, and fails on a new bare one.
+        # The fact is in the shape of the call — whether the handle is kept — which is why it is a
+        # source check beside the queue bound rather than a test.
+        run: tools/check-spawn-observability.sh --gate
+
       - name: Review-ledger coverage gate
         # The audit's own limit statement — `all N T1 modules read`, printed by `audit-status.sh` and
         # rendered into `AUDIT.md` — is a claim about *modules that can fork the chain or lose funds*,

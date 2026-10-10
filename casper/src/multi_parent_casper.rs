@@ -477,6 +477,8 @@ where
         kept_chains: fringe_merge.report.kept_chains + conflict_merge.report.kept_chains,
         rejected_chains: fringe_merge.report.rejected_chains
             + conflict_merge.report.rejected_chains,
+        final_scope_rejected_chains: fringe_merge.report.final_scope_rejected_chains
+            + conflict_merge.report.final_scope_rejected_chains,
         dropped_native_slots: fringe_merge
             .report
             .dropped_native_slots

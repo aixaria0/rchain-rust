@@ -389,6 +389,76 @@ if [[ -x "$ROOT/tools/emit-lean-laws.sh" ]]; then
   fi
 fi
 
+# --- 5c. the trigger list that runs this gate, checked against what it reads -------------------
+#
+# `.github/workflows/formal-on-change.yml` runs *this* script when one of a hand-maintained list of
+# paths changes, and `nightly.yml` is the backstop. A consumer of a corpus that is not on the list
+# re-opens the hole the workflow was built to close: the corpus moves, the consumer is not re-run, and
+# the first failure arrives at 03:37, detached from the change that caused it (AUDIT C262). The
+# residue the row recorded is exactly this — "the path list is hand-maintained and a new corpus
+# consumer not added to it re-opens the hole silently" — and the hole is live: `rholang/src/
+# system_processes.rs` reads `spec/conformance/protocol.tsv` from outside the list.
+#
+# **Why the check is here and not in a new CI step**: this script is itself a listed path, so the
+# check travels with the gate it guards and needs no workflow edit to be kept honest. **Why it greps
+# rather than reading the consumer mapping above**: the mapping is the same kind of hand-maintained
+# list, so a consumer discovered from it would be a consumer already believed in. The grep looks for
+# the *code* form (`../spec/conformance/…`, which is how a path is resolved from the manifest dir) and
+# not the bare path, because the bare path appears in doc comments in half these files — and a class
+# that fires on prose is one people learn to work around.
+WF="$ROOT/.github/workflows/formal-on-change.yml"
+if [[ -f "$WF" ]]; then
+  # The workflow's `paths:` block, as the globs it is written in. The end pattern is the next
+  # top-level key, which in this file is `workflow_dispatch:` — so a YAML reshuffle that moved the
+  # block would be caught by the empty-parse branch below rather than read as "no drift".
+  mapfile -t trigger_globs < <(sed -n '/^ *paths:/,/^ *[a-z_]*:/p' "$WF" | grep -oE '"[^"]+"' | tr -d '"')
+  if (( ${#trigger_globs[@]} == 0 )); then
+    fail "no paths parsed from .github/workflows/formal-on-change.yml — assume the parser is wrong before the workflow is"
+  else
+    # Every consumer of a corpus in the tree, plus the inputs this gate reads and runs (which only the
+    # gate knows, so it declares them here rather than leaving them to whoever edits the workflow).
+    consumers="$(cd "$ROOT" && git grep -lF '../spec/conformance/' -- '*.rs' '*.sh' '*.py' 2>/dev/null | sort -u)"
+    gate_inputs="$(printf '%s\n' \
+      spec/API-SCHEMA.md \
+      tools/emit-lean-laws.sh \
+      tools/emit-lean-counts.sh \
+      tools/check-rust-witnesses.sh)"
+    uncovered=()
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      hit=0
+      for g in "${trigger_globs[@]}"; do
+        # `**` is `*` to bash and `*` crosses `/` in a `[[ == ]]` pattern, so the match is GitHub's
+        # for every glob in this list and *wider* for the `**` ones — wider is the safe direction.
+        [[ "$f" == $g ]] && { hit=1; break; }
+      done
+      (( hit )) || uncovered+=("$f")
+    done <<< "$consumers
+$gate_inputs"
+    if (( ${#uncovered[@]} == 0 )); then
+      ok "every corpus consumer and gate input is on the formal gate's trigger list"
+    else
+      fail "formal-on-change.yml does not run this gate for: ${uncovered[*]} — a change there moves a corpus or a gate input without re-running the gate, and the first failure is the nightly"
+    fi
+    # The other direction: a glob that names nothing is a trigger for a path that moved or was
+    # deleted — coverage that covers nothing, which reads as coverage. Expanded in a subshell because
+    # `globstar` is process-wide and the sections below expand globs of their own; `fail` is called in
+    # *this* shell because a count incremented in a subshell is lost.
+    stale="$( (
+      shopt -s globstar nullglob
+      for g in "${trigger_globs[@]}"; do
+        m=( $g )
+        (( ${#m[@]} > 0 )) || printf '%s ' "$g"
+      done
+    ) )"
+    if [[ -z "$stale" ]]; then
+      ok "every path the formal gate triggers on names something in the tree"
+    else
+      fail "the formal gate triggers on ${stale}— matching nothing: a path that moved or was deleted, still reading as coverage"
+    fi
+  fi
+fi
+
 # --- the reply catalog is the schema's table ---------------------------------
 #
 # Law 39's catalog is data in Lean (`spec/Rchain/Protocol.lean`'s `replyCatalog`) and a probe per row
