@@ -39,15 +39,24 @@ namespace Rchain
 /-- A node's record of the blocks it has refused, by the sender whose block it refused. The port keeps
     this in the DAG's metadata (`BlockMetadata::validation_failed`, set by `mark_failed` for every
     `ValidateError::ValidationFailed`, with the *cause* the rules classify the status into — which is
-    what clause b's restoring rule is keyed on). -/
+    what clause b's restoring rule is keyed on).
+
+    **`anchored` is the precondition clause c needs, carried on the state rather than assumed.** It is
+    the port's `DagRepresentation::rewind_plan` answering with *both* an anchor and its height — the
+    `ResetDecision::Act` arm — and the port **withholds** the rewind in the other two arms: a finalised
+    block the view cannot place a height on, and no finalised block at all. A step that ignored it would
+    certify a relief the port deliberately refuses, which is why it is a field here and a guard below. -/
 structure Strand where
   failed : List Nat
+  anchored : Bool
 deriving DecidableEq
 
 /-- **The refusal step**: the node marks one more sender's block failed. Nothing in the modelled rule set
     unmarks one — read off the port rather than assumed, and the subject of this law: `mark_failed`
-    records, and no rule clears. -/
-def strandStep (s s' : Strand) : Prop := ∃ v, s'.failed = v :: s.failed
+    records, and no rule clears. Refusing a block does not change what the node can *name* as a rewind
+    point, so the precondition carries across. -/
+def strandStep (s s' : Strand) : Prop :=
+  ∃ v, s'.failed = v :: s.failed ∧ s'.anchored = s.anchored
 
 /-- The transition system this law is stated over. `enabled` is `true` everywhere — a node can always
     refuse another block — and the interface field is discharged by construction. -/
@@ -57,7 +66,7 @@ def strandSystem : System where
   enabled := fun _ => true
   enabled_iff := by
     intro s
-    exact ⟨fun _ => ⟨⟨0 :: s.failed⟩, 0, rfl⟩, fun _ => rfl⟩
+    exact ⟨fun _ => ⟨⟨0 :: s.failed, s.anchored⟩, 0, rfl, rfl⟩, fun _ => rfl⟩
 
 /-- **The refusal persists.** At least one attribution frees nobody: once a sender's block has been marked
     failed it stays failed, because no step of the modelled rule set unmarks one. This is the amplifier
@@ -65,7 +74,7 @@ def strandSystem : System where
     not slow to forgive, it cannot. -/
 theorem the_refusal_is_persistent (v : Nat) :
     strandSystem.Persistent (fun s : Strand => v ∈ s.failed) := by
-  rintro s s' ⟨w, hw⟩ hv
+  rintro s s' ⟨w, hw, _⟩ hv
   rw [hw]
   exact List.mem_cons_of_mem w hv
 
@@ -108,7 +117,8 @@ falsifier. -/
     which has none. This is `restore_divergent_justifications`, bounded there by the cause, by a
     per-record cap and by a per-block budget; the modelling here is of *that a step exists*, which is
     what `Terminal` demands and what clause a's falsifier says would end the persistence. -/
-def restoreStep (s s' : Strand) : Prop := ∃ v, s.failed = v :: s'.failed
+def restoreStep (s s' : Strand) : Prop :=
+  ∃ v, s.failed = v :: s'.failed ∧ s'.anchored = s.anchored
 
 /-- The transition system with the restoring rule in it: the port's rule set **after** #125's fix. -/
 def strandSystemRestoring : System where
@@ -117,13 +127,13 @@ def strandSystemRestoring : System where
   enabled := fun _ => true
   enabled_iff := by
     intro s
-    exact ⟨fun _ => ⟨⟨0 :: s.failed⟩, Or.inl ⟨0, rfl⟩⟩, fun _ => rfl⟩
+    exact ⟨fun _ => ⟨⟨0 :: s.failed, s.anchored⟩, Or.inl ⟨0, rfl, rfl⟩⟩, fun _ => rfl⟩
 
 /-- **The restoring step is not vacuous**: it removes the refusal `strandStep` put there, on the
     model's own fixture. A rule that existed and could never fire would satisfy the refutation below
     while restoring nothing. -/
 theorem a_restoring_step_removes_a_refusal (v : Nat) :
-    restoreStep ⟨v :: []⟩ ⟨[]⟩ := ⟨v, rfl⟩
+    restoreStep ⟨v :: [], true⟩ ⟨[], true⟩ := ⟨v, rfl, rfl⟩
 
 /-- **The falsifier, fired.** Law 53a's `falsifiable` cell says the restoring rule "makes
     `the_refusal_is_persistent` false *by construction*" and calls that theorem a guard on this fix.
@@ -134,8 +144,71 @@ theorem a_restoring_step_removes_a_refusal (v : Nat) :
 theorem the_refusal_is_not_persistent_once_a_rule_restores (v : Nat) :
     ¬ strandSystemRestoring.Persistent (fun s : Strand => v ∈ s.failed) := by
   intro h
-  have hstep : strandSystemRestoring.Step ⟨[v]⟩ ⟨[]⟩ := Or.inr ⟨v, rfl⟩
-  have hmem : v ∈ ([] : List Nat) := h ⟨[v]⟩ ⟨[]⟩ hstep (by simp)
+  have hstep : strandSystemRestoring.Step ⟨[v], true⟩ ⟨[], true⟩ := Or.inr ⟨v, rfl, rfl⟩
+  have hmem : v ∈ ([] : List Nat) := h ⟨[v], true⟩ ⟨[], true⟩ hstep (by simp)
+  simp at hmem
+
+/-! ## Clause c — the state the refusal was about can be discarded
+
+**A second inverse, and it is not an unmark.** Clause b's rule *clears a record*: the node re-validates a
+failed block against its current view and unmarks it if it now passes. The port has since grown a
+different rule (#320, F-U5-01's acting half, register C274): a node whose revalidation budget is spent
+**rewinds to its last finalised block** and re-syncs from there — the records above the anchor go with the
+state they were about, so the refusals that survive are those recorded at or before it.
+
+On this model the two are different steps and the difference is the point: `restoreStep` is the exact
+inverse of `strandStep` (one element leaves the head), while a rewind drops a *prefix* — the most recent
+refusals — leaving a suffix. A rewind that dropped nothing, or that dropped from the other end, would be a
+different rule about a different mechanism. -/
+
+/-- **The rewind step**: the node discards the state above its last finalised block, and the refusals
+    recorded there with it. `s.failed = dropped ++ s'.failed` — `s'` keeps a *suffix* of the list, which
+    is the prefix-drop from the head that "the records at or before the anchor survive" means when the
+    list accumulates at the head (`strandStep` prepends).
+
+    **Guarded by the precondition, deliberately.** The port rewinds only where `rewind_plan` answers with
+    an anchor *and* its height; in its other two arms — a finalised block the view cannot place a height
+    on, and none at all — it refuses, because the height `drop_above` takes cannot be named and a reset
+    there would have to replay from genesis. A step without this guard would certify a relief the port
+    withholds, which is the one way a companion theorem here can be *wrong* rather than merely
+    incomplete. -/
+def rewindStep (s s' : Strand) : Prop :=
+  s.anchored = true ∧ s'.anchored = s.anchored ∧ ∃ dropped, s.failed = dropped ++ s'.failed
+
+/-- The transition system with the rewind in it: the port's rule set **after** #320. -/
+def strandSystemRewinding : System where
+  State := Strand
+  Step := fun s s' => strandStep s s' ∨ rewindStep s s'
+  enabled := fun _ => true
+  enabled_iff := by
+    intro s
+    exact ⟨fun _ => ⟨⟨0 :: s.failed, s.anchored⟩, Or.inl ⟨0, rfl, rfl⟩⟩, fun _ => rfl⟩
+
+/-- **The rewind is not vacuous**: on the model's own fixture it removes the refusal `strandStep` put
+    there — the same shape clause b's non-vacuity witness has, and for the same reason: a rule that
+    existed and could never fire would satisfy the refutation below while recovering nothing. -/
+theorem a_rewinding_step_removes_a_refusal (v : Nat) :
+    rewindStep ⟨v :: [], true⟩ ⟨[], true⟩ := ⟨rfl, rfl, [v], rfl⟩
+
+/-- **And the guard is load-bearing, stated as the theorem it is.** A node that cannot name a rewind point
+    — `rewind_plan`'s middle arm (an anchor whose height the view cannot place) or its no-anchor arm —
+    has no rewind available, however many refusals it holds. Without this, the refutation below would say
+    the port has an inverse it deliberately refuses in two of its three states. -/
+theorem a_rewind_is_not_available_without_an_anchor (v : Nat) :
+    ¬ rewindStep ⟨[v], false⟩ ⟨[], false⟩ := by
+  rintro ⟨hanchored, _⟩
+  simp at hanchored
+
+/-- **The falsifier, fired a second time.** Clause b repaired `Terminal` with an unmark; this is the same
+    repair by a different mechanism — over the relation that has `rewindStep`, the refusal is **not**
+    persistent either. Read with `the_refusal_is_persistent`, the law's story is now: the refusal is
+    absorbing exactly as long as no rule restores it *and* no rule discards the state it was about, and
+    the port has both. -/
+theorem the_refusal_is_not_persistent_once_a_rule_rewinds (v : Nat) :
+    ¬ strandSystemRewinding.Persistent (fun s : Strand => v ∈ s.failed) := by
+  intro h
+  have hstep : strandSystemRewinding.Step ⟨[v], true⟩ ⟨[], true⟩ := Or.inr ⟨rfl, rfl, [v], rfl⟩
+  have hmem : v ∈ ([] : List Nat) := h ⟨[v], true⟩ ⟨[], true⟩ hstep (by simp)
   simp at hmem
 
 end Rchain
