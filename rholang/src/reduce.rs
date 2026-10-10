@@ -2518,6 +2518,12 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     space: T,
     dispatcher: D,
     urn_map: Arc<BTreeMap<String, Par>>,
+    /// **Write-only, and deliberately so** (AUDIT C256; the deviation is in `spec/audit/passes.md`
+    /// §6). The oracle returns this collection as `mergeableChannels`, which becomes
+    /// `DeployMergeableData.channels`; here nothing reads it, so that field is `[]` for every deploy.
+    /// Wiring it is a **hard fork** — it changes every block's serialized form and therefore every
+    /// state hash — so the mechanism is recorded as a deliberate deviation instead of being made live
+    /// at the tail of another unit. Named here so the field does not read as a mechanism that works.
     merge_chs: Arc<Mutex<Vec<SortedProc>>>,
     mergeable_tag_name: SortedProc,
     concurrent: bool,
@@ -3262,6 +3268,9 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         Ok(fut)
     }
 
+    /// The collection half of the inert mechanism above (C256): it fills `merge_chs`, and nothing
+    /// consumes it. Kept because deleting it would hide *what the oracle does* from the next reader;
+    /// named as dead so the port is not read as one that publishes mergeable channels.
     fn update_mergeable_channels(&self, chan: &SortedProc) {
         if self.is_mergeable_channel(chan) {
             let mut chs = self.merge_chs.lock().unpoison();

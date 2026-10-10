@@ -13,6 +13,11 @@ use crate::errors::RholangError;
 pub struct EvaluateResult {
     pub cost: Cost,
     pub errors: Vec<RholangError>,
+    /// **Live, and always empty** (AUDIT C256). The field is read downstream — `runtime_replay.rs`
+    /// and `runtime_manager.rs` extend their own sets from it — and it travels to
+    /// `DeployMergeableData.channels`; what is inert is the *collection* that would fill it
+    /// (`rholang/src/reduce.rs`'s `merge_chs`), so every construction below is `BTreeSet::new()`.
+    /// The deviation and the reason it is not wired (a hard fork) are in `spec/audit/passes.md` §6.
     pub mergeable: BTreeSet<Par>,
 }
 

@@ -294,6 +294,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | transport `send` timeout (`DEFAULT_SEND_TIMEOUT`) | `GrpcTransportClient.DefaultSendTimeout` | the constant existed but was unused |
 | stream size cap enforced while draining | `StreamHandler.collect` | Scala checks the cap during the fold; the port had moved it after full buffering |
 | semaphore-bounded inbound dispatch | per-peer `LimitedBufferObservable` | bounded-queue analog |
+| **The mergeable-channel collection is inert**: the reducer collects the channels each deploy touched (`merge_chs`) and **nothing reads it**, so `DeployMergeableData.channels` is `[]` for every deploy | `Reduce.scala` returns `mergeableChannels`, which becomes `DeployMergeableData.channels` | **Wiring it is a hard fork**: it changes every block's serialized form and therefore every state hash — the #280 class — and the bound the fix needs (a bounded per-deploy count, and the `u16` prefix truncation at encode) belongs in the unit that carries the fork note. Recorded rather than left looking live: the write-only `merge_chs`/`update_mergeable_channels` (`rholang/src/reduce.rs`), the two `u16` count prefixes (`rholang/src/merging.rs`) that encode an always-zero count, and `EvaluateResult.mergeable` — which **is** read downstream (`runtime_replay.rs`, `runtime_manager.rs`) and is therefore live-but-empty, so the dead half is the collection and not the field. The silent half is closed: the decode **refuses trailing bytes** (`a_mergeable_value_with_trailing_bytes_is_refused`). AUDIT **C256** |
 | super-majority as exact integer `3·stake > 2·total` | `sdk/consensus/Stake.scala` `stake.toDouble / totalStake > 2d/3` | Law 14 is "strictly > 2/3"; the f64 form loses precision for stakes ≥ 2⁵³ (recorded in §2 of the ρ-pure remediation) |
 | `bonds_map`/stake carried as `NonNegI64` (reject negative) | `Message.bondsMap`/`BlockMetadata.bondsMap`/`BlockMessage.bonds` are `Long` in Scala | stake is non-negative by the PoS invariant; negative stakes are rejected at the proto/genesis boundary rather than silently carried as signed `i64` |
 | internal gRPC (propose + repl) binds `127.0.0.1` | Scala binds both servers to `0.0.0.0` | unauthenticated propose/repl are no longer network-reachable (C1/H1) |
@@ -8806,3 +8807,714 @@ both the hole and the decision.
 **What this pass does not do.** It does not read the four logs (C263 is blocked on the artefact), and it
 does not claim the incident's cause is now known — only that C215's map is not it, in the sibling shape, and
 that the map cannot be a carrier either way. C249, C254, C256, C259 and C260 stay open and owned elsewhere.
+
+## 89. The reconciliation tool verifies what it prints — and the drill that found three more defects (C261, C264, C265, C266)
+
+**What was asked.** #287's review found two places in `tools/reconcile-network.sh` where the tool claims more
+than it does: §4's write report counted *observations* rather than blocks, and §10 named finality as a
+verification while printing and exiting 0. The rows that carry them are **C264** and **C265**. Re-running the
+devnet drill with the fixed tool was the way to settle both — and the drill is also a test of the instrument,
+which failed it in two further ways (**C266** and the trigger half of C265).
+
+**What the two defects were, and why the class matters.** §4 walked every node's answer at every height above
+the anchor and counted each block it saw: `/api/blocks/{h}/{h}` is answered *per node*, so a block held by
+three nodes was counted three times and its `deployCount` added three times. That is **#302's double-count** —
+the arithmetic defect that got the old stake-weighted meet deleted at §3 — reappearing one section down, in
+the record an operator re-submits from. Measured on a diverged net
+(`spec/audit/evidence/n-reconcile-drill/run-4-plan-diverged-prefix.txt` against `run-4-plan-diverged.txt`):
+the pre-fix tool printed `#42: 12 block(s) #43: 12 block(s) #44: 10 block(s)` and wrote 34 records; the fixed
+tool prints `#42: 4 unique block(s) from 12 answer(s)` and writes **12** records, one per unique block, each
+naming its `observers` and carrying the `rejectedDeploys` its merge refused. The record is now what the
+runbook already promised (`docs/src/node/testnet.md`), which is why the claim was made true rather than
+deleted.
+
+§10 printed each node's last-finalised block and **fell off the end of the script with exit 0**, under a
+closing sentence claiming to be #287's falsifier — including when every node answered
+`"Finalized fringe is not available."`, which is exactly what the committed transcript
+`run-3/restore-run.txt` shows. It now asserts the acceptance clause from four rules with named refusals and a
+distinct exit code: every node reports a usable finalised block; its height is **strictly past** `$MEET`; no
+two nodes finalise different blocks at one **height**; and each finalised hash is one that node's own block
+index serves **and** that every node which reached its height also holds. Rule three is not decoration: a DAG
+legitimately holds every sibling at a height, so "in the common DAG" is true while two finalised heads exist.
+Measured live (`run-4-restore-finality-refused.txt`): a converged net whose finality had not moved past the
+anchor — the reviewer's own negative case — exits **9** with
+`NOT final: V1 finalised at 41, which is not past the point (41)`. The old section exited 0 on that state.
+
+**The two the drill found.** (1) **§9 read a round counter as the block frontier.** The comparison walks
+`h = MEET..MAXH` and required a non-empty hash set at every step, but `MAXH` is `/api/status`'s
+`latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest height the block
+API serves. On 2026-10-10 the first `--restore-from-master` of the fourth run exited 6 — *"the nodes still
+disagree on a block hash at or above 41"* — on a net whose three nodes in fact agreed at **every** height
+40–44 and had nothing at all at 45 (`run-4-restore-prefix-section9.txt`). A height no node has produced is
+the frontier, not a disagreement: it is skipped; a height some nodes have and others do not still fails.
+(2) **The block trigger could not reach a `local` host.** §8b POSTed to `http://${HOST[$MASTER]}:…` — the
+node file's own token — and for `local`, one of the three spellings the header documents, that does not
+resolve (`http://local:42403` exits 6, `http://localhost:42403` answers). The section printed *"no block could
+be requested"*, which reads as a net without a faucet rather than as a broken request. On a
+`--no-autopropose` net an unreached trigger means no blocks, and no blocks means no finality — so §10's
+clause was **unsatisfiable** on an idle net, which is a large part of why nobody noticed it was a print. The
+POST now uses `api()`'s transport.
+
+**The drill's result, and it is the tool's own output.** `run-4-restore.txt`: anchor height **51**, unanimously
+reported; §9 `[1] V1=65 V2=65 V3=65 hashes-agree=1`; §10 `finality [1] V1=61 V2=61 V3=61 past-the-point=1`;
+exit **0**. That is the first transcript in that evidence directory where the acceptance's clauses are proved
+by the tool rather than read off by hand afterwards. `run-4-refusal-no-anchor.txt` is the other side: four
+heads with no agreed anchor are **refused** (exit 4) rather than resolved — the tool's design, and C259's
+subject.
+
+**What this pass does not claim.**
+
+- **Not a frozen four-heads recovery.** With no node finalising, §3 has no unanimity to accept and refuses;
+  the state the acceptance names is reachable by this tool only where some finality survives. That limit is
+  the design (C261's gate), not a defect, and the mechanism that would cover the no-anchor case is C259's.
+- **Not a recovery from a net whose instrument is still armed.** The store copy converges the stores, but a
+  node restarted with the C215 injection re-perturbs what it recomputes and §9 refuses the result. Removing
+  the instrument first is the sequencing the third run found, and the third and fourth runs both used it.
+- **Not validity.** The staged chain's blocks were produced under perturbation; what is demonstrated is
+  convergence and resumed finality.
+
+**C261 closes here, and it closes on its own second alternative** rather than on a meet. The row's condition
+was either a stake-weighted strict supermajority over reports that are authenticated, signed and
+ancestry-verified with equivocators removed by proof — or *"the anchors-gate design is stated as the design
+rather than as a placeholder, and §2's report says what it is wherever it prints"*. The second is now the
+state of the world: the tool's header (items 1–3, 6), §2's own output, the runbook
+(`docs/src/node/testnet.md`'s recovery section) and #287 itself all state the unanimous-anchor gate as what
+the tool computes, and §2 prints that it verifies no signature and decides nothing. The four obligations stay
+recorded on #287, which stays open as the meet's issue — the sign-offs are the node's (#290 part 1), and
+nothing here pretends the arithmetic exists.
+
+**What remains.** #287 stays **open** for the meet (its four obligations), for the live-testnet venue the
+acceptance names, and for `--sync-anchor`'s catch-up (C259, tracked on #139). C263 stays blocked on the
+capture. The tool's own limits are now stated where they are used: a node file whose master is unreachable, a
+net with no anchor, and a net with no faucet and no deploys each produce a named refusal rather than a number
+that reads as evidence.
+
+## 90. The anchor path's catch-up: a window at the ingest, and a walk that uses it (C259, C267, C268)
+
+**What this pass was for.** C259's second half is the remediation the operator path needs: make a node that
+restored at an agreed anchor catch up to the tip **without a data-directory copy**. The register said the
+remaining work was the two sidecar caches a restored block must regenerate. The drill said otherwise, and the
+measurement is the pass.
+
+**What the drill found, with the control that made it legible.** A four-validator devnet, a chain of ~400
+heights, a node wiped and started with `--sync-anchor <a finalised block 300 heights below the tip>`:
+
+- **the restore works** — `LFS state is successfully restored` — and it is now *fast* when the anchor is low,
+  because the LFS walk goes *down* from its root: 2.9 seconds for an anchor at height 15;
+- **the catch-up did not** — the node sat at height **121** while the master ran to **577**, with **one**
+  block validated and **173** `block receiver state full (1024 blocks); dropping` lines
+  (`spec/audit/evidence/n-anchor-drill/run-2-catchup-stall.txt`);
+- and the reason is structural, not a broken edge case. `MAX_PENDING_BLOCKS` (1024) bounds how many blocks
+  may wait for their parents — R29's defence against a peer streaming blocks whose justifications never
+  resolve. It also bounds *how far above the node's own frontier* they may be, and since every block request
+  in this protocol is keyed by hash, the only way to learn a gap is to walk **downward** from a peer's tip
+  through justifications. Each new block justifies blocks inside the gap, so the whole gap pends at once and
+  the bound turns progress into drops. The drop is worse than a loss: the receiver's `Err` arm logs and
+  `continue`s **without** `ack_received` (`block_receiver.rs:513-516`), so the hash stays requested, the
+  retriever re-offers it on every trigger, and the pending set never drains because draining is what
+  validation does.
+
+**What the control taught, and it corrected me twice.** A wiped joiner on the *ordinary* path behaves the
+same way on a rig where the master is racing — but for the *other* reason: its restore pays the O(chain)
+tuple-space hydration (`Requesting tuple-space data for 316 approved block state roots`, ~2.5 minutes) and it
+is that, not the pending bound, that kept it at zero while I watched. Two of my own interim readings were
+wrong for want of patience: a restore in progress looks exactly like a stall from outside, and only the
+control distinguishes the two costs. The freeze is a function of the **gap**, and an anchor is how a gap gets
+big — an ordinary joiner syncs to a fringe within a few dozen heights of the tip and never approaches the
+bound, while a node anchored at a meet in a frozen net is hundreds of heights back **on purpose**.
+
+**The fix, in two halves.**
+
+1. **A bounded height-window fetch** (`BlockRangeRequest`/`BlockRange`): the blocks at heights `[from, to]`,
+   answered as the hashes at them in **topological order** (ascending height, parent before child). Hashes
+   rather than blocks — a window is tens of blocks, the requester already has `BlockRequest`, and keeping the
+   answer under a kilobyte is what lets the window be small. The responder bounds the range by its own
+   `MAX_BLOCK_RANGE` and answers an unorderable range with **silence**, the same degraded exchange
+   `FinalizedFringeRequest.anchor` gets, which is what makes it a non-breaking addition on the wire.
+2. **`engine::catchup`**: a `CatchupWindow` that narrows the ingest to `frontier + 8` heights while a walk is
+   running — above it, a block is left **un-acked**, so the retriever offers it again once the frontier has
+   moved past (a pace, not a loss) — and a driver that asks for the next window, requests its hashes in the
+   order they were listed, and waits for its own frontier to reach the window before asking for more. It
+   releases on **every** exit path, including its first empty answer and a peer that never answers, so a node
+   that never catches up is exactly the node it was. R29's bound and its drop path are untouched.
+
+**The result.** The same shape, the same rig, the same 1200-block gap: **98 seconds** from the anchor to the
+tip, **0** drops (`run-3-windowed-catchup.txt` — `frontier is height 15 … the peer has nothing above height
+318 … released the ingest window at height 318`, while the master sat at 319). The control reached the tip
+too, 2.5 minutes later, having paid the hydration the anchored path did not.
+
+**What this pass does not claim.**
+
+- **Not the tool's exact case.** The walk does not depend on finality — it asks a peer for heights, and a tip
+  exists whether or not anything below it finalised — but the run was made on a tracking-finality rig, and
+  the same walk on a net whose finality is **frozen** is owed (C259).
+- **Not the O(chain) cost.** A restore still hydrates the state root of every block from its root down to
+  genesis. The anchored path dodges it by choosing a *low* root, which is a virtue of the anchor rather than
+  a fix, and it is why the control was slow.
+- **Not the sidecars.** C259 predicted the two merge caches as the blocker; they are not reached in this
+  failure and remain a hypothesis about what comes after.
+- **Not a new bound.** The window is a **pace**, and the only thing it can do is delay a block's admission;
+  every block it admits goes through the ordinary validation path, so nothing above the anchor is installed
+  and #287's first invariant holds.
+- **Not the fresh-rig failure.** A *fresh* four-validator autopropose devnet failed to form twice while this
+  was being measured — two joiners never answered, finality stalled on the stake they never contributed
+  (`fresh-rig-autopropose-deadlock.txt`). Filed as **C268** `todo`: the reading is a deadlock, the cause is
+  not established, and the pass does not assume it.
+
+**The frozen-finality variant could not be staged, and the reason matters more than the attempt.** The
+walk does not consult finality at all, so what the variant would add is the *state* rather than the
+mechanism — and that state proved unreachable under this rig's control:
+
+- the one shape that froze finality by itself (four validators, `--epoch-length 10`, autopropose) is the
+  shape whose joiners never join (**C268**, three sightings now, and this run's master also stopped
+  producing at h=73 with a joiner at 0);
+- freezing it *deliberately* by halving the stake does not work either: with two of the four bonded
+  validators up, both reported `h=305 LFB=301` unanimously — the epoch draw leaves a small active set, so
+  the two are a supermajority of what counts, and finality tracks. A solo master finalises too.
+
+So the frozen state is owed, and it is owed a *rig*: what is missing is a staging where finality stops while
+the tip keeps moving. The measurement that would settle it is the same walk from an anchor at a frozen meet.
+
+**And one gap is the tool's, not the node's** (**C269** `todo`). §3 of `tools/reconcile-network.sh` accepts an
+anchor only by *computing* one — a unanimous usable last-finalised block — and in the state `--sync-anchor`
+exists for, no node reports one, so the tool refuses (measured: `finalized heads differ`, exit 4, and
+`no usable finalized block`, exit 4). The operator path needs both answers: a refusal when the tool cannot
+compute a meet, and a way to say *this is the block I am restoring to* when nobody can.
+
+**Rows.** C267 `done` (the ingest could not take a gap), C268 `todo` (the fresh rig), C269 `todo` (the tool
+cannot name an anchor where the anchor is needed), C259 updated — its stated blocker was not the first one,
+and its close condition still wants the frozen-finality walk.
+
+## 91. The operator may name the anchor, and the tool says whose root it is (C269)
+
+**What was wrong.** §3 of `tools/reconcile-network.sh` accepted an anchor only by *computing* one: every
+listed node had to report the same usable last-finalised block, or the tool refused. The node flag it exists
+to drive, `--sync-anchor`, is for the state where there is nothing to sync to — a net whose finality is
+frozen, where the responder substitutes the genesis block (C259) — and in exactly that state no node reports
+a usable finalised block. So the tool refused in the one state its own recovery exists for, and the recovery
+was unreachable from the tool (measured both ways on 2026-10-10: `finalized heads differ`, exit 4, and
+`no usable finalized block`, exit 4).
+
+**What it does now.** `RECONCILE_ANCHOR=<block hash>`:
+
+- §3 takes the **operator's** block, reads its height from the block itself (`/api/block/{hash}` answers with
+  its own `blockInfo`, so the operator supplies a hash and not a height), and checks the one thing it can
+  check without a quorum: that the master **holds** the block. An anchor nobody has is nothing to restore to,
+  and that refusal is by name.
+- It prints that this is **your** root and not a computed meet — "not that stake finalised it, not that any
+  other node agrees" — and then reports what each node claimed, rather than resolving it. The disagreement is
+  the state being recovered from; naming a point does not make the nodes' claims agree.
+- §4 enumerates what is above the operator's point exactly as it does above a computed one, and §10 still
+  asserts finality past it (exit 9 when it does not arrive). The wipe path still requires the node side, and
+  the tool's usage says so: the joiners are configured with `--sync-anchor <the same hash>`;
+  `--restore-from-master` needs no flag because it copies the master's chain state.
+
+**The refusals name the way out.** Both refusal branches now print *"if you know the block this net last
+agreed on, name it: `RECONCILE_ANCHOR=<hash>`"*. A tool that refuses, in the state its own recovery exists
+for, without saying what the operator can do instead is a dead end — and that is what this row was.
+
+**Fixtures** (`tests/reconcile-regression.py`, all offline): the operator's anchor accepted with the
+disagreement reported (exit 0), an anchor nobody holds refused by name (exit 4), and the plain refusal
+asserting that it names the alternative (exit 4). The §3 slice's banner moved with the section, which the
+fixture caught rather than passing silently — the property that slicing by marker is for.
+
+**The row stays open for its run**, and this is the honest state rather than a formality: the row's close
+condition asks for a frozen net recovered through the operator's anchor, and that needs a rig where finality
+stops while the tip keeps moving — the same rig C259 is waiting on (pass §90 records three failed stagings).
+What is *not* owed on the node side is the mechanism: `run-3-windowed-catchup.txt` shows the catch-up from a
+named anchor working, so the remaining gap is a staging, not a code path.
+
+## 92. C250's residue, produced: a node rejects its own block and halts (C215, C250, C268, C270)
+
+**What this pass was asked to do, and what it found instead.** C268 was a note about a *rig*: a fresh
+four-validator devnet under autopropose appeared not to form, twice, with two joiners sitting at height 0 and
+never answered. It was filed `todo` because the reading was a deadlock with no cause. Reproducing it on an
+idle box (24 cores, no builds, no containers before it) produced a **different and much larger thing**, and
+the row is now answered rather than open.
+
+**The capture** (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`). `tools/devnet.sh down -v` then
+`tools/devnet.sh up --validators 4 --fresh` — autopropose on, default epoch length, **nothing injected and
+nothing faulting**. Four minutes later the four heights were 49, 133, 45, 46 and all four nodes were alive
+(`peers` 1 each, the master 3), so the earlier "never answered" reading is not this: nothing was stuck in
+syncing. Three of the four had **halted their own production at height 49**.
+
+**The chain, in the order the log shows it** (all four nodes, within ten seconds):
+
+1. **Four fringe keys recorded with two states each** —
+   `[fringe-divergence] block <hash> finalises a fringe already recorded with a different state <a> vs <b>`,
+   four times on **every** node, the same four blocks and the same two hashes each. This is C215's signal,
+   and it is what C250's residue predicted and could not produce: two honest blocks finalising one fringe
+   from two bases, in ordinary operation, with no byzantine actor anywhere.
+2. **The node's own block fails its own validation** —
+   *"the block's declared pre-state hash is not the state this node computed from its justifications — this
+   node's view of the parents differs from the proposer's, so the disagreement is about the merge rather than
+   about the block's deploys"*. For a self-created block, "the proposer" is the node itself: it computed the
+   pre-state when it built the block and recomputes a different one when it validates it.
+3. **The proposer counts it and halts autopropose** — its own arm says *"count it so the caller can halt
+   autopropose"* — so the node stops producing at that height. Three of four nodes stopped at 49 (45, 46,
+   49); the fourth passed it and reached 133. No two heights meet again, and finality cannot advance
+   (88–101 `finality did not advance` lines per node).
+
+**Why this is the register's business and not a rig's.** C215's fix — the join at a fringe key — is what makes
+the map *deterministic*; the row's own residue clause said the tie-broken `state_hash` "is meaningless and the
+`[fringe-divergence]` line is the signal, but **nothing consumes that line yet**". This pass answers what
+consumes it: the proposer's own validation. So the disagreement is not inert, and the tie-break is not a
+harmless tie-break: it changes a value a node has already built on, the node refuses its own work, and the net
+loses a producer. C250's residue is therefore **produced** — and worse than the row hoped.
+
+**The boundary of the claim, stated because the hashes cannot settle it.** Steps 1, 2 and their ordering are
+measured, on all four nodes, with the logs committed. That the tie-broke keys are what the *merge* for the
+failing block consulted is **inferred**: a pre-state is a merge result over many records, not one record's
+value, so the two cannot be compared literally. One instrumented run would close it — log the tie-break's
+decision, and whether that key is read while building the block whose validation then fails.
+
+**Rows.** **C270** filed `todo` (law 17a): a node cannot be stalled by a disagreement about a fringe key's
+value, by whichever of the three routes that is taken — pin the derivation the proposer built with, make the
+value monotone, or do not halt production on this class. **C250**'s residue is marked produced. **C215**'s
+"nothing consumes that line yet" is answered in place. **C268** closes: the fresh devnet does not form, and
+the reason is C270's stall rather than the joiners it named.
+
+**What this pass does not do.** It does not fix C270, and it does not re-open C215: the join is right and its
+tests still pin it. The question C270 asks is the next unit's — what a node should *do* when its own merge
+result changes under it — and it is a consensus-core decision, not a patch: every route changes what a node
+does with a disagreement rather than merely silencing one.
+
+## 93. The proposer no longer halts on a divergence, and the rig's other half names itself (C268, C270)
+
+**The fix, and it was already typed.** C270's mechanism — a fringe key recorded with two states makes a node
+reject its own block — ran into a policy that is *deliberate*: the proposer's `ValidationFailed` arm counts
+any self-rejection toward the autopropose halt, because a self-created block failing its own validation means
+"node state accounting is inconsistent". But `BlockStatus::failure_cause()` — a classification the codebase
+already carries, with the doc *"Decided by this node's state or replay, so a node with a different view
+reaches the same verdict for a block that is valid elsewhere"* — puts `InvalidPreStateHash` and its class in
+`FailureCause::Divergence`, and the arm never consulted it. So one arm treated as a node-side bug what another
+part of the tree classifies as a property of views.
+
+The arm now takes the divergence case first: **not counted** toward the halt, **not broadcast** (the block this
+node's own view rejected must not go out), and read as "not due" so the next tick re-derives — exactly the
+shape the stale-snapshot arm has had since §48, for exactly the same reason. A status that is the *block's own
+fault* still counts and still halts; two unit tests pin both sides, and the divergence test asserts the
+counter — the one the timer halts on — does not move, which is the whole claim.
+
+**What the drill did and did not show.** The same command that had stalled three of four nodes at height 49
+(`up --validators 4 --fresh`, autopropose) was run with the fix in place: **zero self-rejections on all three
+live nodes** (4 each before) and the three levels at **317/318/319**, past the height that used to stop them.
+But that run also produced **zero `[fringe-divergence]` events**, so the trigger never fired — the net formed
+because the condition did not arise, *not* provably because of the carve-out. The drill therefore shows the
+fix breaks nothing and that nothing regressed; it is **not** evidence for the carve-out, and the row stays
+`in progress` for a run where a divergence occurs and the node keeps producing. Forcing one is the choice:
+`--merge-divergence-injection` is the instrument C215 used to stage this exact shape.
+
+**And the rig's other half named itself, on its third sighting.** With the stall carved out, the same command
+left **validator 3 at height 0** — 132 log lines, one `Starting from bootstrap node, syncing LFS...`, **zero**
+`Received StoreItems`. That is C268's original shape, not C270's: the joiner asks for a fringe and is never
+served. So the fresh-rig failure has **two** causes, one fixed and one open, and pass §92's attempt to explain
+the joiners by the stall was premature — both were happening. §92's own correction ("the joiners-at-0 reading
+did not reproduce") is itself corrected here: it reproduced twice before and once now, and the quiet rigs
+(solo master, then joiners against a chain nobody is producing to) are the ones that have never shown it.
+
+**Rows.** C270 `in progress` (the carve-out is in, unit-tested, owed a run in which the divergence fires).
+C268 reopened `todo` with the shape it originally recorded, its close condition now naming the capture to take
+— the master's side: whether it received the joiner's `FinalizedFringeRequest`, and whether it answered.
+
+## 94. The joiner is answered — the state walk is what does not finish (C268)
+
+**What the row said, and what the capture shows.** C268's shape was "a joiner is never served": two joiners at
+height 0, one log line each, and a master racing ahead. Staged deliberately — a master already at height ~250
+under autopropose, then a wiped joiner against it — the two-sided capture says the opposite of "never served":
+
+```
+13:31:52.935Z INFO [casper.engine.NodeRunning]  Received FinalizedFringeRequest from …@devnet-validator-1
+13:31:52.940Z INFO [casper.engine.NodeRunning]  FinalizedFringe sent to …@devnet-validator-1?protocol=…
+13:31:52.942Z INFO [casper.engine.NodeSyncing]  Received finalized fringe from bootstrap node (0674114441b89163…)
+13:31:52.956Z INFO [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap
+13:31:53.047Z INFO [casper.engine.NodeSyncing]  Received StoreItems(history: 29, data: 230) from …
+```
+
+The master answers in five milliseconds. Ninety seconds later it is at **h=303**, the joiner is at **h=0**, and
+the master has sent **the same page 440 times** — `Sending 29 history and 230 data store items to
+devnet-validator-1`, content-identical, roughly five per second — while the joiner has sent 443
+`StoreItemsRequest`s, received 171 of them (168 the same slice) and logged **zero** validation errors, zero
+refusals, nothing refused by name.
+
+**What that localises, and what it does not.** The walk neither advances nor fails: either the requester
+re-asks the same page — its cursor does not advance — or the responder ignores the cursor and always answers
+from the start. Both ends are named and neither is yet read: the requester's loop in
+`lfs_tuple_space_requester.rs`, the responder's path handling in `node_running.rs`. What the capture *does* fix
+is the shape: a joiner can be served completely, in milliseconds, and still never leave `NodeSyncing`, which is
+a different defect from the one this row was filed with.
+
+**Why the quiet rigs never showed it.** Every sighting was against a master that was *producing*; the rigs that
+always worked joined against a chain nobody was producing to (solo master, then joiners, then autopropose off).
+That is consistent with a cursor that fails under load — and it is written as the next question rather than as
+the cause, because nothing here shows the cursor's value.
+
+**Rows.** C268 `in progress`, sharpened: it now closes when the page walk advances against a producing master
+and a wiped joiner reaches the tip, and its next capture is the request itself — the path the joiner names in
+successive `StoreItemsRequest`s. C270 stays `in progress` (the carve-out is in and unit-tested; the run that
+would demonstrate it needs a divergence to fire).
+
+### §94 addendum: the control refuted the inference, and the cursor is instrumented
+
+The paragraph above read "the same page 440 times" as evidence that the requester's cursor had stopped. **It is
+not evidence, and the same day's control says so**: on a run that finished, the responder's pages are
+identical-looking too (`Sending 29 history and 230 data store items`, with `0 history and 0 data store items`
+interleaved for the `[]` path the *healthy* walk also asks for), across **153** requests whose cursors advance
+through distinct paths. Every page looks like that one; only the paths differ, and nothing logged the paths.
+
+What survives of §94 is the half that was measured on both sides: the joiner **is** answered — fringe in five
+milliseconds — and it **is** served state pages throughout, while it never finishes and never refuses anything.
+Whether its cursor advances in such a run is now answerable rather than guessable, because
+`LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap for path {id:?}` per request from this
+commit on; the next run that sticks is compared against the control line for line. The row's evidence file
+carries both captures.
+
+## 95. The distributed-system laws land, and the refutation that chose the fix (C250, C267, C270, C271)
+
+**What was built.** Six theorems, written refutation-first and then attacked by two adversarial reviewers, are
+now **laws 66–71 in the machine register** — the first rows about *the node as a distributed system* rather
+than about rholang evaluation. `lake build rchain-laws` reports what the register's own checker makes of them:
+*"71 laws, 94 entries, 10 axioms in the tree, all cited; of the 840 declarations the rows name, 0 rest on the
+compiler (`native_decide`) and 441 on Lean's logic."* The register is `spec/laws.tsv`/`spec/LAWS.md`, emitted
+from `Rchain/Laws.lean` and refused stale by the gate, so the claims are checked data rather than prose.
+
+**The laws, in one line each.**
+
+- **66 Casper** — the value a node stores at a fringe key is **not** determined by that key, and
+  `the_join_rewrites_a_writers_value` is what the `min` tie-break costs (C270, measured).
+- **67 Casper** — the record join is a commutative idempotent semigroup **at one key** (the code's own stated
+  precondition, proven necessary), and the sharpening that matters: order-independence does *not* come from
+  the arrivals agreeing — `min` is commutative, so two records that **disagree** still fold to one, *which is
+  why the divergence was invisible in the store*.
+- **68 Casper** — a read is a function of the version it names, and the discriminator is **append-only vs
+  overwrite**, not hashed vs not.
+- **69 Sync** — a joiner's page walk **need not terminate** (an infinite run, proved; the adversary need only
+  be silent), and with a give-up rule it is paced.
+- **70 Sync** — importing the walk of a root yields the trie rooted there, and the checker is sound: the
+  joiner checks the peer rather than trusting it, resting on exactly one assumption — law 19's
+  collision-freeness, through law 10.
+- **71 Sync** — a catch-up window bounds what a joiner holds, so its progress does not depend on the network
+  standing still.
+
+**The refutation that chose the fix, and it is the pass's most important result.** The plan (approved
+2026-10-10) chose to make the record's key name the merge **base**. The adversarial review refuted it as
+implementable: `multi_parent_casper.rs:156-165` reads by the fringe-only key and the base it would need is
+computed *later* (`:230-238`) as the previous fringe's state — **the base is the value that read returns**, so
+a reader asking for a fringe's state cannot name which base the record it wants was written under, and the
+second "reader" (`merging.rs:1516`) forms no key at all. The tension is structural: a store that caches
+*derived* state needs a key that is both computable by its readers and sufficient to determine its value, and
+the fringe is computable-but-insufficient while the base is sufficient-but-wanted. **The design chosen after
+the refutation is that the value drops the derived state** — the record keeps the contributions and the reader
+derives — which makes the store append-only, the property Law 68 proves is what makes a read a function of its
+version. No Rust was written before the refutation, which is the whole point of proving first.
+
+**What was deliberately *not* registered as proved.** Law 66's positive half and Law 67's `writeKey` section
+are **tuple tautologies** (`rfl`) — the statement that `recordOf` and `writeKey` are functions — and their
+cells say so. The review also found `no_fringe_only_key_can_be_complete`'s universal quantifier decorative
+(the same content as its sibling), Law 71 **citing the wrong row** in its module header (C268 where the
+catch-up is C267 — fixed here), and `windowPending` counting heights while `MAX_PENDING_BLOCKS` counts blocks,
+so Law 71's bound is a *proxy* and its cell says that too.
+
+**A defect the Lean found, filed rather than noted.** Proving Law 69 exposed that **an unfinished page walk is
+returned as `Ok`** — `lfs_tuple_space_requester.rs:418-422` checks nothing on the way out, and
+`node_syncing.rs:462` drops the state, unlike the block leg's guard at `:475-481`. A node can therefore leave
+`NodeSyncing` holding a partial state. **C271** filed `todo`, law 69 cited as its statement, with the
+companion hazard that the walk's `request_timeout` is 120 s where the give-up rule's rationale assumes 30 s.
+
+**Rows.** C250's residue, C267, C270 and C271 are the Rust-side rows the laws name; C268's trigger stays open
+(the laws make a stalled walk **bounded and reported**, not impossible, and the pass says so rather than
+implying otherwise).
+
+## 96. The Rust aligns with the laws: the record store retires, the walk is bounded, and the API says what it is doing (C250, C267, C268, C270, C271)
+
+**What was built.** Pass 95 registered laws 66–71; two of them were **refutations of the code as it
+stood** — the value at a fringe key is not determined by that key (law 66, which is C270's measured
+stall) and a joiner's state-page walk need not terminate (law 69, which is C268). This pass is the
+other half: the model restated for the shape that can hold, the code changed until the positive law is
+true, and the rows re-stated for what was delivered.
+
+**Unit 2 — the claim travels with the block, and the store retires.** `models/src/fringe_data.rs` (the
+type, its codec, `FringeDataProto`) is deleted, and with it `casper/src/storage.rs`'s `fringe-data`
+column, `dag.rs`'s `join_fringe_records`, the `min` tie-break and the in-memory `fringe_states` map.
+Nothing writes a second value at a key because **there is no key**: a block's own
+`BlockMetadata.fringe_state_hash` is written once, when the block is inserted, and the readers derive.
+The four readers were re-pointed at what each already had in hand: the merge's base
+(`multi_parent_casper.rs::get_pre_state_for_parents`), the rejection set (`merging.rs::rejections_of_fringe`),
+the handed-out fringe (`node_running.rs::finalized_fringe_response`) and the disagreement report, which
+moved from the writer to the point of use — the measured C270 evidence is **kept**, only re-sited. The
+retired database is **left on disk and ignored** by an upgraded node rather than migrated: the key it
+held is derivable and the value it held is a claim a block now carries.
+
+**The bug the drill caught in the fix itself, and it is the pass's sharpest lesson.** The first cut of
+the reader took the state at the previous fringe from the **members** of that fringe. A member's
+`fringe_state_hash` is the state at the fringe *it* finalises — one fringe earlier — so the base came
+out one step early: the empty state, which carries no bonds leaf. A live four-validator devnet stalled
+at **height 20** with `propose failed with an internal error: active-bonds leaf not found in state`,
+164–197 times per validator. The retired record held what the **finaliser** wrote, and the finaliser is
+a parent — the one whose own `fringe` field *is* that set — so the reader now takes those parents'
+claims. That is both correct and cheaper (no lookup per member), and the empty-fringe case stops being
+a special branch: a parent that finalised nothing is its own finaliser. No test caught this; the
+**rig** did. The test that *did* exist would have gone on passing, because its control perturbed a
+member's claim — so the control moved with the semantics, which is the part worth copying.
+
+**Unit 3 — the walk is bounded and reported, and every exit is checked.** `lfs_tuple_space_requester.rs`
+gained the block leg's rule: a monotone measure (keys not yet `Done`), a reset on any progress, a
+give-up after `MAX_IDLE_ROUNDS = 3`, and a `request_timeout` of **30 s** rather than the 120 s it
+inherited — the round count and the wall clock were chosen together, because a verbatim `3` against
+120 s is six minutes of silence. `TupleSpaceWalkError::{StateValidation, Abandoned}` names the two ways
+a walk can end badly, `finished_or_abandoned` is on **every** exit path, and `node_syncing.rs` now
+**binds** the returned state and refuses an unfinished walk the way the block leg refuses an empty one.
+Law 71's bound stopped being prose: `WINDOW_HEIGHTS ≤ MAX_BLOCK_RANGE` is a compile-time assertion in
+`catchup.rs` (raise either constant alone and the build fails rather than the network — a window wider
+than the responder's range leaves the walk waiting for heights nobody was asked for), and the
+shard-width relation is a **named constant plus a test**, `MAX_SHARD_WIDTH = 1024 ÷ 8 = 128` bonded
+validators, with the driver reading the shard it is actually on and saying so loudly when it is past
+the turnover.
+
+**And the surface finally says what it is doing.** A node latched in `NodeSyncing` was invisible: the
+retries logged to stderr and nothing else moved. `node_syncing.rs` now holds the sync task's own state
+(attempts started, the last named failure) beside its writer, `BlockApi::sync_health()` republishes it,
+and `GET /api/v1/status` carries it as **`sync`** — one nullable object, `null` meaning the task has
+returned, which is not the same as "it synced fine". The terminal error in `node_launch.rs` now carries
+the last failure's own words, so an operator's line says *why* the retries were spent.
+
+**A law the change had to satisfy rather than a test it had to pass.** Adding a field to a status
+response is not a Rust-only change here: law 43's envelope catalog (`spec/Rchain/Envelope.lean`) is the
+oracle for the API surface, and `node/tests/lean_envelope_corpus.rs` checks the DTO's serialization
+*and* the served schema against it. The first cut shipped the field with `skip_serializing_if`, so the
+key vanished when null — which the catalog cannot honestly state. The law's own shape settled it: a
+**nullable** key that is always present, which is what the sibling `finalityStall` does. The catalog row
+and `spec/conformance/envelope.tsv` moved with it, and the corpus test is what refused the omission.
+
+**The register, restated for what is true.** Law 66's refutation stays in the row as the *reason* and its
+new witness is `the_state_is_named_by_a_block`, with `a_disagreement_is_visible` as the positive
+counterpart; law 67 (the record join) is **`retired`** — there is no join left to be a semigroup — with
+the reason recorded rather than a law about nothing; law 68 gains `a_read_of_a_blocks_claim_is_stable`.
+Law 18's Rust witness went with `fringe_data.rs`, and the register's own check refused the anchor that
+then pointed at nothing, which is the check earning its keep: nothing else in the tree would have
+noticed a law losing its only test. It is restored in `models/src/block_metadata.rs`
+(`law18_fringe_hash_is_order_independent`). Retiring row 67 moved three emitted totals (63 → 62
+`proved-model`, 65 → 64 proved, 48 → 47 proved-over-the-model), and `tools/emit-lean-counts.sh` refused
+**three documents** that carried them by hand — the marker mechanism catching its own class of rot one
+layer out from the register it reads.
+
+**What was measured, and what was not.** The divergence rig is the pre-fix run's own command —
+`up --validators 4 --fresh`, autopropose, default epoch length, **no injection and no fault** — and the
+capture is `spec/audit/evidence/n-anchor-drill/divergence-fixed.txt`. Pre-fix, three of four nodes
+rejected **their own** block at height 49 and stopped producing (45/46/49, the fourth running to 133),
+with four fringe keys recorded with two states each on every node. Post-fix:
+
+- all four nodes ran level through the height that stopped them and were at **212/212/213/212** after
+  four and a half minutes (~0.8 heights/s), with **0** self-rejections, **0** `active-bonds` failures
+  and `autoproposeTimerHalted: false` on every node;
+- **one head**: the block-hash *set* at each sampled height (40, 45, 46, 48, 49, 50, 60, 80, 100, 150,
+  190) is identical across all four nodes — not merely agreeing heights, which four idle nodes would
+  also show;
+- and **finality advances**: `/api/last-finalized-block` answers height **198 / 197 / 195 / 195** while
+  the tips are 212–213. That reading needed a second capture: the first printed `-` four times, and an
+  endpoint answering an *error* and an instrument that failed are indistinguishable once parsed, so the
+  capture now prints the raw body. It also needed the endpoint at all, because the log line count says
+  the opposite — 490–514 `finality did not advance` per node — and those are the **per-block**
+  observation (finality moves less often than blocks do), not a freeze. Two readings of one node, one
+  of which reads as a stall and is not.
+
+**What the drill does not show, and it is not a small caveat.** The `finalityStall` *reason* is
+intermittently non-null on this rig — `"a layer exists but its supporting stake is not a supermajority
+— 100 of 400 (1 full partition(s) among 1 candidate(s))"` — and `finalityStallEpisodes` reads 136–152,
+i.e. the gate enters a stall on the order of once per block and recovers. So finality is **advancing
+slowly and jerkily, not smoothly**, and this pass does not explain why. The rig only ever needed to
+answer one question — does a node still stall itself on a fringe-key disagreement? — and it answers it.
+The gate's stall/advance cadence on a four-validator autopropose net is a **separate** measured
+property, it is the same rig that produced the pre-fix `200 of 400` reading in C268's row, and it belongs
+to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rchain-community/rchain-rust/issues/318)**,
+which carries the numbers and the two questions (is a stall entered once per round expected, and is the
+~15-height lag expected), and says why this rig cannot decide them: it was built for C270's question, and
+the unit that takes #318 on should start by building a rig that can *distinguish* a stall that costs
+liveness from one that does not. It is not a register row yet — if the answer is a defect, it should
+become one.
+
+One test's control had to move with the fix (above), and the store's removal has one new invariant —
+`drop_above` clears a rewound block's `member_of_fringe`, so an orphaned claim cannot re-enter — pinned
+by its own test.
+
+**The second drill, and it is the one that shows the walk's new shape on a live node**
+(`spec/audit/evidence/n-anchor-drill/walk-gives-up.txt`). Rig: `up --validators 3`, the master allowed
+to build height, `reset 1` to wipe validator 1 onto the joining path, then
+`stop devnet-bootstrap` — the peer the walk is asking **goes away mid-walk**. Before this pass the walk
+would have returned `Ok` with the state unfinished and the node would have gone on to `NodeRunning`
+holding a partial state, or spun with no line anywhere; instead, at **t+140 s**:
+
+```
+ERROR [casper.engine.NodeSyncing] LFS state sync failed (attempt 1 of 3): the state-page walk was
+abandoned: no tuple-space state page finished in 3 consecutive idle rounds of 30s (59 page(s)
+finished, 216 key(s) still outstanding): the peer is not answering, so the walk cannot complete
+```
+
+— the failure is **named**, it carries the numbers that make it a diagnosis, it is counted as an
+attempt, and the retry follows ten seconds later. The joiner's own `/api/v1/status` answers
+`latestBlockNumber: 0` throughout, which is what the new `sync` field exists to annotate. (The bound is
+three idle rounds of 30 s; the capture samples every 20 s and the round in flight when the peer stopped
+had to elapse first, so 140 s is the observation rather than the constant.)
+
+**Rows.** C270 and C271 close; C267's residue (the stated bound) closes with it. C268 stays open and
+says so: the laws make a stalled walk **bounded and reported**, not impossible, and the trigger — why a
+page walk against a *producing* peer fails to advance — is still unexplained.
+
+## 97. The logical close-out: every open row re-derived against today's tree (C249, C254, C255, C256, C260, C262, C263, C268)
+
+**The method, because the closures below only make sense with it.** This pass began as a review of what
+was left open, and the first version of that review was wrong in a way worth recording: it took each
+row's *closure condition* literally, treated findings filed against older builds as if the code had not
+moved, and turned the set into work items — mostly adding reporting to states the intervening hardening
+may already have made **unrepresentable**. That is register-keeping. It keeps a row open because its own
+text says so, not because the defect is still there.
+
+What replaced it is the rule this programme already has, applied properly: **if a bad state is no longer
+representable in the code, the finding closes — with the citation that forbids it.** The ladder on
+`docs/src/spec/failure-hazop.md` names that as the strongest rung (R1, *unrepresentable*), C248's
+`reject_whole_blocks` deletion is the worked precedent, and C252's close cell has the shape in one line
+("the panic is unrepresentable rather than guarded"). So every open row was re-derived against today's
+tree in three questions: **is the mechanism still representable**; if it is, **does the scenario still
+reproduce**; and only then, what is the work.
+
+It mattered because `dev` moved. Between the build **#315** was filed on (`b4f1cbfdb`) and today there are
+**40 commits** — the self-reject carve-out (#316), the windowed catch-up, the fringe record store's
+retirement with the claim travelling per block, and the walk's give-up — and rows filed in §73–§94 have
+the same gap behind them.
+
+**Eight rows close, and two of them close on a correction to their own text.**
+
+- **C268 closed as unrepresentable *and* unreproduced.** Every exit of the page walk is checked and
+  `node_syncing.rs` refuses an unfinished walk, so "a silent wedge in `NodeSyncing`" has no shape left;
+  the history store is content-addressed and append-only, so no mechanism in the code can produce a
+  non-advancing page; and the row's own record already says **three deliberate stagings, all healthy**.
+  Its close cell also says why it can never have a theorem, which the row's own law knows: law 69's
+  witness cell records that `ReachesTheGoal` is left unproved because the goal needs the **peer** to
+  answer, and the peer is the adversary the model quantifies over.
+- **C263 closed as superseded.** It waited on a tarball that lives only on the reporter's machine; the
+  TE-1 witness has since landed **in this tree** and reads the four nodes together, and the question the
+  row wanted ("which mechanism did the incident run") has been divided — the write loss is C216/C248
+  (fixed, law 17c), the four heads are the witness's own subject. A close condition that names an input
+  this programme cannot reach is discharged by the record.
+- **C260's title was half wrong**, and the re-derivation found which half: no write is dropped (a
+  final-scope chain is never applied *or* rejected; `rejected_finally` cascades only to a conflict-scope
+  dependent). The reporting half was real and **wider than the row says** — such a rejection reached no
+  surface at all, and I1's own filter exempts it by construction. The row survives, re-scoped, and the
+  field that closes it is `MergeReport::final_scope_rejected_chains`.
+- **C249 was a finding wrapped around a rung.** Its defect half is closed (both silent paths are loud,
+  with counters on `/api/status`); the reset rung it also names is **F-U5-01 on the failure-HAZOP
+  worksheet**, dispositioned R3, **owned by #287**, with its owed test and its ship-dark rule written
+  down. Closing the row de-duplicates the register rather than dropping the work.
+- **C254 landed its two residuals**: the source check `tools/check-spawn-observability.sh` (30 sites in
+  eight ingress files — 6 supervised, 7 held, 17 bare-with-a-reason, both directions of staleness
+  checked, negative control run) and the closed-channel count on the status surface.
+- **C262's residue was a live hole**, not a hypothetical one: `rholang/src/system_processes.rs` reads
+  `spec/conformance/protocol.tsv` from outside the formal gate's trigger list. The gate now checks its own
+  trigger list, in both directions, from inside the gate — which needs no workflow edit to stay honest.
+- **C255's last item** was one allowlist entry saying it covers a shape; **C256** closed on the decision
+  its close condition allows, with the inert mechanism recorded in the deviation register (§6) and its
+  three dead halves named as dead.
+
+**What the re-derivation also showed, and it is a fact about the register.** **Six of the ten open rows
+rested on a `candidate:` slug rather than a law** — C254, C255, C256, C262, C268, C269 — and a slug means
+the property has **no theorem**, so "is this state still representable?" has no *formal* answer for those
+rows. That is the same shape the OCapN wave was caught in ("an integration whose register rows are all
+`candidate:` slugs has no laws"), and it is why a review driven by closure conditions could only tick
+them. For C268 it is stronger still: no theorem *can* exist, for the reason its own law states.
+
+**What stays open, and why that is not a failure of the pass.** **C259** and **C269** are the two rows
+whose subject is genuinely a run: a net whose finality is frozen, a wiped joiner synced through an
+operator-named anchor, and the tool naming that anchor. The state is still stageable — the divergence
+instrument retired with the store it perturbed, and nothing had to replace it, because a sub-quorum net
+freezes finality on its own (`up --validators 4 --fresh` reaches it unaided, `--no-autopropose` with
+nothing deployed cannot move finality, and stopping validators below ⅔ freezes it on demand). **#315** is
+decided by the same run, and #318 takes one of its two arms from it.
+
+**The issues, re-derived too, and the criticism does *not* land there.** All seven open issues but #51
+were filed in the last week, and the ones still open are open because they are *design decisions or
+missing capabilities* — slashing by proof and a bounded denominator (#290), the reconciliation meet and
+its live venue (#287), post-quantum signatures (#274), a process item (#51) — not because a defect was
+filed against an older build. #315 is the single case where "reported against an older version" could
+hold, which is why the rig tests it instead of assuming either way.
+
+### §97's rig: the frozen net, the return, and the anchor (C259, C269, #315)
+
+**One devnet session, four phases, and it settles more than the pass asked it to.** The rig is
+`tools/devnet.sh up --validators 4 --fresh` — four bonded validators at 100 each, autopropose — and the
+state worked for is a net whose **finality is frozen while the tip keeps moving**, which is what C259 and
+C269 both wait on. It needs no instrument: **stopping two of the four leaves 200 of 400**, under the
+strict two-thirds finality needs. (The divergence injection retired with the store it perturbed, and
+nothing had to replace it — the state arises on its own.) Raw capture:
+`spec/audit/evidence/n-anchor-drill/frozen-finality-recovery.txt`.
+
+**The frozen state, measured.** Before the stops: h=68/69/67/67 with last-finalised 52 — a gap of 16.
+Sixty seconds after `stop 2` and `stop 3`: the survivors at **h=125/125 with f=54**, so the tip moved
+**57 heights while finality moved 2**, `autoproposeHalted=false` on both, and the gate's own reason:
+
+```
+finalityStall: a layer exists but its supporting stake is not a supermajority —
+               200 of 400 (2 full partition(s) among 2 candidate(s))
+```
+
+That is `NoAdvance::Support` firing with the arithmetic this rig is built on — **the second arm #318
+asked for**, and the first reading of that arm on a net where the freeze is *by construction* rather than
+incidental.
+
+**#315's question, answered on the current build: it resumes.** With the net frozen, `start 2` returned
+the validator and finality moved **54 → 102**. #315's mechanism was that a returning validator "has not
+*sent* a block since restarting", so the peers' latest-message views still held its pre-outage messages
+and `quorum_reachable` stayed false — and that is not reproducible here. The stated prediction before the
+run was that it would resume; it did. What that does **not** settle is the live incident's own history (a
+partition, then a rebuild of the instance), which is a state this box cannot reach — so the issue gets the
+result and the distinction rather than a close it has not earned.
+
+**C259's owed clause, met: the walk completes on a net whose finality is frozen.** The trick is *which*
+validator to wipe: **a survivor** — its stake is bonded whether or not its node is serving, so wiping
+validator 1 keeps the net at 200 of 400 and frozen, while wiping a *stopped* one would return its stake
+and unfreeze the net (which is #315's question, not this one). Validator 1, wiped and started with
+`--sync-anchor <the anchor at height 52>`, logs its own path:
+
+```
+Syncing to the operator-named anchor a5655cd4… rather than to a fringe a peer offers: with finality
+  frozen no peer has one, and the answer to an ordinary fringe request would be the genesis block
+LFS state is successfully restored.
+catch-up against devnet-bootstrap: this node's frontier is height 52, walking outward in windows of 8
+```
+
+— with the master at h=182, f=110, still reporting the `Support` stall. So the walk the row owed, on the
+state it owed it on, completes.
+
+**C269's owed run: the tool names the operator's block.** With all four nodes readable,
+`RECONCILE_ANCHOR=<the same hash> tools/reconcile-network.sh` exits **0** and prints:
+
+```
+== 3. the anchor ==
+  the operator's anchor: height 52, hash a5655cd4f219aca6c40247ddf61a6d868987d9f6c7572667aa6fd0712f5b929b
+  This is **your** root, not a computed meet: this tool has verified that devnet-bootstrap holds the block
+== 4. what is above the point ==
+```
+
+which is the row's close condition word for word: the anchor stated as the operator's choice rather than
+a computed meet, the nodes' disagreement reported rather than resolved, and what is above the point
+enumerated. **The honest limit, unchanged from the plan**: this net keeps a *usable* last-finalised
+block, so the tool's computed-meet path would have accepted it too — what the run exercises is the
+operator-named path, not the refusal it was built for.
+
+**C268's close condition, met on demand — after a staging of the same rig looked stuck.** The
+frozen-finality session ended with a plain `reset 3` against a producing master at h=265, and at t+45 s
+the joiner had **385 requests and no restore, height 0** — which reads like the row's shape. It is not
+evidence of it, and the reason is the row's own discriminator: that capture counted *requests* and not
+*paths*. Re-running the same staging with the discriminator
+(`spec/audit/evidence/n-anchor-drill/c268-fourth-staging.txt`) is unambiguous:
+
+```
+t+ 40s  requests=48   distinct-paths=48
+t+ 60s  requests=172  distinct-paths=171
+t+100s  requests=184  distinct-paths=171  restored=1  joiner h=86  master h=182
+```
+
+**171 distinct paths out of 172 requests**, the count inside the recorded healthy control's range
+(153–226), and `LFS state is successfully restored` with the joiner climbing from 0 to 86. The cursor
+advances through distinct paths and never repeats a slice — which is what "the page walk advances" means,
+and it is the row's own close condition rather than an argument from absence. The phase-F count is
+recorded in the capture as what it is: a walk still in progress when the window closed.

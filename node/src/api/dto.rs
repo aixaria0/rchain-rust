@@ -142,6 +142,18 @@ pub struct ApiStatus {
     /// violated invariant. The live incident produced no counter and no line anywhere moving; this is
     /// the number it would have moved, and the log still carries the detail.
     pub non_quiet_merge_reports: u64,
+    /// **Law 69's other half: the LFS sync task's own state**, so a node stuck in `NodeSyncing` is
+    /// visible on the status surface instead of silent. **Null when the node is not syncing** — which
+    /// means "the sync task has returned", **not** "it synced fine": a node that never had to sync and
+    /// one that finished cleanly both report null here.
+    ///
+    /// **Nullable rather than omitted**, which is what the sibling `finalityStall` does and what law
+    /// 43's envelope catalog requires: that law checks a struct's key *set* against the DTO's own
+    /// serialization, so a field that disappears when it is empty would make the catalog either
+    /// incomplete (the AUDIT C29 drift) or wrong depending on the payload. A key that is always
+    /// present and sometimes null is the shape the law can state.
+    #[serde(default)]
+    pub sync: Option<SyncStatus>,
     /// A poisoned lock was recovered from, which means a panic happened while shared state was held.
     /// Monotone and process-wide, because the poisoning is: the panic happened in whichever thread held
     /// the guard (`rspace::lock`). Counted rather than silently absorbed, which is F-U9-03.
@@ -161,6 +173,25 @@ pub struct ApiStatus {
     /// …and how many have **returned**, which is the quieter death and the reason the two are counted
     /// apart: a panic announces itself once, a return does not announce itself anywhere.
     pub tasks_exited: u64,
+    /// **How many sends a closed channel swallowed** (C254). Every production `send` goes through
+    /// `rchain_shared::chan`, which keeps the decision *and* counts it, so the count is the other half
+    /// of the closed-channel door — the door made the event loud at the call site, this makes it
+    /// countable on a surface. Monotone and process-wide. It was counted from the day the door landed
+    /// and published by nothing, which its own module doc said out loud.
+    pub undelivered_sends: u64,
+}
+
+/// The LFS sync task's state, carried under `sync` on the status response (law 69's other half).
+///
+/// **One object, not two fields**: the attempt count and the reason are one observation and travel
+/// together, so a reader never pairs a count from one attempt with a reason from another.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    /// Attempts the sync task has **started**.
+    pub attempts: u32,
+    /// The last named failure's message, verbatim. `null` while the attempt now running has not failed.
+    pub last_failure: Option<String>,
 }
 
 /// The node's capabilities, returned by `GET /api/v1/capabilities` (the app-facing "can I propose /
@@ -289,11 +320,13 @@ mod tests {
             finality_stall: None,
             finality_stall_episodes: 0,
             non_quiet_merge_reports: 0,
+            sync: None,
             poison_recoveries: 0,
             unrestorable_records: 0,
             unrestorable_block: None,
             tasks_panicked: 0,
             tasks_exited: 0,
+            undelivered_sends: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

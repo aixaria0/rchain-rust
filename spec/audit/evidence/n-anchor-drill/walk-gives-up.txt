@@ -1,0 +1,66 @@
+== a joiner whose peer goes silent mid-walk: does it fail by name, bounded, and stop? ==
+
+rig: `tools/devnet.sh up --validators 3` (autopropose), the master allowed to build height, then
+`tools/devnet.sh reset 1` to wipe validator 1 onto the joining path, then
+`tools/devnet.sh stop devnet-bootstrap` — the peer the walk is asking **goes away mid-walk**.
+
+== the build the devnet ran ==
+71ecf4f1a
+
+== the joiner's log, from the moment its peer went silent ==
+(t=0 is `tools/devnet.sh stop devnet-bootstrap`; the walk's bound is 3 idle rounds of 30 s)
+
+t+0s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+20s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+40s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+60s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+80s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+100s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+120s  'abandoned' lines: 0   'LFS state sync failed' lines: 0
+t+140s  'abandoned' lines: 1   'LFS state sync failed' lines: 1
+
+== the lines themselves, verbatim ==
+2026-10-10T17:24:10.744Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([217, 129, 42, 214, 87, 161, 128, 133, 32, 178, 188, 129, 51, 1, 240, 22, 104, 153, 133, 4, 62, 247, 134, 110, 45, 14, 164, 207, 25, 208, 189, 199])), None)]
+2026-10-10T17:24:10.760Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([217, 146, 33, 45, 141, 54, 252, 126, 53, 4, 180, 241, 46, 68, 43, 198, 218, 181, 42, 118, 73, 59, 87, 200, 175, 47, 107, 172, 136, 129, 160, 3])), None)]
+2026-10-10T17:24:10.777Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([220, 110, 144, 196, 153, 106, 149, 161, 187, 231, 60, 106, 108, 130, 33, 61, 128, 102, 113, 205, 115, 147, 175, 239, 203, 53, 6, 19, 171, 51, 221, 15])), None)]
+2026-10-10T17:24:10.793Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([224, 68, 112, 173, 236, 243, 76, 232, 134, 156, 7, 235, 24, 6, 229, 2, 185, 152, 19, 118, 187, 120, 132, 251, 237, 10, 1, 53, 60, 115, 9, 41])), None)]
+2026-10-10T17:24:10.809Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([224, 100, 69, 42, 180, 51, 211, 143, 33, 169, 233, 122, 2, 159, 93, 166, 44, 214, 47, 251, 58, 17, 134, 237, 105, 152, 64, 123, 43, 52, 171, 126])), None)]
+2026-10-10T17:24:10.825Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([227, 61, 111, 168, 98, 1, 142, 38, 159, 139, 183, 240, 178, 113, 200, 101, 120, 69, 7, 99, 146, 92, 62, 196, 121, 22, 96, 70, 49, 124, 41, 82])), None)]
+2026-10-10T17:24:10.840Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([228, 250, 16, 247, 113, 49, 4, 122, 11, 32, 193, 40, 183, 199, 46, 184, 14, 243, 164, 126, 181, 190, 204, 75, 105, 22, 128, 184, 219, 209, 140, 152])), None)]
+2026-10-10T17:24:10.855Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([229, 249, 94, 175, 86, 71, 54, 254, 6, 130, 0, 141, 216, 61, 36, 144, 54, 161, 112, 56, 18, 100, 3, 237, 243, 211, 207, 210, 225, 31, 205, 3])), None)]
+2026-10-10T17:24:10.870Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([230, 133, 13, 203, 83, 40, 38, 176, 248, 240, 30, 41, 111, 211, 180, 155, 121, 118, 252, 155, 26, 85, 226, 101, 220, 4, 224, 109, 96, 239, 3, 34])), None)]
+2026-10-10T17:24:10.885Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([231, 40, 211, 6, 33, 180, 101, 141, 61, 171, 210, 161, 64, 238, 99, 255, 196, 148, 100, 33, 140, 120, 254, 150, 24, 147, 239, 45, 231, 219, 81, 158])), None)]
+2026-10-10T17:24:10.898Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([232, 241, 190, 52, 253, 60, 29, 161, 217, 85, 83, 72, 169, 59, 187, 134, 113, 14, 122, 102, 20, 43, 77, 81, 30, 90, 221, 153, 128, 246, 39, 198])), None)]
+2026-10-10T17:24:10.911Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([233, 124, 66, 47, 111, 181, 149, 89, 128, 254, 110, 52, 248, 130, 111, 228, 103, 143, 231, 233, 178, 129, 152, 217, 47, 183, 212, 149, 152, 93, 150, 205])), None)]
+2026-10-10T17:24:10.924Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([233, 146, 71, 85, 201, 17, 49, 118, 118, 67, 158, 229, 76, 180, 115, 155, 207, 102, 247, 112, 51, 72, 7, 53, 140, 243, 26, 180, 55, 191, 2, 52])), None)]
+2026-10-10T17:24:10.937Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([235, 195, 3, 237, 35, 199, 26, 140, 74, 67, 85, 145, 162, 214, 186, 234, 116, 49, 102, 206, 25, 34, 20, 191, 85, 118, 254, 119, 189, 205, 167, 180])), None)]
+2026-10-10T17:24:10.951Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([238, 64, 10, 137, 109, 138, 3, 9, 254, 5, 87, 17, 174, 28, 16, 102, 201, 227, 3, 165, 115, 82, 95, 230, 8, 200, 222, 187, 36, 47, 76, 69])), None)]
+2026-10-10T17:24:10.966Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([238, 207, 44, 170, 191, 10, 147, 86, 215, 83, 101, 58, 248, 69, 23, 110, 73, 193, 96, 198, 67, 89, 38, 178, 13, 180, 107, 2, 75, 22, 223, 204])), None)]
+2026-10-10T17:24:10.982Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([242, 183, 173, 181, 17, 219, 53, 158, 231, 84, 225, 170, 85, 129, 219, 120, 136, 72, 58, 213, 235, 100, 140, 186, 150, 207, 46, 193, 219, 28, 113, 142])), None)]
+2026-10-10T17:24:10.997Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([244, 242, 214, 137, 40, 215, 45, 128, 50, 13, 110, 70, 36, 39, 12, 244, 105, 141, 218, 118, 94, 221, 214, 187, 202, 129, 159, 74, 104, 10, 193, 32])), None)]
+2026-10-10T17:24:11.011Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([245, 169, 19, 63, 129, 120, 233, 21, 17, 159, 35, 74, 2, 82, 85, 236, 2, 13, 111, 174, 202, 236, 237, 245, 133, 79, 44, 233, 137, 120, 127, 191])), None)]
+2026-10-10T17:24:11.026Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([246, 253, 151, 160, 199, 90, 182, 252, 134, 205, 136, 228, 54, 155, 248, 192, 232, 100, 168, 250, 134, 35, 227, 158, 71, 168, 78, 236, 20, 88, 201, 34])), None)]
+2026-10-10T17:24:11.043Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([247, 113, 176, 113, 176, 103, 252, 105, 182, 86, 48, 225, 87, 110, 134, 61, 92, 70, 0, 102, 225, 214, 190, 211, 140, 228, 48, 167, 15, 144, 241, 196])), None)]
+2026-10-10T17:24:11.059Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([247, 116, 102, 122, 119, 69, 47, 116, 161, 230, 251, 246, 254, 191, 217, 207, 12, 197, 90, 223, 126, 203, 185, 4, 172, 16, 233, 207, 153, 188, 127, 153])), None)]
+2026-10-10T17:24:11.075Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([250, 150, 197, 130, 88, 194, 115, 8, 121, 150, 83, 186, 96, 157, 11, 62, 203, 35, 50, 217, 153, 187, 57, 176, 31, 235, 154, 62, 126, 129, 76, 35])), None)]
+2026-10-10T17:24:11.092Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([252, 70, 115, 188, 210, 24, 209, 213, 32, 155, 175, 233, 245, 148, 246, 149, 103, 86, 235, 19, 22, 28, 224, 145, 200, 231, 227, 191, 254, 99, 2, 10])), None)]
+2026-10-10T17:24:11.107Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([252, 231, 47, 110, 45, 55, 89, 15, 172, 118, 136, 106, 18, 100, 22, 48, 31, 190, 160, 213, 65, 207, 149, 200, 127, 73, 194, 77, 189, 236, 233, 235])), None)]
+2026-10-10T17:24:11.123Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([252, 248, 171, 4, 67, 82, 174, 243, 183, 36, 33, 11, 101, 112, 165, 78, 147, 109, 143, 229, 168, 24, 217, 66, 82, 212, 129, 45, 230, 114, 92, 224])), None)]
+2026-10-10T17:24:11.139Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([253, 102, 36, 121, 96, 46, 59, 133, 100, 9, 180, 125, 66, 89, 14, 181, 36, 9, 16, 245, 4, 174, 210, 155, 189, 37, 31, 44, 194, 72, 15, 133])), None)]
+2026-10-10T17:24:11.156Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([254, 243, 174, 180, 8, 26, 53, 218, 118, 19, 190, 199, 104, 4, 189, 132, 131, 5, 167, 141, 239, 93, 109, 229, 99, 251, 124, 12, 169, 193, 220, 55])), None)]
+2026-10-10T17:24:41.173Z ERROR [casper.engine.NodeSyncing] LFS state sync failed (attempt 1 of 3): the state-page walk was abandoned: no tuple-space state page finished in 3 consecutive idle rounds of 30s (59 page(s) finished, 216 key(s) still outstanding): the peer is not answering, so the walk cannot complete
+2026-10-10T17:24:51.187Z INFO  [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap for path [(Blake2b256Hash(Hash32([189, 201, 202, 182, 203, 41, 154, 187, 20, 60, 254, 116, 84, 216, 215, 51, 131, 174, 230, 83, 160, 161, 230, 144, 62, 103, 243, 27, 72, 89, 9, 178])), None)]
+
+== the master's own last lines before it was stopped ==
+stopped devnet-bootstrap
+
+== what the joiner is doing at the end (its API is up; the walk must not be) ==
+validator-1 /api/v1/status: "latestBlockNumber":0
+
+== elapsed, whole run ==
+  264 s
+
+**What this shows if the counts above move.** An 'abandoned' line at a bounded time after the peer
+went silent, an 'LFS state sync failed' line (the attempt counted and handed back rather than the
+node sitting in the loop), and the joiner's own API answering while it is *not* in the walk.
+

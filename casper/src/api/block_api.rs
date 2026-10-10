@@ -153,6 +153,24 @@ pub struct FinalityHealth {
     pub unrestorable_block: Option<String>,
 }
 
+/// The LFS sync task's own state, in the [`FinalityHealth`] shape — what `GET /api/v1/status` carries
+/// under `sync`.
+///
+/// **Why a surface at all.** A node stuck in `NodeSyncing` was invisible: the retries logged to
+/// stderr and nothing else moved, and the status API carried no trace of it, so a probe could not
+/// tell a node that was syncing from one that was fine. The measured incident
+/// (`spec/audit/evidence/n-anchor-drill/c268-joiner-page-walk-loop.txt`) was joiners answering the
+/// status API at height 0 for ten minutes with no way to see why. The statics that back this live
+/// beside their writer in [`crate::engine::node_syncing`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncHealth {
+    /// Attempts the sync task has **started**.
+    pub attempts: u32,
+    /// The last named failure's message, verbatim. `None` while the attempt now running has not
+    /// failed.
+    pub last_failure: Option<String>,
+}
+
 /// The block API (port of `BlockApi[F]`). Implementations read from the block store/DAG and drive
 /// propose via the runtime.
 #[async_trait]
@@ -194,6 +212,22 @@ pub trait BlockApi: Send + Sync {
             unrestorable_records: crate::interpreter_util::unrestorable_records(),
             unrestorable_block: crate::interpreter_util::unrestorable_block(),
         }
+    }
+
+    /// Law 69's other half: the LFS sync task's own state — how many attempts it has started and why
+    /// the last one failed. **`None` is a reading too**: it means the task has returned, which covers
+    /// a restored state *and* a node that never had to sync. It does not mean "the last sync
+    /// succeeded", and a surface that reported `Some(default)` here would say exactly that.
+    ///
+    /// **The default reads this process's own static rather than returning `None` unconditionally**,
+    /// for the reason [`finality_health`](Self::finality_health) gives: the value is process-wide state
+    /// the sync task writes, so reading it is correct for every implementation and a stub reports the
+    /// truth rather than a polite absence.
+    async fn sync_health(&self) -> Option<SyncHealth> {
+        crate::engine::node_syncing::sync_state().map(|state| SyncHealth {
+            attempts: state.attempts,
+            last_failure: state.last_failure,
+        })
     }
 
     async fn create_block(&self, is_async: bool) -> ApiErr<String>;

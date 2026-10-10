@@ -65,6 +65,15 @@ cross-cutting "no silent partiality / no `unsafe`" discipline; it fails the buil
 
 ---
 
+**The table stops at law 29, and that is this page's scope rather than the register's.** The register is
+at <!-- counts:laws-entries -->71 laws and 94 entries<!-- counts:end --> (`spec/laws.tsv`, emitted from `spec/Rchain/Laws.lean`); this page is a
+hand-written narrative for the first twenty-nine, which are the ones about rholang evaluation and the
+storage layer it rests on. Extending it through 30–71 — the scheduler's validated-speculation phase, the
+Proof-of-Stake and finality rows, the wire and session laws, and the distributed-system set — is its own
+piece of work, deliberately not done in the pass that added the later rows. The terse, machine-checked
+mapping to *every* law is [`spec/INVENTORY.md`](../../../spec/INVENTORY.md), whose rows carry the Lean
+declarations, the Rust files and the corpus that ties them.
+
 ## Three laws worth a closer look
 
 ### Law 2 — why α-equivalence is "just" sorted-`Par` equality
