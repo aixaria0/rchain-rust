@@ -9359,3 +9359,80 @@ had to elapse first, so 140 s is the observation rather than the constant.)
 **Rows.** C270 and C271 close; C267's residue (the stated bound) closes with it. C268 stays open and
 says so: the laws make a stalled walk **bounded and reported**, not impossible, and the trigger — why a
 page walk against a *producing* peer fails to advance — is still unexplained.
+
+## 97. The logical close-out: every open row re-derived against today's tree (C249, C254, C255, C256, C260, C262, C263, C268)
+
+**The method, because the closures below only make sense with it.** This pass began as a review of what
+was left open, and the first version of that review was wrong in a way worth recording: it took each
+row's *closure condition* literally, treated findings filed against older builds as if the code had not
+moved, and turned the set into work items — mostly adding reporting to states the intervening hardening
+may already have made **unrepresentable**. That is register-keeping. It keeps a row open because its own
+text says so, not because the defect is still there.
+
+What replaced it is the rule this programme already has, applied properly: **if a bad state is no longer
+representable in the code, the finding closes — with the citation that forbids it.** The ladder on
+`docs/src/spec/failure-hazop.md` names that as the strongest rung (R1, *unrepresentable*), C248's
+`reject_whole_blocks` deletion is the worked precedent, and C252's close cell has the shape in one line
+("the panic is unrepresentable rather than guarded"). So every open row was re-derived against today's
+tree in three questions: **is the mechanism still representable**; if it is, **does the scenario still
+reproduce**; and only then, what is the work.
+
+It mattered because `dev` moved. Between the build **#315** was filed on (`b4f1cbfdb`) and today there are
+**40 commits** — the self-reject carve-out (#316), the windowed catch-up, the fringe record store's
+retirement with the claim travelling per block, and the walk's give-up — and rows filed in §73–§94 have
+the same gap behind them.
+
+**Eight rows close, and two of them close on a correction to their own text.**
+
+- **C268 closed as unrepresentable *and* unreproduced.** Every exit of the page walk is checked and
+  `node_syncing.rs` refuses an unfinished walk, so "a silent wedge in `NodeSyncing`" has no shape left;
+  the history store is content-addressed and append-only, so no mechanism in the code can produce a
+  non-advancing page; and the row's own record already says **three deliberate stagings, all healthy**.
+  Its close cell also says why it can never have a theorem, which the row's own law knows: law 69's
+  witness cell records that `ReachesTheGoal` is left unproved because the goal needs the **peer** to
+  answer, and the peer is the adversary the model quantifies over.
+- **C263 closed as superseded.** It waited on a tarball that lives only on the reporter's machine; the
+  TE-1 witness has since landed **in this tree** and reads the four nodes together, and the question the
+  row wanted ("which mechanism did the incident run") has been divided — the write loss is C216/C248
+  (fixed, law 17c), the four heads are the witness's own subject. A close condition that names an input
+  this programme cannot reach is discharged by the record.
+- **C260's title was half wrong**, and the re-derivation found which half: no write is dropped (a
+  final-scope chain is never applied *or* rejected; `rejected_finally` cascades only to a conflict-scope
+  dependent). The reporting half was real and **wider than the row says** — such a rejection reached no
+  surface at all, and I1's own filter exempts it by construction. The row survives, re-scoped, and the
+  field that closes it is `MergeReport::final_scope_rejected_chains`.
+- **C249 was a finding wrapped around a rung.** Its defect half is closed (both silent paths are loud,
+  with counters on `/api/status`); the reset rung it also names is **F-U5-01 on the failure-HAZOP
+  worksheet**, dispositioned R3, **owned by #287**, with its owed test and its ship-dark rule written
+  down. Closing the row de-duplicates the register rather than dropping the work.
+- **C254 landed its two residuals**: the source check `tools/check-spawn-observability.sh` (30 sites in
+  eight ingress files — 6 supervised, 7 held, 17 bare-with-a-reason, both directions of staleness
+  checked, negative control run) and the closed-channel count on the status surface.
+- **C262's residue was a live hole**, not a hypothetical one: `rholang/src/system_processes.rs` reads
+  `spec/conformance/protocol.tsv` from outside the formal gate's trigger list. The gate now checks its own
+  trigger list, in both directions, from inside the gate — which needs no workflow edit to stay honest.
+- **C255's last item** was one allowlist entry saying it covers a shape; **C256** closed on the decision
+  its close condition allows, with the inert mechanism recorded in the deviation register (§6) and its
+  three dead halves named as dead.
+
+**What the re-derivation also showed, and it is a fact about the register.** **Six of the ten open rows
+rested on a `candidate:` slug rather than a law** — C254, C255, C256, C262, C268, C269 — and a slug means
+the property has **no theorem**, so "is this state still representable?" has no *formal* answer for those
+rows. That is the same shape the OCapN wave was caught in ("an integration whose register rows are all
+`candidate:` slugs has no laws"), and it is why a review driven by closure conditions could only tick
+them. For C268 it is stronger still: no theorem *can* exist, for the reason its own law states.
+
+**What stays open, and why that is not a failure of the pass.** **C259** and **C269** are the two rows
+whose subject is genuinely a run: a net whose finality is frozen, a wiped joiner synced through an
+operator-named anchor, and the tool naming that anchor. The state is still stageable — the divergence
+instrument retired with the store it perturbed, and nothing had to replace it, because a sub-quorum net
+freezes finality on its own (`up --validators 4 --fresh` reaches it unaided, `--no-autopropose` with
+nothing deployed cannot move finality, and stopping validators below ⅔ freezes it on demand). **#315** is
+decided by the same run, and #318 takes one of its two arms from it.
+
+**The issues, re-derived too, and the criticism does *not* land there.** All seven open issues but #51
+were filed in the last week, and the ones still open are open because they are *design decisions or
+missing capabilities* — slashing by proof and a bounded denominator (#290), the reconciliation meet and
+its live venue (#287), post-quantum signatures (#274), a process item (#51) — not because a defect was
+filed against an older build. #315 is the single case where "reported against an older version" could
+hold, which is why the rig tests it instead of assuming either way.
