@@ -122,11 +122,12 @@ recorded in the Scala-deviation register, [`spec/audit/passes.md`](spec/audit/pa
 
 ## The target, and how work is tracked
 
-**The oracle is done.** `spec/laws.tsv` reads **0 `owed`, 0 `open`** across
-<!-- counts:entries -->88 entries<!-- counts:end --> — <!-- counts:proved-model-entries -->57<!-- counts:end --> `proved-model`, <!-- counts:proved-tied-entries -->23<!-- counts:end -->
-`proved-tied`, <!-- counts:axioms -->10 axioms<!-- counts:end --> (9 crypto by design, 1 named) — so the
-mathematical programme the prime directive sets is finished. Adding a law, or re-opening a proof, is a
-deliberate act rather than the default next step.
+**The oracle is done.** `spec/laws.tsv` reads **0 `owed`, 1 `open`** across
+<!-- counts:entries -->94 entries<!-- counts:end --> — <!-- counts:proved-model-entries -->62<!-- counts:end --> `proved-model`, <!-- counts:proved-tied-entries -->23<!-- counts:end -->
+`proved-tied`, <!-- counts:axioms -->10 axioms<!-- counts:end --> (9 crypto by design, 1 named) — the single open row
+(law 63a, a bridged deploy's attribution) being a cross-implementation relay this tree cannot reach
+rather than a proof debt, so the mathematical programme the prime directive sets is finished. Adding a
+law, or re-opening a proof, is a deliberate act rather than the default next step.
 
 **What remains is operational, and it is one sentence:** `docs/src/node/testnet.md` says *"this net takes one
 validator on purpose, and adding a second is unsafe today"*. The target is to lift that — **a net of ≥2

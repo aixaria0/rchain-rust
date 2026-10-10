@@ -18,6 +18,21 @@ use crate::casper::protocol::casper_message::BlockMessage;
 use crate::proto::casper::{BlockMetadataProto, BondProto};
 use crate::validator::Validator;
 
+/// **The key of a fringe** — the hash over its blocks, which is what a block records as its
+/// [`BlockMetadata::member_of_fringe`] and what `BlockDagKeyValueStorage` used to key its retired
+/// `fringe-data` store by (Law 18: fringe identity is order-independent — the hash is over the
+/// `BTreeSet`, so the input order cannot move it).
+///
+/// This lived on `FringeData` until the store retired (Law 66/68; C250's residue, C270): the claim a
+/// fringe held is now a per-block fact (`BlockMetadata.fringe_state_hash`, `BlockMetadata.fringe`, the
+/// block's `rejected_deploys`, and `member_of_fringe`), so the *type* goes while this one computation
+/// — which names the fringe a block belongs to — stays, because the readers that replaced the store
+/// still need to name a fringe to *find* its blocks.
+pub fn fringe_hash_of(fringe: &BTreeSet<BlockHash>) -> Blake2b256Hash {
+    let parts: Vec<&[u8]> = fringe.iter().map(|h| h.as_bytes() as &[u8]).collect();
+    Blake2b256Hash::create_many(&parts)
+}
+
 /// **Why** a block was marked failed, which decides whether a restoring rule may clear the record and
 /// whether the failure is the block's own fault (AUDIT C173).
 ///
@@ -442,5 +457,31 @@ mod tests {
             BTreeMap::from([(validator(2), 100.try_into().unwrap())])
         );
         assert!(!meta.validated);
+    }
+
+    /// **Law 18's witness, moved here with `fringe_hash_of` — and the move was forced, not chosen.**
+    ///
+    /// This test lived in `fringe_data.rs`, which the record redesign deleted (Law 66: the store, the
+    /// type and the join retired, because the claim travels with its block). Deleting the module took the
+    /// witness with it, and the register's own check refused the anchor that then pointed at nothing —
+    /// which is the check earning its keep, since nothing else in the tree would have noticed a law
+    /// losing its only test.
+    ///
+    /// The property: a fringe's identity is its *sorted* members, so two sets built in different
+    /// insertion orders are one key. `fringe_hash_of` iterates its `BTreeSet` input, so this is also the
+    /// statement that the key does not depend on how the set was assembled.
+    #[test]
+    fn law18_fringe_hash_is_order_independent() {
+        let mut one = BTreeSet::new();
+        one.insert(block_hash(1));
+        one.insert(block_hash(2));
+        let mut two = BTreeSet::new();
+        two.insert(block_hash(2));
+        two.insert(block_hash(1));
+        assert_eq!(
+            fringe_hash_of(&one),
+            fringe_hash_of(&two),
+            "one fringe, one key, whatever order it was built in"
+        );
     }
 }

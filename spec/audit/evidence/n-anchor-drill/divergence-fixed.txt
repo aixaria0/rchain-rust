@@ -1,0 +1,135 @@
+== the C270 divergence rig, on the tree with the claim travelling with its block ==
+
+rig: `tools/devnet.sh up --validators 4 --fresh` — autopropose, default epoch length, **no
+injection and no fault**. The same command as `self-reject-stall.txt`, which recorded the stall.
+
+== the build the devnet ran ==
+71ecf4f1a
+ M AGENTS.md
+ M README.md
+ M casper/src/api/block_api.rs
+ M casper/src/engine/catchup.rs
+ M casper/src/engine/node_launch.rs
+ M casper/src/engine/node_syncing.rs
+ M casper/tests/merge_determinism.rs
+ M docs/src/ai-entrypoint.md
+ M docs/src/contributor/architecture.md
+ M docs/src/contributor/laws-to-rust.md
+ M docs/src/contributor/spec.md
+ M docs/src/contributor/why-rust.md
+ M docs/src/formal/README.md
+ M docs/src/formal/concurrency.md
+ M docs/src/formal/laws.md
+ M docs/src/introduction.md
+ M models/src/block_metadata.rs
+ M node/src/api/conversion.rs
+ M node/src/api/dto.rs
+ M node/src/api/web_api_impl.rs
+ M node/src/web/http.rs
+ M node/tests/lean_envelope_corpus.rs
+ M spec/INVENTORY.md
+ M spec/LAWS.md
+ M spec/README.md
+ M spec/Rchain/Envelope.lean
+ M spec/Rchain/Laws.lean
+ M spec/conformance/envelope.tsv
+ M spec/coq/README.md
+ M spec/laws.tsv
+
+== heights, every 30 s, until the master passes the height that stopped three of the four ==
+t+30s  40403: h=2 41403: h= 42403: h= 43403: h= 
+t+60s  40403: h=26 41403: h=27 42403: h=26 43403: h=25 
+t+90s  40403: h=34 41403: h=34 42403: h=34 43403: h=33 
+t+120s  40403: h=55 41403: h=55 42403: h=54 43403: h=54 
+t+150s  40403: h=81 41403: h=81 42403: h=81 43403: h=80 
+t+180s  40403: h=114 41403: h=113 42403: h=115 43403: h=113 
+t+210s  40403: h=153 41403: h=152 42403: h=154 43403: h=152 
+t+240s  40403: h=189 41403: h=189 42403: h=189 43403: h=188 
+t+270s  40403: h=212 41403: h=212 42403: h=213 43403: h=212 
+
+== the readings the pre-fix run was diagnosed by ==
+node devnet-bootstrap (40403):
+  latestBlockNumber          212
+  finalityStall              "a layer exists but its supporting stake is not a supermajority — 100 of 400 (1 full partition(s) among 1 candidate(s))"
+  autoproposeTimerHalted     false
+  consecutiveSelfValidationFailures 0
+  staleSnapshotSelfEquivocations    0
+node devnet-validator-1 (41403):
+  latestBlockNumber          212
+  finalityStall              "a layer exists but its supporting stake is not a supermajority — 100 of 400 (1 full partition(s) among 1 candidate(s))"
+  autoproposeTimerHalted     false
+  consecutiveSelfValidationFailures 0
+  staleSnapshotSelfEquivocations    0
+node devnet-validator-2 (42403):
+  latestBlockNumber          213
+  finalityStall              null
+  autoproposeTimerHalted     false
+  consecutiveSelfValidationFailures 0
+  staleSnapshotSelfEquivocations    0
+node devnet-validator-3 (43403):
+  latestBlockNumber          212
+  finalityStall              null
+  autoproposeTimerHalted     false
+  consecutiveSelfValidationFailures 0
+  staleSnapshotSelfEquivocations    0
+
+== how far finality has come: the reading the pre-fix run could not produce ==
+(`/api/last-finalized-block` answers per node; **the raw body is printed**, because an endpoint
+ that answers an *error* and an instrument that failed look the same once parsed — the first
+ capture of this section printed '-' four times and could not tell them apart.)
+  devnet-bootstrap: {"blockInfo":{"version":1,"shardId":"/root","blockHash":"454468ce4004a40a25435106a1224aa104c8a32cc86a23361f673bcc409f2991","blockNumber":198,"sender":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f182
+  devnet-validator-1: {"blockInfo":{"version":1,"shardId":"/root","blockHash":"bd8d073dbeab09a98631eef4595adf004f30ad6d5367c9e5d83fca71785abba5","blockNumber":197,"sender":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f182
+  devnet-validator-2: {"blockInfo":{"version":1,"shardId":"/root","blockHash":"d574797fa64afd8dfe495fb53230202674b8167ad2e9e731a6b22eb94ddb5cc9","blockNumber":195,"sender":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f182
+  devnet-validator-3: {"blockInfo":{"version":1,"shardId":"/root","blockHash":"d574797fa64afd8dfe495fb53230202674b8167ad2e9e731a6b22eb94ddb5cc9","blockNumber":195,"sender":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f182
+
+(`finalityStall` is the gate's last observation; `finalityStallEpisodes` is how many times this
+ node has *entered* a stall, monotone — so 'stalled now' is distinguishable from 'stalled and
+ recovered'.)
+  devnet-bootstrap: finalityStallEpisodes=152 finalityStall="a layer exists but its supporting stake is not a supermajority — 100 of 400 (1 full partition(s) among 1 candidate(s))"
+  devnet-validator-1: finalityStallEpisodes=136 finalityStall="a layer exists but its supporting stake is not a supermajority — 100 of 400 (1 full partition(s) among 1 candidate(s))"
+  devnet-validator-2: finalityStallEpisodes=152 finalityStall=null
+  devnet-validator-3: finalityStallEpisodes=138 finalityStall=null
+
+== block hashes per height, all four: one head, or four? ==
+h=40 : 6f90a956,7d75d17a,bffe571b,dbe50255 | 6f90a956,7d75d17a,bffe571b,dbe50255 | 6f90a956,7d75d17a,bffe571b,dbe50255 | 6f90a956,7d75d17a,bffe571b,dbe50255 |
+h=45 : 0a92259c,12aeb31a,5e0bdd5a,f41a6b6f | 0a92259c,12aeb31a,5e0bdd5a,f41a6b6f | 0a92259c,12aeb31a,5e0bdd5a,f41a6b6f | 0a92259c,12aeb31a,5e0bdd5a,f41a6b6f |
+h=46 : 2cb3c174,62970ecc,f92aa60c | 2cb3c174,62970ecc,f92aa60c | 2cb3c174,62970ecc,f92aa60c | 2cb3c174,62970ecc,f92aa60c |
+h=48 : 1261de16,7b185db4,8a5438b9,ab5c8bf2 | 1261de16,7b185db4,8a5438b9,ab5c8bf2 | 1261de16,7b185db4,8a5438b9,ab5c8bf2 | 1261de16,7b185db4,8a5438b9,ab5c8bf2 |
+h=49 : b36863e8,b4a9f8fe,c0f7e97c,d1e39d04 | b36863e8,b4a9f8fe,c0f7e97c,d1e39d04 | b36863e8,b4a9f8fe,c0f7e97c,d1e39d04 | b36863e8,b4a9f8fe,c0f7e97c,d1e39d04 |
+h=50 : 24e15f94,5e918ab3,74541a14,76c9d3fd | 24e15f94,5e918ab3,74541a14,76c9d3fd | 24e15f94,5e918ab3,74541a14,76c9d3fd | 24e15f94,5e918ab3,74541a14,76c9d3fd |
+h=60 : 1f762037,7c0f27db,882f94b3,bb2c6a88 | 1f762037,7c0f27db,882f94b3,bb2c6a88 | 1f762037,7c0f27db,882f94b3,bb2c6a88 | 1f762037,7c0f27db,882f94b3,bb2c6a88 |
+h=80 : 0c0dfb69,10cce8aa,cca48340,dbfcd2da | 0c0dfb69,10cce8aa,cca48340,dbfcd2da | 0c0dfb69,10cce8aa,cca48340,dbfcd2da | 0c0dfb69,10cce8aa,cca48340,dbfcd2da |
+h=100 : 3771fc1f,a59830f9,bc7372c4,dc80f4d8 | 3771fc1f,a59830f9,bc7372c4,dc80f4d8 | 3771fc1f,a59830f9,bc7372c4,dc80f4d8 | 3771fc1f,a59830f9,bc7372c4,dc80f4d8 |
+h=150 : 527bd85c,5ffa040c | 527bd85c,5ffa040c | 527bd85c,5ffa040c | 527bd85c,5ffa040c |
+h=190 : 26b191cf,d7596de3,f54f4ae0,fbb71986 | 26b191cf,d7596de3,f54f4ae0,fbb71986 | 26b191cf,d7596de3,f54f4ae0,fbb71986 | 26b191cf,d7596de3,f54f4ae0,fbb71986 |
+
+== the log lines that made the pre-fix stall legible, counted on each node ==
+devnet-bootstrap:
+  [fringe-divergence]              0
+  Self-created block ... failed    0
+  active-bonds leaf not found      0
+  finality did not advance         514
+  LFS state is successfully restored. 0
+devnet-validator-1:
+  [fringe-divergence]              0
+  Self-created block ... failed    0
+  active-bonds leaf not found      0
+  finality did not advance         490
+  LFS state is successfully restored. 1
+devnet-validator-2:
+  [fringe-divergence]              0
+  Self-created block ... failed    0
+  active-bonds leaf not found      0
+  finality did not advance         503
+  LFS state is successfully restored. 1
+devnet-validator-3:
+  [fringe-divergence]              0
+  Self-created block ... failed    0
+  active-bonds leaf not found      0
+  finality did not advance         507
+  LFS state is successfully restored. 1
+
+== the pre-fix run's own lines, for the comparison ==
+  (spec/audit/evidence/n-anchor-drill/self-reject-stall.txt: heights 45/46/49/133,
+   "Self-created block ... failed its own validation" on three nodes, autopropose halted)
+

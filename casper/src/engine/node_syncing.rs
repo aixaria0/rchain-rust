@@ -23,10 +23,13 @@ use rchain_models::casper::protocol::casper_message::{
     BlockFringe, BlockMessage, CasperMessage, FinalizedFringe, StoreItemsMessage,
 };
 use rchain_rspace::state::RSpaceImporter;
+use rchain_shared::lock::Unpoison;
 use rchain_shared::log::{Log, LogSource};
 
 use super::lfs_block_requester::request_blocks;
-use super::lfs_tuple_space_requester::{request_tuple_space, request_tuple_space_roots};
+use super::lfs_tuple_space_requester::{
+    request_tuple_space, request_tuple_space_roots, REQUEST_TIMEOUT,
+};
 use crate::protocol::comm_util::CommUtil;
 use crate::validator_identity::ValidatorIdentity;
 
@@ -80,6 +83,70 @@ pub const MAX_SYNC_ATTEMPTS: u32 = 3;
 /// tip — but waiting for one *only* would turn a bootstrap that has stopped answering into the same
 /// latch this fixes, one level up.
 const SYNC_RETRY_DELAY: Duration = Duration::from_secs(10);
+
+/// The sync task's current state, or `None` when it is not syncing.
+///
+/// **`None` is the ordinary case**: it is written while the retry loop is running and **cleared when
+/// an attempt restores the state**, so a non-`None` reading means "this node is in `NodeSyncing`
+/// right now" rather than "this node once synced". A running node therefore reports nothing here,
+/// which is the honest reading — the sync task has returned.
+///
+/// **Why a surface at all.** The attempt count and the failure reason lived only in the task's own
+/// locals and in a line on stderr, so a node whose sync was looping — or whose retries had been spent
+/// and had stopped serving — answered `GET /api/v1/status` exactly like a healthy one. The measured
+/// incident (`spec/audit/evidence/n-anchor-drill/c268-joiner-page-walk-loop.txt`) was joiners at
+/// height 0 for ten minutes with no way for a probe to ask why. This is the writer half;
+/// `BlockApi::sync_health` reads it, so the log line and the status surface carry the same fact.
+static SYNC_STATE: std::sync::Mutex<Option<SyncState>> = std::sync::Mutex::new(None);
+
+/// What the LFS sync task is doing, as this process last observed it — the reading [`sync_state`]
+/// returns and [`crate::api::block_api::SyncHealth`] republishes on the status surface.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncState {
+    /// Attempts **started**. Counted when an attempt begins rather than when it fails, so a reading
+    /// taken while one is in flight names the attempt now running rather than the last one that ended.
+    /// This is *not* the count the retry bound uses, which is a failure count (`attempts` in the loop
+    /// below); the two agree at every failure and differ only mid-attempt.
+    pub attempts: u32,
+    /// The last named failure's message, verbatim — the same `e` the retry loop logs. `None` while the
+    /// attempt the count names has not failed (and before any attempt has).
+    pub last_failure: Option<String>,
+}
+
+/// Record that an attempt has **started**, and drop the previous one's failure.
+///
+/// The failure goes with the count it belonged to: `attempts` and `last_failure` are read as a pair,
+/// and a reason left beside a *newer* count would report attempt N failing with attempt N-1's error —
+/// a worse lie than reporting no reason at all.
+fn note_sync_attempt(started: u32) {
+    *SYNC_STATE.lock().unpoison() = Some(SyncState {
+        attempts: started,
+        last_failure: None,
+    });
+}
+
+/// Record the failure of the attempt the current reading names.
+fn note_sync_failure(message: &str) {
+    let mut state = SYNC_STATE.lock().unpoison();
+    if let Some(state) = state.as_mut() {
+        state.last_failure = Some(message.to_string());
+    }
+}
+
+/// Clear the reading: the sync task has stopped — the state was restored, or the retries were spent —
+/// so this node is not syncing and has nothing to report here.
+fn clear_sync_state() {
+    *SYNC_STATE.lock().unpoison() = None;
+}
+
+/// The LFS sync task's current state, as this process last observed it (the reader half; see
+/// [`SYNC_STATE`]).
+///
+/// `None` means the task is not running — **not** that the last sync succeeded, which this accessor
+/// cannot see and does not claim.
+pub fn sync_state() -> Option<SyncState> {
+    SYNC_STATE.lock().unpoison().clone()
+}
 
 impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
     #[allow(clippy::too_many_arguments)]
@@ -329,6 +396,11 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                 let mut incoming_blocks_rx = incoming_blocks_rx;
                 let mut tuple_space_rx = tuple_space_rx;
                 let mut attempts: u32 = 0;
+                // The attempt count the *status surface* names, separate from `attempts` above, which
+                // is the retry bound's failure count. They agree at every failure and differ only
+                // while an attempt is in flight — exactly the window a reader asking "is this node
+                // trying right now" is asking about.
+                let mut started: u32 = 0;
 
                 loop {
                     // The target is re-read every attempt: a later bootstrap answer is newer, and
@@ -339,8 +411,14 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                         // the slot is written before the task is spawned, so it is unreachable in
                         // practice, and a node with no fringe is one that never received a request.
                         log.error(source, "LFS sync task started with no fringe to sync to");
+                        // A returning task must not leave a reading behind: `None` here means "not
+                        // syncing", and this task is about to stop.
+                        clear_sync_state();
                         return;
                     };
+
+                    started += 1;
+                    note_sync_attempt(started);
 
                     let outcome = run_approved_state_sync(
                         &target,
@@ -366,10 +444,17 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                             }
                             log.info(source, "LFS state is successfully restored.");
                             notify_when_restored(&outcome, &finished);
+                            // The state is restored, so this task is returning and the node is no
+                            // longer syncing: the reading is cleared rather than left naming the loop
+                            // that is now over.
+                            clear_sync_state();
                             return;
                         }
                         Err(e) => {
                             attempts += 1;
+                            // The reason travels with the count: the status surface and the terminal
+                            // line both read it, and it is the same `e` the log below formats.
+                            note_sync_failure(e);
                             log.error(
                                 source,
                                 &format!(
@@ -451,7 +536,7 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     let tuple_fut = request_tuple_space(
         fringe,
         tuple_space_rx,
-        Duration::from_secs(120),
+        REQUEST_TIMEOUT,
         transport.as_ref(),
         &conf,
         importer,
@@ -459,10 +544,29 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     );
 
     let (block_st, tuple_res) = tokio::join!(block_fut, tuple_fut);
-    tuple_res.map_err(|e| e.to_string())?;
+    // **The tuple leg's state is bound, not dropped** (C271). This used to be
+    // `tuple_res.map_err(|e| e.to_string())?;` — the error was propagated and the state thrown away, so
+    // a walk that stopped early was indistinguishable from one that completed. Law 69
+    // (`spec/Rchain/Sync/Walk.lean`) is a statement about the walk's *exit*, and the consumer's half of
+    // it is reading the state that exit returned.
+    let tuple_st = tuple_res.map_err(|e| e.to_string())?;
     // A store failure while walking the blocks fails the sync attempt (the oracle's stream fails
     // the same way) rather than leaving a block marked done that was never persisted (AUDIT C65).
     let block_st = block_st.map_err(|e| e.to_string())?;
+
+    // **An unfinished page walk is not a restored state** (C271) — the tuple leg's twin of the block
+    // guard below, in the same shape: what was expected, what was found. `request_tuple_space_roots`
+    // now refuses its own non-completion exits by name (Law 69), so this is the consumer's independent
+    // reading of the same contract, and it documents at the call site what "restored" means: a node that
+    // left `NodeSyncing` on anything but a complete state would serve an API over a partial one.
+    if !tuple_st.is_finished() {
+        return Err(format!(
+            "the tuple-space walk finished without completing every page: {} key(s) still \
+             outstanding (expected the walk to reach `is_finished` before the state is called \
+             restored)",
+            tuple_st.outstanding_count()
+        ));
+    }
 
     // **A finished walk that received nothing is not a restored state** (issue #100). The block walk
     // starts from the fringe's own hashes, so any fringe that names a block records at least that block
@@ -499,10 +603,14 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
                 extra_roots.len()
             ),
         );
+        // This walk's returned state is not bound here, and unlike the joined leg above that is safe
+        // (C271): `request_tuple_space_roots` now returns `Ok` **only** for a walk that reached
+        // `is_finished`, so there is no partial state left to read — the check that mattered is the one
+        // inside the walk, and the one above is its twin at the call site.
         request_tuple_space_roots(
             &extra_roots,
             tuple_space_rx,
-            Duration::from_secs(120),
+            REQUEST_TIMEOUT,
             transport.as_ref(),
             &conf,
             importer,
@@ -637,8 +745,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use rchain_block_storage::dag::codecs::{
-        Blake2b256HashCodec, BlockHashCodec, BlockMessageCodec, BlockMetadataCodec,
-        FringeDataCodec, SignedDeployDataCodec,
+        BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
     };
     use rchain_block_storage::dag::dag_storage::DeployId;
     use rchain_comm::errors::CommErr;
@@ -652,7 +759,6 @@ mod tests {
         BlockMessage, RholangState, SignedDeployData,
     };
     use rchain_models::comm::protocol::Protocol;
-    use rchain_models::fringe_data::FringeData;
     use rchain_models::validator::Validator;
     use rchain_rspace::state::RSpaceImporter;
     use rchain_shared::log::{Log, LogSource, NopLog};
@@ -668,6 +774,14 @@ mod tests {
 
     use crate::block_metadata_store::BlockMetadataStore;
     use crate::dag::BlockDagKeyValueStorage;
+
+    /// **The process-global [`SYNC_STATE`] is written by every test that lets a sync task run**, so a
+    /// reader that means to observe *its own* writes is polluted by whichever sibling is mid-flight.
+    /// The tests that touch it take this guard for their whole body; the direct test it protects
+    /// asserts on values no other test produces. A `tokio` mutex rather than a `std` one because the
+    /// guard is held across `await` — each `#[tokio::test]` owns its own runtime, and this primitive
+    /// is the one that serializes tasks *across* runtimes.
+    static SYNC_STATE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     type Shared = Arc<tokio::sync::Mutex<Box<dyn KeyValueStore + Send + Sync>>>;
 
@@ -716,12 +830,6 @@ mod tests {
             .await
             .unwrap(),
         );
-        let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
-            Arc::new(KeyValueTypedStoreCodec::new(
-                in_memory(),
-                Arc::new(Blake2b256HashCodec),
-                Arc::new(FringeDataCodec),
-            ));
         let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
             Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
@@ -735,14 +843,9 @@ mod tests {
                 Arc::new(SignedDeployDataCodec),
             ));
         Arc::new(
-            BlockDagKeyValueStorage::create(
-                metadata_store,
-                fringe_store,
-                deploy_index,
-                deploy_store,
-            )
-            .await
-            .unwrap(),
+            BlockDagKeyValueStorage::create(metadata_store, deploy_index, deploy_store)
+                .await
+                .unwrap(),
         )
     }
 
@@ -987,6 +1090,45 @@ mod tests {
             "a restored state must signal the node out of syncing"
         );
     }
+
+    /// **No silence, law 69's other half: the sync task's state is a reading, and it is *cleared* when
+    /// there is nothing to read.**
+    ///
+    /// Both directions in one test, following [`notify_when_restored`]'s pair above: a failed attempt
+    /// leaves a reading that names the attempt it belongs to and the reason it failed, and a restored
+    /// state clears it — because a reading left behind ("not syncing, but here is why it last failed")
+    /// is indistinguishable from a node that is failing *right now*, which is the silence this row is
+    /// about. `None` is the ordinary case, so the second half is also what keeps the first from passing
+    /// as "the surface always says something".
+    ///
+    /// The statics are process-wide and the tests here run in parallel, so this holds
+    /// [`SYNC_STATE_TESTS`] and so do the tests that spawn a sync task: without it a sibling mid-flight
+    /// would write between the calls below and the assertion would be about its write, not this one's.
+    #[tokio::test]
+    async fn a_failed_attempt_leaves_a_reading_and_a_restore_clears_it() {
+        let _guard = SYNC_STATE_TESTS.lock().await;
+
+        note_sync_attempt(2);
+        note_sync_failure("the state-page walk was abandoned after 3 idle rounds");
+        let reading = sync_state().expect("a running sync reports a reading");
+        assert_eq!(
+            reading.attempts, 2,
+            "the reading names the attempt that started"
+        );
+        assert_eq!(
+            reading.last_failure.as_deref(),
+            Some("the state-page walk was abandoned after 3 idle rounds"),
+            "the reading must carry the failure verbatim, not a paraphrase of it"
+        );
+
+        clear_sync_state();
+        assert_eq!(
+            sync_state(),
+            None,
+            "a node that is not syncing must report nothing, not the last failure it saw"
+        );
+    }
+
     /// **U16 / AUDIT C68 *and* C181, end to end: a failed attempt is retried, the retries are bounded,
     /// and the bound has a terminal state.**
     ///
@@ -1004,6 +1146,9 @@ mod tests {
     /// is what keeps the fix from being "signal success on failure", which is the C68 regression.
     #[tokio::test]
     async fn a_failed_attempt_is_retried_and_the_retries_end_in_a_terminal_signal() {
+        // Held for the whole test: this test's sync task writes the process-global `SYNC_STATE`, and
+        // the direct reading test must not observe it mid-flight.
+        let _guard = SYNC_STATE_TESTS.lock().await;
         let bootstrap = peer("bootstrap");
         let log = Arc::new(RecordingLog::default());
 
@@ -1216,6 +1361,9 @@ mod tests {
     /// tree by moving the log back inside the start branch: the second state hash appears nowhere.
     #[tokio::test]
     async fn a_later_bootstrap_fringe_is_not_discarded_in_silence() {
+        // This test's sync task also writes the process-global `SYNC_STATE` (see the note on the
+        // direct reading test).
+        let _guard = SYNC_STATE_TESTS.lock().await;
         let log = Arc::new(RecordingLog::default());
         let (mut engine, bootstrap, _approved) = failing_engine(&log).await;
 
@@ -1264,6 +1412,9 @@ mod tests {
     /// starts on the empty fringe in phase 1, and phase 2 produces nothing.)
     #[tokio::test]
     async fn an_empty_fringe_does_not_consume_the_sync_trigger() {
+        // This test's sync task also writes the process-global `SYNC_STATE` (see the note on the
+        // direct reading test).
+        let _guard = SYNC_STATE_TESTS.lock().await;
         let bootstrap = peer("bootstrap");
         let log = Arc::new(RecordingLog::default());
 

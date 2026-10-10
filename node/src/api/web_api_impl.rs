@@ -1047,11 +1047,16 @@ impl WebApi for WebApiImpl {
         // else — plus the poisoned-lock count, read from `rspace` because the poisoning is a
         // storage-layer event and the count is process-wide (F-U9-03).
         let finality = self.block_api.finality_health().await;
+        // Law 69's other half: the sync task's own state, so a node latched in `NodeSyncing` says so on
+        // this surface instead of only on stderr. `None` is the ordinary reading — the task has
+        // returned — and it is not the same as a completed sync.
+        let sync = self.block_api.sync_health().await;
         Ok(to_api_status(
             &status,
             &caps,
             &health,
             &finality,
+            sync.as_ref(),
             rchain_rspace::lock::poison_recoveries(),
             // C254: the supervisor's counters. Every long-lived background task is watched by
             // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a

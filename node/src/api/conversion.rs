@@ -1,6 +1,6 @@
 //! Web API protobuf conversion functions (port of the conversion fns in `api/WebApi.scala`).
 
-use rchain_casper::api::block_api::{Capabilities, FinalityHealth, ProposerHealth};
+use rchain_casper::api::block_api::{Capabilities, FinalityHealth, ProposerHealth, SyncHealth};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::signatures_alg::from_algorithm;
@@ -15,7 +15,7 @@ use rchain_shared::base16;
 use super::dto::{
     ApiStatus, DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
     ExploratoryDeployResponse, NodeCapabilities, PooledDeploy, RhoDataResponse, RhoExprWithBlock,
-    SignatureException, VersionInfo,
+    SignatureException, SyncStatus, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
 
@@ -33,6 +33,7 @@ pub fn to_api_status(
     caps: &Capabilities,
     health: &ProposerHealth,
     finality: &FinalityHealth,
+    sync: Option<&SyncHealth>,
     poison_recoveries: u64,
     tasks_panicked: u64,
     tasks_exited: u64,
@@ -60,6 +61,14 @@ pub fn to_api_status(
         finality_stall: finality.stall_reason.clone(),
         finality_stall_episodes: finality.stall_episodes,
         non_quiet_merge_reports: finality.non_quiet_merge_reports,
+        // Law 69's other half: the sync task's own state, threaded in by the caller exactly as
+        // `finality` is. **`None` travels as `null` rather than as a zeroed object** — a reader must be
+        // able to tell "this node is not syncing" from "this node is syncing and its first attempt has
+        // not failed yet", and only the absence of the object says the first.
+        sync: sync.map(|s| SyncStatus {
+            attempts: s.attempts,
+            last_failure: s.last_failure.clone(),
+        }),
         poison_recoveries,
         unrestorable_records: finality.unrestorable_records,
         unrestorable_block: finality.unrestorable_block.clone(),
@@ -252,7 +261,9 @@ mod tests {
             unrestorable_records: 1,
             unrestorable_block: Some("ab12 (seq 9)".to_string()),
         };
-        let api = to_api_status(&status, &caps, &health, &finality, 11, 2, 40);
+        // The sync reading is a parameter like `finality`, and the `None` arm is the ordinary one:
+        // this process's sync task has returned.
+        let api = to_api_status(&status, &caps, &health, &finality, None, 11, 2, 40);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
@@ -288,6 +299,11 @@ mod tests {
         // return are different facts — the return is the one nothing else reports.
         assert_eq!(api.tasks_panicked, 2);
         assert_eq!(api.tasks_exited, 40);
+        // Law 69's other half: a `None` reading travels as a null `sync`, which is what an operator
+        // sees on a node that is not syncing — the ordinary reading, and the one that must not be
+        // confused with "synced fine". The `Some` shape needs a running sync task, and its decision is
+        // pinned in `node_syncing`'s own test where the statics live.
+        assert_eq!(api.sync, None);
     }
 
     #[test]

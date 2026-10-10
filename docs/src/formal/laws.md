@@ -11,10 +11,10 @@ saying **what it is about**.
 > carry a part of it). It counts *clauses* rather than laws and separates **`proved-tied`** (proved *and*
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
-> disagree, the register is right. Its total is **<!-- counts:proved-laws -->59<!-- counts:end --> of
-> <!-- counts:laws -->65 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->19<!-- counts:end --> tied to the node by a corpus,
-> <!-- counts:proved-model-laws -->42<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
-> definition, and the register has a word for that).
+> disagree, the register is right. Its total is **<!-- counts:proved-laws -->64<!-- counts:end --> of
+> <!-- counts:laws -->71 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->19<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:proved-model-laws -->47<!-- counts:end --> over the model — with two more laws proved but *vacuous* (their statements restate their
+> own definitions, and the register has a word for that).
 
 ## The set, and what each part of it is about
 
@@ -31,6 +31,11 @@ saying **what it is about**.
 | 48–49 | **Charging** | what a denied deploy does to the merged state, and what a matched deploy is charged | *(below)* |
 | 50 | **Depth guards** | the two budgets a term's size is bounded by: the AST depth the parser refuses, and the value depth the space refuses — the second being the route the parser cannot see (a contract folding pairs at run time) | *(below)* |
 | 51–54 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), the two answers finality's gate must give (52: the partition may shrink, the quorum denominator may not), one attribution that is terminal (53: the refusal persists and the rule refuses its children), and which view a rule reads (54) | [Progress: the shapes of non-progress](progress.md) |
+| 55–56 | **Bounded work and the rooted namespace** | every step's cost is bounded by a quantity the protocol bounds, and a name is rooted in the identity that owns it | *(below)* |
+| 57 | **The delegator's stake** | a delegation joins the operator's pool and its reward splits pro-rata, so a validator with delegators commits what it would alone | *(below)* |
+| 58 | **The finality gate's forward dual** | a fully-participating view *is* the whole bonded set, so the gate publishes — the direction Law 52's free support map left open | *(below)* |
+| 59–65 | **The wire and the session** | the CapTP bridge's round trip and refusals, the install rule, the session loop, the dial policy, attribution, interop, and the printer's literal guard | *(below)* |
+| 66–71 | **The distributed-system set** | the fringe record's key, the record join, versioned reads, the state-page walk's termination, transfer correctness, and the catch-up window | *(below)* |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
 defect that started the formalisation programme (AUDIT C9–C22) lived there and **nothing errored**: an
@@ -340,6 +345,61 @@ constraint governing this workstream is that a staker must not lose its bond thr
 — a partition is the canonical case of exactly that. What the port has instead is an **income-only**
 participation rule (law 44), which scales an epoch's reward and cannot reach a stake. It is not a recency
 window, and the citations this used to carry (#24, #39) are both closed.
+
+---
+
+## Bounded work, the namespace, and the wire (Laws 55–65)
+
+**What they are about.** Eleven laws that arrived *after* the progress vocabulary, over several
+unrelated problem areas. Law 55 is the class **AUDIT C180** filed as `candidate:bounded-work-per-step`:
+work whose cost grows with an input nothing bounds, and where a bound exists it belongs to the step
+rather than to a check after it. Law 56 is the rooted namespace, where a name is rooted in a **derived**
+identity so a write outside your own root is inexpressible rather than refused. Law 57 is the
+Proof-of-Stake validator's delegator: a delegation joins the operator's pool and its reward splits
+pro-rata, so a validator with delegators commits the same total it would have alone. Law 58 closes the
+direction Law 52's free support map left open — a *fully-participating* view is the whole bonded set, so
+the gate publishes. Laws 59–65 are the OCapN surface: the CapTP value bridge (59), the install rule
+(60), the session loop (61), the dial policy (62), the one **open** row (63, a bridged deploy's
+attribution), the interop rule that the implementations, not the prose, are the oracle (64), and the
+printer's guard against a value with no faithful literal (65).
+
+| # | Law | Where it lives |
+|---|---|---|
+| 55 | **Bounded work per step.** Every step costs at most a quantity the protocol bounds, and the bound is a **hypothesis of the step**, not a check after it (`spendStep` charges only while `spent < limit`); a spent budget carries **nothing**, so the bound is a resource policy and not a consensus change | `Rchain/Bounded.lean` (`Work`, `spendStep`, `workSystem`, and the defect's inverted `lateGuardStep`/`lateGuardSystem` with `the_late_guard_overspends`; `boundedRun` for the schedule half) — the merge search's `SearchBudget` (`sdk/src/dag/merging.rs`), the census (`casper/src/merging.rs`), and the ingress queues (`casper/src/blocks/block_receiver.rs`, `casper/src/blocks/block_processor.rs`) |
+| 56 | **The rooted namespace.** `publish(path, value)` is accepted iff the path's owner prefix is the caller's **derived** REV address, so a write outside your own root cannot be spelled; versions are append-only, `seal` closes a path, and only the alias tier is a mutable pointer | `Rchain/Namespace.lean` (`NsPath`, `NsState`, `Verdict`, `publish`, `setAlias`, and the defect's `unguardedPublish`) — `casper/src/genesis/resources/rgov/MasterDictionary.rho`, `casper/src/genesis/rgov.rs`, `casper/src/genesis/mod.rs` |
+| 57 | **The delegator's stake is the operator's bond, attributed.** A delegation moves a principal into the staking vault and adds it to the operator's pool entry (the aggregate), so it counts in the draw and in what a slash reaches; the epoch reward splits pro-rata, the operator keeping the integer remainder, so a validator with delegators commits what it would alone and the split is the identity with none | `Rchain/Pos.lean` (`PosDelegation`, `PosUndelegation`, `delegatedTotal`, `proRata`, `delegate`, `undelegate`, `split_sums_to_the_reward`, `a_second_delegation_accumulates`, `a_slash_clears_the_delegations`) — `rholang/src/native_state.rs`, `rholang/src/system_processes.rs` |
+| 58 | **The gate publishes on a fully-participating set** — the forward dual Law 52 lacks. Law 52's gate is a biconditional over a *free* support map and never says one obtains; a participation-closed view is the whole bonded set, hence a full partition, hence the gate publishes. The schedule is a named hypothesis, not a theorem | `Rchain/Casper/Rounds.lean` (`participation_all_current`, `gate_publishes_of_a_full_partition`, `nextFringe_publishes_of_a_full_partition`, `the_licence_ends_at_the_horizon`) — `casper/src/blocks/proposer/proposer.rs`, `block-storage/src/dag/liveness.rs`, `block-storage/src/dag/finalizer.rs` |
+| 59 | **The CapTP bridge round-trips its domain, and its refusals are named.** A value the bridge decoded is one it encodes and decodes again; the decode is injective on the domain; and the encoder never emits a shape outside it — no silent partiality applied to a wire | `Rchain/Syrup.lean` (`parToSy`, `syToPar`, `wireable`, `syrup_decode_encode`, `syToPar_injective`, `parToSy_wireable`) — `ocapn/src/par_value.rs`, tied by the `syrup` corpus (`node/tests/lean_syrup_corpus.rs`) |
+| 60 | **An install is total on a channel.** An install that would replace a *different* installed continuation is refused (the space keeps one per channel, so a second `insert` used to replace the first silently), an idempotent re-install is a no-op, and what a channel carries after any permitted run is the continuation it was first given | `Rchain/Install.lean` (`installed`, `InstallStep`, `ReplacingStep`, `a_different_install_has_no_step`, `a_permitted_run_keeps_the_first`) — `rspace/src/hot_store.rs`, `rholang/src/system_processes.rs` |
+| 61 | **A delivery in flight does not stall the loop.** With an answer outstanding the session's loop still reads the next delivery, and the outstanding answer is still written — deferring is not dropping | `Rchain/Session.lean` (`LoopState`, `Step`, `BlockingStep`, `a_pending_answer_does_not_block_the_next_delivery`, `a_deferred_answer_is_still_written`) — `ocapn/src/conn.rs` (`Reply::Deferred`), `ocapn/src/owner.rs`, `ocapn/src/bootstrap.rs` |
+| 62 | **A peer cannot extend this node's reach.** The node never dials, on a peer's word, anything that peer could not dial itself, so a remote peer cannot aim this node at its own loopback services while a loopback peer still can | `Rchain/Perimeter.lean` (`Origin`, `Target`, `ownReach`, `permits`, and the defect's `originBlind`) — `ocapn/src/dial_policy.rs`, `ocapn/src/netlayer.rs`, `ocapn/src/enliven.rs`, `ocapn/src/fixtures.rs` |
+| 63 | **A bridged delivery's footprint is attributable to a payer** — the state a session causes is one the peer that caused it pays for. **This row is `open`:** the close is a cross-implementation relay (the node hands the peer the exact `DeployData` to sign), which Endo cannot speak yet | `Rchain/Attribution.lean` (`Payer`, `Attributable`, `bridgedWrite`, `a_bridged_write_is_not_attributable`, `the_relay_would_satisfy_it`) — the sites it is about: `casper/src/shard_invoke.rs`, `node/src/api/ocapn.rs` |
+| 64 | **Where the references disagree, the port speaks the implementations' reading and accepts every reading they produce.** The draft is not the oracle — the implementations are; and where they differ from each other the port accepts the union, because there is no single reading to speak | `Rchain/Interop.lean` (`Source`, `Form`, `Disagreement`, `speaks`, `accepts`, `the_port_speaks_the_implementations_reading`, `every_reference_reading_is_accepted`) — `ocapn/src/captp.rs`, `ocapn/src/session.rs`, `ocapn/src/bootstrap.rs`, `casper/src/shard_invoke.rs` |
+| 65 | **A value with no faithful literal is refused, not written.** The printer writes a value into a term that is parsed back as code, and Rholang's literal grammar has no escape — so `check_renderable` refuses what it cannot write faithfully rather than signing a term whose body a peer chose | `Rchain/Literal.lean` (`Literal`, `Faithful`, `mayWrite`, `the_printer_writes_only_what_reads_back`, `an_unfaithful_literal_is_refused`, `the_quoted_string_case_is_refused`) — `rholang/src/pretty_printer.rs`, `casper/src/shard_invoke.rs` |
+
+## The distributed-system set (Laws 66–71)
+
+**What they are about.** Six rows that treat the node as a distributed system rather than as a language
+plus a chain: the fringe record store, and the sync that carries state between nodes. Law 66 is an
+*impossibility about the design* — the value a node stores at a fringe key is not determined by that
+key, because the merge that produced it also started from a base the key never mentions, so two writers
+under one key store different states and the join's tie-break silently settles it. Law 67 is the join
+itself: a commutative, idempotent semigroup at one key (though not a monoid — it has no identity the
+model fabricates), so the value at a key is a function of the set of arriving records. Law 68 is the
+store property that makes a read well-defined: a read is a function of the version it names, and what a
+store must be for that is **append-only, not content-addressed**. Laws 69–71 are the joiner's sync: the
+state-page walk's termination and its give-up rule (69), that importing a walk of a root yields the trie
+rooted there and the checker is sound (70), and that a catch-up window bounds what a joining node holds
+so its progress does not depend on the network standing still (71).
+
+| # | Law | Where it lives |
+|---|---|---|
+| 66 | **The value at a fringe key is not determined by that key.** The record holds a `state_hash` the key never mentions (the merge started from a base), and the join's `min` tie-break settles the collision — so a writer that had computed the other value finds its own block failing its own validation | `Rchain/Casper/Record.lean` (`the_fringe_only_key_is_incomplete`, `the_join_rewrites_a_writers_value`) — `models/src/fringe_data.rs`, `casper/src/dag.rs`, `casper/src/multi_parent_casper.rs` |
+| 67 | **The record join is a commutative idempotent semigroup at one key** — so the value at a key is a function of the set of arriving records — **and it is not a monoid** (no identity). Order-independence does not come from the arrivals agreeing: `min` is commutative, so two records that *disagree* still fold to one | `Rchain/Casper/RecordJoin.lean` (`joinRecord_assoc`/`_comm`/`_idempotent`, `joinRecord_fold_perm`, `the_joined_value_is_a_function_of_the_set`, `the_join_changes_nothing_iff_the_report_adds_nothing`) — `casper/src/dag.rs`'s `join_fringe_records` |
+| 68 | **A read is a function of the version it names**, and what a store must be for that is **append-only, not content-addressed**. Two content-addressed reads of one version agree because a collision is impossible; a store that only appends has the same property without hashing — the record store today is neither | `Rchain/Casper/ReadVersion.lean` (`two_content_addressed_reads_of_one_version_agree`, `a_read_of_an_append_only_store_is_stable`, `a_non_content_addressed_read_is_not_a_function_of_its_version`) — `rspace/src/history/radix_tree.rs`, `models/src/fringe_data.rs`, `tools/reconcile-network.sh` |
+| 69 | **A joiner's state-page walk need not terminate, and with a give-up rule it is paced.** The walk as written exits only on an error or `is_finished`, so a peer that simply never answers leaves an infinite run; the idle give-up the block leg already has makes every turn spend fuel, giving a bounded exit | `Rchain/Sync/Walk.lean` (`the_page_walk_as_written_spins_for_ever`, `the_fixed_walk_cannot_run_for_ever`, `the_page_walk_with_the_give_up_rule_is_paced`) — `casper/src/engine/lfs_tuple_space_requester.rs`, `casper/src/engine/lfs_block_requester.rs`, `casper/src/engine/node_syncing.rs` |
+| 70 | **Importing the walk of a root yields exactly the trie rooted there, and the checker is sound.** The walk delivers the reachable nodes however the pages are cut; a page-wise import whose pages pass their checks reads at the root what the peer reads there — the joiner is checking the peer, not trusting it | `Rchain/Sync/Transfer.lean` (`import_reads_the_rooted_trie`, `reads_determined`, `WalkListing.pages_are_the_nodes`) — `rspace/src/state/mod.rs`, `rspace/src/history/export.rs`, `rspace/src/history/radix_tree.rs` |
+| 71 | **A catch-up window bounds what a joining node holds**, so its progress does not depend on the network standing still. The frontier is monotone along any run, stalls included; an answered window advances it one width; and the pending set is a function of the window and the frontier, never of how far the peer's tip has run | `Rchain/Sync/Progress.lean` (`run_monotone`, `answered_run_reaches`, `windowPending_independent_of_tip`, `gapPending_exceeds_the_window`) — `casper/src/engine/catchup.rs`, `casper/src/engine/node_running.rs` |
 
 ---
 

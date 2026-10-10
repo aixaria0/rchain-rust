@@ -60,7 +60,13 @@ The 15 components were scoped for a faithful Rust port and rated by difficulty a
 *formalization* phases (which rank by invariant value — see [`AGENTS.md`](../../../AGENTS.md)). Both run
 in parallel: laws are proven in phase order while code is ported in dependency order.
 
-### Ratings (main LOC → difficulty → est. person-days)
+### Ratings (Scala main LOC → difficulty → est. person-days)
+
+**The `Main LOC` column is the port-scoping estimate** — the size of the *Scala* module being ported,
+read when the rewrite was scoped, and it is what the difficulty and person-day figures below were
+derived from. It is **not** the Rust tree's size: the crates have diverged from it (native system
+contracts, the `ocapn` crate, and the invariants the port carries structurally rather than in the
+Scala's shape), so the Rust tree's own, re-measured LOC is in the table at the end of this section.
 
 | Module | Main LOC | Difficulty | Est. | Depends on | Note |
 |---|---|---|---|---|---|
@@ -80,6 +86,23 @@ in parallel: laws are proven in phase order while code is ported in dependency o
 | `rosette` (C++) | ~50k | Hard | ~80–150 | — | **orphaned — skip** |
 
 Total in-scope (non-orphaned): roughly **200–220 person-days**.
+
+### The Rust tree, re-measured (2026-10-10)
+
+`for c in sdk shared crypto graphz models block-storage comm rspace rholang casper node ocapn; do git ls-files "$c/*.rs" | xargs wc -l | tail -1; done`, plus the whole workspace (`git ls-files '*.rs' | xargs wc -l`):
+
+| Crate | Rust LOC | Crate | Rust LOC |
+|---|---|---|---|
+| `sdk` | 3,001 | `rholang` | 37,638 |
+| `shared` | 4,485 | `casper` | 55,525 |
+| `crypto` | 4,478 | `node` | 30,027 |
+| `graphz` | 837 | `ocapn` | 11,573 |
+| `models` | 11,918 | `rspace-bench` | 495 |
+| `block-storage` | 3,959 | `qucalc` | 1,087 |
+| `comm` | 8,483 | *(workspace-level)* | 281 |
+| `rspace` | 15,938 | **total** | **189,725 over 461 files** |
+
+`casper` is the largest crate at 55,525 lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
 
 ### Rewrite order (bottom-up)
 
