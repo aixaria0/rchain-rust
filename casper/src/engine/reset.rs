@@ -26,7 +26,12 @@ use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
+
+use crate::interpreter_util::ResetRequest;
+use crate::runtime_manager::RuntimeManager;
 
 /// Rewind the DAG to `anchor_height` and remove the bodies of everything it dropped.
 ///
@@ -48,4 +53,93 @@ pub async fn rewind_and_purge(
     })?;
     let deleted = block_store.delete(&dropped).await?;
     Ok((dropped.len(), deleted))
+}
+
+/// **What a running node does when the reset waker fires** (#320) — the running loop's reset arm,
+/// extracted so the decision and its effect are testable without a transport, an importer, a
+/// `ShardSpec` or a `NodeRunning`.
+///
+/// Three outcomes, and the middle one is the one an operator will meet first:
+///
+/// * **nothing pending** (`Ok(None)`) — a spurious wake, or a request another arm already took. The
+///   running phase carries on; it does *not* rebuild anything;
+/// * **the switch is off** (`Ok(None)`, after logging) — the detector has already counted and logged
+///   the divergence, and this line is the operator's evidence that the node *would* have reset itself.
+///   That is what makes turning `casper.self-reset` on a decision rather than a leap, and it is why the
+///   request is consumed here rather than left pending: a surface that showed a request for ever would
+///   be the same silence in a different place;
+/// * **acted** (`Ok(Some(request))`) — the durable half ran and the caller has an anchor to catch up
+///   from.
+///
+/// **The caller propagates the error rather than continuing**: a rewind that failed leaves a store
+/// rewound under a view that was not, and a node in that shape serving on is worse than the refusal the
+/// reset replaces.
+pub async fn act_on_reset_request(
+    self_reset: bool,
+    dag: &Arc<dyn BlockDagStorage>,
+    block_store: &BlockStore,
+    runtime_manager: &Arc<RuntimeManager>,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) -> Result<Option<ResetRequest>, String> {
+    let Some(request) = crate::interpreter_util::take_reset_request() else {
+        return Ok(None);
+    };
+    if !self_reset {
+        log.warn(
+            source,
+            &format!(
+                "a reset was requested (rewind to {} at height {}) but `casper.self-reset` is off, so \
+                 this node keeps refusing {} and its descendants. Turn it on to let the node reset \
+                 itself (#320)",
+                request.anchor.to_hex(),
+                i64::from(request.anchor_height),
+                request.refused.to_hex(),
+            ),
+        );
+        return Ok(None);
+    }
+    perform_reset(dag, block_store, runtime_manager, &request, log, source).await?;
+    Ok(Some(request))
+}
+
+/// The act itself, in the order the design requires — see [`rewind_and_purge`] for why the anchor's
+/// state is read first and why the two stores move together.
+async fn perform_reset(
+    dag: &Arc<dyn BlockDagStorage>,
+    block_store: &BlockStore,
+    runtime_manager: &Arc<RuntimeManager>,
+    request: &ResetRequest,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) -> Result<(), String> {
+    let anchor_block = block_store
+        .get(&[request.anchor])
+        .await?
+        .pop()
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "the reset's anchor {} is not in this node's block store, so the state to reset the \
+                 runtime to cannot be read — refusing the reset rather than rewinding to a block this \
+                 node cannot replay from",
+                request.anchor.to_hex()
+            )
+        })?;
+    let (rewound, removed) = rewind_and_purge(dag, block_store, request.anchor_height).await?;
+    runtime_manager
+        .runtime()
+        .reset(Blake2b256Hash::from_byte_array(
+            anchor_block.post_state_hash.as_bytes(),
+        ))
+        .await?;
+    log.warn(
+        source,
+        &format!(
+            "rewound {rewound} block(s) above height {} — {removed} body(ies) removed from the block \
+             store so they cannot be served or re-inserted — and reset the runtime to that state (#320)",
+            i64::from(request.anchor_height),
+        ),
+    );
+    Ok(())
 }

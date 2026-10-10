@@ -15,7 +15,6 @@ use rchain_block_storage::syntax::{insert_genesis, put_approved_block, put_block
 use rchain_comm::peer_node::PeerNode;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_comm::transport::transport_layer::TransportLayer;
-use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, CasperMessage, FinalizedFringe,
 };
@@ -33,7 +32,6 @@ use crate::engine::node_running::NodeRunning;
 use crate::engine::node_syncing::NodeSyncing;
 use crate::genesis::contracts::{ProofOfStake, Registry, Validator};
 use crate::genesis::Genesis;
-use crate::interpreter_util::ResetRequest;
 use crate::protocol::casper_message_protocol::FinalizedFringeSerde;
 use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
 use crate::runtime_manager::RuntimeManager;
@@ -469,46 +467,41 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             return Ok(());
         }
 
-        let Some(request) = crate::interpreter_util::take_reset_request() else {
-            // A wake with nothing behind it — the request was taken by an earlier arm. Nothing to do,
-            // and *not* a reason to rebuild anything.
-            continue;
-        };
-        if !self_reset {
-            // **The switch is off, and the node says so rather than acting.** The detector has already
-            // counted and logged the divergence; this line is the operator's evidence that the node
-            // would have reset itself, which is what makes turning the switch on a decision and not a
-            // leap.
-            log.warn(
-                source,
-                &format!(
-                    "a reset was requested (rewind to {} at height {}) but `casper.self-reset` is off, \
-                     so this node keeps refusing {} and its descendants. Turn it on to let the node \
-                     reset itself (#320)",
-                    request.anchor.to_hex(),
-                    i64::from(request.anchor_height),
-                    request.refused.to_hex(),
-                ),
-            );
-            continue;
-        }
-
-        perform_reset(&dag, &block_store, &runtime_manager, &request, &log, source).await?;
-        phase_anchor = Some(request.anchor);
-        log.warn(
+        // The arm's body, extracted: what a running node does when the waker fires belongs in
+        // `engine::reset` with the rest of the reset, and — the reason it is extracted at all — it is
+        // then testable without a transport, an importer or a spec, which an `apply`-level test would
+        // need a large fixture for while testing five lines of `select!`.
+        match crate::engine::reset::act_on_reset_request(
+            self_reset,
+            &dag,
+            &block_store,
+            &runtime_manager,
+            &log,
             source,
-            &format!(
-                "reset complete: rewound to {} (height {}), the runtime is at that state and the \
-                 catch-up walk is restarting from it — the blocks above are re-requested from {} (#320)",
-                request.anchor.to_hex(),
-                i64::from(request.anchor_height),
-                rp_conf
-                    .bootstrap
-                    .as_ref()
-                    .map(|p| p.endpoint.host.clone())
-                    .unwrap_or_else(|| "no peer".to_string()),
-            ),
-        );
+        )
+        .await?
+        {
+            // Nothing pending (a spurious wake), or the switch is off and the node has said so.
+            None => continue,
+            Some(request) => {
+                phase_anchor = Some(request.anchor);
+                log.warn(
+                    source,
+                    &format!(
+                        "reset complete: rewound to {} (height {}), the runtime is at that state and the \
+                         catch-up walk is restarting from it — the blocks above are re-requested from \
+                         {} (#320)",
+                        request.anchor.to_hex(),
+                        i64::from(request.anchor_height),
+                        rp_conf
+                            .bootstrap
+                            .as_ref()
+                            .map(|p| p.endpoint.host.clone())
+                            .unwrap_or_else(|| "no peer".to_string()),
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -571,64 +564,6 @@ async fn start_catchup_if_anchored(
         )
         .await;
     });
-}
-
-/// **Perform the reset a spent divergence budget asked for** (#320).
-///
-/// Three steps, in this order, and the order is the design:
-///
-/// 1. **the anchor's state, read first**, because it is the only step that cannot fail for a reason the
-///    rewind caused — and the anchor's `post_state_hash` is what the runtime is reset to;
-/// 2. **the rewind** — `drop_above(height)`, which keeps the block *at* the height and drops everything
-///    above it. **An error here is fatal, not a fallback.** The primitive deletes the persisted metadata
-///    and then rebuilds the representation, and the rebuild can refuse (it re-applies the equivocation
-///    gate); carrying on from that leaves a store that has been rewound under a view that has not, which
-///    is a torn node — strictly worse than the refusal this replaces, and the reason the caller
-///    propagates the error rather than logging it;
-/// 3. **the runtime, to the anchor's post-state**, so no in-memory state above the anchor survives. Every
-///    other root reset in this tree happens before a replay and is the same move
-///    (`RuntimeManager::runtime().reset(..)`).
-async fn perform_reset(
-    dag: &Arc<dyn BlockDagStorage>,
-    block_store: &BlockStore,
-    runtime_manager: &Arc<RuntimeManager>,
-    request: &ResetRequest,
-    log: &Arc<dyn Log>,
-    source: LogSource,
-) -> Result<(), String> {
-    let anchor_block = block_store
-        .get(&[request.anchor])
-        .await?
-        .pop()
-        .flatten()
-        .ok_or_else(|| {
-            format!(
-                "the reset's anchor {} is not in this node's block store, so the state to reset the \
-                 runtime to cannot be read — refusing the reset rather than rewinding to a block this \
-                 node cannot replay from",
-                request.anchor.to_hex()
-            )
-        })?;
-    // The durable half: the DAG rewinds, and the bodies it dropped go with it. Both, in one call, so
-    // the re-insertion window the receiver opens on stored-but-unknown blocks cannot outlive it — see
-    // `engine::reset`'s module doc for what leaving the bodies costs.
-    let (rewound, removed) =
-        crate::engine::reset::rewind_and_purge(dag, block_store, request.anchor_height).await?;
-    runtime_manager
-        .runtime()
-        .reset(Blake2b256Hash::from_byte_array(
-            anchor_block.post_state_hash.as_bytes(),
-        ))
-        .await?;
-    log.warn(
-        source,
-        &format!(
-            "rewound {rewound} block(s) above height {} — {removed} body(ies) removed from the block \
-             store so they cannot be served or re-inserted — and reset the runtime to that state (#320)",
-            i64::from(request.anchor_height),
-        ),
-    );
-    Ok(())
 }
 
 #[cfg(test)]

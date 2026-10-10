@@ -3083,7 +3083,8 @@ def laws : List Law := [
     rustWitness := [
       "casper/src/multi_parent_casper.rs:a_spent_budget_rewinds_only_where_a_height_can_be_named",
       "casper/src/dag.rs:the_reset_rewinds_the_dag_and_removes_the_bodies_it_dropped",
-      "casper/src/interpreter_util.rs:a_reset_request_is_raised_once_taken_once_and_wakes_the_driver"],
+      "casper/src/interpreter_util.rs:a_reset_request_is_raised_once_taken_once_and_wakes_the_driver",
+      "casper/tests/reset.rs:a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off"],
     statement := "**A refusal has a second inverse, and it is not an unmark.** Clause b clears a record: \
       the node re-validates a failed block against its current view and unmarks it if it now passes. The \
       port has since grown a different rule (#320, F-U5-01's acting half): a node whose revalidation \
