@@ -169,6 +169,24 @@ pub struct CasperConf {
     /// Only consulted when this node's DAG is empty (the boot path that would otherwise request a
     /// fringe). Empty means the ordinary path, unchanged.
     pub sync_anchor: Option<String>,
+    /// **Whether this node may reset itself** — the acting half of F-U5-01, off by default (#320).
+    ///
+    /// When a `Divergence` record's revalidation budget is spent, the node can no longer extend the
+    /// chain: it refuses that block and its descendants for the process lifetime, and until this switch
+    /// the only way back was an operator deleting the shard data dir. With it on, the node rewinds to
+    /// its **last finalised block** — a block a strict supermajority of stake finalised, so nothing the
+    /// network committed is lost — resets its runtime to that state and re-enters sync from there.
+    ///
+    /// **Off by default, and not gated on `--dev-mode`.** The detector, the count and the dry run are the
+    /// first half and they shipped dark so an operator could see what a reset *would* act on; the switch
+    /// is that operator's consent. Dev mode would be the wrong gate: it is for effects that are
+    /// indistinguishable from a fault, and this one is the opposite — it counts, logs, and acts only on a
+    /// spent budget. So a stranded production validator can turn it on without becoming a dev node.
+    ///
+    /// **It needs a bootstrap**, refused at config load if it has none: rewinding leaves the node
+    /// deliberately behind its peers, and the blocks above the anchor are re-requested *from a peer*.
+    /// A node that cannot ask anybody has nothing to re-sync against.
+    pub self_reset: bool,
     /// The effect-scheduler mode (Laws 20–25): `dfs` (default), `gate`, `relaxed`, or
     /// `relaxed-validated`. Parsed via `FromStr` at consumption (`EffectMode`); the block paths
     /// hard-reject `relaxed` (off-chain only) and accept `relaxed-validated` with

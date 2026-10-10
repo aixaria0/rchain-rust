@@ -651,6 +651,15 @@ pub struct Run {
     #[arg(long = "equivocation-injection")]
     pub equivocation_injection: bool,
 
+    /// **Let this node reset itself when it can no longer extend the chain** (#320). When a divergence
+    /// record's revalidation budget is spent the node refuses that block and its descendants for the
+    /// process lifetime; with this switch it instead rewinds to its last finalised block — one a strict
+    /// supermajority of stake finalised — resets its runtime to that state and re-syncs from there.
+    /// **Off by default**, and it needs a bootstrap: rewinding leaves the node behind its peers on
+    /// purpose, and the blocks above the anchor are re-requested from one.
+    #[arg(long = "self-reset")]
+    pub self_reset: bool,
+
     /// **Perturb this node's fringe records, so its merge answers differently from its peers'** — `0`
     /// (the default) injects nothing. A measurement instrument for the divergence class, and the
     /// staging instrument for the reconciliation drill: it makes four nodes reach four different merged

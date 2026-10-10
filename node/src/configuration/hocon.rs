@@ -440,6 +440,12 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
             None => 0,
         },
         sync_anchor: to_optional_string(h, "sync-anchor")?,
+        // Absent means off: a node that does not opt into resetting itself keeps refusing, which is
+        // exactly the behaviour every build before this one had.
+        self_reset: match get_opt(h, "self-reset") {
+            Some(v) => to_bool(v)?,
+            None => false,
+        },
         effect_mode: to_optional_string(h, "effect-scheduler")?
             .unwrap_or_else(|| "dfs".to_string()),
     })

@@ -15,6 +15,7 @@ use rchain_block_storage::syntax::{insert_genesis, put_approved_block, put_block
 use rchain_comm::peer_node::PeerNode;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_comm::transport::transport_layer::TransportLayer;
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, CasperMessage, FinalizedFringe,
 };
@@ -32,6 +33,7 @@ use crate::engine::node_running::NodeRunning;
 use crate::engine::node_syncing::NodeSyncing;
 use crate::genesis::contracts::{ProofOfStake, Registry, Validator};
 use crate::genesis::Genesis;
+use crate::interpreter_util::ResetRequest;
 use crate::protocol::casper_message_protocol::FinalizedFringeSerde;
 use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
 use crate::runtime_manager::RuntimeManager;
@@ -230,6 +232,10 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     // **An operator-named block to sync to instead of a finalised fringe** (C259). See
     // `CasperConf::sync_anchor`; only consulted when this node's DAG is empty.
     sync_anchor: Option<String>,
+    // **May this node reset itself?** (F-U5-01's acting half, #320.) Off means the detector still
+    // counts, logs and dry-runs the divergence but nothing acts on it — the behaviour of every build
+    // before this one. See `CasperConf::self_reset` for why it is an operator switch and not automatic.
+    self_reset: bool,
     // Operator switch, threaded to `NodeRunning`: when set, this node refuses store-items
     // (state-sync) requests (port of the Scala's `disableStateExporter`).
     disable_state_exporter: bool,
@@ -249,6 +255,17 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     log: Arc<dyn Log>,
 ) -> Result<(), String> {
     let source = LogSource::new("casper.engine.NodeLaunch");
+
+    // **The operator's anchor, parsed once** (C259): the sync phase names it in its fringe request, and
+    // the running phase walks to it. Parsed here rather than in the branch because a `--sync-anchor` typo
+    // must be refused whatever this node's DAG looks like — the boot path is not the only reader now.
+    let boot_anchor = match sync_anchor.as_deref() {
+        None => None,
+        Some(hex) => Some(
+            BlockHash::try_from_hex(hex)
+                .map_err(|e| format!("--sync-anchor `{hex}` is not a block hash: {e}"))?,
+        ),
+    };
 
     let repr = dag.get_representation().await;
     if repr.dag_set.is_empty() && standalone {
@@ -291,13 +308,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         // (`lfs_block_requester.rs`), so seeding it with an anchor rather than with a peer's fringe is
         // the same machinery with a different root — and `request_tuple_space` then pulls the state at
         // the anchor's post-state, exactly as it would for a fringe.
-        let anchor = match sync_anchor.as_deref() {
-            None => None,
-            Some(hex) => Some(
-                BlockHash::try_from_hex(hex)
-                    .map_err(|e| format!("--sync-anchor `{hex}` is not a block hash: {e}"))?,
-            ),
-        };
+        let anchor = boot_anchor;
         // **The anchor is named *in the request*, not fetched and patched in afterwards** (C259a).
         // Seeding the sync from the anchor block alone left `ancestry` empty, which bypasses exactly the
         // #139 fix that makes a restored block replayable: no block below the anchor then carries the
@@ -393,13 +404,25 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     // released — by the driver's every exit path, including its first empty answer — the ingest is
     // exactly what it was before, so a node that never catches up is unaffected.
     let catchup = Arc::new(CatchupWindow::new(catchup::WINDOW_HEIGHTS));
-    let (block_range_tx, block_range_rx) = tokio::sync::mpsc::channel(4);
+
+    // **The cell the validator path uses to ask for a reset** (F-U5-01's acting half, #320). Installed
+    // before the running phase, because the detection happens deep in the validator path — which holds
+    // no transport, no block store and no runtime — and the reset is performed *here*, where all three
+    // are in scope. The request and the arms it refuses are `interpreter_util`'s.
+    let reset_wake = Arc::new(tokio::sync::Notify::new());
+    crate::interpreter_util::install_reset_waker(reset_wake.clone());
+
+    // The catch-up walk's door. The engine funnels a peer's `BlockRangeRequest` answers down it and the
+    // walk owns the receiving end, so a *second* walk needs a second channel — which is why this is a
+    // cell the engine reads per answer rather than a sender it owns.
+    let block_range_door: crate::engine::node_running::BlockRangeDoor =
+        Arc::new(tokio::sync::Mutex::new(tokio::sync::mpsc::channel(4).0));
 
     // Transition to running mode.
     let engine = NodeRunning::new(
         transport.clone(),
         rp_conf.clone(),
-        block_store,
+        block_store.clone(),
         dag.clone(),
         block_retriever,
         log.clone(),
@@ -408,51 +431,204 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         exporter,
         disable_state_exporter,
         catchup.clone(),
-        block_range_tx,
+        block_range_door.clone(),
     );
     log.info(source, "Making a transition to Running state.");
 
+    // **The anchor this running phase walks to**: the operator's at boot, or the one a reset rewound to.
+    let mut phase_anchor = boot_anchor;
+
+    wait_for_first_connection(&connections, log.as_ref()).await;
+    comm_util.send_fork_choice_tip_request().await;
+
+    loop {
+        start_catchup_if_anchored(
+            &mut phase_anchor,
+            &block_range_door,
+            &catchup,
+            &transport,
+            &rp_conf,
+            &connections,
+            &dag,
+            &log,
+            source,
+        )
+        .await;
+
+        // **Three exits, not two** (#320). The stream ending is the node shutting down; the reset is a
+        // state this node decided it needs, and it is the only one that loops.
+        let requested = tokio::select! {
+            _ = async {
+                while let Some(pm) = packet_rx.recv().await {
+                    engine.handle(&pm.peer, &pm.message).await;
+                }
+            } => None,
+            _ = reset_wake.notified() => Some(()),
+        };
+        if requested.is_none() {
+            return Ok(());
+        }
+
+        let Some(request) = crate::interpreter_util::take_reset_request() else {
+            // A wake with nothing behind it — the request was taken by an earlier arm. Nothing to do,
+            // and *not* a reason to rebuild anything.
+            continue;
+        };
+        if !self_reset {
+            // **The switch is off, and the node says so rather than acting.** The detector has already
+            // counted and logged the divergence; this line is the operator's evidence that the node
+            // would have reset itself, which is what makes turning the switch on a decision and not a
+            // leap.
+            log.warn(
+                source,
+                &format!(
+                    "a reset was requested (rewind to {} at height {}) but `casper.self-reset` is off, \
+                     so this node keeps refusing {} and its descendants. Turn it on to let the node \
+                     reset itself (#320)",
+                    request.anchor.to_hex(),
+                    i64::from(request.anchor_height),
+                    request.refused.to_hex(),
+                ),
+            );
+            continue;
+        }
+
+        perform_reset(&dag, &block_store, &runtime_manager, &request, &log, source).await?;
+        phase_anchor = Some(request.anchor);
+        log.warn(
+            source,
+            &format!(
+                "reset complete: rewound to {} (height {}), the runtime is at that state and the \
+                 catch-up walk is restarting from it — the blocks above are re-requested from {} (#320)",
+                request.anchor.to_hex(),
+                i64::from(request.anchor_height),
+                rp_conf
+                    .bootstrap
+                    .as_ref()
+                    .map(|p| p.endpoint.host.clone())
+                    .unwrap_or_else(|| "no peer".to_string()),
+            ),
+        );
+    }
+}
+
+/// Start the catch-up walk for a running phase, if that phase has an anchor and a peer to walk against.
+///
+/// **Called once per running phase, and that is new** (#320): the boot path starts it an extra time
+/// because a reset has just put this node deliberately behind its peers, and the walk is what pulls it
+/// back. The engine's door is swapped for the new walk's channel first, which drops the previous
+/// sender — and *that* is how the walk that ended learns to stop (`run_catchup` breaks on a closed
+/// channel), so the two walks cannot interleave.
+#[allow(clippy::too_many_arguments)]
+async fn start_catchup_if_anchored(
+    phase_anchor: &mut Option<BlockHash>,
+    block_range_door: &crate::engine::node_running::BlockRangeDoor,
+    catchup: &Arc<CatchupWindow>,
+    transport: &Arc<dyn TransportLayer>,
+    rp_conf: &RPConf,
+    connections: &ConnectionsCell,
+    dag: &Arc<dyn BlockDagStorage>,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) {
+    let Some(anchor) = phase_anchor.take() else {
+        return;
+    };
     // **Only a node that named an anchor catches up.** An ordinary joiner is level with the fringe it
     // synced to; its first window would come back empty and the driver would release the gate having
     // done nothing, which is a round trip this avoids. If there is no bootstrap there is nobody to
     // walk against, so the driver is not started and the receive end is dropped with it.
-    if sync_anchor.is_some() {
-        match rp_conf.bootstrap.clone() {
-            Some(peer) => {
-                let (transport, conf, connections, dag, log) = (
-                    transport.clone(),
-                    rp_conf.clone(),
-                    connections.clone(),
-                    dag.clone(),
-                    log.clone(),
-                );
-                tokio::spawn(async move {
-                    catchup::run_catchup(
-                        transport,
-                        conf,
-                        connections,
-                        dag,
-                        log,
-                        catchup,
-                        peer,
-                        block_range_rx,
-                    )
-                    .await;
-                });
-            }
-            None => {
-                log.warn(
-                    source,
-                    "--sync-anchor was given without a bootstrap: nothing to catch up against",
-                );
-            }
-        }
-    }
-    wait_for_first_connection(&connections, log.as_ref()).await;
-    comm_util.send_fork_choice_tip_request().await;
-    while let Some(pm) = packet_rx.recv().await {
-        engine.handle(&pm.peer, &pm.message).await;
-    }
+    let Some(peer) = rp_conf.bootstrap.clone() else {
+        log.warn(
+            source,
+            &format!(
+                "an anchor ({}) was named without a bootstrap: nothing to catch up against",
+                anchor.to_hex()
+            ),
+        );
+        return;
+    };
+    let (block_range_tx, block_range_rx) = tokio::sync::mpsc::channel(4);
+    *block_range_door.lock().await = block_range_tx;
+    let (transport, conf, connections, dag, log, catchup) = (
+        transport.clone(),
+        rp_conf.clone(),
+        connections.clone(),
+        dag.clone(),
+        log.clone(),
+        catchup.clone(),
+    );
+    tokio::spawn(async move {
+        catchup::run_catchup(
+            transport,
+            conf,
+            connections,
+            dag,
+            log,
+            catchup,
+            peer,
+            block_range_rx,
+        )
+        .await;
+    });
+}
+
+/// **Perform the reset a spent divergence budget asked for** (#320).
+///
+/// Three steps, in this order, and the order is the design:
+///
+/// 1. **the anchor's state, read first**, because it is the only step that cannot fail for a reason the
+///    rewind caused — and the anchor's `post_state_hash` is what the runtime is reset to;
+/// 2. **the rewind** — `drop_above(height)`, which keeps the block *at* the height and drops everything
+///    above it. **An error here is fatal, not a fallback.** The primitive deletes the persisted metadata
+///    and then rebuilds the representation, and the rebuild can refuse (it re-applies the equivocation
+///    gate); carrying on from that leaves a store that has been rewound under a view that has not, which
+///    is a torn node — strictly worse than the refusal this replaces, and the reason the caller
+///    propagates the error rather than logging it;
+/// 3. **the runtime, to the anchor's post-state**, so no in-memory state above the anchor survives. Every
+///    other root reset in this tree happens before a replay and is the same move
+///    (`RuntimeManager::runtime().reset(..)`).
+async fn perform_reset(
+    dag: &Arc<dyn BlockDagStorage>,
+    block_store: &BlockStore,
+    runtime_manager: &Arc<RuntimeManager>,
+    request: &ResetRequest,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) -> Result<(), String> {
+    let anchor_block = block_store
+        .get(&[request.anchor])
+        .await?
+        .pop()
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "the reset's anchor {} is not in this node's block store, so the state to reset the \
+                 runtime to cannot be read — refusing the reset rather than rewinding to a block this \
+                 node cannot replay from",
+                request.anchor.to_hex()
+            )
+        })?;
+    let dropped = dag.drop_above(request.anchor_height).await.map_err(|e| {
+        format!(
+            "the reset's rewind failed: {e}. This is fatal on purpose — the store may have been \
+                 rewound under a view that was not rebuilt, so the node must not keep serving"
+        )
+    })?;
+    runtime_manager
+        .runtime()
+        .reset(Blake2b256Hash::from_byte_array(
+            anchor_block.post_state_hash.as_bytes(),
+        ))
+        .await?;
+    log.warn(
+        source,
+        &format!(
+            "rewound {} block(s) above height {} and reset the runtime to that state (#320)",
+            dropped.len(),
+            i64::from(request.anchor_height),
+        ),
+    );
     Ok(())
 }
 

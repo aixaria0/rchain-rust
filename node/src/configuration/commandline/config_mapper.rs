@@ -317,6 +317,9 @@ pub fn from_options(options: &Options) -> Hocon {
             ));
         }
         opt_str(&mut e, "casper.sync-anchor", &run.sync_anchor);
+        if run.self_reset {
+            e.push(("casper.self-reset".to_string(), Hocon::Boolean(true)));
+        }
         if let Some(n) = run.merge_divergence_injection {
             e.push((
                 "casper.merge-divergence-injection".to_string(),

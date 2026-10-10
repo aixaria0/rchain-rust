@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
+use rchain_shared::refined::BlockHeight;
 
 use super::representation::DagRepresentation;
 
@@ -90,6 +91,19 @@ pub trait BlockDagStorage: Send + Sync {
             "this DAG storage cannot update the record of {} (no `update_metadata` impl)",
             block_metadata.block_hash.to_hex()
         ))
+    }
+
+    /// **Rewind this node to `height`, dropping everything above it and keeping the block at it** (the
+    /// anchor). Returns the dropped hashes, because the reset is not the only thing that has to be
+    /// rewound: the derived deploy and deployer indices point at blocks that no longer exist.
+    ///
+    /// On the trait rather than only on the key-value backend since #320: a diverged *running* node
+    /// re-enters sync by rewinding, and the engine holds a `dyn BlockDagStorage` — the rewind is part
+    /// of the storage contract now, not an implementation detail of one backend. **The default
+    /// refuses**, which is the honest answer for a backend that cannot rewind (a test stub, or a
+    /// storage that keeps only a tip): a silent no-op would leave the node believing it had reset.
+    async fn drop_above(&self, _height: BlockHeight) -> Result<Vec<BlockHash>, String> {
+        Err("this DAG storage cannot rewind (no `drop_above` impl)".to_string())
     }
 
     async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String>;
