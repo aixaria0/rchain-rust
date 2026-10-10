@@ -9325,9 +9325,12 @@ slowly and jerkily, not smoothly**, and this pass does not explain why. The rig 
 answer one question — does a node still stall itself on a fringe-key disagreement? — and it answers it.
 The gate's stall/advance cadence on a four-validator autopropose net is a **separate** measured
 property, it is the same rig that produced the pre-fix `200 of 400` reading in C268's row, and it belongs
-to the finality rows (14, 52) rather than to C270. It is recorded here rather than filed, deliberately:
-it is an observation from a rig built for something else, and the unit that takes it on should start by
-building a rig that can *distinguish* a stall that costs liveness from one that does not.
+to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rchain-community/rchain-rust/issues/318)**,
+which carries the numbers and the two questions (is a stall entered once per round expected, and is the
+~15-height lag expected), and says why this rig cannot decide them: it was built for C270's question, and
+the unit that takes #318 on should start by building a rig that can *distinguish* a stall that costs
+liveness from one that does not. It is not a register row yet — if the answer is a defect, it should
+become one.
 
 One test's control had to move with the fix (above), and the store's removal has one new invariant —
 `drop_above` clears a rewound block's `member_of_fringe`, so an orphaned claim cannot re-enter — pinned
