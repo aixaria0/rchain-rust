@@ -444,6 +444,13 @@ except Exception:
 # The signed statement from one node, verified, on stdout as JSON — or a refusal. The verification
 # happens here rather than at the point of use so that **no unverified hash ever enters the arithmetic**:
 # `ATT_HASH` and `ATT_KEY` are read from this verdict and nowhere else.
+#
+# **`2>/dev/null`, deliberately, and it is not cosmetic.** `rnode`'s stderr is not empty: jemalloc is
+# built with `stats_print:true` for the memory work (`.cargo/config.toml`, issue #117) and writes ~190 KB
+# of allocator statistics at process exit. Merging the two streams would put that in the middle of the
+# JSON this function parses — which is exactly what happened on the first live run of this meet, and why
+# the verdict is on stdout alone. The verifier prints its refusal to *stdout* (`main.rs``'s error path
+# `println!``s it), so nothing is lost by dropping stderr.
 attestation_of() { # host port nonce name
   local ra raw verdict rc
   ra=$(rnode_bin) || refuse "no verifier: rnode not found" \
@@ -457,8 +464,8 @@ attestation_of() { # host port nonce name
       "(A node built before this route existed answers 404; recovering without it means naming the" \
       "anchor yourself: RECONCILE_ANCHOR=<hash>.)"
   fi
-  verdict=$(printf '%s' "$raw" | "$ra" verify-attestation --nonce "$3" 2>&1); rc=$?
-  [ $rc -eq 0 ] || refuse "$4's attestation did not verify" "$verdict"
+  verdict=$(printf '%s' "$raw" | "$ra" verify-attestation --nonce "$3" 2>/dev/null); rc=$?
+  [ $rc -eq 0 ] || refuse "$4's attestation did not verify" "${verdict:-the verifier printed nothing}"
   printf '%s' "$verdict"
 }
 
@@ -477,8 +484,8 @@ verified_block() { # host port hash
     refuse "$1:$2 did not answer for block ${3:0:16}…" \
       "The meet walks block ancestry, and every step has to be a block this tool has verified."
   fi
-  verdict=$(printf '%s' "$raw" | "$ra" verify-block 2>&1); rc=$?
-  [ $rc -eq 0 ] || refuse "block ${3:0:16}… did not verify" "$verdict"
+  verdict=$(printf '%s' "$raw" | "$ra" verify-block 2>/dev/null); rc=$?
+  [ $rc -eq 0 ] || refuse "block ${3:0:16}… did not verify" "${verdict:-the verifier printed nothing}"
   [ -n "$CACHE_DIR" ] && printf '%s' "$verdict" > "$cache"
   printf '%s' "$verdict"
 }
@@ -502,27 +509,39 @@ verified_block_opt() { verified_block "$1" "$2" "$3" 2>/dev/null; }
 # scan costs a pass over the heights it covers; a full-chain pass on a long net is not something an
 # emergency tool should do by default. Absence of a proof *within the window* is not absence of
 # equivocation, which is why every run prints the window it looked at.
+# **The scan is across the endpoints, not within one of them, and the reason is a property of the
+# protocol rather than a convenience.** A node refuses the *second* block a sender offers at a height
+# (`insert`'s H-1 gate), so the pair that proves the offence is almost never held by one endpoint —
+# each holds one of the twins. A per-node scan therefore looks precisely where the evidence is not.
+# Aggregating the endpoints' answers and verifying the pair is what makes the proof reachable at all;
+# it also stays honest, because both blocks are fetched and verified before anything is called proved.
 proven_equivocations() { # from_height to_height
-  local h n hash sender rest key first a b sender_a sender_b
-  declare -A FIRST_HASH
+  local h n hash sender rest key a b sender_a sender_b
+  declare -A FIRST_HASH FIRST_FROM SECOND_HASH SECOND_FROM
   for (( h=$1; h<=$2; h++ )); do
     for n in "${NAMES[@]}"; do
       while read -r hash sender rest; do
         [ -n "$hash" ] || continue
         key="$h $sender"
-        if [ -z "${FIRST_HASH[$key]:-}" ]; then FIRST_HASH[$key]="$hash"; continue; fi
+        if [ -z "${FIRST_HASH[$key]:-}" ]; then
+          FIRST_HASH[$key]="$hash"; FIRST_FROM[$key]="$n"; continue
+        fi
         [ "${FIRST_HASH[$key]}" = "$hash" ] && continue
-        a=$(verified_block_opt "${HOST[$n]}" "${PORT[$n]}" "${FIRST_HASH[$key]}")
-        b=$(verified_block_opt "${HOST[$n]}" "${PORT[$n]}" "$hash")
-        [ -n "$a" ] && [ -n "$b" ] || continue
-        sender_a=$(printf '%s' "$a" | jfield "b['sender']")
-        sender_b=$(printf '%s' "$b" | jfield "b['sender']")
-        # The two blocks have to agree that they are one sender's, verified — the summary's claim is
-        # only what told us where to look.
-        [ -n "$sender_a" ] && [ "$sender_a" = "$sender_b" ] || continue
-        printf '%s %s %s %s\n' "$h" "$sender_a" "${FIRST_HASH[$key]}" "$hash"
+        SECOND_HASH[$key]="$hash"; SECOND_FROM[$key]="$n"
       done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")
     done
+  done
+  for key in "${!SECOND_HASH[@]}"; do
+    read -r h sender <<< "$key"
+    a=$(verified_block_opt "${HOST[${FIRST_FROM[$key]}]}" "${PORT[${FIRST_FROM[$key]}]}" "${FIRST_HASH[$key]}")
+    b=$(verified_block_opt "${HOST[${SECOND_FROM[$key]}]}" "${PORT[${SECOND_FROM[$key]}]}" "${SECOND_HASH[$key]}")
+    [ -n "$a" ] && [ -n "$b" ] || continue
+    sender_a=$(printf '%s' "$a" | jfield "b['sender']")
+    sender_b=$(printf '%s' "$b" | jfield "b['sender']")
+    # The two blocks have to agree that they are one sender's, verified — the summary's claim is only
+    # what told us where to look.
+    [ -n "$sender_a" ] && [ "$sender_a" = "$sender_b" ] || continue
+    printf '%s %s %s %s\n' "$h" "$sender_a" "${FIRST_HASH[$key]}" "${SECOND_HASH[$key]}"
   done
 }
 
