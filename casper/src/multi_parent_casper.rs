@@ -133,13 +133,11 @@ async fn final_scope_rejections(
     // *its own* fringe's finalisers and not another's.
     let mut members_of: BTreeMap<Blake2b256Hash, BTreeSet<BlockHash>> = BTreeMap::new();
     for h in final_scope {
-        if let Some(f) = dag
-            .lookup(h)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|meta| meta.member_of_fringe)
-        {
+        // **`?`, not `.ok()`**: a metadata store that cannot be read is an error, not "this block
+        // belongs to no fringe". `.ok()` here would have turned a store failure into a *smaller*
+        // finaliser set — a silently weaker rejection set rather than a refused merge, which is the
+        // class the type-system gate exists to keep out.
+        if let Some(f) = dag.lookup(h).await?.and_then(|meta| meta.member_of_fringe) {
             members_of.entry(f).or_default().insert(*h);
         }
     }
@@ -149,7 +147,8 @@ async fn final_scope_rejections(
     let mut finalisers_of: BTreeMap<Blake2b256Hash, Vec<BTreeSet<Vec<u8>>>> = BTreeMap::new();
     for m in final_scope {
         for child in child_map.get(m).into_iter().flatten() {
-            let Some(meta) = dag.lookup(child).await.ok().flatten() else {
+            // As above: an unreadable store is an error rather than an absent child.
+            let Some(meta) = dag.lookup(child).await? else {
                 continue;
             };
             let Some(block) = block_store
