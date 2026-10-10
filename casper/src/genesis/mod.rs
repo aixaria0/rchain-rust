@@ -513,7 +513,8 @@ pub async fn create_genesis_block(
         // Genesis carries a fixed timestamp (0) so every node agrees; informational only.
         timestamp: 0,
     };
-    let rand = BlockRandomSeed::random_generator_from_shard_id(&genesis.shard_id);
+    let rand = BlockRandomSeed::random_generator_from_shard_id(&genesis.shard_id)
+        .map_err(|e| e.to_string())?;
     let pos_genesis = build_pos_genesis(&genesis.proof_of_stake);
     let (start_hash, state_hash, processed_results) = runtime
         .compute_genesis(

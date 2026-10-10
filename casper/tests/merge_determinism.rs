@@ -413,7 +413,7 @@ async fn validated(
     term: &str,
     sig: u8,
 ) -> (BlockMessage, Blake2b256Hash) {
-    let rand = BlockRandomSeed::random_generator_from_block(&b);
+    let rand = BlockRandomSeed::random_generator_from_block(&b).expect("valid block seed");
     let (post, user, sys) = rm
         .compute_state(
             pre,

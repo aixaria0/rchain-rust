@@ -1317,7 +1317,7 @@ async fn regenerate_sidecars(
     // a replay that computes anything else.
     let participation = crate::multi_parent_casper::participation_for_block(dag, block).await?;
     let forked = runtime.fork_replay_runtime(pre_state_hash).await?;
-    let rand = BlockRandomSeed::random_generator_from_block(block);
+    let rand = BlockRandomSeed::random_generator_from_block(block).map_err(|e| e.to_string())?;
     let with_cost_accounting = !block.justifications.is_empty();
     let (computed, channels) = runtime
         .replay_compute_state_with(

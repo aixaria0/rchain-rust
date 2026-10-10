@@ -766,7 +766,8 @@ where
     } else if slash_is_unjustified(dag, block).await? {
         Err(BlockStatus::UnjustifiedSlash)
     } else {
-        let rand = BlockRandomSeed::random_generator_from_block(block);
+        let rand =
+            BlockRandomSeed::random_generator_from_block(block).map_err(|e| e.to_string())?;
         let post_state_hash = Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes());
         // Fork a fresh replay runtime at the block's pre-state (read-only history fork) so block
         // validation is self-contained and can run concurrently with other blocks.

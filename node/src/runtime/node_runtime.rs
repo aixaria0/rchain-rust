@@ -176,11 +176,12 @@ fn reporting_casper(
     store_manager: &LmdbDirStoreManager,
     shard_id: &str,
     dag: Arc<dyn BlockDagStorage>,
-) -> impl ReportingCasper {
+) -> Result<impl ReportingCasper, String> {
     let store_manager = store_manager.clone();
-    let mergeable_tag_name =
-        SortedProc::new(BlockRandomSeed::non_negative_mergeable_tag_name(shard_id));
-    rho_reporter(
+    let mergeable_tag_name = SortedProc::new(
+        BlockRandomSeed::non_negative_mergeable_tag_name(shard_id).map_err(|e| e.to_string())?,
+    );
+    Ok(rho_reporter(
         move || {
             let manager = store_manager.clone();
             async move { create_reporting_rspace(&manager).await }
@@ -201,7 +202,7 @@ fn reporting_casper(
                 Ok((fringe_state_hash, participation))
             }
         },
-    )
+    ))
 }
 
 /// The state hash of the last finalised fringe as of a block — the value that block's close system
@@ -2244,14 +2245,15 @@ pub async fn setup_shard(
             &store_manager,
             &shard_id,
             block_dag_storage.clone(),
-        )),
+        )?),
         report_store,
         validator_opt.clone(),
     ));
 
     // The transaction API is shard-scoped: its `transfer_unforgeable` is derived from the shard's
     // genesis random, so each shard reads its own REV transfers.
-    let transfer_unforgeable = BlockRandomSeed::transfer_unforgeable(&shard_id);
+    let transfer_unforgeable =
+        BlockRandomSeed::transfer_unforgeable(&shard_id).map_err(|e| e.to_string())?;
     let transaction_api = Arc::new(TransactionAPIImpl::new(
         block_report_api.clone(),
         transfer_unforgeable,

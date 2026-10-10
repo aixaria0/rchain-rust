@@ -203,7 +203,8 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
 
     let mut block = block_shell();
     block.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
-    let block_rand = BlockRandomSeed::random_generator_from_block(&block);
+    let block_rand =
+        BlockRandomSeed::random_generator_from_block(&block).expect("valid block seed");
 
     let (post_state, user_results, sys_results) = rm
         .compute_state(
