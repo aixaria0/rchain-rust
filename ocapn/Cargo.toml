@@ -32,6 +32,13 @@ rand = "0.10"
 # Unlicense, which `deny.toml` already allows.
 noise-protocol = "0.2"
 noise-rust-crypto = { version = "0.6.2", features = ["x25519", "use-chacha20poly1305", "use-blake2"] }
+#
+# **This crate pins `x25519-dalek` 2, and `rchain-crypto` takes 3** — so the lockfile carries both
+# majors (2.0.1 here, 3.0.0 there) and the binary compiles two copies of one primitive. That is not an
+# oversight and not a correctness risk: both are the same RFC 7748 function over the same 32-byte
+# values, and `rchain-crypto`'s RFC 7748 §6.1 vectors pin the one we call. It is a compile-time and
+# audit-surface cost, it cannot be unified today (0.6.2 is the newest release and still on 2), and it is
+# recorded here so a reader of the lockfile meets the reason rather than the appearance of a mistake.
 # The `websocket` netlayer — the transport `@endo/ocapn` 1.1.1 (published) speaks, so it is the one
 # there is a live interop target for. MIT / Apache-2.0. The `rustls` half is for `wss://`, which Endo
 # does not do but the other reference implementation does; `rustls` and `tokio-rustls` are already in

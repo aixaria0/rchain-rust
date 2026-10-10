@@ -79,11 +79,12 @@ const ESTABLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10
 /// (HAZOP rows A5 and A6). Setting them here puts the refusal where `framed` puts it: before the
 /// buffer, not after it.
 fn ws_config() -> WebSocketConfig {
-    WebSocketConfig {
-        max_message_size: Some(MAX_MESSAGE_BYTES),
-        max_frame_size: Some(MAX_MESSAGE_BYTES),
-        ..Default::default()
-    }
+    // **A builder, because 0.30 made `WebSocketConfig` `#[non_exhaustive]`** — the struct-expression
+    // form this used to be is a compile error now, and the two limits are the same two (HAZOP rows A5
+    // and A6): they put the refusal before the buffer rather than after it.
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES))
 }
 
 /// The byte stream under the WebSocket layer, as a trait object — the one place the two ways in
@@ -288,7 +289,7 @@ where
     rand::rng().fill_bytes(&mut challenge);
     let bytes = peer_auth(&challenge).to_bytes();
 
-    conn.send_raw(Message::Binary(bytes.clone())).await?;
+    conn.send_raw(Message::Binary(bytes.clone().into())).await?;
     let reply = conn.next_raw(AUTH_TIMEOUT).await?;
     let envelope = Value::from_bytes(&reply)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -338,7 +339,8 @@ where
         record,
         signature,
     ]);
-    conn.send_raw(Message::Binary(envelope.to_bytes())).await?;
+    conn.send_raw(Message::Binary(envelope.to_bytes().into()))
+        .await?;
     conn.authenticated = true;
     Ok(())
 }
@@ -454,7 +456,7 @@ where
             // and a close frame's reason bytes, so the handshake used to sign whatever a peer put in
             // a *close* — and signing bytes of the peer's choosing is what the record wrapper exists
             // to prevent (HAZOP row A4). Anything that is not a binary message is refused here.
-            Some(Ok(Message::Binary(bytes))) => Ok(bytes),
+            Some(Ok(Message::Binary(bytes))) => Ok(bytes.to_vec()),
             Some(Ok(other)) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("a websocket frame that is not a binary message: {other:?}"),
@@ -481,7 +483,8 @@ where
                 "a websocket message exceeds the transport's bound",
             ));
         }
-        self.send_raw(Message::Binary(message.to_vec())).await
+        self.send_raw(Message::Binary(message.to_vec().into()))
+            .await
     }
 
     fn peer_address(&self) -> Option<SocketAddr> {
@@ -507,7 +510,7 @@ where
                             "a websocket message exceeds the transport's bound",
                         ));
                     }
-                    return Ok(Some(bytes));
+                    return Ok(Some(bytes.to_vec()));
                 }
                 // **A close is the end of the stream, at a message boundary.** `into_data` would hand
                 // back the close frame's *reason bytes* as though they were a message, and it does the
