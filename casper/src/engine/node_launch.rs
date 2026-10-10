@@ -359,12 +359,26 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             _ = handle_loop => {}
             _ = finished.notified() => {}
             _ = terminal.notified() => {
-                return Err(
-                    "LFS state sync is terminal: the approved state could not be restored and the \
-                     retries are spent, so this node is stopping rather than serving a chain it \
-                     never synced"
+                // **The reason travels with the sentence** (C271/C268). "The retries are spent" is
+                // only half the fact, and without *why* the operator's one error line said the node
+                // was giving up and nothing about what it could not restore. The failure is read from
+                // the same static the status surface carries, so the log line and `/api/v1/status`
+                // agree; the fallback keeps the old wording if the reading is somehow absent rather
+                // than printing `None`.
+                let reason = crate::engine::node_syncing::sync_state()
+                    .and_then(|state| state.last_failure);
+                let message = match reason {
+                    Some(reason) => format!(
+                        "LFS state sync is terminal: the approved state could not be restored and the \
+                         retries are spent: {reason}, so this node is stopping rather than serving a \
+                         chain it never synced"
+                    ),
+                    None => "LFS state sync is terminal: the approved state could not be restored and \
+                             the retries are spent, so this node is stopping rather than serving a \
+                             chain it never synced"
                         .to_string(),
-                );
+                };
+                return Err(message);
             }
         }
     } else {
