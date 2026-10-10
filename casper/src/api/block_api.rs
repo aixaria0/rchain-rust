@@ -12,7 +12,7 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::casper::protocol::deploy_service::{
     BlockInfo, BondInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus,
-    LightBlockInfo, Status,
+    FinalityAttestation, LightBlockInfo, RawBlock, Status,
 };
 use rchain_models::validator::Validator;
 use rchain_shared::base16;
@@ -292,6 +292,21 @@ pub trait BlockApi: Send + Sync {
     ) -> ApiErr<(Vec<Par>, LightBlockInfo)>;
 
     async fn last_finalized_block(&self) -> ApiErr<BlockInfo>;
+
+    /// **The preimage of a block's hash, so a client can verify what it was given** (AUDIT C261's
+    /// missing artefact). `get_block` answers with a summary a client cannot recompute the hash of;
+    /// this answers with the bytes the hash *is* taken over. Default refuses, so a surface that has no
+    /// block store need not implement it.
+    async fn get_raw_block(&self, _hash: &str) -> ApiErr<RawBlock> {
+        Err("this surface serves no raw block".to_string())
+    }
+
+    /// **The node's own finalised block, signed by its validator key** — the artefact that makes a
+    /// finality claim attributable to a bonded validator rather than a node-local assertion. Default
+    /// refuses: a surface with no validator identity cannot attest for anyone.
+    async fn finality_attestation(&self, _nonce: &str) -> ApiErr<FinalityAttestation> {
+        Err("this surface holds no validator identity to attest with".to_string())
+    }
 
     async fn is_finalized(&self, hash: &str) -> ApiErr<bool>;
 

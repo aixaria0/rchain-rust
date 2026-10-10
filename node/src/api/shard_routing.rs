@@ -27,8 +27,8 @@ use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::casper::protocol::deploy_service::{
-    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
-    Status,
+    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus,
+    FinalityAttestation, LightBlockInfo, RawBlock, Status,
 };
 use rchain_shared::refined::ShardId;
 
@@ -298,6 +298,24 @@ impl BlockApi for ShardRoutingBlockApi {
 
     async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
         self.primary_api().last_finalized_block().await
+    }
+
+    async fn get_raw_block(&self, hash: &str) -> ApiErr<RawBlock> {
+        // Keyed by a block hash, like `get_block`: a hash belongs to one shard, so the probe is the
+        // right dispatch and cannot match two members.
+        let hash = hash.to_string();
+        self.probe(move |api| {
+            let hash = hash.clone();
+            async move { api.get_raw_block(&hash).await }
+        })
+        .await
+    }
+
+    async fn finality_attestation(&self, nonce: &str) -> ApiErr<FinalityAttestation> {
+        // Names no shard and no key, so it resolves to the primary — the same rule as
+        // `last_finalized_block`, and for the same reason: it is a statement about *this node's*
+        // primary shard, which is the chain a single-shard recovery is about.
+        self.primary_api().finality_attestation(nonce).await
     }
 
     async fn is_finalized(&self, hash: &str) -> ApiErr<bool> {

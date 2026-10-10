@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 
 use rchain_casper::api::block_api::DeployerInfo;
-use rchain_models::casper::protocol::deploy_service::{BlockInfo, LightBlockInfo};
+use rchain_models::casper::protocol::deploy_service::{
+    BlockInfo, FinalityAttestation, LightBlockInfo, RawBlock,
+};
 
 use super::dto::{
     ApiStatus, BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest,
@@ -68,6 +70,26 @@ pub trait WebApi: Send + Sync {
     ) -> Result<Vec<LightBlockInfo>, BlockApiException>;
 
     async fn is_finalized(&self, hash: &str) -> Result<bool, BlockApiException>;
+
+    /// `GET /api/v1/block/{hash}/raw` — the preimage of the block's own hash, so a client can verify
+    /// what it was given rather than take this node's word for the fields a `LightBlockInfo` reports
+    /// (AUDIT C261's missing artefact). The default refuses, so a double need not implement it.
+    async fn raw_block(&self, _hash: &str) -> Result<RawBlock, BlockApiException> {
+        Err(BlockApiException(
+            "this surface serves no raw block".to_string(),
+        ))
+    }
+
+    /// `GET /api/v1/finality-attestation` — this node's finalised block, signed by its validator key,
+    /// bound to the caller's nonce. The default refuses: a surface with no identity attests for no one.
+    async fn finality_attestation(
+        &self,
+        _nonce: &str,
+    ) -> Result<FinalityAttestation, BlockApiException> {
+        Err(BlockApiException(
+            "this surface holds no validator identity to attest with".to_string(),
+        ))
+    }
 
     async fn get_transaction(&self, hash: &str) -> Result<TransactionResponse, BlockApiException>;
 }

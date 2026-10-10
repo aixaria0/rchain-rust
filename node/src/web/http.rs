@@ -629,6 +629,31 @@ async fn api_get_block(State(state): State<HttpState>, Path(hash): Path<String>)
     json_result(state.web_api.get_block(&hash).await)
 }
 
+/// `GET /api/v1/block/{hash}/raw` — the preimage of the block's own hash (AUDIT C261).
+///
+/// This exists because the summary route cannot be verified: `LightBlockInfo` is built from a stored
+/// block and the protobuf it came from is not reconstructible out of it, so a client reading a height
+/// or a justification from it is reading the node's word. With the preimage, the client hashes it,
+/// compares to `blockHash`, and then reads the fields off bytes it has verified.
+async fn api_get_raw_block(State(state): State<HttpState>, Path(hash): Path<String>) -> Response {
+    json_result(state.web_api.raw_block(&hash).await)
+}
+
+/// `GET /api/v1/finality-attestation?nonce=…` — what this node has finalised, signed by its validator
+/// key (AUDIT C261). A node-local claim cannot be weighed; an attestation signed by a bonded key can.
+async fn api_finality_attestation(
+    State(state): State<HttpState>,
+    Query(query): Query<FinalityAttestationQuery>,
+) -> Response {
+    json_result(state.web_api.finality_attestation(&query.nonce).await)
+}
+
+/// The attestation's query (`nonce`, required — see the handler's route documentation).
+#[derive(Deserialize)]
+struct FinalityAttestationQuery {
+    nonce: String,
+}
+
 async fn api_get_blocks(State(state): State<HttpState>) -> Response {
     json_result(state.web_api.get_blocks(1).await)
 }
@@ -847,6 +872,26 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/block/{hash}/raw": {
+      "get": {
+        "summary": "The preimage of the block's own hash, so a client verifies the block instead of trusting a summary of it",
+        "parameters": [ { "name": "hash", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "The bytes the block hash is taken over, plus the signature over that hash", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RawBlock" } } } },
+          "400": { "description": "Invalid block hash, or a block this node has not added" }
+        }
+      }
+    },
+    "/finality-attestation": {
+      "get": {
+        "summary": "This node's finalised block, signed by its validator key and bound to the caller's nonce",
+        "parameters": [ { "name": "nonce", "in": "query", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "The attestation", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FinalityAttestation" } } } },
+          "400": { "description": "Missing or too-short nonce, or this node has no validator identity" }
+        }
+      }
+    },
     "/propose": {
       "post": {
         "summary": "Propose a block",
@@ -994,6 +1039,26 @@ pub const OPENAPI_JSON: &str = r##"{
           "deployCount": { "type": "integer", "format": "int32" },
           "rejectedDeploys": { "type": "array", "items": { "type": "string" } },
           "timestamp": { "type": "integer", "format": "int64", "description": "Informational block header timestamp (ms since the epoch); not a consensus input" }
+        }
+      },
+      "RawBlock": {
+        "type": "object",
+        "properties": {
+          "blockHash": { "type": "string", "description": "The block's content-addressed hash, hex" },
+          "encoded": { "type": "string", "description": "Base16 of the exact bytes the hash is taken over (the block with its hash and signature cleared); hashing it reproduces blockHash" },
+          "sender": { "type": "string", "description": "The proposer's public key, hex" },
+          "sigAlgorithm": { "type": "string" },
+          "sig": { "type": "string", "description": "Base16 signature over the 32 bytes of blockHash, by sender" }
+        }
+      },
+      "FinalityAttestation": {
+        "type": "object",
+        "properties": {
+          "blockHash": { "type": "string", "description": "The block this validator has finalised, hex" },
+          "nonce": { "type": "string", "description": "The caller's nonce, hex; it is signed, so the attestation is good only for the conversation that asked for it" },
+          "sender": { "type": "string", "description": "The attesting validator's public key, hex" },
+          "sigAlgorithm": { "type": "string" },
+          "sig": { "type": "string", "description": "Base16 signature over blake2b256(\"rchain-finality-attestation-v1\" || nonce || blockHash)" }
         }
       },
       "DeployInfo": {
@@ -1209,6 +1274,8 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/last-finalized-block", get(api_last_finalized_block))
         .route("/api/block/{hash}", get(api_get_block))
+        .route("/api/block/{hash}/raw", get(api_get_raw_block))
+        .route("/api/finality-attestation", get(api_finality_attestation))
         .route("/api/blocks", get(api_get_blocks))
         .route("/api/blocks/{start}/{end}", get(api_get_blocks_by_heights))
         .route("/api/blocks/{depth}", get(api_get_blocks_by_depth))
@@ -1238,6 +1305,11 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/v1/blocks", get(api_get_blocks))
         .route("/api/v1/block/{hash}", get(api_get_block))
+        .route("/api/v1/block/{hash}/raw", get(api_get_raw_block))
+        .route(
+            "/api/v1/finality-attestation",
+            get(api_finality_attestation),
+        )
         .route("/api/v1/openapi.json", get(api_v1_openapi));
 
     // **The faucet is mounted only when it is switched on** (AUDIT R34).

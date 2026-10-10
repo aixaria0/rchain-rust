@@ -19,8 +19,8 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::casper::protocol::deploy_service::{
-    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
-    Status, VersionInfo, WaitingContinuationInfo,
+    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus,
+    FinalityAttestation, LightBlockInfo, RawBlock, Status, VersionInfo, WaitingContinuationInfo,
 };
 use rchain_models::rholang::RhoType::RhoDeployId;
 use rchain_models::sorter::sort_par_term;
@@ -179,6 +179,45 @@ impl BlockApiImpl {
             admin_http,
             system_public_keys,
             propose_health,
+        }
+    }
+
+    /// Resolve a caller-supplied hash string to a block this node has **and has added**.
+    ///
+    /// Extracted from `get_block` when `get_raw_block` arrived, so the two read paths cannot drift on
+    /// what counts as readable: the length floor and hex decode, the full-hash versus prefix lookup,
+    /// and the `contains` check (a block the store holds but the DAG never took is answered as an
+    /// error rather than served, which is the difference between "on this node" and "on this chain").
+    async fn find_block(&self, hash: &str) -> Result<BlockMessage, String> {
+        if hash.len() < 6 {
+            return Err(format!(
+                "Input hash value must be at least 6 characters: {hash}"
+            ));
+        }
+        let hash_bytes = base16::decode(hash)
+            .ok_or_else(|| format!("Input hash value is not valid hex string: {hash}"))?;
+        let block_opt = if hash.len() == 64 {
+            self.block_store
+                .get(&[BlockHash::try_from(hash_bytes.as_slice()).map_err(|e| e.to_string())?])
+                .await?
+                .pop()
+                .flatten()
+        } else {
+            let dag = self.dag.get_representation().await;
+            match dag.find(hash) {
+                Some(h) => self.block_store.get(&[h]).await?.pop().flatten(),
+                None => None,
+            }
+        };
+        let block =
+            block_opt.ok_or_else(|| format!("Error: Failure to find block with hash: {hash}"))?;
+        let dag = self.dag.get_representation().await;
+        if dag.contains(&block.block_hash) {
+            Ok(block)
+        } else {
+            Err(format!(
+                "Error: Block with hash {hash} received but not added yet"
+            ))
         }
     }
 
@@ -693,36 +732,54 @@ impl BlockApi for BlockApiImpl {
     }
 
     async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {
-        if hash.len() < 6 {
+        let block = self.find_block(hash).await?;
+        Ok(get_full_block_info(&block))
+    }
+
+    async fn get_raw_block(&self, hash: &str) -> ApiErr<RawBlock> {
+        let block = self.find_block(hash).await?;
+        // `encoded` is `to_bytes_cleared()`, which is *exactly* the preimage `hash_block` hashes —
+        // so a client that hashes it and gets `block_hash` back has verified every other field in it
+        // (the heights, the seq_num, the justifications and the bond map all live inside these
+        // bytes). `sig` travels beside the preimage because the cleared form empties it by
+        // construction, and it is over the 32 bytes of `block_hash`, not over `encoded`.
+        Ok(RawBlock {
+            block_hash: base16::encode(block.block_hash.as_bytes()),
+            encoded: base16::encode(&block.to_bytes_cleared()),
+            sender: base16::encode(block.sender.as_bytes()),
+            sig_algorithm: block.sig_algorithm.clone(),
+            sig: base16::encode(&block.sig),
+        })
+    }
+
+    async fn finality_attestation(&self, nonce: &str) -> ApiErr<FinalityAttestation> {
+        let Some(identity) = self.validator_opt.as_ref() else {
+            return Err("this node has no validator identity to attest with".to_string());
+        };
+        // The nonce is the caller's, and it is signed rather than echoed: an attestation is good for
+        // the conversation that asked for it and no other (see `attestation_prehash`). Refusing an
+        // empty one is the freshness rule stated where it can be checked — a statement with no
+        // caller-supplied part is a statement anyone can replay.
+        let nonce_bytes =
+            base16::decode(nonce).ok_or_else(|| format!("nonce is not valid hex: {nonce}"))?;
+        if nonce_bytes.len() < 16 {
             return Err(format!(
-                "Input hash value must be at least 6 characters: {hash}"
+                "nonce must be at least 16 bytes of entropy (hex), got {}",
+                nonce_bytes.len()
             ));
         }
-        let hash_bytes = base16::decode(hash)
-            .ok_or_else(|| format!("Input hash value is not valid hex string: {hash}"))?;
-        let block_opt = if hash.len() == 64 {
-            self.block_store
-                .get(&[BlockHash::try_from(hash_bytes.as_slice()).map_err(|e| e.to_string())?])
-                .await?
-                .pop()
-                .flatten()
-        } else {
-            let dag = self.dag.get_representation().await;
-            match dag.find(hash) {
-                Some(h) => self.block_store.get(&[h]).await?.pop().flatten(),
-                None => None,
-            }
-        };
-        let block =
-            block_opt.ok_or_else(|| format!("Error: Failure to find block with hash: {hash}"))?;
         let dag = self.dag.get_representation().await;
-        if dag.contains(&block.block_hash) {
-            Ok(get_full_block_info(&block))
-        } else {
-            Err(format!(
-                "Error: Block with hash {hash} received but not added yet"
-            ))
-        }
+        let hash = dag.last_finalized_block_unsafe()?;
+        let sig = identity
+            .attest_finality(&nonce_bytes, &hash)
+            .map_err(|e| e.to_string())?;
+        Ok(FinalityAttestation {
+            block_hash: base16::encode(hash.as_bytes()),
+            nonce: nonce.to_string(),
+            sender: base16::encode(identity.public_key.bytes()),
+            sig_algorithm: identity.sig_algorithm.clone(),
+            sig: base16::encode(&sig),
+        })
     }
 
     async fn bond_status(&self, public_key: &[u8]) -> ApiErr<bool> {

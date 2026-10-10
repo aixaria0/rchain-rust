@@ -3,6 +3,7 @@
 //! `run_cli` mirrors `NodeMain.runCLI` (the thin-client CLI); the `run` (start-node) path is wired
 //! separately in `crate::main`.
 
+use std::io::Read;
 use std::path::Path;
 
 use rchain_casper::protocol::client::{DeployRuntime, GrpcDeployService, GrpcProposeService, Name};
@@ -13,6 +14,7 @@ use rchain_crypto::util::key_util::write_keys;
 
 use crate::configuration::commandline::options::{Commands, Options};
 use crate::effects::{ConsoleIo, GrpcReplClient, RustylineConsole, StdioConsole};
+use crate::runtime::recovery_verify;
 use crate::runtime::repl_runtime::ReplRuntime;
 
 /// The internal gRPC port used by the repl/propose clients by default (port of `Options.GrpcInternalPort`).
@@ -21,6 +23,24 @@ const GRPC_INTERNAL_PORT: i32 = 40402;
 const GRPC_EXTERNAL_PORT: i32 = 40401;
 
 const VALIDATOR_PASSWORD_ENV_VAR: &str = "RNODE_VALIDATOR_PASSWORD";
+
+/// Read all of stdin as text, for the two offline verifiers. Reading to EOF is the contract: the tool
+/// pipes one node response in, and a truncated response is a refusal from the verifier rather than a
+/// silent partial read.
+fn read_stdin() -> Result<String, Vec<String>> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|e| vec![format!("could not read the response from stdin: {e}")])?;
+    if text.trim().is_empty() {
+        return Err(vec![
+            "no response on stdin: pipe the node's JSON in (for example \
+             `curl -s http://127.0.0.1:40403/api/v1/block/<hash>/raw | rnode verify-block`)"
+                .to_string(),
+        ]);
+    }
+    Ok(text)
+}
 
 /// Execute a CLI command against a remote node (port of `NodeMain.runCLI`).
 pub async fn run_cli(options: &Options) -> Result<(), Vec<String>> {
@@ -72,6 +92,30 @@ pub async fn run_cli(options: &Options) -> Result<(), Vec<String>> {
             })
             .await
             .map_err(|e| vec![e.to_string()])
+        }
+
+        // The reconciliation tool's verifiers (AUDIT C261). **Offline, and before the deploy-service
+        // arm below**: they read a node's JSON response on stdin and check it with this node's own
+        // `hash_block` / `block_signature` / attestation-prehash, so nothing connects to anything.
+        Commands::VerifyBlock => {
+            let text = read_stdin()?;
+            match recovery_verify::verify_block(&text) {
+                Ok(verdict) => {
+                    println!("{verdict}");
+                    Ok(())
+                }
+                Err(reason) => Err(vec![reason]),
+            }
+        }
+        Commands::VerifyAttestation { nonce } => {
+            let text = read_stdin()?;
+            match recovery_verify::verify_attestation(&text, nonce) {
+                Ok(verdict) => {
+                    println!("{verdict}");
+                    Ok(())
+                }
+                Err(reason) => Err(vec![reason]),
+            }
         }
 
         // The remaining subcommands talk to the deploy service (and the propose service for
