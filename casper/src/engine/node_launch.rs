@@ -615,6 +615,16 @@ async fn perform_reset(
                  rewound under a view that was not rebuilt, so the node must not keep serving"
         )
     })?;
+    // **The bodies go too, and that is what the returned hashes are for.** `drop_above` rewinds the DAG
+    // and deliberately leaves `BlockStore` alone — it does not own it — and a node that kept the bodies
+    // would keep *serving* blocks it can no longer replay (`block_is_known` asks the store) and, worse,
+    // its receiver reads a body that is stored but absent from the DAG as **"stored but not yet
+    // validated"** and re-injects it (`block_receiver::not_validated` + `send_to_validate`) — so the node
+    // would re-insert the very blocks it just rewound away from, undoing the reset the next time a child
+    // of one arrived. Deleting them makes the rewound state **unrepresentable rather than guarded**:
+    // there is nothing left to serve or to re-insert, and everything above the anchor is re-fetched from
+    // peers, which is the whole of what a rewind means.
+    let deleted = block_store.delete(&dropped).await?;
     runtime_manager
         .runtime()
         .reset(Blake2b256Hash::from_byte_array(
@@ -624,9 +634,11 @@ async fn perform_reset(
     log.warn(
         source,
         &format!(
-            "rewound {} block(s) above height {} and reset the runtime to that state (#320)",
+            "rewound {} block(s) above height {} — {} body(ies) removed from the block store so they \
+             cannot be served or re-inserted — and reset the runtime to that state (#320)",
             dropped.len(),
             i64::from(request.anchor_height),
+            deleted,
         ),
     );
     Ok(())
