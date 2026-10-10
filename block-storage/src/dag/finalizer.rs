@@ -65,6 +65,11 @@ pub enum NoAdvance<S> {
     Coverage {
         missing: BTreeSet<S>,
         senders: BTreeSet<S>,
+        /// How many senders the partition held. Carried so a reader can tell a **broad** region — most
+        /// of the partition silent — from a narrow one, which the two sets above do not say on their
+        /// own: one sender missing out of four is a validator that has not spoken yet this round, and
+        /// one out of thirty is the same sentence about a different net.
+        partition: usize,
     },
     /// `calculate_fringe` refused: a layer exists whose candidates were seen by the whole
     /// partition, but the stake behind them is not a supermajority.
@@ -72,7 +77,17 @@ pub enum NoAdvance<S> {
         supporting: i128,
         total: i128,
         full_partitions: usize,
+        /// How many candidate messages the layer had. Compare with `partition`: on a healthy net this
+        /// is smaller than the partition for most of a round, because a block justifies only the
+        /// messages that existed when it was built (see [`partition`](NoAdvance::Support::partition)
+        /// and #318).
         candidates: usize,
+        /// How many senders the layer had to cover. **#318's missing number**: a `Support` refusal that
+        /// reads `200 of 400 (1 full partition among 1 candidate)` is a *partial* layer — one
+        /// validator's message seen by everyone — which is the ordinary state between the first and the
+        /// last block of a round rather than a fault. Without the partition in the payload, that
+        /// reading and a genuinely stuck one were the same string.
+        partition: usize,
     },
     /// The progress guard: the derivation would publish exactly what is already finalised.
     AlreadyPublished,
@@ -294,7 +309,11 @@ where
                 .filter(|v| !senders.contains(*v))
                 .cloned()
                 .collect();
-            return Err(NoAdvance::Coverage { missing, senders });
+            return Err(NoAdvance::Coverage {
+                missing,
+                senders,
+                partition: partition_bonds.len(),
+            });
         }
         let next_layer = self.calculate_next_layer(&min_msgs);
         let fringe_support_map =
@@ -310,6 +329,7 @@ where
                 total,
                 full_partitions,
                 candidates,
+                partition: partition_bonds.len(),
             });
         }
         Ok(next_layer.values().cloned().collect())

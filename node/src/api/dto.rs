@@ -130,13 +130,23 @@ pub struct ApiStatus {
     /// does not count toward the timer halt; it is reported so a node that never recovers from the race
     /// is still visible.
     pub stale_snapshot_self_equivocations: u64,
-    /// C249's F-U10-01: **why** finality is not advancing, as the merge gate last reported it. The
-    /// reason existed only on stderr — a node that had stopped advancing said so to whoever was reading
-    /// the log, and to nothing a probe could ask. `None` when the last observation saw a merge that
-    /// advanced; that is not "healthy", it is "the gate reported no reason".
+    /// C249's F-U10-01: **the gate's verdict on the last block this node validated**. The reason existed
+    /// only on stderr — a node that had stopped advancing said so to whoever was reading the log, and to
+    /// nothing a probe could ask. `None` when that derivation advanced.
+    ///
+    /// **Not an alarm, and not "why finality is not advancing"** (#318): on a producing chain most
+    /// blocks are refused by the stake gate, because a block justifies only the messages that existed
+    /// when it was built — so this is usually `Some(..)` while the chain is healthy. The state to alarm
+    /// on is `finalityStalled`, and this is its diagnosis.
     pub finality_stall: Option<String>,
+    /// **Whether this node is stalled right now** — the derivation has been refused for longer than a
+    /// round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary
+    /// partial layers of a producing round.
+    pub finality_stalled: bool,
     /// …and how many times this process has entered a stall, so a reader can tell "stalled now" from
-    /// "stalled and recovered" without watching.
+    /// "stalled and recovered" without watching. Counts the sustained state above, which is what makes
+    /// the two distinguishable — before #318 it counted single refusals and climbed once per round on a
+    /// healthy net.
     pub finality_stall_episodes: u64,
     /// #280's ledger, counted: merges that returned a report which was not quiet — a dropped chain, or a
     /// violated invariant. The live incident produced no counter and no line anywhere moving; this is
@@ -318,6 +328,7 @@ mod tests {
             autopropose_timer_halted: false,
             stale_snapshot_self_equivocations: 0,
             finality_stall: None,
+            finality_stalled: false,
             finality_stall_episodes: 0,
             non_quiet_merge_reports: 0,
             sync: None,

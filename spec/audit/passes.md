@@ -9324,6 +9324,13 @@ intermittently non-null on this rig — `"a layer exists but its supporting stak
 i.e. the gate enters a stall on the order of once per block and recovers. So finality is **advancing
 slowly and jerkily, not smoothly**, and this pass does not explain why. The rig only ever needed to
 answer one question — does a node still stall itself on a fringe-key disagreement? — and it answers it.
+
+*Answered by **§99/C273** (2026-10-10, #318): the reason string was the ordinary mid-round state of a
+producing chain — a block justifies only the messages that existed when it was built, so the stake gate
+sees a partial layer — and the episode counter was counting those rather than stalls. The reason now
+names the partition it was partial against and an episode is a sustained run, so the reading this
+paragraph could not explain no longer appears; the jerkiness it describes was the surface, not the
+chain.*
 The gate's stall/advance cadence on a four-validator autopropose net is a **separate** measured
 property, it is the same rig that produced the pre-fix `200 of 400` reading in C268's row, and it belongs
 to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rchain-community/rchain-rust/issues/318)**,
@@ -9711,3 +9718,69 @@ What *is* exercised for obligation 4 is the arithmetic: three fixture cases (a p
 both sides of the fraction, the proof named with the pool it shrinks, and the equivocator's attestation not
 being allowed to set the meet) plus the aggregation fix the live run forced — a scan that reads one endpoint
 cannot see a pair a node refuses to hold.
+
+---
+
+## 99. The stall that was not a stall: an operator surface counting a producing chain's ordinary state (C273, #318)
+
+**The finding, and it came from a rig built for something else.** On a four-validator autopropose devnet
+where every validator was producing and every sampled height's block-hash set was identical across all four
+nodes, `finalityStallEpisodes` read **136-152** after about 212 blocks — roughly one "episode" per round —
+while last-finalised advanced throughout (195-198 against tips at 212-213). The chain was healthy; the
+number said it was not. That measurement is `spec/audit/evidence/n-anchor-drill/divergence-fixed.txt`, and
+#318 was opened because it fit no row.
+
+**Why it happened, read off the gate rather than argued.** `note_finality_stall` counted a
+not-stalled → stalled transition on every observation, and the stake gate refuses the derivation on *most*
+blocks of a healthy round. A block justifies only the messages that existed when it was built, so what the
+gate sees is a partial layer — one validator's candidate seen by the whole partition — and its own refusal
+says so:
+
+```
+a layer exists but its supporting stake is not a supermajority — 100 of 400 (1 full partition(s) among 1 candidate(s))
+```
+
+That is the ordinary state between the first and the last block of a round. What the payload did *not* say
+is how many senders the partition had, so **a healthy mid-round refusal and a stuck node rendered as the
+same string**, and `finalityStall`'s description on the wire — "why finality is not advancing" — told an
+operator to read it as an alarm. The two readings disagreed because the counter was measuring rounds, not
+health: the number it reached was a function of how long the net had been running.
+
+**The answer to #318's first question, then: yes, ~1 stall-entering per round was expected — because the
+counter was counting the wrong thing.** The gate is not wrong to refuse a partial layer: the derivation
+advances when the layer completes, which is what "finality advances once per round" means. So the fix is
+the signal, not the gate, and #318's second question — the stable ~15-height lag — is untouched by it and
+still owed its own measurement with a stated expectation.
+
+**What landed.**
+
+- **The gate's refusals carry the partition.** `NoAdvance::Coverage` and `NoAdvance::Support` gained
+  `partition`, taken from `partition_bonds` at the refusal site — the gate's own arithmetic rather than a
+  second copy of it (`Split`, law 51b). The reason string names it:
+  `… 1 candidate(s) of a 4-sender partition`. That is #318's instrument, permanently: the reading is now
+  self-describing rather than needing a rig that logs the layer beside it.
+- **An episode is a sustained run.** The threshold is **`2 × partition` consecutive refusals**, which is
+  not tuned: a healthy net advances the derivation at least once per round — that is what a round *is* —
+  so the longest run of refusals a healthy net can show is bounded by the partition. Twice it is a run no
+  healthy net reaches, and it **scales with the net**: eight refusals are a stall on four senders and
+  pacing on thirty. The test pins both ends.
+- **`finalityStalled` is on the surface.** The counter's own stated purpose was always "so 'stalled now' is
+  distinguishable from 'stalled and recovered'", and it could not serve that purpose while a refusal was
+  the ambient state of a producing chain. The reason string stays the per-observation *diagnosis* (F-U10-01
+  asked for it on every observation, and that stands); the boolean is the state to alarm on.
+- **The progress guard counts nothing.** `AlreadyPublished` — the derivation would publish what is already
+  finalised — is neither a refusal nor an advance, so it no longer feeds the run: a quiet chain must not
+  look stalled.
+- **The descriptions say what the numbers are.** The DTO's doc comment, the OpenAPI property text and the
+  `Envelope.lean` row all move with the new key (`finalityStalled`), so the served document a client
+  generates types from no longer describes a diagnosis as an alarm.
+
+**What is *not* claimed.** This does not make the surface a health verdict: `finalityStall` is still the
+gate's verdict on the last block validated, and on a producing chain it is usually `Some(..)`. The
+distinction the fix buys is between *pacing* and *stalling*, which is what an operator reads it for — not a
+licence to treat a non-null reason as a fault.
+
+**And the row this refines.** F-U10-01 exposed the surface and is right to have done so; what it could not
+know is that the counter it exposed would count partial layers. Its cell now carries the refinement and
+points here, and its stale falsifier citation (the test was renamed by this pass) is corrected to the
+re-derived line numbers and the new test name.
