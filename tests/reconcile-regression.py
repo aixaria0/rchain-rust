@@ -12,63 +12,182 @@ import subprocess
 import tempfile
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools/reconcile-network.sh"
-def run_case(name, finalized, expected, required, anchor=None, anchor_height=None):
-    # Exercise the production anchor selection in isolation with injected API snapshots.
-    source = SCRIPT.read_text()
-    a = source.index('echo "== 3. the anchor')
-    b = source.index("# --- 4. what is above", a)
-    fragment = source[a:b]
-    shell = """set -uo pipefail
-NAMES=(A B)
-declare -A LFB LFH HOST PORT
-LFB[A]="$A_HEIGHT"; LFH[A]="$A_HASH"
-LFB[B]="$B_HEIGHT"; LFH[B]="$B_HASH"
-HOST[A]=A; PORT[A]=1; HOST[B]=B; PORT[B]=1; MASTER=A
+
+# The slice a §3 case drives: the meet's helpers *and* the section, so the real parsing, the real
+# refusals and the real arithmetic run — only the two artefact calls are stubbed. The stubs are spliced
+# in *between* the helpers and the section, because a shell script is read and executed incrementally: a
+# definition at the end of the file has not been read when a call near the top runs.
+MEET_HELPERS = ("# --- the meet's artefacts", "# --- 3. the anchor")
+MEET_SECTION = ("# --- 3. the anchor", "# --- 4. what is above")
+
+STUB_OVERRIDES = """attestation_of() { printf '%s' "${STUB_ATT[$4]}"; }
+verified_block() { printf '%s' "${STUB_BLOCK[$3]}"; }
+is_ancestor_of() { [ "$2" = "${STUB_BAD_CAND:-}" ] && return 1; return 0; }
+proven_equivocations() { printf '%s' "${STUB_PROVEN:-}"; }
 anchor_height() { printf '%s' "${STUB_ANCHOR_HEIGHT:-}"; }
-""" + fragment
+"""
+
+
+def run_meet(name, nodes, bonds, expect_rc, required, bad_candidate=None, extra_blocks=None,
+             anchor=None, anchor_height=None, proven=None):
+    """Drive §3 with the attestation and block calls stubbed, and the rest of the code real.
+
+    `nodes` is a list of `{name, height, hash, key}` (plus optional `bonds` — the bond map that node's
+    verified block carries — and `justifications`). `bonds` is the map every node reports unless it
+    carries its own: `[(validator_key, stake)]`. `bad_candidate` makes `is_ancestor_of` answer *no* for
+    one candidate, which is how the descent below a divergent subset is exercised.
+    """
+    src = SCRIPT.read_text()
+    helpers = src[src.index(MEET_HELPERS[0]):src.index(MEET_HELPERS[1])]
+    section = src[src.index(MEET_SECTION[0]):src.index(MEET_SECTION[1])]
+    default_bonds = [{"validator": k, "stake": s} for k, s in bonds]
+
+    preamble = [
+        "set -uo pipefail",
+        "MAX_WALK=512",
+        "EQUIV_WINDOW=16",
+        # `verified_block` memoises on disk; the fixture keeps that real by pointing it at a scratch dir.
+        'CACHE_DIR=""',
+        "declare -A STUB_ATT STUB_BLOCK",
+        "NAMES=(%s)" % " ".join(n["name"] for n in nodes),
+        "declare -A HOST PORT",
+        # §1's own reading, which the operator-anchor branch reports back to the operator (it does not
+        # need to *compute* with it — that is what changed — but a person naming an anchor wants to see
+        # what the nodes say).
+        "declare -A LFB LFH",
+        "MASTER=%s" % nodes[0]["name"],
+    ]
+    for n in nodes:
+        preamble.append("HOST[%s]=%s; PORT[%s]=1" % (n["name"], n["name"], n["name"]))
+        preamble.append("LFB[%s]='%s'; LFH[%s]='%s'"
+                        % (n["name"], n.get("lfb_height", ""), n["name"], n.get("lfb_hash", "")))
+        att = {"verified": True, "blockHash": n["hash"], "sender": n["key"], "nonce": "stub"}
+        preamble.append("STUB_ATT[%s]='%s'" % (n["name"], json.dumps(att)))
+        blk = {
+            "verified": True,
+            "blockHash": n["hash"],
+            "blockNumber": n["height"],
+            "justifications": n.get("justifications", []),
+            "bonds": n.get("bonds", default_bonds),
+        }
+        preamble.append("STUB_BLOCK[%s]='%s'" % (n["hash"], json.dumps(blk)))
+    for h, blk in (extra_blocks or {}).items():
+        preamble.append("STUB_BLOCK[%s]='%s'" % (h, json.dumps(blk)))
+
+    # The stubs are spliced between the helpers and the section: the real `jfield`, `refuse`, `rnode_bin`
+    # and arithmetic run, while the three artefact calls answer from the tables above. They must come
+    # *before* §3 textually — a shell reads incrementally, so a definition after the section would not
+    # exist yet when the section runs (which is how the first draft of this fixture passed everything to
+    # the real function and then failed on a missing `api`).
+    script = "\n".join(preamble) + "\n" + helpers + STUB_OVERRIDES + section
     if anchor is not None:
-        shell = 'RECONCILE_ANCHOR="%s"\n' % anchor + shell
-    def fields(v):
-        if isinstance(v, dict):
-            return str(v.get("blockNumber", "")), v.get("blockHash", "")
-        return "", ""
-    ah, ab = fields(finalized[0]); bh, bb = fields(finalized[1])
-    env = {**os.environ, "A_HEIGHT": ah, "A_HASH": ab, "B_HEIGHT": bh, "B_HASH": bb}
+        script = 'RECONCILE_ANCHOR="%s"\n' % anchor + script
+    env = dict(os.environ)
+    if bad_candidate is not None:
+        env["STUB_BAD_CAND"] = bad_candidate
     if anchor_height is not None:
         env["STUB_ANCHOR_HEIGHT"] = anchor_height
-    p = subprocess.run(["bash", "-c", shell], env=env, capture_output=True, text=True, timeout=10)
+    if proven:
+        env["STUB_PROVEN"] = "\n".join(proven)
+
+    p = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
     combined = p.stdout + p.stderr
-    assert p.returncode == expected, f"{name}: exit={p.returncode}, expected={expected}\n{combined}"
+    assert p.returncode == expect_rc, f"{name}: exit={p.returncode}, expected={expect_rc}\n{combined}"
     assert required in combined, f"{name}: missing {required!r}\n{combined}"
     print(f"PASS {name} (exit {p.returncode})")
 
+
 if __name__ == "__main__":
-    anchor = {"blockNumber": 0, "blockHash": "anchor"}
-    run_case("unanimous anchor", [anchor, anchor], 0, "unanimously reported finalized anchor")
-    run_case("divergent finalized hashes",
-             [anchor, {"blockNumber": 0, "blockHash": "other"}],
-             4, "finalized heads differ")
-    run_case("unavailable finality",
-             [anchor, "Finalized fringe is not available."],
-             4, "no usable finalized block")
-    run_case("same hash at different finalized heights",
-             [anchor, {"blockNumber": 1, "blockHash": "anchor"}],
-             4, "finalized heads differ")
+    # --- section 3: the meet, over verified attestations ------------------------------------------
+    KEYS = ["k" + n for n in "ABCD"]
+    EQUAL = [(k, 100) for k in KEYS]
+    def node(name, height, key, **kw):
+        return dict(name=name, height=height, hash="h" + name, key=key, **kw)
+
+    # **The case the gate could not handle, and why the gate was replaced.** Three of four validators
+    # are a few rounds apart in what they have finalised (110 / 102 / 97) and the fourth is far behind
+    # (50): three of four is 300 of 400, a strict supermajority, so the meet is the *deepest* block
+    # they all finalised — the shallowest of the three — and the laggard is excluded rather than asked
+    # to agree, and excluded rather than dragging the point back to its own 50.
+    run_meet("a lagging validator neither vetoes nor drags",
+             [node("A", 110, KEYS[0]), node("B", 102, KEYS[1]),
+              node("C", 97, KEYS[2]), node("D", 50, KEYS[3])],
+             EQUAL, 0, "the meet: height 97")
+    run_meet("the laggard is named, not silently dropped",
+             [node("A", 110, KEYS[0]), node("B", 102, KEYS[1]),
+              node("C", 97, KEYS[2]), node("D", 50, KEYS[3])],
+             EQUAL, 0, "not in the subset (lagging, not vetoing): D")
+    run_meet("four validators in lockstep still compute",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1]),
+              node("C", 10, KEYS[2]), node("D", 10, KEYS[3])],
+             EQUAL, 0, "stake: 400 of 400 = 100%")
+    # **The double-count that deleted the first meet (#302)**, in the shape it would return: two
+    # endpoints attesting as *one* validator. Counting the bond twice would fabricate a supermajority
+    # out of one stake, so it is a refusal either way it is read.
+    run_meet("two endpoints attesting as one validator",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[0])],
+             EQUAL, 4, "both attested as")
+    # A key the pool does not bond weighs nothing, and a node whose key is absent from the pool is not
+    # running the chain this pool describes.
+    run_meet("an attesting key the bond set does not bond",
+             [node("A", 10, "kX"), node("B", 10, KEYS[1])],
+             EQUAL, 4, "which the bond set does not bond")
+    # A denominator that differs between nodes is not a denominator: different pools is the state
+    # divergence the design refuses on.
+    run_meet("the nodes disagree on the pool",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1],
+                                           bonds=[{"validator": KEYS[0], "stake": 100}])],
+             EQUAL, 4, "disagree on the bond set")
+    # **A strict supermajority, not a majority and not two thirds.** Two of four equal validators is
+    # 200 of 400 (half); two of three is 200 of 300 — exactly two thirds, which the protocol's own rule
+    # (`3 * stake > 2 * total`) refuses. Both must refuse here.
+    run_meet("no strict supermajority",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1])],
+             EQUAL, 4, "no strict supermajority of stake attested")
+    run_meet("exactly two thirds is not a supermajority",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1])],
+             [(KEYS[0], 100), (KEYS[1], 100), (KEYS[2], 100)], 4, "no strict supermajority of stake attested")
+    # **The descent.** When the subset's attested blocks are not on one branch the shallowest is not an
+    # ancestor of the others, and the meet is *below* it — the common ancestor is finalised by both
+    # sides, so the walk steps down, verifies each step, and reports how far it went.
+    run_meet("the meet descends when the subset diverged",
+             [node("A", 10, KEYS[0]), node("B", 8, KEYS[1], justifications=["hP"]),
+              node("C", 9, KEYS[2])],
+             [(KEYS[0], 100), (KEYS[1], 100), (KEYS[2], 100)], 0, "the meet: height 7",
+             bad_candidate="hB",
+             extra_blocks={"hP": {"verified": True, "blockHash": "hP", "blockNumber": 7,
+                                  "justifications": [], "bonds": []}})
+    # **A proven equivocator leaves both sides of the fraction** — the rule the issue states, and the
+    # one the denominator may legitimately shrink by. Here it is the whole point of the rule: without
+    # the exclusion, two of three equal validators is 200 of 300 — *exactly* two thirds, refused; with
+    # the third proven, the pool is the honest 200 and the threshold is met. Never by silence: C is out
+    # because two signed blocks were re-derived, not because it went quiet.
+    run_meet("a proven equivocator leaves numerator and denominator",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1]), node("C", 10, KEYS[2])],
+             [(KEYS[0], 100), (KEYS[1], 100), (KEYS[2], 100)], 0, "stake: 200 of 200 = 100%",
+             proven=["10 %s aa11 bb22" % KEYS[2]])
+    run_meet("the proof is named, and the pool it shrinks",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1]), node("C", 10, KEYS[2])],
+             [(KEYS[0], 100), (KEYS[1], 100), (KEYS[2], 100)], 0, "the pool is now 200",
+             proven=["10 %s aa11 bb22" % KEYS[2]])
+    # A proven equivocator's own attestation must not decide the point: it is out of the subset, so its
+    # (here, shallower) block cannot become the meet.
+    run_meet("the equivocator's attestation does not set the meet",
+             [node("A", 10, KEYS[0]), node("B", 10, KEYS[1]), node("C", 3, KEYS[2])],
+             [(KEYS[0], 100), (KEYS[1], 100), (KEYS[2], 100)], 0, "the meet: height 10",
+             proven=["3 %s aa11 bb22" % KEYS[2]])
+
     # **The operator's anchor** (C269): when nothing can be computed, the operator names the block — and
-    # the tool says whose root it is rather than presenting it as a meet.
-    run_case("the operator names the anchor",
-             ["Finalized fringe is not available.", "Finalized fringe is not available."],
-             0, "the operator's anchor: height 41",
-             anchor="ab" * 32, anchor_height="41")
-    run_case("the operator names an anchor nobody holds",
-             ["Finalized fringe is not available.", "Finalized fringe is not available."],
-             4, "could not be read from A",
+    # the tool says whose root it is rather than presenting it as a meet. The two cases below now also
+    # *shape* the refusal: a net with no finality left cannot attest anything, so this is the only path
+    # left, and the message has to say so.
+    run_meet("the operator names the anchor",
+             [node("A", 0, KEYS[0]), node("B", 0, KEYS[1])], EQUAL, 0, "the operator's anchor: height 41",
+             bad_candidate=None, anchor="ab" * 32, anchor_height="41")
+    run_meet("the operator names an anchor nobody holds",
+             [node("A", 0, KEYS[0]), node("B", 0, KEYS[1])], EQUAL, 4, "could not be read from A",
              anchor="cd" * 32, anchor_height="")
-    # The refusal *names the way out*: a tool that refuses in the state its own recovery exists for must
-    # say what the operator can do instead, or the refusal is a dead end.
-    run_case("the refusal to compute a meet names the operator's alternative",
-             [anchor, "Finalized fringe is not available."],
-             4, "name it: RECONCILE_ANCHOR=<hash>")
+
     # Same first block but a different second block must not be reported as convergence.
     # Verification is behind --apply, so test the actual set-comparison fragment below.
     fragment = SCRIPT.read_text()
@@ -120,7 +239,10 @@ blocks_at() { printf '%s\\n' 'aa11 sender9 post 1 []' 'bb22 sender9 post 1 []'; 
     assert p.returncode == 0, p.stdout + p.stderr
     assert "REPORTED sender9" in p.stdout, p.stdout
     assert "two distinct blocks at height 0" in p.stdout, p.stdout
-    assert "no stake is weighed, dropped or decided" in p.stdout, p.stdout
+    # §2 still decides nothing — and now says where a *proof* is made instead, so a reader does not go
+    # away thinking the report is the last word on equivocation.
+    assert "these sender fields are the endpoints' word" in p.stdout, p.stdout
+    assert "§3 *proves* what it can from" in p.stdout, p.stdout
     print("PASS section 2 reports an equivocation and consumes nothing")
 
     # --- section 4: one block served by several nodes is one block -------------------------------
