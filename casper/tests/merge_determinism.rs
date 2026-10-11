@@ -1016,3 +1016,152 @@ async fn an_empty_previous_fringe_is_the_genesis_claim() {
         "an empty fringe has no finalisers, so it has nothing to reject"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------
+// F-U6-01's owed falsifier (C248's residue clause 1): does an arrival order fork the merge?
+// ---------------------------------------------------------------------------------------------------
+
+/// **What an arrival order moves, and what it does not** — F-U6-01's owed falsifier (*"two merges of one
+/// round under two scopes, comparing the merged state at the already-finalised height"*), and the
+/// measurement that refuses the reading issue **#328** gives it.
+///
+/// #328 says the snapshot is a hard fork: `round_parents` is re-snapshotted on **every insert**
+/// (`message_state.rs::advance_round`), so two nodes holding one block set can hold different round
+/// boundaries, "so two honest proposers at one height can merge **different scope-sets** and reach
+/// different merged states". Three things are true here and the third is not what the first two suggest:
+///
+/// 1. **the snapshot really is arrival-order dependent** — with the same five blocks in two orders the
+///    two nodes' `round_parents` are `{a2, b1}` and `{a2, b2}` (asserted below);
+/// 2. **the scope really is parent-sensitive** — `MergeScope::from_dag` over those two snapshots returns
+///    two different conflict scopes (asserted below), so the dependency #328 describes is there;
+/// 3. **and it still forks nothing**, because the merge is never run from a node's own snapshot. A
+///    proposer's snapshot becomes the block's `justifications`; every node — the proposer included —
+///    derives a block's pre-state from **those justifications** against its own DAG. The derivation is
+///    therefore a function of (block, DAG), and the two nodes here hold the *same* DAG. The closing
+///    assertion is exactly that: for each block, the production `MergeScope::from_dag` built from that
+///    block's own justifications is the same scope on both nodes.
+///
+/// So the *fork* reading of item 1 is refuted: two proposers with two snapshots produce two sibling
+/// blocks, each valid to everyone, which is ordinary multi-proposer concurrency rather than a
+/// disagreement about a state. What this **does not** reach is the other half of F-U6-01 — a boundary
+/// chain that carried a deploy computing a different pot from its empty siblings — which needs an
+/// epoch-running fixture rather than five blocks; C248's residue clause 1 keeps that, and this test is
+/// the half of it that a five-block DAG can settle.
+#[tokio::test]
+async fn an_arrival_order_moves_the_round_snapshot_and_not_the_scope_a_block_derives() {
+    use rchain_block_storage::dag::message_map;
+
+    // **The bond map has to be non-empty or this measures nothing.** `advance_round` closes a round when
+    // every *bonded* sender has moved past the boundary, and over an empty bond set that predicate is
+    // vacuously true — the snapshot would be taken at the first insert and never differ. One bonded
+    // sender per proposer, and the map rides on every block (that is where `advance_round` reads it).
+    let bonds: BTreeMap<Validator, NonNegI64> = BTreeMap::from([
+        (Validator::new([1u8; 65]), NonNegI64::try_from(1).unwrap()),
+        (Validator::new([2u8; 65]), NonNegI64::try_from(1).unwrap()),
+    ]);
+    let mk = |id: u8, sender: u8, seq: i64, height: i64, parents: &[BlockHash]| {
+        let mut b = block(id, sender, seq, height, parents);
+        b.bonds = bonds.clone();
+        b
+    };
+
+    // `g` → `{a1 by A, b1 by B}`, then `{a2 on a1, b2 on b1}`. Two senders, two heights above genesis.
+    let g = mk(0x01, 1, 0, 0, &[]);
+    let a1 = mk(0x11, 1, 1, 1, &[g.block_hash]);
+    let b1 = mk(0x21, 2, 0, 1, &[g.block_hash]);
+    let a2 = mk(0x31, 1, 2, 2, &[a1.block_hash]);
+    let b2 = mk(0x41, 2, 1, 2, &[b1.block_hash]);
+
+    // One block set, two arrival orders. `b1` arrives before `a1` on the second node, which is the
+    // whole difference: a peer's gossip order, not a different chain.
+    let node_one = build_storage().await;
+    for b in [&g, &a1, &a2, &b1, &b2] {
+        insert(&node_one, meta(b, &[], 1), (*b).clone()).await;
+    }
+    let node_two = build_storage().await;
+    for b in [&g, &b1, &a1, &a2, &b2] {
+        insert(&node_two, meta(b, &[], 1), (*b).clone()).await;
+    }
+
+    let one = node_one.get_representation().await;
+    let two = node_two.get_representation().await;
+
+    // **The premise, or the rest is measuring two different chains.** Same blocks, same messages, same
+    // children, same heights — everything a merge reads except the round boundary.
+    assert_eq!(one.dag_set, two.dag_set);
+    assert_eq!(one.dag_message_state.msg_map, two.dag_message_state.msg_map);
+    assert_eq!(one.child_map, two.child_map);
+    assert_eq!(one.height_map, two.height_map);
+
+    // (1) The snapshot differs, and by exactly which block is in it.
+    let snapshot = |r: &rchain_block_storage::dag::representation::DagRepresentation| {
+        r.dag_message_state
+            .round_parents
+            .values()
+            .map(|m| m.id)
+            .collect::<BTreeSet<BlockHash>>()
+    };
+    let snap_one = snapshot(&one);
+    let snap_two = snapshot(&two);
+    assert_eq!(
+        snap_one,
+        BTreeSet::from([a2.block_hash, b1.block_hash]),
+        "the first node's boundary closed on its own `a2` and `b1`"
+    );
+    assert_eq!(
+        snap_two,
+        BTreeSet::from([a2.block_hash, b2.block_hash]),
+        "the second closed on `a2` and `b2` — one block set, two round boundaries, decided by arrival order"
+    );
+
+    // (2) The scope `from_dag` builds from a parent set really does move with it, so nothing below is
+    // passing because the scope ignores its argument.
+    let scope_from = |r: &rchain_block_storage::dag::representation::DagRepresentation,
+                      parents: &BTreeSet<BlockHash>| {
+        let messages: BTreeSet<_> = parents
+            .iter()
+            .filter_map(|h| r.dag_message_state.msg_map.get(h).cloned())
+            .collect();
+        let final_fringe: BTreeSet<BlockHash> =
+            message_map::latest_fringe(&r.dag_message_state.msg_map, &messages)
+                .iter()
+                .map(|m| m.id)
+                .collect();
+        // The production argument shape: `get_pre_state_for_parents` builds the conflict scope exactly
+        // this way (`multi_parent_casper.rs`: `from_dag(parent_hashes, &new_fringe, …)`).
+        MergeScope::from_dag(
+            parents,
+            &final_fringe,
+            &r.child_map,
+            &r.dag_message_state.msg_map,
+        )
+    };
+    let (scope_one, _) =
+        scope_from(&one, &snap_one).expect("the first node's snapshot is in its DAG");
+    let (scope_two, _) = scope_from(&two, &snap_two).expect("and the second's, in its own");
+    assert_ne!(
+        scope_one.conflict_scope, scope_two.conflict_scope,
+        "the two snapshots build two different scopes — the parent-sensitivity #328 describes is real"
+    );
+    assert!(
+        scope_two.conflict_scope.contains(&b2.block_hash)
+            && !scope_one.conflict_scope.contains(&b2.block_hash),
+        "and the difference is exactly `b2`, the block only the second node's boundary has seen"
+    );
+
+    // (3) **And nothing forks**, because a block brings its own parents. For every block, the scope the
+    // production derivation builds from **that block's justifications** is the same on both nodes — the
+    // two arrival orders differ in what they would *propose*, not in what they compute about what was
+    // proposed.
+    for b in [&a1, &b1, &a2, &b2] {
+        let parents: BTreeSet<BlockHash> = b.justifications.iter().copied().collect();
+        let (on_one, _) = scope_from(&one, &parents).expect("the first node derives a scope");
+        let (on_two, _) = scope_from(&two, &parents).expect("the second derives one too");
+        assert_eq!(
+            on_one, on_two,
+            "block {}'s pre-state is derived from its own justifications, so the arrival order cannot \
+             reach it — this is the assertion that refuses the fork reading of #328's item 1",
+            b.block_hash.to_hex()
+        );
+    }
+}
