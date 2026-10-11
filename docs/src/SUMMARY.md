@@ -52,7 +52,7 @@
 
 # Part IV — Building applications
 
-- [Building applications on the local devnet](developer/building-apps.md)
+- [Building applications: local devnet and public testnet](developer/building-apps.md)
 - [Tokens in Rholang: ERTP](developer/ertp.md)
 - [Talking to a node from another implementation](developer/ocapn.md)
 - [Porting an app from rnode](developer/porting-a-client.md)

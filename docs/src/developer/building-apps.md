@@ -1,8 +1,9 @@
-# Building applications on the local devnet
+# Building applications: local devnet and public testnet
 
 This page is for developers building apps against a running RNode — wallets, block explorers, dapps,
-indexers, and tooling. It covers standing up the local Docker **devnet** and configuring your app to
-**deploy rholang** and **read back the results**.
+indexers, and tooling. It starts with the local Docker **devnet**, then shows the stricter evidence
+boundary for a shared **public testnet**. Both use the public API to **deploy rholang** and **read back
+the results**.
 
 The devnet is a throwaway local testnet: 1–3 bonded validators with real consensus and autopropose, a
 funded deployer wallet, and every API surface published to `localhost`. It is *not* for production —
@@ -350,7 +351,105 @@ curl -s http://localhost:40403/api/v1/blocks
 curl -s http://localhost:40403/api/v1/block/<blockHash>
 ```
 
-## 5. Reference — HTTP routes
+## 5. Building against a shared public testnet
+
+The public deploy/read API is the same surface an application uses on the local devnet, but a shared
+public testnet changes the **trust and evidence boundary**. Treat the network as an independently
+operated service: do not assume access to the admin API, do not assume a faucet is enabled, and do not
+hardcode one observed block-production mode as a network invariant. The current public-testnet
+endpoint and operator notes live in [Public testnet](../node/testnet.md).
+
+Start by observing the node rather than inferring its configuration:
+
+```sh
+BASE=https://<public-testnet-node>
+
+curl -s "$BASE/api/v1/status" | jq
+curl -s "$BASE/api/v1/capabilities" | jq
+curl -s "$BASE/api/last-finalized-block" | jq
+```
+
+Use those observations to set the deploy's `shardId`, choose a fresh `validAfterBlockNumber`, and gate
+optional UI such as a faucet. A public client should not need `POST /api/v1/propose`: if the network is
+idle, block production is an operator/network property, not authority the browser should silently
+assume it has.
+
+### 5.1 Keep unknown, false, and stale separate
+
+Public endpoints can degrade independently. For example, status may be reachable while a capability or
+finalized-state read fails. Do not turn an unavailable observation into a negative fact such as
+`faucet=false`, `devMode=false`, or "node offline". Keep each observation's success/failure boundary
+explicit and preserve the last known value as stale only if the UI says that it is stale.
+
+This matters most around finality: a latest height can keep moving while a finalized-height read is
+unavailable, and an application must not convert that gap into a finality claim.
+
+### 5.2 Submission, execution, inclusion, finality, and state are different claims
+
+A client should model these as a ladder rather than one boolean "success":
+
+1. **Submission accepted** — `POST /api/v1/deploy` returned a deploy signature. This proves only that
+   the node accepted the signed deploy into its submission path.
+2. **Execution observed** — `GET /api/v1/deploy-status/{sig}` returned `ProcessedWithSuccess`. The
+   response also identifies the block that processed the deploy.
+3. **Containing block finalized** — query the exact processing block with
+   `GET /api/is-finalized/{blockHash}` and require `true`. In a block DAG, a numerically higher
+   finalized height alone does not prove that this particular block finalized.
+4. **Application state observed from finalized state** — query the contract/balance/receipt from a
+   finalized state view and check the exact postcondition the operation claims.
+5. **Transaction-specific evidence** — where another operation could produce the same state change,
+   bind the application receipt to something unique to this deploy (for example the deploy id, a unique
+   contract receipt/name, or the containing block's deploy set). A balance increase by itself is useful
+   corroboration, but it does not prove that one particular transfer caused it.
+
+The distinction is intentional. A faucet or wallet that says "delivered" immediately after submission
+can be wrong even when the HTTP request succeeded: the deploy may later execute with an error, or the
+processing block may not yet be finalized.
+
+### 5.3 Faucet: pending is not delivered
+
+When the public node advertises `faucet:true`, the faucet response's `deployId` is the deploy signature.
+Treat a `pending` response exactly like any other submitted deploy:
+
+```sh
+# 1. request test funds
+curl -s -X POST "$BASE/api/v1/faucet" \
+  -H 'Content-Type: application/json' \
+  -d '{"address":"<rev-address>"}'
+
+# 2. poll the returned deployId
+curl -s "$BASE/api/v1/deploy-status/<deployId>" | jq
+
+# 3. after ProcessedWithSuccess, verify the exact processing block
+curl -s "$BASE/api/is-finalized/<blockHash>" | jq
+
+# 4. use a finalized-state read for the claimed balance/contract postcondition
+curl -s "$BASE/api/last-finalized-block" | jq
+```
+
+Only after the processing block is finalized should the client use a finalized balance/state read to
+claim that the drip landed. `ProcessedWithError` is execution evidence that it did not. An unavailable
+status is not success or failure; it is unresolved.
+
+### 5.4 Shared-network hygiene
+
+- Use **disposable keys** and test-value funds. A public testnet can reset and has no production-value
+  guarantee.
+- Refresh `validAfterBlockNumber` from current network state; a literal copied from a local-devnet
+  example eventually expires on a long-running shared chain.
+- Keep bounded request timeouts. A half-open public connection should not leave signing or transfer UI
+  permanently pending.
+- Do not expose an admin/propose control unless the node explicitly provides that authority and the
+  application is meant to operate it. Ordinary public-testnet applications should stay on the public
+  API.
+- Record enough evidence to reproduce a claim: deploy id, inclusion block/hash, finalized observation,
+  and the application-specific postcondition. Block heights alone are not stable fixtures because the
+  shared testnet advances and may reset.
+
+The same discipline applies to tokens and other capability-based applications: prove the operation the
+UI names, and state separately what was submitted, included, finalized, and observed afterward.
+
+## 6. Reference — HTTP routes
 
 All routes are also served without the `/v1` segment (the legacy `/api/…` forms) except where noted.
 Requests and responses are JSON (`camelCase` keys).
@@ -376,7 +475,7 @@ The public API also serves `/api/last-finalized-block`, `/api/blocks/{start}/{en
 `/metrics`, and `/api/transactions/{hash}` (the transactions route answers 404 unless
 `api-server.enable-reporting` is on).
 
-## 6. Reference — gRPC services
+## 7. Reference — gRPC services
 
 `DeployService` (external, host `40402`) exposes `doDeploy`, `deployStatus`, `getBlock`, `getBlocks`,
 `listenForDataAtName`, `getDataAtName`, `listenForContinuationAtName`, `findDeploy`,
@@ -385,7 +484,7 @@ The public API also serves `/api/last-finalized-block`, `/api/blocks/{start}/{en
 exposes `propose` and `proposeResult`. The protobuf definitions live in
 `models/proto/{deploy_service_v1,propose_service_v1,deploy_service_common}.proto`.
 
-## 7. Notes and gotchas
+## 8. Notes and gotchas
 
 - **Throwaway keys.** The validator/deployer keys in `tools/devnet.sh` are public dev keys; never reuse
   them for anything with real value.
@@ -410,7 +509,7 @@ exposes `propose` and `proposeResult`. The protobuf definitions live in
   explore-deploy) run on an isolated fork of the state, so they cannot disturb block production; if
   you see this error, it is a consensus bug to report, not a request you should retry.
 
-## 8. When blocks are created (the formal spec)
+## 9. When blocks are created (the formal spec)
 
 CBC-Casper is **deploy-driven**: a block is created **only** when one of three triggers fires on a
 node. An idle node with none of them produces no blocks — there is no independent heartbeat.
