@@ -8,6 +8,7 @@ use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_block_storage::dag::finalizer::{Finalizer, Message};
 use rchain_block_storage::dag::liveness;
 use rchain_block_storage::dag::message_map;
+use rchain_block_storage::dag::representation::RewindPlan;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
@@ -19,7 +20,7 @@ use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
 
 use crate::block_status::BlockStatus;
-use crate::interpreter_util::validate_block_checkpoint;
+use crate::interpreter_util::{validate_block_checkpoint, ResetRequest};
 use crate::merging::{
     rejections_of_fringe, BlockIndex, DeployChainIndex, MergeOutcome, MergeReport, MergeScope,
     ParentsMergedState, RejectionsMap,
@@ -891,10 +892,16 @@ fn revalidated_record(
 /// the scan simply `continue`d — which is the disposition pass's finding at its far end: the failure
 /// upstream is loud, and the *state* it leaves has no surface and no inverse at all.
 ///
-/// **This resets nothing, on purpose.** It detects, logs and counts, so an operator can see what a reset
-/// *would* act on before one ships. #287/#294 own the net-wide reconciliation; the per-node reset is a
-/// later unit, and shipping the detector first is what makes that unit reviewable against a real
-/// denominator rather than an argument.
+/// **This counts, logs, and now asks for the reset** (F-U5-01's acting half, #320). It shipped dark first
+/// on purpose — detect, log, count, so an operator could see what a reset *would* act on before one was
+/// wired — and the dark half is what made this one reviewable against a real denominator rather than an
+/// argument. #287/#294 own the net-wide reconciliation; this is the per-node half, and the two do not
+/// share a deliverable.
+///
+/// The request is raised **only where the rewind has somewhere to go**: `rewind_plan`'s first arm, the
+/// last finalised block. A node with no finalised fringe cannot name a safe state, and a reset there
+/// would rewind to genesis — which is the confusion the plan's two arms exist to prevent, so the second
+/// arm keeps refusing and logs what it would have had to replay.
 async fn note_unrestorable_if_exhausted(
     dag: &dyn BlockDagStorage,
     record: &BlockMetadata,
@@ -910,15 +917,130 @@ async fn note_unrestorable_if_exhausted(
         source,
         &format!(
             "cannot restore block {} (seq {}): its revalidation budget is spent after {} attempt(s) and \
-             it still fails against this node's DAG, so this node will refuse it and its descendants for \
-             the process lifetime. Nothing resets a running node yet — an operator's only way back is \
-             deleting the shard data dir, which is a comment and not code (AUDIT C249; #287/#294)",
+             it still fails against this node's DAG, so this node refuses it and its descendants for the \
+             process lifetime unless a reset follows (AUDIT C249; #320)",
             hash.to_hex(),
             record.seq_num,
             record.restore_attempts,
         ),
     );
-    report_reset_dry_run(dag, hash, source, log).await;
+    let plan = dag.get_representation().await.rewind_plan();
+    match reset_decision(&plan, *hash) {
+        // **The one arm that can act.** The first request wins and the driver takes it once, so a scan
+        // that gives up on several blocks in one pass asks for one reset rather than one per block.
+        ResetDecision::Act {
+            anchor,
+            anchor_height,
+            blocks_above,
+            refused,
+        } => {
+            let raised = crate::interpreter_util::request_reset(ResetRequest {
+                anchor,
+                anchor_height,
+                blocks_above,
+                refused,
+            });
+            let prefix = if raised {
+                "reset requested"
+            } else {
+                "reset already pending"
+            };
+            // **The sentence describes the request, not an accomplished act.** The engine performs it —
+            // this path holds no transport, no block store and no runtime, so it cannot — and the two
+            // lines below are what an operator reads to tell "the node asked" from "the node acted".
+            log.warn(
+                source,
+                &format!(
+                    "{prefix}: rewind to the last finalized block {} (height {}), drop the {} block(s) \
+                     above it and catch up from there. The dropped blocks are re-requested from peers, \
+                     and the rewind is to a block the network finalised, so nothing committed is lost \
+                     (#320)",
+                    anchor.to_hex(),
+                    i64::from(anchor_height),
+                    blocks_above,
+                ),
+            );
+        }
+        ResetDecision::RefuseNoHeight {
+            anchor,
+            blocks_above,
+        } => log.warn(
+            source,
+            &format!(
+                "no reset is requested: this node's last finalized block {} is not in its own height map \
+                 (that map leaves out validation-failed blocks), so the height a rewind has to start at \
+                 cannot be named. The {} block(s) above genesis stay where they are (AUDIT C249; #320)",
+                anchor.to_hex(),
+                blocks_above,
+            ),
+        ),
+        ResetDecision::RefuseNoAnchor { blocks_above } => log.warn(
+            source,
+            &format!(
+                "no reset is requested: this node has no finalized fringe, so there is no state it can \
+                 name as safe to rewind to and a reset would have to replay from genesis — which is the \
+                 state a frozen net cannot be recovered from (C259). The {} block(s) above genesis stay \
+                 where they are (AUDIT C249; #320)",
+                blocks_above,
+            ),
+        ),
+    }
+    report_reset_dry_run(&plan, hash, source, log).await;
+}
+
+/// **What a spent restore budget implies, given the view's rewind plan** (#320).
+///
+/// Extracted from the detector so the decision is *pure* and a test can pin all three arms without
+/// building a DAG — the alternative was a decision that existed only as a `match` inside an `async fn`
+/// whose arms were pinned by the sentences it logged.
+///
+/// The rule, and why it is not "rewind somewhere":
+///
+/// * **act only where a height can be named.** `drop_above` takes a *height* and keeps the block *at*
+///   it, so the anchor has to be locatable, not merely known;
+/// * **`(Some, None)` is not the same refusal as `(None, None)`.** The first has a finalised block it
+///   cannot place — its height map leaves out validation-failed blocks — and the second has nothing
+///   finalised at all. Both end in "no reset", and for different reasons: conflating them is exactly
+///   the mistake `report_reset_dry_run`'s two arms were separated to prevent for the other pair;
+/// * **genesis is not a safe anchor for a node that still has a chain.** Rewinding to it would drop
+///   everything this node can serve, and on a net with frozen finality a fringe request is answered
+///   with the genesis block anyway (C259) — so the reset would cost the DAG and buy nothing.
+///
+/// `(None, Some(_))` cannot arise (`rewind_plan` derives the height from the anchor) and is folded into
+/// the no-anchor arm so the match is total without a wildcard hiding a reachable case.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResetDecision {
+    Act {
+        anchor: BlockHash,
+        anchor_height: BlockHeight,
+        blocks_above: usize,
+        refused: BlockHash,
+    },
+    RefuseNoHeight {
+        anchor: BlockHash,
+        blocks_above: usize,
+    },
+    RefuseNoAnchor {
+        blocks_above: usize,
+    },
+}
+
+fn reset_decision(plan: &RewindPlan, refused: BlockHash) -> ResetDecision {
+    match (plan.anchor, plan.anchor_height) {
+        (Some(anchor), Some(anchor_height)) => ResetDecision::Act {
+            anchor,
+            anchor_height,
+            blocks_above: plan.blocks_above,
+            refused,
+        },
+        (Some(anchor), None) => ResetDecision::RefuseNoHeight {
+            anchor,
+            blocks_above: plan.blocks_above,
+        },
+        (None, None) | (None, Some(_)) => ResetDecision::RefuseNoAnchor {
+            blocks_above: plan.blocks_above,
+        },
+    }
 }
 
 /// **What a per-node reset would drop, computed and logged, and nothing dropped** (C249's R3).
@@ -939,34 +1061,52 @@ async fn note_unrestorable_if_exhausted(
 /// number it prints is what a replay from genesis would redo. Reading the second as "nothing to drop"
 /// is exactly the confusion this separates.
 async fn report_reset_dry_run(
-    dag: &dyn BlockDagStorage,
+    plan: &RewindPlan,
     refused: &BlockHash,
     source: LogSource,
     log: &Arc<dyn Log>,
 ) {
-    let repr = dag.get_representation().await;
-    let plan = repr.rewind_plan();
     match (plan.anchor, plan.anchor_height) {
         (Some(anchor), Some(height)) => log.warn(
             source,
             &format!(
-                "a per-node reset would rewind to the last finalized block {} (height {}) and drop {} \
-                 block(s) above it, replaying from there. Nothing is dropped: this node keeps refusing \
-                 {} and its descendants (AUDIT C249; #287/#294 own the net-wide half)",
+                "the reset's numbers, for the record: rewind to the last finalized block {} (height \
+                 {}), {} block(s) above it dropped and re-requested, and the block this node gave up on \
+                 is {} (AUDIT C249; #320)",
                 anchor.to_hex(),
                 i64::from(height) + 1,
                 plan.blocks_above,
                 refused.to_hex(),
             ),
         ),
+        // **The middle arm, named for what it is.** The first version of this function logged it with the
+        // sentence below, which is false of it: this node *has* a finalised block and cannot locate it in
+        // its own height map (the map leaves out validation-failed blocks). The two are different facts
+        // and the same lesson the plan's arms already state for the other pair — a reader must be able to
+        // tell "nothing to rewind to" from "a block I cannot put a height on".
+        (Some(anchor), None) => log.warn(
+            source,
+            &format!(
+                "a per-node reset has a finalized block ({}) it cannot place in its own height map, so it \
+                 cannot name the height to rewind to: the {} block(s) this node holds above genesis would \
+                 have to be replayed from it. Nothing is dropped (AUDIT C249; #320)",
+                anchor.to_hex(),
+                plan.blocks_above,
+            ),
+        ),
         // No fringe: a node this early in a chain has nothing to rewind *to*, which is not the same
         // answer as having nothing to drop.
-        _ => log.warn(
+        //
+        // The `(None, Some(_))` shape is folded in because it **cannot arise**: `rewind_plan` derives the
+        // height *from* the anchor, so a height without an anchor is not a state the planner can return.
+        // It is named here rather than matched with a wildcard so a reader sees that the fourth
+        // combination was considered and is not silently lumped in with a reachable one.
+        (None, None) | (None, Some(_)) => log.warn(
             source,
             &format!(
                 "a per-node reset has no finalized block to rewind to yet, so it could not name a safe \
                  state: the {} block(s) this node holds above genesis would have to be replayed from it. \
-                 Nothing is dropped (AUDIT C249)",
+                 Nothing is dropped (AUDIT C249; #320)",
                 plan.blocks_above,
             ),
         ),
@@ -1315,6 +1455,80 @@ mod tests {
     #[test]
     fn the_deploy_lifespan_is_pinned() {
         assert_eq!(DEPLOY_LIFESPAN, 50);
+    }
+
+    /// **The reset decision, all three arms, and the two refusals are different answers** (#320).
+    ///
+    /// What this pins, and it is the part of the acting half that a rig cannot cheaply reach: a spent
+    /// restore budget rewinds only where the view can name a *height* — `drop_above` takes a height and
+    /// keeps the block at it, so "a finalised block I can see" is not enough. The middle arm is the one
+    /// the dry run had been logging with the no-anchor sentence, and conflating the two would make a
+    /// node that has a finalised block but cannot place it look like a node that has none.
+    #[test]
+    fn a_spent_budget_rewinds_only_where_a_height_can_be_named() {
+        let anchor = BlockHash::new([7u8; 32]);
+        let refused = BlockHash::new([9u8; 32]);
+        let height = BlockHeight::try_from(41i64).expect("a height");
+
+        // The actable arm: an anchor the view can place. This is the only shape that requests a reset.
+        let plan = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: Some(height),
+            blocks_above: 12,
+        };
+        assert_eq!(
+            reset_decision(&plan, refused),
+            ResetDecision::Act {
+                anchor,
+                anchor_height: height,
+                blocks_above: 12,
+                refused,
+            },
+            "an anchor with a height is the arm that acts"
+        );
+
+        // The middle arm: a finalised block the view cannot place (its height map leaves out
+        // validation-failed blocks). Not the same answer as having none, and not an action.
+        let plan = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: None,
+            blocks_above: 4,
+        };
+        assert_eq!(
+            reset_decision(&plan, refused),
+            ResetDecision::RefuseNoHeight {
+                anchor,
+                blocks_above: 4,
+            },
+            "a block without a height cannot be rewound to"
+        );
+
+        // No fringe at all: no safe state to name, so the rewind would have to be genesis — which is
+        // the state C259 exists for, and a reset into it loses the DAG the node can still serve.
+        let plan = RewindPlan {
+            anchor: None,
+            anchor_height: None,
+            blocks_above: 3,
+        };
+        assert_eq!(
+            reset_decision(&plan, refused),
+            ResetDecision::RefuseNoAnchor { blocks_above: 3 },
+            "no fringe means no anchor, and genesis is not one"
+        );
+
+        // And the shape `rewind_plan` cannot return: a height without an anchor. Folded into the
+        // no-anchor arm rather than wildcarded, so the match stays total *and* the reader can see it
+        // was considered — `rewind_plan` derives the height from the anchor, so this is unreachable.
+        let plan = RewindPlan {
+            anchor: None,
+            anchor_height: Some(height),
+            blocks_above: 1,
+        };
+        assert_eq!(
+            reset_decision(&plan, refused),
+            ResetDecision::RefuseNoAnchor { blocks_above: 1 },
+            "a height without an anchor is not a state the planner produces"
+        );
     }
 
     /// A parsing error keeps the details it was built from — the only thing that makes a malformed

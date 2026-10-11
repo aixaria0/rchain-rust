@@ -145,6 +145,7 @@ impl Configuration {
 
         check_merge_divergence_injection(&node_conf)?;
         check_sync_anchor(&node_conf)?;
+        check_self_reset(&node_conf)?;
 
         Ok((check_dev_mode(node_conf), profile, config_file))
     }
@@ -337,6 +338,37 @@ fn check_merge_divergence_injection(node_conf: &NodeConf) -> Result<(), String> 
              node's merge disagree with its peers' on purpose, which is indistinguishable from a node \
              that diverged by accident, and a chain in that state does not recover"
         ));
+    }
+    Ok(())
+}
+
+/// **`casper.self-reset` without a bootstrap is refused here, not discovered at the reset** (#320).
+///
+/// A reset rewinds the node to its last finalised block, which puts it *deliberately behind* its peers:
+/// everything above the anchor is dropped and has to be re-requested. A node with no bootstrap has
+/// nobody to ask, so the switch would buy it a truncated DAG and no way back — worse than the refusal it
+/// replaces, because the refusal at least leaves the node serving the chain it has. The check is here
+/// rather than at the reset because it is a property of the operator's configuration: it costs a restart
+/// to find out, not a divergence.
+///
+/// **Not gated on `--dev-mode`**, deliberately — see `CasperConf::self_reset`: the switch is the
+/// operator's consent to a change the node has already detected, counted and logged, and a stranded
+/// production validator is exactly who needs it.
+fn check_self_reset(node_conf: &NodeConf) -> Result<(), String> {
+    if !node_conf.casper.self_reset {
+        return Ok(());
+    }
+    // **`standalone` is the predicate, not "is a bootstrap configured".** A non-standalone node always
+    // has one (the HOCON `bootstrap` key is required, and `node_runtime` turns it into the peer the
+    // retriever asks); a standalone node is its own network — it creates genesis and has nobody to
+    // re-sync from, which is the case this check exists for.
+    if node_conf.standalone {
+        return Err(
+            "casper.self-reset = true needs a bootstrap: the reset rewinds this node to its last \
+             finalized block and re-requests everything above it, so a standalone node would find \
+             itself behind its own chain with nobody to ask"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -539,6 +571,35 @@ mod tests {
         );
     }
 
+    /// **`self-reset` is off by default, and refused where it could not work** (#320).
+    ///
+    /// The switch is the operator's consent to a rewind, so the two ends are what matter: off is the
+    /// ordinary path and must stay accepted, and on is refused on a node with nobody to re-sync from —
+    /// a standalone node would rewind itself behind its own chain and have no peer to ask for the
+    /// blocks above the anchor. The assertions are a set so the test cannot pass by refusing
+    /// everything.
+    #[test]
+    fn self_reset_is_refused_without_a_peer_to_re_sync_from() {
+        let mut conf = default_expected();
+        assert!(
+            check_self_reset(&conf).is_ok(),
+            "off is the ordinary path: this is what every build before #320 did"
+        );
+
+        conf.casper.self_reset = true;
+        assert!(
+            check_self_reset(&conf).is_ok(),
+            "on a node with a bootstrap the switch is the case it exists for"
+        );
+
+        conf.standalone = true;
+        let err = check_self_reset(&conf).expect_err("a standalone node has nobody to ask");
+        assert!(
+            err.contains("needs a bootstrap"),
+            "the refusal names what is missing: {err}"
+        );
+    }
+
     fn default_expected() -> NodeConf {
         let bootstrap = PeerNode::from_address(
             "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404",
@@ -655,6 +716,7 @@ mod tests {
                 equivocation_injection: false,
                 merge_divergence_injection: 0,
                 sync_anchor: None,
+                self_reset: false,
                 effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
@@ -1241,6 +1303,7 @@ mod tests {
                 equivocation_injection: false,
                 merge_divergence_injection: 0,
                 sync_anchor: None,
+                self_reset: false,
                 effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {

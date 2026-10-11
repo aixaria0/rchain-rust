@@ -646,6 +646,16 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         self.representation.read().await.clone()
     }
 
+    /// **The forward, and it is not decorative.** The body lives in this type's *inherent* `drop_above`
+    /// (it predates the trait method); without this, a call through `&dyn BlockDagStorage` — which is how
+    /// the engine holds its DAG — resolves the **trait's refusing default** while a call on the concrete
+    /// type takes the real one. That difference is invisible in every existing test and in every
+    /// direct caller, and the reset's durable-half test found it on its first run: the engine would have
+    /// refused to rewind on exactly the node that needed it.
+    async fn drop_above(&self, height: BlockHeight) -> Result<Vec<BlockHash>, String> {
+        BlockDagKeyValueStorage::drop_above(self, height).await
+    }
+
     /// The equivocations the H-1 gate recorded (AUDIT C200) — see the field's own note for why they
     /// live here and only here.
     async fn recorded_equivocations(&self) -> Vec<(Validator, Vec<u8>)> {
@@ -1151,6 +1161,108 @@ mod tests {
         assert!(
             metadata.get(&hash(4)).await.unwrap().is_none(),
             "and the store agrees, which is what the next boot reads"
+        );
+    }
+
+    /// **The reset's durable half: the DAG and the bodies go together, and a fresh view sees it**
+    /// (#320).
+    ///
+    /// The test lives in this module because the fixture that builds a DAG over an in-memory metadata
+    /// store is here — the subject is `engine::reset::rewind_and_purge`, which composes the rewind this
+    /// module already tests with the *body* purge that `BlockStore` needs and `drop_above` cannot do
+    /// (it does not own that store).
+    ///
+    /// **What it pins, and it is the half that undoes a reset if it is missing.** A body left behind is
+    /// read by `block_receiver::not_validated` as "stored but not yet validated" and re-injected by
+    /// `send_to_validate`, so the next child of a dropped block arriving re-inserts it above the anchor.
+    /// The assertion is therefore about the *store*, not about the DAG: after the reset the bodies are
+    /// gone, so there is nothing for a peer to be served and nothing for the receiver to re-inject.
+    ///
+    /// The durability half is the second assertion: a **fresh** storage built over the same metadata
+    /// store sees the rewound chain. An in-memory-only rewind would be undone by the next boot, which is
+    /// the shape `drop_above`'s own test establishes for the DAG alone.
+    #[tokio::test]
+    async fn the_reset_rewinds_the_dag_and_removes_the_bodies_it_dropped() {
+        let metadata = empty_metadata_store().await;
+        let mut parents: Vec<BlockHash> = Vec::new();
+        for n in 0..5u8 {
+            let h = hash(n);
+            let store = build_storage_over(Arc::clone(&metadata)).await;
+            // The sequence number climbs with the height: `insert`'s H-1 gate refuses two blocks from
+            // one sender at one sequence number, and a chain is not an equivocation.
+            let mut m = meta(h, &parents, i64::from(n));
+            m.seq_num = i64::from(n).try_into().unwrap();
+            store.insert(m, block(h)).await.expect("the chain inserts");
+            parents = vec![h];
+        }
+        let storage = build_storage_over(Arc::clone(&metadata)).await;
+
+        // The bodies, as a serving node holds them — through the same store the receiver reads.
+        let manager = rchain_shared::store_manager::InMemoryStoreManager::default();
+        let block_store = rchain_block_storage::block_store::create(&manager)
+            .await
+            .expect("an in-memory block store");
+        for n in 0..5u8 {
+            block_store
+                .put(&[(hash(n), block(hash(n)))])
+                .await
+                .expect("the body is stored");
+        }
+
+        let anchor = BlockHeight::try_from(2).unwrap();
+        let dag: Arc<dyn BlockDagStorage> = storage.clone();
+        let (rewound, removed) = crate::engine::reset::rewind_and_purge(&dag, &block_store, anchor)
+            .await
+            .expect("the reset's durable half succeeds over healthy stores");
+
+        assert_eq!(
+            (rewound, removed),
+            (2, 2),
+            "heights 3 and 4 go, both halves"
+        );
+        assert!(
+            !storage.get_representation().await.contains(&hash(4)),
+            "the view is at the anchor"
+        );
+        assert!(
+            storage.get_representation().await.contains(&hash(2)),
+            "and the anchor survives — it is the state replayed from"
+        );
+        for n in 3..5u8 {
+            assert!(
+                !block_store
+                    .contains(&[hash(n)])
+                    .await
+                    .expect("the store answers")
+                    .first()
+                    .copied()
+                    .unwrap_or(false),
+                "the body of height {n} is gone, so it can be neither served nor re-injected"
+            );
+        }
+        assert!(
+            block_store
+                .contains(&[hash(2)])
+                .await
+                .expect("the store answers")
+                .first()
+                .copied()
+                .unwrap_or(false),
+            "the anchor's own body stays — the reset keeps what it rewinds to"
+        );
+
+        // The next boot reads the metadata store, so a rewind that lived only in memory would be
+        // undone by it. This is the assertion that makes the test about the reset rather than about a
+        // flag that was set.
+        let rebooted = build_storage_over(Arc::clone(&metadata)).await;
+        let repr = rebooted.get_representation().await;
+        assert!(
+            !repr.contains(&hash(4)),
+            "a fresh view sees the rewound chain"
+        );
+        assert!(
+            repr.contains(&hash(2)),
+            "down to the anchor, which survives"
         );
     }
 

@@ -840,8 +840,17 @@ pub struct NodeRunning<E: RSpaceExporter> {
     catchup: Arc<CatchupWindow>,
     /// Where a `BlockRange` answer goes: the catch-up driver owns the receiver. A full channel is not
     /// an error — it means the walk that asked has ended.
-    block_range_tx: tokio::sync::mpsc::Sender<BlockRange>,
+    ///
+    /// **Behind a cell since #320**, because a walk can now happen more than once: a node that resets
+    /// itself rewinds and walks again from the anchor it rewound to, and the second walk owns a second
+    /// receiver. `apply` swaps the sender in — dropping the previous one, which is what tells the walk
+    /// that ended to stop.
+    block_range_tx: BlockRangeDoor,
 }
+
+/// **The catch-up walk's door** — see [`NodeRunning::block_range_tx`]. Shared with `apply`, which swaps
+/// a fresh sender in once per running phase.
+pub type BlockRangeDoor = Arc<tokio::sync::Mutex<tokio::sync::mpsc::Sender<BlockRange>>>;
 
 impl<E: RSpaceExporter> NodeRunning<E> {
     #[allow(clippy::too_many_arguments)]
@@ -857,7 +866,7 @@ impl<E: RSpaceExporter> NodeRunning<E> {
         exporter: E,
         disable_state_exporter: bool,
         catchup: Arc<CatchupWindow>,
-        block_range_tx: tokio::sync::mpsc::Sender<BlockRange>,
+        block_range_tx: BlockRangeDoor,
     ) -> Self {
         NodeRunning {
             transport,
@@ -1115,7 +1124,15 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         answer.tip
                     ),
                 );
-                if self.block_range_tx.try_send(answer.clone()).is_err() {
+                // The door is read per answer rather than held, because `apply` swaps it when a walk
+                // ends (a full channel is not an error: it means nobody is walking).
+                if self
+                    .block_range_tx
+                    .lock()
+                    .await
+                    .try_send(answer.clone())
+                    .is_err()
+                {
                     self.log.warn(
                         self.log_source,
                         "a block-range answer arrived with no catch-up waiting for it",
@@ -1758,6 +1775,8 @@ mod tests {
         let store = block_store(vec![]).await;
         let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
         let (block_range_tx, _block_range_rx) = tokio::sync::mpsc::channel(4);
+        // The door, as `apply` installs it: these tests never walk, so the receiver is dropped here.
+        let block_range_tx = Arc::new(tokio::sync::Mutex::new(block_range_tx));
         let window = Arc::new(CatchupWindow::new(crate::engine::catchup::WINDOW_HEIGHTS));
 
         let running = NodeRunning::new(
@@ -1833,6 +1852,8 @@ mod tests {
         let store = block_store(vec![known.clone()]).await;
         let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
         let (block_range_tx, _block_range_rx) = tokio::sync::mpsc::channel(4);
+        // The door, as `apply` installs it: these tests never walk, so the receiver is dropped here.
+        let block_range_tx = Arc::new(tokio::sync::Mutex::new(block_range_tx));
 
         let running = NodeRunning::new(
             transport.clone(),

@@ -1865,6 +1865,8 @@ async fn setup_shard_runtime(
         spec.clone(),
         !conf.protocol_client.disable_lfs,
         conf.casper.sync_anchor.clone(),
+        // F-U5-01's acting half (#320): the operator's switch, off unless they turned it on.
+        conf.casper.self_reset,
         conf.protocol_server.disable_state_exporter,
         parts.validator_identity_opt.clone(),
         conf.standalone,

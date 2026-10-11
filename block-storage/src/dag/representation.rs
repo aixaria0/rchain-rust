@@ -18,8 +18,10 @@ use super::message_state::DagMessageState;
 
 /// What a rewind to this node's own last finalized block would cost.
 ///
-/// Produced by [`DagRepresentation::rewind_plan`] and reported, not acted on: the per-node reset ships
-/// dark, so an operator can see what it would drop before a build that drops it exists (C249's R3).
+/// Produced by [`DagRepresentation::rewind_plan`]. It was reported and not acted on while the per-node
+/// reset shipped dark (C249's R3); since #320 it is also the **input to the reset**, and its three
+/// shapes decide whether the node can act at all — see `multi_parent_casper::reset_decision`. The
+/// middle shape (`anchor` without a height) is why the two arms were never merged into one answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewindPlan {
     /// The block a reset would replay from — the highest block in the latest fringe, or `None` when

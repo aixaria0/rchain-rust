@@ -10,6 +10,7 @@ pub mod lfs_tuple_space_requester;
 pub mod node_launch;
 pub mod node_running;
 pub mod node_syncing;
+pub mod reset;
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -3079,6 +3079,50 @@ def laws : List Law := [
       together. The three Rust bounds are the ones the register's C180 class asks for, because a \
       restoring rule that re-validated on every child would be an unbounded re-fetch triggered by an \
       input nothing bounds" },
+  { number := 53, clause := "c", layer := "Casper",
+    rustWitness := [
+      "casper/src/multi_parent_casper.rs:a_spent_budget_rewinds_only_where_a_height_can_be_named",
+      "casper/src/dag.rs:the_reset_rewinds_the_dag_and_removes_the_bodies_it_dropped",
+      "casper/src/interpreter_util.rs:a_reset_request_is_raised_once_taken_once_and_wakes_the_driver",
+      "casper/tests/reset.rs:a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off"],
+    statement := "**A refusal has a second inverse, and it is not an unmark.** Clause b clears a record: \
+      the node re-validates a failed block against its current view and unmarks it if it now passes. The \
+      port has since grown a different rule (#320, F-U5-01's acting half): a node whose revalidation \
+      budget is spent **rewinds to its last finalised block** and re-syncs from there, and the records \
+      above the anchor go with the state they were about. On this model the two are different steps and \
+      the difference is the point — `restoreStep` removes one element from the head, while `rewindStep` \
+      drops a *prefix*, leaving a suffix. A rewind that dropped nothing, or from the other end, would be \
+      a different rule about a different mechanism. **And the step is guarded, because the port refuses \
+      it in two of its three states**: `rewind_plan` answers with an anchor *and* its height (the arm \
+      that acts), with an anchor whose height the view cannot place, or with nothing at all — and only \
+      the first can rewind, because `drop_above` takes a height and a reset without one would have to \
+      replay from genesis. `Rchain.a_rewind_is_not_available_without_an_anchor` is that guard as the \
+      theorem it is; without it this clause would certify a relief the port withholds",
+    status := .provedModel,
+    declarations := [`Rchain.Strand, `Rchain.rewindStep, `Rchain.strandSystemRewinding],
+    axioms := [],
+    rust := ["casper/src/engine/reset.rs", "casper/src/engine/node_launch.rs",
+      "casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.the_refusal_is_not_persistent_once_a_rule_rewinds,
+      `Rchain.a_rewinding_step_removes_a_refusal, `Rchain.a_rewind_is_not_available_without_an_anchor],
+    falsifiable := some "**the falsifier is the absence of the step, and the guard is the second one.** \
+      Delete `rewindStep` from `strandSystemRewinding`'s relation and the reachable set is clause a's \
+      again, so `the_refusal_is_not_persistent_once_a_rule_rewinds` cannot be proved — persistence \
+      returns. On the Rust side the three witnesses are the reset's own decisions rather than its \
+      machinery: the decision rewinds only where a height can be named (the middle and no-anchor arms \
+      refuse), the durable half leaves the DAG at the anchor with the dropped bodies gone, and the \
+      request is raised once, taken once and wakes the driver. **What the clause does not claim**: it is \
+      not a liveness promise about any particular run — a node that rewinds and cannot reach a peer \
+      again is in C259's state, which is the net-wide reconciliation's subject and not this clause's",
+    note := "#320, register C274, landed 2026-10-11. Modelled as a clause rather than a number for the \
+      same reason clause b is: it is the *other* repair of clause a's `Terminal`, and a reader must be \
+      able to tell the two apart — `Persistent` versus `Unrestorable` is the distinction Law 51's \
+      vocabulary exists for, and \"the refusal was cleared\" and \"the state it was about was discarded\" \
+      are different answers to the same terminal state. **The worksheet had this wrong**: \
+      `failure-hazop.md` credited R3 with reddening `the_refusal_is_persistent`, and that reddening came \
+      from clause b's restoring rule (#125), not from #320 — a rewind is not an unmark, and reddening the \
+      persistence theorem with one would be a false falsifier, asserting a rule the port does not have \
+      for that hash. The corrected cell is F-U5-02's" },
   { number := 54, clause := "a", layer := "Casper",
     rustWitness := [
       "casper/src/blocks/proposer/proposer.rs:a_silent_validators_stale_message_does_not_carry_the_quorum",

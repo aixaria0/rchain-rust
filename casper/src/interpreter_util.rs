@@ -391,6 +391,67 @@ pub fn note_unrestorable(block_hex: &str, seq_num: i64) {
     *CURRENT_UNRESTORABLE.lock().unpoison() = Some(format!("{block_hex} (seq {seq_num})"));
 }
 
+/// **A per-node reset this node has decided it needs** (F-U5-01's acting half, #320).
+///
+/// The condition is the one `note_unrestorable` counts — a `Divergence` record whose revalidation
+/// budget is spent, so the node will refuse that block and its descendants for the process lifetime —
+/// **and** a state it can safely rewind to: `DagRepresentation::rewind_plan`'s first arm, the last
+/// finalised block. The second arm (no fringe) is deliberately **not** a request: a node with nothing
+/// finalised cannot name a safe state, which is C259's state, and "nothing to rewind to" must never
+/// become "rewind to genesis".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetRequest {
+    /// The last finalised block — the height the rewind drops above.
+    pub anchor_height: BlockHeight,
+    /// The same block, for the log and for the state the runtime is reset to.
+    pub anchor: BlockHash,
+    /// How many blocks the *view* says will go (a floor: validation-failed blocks are not in the height
+    /// map and the reset works from the store — the same direction of error as the dry run).
+    pub blocks_above: usize,
+    /// The block this node gave up on, which is what makes the reset necessary.
+    pub refused: BlockHash,
+}
+
+static RESET_REQUEST: std::sync::Mutex<Option<ResetRequest>> = std::sync::Mutex::new(None);
+static RESET_WAKE: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>> = std::sync::Mutex::new(None);
+
+/// **Install the waker the engine's drive loop waits on**, once, at boot. The engine owns where a
+/// reset would be performed — it holds the transport, the block store and the runtime — and the
+/// detection happens deep in the validator path, which has none of them. So the two halves talk through
+/// this cell rather than through a new dependency: the detector records the request, and the driver
+/// wakes.
+pub fn install_reset_waker(notify: Arc<tokio::sync::Notify>) {
+    *RESET_WAKE.lock().unpoison() = Some(notify);
+}
+
+/// Record a reset request and wake the driver, if one is installed. Returns whether this call *set* it
+/// — a second request while one is pending changes nothing, and the driver takes the first.
+pub fn request_reset(request: ResetRequest) -> bool {
+    let mut slot = RESET_REQUEST.lock().unpoison();
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(request);
+    let wake = RESET_WAKE.lock().unpoison().clone();
+    drop(slot);
+    if let Some(notify) = wake {
+        notify.notify_one();
+    }
+    true
+}
+
+/// Take the pending request, if any. The driver takes it exactly once, which is what makes the reset
+/// idempotent under a burst of refusals: the first exhaustion acts, the rest of the scan finds the slot
+/// empty.
+pub fn take_reset_request() -> Option<ResetRequest> {
+    RESET_REQUEST.lock().unpoison().take()
+}
+
+/// The pending request without taking it, for the status surface and for tests.
+pub fn reset_request() -> Option<ResetRequest> {
+    RESET_REQUEST.lock().unpoison().clone()
+}
+
 /// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
 /// height-gated: the instrument exists to be read off a *run*, and a run is measured in seconds. The
 /// clock starts at the first report rather than at process start, so the first line is immediate.
@@ -855,6 +916,64 @@ mod tests {
 
     fn hash(byte: u8) -> Blake2b256Hash {
         Blake2b256Hash::from_bytes([byte; 32])
+    }
+
+    /// **The reset request's contract, which the engine's running loop depends on** (#320).
+    ///
+    /// Three properties, and each is load-bearing for the loop rather than decorative:
+    ///
+    /// * **the first request wins.** A single validation pass can give up on several blocks, and the
+    ///   reset it needs is one reset — so a second request while one is pending must not replace the
+    ///   anchor the driver is about to rewind to;
+    /// * **taking it consumes it.** The loop takes exactly once, which is what makes acting idempotent
+    ///   under a burst of refusals;
+    /// * **the waker fires**, or a loop parked on the packet stream would never look — the whole reason
+    ///   the request travels through a cell instead of the validator path performing the reset itself.
+    ///
+    /// One test rather than three, for the same reason the stall surface's is one: the statics are
+    /// process-wide and libtest runs a module's tests concurrently.
+    #[tokio::test]
+    async fn a_reset_request_is_raised_once_taken_once_and_wakes_the_driver() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        install_reset_waker(notify.clone());
+        // Whatever a previous test left: this test owns the cell from here.
+        let _ = take_reset_request();
+
+        let first = ResetRequest {
+            anchor: BlockHash::new([1u8; 32]),
+            anchor_height: BlockHeight::try_from(10i64).expect("a height"),
+            blocks_above: 3,
+            refused: BlockHash::new([2u8; 32]),
+        };
+        let second = ResetRequest {
+            anchor: BlockHash::new([9u8; 32]),
+            ..first.clone()
+        };
+
+        assert!(
+            request_reset(first.clone()),
+            "the first request is recorded"
+        );
+        assert!(
+            !request_reset(second),
+            "a second request while one is pending is refused rather than replacing it"
+        );
+        assert_eq!(
+            reset_request().as_ref(),
+            Some(&first),
+            "the anchor the driver will rewind to is the first one asked for"
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("the request wakes a driver parked on the packet stream");
+
+        assert_eq!(take_reset_request(), Some(first), "the driver takes it");
+        assert_eq!(
+            take_reset_request(),
+            None,
+            "and takes it exactly once — a burst of refusals is one reset"
+        );
     }
 
     /// **The disagreement line names both hashes, the predicate, and whether a `CloseBlock` is
