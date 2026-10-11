@@ -9955,3 +9955,90 @@ five blocks. C248's residue clause 1 keeps that half; what it loses is the part 
 sensitivity as a fork, which this pass measured and refused. The debt line moves with it
 (`falsifiers owed: 14 → 13` — one from #330's F-U5-01 and one from here), checked by
 `tools/check-hazop-worksheet.sh`.
+## 103. C259 closes: the no-finality run exists, and the row was asking the wrong mechanism for it (C259, #328)
+
+**What was owed.** One run: *"a net in the no-finality state converges to one head without a genesis"* —
+a four-heads divergence with frozen finality, where **no node has a usable finalised block anywhere**. The
+row has carried it since 2026-10-09, and §97 narrowed it to exactly this case ("what this row still owes is
+the *no*-finality case … which the retired divergence instrument used to stage").
+
+**The run exists, and it is the closed row's own acceptance.** `n-reconcile-drill/restore-disarmed.txt`,
+third run: the meet is **genesis** (height 0 — which is what "no finalised block anywhere" *is*, computed
+rather than asserted), heights 17/17/17/17, **identical per-height block hashes across all four nodes**
+including the multi-block heights, the genesis block untouched, and **finality resumed to height 11 on one
+hash** where every node had answered `"Finalized fringe is not available."`. That is all four of the
+acceptance's clauses, and the row's own.
+
+**Why the row had not closed on it, and the correction.** The row's own words: (b), the store-level
+restore, *"is a stopgap and does not close this row"*, and (a), the anchor, *"is the unit that lets an
+operator recover without a data-dir copy"*. Both statements are true and the inference drawn from them was
+not: **(a) is structurally unavailable for the no-finality state.** An anchor is a block *above* genesis
+that a supermajority agreed on; where nothing is finalised there is none, which is precisely the state.
+Requiring the no-finality case to be closed by (a) was unsatisfiable by construction — and the state is not
+uncovered, it is covered by (b), whose cost is a data-dir copy and whose semantics are an operator
+asserting a winner (the tool prints the winner before applying it). So the row closes on **the run**, and
+the division of labour is stated: (a) for the partial divergences (demonstrated: the frozen-net walk, and a
+joiner anchored 300 heights below a tip reaching it in 98 s), (b) for the no-finality case (demonstrated
+above).
+
+**Two residues, re-homed rather than dropped.** The row named two besides the run, and both now live where
+an operator meets them (`docs/src/node/testnet.md`): the **O(chain) tuple-space hydration** a restore pays
+(316 state roots, ~2.5 minutes on the control) is a stated cost of the restore; and the **sidecar stores**
+(`mergeable-channel-cache`, `native-changes-cache`) are not part of the state a sync transfers, so a
+restored block regenerates them — named as an open decision (extend the sync, or bound the regeneration
+once) rather than as a defect. A third named item is **moot**: `drop_above`'s "missing pruning of
+`fringe_data_store`" cannot be missing, because that store retired with the per-block fringe claim (Law
+66/68; C250's residue, C270). The only cache left to prune is `BLOCK_INDEX_CACHE`, and that is #328's item
+2, where the rewind now prunes it with the bodies it drops.
+
+**And the state is unstageable on purpose.** The instrument that staged it (C215's
+`--merge-divergence-injection`) perturbed the retired `fringe-data` store *and* **reached block content** —
+an injected proposer's `rejected_deploys` is computed under its own perturbation and written into the block,
+so every block it published was un-validatable by a clean node. The flag survives as an inert,
+self-disclosing tombstone (`casper/src/dag.rs`) rather than as a working instrument, and the natural rig
+that now produces four heads (`up --validators 4 --fresh`, §92) freezes finality at a *usable* block
+instead. That is a repair, not a gap.
+
+**What is not claimed.** The chain in that run was produced under the retired perturbation, so its
+**validity** is not what was demonstrated — its convergence and resumed finality are. And (b) is a stopgap
+in the sense the row meant: it needs a data-dir copy and an operator's decision. Both are recorded on the
+row and in the operator page rather than left implied.
+
+## 104. The last unread clause of #315: the proposer's own `quorum_reachable`, after the mesh (—, #328 item 3)
+
+**The clause, and why it had never been read.** #315's close condition had two parts. The first — *"the
+chain resumes after a sub-quorum outage"* — was run and refuted on the current build (two of four stopped,
+both restored, finality 54 → 102 with no operator action). The second was *"no `quorum_reachable=false`
+persisting after the mesh is complete"*, and the runs that closed #315 captured the **API** surface:
+finality advancing, every validator attesting. `quorum_reachable` is not on that surface at all — it is
+computed in the proposer (`casper/src/blocks/proposer/proposer.rs`, `is_super_majority(live moving stake +
+own stake, the whole bonded map)`) and rendered **only** into a log line, rate-limited to fire on change
+and then every hundred tips. So the clause was a reading of a proposer-side line, and no run had read it.
+
+**The reading.** Three validators, `--no-autopropose --propose-on-deploy`, deploys to drive production —
+and deliberately **not** a fresh four-validator autopropose net, which self-diverges into the §92
+self-reject stall and would have measured a different thing. Final heights 19/19/19, finalised 15. Of the
+**16** collected `attestation at tip N: …` lines, **14 read `quorum_reachable=true`** and **2 read
+`false`** — and both are the **genesis round**:
+
+```
+attestation at tip 0: withheld — … quorum_reachable=false … round=[04f700a4]
+attestation at tip 1: licensed — … quorum_reachable=false … round=[04f700a4]
+```
+
+`round=[04f700a4]` is a **one-sender** round. The flag asks whether the live stake plus the node's own
+reaches a supermajority **of the whole bonded map**, and on a round with one participant there is no
+supermajority to reach — by construction, not by fault. That is the same reading `n213-results.md` recorded
+for the first cut ("the round is its genesis alone, the exact state in which the first cut read
+`quorum_reachable=false`"). From the moment the round is the full three-sender set
+(`round=[04d8b6c3 04dbe32c 04f700a4]`) every line reads `true`, at tips 5, 6 and 18.
+
+**So the clause holds, and the falses are named rather than excluded.** What this is *not*: a statement
+about the N=8 shape, where the refusal is `400 of 800` **with all eight validators sending** — a stake
+shortfall and not a one-sender round, and A1.3's own row; and *not* a general health check, because the
+clause is about the flag not **persisting** false, and a chain genuinely short of a supermajority should
+read false.
+
+**Evidence.** `spec/audit/evidence/n328-quorum/` — `results.md` (the reading), `run.txt` (the raw capture),
+`attestation-lines.txt` (the collected lines), driven by `n328-quorum-run.sh` in the same directory. One
+host, one run.
