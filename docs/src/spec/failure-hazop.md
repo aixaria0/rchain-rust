@@ -205,7 +205,7 @@ the pool, and finality/state undo is a stated deferral).
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U6-01** | EARLY | At an epoch boundary the concurrent boundary chains each compute a pot, and **which sibling's effect survives still depends on which chains are in scope** — so a boundary that carried a deploy computes a different pot from its empty siblings | C248 moved the native relation onto the chain and deleted `reject_whole_blocks`, which stopped the *whole-block* loss; the boundary chains *themselves* still contend, so the merged pot is scope-dependent (C248's residue clause 1, stated there as "Aria's criterion 2 is NOT met and must not be read as met") | loud only if a violation lands in `MergeReport`; the scope-dependence itself is **unreported** | Split | R1 | owed: two merges of one round under two scopes, comparing the merged state at the already-finalised height (C248's residue names this falsifier and records that it is not written) |
+| **F-U6-01** | EARLY | At an epoch boundary the concurrent boundary chains each compute a pot, and **which sibling's effect survives still depends on which chains are in scope** — so a boundary that carried a deploy computes a different pot from its empty siblings | C248 moved the native relation onto the chain and deleted `reject_whole_blocks`, which stopped the *whole-block* loss; the boundary chains *themselves* still contend, so the merged pot is scope-dependent (C248's residue clause 1, stated there as "Aria's criterion 2 is NOT met and must not be read as met") | loud only if a violation lands in `MergeReport`; the scope-dependence itself is **unreported**. **The arrival-order half is measured, and it is not a fork** (§102, 2026-10-11): with one block set in two orders the round snapshot really differs (`{a2,b1}` vs `{a2,b2}`) and `MergeScope::from_dag` really gives two scopes for it — but a block carries its own justifications and every node derives its pre-state from those, so the two nodes derive the *same* scope for each block. What differs is what a node would **propose**, not what it computes. What is left here is the boundary-chain contention itself | Split | R1 | `casper/tests/merge_determinism.rs::an_arrival_order_moves_the_round_snapshot_and_not_the_scope_a_block_derives` — and what it does **not** reach is named in §102: a boundary chain that carried a deploy against its empty siblings, which needs an epoch-running fixture |
 
 ### U7 — Deploy pool, gas & admission
 
@@ -454,7 +454,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 14 · node-words owed: 44
+**Debt.** falsifiers owed: 13 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.

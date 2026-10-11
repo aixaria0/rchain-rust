@@ -9912,3 +9912,46 @@ arm the row's falsifier asks for (*a diverged running node re-enters sync*). **I
 natural four-heads divergence needs no instrument (`n-anchor-drill/self-reject-stall.txt`, `up --validators
 4 --fresh`), where §100 recorded it blocked behind the retired injection — and it is unrun. Neither is
 claimed as done here.
+## 102. The merge's scope is parent-sensitive, and that is not a fork (F-U6-01, C248's residue 1, #328)
+
+**What was owed.** F-U6-01's falsifier — *"two merges of one round under two scopes, comparing the merged
+state at the already-finalised height"* — recorded as owed since C248 and named again as item 1 of #328,
+where the claim is stronger than the row's: `round_parents` is re-snapshotted on every insert
+(`block-storage/src/dag/message_state.rs::advance_round`), so two nodes holding one block set can hold
+different round boundaries and *"two honest proposers at one height can merge different scope-sets and
+reach different merged states. **This is a hard fork**"*.
+
+**The measurement, on one block set in two arrival orders.** Five blocks — `g`, then `{a1 by A, b1 by B}`,
+then `{a2 on a1, b2 on b1}` — with a non-empty bond map, because `advance_round`'s closing predicate is
+vacuously true over an empty one and the construction would then measure nothing. The two orders differ in
+one thing: whether `b1` or `a1` arrives first. The result, in
+`casper/tests/merge_determinism.rs::an_arrival_order_moves_the_round_snapshot_and_not_the_scope_a_block_derives`:
+
+- **the premise holds** — `dag_set`, `msg_map`, `child_map` and the height map are equal, so the two nodes
+  really do hold one block set;
+- **the snapshot differs, and by name** — one node's `round_parents` is `{a2, b1}`, the other's `{a2, b2}`.
+  That is #328's first claim, measured;
+- **the scope moves with it** — `MergeScope::from_dag` over the two snapshots returns two different
+  conflict scopes, differing in exactly `b2`, the block only the second boundary has seen. That is #328's
+  second claim, also measured;
+- **and nothing forks** — for **every** block, the scope the production derivation builds from *that
+  block's own justifications* is the same on both nodes.
+
+**Why the fourth line is the answer.** A proposer's snapshot does not travel as a snapshot: it becomes the
+block's `justifications`, and every node — the proposer included — derives that block's pre-state from
+those justifications against its own DAG (`multi_parent_casper.rs::get_pre_state_for_parents` takes
+`parent_hashes`, and every caller passes a block's, never its own round's). So the derivation is a function
+of *(block, DAG)*, and two nodes with the same block set have the same DAG. Two proposers with two
+snapshots produce two **sibling** blocks, each valid to everyone — ordinary multi-proposer concurrency,
+which is what `validate.rs`'s `max(justifications) + 1 == block_number` rule exists to admit. The
+"different parents, different pre-state" fact is real and is not a divergence: it is two blocks, not one
+block with two states.
+
+**What this refutes, and what it leaves.** It refutes the *fork* reading of #328's item 1, and #328's body
+is corrected on the issue. It does **not** reach the other half of F-U6-01 — a boundary chain that carried
+a deploy computing a different pot from its empty siblings at an epoch boundary — which is a question about
+*which chains are in scope*, not about arrival order, and which needs an epoch-running fixture rather than
+five blocks. C248's residue clause 1 keeps that half; what it loses is the part that read the scope's
+sensitivity as a fork, which this pass measured and refused. The debt line moves with it
+(`falsifiers owed: 14 → 13` — one from #330's F-U5-01 and one from here), checked by
+`tools/check-hazop-worksheet.sh`.
