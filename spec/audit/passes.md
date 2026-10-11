@@ -9841,3 +9841,74 @@ is nothing left to serve or to re-inject. R1, reached by reading rather than by 
 a peer, so a node with nobody to ask would trade a refusal for a truncated DAG). Not gated on `--dev-mode`:
 that guard is for effects indistinguishable from a fault, and this one counts, logs and acts only on a
 spent budget — a stranded production validator is exactly who needs it.
+
+## 101. The reset's crash window, and the line the record draws across it (C274, F-U5-01, #328)
+
+**What was owed.** §100 built the rung and named what it still owed, and the second item was the one with
+a state attached: *"the rewind and the body purge are two store operations. A process that dies between
+them leaves bodies with no DAG entries, which the re-insertion arm reads as awaiting validation again — so
+the crash window needs the node to know, across a restart, that it is rewound."* The first item — an
+`apply`-level test — is unchanged and is named again at the end of this pass rather than quietly dropped.
+
+**Why the window is not a race to be narrowed.** The two operations are `dag.drop_above(height)` and
+`block_store.delete(&dropped)`, and the second's input is the first's output — so the order is forced and
+the reverse is worse. Bodies first would leave metadata whose bodies are gone: a node holding blocks it
+cannot serve, refusing their children for want of a body it recorded as present. That is a wedge against an
+oscillation, and the window cannot be closed by arranging two operations that have to happen in the order
+they already happen in. What closes it is the node being able to **name** the state it is in when the
+process stops.
+
+**The record, and why it is two phases rather than a flag.** `ResetMarker { anchor, height, phase }`
+(`block-storage/src/dag/dag_storage.rs`), persisted as 41 fixed bytes — anchor, height, one phase byte —
+under one literal key in a dedicated store. `Rewinding` is written **before** the first destructive
+operation; `Rewound` after the second returns. **The phase is load-bearing and that is the design's one
+real decision**: a boot that finds `Rewinding` knows only that a rewind was *intended* and re-applies both
+operations, but a boot that finds `Rewound` must re-apply **nothing** — by then the node may have caught up
+and produced above the anchor, and a second `drop_above` would throw those blocks away. A boolean would
+have made the second boot destructive on exactly the node that had recovered.
+
+**Where it lives, and the three places it could not.** Not `block-metadata`: that store decodes *every* key
+as a 32-byte `BlockHash` (`BlockMetadataStore::create`), so a literal key breaks the boot it is meant to
+repair. Not the approved store, which `get_approved_block` reads and **nothing in production reads** — a
+store with no reader is where the marker would go to be ignored, and its value ("the state this node
+approved") is a different claim from "a reset this node performed and did not finish". So: a
+`reset-marker` DB in the existing `dagstorage` environment, one key, following the `indexed-from` pattern
+that already stores a height under a literal key. **And the reset refuses to run without it** — the
+`BlockDagStorage::write_reset_marker` default *refuses*, as `update_metadata`'s does, because a reset whose
+durable half cannot be recorded is one a crash can undo silently.
+
+**The guard, and the half of it that is not the rewind's return value.** `engine::reset::resume_after_reset`
+is the boot path's repair. On `Rewinding` it re-applies `drop_above` *and* purges by a **predicate** —
+every body whose hash is absent from `dag_set` — rather than by what the rewind returned. That is the part
+worth reading twice: after a crash *during* the delete, the rewind is already durable and returns `[]`, so a
+purge keyed on its return value would delete nothing and the very bodies the receiver re-injects would
+survive the repair that exists for them. The predicate is the same fact stated independently of the order.
+It costs one enumeration of the block store, **paid only when a marker is present** — a rare, deliberate
+state, not any ordinary boot — and it may take a legitimately in-flight body with it, which is harmless
+because the node is entering catch-up on purpose and re-fetches what it needs.
+
+**The marker is cleared by the walk, not by the guard.** `run_catchup` clears it when its **frontier is
+above the anchor** — the condition is the walk's own result, not its exit reason. A walk that ended with
+nothing above the anchor (a silent peer, a closed door) leaves the marker, so the next boot re-enters the
+guard rather than reconnecting to a truncated DAG; clearing on mere completion would re-open exactly the
+window the marker exists to close.
+
+**What is tested, and what is read.** `casper/tests/reset.rs` gains two tests.
+`a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker` starts *inside* the window — it writes the
+intent and runs the rewind through the same seam `rewind_and_purge` splits at, then asserts the guard
+reaps the bodies the DAG no longer holds, keeps the anchor's own body, and **does not rewind again** on a
+second call once the node has produced above the anchor (the one way this guard could do harm). Its premise
+assertion is what makes the second call a real test rather than a no-op: the DAG is already at the anchor
+before the guard runs, so the purge can only have come from the predicate.
+`a_node_that_never_reset_is_not_touched_by_the_reset_guard` pins the other direction — no marker, no
+repair, nothing purged — because a guard that passed its own test by changing every node's boot would be
+the worse defect. Falsifier: the capability is absent on the pre-fix tree and the test does not build
+there; what it pins is the store state a crash leaves and nothing else in the tree reads.
+
+**What is still read rather than run, named.** (1) The call site: `node_launch::apply`'s `else` branch
+calls the guard and, when it answers, hands the anchor to the catch-up walk below — the same five-lines-of-
+wiring boundary §100 recorded for the arm, and the reason the guard is a function of its own. (2) The devnet
+arm the row's falsifier asks for (*a diverged running node re-enters sync*). **It is stageable now** — the
+natural four-heads divergence needs no instrument (`n-anchor-drill/self-reject-stall.txt`, `up --validators
+4 --fresh`), where §100 recorded it blocked behind the retired injection — and it is unrun. Neither is
+claimed as done here.

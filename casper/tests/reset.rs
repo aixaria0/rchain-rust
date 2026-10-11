@@ -26,10 +26,10 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::codecs::{
     BlockHashCodec, BlockMetadataCodec, SignedDeployDataCodec,
 };
-use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
+use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId, ResetMarker, ResetPhase};
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::dag::BlockDagKeyValueStorage;
-use rchain_casper::engine::reset::act_on_reset_request;
+use rchain_casper::engine::reset::{act_on_reset_request, resume_after_reset};
 use rchain_casper::interpreter_util::{reset_request, take_reset_request, ResetRequest};
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
@@ -123,10 +123,17 @@ async fn build_dag() -> Arc<BlockDagKeyValueStorage> {
             Arc::new(BytesCodec),
             Arc::new(SignedDeployDataCodec),
         ));
+    // **The reset marker is part of the fixture** (F-U5-01, C274). A reset refuses to run without
+    // somewhere to record itself — the whole point of the record is that a crash mid-reset is
+    // repairable — so a test that drives one attaches the store, exactly as the node does.
+    let reset_marker: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>> = Arc::new(
+        KeyValueTypedStoreCodec::new(fresh(), Arc::new(BytesCodec), Arc::new(BytesCodec)),
+    );
     Arc::new(
         BlockDagKeyValueStorage::create(metadata, deploy_index, deploy_store)
             .await
-            .expect("dag storage"),
+            .expect("dag storage")
+            .with_reset_marker(reset_marker),
     )
 }
 
@@ -263,5 +270,172 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
         reset_request(),
         None,
         "taking the request is not undone by acting on it"
+    );
+}
+
+/// **The reset's crash window, and the boot guard that closes it** (F-U5-01's owed marker, register
+/// C274).
+///
+/// A reset is two store operations — the DAG's rewind and the removal of the bodies it dropped — and a
+/// process that dies between them leaves bodies with no DAG entries. That is not an inert state: the
+/// receiver reads such a body as *"stored but not yet validated"* and re-injects it, so the next child
+/// of a dropped block re-inserts the dropped block **above the anchor** and undoes the reset. Ordering
+/// cannot close the window (the hashes to purge are what the rewind returns) and the reverse order is
+/// worse, so the node records what it is doing and this test drives the boot that reads the record.
+///
+/// **The falsifier, stated.** Without the marker the crash is unrepaired: `resume_after_reset` finds
+/// nothing to read and the bodies above the anchor stay in the store, which is what the first two
+/// assertions would fail on. The test therefore starts *after* the rewind and *before* the purge —
+/// exactly the window — rather than making the crash a fault injection.
+///
+/// What it does not drive: `node_launch::apply`. The guard is a function of its own for the same reason
+/// `act_on_reset_request` is — an `apply`-level fixture needs a transport, an importer, a spec and a
+/// `NodeRunning` — so the five lines that call it are read rather than run, said out loud here.
+#[tokio::test]
+async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
+    let dag = build_dag().await;
+    let block_store = build_block_store().await;
+    let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
+    let source = LogSource::new("test");
+
+    // A chain of four, bodies and metadata together — the state a node is in before it resets.
+    let mut parents: Vec<BlockHash> = Vec::new();
+    for n in 0..4i64 {
+        let h = hash(n as u8);
+        let post = StateHash::new([0u8; 32]);
+        dag.insert(meta(h, &parents, n, n), block(h, post))
+            .await
+            .expect("the chain inserts");
+        block_store
+            .put(&[(h, block(h, post))])
+            .await
+            .expect("the body is stored");
+        parents = vec![h];
+    }
+
+    let anchor = hash(1);
+    let anchor_height = BlockHeight::try_from(1).unwrap();
+
+    // --- the crash --------------------------------------------------------------------------------
+    // The reset wrote its intent and rewound the DAG, and the process died before the bodies went. The
+    // two calls are `rewind_and_purge` split at its own seam, so this is the window itself and not a
+    // reconstruction of it.
+    dag.write_reset_marker(ResetMarker {
+        anchor,
+        height: anchor_height,
+        phase: ResetPhase::Rewinding,
+    })
+    .await
+    .expect("the intent is recorded");
+    let dropped = dag
+        .drop_above(anchor_height)
+        .await
+        .expect("the rewind runs");
+    assert_eq!(dropped.len(), 2, "heights 2 and 3 went from the DAG");
+    assert!(
+        has(&block_store, hash(2)).await && has(&block_store, hash(3)).await,
+        "and their bodies stayed — the crash window the marker exists for"
+    );
+    assert!(
+        !dag.get_representation().await.contains(&hash(3)),
+        "the DAG is already at the anchor: the rewind is durable and the purge is not"
+    );
+
+    // --- the boot that reads the record -----------------------------------------------------------
+    let resumed = resume_after_reset(
+        &(dag.clone() as Arc<dyn BlockDagStorage>),
+        &block_store,
+        &log,
+        source,
+    )
+    .await
+    .expect("the guard runs over healthy stores");
+    assert_eq!(
+        resumed,
+        Some(anchor),
+        "the guard names the anchor the catch-up walk must start from"
+    );
+    assert!(
+        !has(&block_store, hash(2)).await && !has(&block_store, hash(3)).await,
+        "the bodies above the anchor are gone, so the receiver has nothing to re-inject"
+    );
+    assert!(
+        has(&block_store, anchor).await,
+        "the anchor's own body stays — the reset keeps what it rewinds to"
+    );
+    assert!(
+        dag.get_representation().await.contains(&anchor),
+        "and the anchor survives in the view every dependency check reads"
+    );
+
+    // **The phase moved, and that is what stops a second boot from rewinding again.** By the next boot
+    // this node may have caught up and produced above the anchor; a guard that re-applied `drop_above`
+    // would throw those blocks away. So the completion is recorded, and the second call is a no-op.
+    let marker = dag
+        .read_reset_marker()
+        .await
+        .expect("the marker is readable")
+        .expect("and still present — the catch-up walk clears it, not the guard");
+    assert_eq!(marker.phase, ResetPhase::Rewound);
+    assert_eq!((marker.anchor, marker.height), (anchor, anchor_height));
+
+    // A block above the anchor, as a caught-up node would have: the second call must leave it alone.
+    let above = hash(9);
+    dag.insert(
+        meta(above, &[anchor], 2, 9),
+        block(above, StateHash::new([0u8; 32])),
+    )
+    .await
+    .expect("the node produces above the anchor again");
+    let second = resume_after_reset(
+        &(dag.clone() as Arc<dyn BlockDagStorage>),
+        &block_store,
+        &log,
+        source,
+    )
+    .await
+    .expect("the guard runs again");
+    assert_eq!(second, Some(anchor), "the anchor is still what it names");
+    assert!(
+        dag.get_representation().await.contains(&above),
+        "and nothing was rewound a second time — the one way this guard could do harm"
+    );
+}
+
+/// **The ordinary boot is untouched.** A node that has never reset has no marker, so the guard answers
+/// `None` and the caller reconnects exactly as every build before this one did. Without this the guard
+/// could pass its own test while changing the boot path of every node in the network.
+#[tokio::test]
+async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
+    let dag = build_dag().await;
+    let block_store = build_block_store().await;
+    let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
+
+    let h = hash(0);
+    dag.insert(meta(h, &[], 0, 0), block(h, StateHash::new([0u8; 32])))
+        .await
+        .expect("the chain inserts");
+    block_store
+        .put(&[(h, block(h, StateHash::new([0u8; 32])))])
+        .await
+        .expect("the body is stored");
+
+    let resumed = resume_after_reset(
+        &(dag.clone() as Arc<dyn BlockDagStorage>),
+        &block_store,
+        &log,
+        LogSource::new("test"),
+    )
+    .await
+    .expect("the guard runs");
+    assert_eq!(resumed, None, "no marker, so the ordinary path");
+    assert!(
+        has(&block_store, h).await,
+        "and nothing was purged: the guard has no reason to touch a healthy store"
+    );
+    assert_eq!(
+        dag.read_reset_marker().await.expect("readable"),
+        None,
+        "and it wrote nothing"
     );
 }

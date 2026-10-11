@@ -268,6 +268,48 @@ pub async fn run_catchup(
         source,
         &format!("catch-up released the ingest window at height {frontier}"),
     );
+    // **A reset's marker is cleared once this node is past the anchor it rewound to** (F-U5-01's crash
+    // window, register C274). The condition is the walk's own result and not its exit reason: a walk
+    // that ended with nothing above the anchor — a silent peer, a closed door — leaves the marker, so
+    // the *next* boot re-enters the guard rather than reconnecting to a truncated DAG. Clearing on the
+    // walk's mere completion would re-open exactly the window the marker exists to close.
+    match dag.read_reset_marker().await {
+        Ok(Some(marker)) if frontier > i64::from(marker.height) => {
+            match dag.clear_reset_marker().await {
+                Ok(()) => log.info(
+                    source,
+                    &format!(
+                        "this node has caught up past the anchor it rewound to (height {}); clearing the \
+                         reset marker so the next boot is an ordinary one (#320, C274)",
+                        i64::from(marker.height)
+                    ),
+                ),
+                Err(e) => log.warn(
+                    source,
+                    &format!(
+                        "caught up past the reset anchor (height {}) but could not clear the marker: \
+                         {e} — the next boot will re-enter the reset guard, which repairs rather than \
+                         re-rewinds",
+                        i64::from(marker.height)
+                    ),
+                ),
+            }
+        }
+        Ok(Some(marker)) => log.info(
+            source,
+            &format!(
+                "still at or below the anchor this node rewound to (height {}, frontier {frontier}): \
+                 keeping the reset marker, so the next boot resumes the repair rather than reconnecting \
+                 to a truncated DAG",
+                i64::from(marker.height)
+            ),
+        ),
+        Ok(None) => {}
+        Err(e) => log.warn(
+            source,
+            &format!("could not read the reset marker while finishing the catch-up: {e}"),
+        ),
+    }
     frontier
 }
 

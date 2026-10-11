@@ -17,6 +17,12 @@ pub const SHARD_ID_MARKER: &str = "shard-id";
 /// and decision belong to one node and must not enter another shard's state hash.
 pub const GATEWAY_TXN_DB: &str = "gateway-txn";
 
+/// **Where a shard records a reset it performed** (F-U5-01's acting half, register C274). A restart
+/// reads it to repair a reset that crashed between its two store operations, and to re-enter the
+/// catch-up walk at the anchor rather than reconnecting to a deliberately truncated DAG. One literal
+/// key (`RESET_MARKER_KEY`, `block-storage`), and no rows at all on a shard that has never reset.
+pub const RESET_MARKER_DB: &str = "reset-marker";
+
 /// The data directory of the shard at `index` in the node's membership list.
 ///
 /// The primary membership (index 0) keeps `root` itself, so every existing single-shard deployment
@@ -63,6 +69,11 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
         // Deployer key (hashed) → a block it signed in (`GET /api/v1/deployer`)
         (
             Db::new("deployer-index"),
+            LmdbEnvConfig::new("dagstorage", 100 * GB),
+        ),
+        // The node's own record of a reset it performed (one literal key, usually absent)
+        (
+            Db::new(RESET_MARKER_DB),
             LmdbEnvConfig::new("dagstorage", 100 * GB),
         ),
         // Runtime mergeable store (cache of mergeable channels for block-merge)
@@ -177,6 +188,14 @@ mod tests {
         // The gateway's coordinator ledger is node-local and in its own environment, so opening it
         // writes one extra directory rather than sharing a shard's.
         assert!(ids.contains(&GATEWAY_TXN_DB));
+        // The reset marker shares the DAG's environment (F-U5-01, C274): it is a fact about this
+        // shard's chain, and one literal key does not warrant a file of its own.
+        assert!(ids.contains(&RESET_MARKER_DB));
+        let marker = mapping
+            .iter()
+            .find(|(db, _)| db.id == RESET_MARKER_DB)
+            .map(|(_, c)| c.name.clone());
+        assert_eq!(marker.as_deref(), Some("dagstorage"));
         let gateway = mapping
             .iter()
             .find(|(db, _)| db.id == GATEWAY_TXN_DB)

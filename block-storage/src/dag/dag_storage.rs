@@ -18,6 +18,92 @@ use super::representation::DagRepresentation;
 /// A deploy id (the Scala `BlockDagStorage.DeployId = ByteString`).
 pub type DeployId = Vec<u8>;
 
+/// **What a node must remember, across a restart, about a reset it performed** (F-U5-01's acting half,
+/// register C274).
+///
+/// **Why the node has to remember anything at all.** A reset is two store operations — the DAG's rewind
+/// (`drop_above`) and the removal of the bodies it dropped (`BlockStore`) — and a process that dies
+/// between them leaves bodies with no DAG entries. That state is not inert: `block_receiver::not_validated`
+/// reads a stored body the DAG does not hold as *"stored but not yet validated"*, re-injects it, and the
+/// next child of a dropped block **re-inserts the dropped block above the anchor**, undoing the reset. The
+/// window cannot be closed by ordering (the hashes to purge are what the rewind returns) and the reverse
+/// order is worse (metadata whose bodies are gone is a wedge), so the node has to be able to *name* the
+/// state it is in.
+///
+/// **Two phases, and the phase is load-bearing.** `Rewinding` is written *before* the first destructive
+/// operation; `Rewound` once both have returned. A boot that finds `Rewinding` knows only that a rewind
+/// was **intended** and re-applies both operations (both are idempotent); a boot that finds `Rewound`
+/// knows the stores already agree and must **not** rewind again — by then the node may have caught up and
+/// produced above the anchor, and re-running `drop_above` would throw those blocks away. That is the one
+/// way this type could do harm, and the reason it is a phase and not a flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResetMarker {
+    /// The block the node rewound to — kept as the state replayed from, and the root the catch-up walk
+    /// is anchored at on the next boot.
+    pub anchor: BlockHash,
+    /// The anchor's height, so the boot guard can rewind without reading the whole block store.
+    pub height: BlockHeight,
+    pub phase: ResetPhase,
+}
+
+/// Which half of a reset a [`ResetMarker`] records. See the type's own doc for why this is not a flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetPhase {
+    /// Written before `drop_above`: the rewind may not have happened, so a boot re-applies it.
+    Rewinding,
+    /// Written after the body purge returned: the two stores agree, so a boot re-applies nothing.
+    Rewound,
+}
+
+/// The reset marker's one key: a literal, not a block hash, so it cannot collide with a block entry
+/// (LMDB refuses an empty key, which is why it is not the empty string).
+pub const RESET_MARKER_KEY: &[u8] = b"last-reset";
+
+impl ResetMarker {
+    /// Anchor (32) ++ height (big-endian i64, 8) ++ phase (1). Fixed width, so a decode cannot be
+    /// ambiguous and a truncated value is refused rather than guessed at.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(41);
+        out.extend_from_slice(self.anchor.as_bytes().as_slice());
+        out.extend_from_slice(&i64::from(self.height).to_be_bytes());
+        out.push(match self.phase {
+            ResetPhase::Rewinding => 0,
+            ResetPhase::Rewound => 1,
+        });
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != 41 {
+            return Err(format!(
+                "a reset marker is 41 bytes (anchor ++ height ++ phase) and this one is {}",
+                bytes.len()
+            ));
+        }
+        let mut anchor = [0u8; 32];
+        anchor.copy_from_slice(&bytes[..32]);
+        let mut height = [0u8; 8];
+        height.copy_from_slice(&bytes[32..40]);
+        let height = BlockHeight::try_from(i64::from_be_bytes(height))
+            .map_err(|e| format!("the reset marker's height is not a block height: {e}"))?;
+        let phase = match bytes[40] {
+            0 => ResetPhase::Rewinding,
+            1 => ResetPhase::Rewound,
+            other => {
+                return Err(format!(
+                "the reset marker's phase byte is {other}, and only 0 (rewinding) and 1 (rewound) \
+                     mean anything"
+            ))
+            }
+        };
+        Ok(ResetMarker {
+            anchor: BlockHash::new(anchor),
+            height,
+            phase,
+        })
+    }
+}
+
 /// What a node knows about one deployer key: a block that includes a deploy it signed, and the height
 /// from which that knowledge is complete.
 ///
@@ -106,6 +192,29 @@ pub trait BlockDagStorage: Send + Sync {
         Err("this DAG storage cannot rewind (no `drop_above` impl)".to_string())
     }
 
+    /// **Record that this node is rewinding to `marker.anchor`, and that it has finished** (see
+    /// [`ResetMarker`]) — the write that lets a restart repair a reset that crashed half-way.
+    ///
+    /// **The default refuses rather than doing nothing.** A reset whose durable half cannot be recorded
+    /// is a reset a crash can undo silently, and a no-op write would let the caller believe it had
+    /// recorded one — the same reasoning `update_metadata`'s refusing default carries. The node attaches
+    /// a store for this (`reset-marker`); a fixture that drives a real reset attaches one too.
+    async fn write_reset_marker(&self, _marker: ResetMarker) -> Result<(), String> {
+        Err("this DAG storage cannot record a reset (no `write_reset_marker` impl)".to_string())
+    }
+
+    /// **Has this node reset itself and not yet caught up?** The default answers *no*, which is honest
+    /// for a backend that records nothing: there is no marker, so there is nothing to repair.
+    async fn read_reset_marker(&self) -> Result<Option<ResetMarker>, String> {
+        Ok(None)
+    }
+
+    /// Clear the marker once the node has caught up past its anchor. The default does nothing, for the
+    /// same reason the read answers `None`: a backend with no marker has nothing to clear.
+    async fn clear_reset_marker(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String>;
 
     /// Look up a block hash by the deploy id included in the DAG.
@@ -127,4 +236,49 @@ pub trait BlockDagStorage: Send + Sync {
     async fn pooled_deploys(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String>;
 
     async fn contains_deploy_in_pool(&self, deploy_id: &DeployId) -> Result<bool, String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The marker's wire form is fixed-width, and a decode is strict** (F-U5-01, register C274).
+    ///
+    /// The record is written before a destructive operation and read by a boot that has to decide
+    /// whether to re-apply one, so a decoder that guessed at a malformed value would be deciding what to
+    /// do with a store it does not understand. It refuses instead: exactly 41 bytes, and the phase byte
+    /// has two meanings and no default.
+    #[test]
+    fn a_reset_marker_round_trips_and_a_malformed_one_is_refused() {
+        for phase in [ResetPhase::Rewinding, ResetPhase::Rewound] {
+            let marker = ResetMarker {
+                anchor: BlockHash::new([7u8; 32]),
+                height: BlockHeight::try_from(4_294_967_296i64).unwrap(),
+                phase,
+            };
+            let bytes = marker.encode();
+            assert_eq!(bytes.len(), 41, "anchor (32) ++ height (8) ++ phase (1)");
+            assert_eq!(ResetMarker::decode(&bytes).unwrap(), marker);
+        }
+
+        // A truncated value, a phase byte with no meaning, and a height that is not a height.
+        assert!(ResetMarker::decode(&[0u8; 40]).is_err(), "short");
+        assert!(ResetMarker::decode(&[0u8; 42]).is_err(), "long");
+        let mut bad_phase = ResetMarker {
+            anchor: BlockHash::new([0u8; 32]),
+            height: BlockHeight::zero(),
+            phase: ResetPhase::Rewound,
+        }
+        .encode();
+        bad_phase[40] = 9;
+        assert!(ResetMarker::decode(&bad_phase).is_err(), "unknown phase");
+        let mut bad_height = ResetMarker {
+            anchor: BlockHash::new([0u8; 32]),
+            height: BlockHeight::zero(),
+            phase: ResetPhase::Rewinding,
+        }
+        .encode();
+        bad_height[32..40].copy_from_slice(&(-1i64).to_be_bytes());
+        assert!(ResetMarker::decode(&bad_height).is_err(), "negative height");
+    }
 }

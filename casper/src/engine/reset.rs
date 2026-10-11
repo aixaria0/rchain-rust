@@ -21,30 +21,54 @@
 //! So the bodies go with the metadata, and the rewound state becomes unrepresentable rather than guarded:
 //! there is nothing left to serve or to re-insert, and everything above the anchor is re-fetched from
 //! peers, which is the whole of what a rewind means.
+//!
+//! **And the two operations are bracketed, because unrepresentable is not the same as atomic** (register
+//! C274's second item). A process that dies *between* them leaves bodies the DAG does not hold — the very
+//! set the re-insertion arm re-injects — so the node records the intent durably before the first
+//! operation and the completion after the second, and [`resume_after_reset`] is the boot guard that reads
+//! it. Nothing here is best-effort: a reset that cannot record itself does not run, which is why the
+//! marker's write refuses on a storage that has no store for it.
 
 use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
-use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::dag::dag_storage::{BlockDagStorage, ResetMarker, ResetPhase};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_models::block_hash::BlockHash;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
 
 use crate::interpreter_util::ResetRequest;
 use crate::runtime_manager::RuntimeManager;
 
-/// Rewind the DAG to `anchor_height` and remove the bodies of everything it dropped.
+/// Rewind the DAG to `anchor` at `anchor_height` and remove the bodies of everything it dropped.
 ///
 /// Returns `(blocks rewound, bodies removed)`. **An error is fatal and the caller must not carry on**:
 /// `drop_above` deletes the persisted metadata and *then* rebuilds the representation, and the rebuild
 /// can refuse (it re-applies the equivocation gate), which leaves a store that has been rewound under a
 /// view that has not. A node in that shape is worse than the refusal it replaces, so the caller
 /// propagates rather than logging and continuing.
+///
+/// **The two store operations are bracketed by a durable record** (F-U5-01's crash window, register
+/// C274). `Rewinding` is written *before* the first destructive operation and `Rewound` *after* the
+/// second, so a restart can tell the difference between "a rewind was intended and may be half-done"
+/// and "the two stores agree" — see [`resume_after_reset`]. Without the record the window is
+/// unrepairable: a process dying between the two operations leaves bodies the DAG does not hold, and
+/// the receiver reads those as *"stored but not yet validated"* and re-injects them, undoing the reset.
 pub async fn rewind_and_purge(
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
+    anchor: BlockHash,
     anchor_height: BlockHeight,
 ) -> Result<(usize, usize), String> {
+    let mark = |phase| ResetMarker {
+        anchor,
+        height: anchor_height,
+        phase,
+    };
+    // The intent is durable before anything is destroyed. A write that fails stops the reset *before*
+    // it has touched a store, which is the only point at which refusing is free.
+    dag.write_reset_marker(mark(ResetPhase::Rewinding)).await?;
     let dropped = dag.drop_above(anchor_height).await.map_err(|e| {
         format!(
             "the reset's rewind failed: {e}. This is fatal on purpose — the store may have been rewound \
@@ -52,7 +76,113 @@ pub async fn rewind_and_purge(
         )
     })?;
     let deleted = block_store.delete(&dropped).await?;
+    // Both operations have returned: the stores agree, and a restart must not rewind again (it may by
+    // now have caught up and produced above the anchor — see `resume_after_reset`).
+    dag.write_reset_marker(mark(ResetPhase::Rewound)).await?;
     Ok((dropped.len(), deleted))
+}
+
+/// **What the boot path does about a reset this node performed and did not finish** (F-U5-01, register
+/// C274) — the guard that closes the crash window [`rewind_and_purge`] opens.
+///
+/// Returns the anchor the caller must hand to the catch-up walk, or `None` when this node has never
+/// reset. Three states, and the middle two are different facts:
+///
+/// * **no marker** (`Ok(None)`) — the ordinary boot. The caller logs "reconnecting" and the node runs on
+///   the DAG it has, which is what every build before this one did;
+/// * **`Rewinding`** — the rewind was intended and may not have completed, so both operations are
+///   re-applied. They are idempotent: `drop_above` returns nothing the second time, and the body purge
+///   is driven by a predicate (see [`purge_orphan_bodies`]) that does not depend on what the rewind
+///   returned — which matters, because after a crash *during* the purge the rewind has already
+///   happened and returns nothing, so a purge keyed on its return value would delete nothing;
+/// * **`Rewound`** — both operations returned and the stores agree. **Nothing is re-applied**: the node
+///   may have caught up and produced blocks above the anchor in the meantime, and a second
+///   `drop_above` would throw those away. The marker is only telling the caller where to catch up from.
+///
+/// The marker is **not** cleared here. It is cleared when the node's frontier passes the anchor (the
+/// catch-up walk's own end), and that is the honest condition: until then, a crash must land back in
+/// this guard rather than in the truncated-DAG state it exists to prevent.
+pub async fn resume_after_reset(
+    dag: &Arc<dyn BlockDagStorage>,
+    block_store: &BlockStore,
+    log: &Arc<dyn Log>,
+    source: LogSource,
+) -> Result<Option<BlockHash>, String> {
+    let Some(marker) = dag.read_reset_marker().await? else {
+        return Ok(None);
+    };
+    if marker.phase == ResetPhase::Rewinding {
+        let dropped = dag.drop_above(marker.height).await.map_err(|e| {
+            format!(
+                "this node was rewinding to height {} when it stopped, and the rewind could not be \
+                 re-applied on this boot: {e}",
+                i64::from(marker.height)
+            )
+        })?;
+        let purged = purge_orphan_bodies(dag, block_store).await?;
+        log.warn(
+            source,
+            &format!(
+                "this node was rewinding to {} (height {}) when it stopped, part-way through the \
+                 reset's two store operations: re-applied the rewind ({} block(s)) and removed {purged} \
+                 body(ies) the DAG does not hold, which the receiver would otherwise re-inject above the \
+                 anchor (#320, C274)",
+                marker.anchor.to_hex(),
+                i64::from(marker.height),
+                dropped.len(),
+            ),
+        );
+        dag.write_reset_marker(ResetMarker {
+            phase: ResetPhase::Rewound,
+            ..marker
+        })
+        .await?;
+    } else {
+        log.warn(
+            source,
+            &format!(
+                "this node rewound to {} (height {}) before it stopped: the stores already agree, so \
+                 nothing is re-applied, and the catch-up walk is anchored there rather than reconnecting \
+                 to a truncated DAG (#320, C274)",
+                marker.anchor.to_hex(),
+                i64::from(marker.height),
+            ),
+        );
+    }
+    Ok(Some(marker.anchor))
+}
+
+/// Remove every body the DAG does not hold — **the receiver's own re-injection set**, which is what the
+/// boot guard has to delete when a reset crashed part-way.
+///
+/// **Why a predicate and not the rewind's return value.** The ordinary purge deletes the hashes
+/// `drop_above` returned, and that is exactly the set a completed rewind drops. A crash *during* the
+/// delete leaves a subset of those hashes un-deleted while the rewind is already durable, so a
+/// re-applied `drop_above` returns nothing and the returned set is empty — the survivors would go
+/// unreaped and the receiver would re-inject them. The predicate is the same fact stated independently
+/// of the order: a body whose block the DAG does not hold is a body that can be neither replayed nor
+/// served.
+///
+/// **What it costs, and what it may take with it.** The store is enumerated, so this is O(bodies) — and
+/// it is paid **only when a marker is present**, a rare and deliberate state, not on any ordinary boot.
+/// It may also remove a body that was legitimately in flight (the receiver stores a body before it
+/// inserts the block), which is harmless: the reset puts the node behind its peers on purpose and the
+/// catch-up walk re-fetches what it needs.
+async fn purge_orphan_bodies(
+    dag: &Arc<dyn BlockDagStorage>,
+    block_store: &BlockStore,
+) -> Result<usize, String> {
+    let bodies = block_store.to_map().await?;
+    let repr = dag.get_representation().await;
+    let orphans: Vec<BlockHash> = bodies
+        .keys()
+        .filter(|hash| !repr.contains(hash))
+        .copied()
+        .collect();
+    if orphans.is_empty() {
+        return Ok(0);
+    }
+    block_store.delete(&orphans).await
 }
 
 /// **What a running node does when the reset waker fires** (#320) — the running loop's reset arm,
@@ -126,7 +256,8 @@ async fn perform_reset(
                 request.anchor.to_hex()
             )
         })?;
-    let (rewound, removed) = rewind_and_purge(dag, block_store, request.anchor_height).await?;
+    let (rewound, removed) =
+        rewind_and_purge(dag, block_store, request.anchor, request.anchor_height).await?;
     runtime_manager
         .runtime()
         .reset(Blake2b256Hash::from_byte_array(
