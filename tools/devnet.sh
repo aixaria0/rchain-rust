@@ -359,21 +359,26 @@ wait_for_http() {
 # nightly fuzz starts immediately after `up`, so wait for every advertised
 # validator/observer API before returning success.
 wait_for_peer_http() {
-  local name="$1" port="$2" url body
+  local name="$1" port="$2" url body block_num
   url="http://localhost:${port}/api/v1/status"
   for (( attempt=1; attempt<=120; attempt++ )); do
     if ! docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true; then
-      echo "$name stopped before its HTTP API became ready" >&2
+      echo "$name stopped before it synced genesis and became ready" >&2
       return 1
     fi
-    if body="$(curl -fsS --max-time 3 "$url" 2>/dev/null)" &&
-       [[ "$body" == *'"latestBlockNumber"'* ]]; then
-      echo "==> $name serving /api/v1/status (port $port)"
-      return 0
+    if body="$(curl -fsS --max-time 3 "$url" 2>/dev/null)"; then
+      block_num="$(printf '%s' "$body" | sed -n 's/.*"latestBlockNumber":\([0-9]*\).*/\1/p')"
+      # HTTP can answer while a joining peer is still restoring LFS/DAG state. A
+      # non-zero latestBlockNumber proves genesis is present locally, which is
+      # the minimum contract required by the fuzz harness' explicit block anchor.
+      if [[ -n "$block_num" && "$block_num" -gt 0 ]]; then
+        echo "==> $name synced genesis and serves /api/v1/status (latestBlockNumber=$block_num port=$port)"
+        return 0
+      fi
     fi
     sleep 1
   done
-  echo "timed out waiting for $name to serve /api/v1/status (port $port)" >&2
+  echo "timed out waiting for $name to sync genesis and serve /api/v1/status (port $port)" >&2
   return 1
 }
 
