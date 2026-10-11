@@ -257,7 +257,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     // **The operator's anchor, parsed once** (C259): the sync phase names it in its fringe request, and
     // the running phase walks to it. Parsed here rather than in the branch because a `--sync-anchor` typo
     // must be refused whatever this node's DAG looks like — the boot path is not the only reader now.
-    let boot_anchor = match sync_anchor.as_deref() {
+    let mut boot_anchor = match sync_anchor.as_deref() {
         None => None,
         Some(hex) => Some(
             BlockHash::try_from_hex(hex)
@@ -391,7 +391,30 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             }
         }
     } else {
-        log.info(source, "Reconnecting to existing network...");
+        // **A node that reset itself is not simply reconnecting** (F-U5-01's crash window, register
+        // C274). Its DAG was deliberately truncated to an anchor, so running on what it holds would be
+        // running on a chain it chose to leave — and if the process died between the reset's two store
+        // operations, its block store holds bodies the DAG does not, which the receiver reads as
+        // *"stored but not yet validated"* and re-injects above the anchor. `resume_after_reset` repairs
+        // both and names the anchor the catch-up walk below must start from. With no marker this is the
+        // ordinary reconnection it has always been.
+        if let Some(anchor) =
+            crate::engine::reset::resume_after_reset(&dag, &block_store, &log, source).await?
+        {
+            if boot_anchor.is_some_and(|named| named != anchor) {
+                log.warn(
+                    source,
+                    &format!(
+                        "--sync-anchor names a block this node did not rewind to; the reset's own \
+                         anchor {} wins, because it is the state this store actually holds",
+                        anchor.to_hex()
+                    ),
+                );
+            }
+            boot_anchor = Some(anchor);
+        } else {
+            log.info(source, "Reconnecting to existing network...");
+        }
     }
 
     // **The catch-up window and the driver that walks it** (C259). A node restored at an anchor below

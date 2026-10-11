@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId, DeployerLookup};
+use rchain_block_storage::dag::dag_storage::{
+    BlockDagStorage, DeployId, DeployerLookup, ResetMarker, RESET_MARKER_KEY,
+};
+
 use rchain_block_storage::dag::finalizer::Message;
 use rchain_block_storage::dag::message_map;
 use rchain_block_storage::dag::message_state::DagMessageState;
@@ -84,6 +87,11 @@ pub struct BlockDagKeyValueStorage {
     /// CLI still parses, and reported as armed-but-inert on every insert. See
     /// [`Self::with_merge_divergence_injection`].
     merge_divergence_injection: u8,
+    /// **Where this node records a reset it performed** (F-U5-01, register C274). Attached by
+    /// [`Self::with_reset_marker`]; `None` in fixtures that never reset, and then the write refuses —
+    /// which is what stops a reset from running with no way for a crash to be repaired. See
+    /// [`ResetMarker`] for what the record has to say and why it is two phases.
+    reset_marker: Option<Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>>,
 }
 
 /// The deployer index's one non-key entry: the `indexed_from` height, big-endian `i64`. Deployer
@@ -110,6 +118,7 @@ impl BlockDagKeyValueStorage {
             deployer_index: None,
             deployer_indexed_from: AtomicI64::new(0),
             merge_divergence_injection: 0,
+            reset_marker: None,
         })
     }
 
@@ -316,6 +325,20 @@ impl BlockDagKeyValueStorage {
         self.deployer_indexed_from = AtomicI64::new(from);
         self.deployer_index = Some(index);
         Ok(self)
+    }
+
+    /// Attach the store a reset records itself in (`reset-marker`). From here on
+    /// `write_reset_marker` works and a restart can repair a reset that crashed half-way; without it the
+    /// write refuses, so a reset cannot run with no way for its crash window to be closed.
+    ///
+    /// Nothing is read at attach time — unlike the deployer index, this record has no "how much is
+    /// indexed" claim to seed — so this is a plain setter returning `Self`.
+    pub fn with_reset_marker(
+        mut self,
+        store: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>,
+    ) -> Self {
+        self.reset_marker = Some(store);
+        self
     }
 
     /// Index every block already in the DAG, then record the index as complete (`0`). Run once in
@@ -654,6 +677,45 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
     /// refused to rewind on exactly the node that needed it.
     async fn drop_above(&self, height: BlockHeight) -> Result<Vec<BlockHash>, String> {
         BlockDagKeyValueStorage::drop_above(self, height).await
+    }
+
+    /// **The reset's record, from the storage that can keep one** (F-U5-01, register C274). Three
+    /// forwards rather than three defaults: the default write *refuses*, so a `dyn BlockDagStorage`
+    /// caller that kept the default would make every reset fail on exactly the node that needed one —
+    /// the same shape as `drop_above`'s forward two methods up, and the reason these are written the
+    /// same way. The store is absent only in a fixture that never attached one, and then the refusing
+    /// default is the honest answer.
+    async fn write_reset_marker(&self, marker: ResetMarker) -> Result<(), String> {
+        let Some(store) = &self.reset_marker else {
+            return Err(
+                "this DAG storage has no reset-marker store attached, so a reset it performs could \
+                 not be repaired after a crash — refusing to run one"
+                    .to_string(),
+            );
+        };
+        store
+            .put(&[(RESET_MARKER_KEY.to_vec(), marker.encode())])
+            .await
+    }
+
+    async fn read_reset_marker(&self) -> Result<Option<ResetMarker>, String> {
+        let Some(store) = &self.reset_marker else {
+            return Ok(None);
+        };
+        let raw = store
+            .get(&[RESET_MARKER_KEY.to_vec()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten();
+        raw.map(|bytes| ResetMarker::decode(&bytes)).transpose()
+    }
+
+    async fn clear_reset_marker(&self) -> Result<(), String> {
+        let Some(store) = &self.reset_marker else {
+            return Ok(());
+        };
+        store.delete(&[RESET_MARKER_KEY.to_vec()]).await.map(|_| ())
     }
 
     /// The equivocations the H-1 gate recorded (AUDIT C200) — see the field's own note for why they
@@ -1094,9 +1156,16 @@ mod tests {
                 Arc::new(BytesCodec),
                 Arc::new(SignedDeployDataCodec),
             ));
+        // **The reset marker is attached here because a reset needs somewhere to record itself**
+        // (F-U5-01, C274): `rewind_and_purge` refuses when the store is absent, so a fixture that
+        // drives one attaches it — the same reason the node does.
+        let reset_marker: Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>> = Arc::new(
+            KeyValueTypedStoreCodec::new(in_memory(), Arc::new(BytesCodec), Arc::new(BytesCodec)),
+        );
         BlockDagKeyValueStorage::create(metadata_store, deploy_index, deploy_store)
             .await
             .unwrap()
+            .with_reset_marker(reset_marker)
     }
 
     async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
@@ -1211,9 +1280,10 @@ mod tests {
 
         let anchor = BlockHeight::try_from(2).unwrap();
         let dag: Arc<dyn BlockDagStorage> = storage.clone();
-        let (rewound, removed) = crate::engine::reset::rewind_and_purge(&dag, &block_store, anchor)
-            .await
-            .expect("the reset's durable half succeeds over healthy stores");
+        let (rewound, removed) =
+            crate::engine::reset::rewind_and_purge(&dag, &block_store, hash(2), anchor)
+                .await
+                .expect("the reset's durable half succeeds over healthy stores");
 
         assert_eq!(
             (rewound, removed),
