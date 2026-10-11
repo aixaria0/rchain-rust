@@ -354,6 +354,13 @@ def run_scheduler(args, rng):
             status, _ = http_json(url, method="POST", body=term)
         except urllib.error.HTTPError as e:
             status = e.code
+            # Preserve the server's rejection reason; a bare 400 cannot
+            # distinguish invalid Rholang from scheduler/runtime failures.
+            error_body = e.read(4096).decode("utf-8", errors="replace")
+            print(
+                f"scheduler corpus term {i} validator {node} HTTP {status} "
+                f"response: {error_body!r}", file=sys.stderr,
+            )
         except (urllib.error.URLError, OSError) as e:
             fail(f"scheduler corpus term {i} on validator {node}: connection error {e}",
                  args.validators)
