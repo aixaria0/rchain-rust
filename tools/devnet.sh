@@ -355,6 +355,33 @@ wait_for_http() {
   return 1
 }
 
+# A devnet is not ready just because the bootstrap HTTP API answers. The
+# nightly fuzz starts immediately after `up`, so wait for every advertised
+# validator/observer API before returning success.
+wait_for_peer_http() {
+  local name="$1" port="$2" url body block_num
+  url="http://localhost:${port}/api/v1/status"
+  for (( attempt=1; attempt<=120; attempt++ )); do
+    if ! docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true; then
+      echo "$name stopped before it synced genesis and became ready" >&2
+      return 1
+    fi
+    if body="$(curl -fsS --max-time 3 "$url" 2>/dev/null)"; then
+      block_num="$(printf '%s' "$body" | sed -n 's/.*"latestBlockNumber":\([0-9]*\).*/\1/p')"
+      # HTTP can answer while a joining peer is still restoring LFS/DAG state. A
+      # non-zero latestBlockNumber proves genesis is present locally, which is
+      # the minimum contract required by the fuzz harness' explicit block anchor.
+      if [[ -n "$block_num" && "$block_num" -gt 0 ]]; then
+        echo "==> $name synced genesis and serves /api/v1/status (latestBlockNumber=$block_num port=$port)"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for $name to sync genesis and serve /api/v1/status (port $port)" >&2
+  return 1
+}
+
 # `docker run` flags shared by every node (container name/network/ports + data + contracts mounts).
 docker_opts() {
   local name="$1" grpc_host="$2" http_host="$3" admin_host="$4"
@@ -633,6 +660,14 @@ cmd_up() {
   # up, so a state file never describes a network that failed to start.
   write_up_state "$n" "$m"
   wait_for_http
+  # A successful `up` is the readiness contract for callers such as the fuzz
+  # workflow. Wait for all peers, not merely their container creation.
+  for (( i = 1; i < n; i++ )); do
+    wait_for_peer_http "$(validator_name "$i")" "$((HTTP_BASE + i * 1000))"
+  done
+  for (( i = 1; i <= m; i++ )); do
+    wait_for_peer_http "$(observer_name "$i")" "$((HTTP_BASE + (n + i) * 1000))"
+  done
 
   echo ""
   echo "==> up. Interact with:"

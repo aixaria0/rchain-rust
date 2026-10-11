@@ -333,27 +333,53 @@ def run_malformed(args, rng):
 
 # --- mode: scheduler -------------------------------------------------------------------------
 
-# Terms whose reduction is order-sensitive enough to tell the scheduler modes apart. All are closed
-# and must reduce cleanly in every mode.
+# Terms whose reduction is order-sensitive enough to tell the scheduler modes apart. All are closed,
+# bounded, and must reduce cleanly in every mode. Persistence is deliberately one-sided: pairing a
+# persistent send (`!!`) with a persistent receive (`<=`) is a live process, not a finite reducer
+# probe, so it correctly exhausts the explore-deploy step budget instead of terminating.
 SCHEDULER_CORPUS = [
     'new c in { c!(1) | for (@x <- c) { @"out"!(x) } }',
     'new c in { c!(1) | c!(2) | for (@x <- c) { @"out"!(x) } }',
     'new c, d in { c!(1) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }',
-    'new c in { c!!(1) | for (@x <= c) { @"out"!(x) } }',
+    'new c in { c!!(1) | for (@x <- c) { @"out"!(x) } }',
+    'new c in { c!(1) | for (@x <= c) { @"out"!(x) } }',
     'new c in { c!(1) | for (@x <- c) { @"out"!(x) } } | new e in { e!(2) | for (@y <- e) { @"out"!(y) } }',
 ]
 
 
+def explicit_explore_anchor(node):
+    """Select a real block on this node; never silently substitute an unfinalized tip."""
+    _, blocks = http_json(f"{node_http(node)}/api/blocks")
+    if not isinstance(blocks, list) or not blocks:
+        fail(f"validator {node} has no blocks to anchor scheduler exploration", 3)
+    genesis = next((b for b in blocks if b.get("blockNumber") == 0), blocks[0])
+    block_hash = genesis.get("blockHash")
+    if not isinstance(block_hash, str) or not block_hash:
+        fail(f"validator {node} block listing lacks blockHash: {genesis!r}", 3)
+    return block_hash
+
+
 def run_scheduler(args, rng):
-    """The corpus must reduce in the mode the devnet was started with."""
+    """Reduce against a named block: the no-hash route requires finality."""
     print(f"==> scheduler: {len(SCHEDULER_CORPUS)} corpus terms")
     for i, term in enumerate(SCHEDULER_CORPUS):
         node = i % args.validators
-        url = f"{node_http(node)}/api/v1/explore-deploy"
+        block_hash = explicit_explore_anchor(node)
+        url = f"{node_http(node)}/api/v1/explore-deploy-by-block-hash"
+        payload = {"term": term, "blockHash": block_hash, "usePreStateHash": False}
+        print(f"scheduler case={i} validator={node} blockHash={block_hash} "
+              f"route=/api/v1/explore-deploy-by-block-hash", flush=True)
         try:
-            status, _ = http_json(url, method="POST", body=term)
+            status, _ = http_json(url, method="POST", body=payload)
         except urllib.error.HTTPError as e:
             status = e.code
+            # Preserve the server's rejection reason; a bare 400 cannot
+            # distinguish invalid Rholang from scheduler/runtime failures.
+            error_body = e.read(4096).decode("utf-8", errors="replace")
+            print(
+                f"scheduler corpus term {i} validator {node} HTTP {status} "
+                f"response: {error_body!r}", file=sys.stderr,
+            )
         except (urllib.error.URLError, OSError) as e:
             fail(f"scheduler corpus term {i} on validator {node}: connection error {e}",
                  args.validators)
