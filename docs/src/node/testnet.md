@@ -368,9 +368,22 @@ stating what it does and does not do, because **it is not a sync**.
   **signatures of the deploys its merge rejected** (`rejectedDeploys`, base16; a deploy's id *is* its
   signature) — and their owners re-submit. The record is per block, not per observation: a block held by every
   node is one line, because `/api/blocks/{h}/{h}` answers per node and counting answers inflated the work list
-  by the replication factor. It is also **not** the protocol answer — a node-side path that syncs to an agreed
-  anchor exists in part (`--sync-anchor`) and does not yet catch up (register row **C259**(a)); until it does,
-  this is the mechanism an operator has.
+  by the replication factor. It is also **not** the protocol answer, though the protocol answer now exists
+  beside it: a node-side path that syncs to an agreed anchor is **built and measured** — `--sync-anchor`
+  names the root *in the request*, the responder builds that block's fringe **and its whole ancestry**
+  (register row **C259**(a), the #139 pattern), and the **windowed catch-up** walks the gap upward, a wiped
+  joiner 300 heights below the tip reaching it in 98 s with no drops
+  (`spec/audit/evidence/n-anchor-drill/run-3-windowed-catchup.txt`). **C259 closed 2026-10-11**: the
+  no-finality case — a net with no usable finalised block anywhere — is recovered by
+  `--restore-from-master`, measured on that exact state (meet at genesis, one head, identical per-height
+  hashes, finality resumed on one hash: `spec/audit/evidence/n-reconcile-drill/restore-disarmed.txt`).
+- **Two costs the restore still pays, stated rather than implied.** The LFS restore hydrates the tuple space
+  of every block from its root down to genesis, so it is **O(chain)** (`Requesting tuple-space data for 316
+  approved block state roots`, ~2.5 minutes on the control) — and a node-side anchor restore pays the same.
+  And the **sidecar stores a merge needs** (`mergeable-channel-cache`, `native-changes-cache`) are *not* part
+  of the state a sync transfers, so a restored block regenerates them: either by extending the sync or by
+  bounding that regeneration once, and that is an open decision rather than a defect. Neither is a recovery
+  limit; both are what a restore costs.
 - **It verifies the fourth clause, and refuses without it.** After restarting, the tool compares each height's
   **block-hash set** across the nodes (not their heights, where four nodes at zero are equal), and then
   requires every node to have **finalised past the reconciliation point**, on a block the nodes' own DAGs

@@ -1,0 +1,56 @@
+# n328-quorum — the post-mesh quorum_reachable reading (#315's clause, #328 item 3)
+# tree=08ef59ee7 head=08ef59ee70567dcffd072cda1c3c07bb059ad5b0
+# rig: --validators 3 --stakes 100,100,50 --epoch-length 10 --no-autopropose --propose-on-deploy
+# started 2026-10-11T08:41:32Z
+==> devnet: 3 validator(s) + 0 observer(s)
+    autopropose=false propose-on-deploy=true admin=true deployer=true
+    pos: epoch-length=10 active-validators=default
+==> starting devnet-bootstrap (validator 0, standalone, creates genesis)
+fc40f92224e58c671638c888a700a456055feb84317d800a465f19f0daf53200
+==> bootstrap id: 472fddf513857917c146e47e903c79c1d365c4ec
+==> devnet-bootstrap has committed genesis (latestBlockNumber=1); starting the network
+==> starting devnet-validator-1 (validator 1, bootstraps from devnet-bootstrap)
+82411ec27acb045db9bdb8bdeb99a2b76806fa92ae71c2fbbac56c6ae97e3399
+==> starting devnet-validator-2 (validator 2, bootstraps from devnet-bootstrap)
+c81a76ac204de59e5101492b76473092b468aeb9a689441ccb3f5d6c429fc44a
+==> devnet-bootstrap serving /api/v1/status (autopropose off; block production is manual)
+
+==> up. Interact with:
+    tools/devnet.sh deploy <contract.rho>   # signed deploy to devnet-bootstrap
+    tools/devnet.sh query <name>            # listen for data at a public name
+    tools/devnet.sh propose [--admin]       # force a block
+    tools/devnet.sh status | logs <node> | diagnose | down
+
+    Public HTTP API:  http://localhost:40403/api/v1/status
+    Admin HTTP API:   http://localhost:40405/api/v1/propose
+== 1. the mesh (all three past genesis) ==
+  3 of 3 past genesis; heights 1 1 1; finalised none
+== 2. production and finality ==
+==> deploying hello.rho to devnet-bootstrap (validAfterBlockNumber=1)
+Response: Success!
+DeployId is: 3044022044af9472345fbea760015b9a58d2c2fcd4f242b3f531edd4e77d8ab811f26b2702205c509a172e19fffe9d68fd25d04abc78d9da0ceb8f1ff9fa2bd5f3e2792d0617
+  t+0s heights=1/1/1 finalised=none deploys=1
+==> deploying hello.rho to devnet-bootstrap (validAfterBlockNumber=6)
+Response: Success!
+DeployId is: 3045022100e2c736400c01895aae1e58385659ba0959003af75c52c27308d5b12fef850c1e022056f5a054b02069baab4c7e610b469d8e1cf1789650f2376cab0d4fa0e230523b
+  t+10s heights=6/6/6 finalised=2 deploys=2
+==> deploying hello.rho to devnet-bootstrap (validAfterBlockNumber=13)
+Response: Success!
+DeployId is: 304402204961a67cc2e1adac09adb634e0bef6a00181bbbeb2145f1a34d2336665caec29022023940809cc7408e173e54037403549a730c41c6ee3ee910def1aabb633dcbe05
+  t+21s heights=13/13/13 finalised=9 deploys=3
+== 3. the attestation lines, from all three nodes ==
+  lines=16 quorum_reachable=true:14 false:2
+  final heights=19/19/19 finalised=15
+== 4. every line that reads false, in full ==
+attestation at tip 0: withheld — nothing_to_finalize=false new_state_transition=true quorum_reachable=false cadence_due=false paced=false round=[04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=false cadence_due=true paced=true round=[04f700a4] blocked_attempts=0 escape=false
+== 5. the last eight lines — the steady state ==
+attestation at tip 5: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 6: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 18: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=false cadence_due=true paced=true round=[04f700a4] blocked_attempts=0 escape=false
+attestation at tip 1: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 5: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 6: licensed — nothing_to_finalize=false new_state_transition=true quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+attestation at tip 18: withheld — nothing_to_finalize=true new_state_transition=false quorum_reachable=true cadence_due=false paced=true round=[04d8b6c3 04dbe32c 04f700a4] blocked_attempts=0 escape=false
+== the rig's own state (left up for inspection; 'tools/devnet.sh down -v' when done) ==
