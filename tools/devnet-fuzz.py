@@ -333,13 +333,16 @@ def run_malformed(args, rng):
 
 # --- mode: scheduler -------------------------------------------------------------------------
 
-# Terms whose reduction is order-sensitive enough to tell the scheduler modes apart. All are closed
-# and must reduce cleanly in every mode.
+# Terms whose reduction is order-sensitive enough to tell the scheduler modes apart. All are closed,
+# bounded, and must reduce cleanly in every mode. Persistence is deliberately one-sided: pairing a
+# persistent send (`!!`) with a persistent receive (`<=`) is a live process, not a finite reducer
+# probe, so it correctly exhausts the explore-deploy step budget instead of terminating.
 SCHEDULER_CORPUS = [
     'new c in { c!(1) | for (@x <- c) { @"out"!(x) } }',
     'new c in { c!(1) | c!(2) | for (@x <- c) { @"out"!(x) } }',
     'new c, d in { c!(1) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }',
-    'new c in { c!!(1) | for (@x <= c) { @"out"!(x) } }',
+    'new c in { c!!(1) | for (@x <- c) { @"out"!(x) } }',
+    'new c in { c!(1) | for (@x <= c) { @"out"!(x) } }',
     'new c in { c!(1) | for (@x <- c) { @"out"!(x) } } | new e in { e!(2) | for (@y <- e) { @"out"!(y) } }',
 ]
 
