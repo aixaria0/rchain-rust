@@ -344,14 +344,30 @@ SCHEDULER_CORPUS = [
 ]
 
 
+def explicit_explore_anchor(node):
+    """Select a real block on this node; never silently substitute an unfinalized tip."""
+    _, blocks = http_json(f"{node_http(node)}/api/blocks")
+    if not isinstance(blocks, list) or not blocks:
+        fail(f"validator {node} has no blocks to anchor scheduler exploration", 3)
+    genesis = next((b for b in blocks if b.get("blockNumber") == 0), blocks[0])
+    block_hash = genesis.get("blockHash")
+    if not isinstance(block_hash, str) or not block_hash:
+        fail(f"validator {node} block listing lacks blockHash: {genesis!r}", 3)
+    return block_hash
+
+
 def run_scheduler(args, rng):
-    """The corpus must reduce in the mode the devnet was started with."""
+    """Reduce against a named block: the no-hash route requires finality."""
     print(f"==> scheduler: {len(SCHEDULER_CORPUS)} corpus terms")
     for i, term in enumerate(SCHEDULER_CORPUS):
         node = i % args.validators
-        url = f"{node_http(node)}/api/v1/explore-deploy"
+        block_hash = explicit_explore_anchor(node)
+        url = f"{node_http(node)}/api/v1/explore-deploy-by-block-hash"
+        payload = {"term": term, "blockHash": block_hash, "usePreStateHash": False}
+        print(f"scheduler case={i} validator={node} blockHash={block_hash} "
+              f"route=/api/v1/explore-deploy-by-block-hash", flush=True)
         try:
-            status, _ = http_json(url, method="POST", body=term)
+            status, _ = http_json(url, method="POST", body=payload)
         except urllib.error.HTTPError as e:
             status = e.code
             # Preserve the server's rejection reason; a bare 400 cannot
