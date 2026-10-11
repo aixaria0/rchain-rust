@@ -22,6 +22,7 @@ IV.
 | Human-facing walkthrough: each law → concrete Rust file/type/function + test | [`docs/src/contributor/laws-to-rust.md`](docs/src/contributor/laws-to-rust.md) |
 | The ρ→CoC type-system spec | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) |
 | How Rust made the Scala fragility explicit (bugs caught, production-readiness) | [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) |
+| What the language let the architecture *build* — the architectural gains, each with its artefact | [`spec/RUST-AFFORDANCES.md`](spec/RUST-AFFORDANCES.md) |
 | **Audit check-off** — what the adversarial audit has left, in three states (`todo` · `in progress` · `done`), with the unread T1 coverage that bounds any claim it makes. Start here. | [`spec/AUDIT.md`](spec/AUDIT.md) |
 | The audit's **pass record** — the evidence behind every check-off row: one section per pass, and the Scala-deviation register (§6). This is what a row's `§` cites. | [`spec/audit/passes.md`](spec/audit/passes.md) |
 | Native system contracts (registry/PoS/vault state model + replay determinism) | [`spec/RUST-FIRST.md`](spec/RUST-FIRST.md) |
@@ -77,19 +78,30 @@ done | sed "s|^$PWD/||" | sort -u > /tmp/tgt
 git ls-files '*.md' | grep -v '^legacy/' | grep -vxF -f /tmp/tgt
 ```
 
-**It prints two files: `spec/STYLE.md` and `spec/coq/README.md`.** Both are **book-orphans rather
-than orphans** — `spec/STYLE.md` is named in `spec/README.md`'s layout tree, and
-`spec/coq/README.md` is the README of a directory this file and `spec/README.md` both link — so
-neither is unreachable, but neither is a *clickable* target anywhere, and a reader who follows links
-rather than browsing the tree does not arrive at them. That is the whole residue, and it is left
-standing rather than patched here: `spec/` is deliberately outside the book (its index is
-`spec/README.md`), and both files are one link away for whoever next edits those pages.
+**It printed two files then. Re-run on 2026-10-11 it prints 62, and the difference is not drift in the
+rule but growth in the tree.** The two are still there — `spec/STYLE.md` and `spec/coq/README.md`, both
+**book-orphans rather than orphans**: `spec/STYLE.md` is named in `spec/README.md`'s layout tree, and
+`spec/coq/README.md` is the README of a directory this file and `spec/README.md` both link — so neither
+is unreachable, but neither is a *clickable* target anywhere, and a reader who follows links rather than
+browsing the tree does not arrive at them.
 
-**The run before this section existed printed three.** The third was `docs/src/SUMMARY.md`, the book's
-index, which is a root by construction — and the `SUMMARY.md` link in the first rule above is what
-gave it an incoming link, so re-running the snippet on a tree without that link restores it. That is
-worth keeping visible rather than tidying: the number this audit reports is a property of the tree it
-is run on, including this file, and an audit that edits the thing it measures should say so.
+**Of the other 60, 59 are evidence artefacts, and the census is asking the wrong question about them.**
+`spec/audit/evidence/**` is cited from a register row's **evidence cell** — `spec/findings.tsv`,
+rendered into `spec/AUDIT.md` — and this snippet resolves `](target)` links only, so a file *named in a
+table* is counted here as named nowhere. The rule is "reachable as a link target", and the evidence
+tree is reachable by a mechanism the rule does not read. That is a limit of the instrument, stated
+rather than papered over: widening the census to read `.tsv` cells would make it a *different* check,
+and one nothing else re-runs.
+
+**The one that is genuinely unreferenced is `HANDOVER.md`** — a root handover note, no incoming link
+anywhere, and deliberately so: it is a working document, not a page of the book or of `spec/`.
+
+**The earlier run, kept for the lesson.** The run before this section existed printed three; the third
+was `docs/src/SUMMARY.md`, the book's index, a root by construction — and the `SUMMARY.md` link in the
+first rule above is what gave it an incoming link, so re-running the snippet on a tree without that link
+restores it. The number this audit reports is a property of the tree it is run on, *including this
+file* — and the figure has gone from 2 to 62 without a single book-orphan being added, which is exactly
+why an audit that edits the thing it measures should say so.
 
 **The Lean side has no orphans at all**: the two modules nothing imports, `Rchain/Corpus.lean` and
 `Rchain/LawsMain.lean`, are the conformance emitter and the law-register checker — `lean_exe` roots,
