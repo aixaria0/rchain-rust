@@ -218,7 +218,9 @@ impl ReportingCasper for RhoReporter {
         runtime.set_block_data(BlockData::from_block(&block));
         runtime.reset(pre_state_hash).await?;
 
-        let rand = BlockRandomSeed::from_block(&block).random_generator();
+        let rand = BlockRandomSeed::from_block(&block)
+            .random_generator()
+            .map_err(|e| e.to_string())?;
         let (fringe_state_hash, participation) = (self.close_inputs_of)(block.clone()).await?;
         replay_deploys(
             &runtime,

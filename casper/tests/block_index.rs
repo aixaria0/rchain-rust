@@ -183,7 +183,8 @@ async fn the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block() {
     // The shell first, so the seed the *block* implies is the seed the deploy is run under.
     let mut block = block_shell();
     block.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
-    let block_rand = BlockRandomSeed::random_generator_from_block(&block);
+    let block_rand =
+        BlockRandomSeed::random_generator_from_block(&block).expect("valid block seed");
 
     let (post_state, user_results, sys_results) = rm
         .compute_state(
@@ -309,7 +310,8 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     // sidecar key the index will look it up under.
     let mut block = block_shell();
     block.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
-    let block_rand = BlockRandomSeed::random_generator_from_block(&block);
+    let block_rand =
+        BlockRandomSeed::random_generator_from_block(&block).expect("valid block seed");
     let (post_state, user_results, sys_results) = rm
         .compute_state(
             &genesis_post,
@@ -549,7 +551,7 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
         None,
         rand.split_byte(0),
     )];
-    let a_rand = BlockRandomSeed::random_generator_from_block(&a);
+    let a_rand = BlockRandomSeed::random_generator_from_block(&a).expect("valid block seed");
     let (post_a, a_user, a_sys) = rm
         .compute_state(
             &genesis_post,
@@ -572,7 +574,7 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
     b.sender = victim;
     b.seq_num = SeqNum::try_from(1).expect("seq 1");
     b.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
-    let b_rand = BlockRandomSeed::random_generator_from_block(&b);
+    let b_rand = BlockRandomSeed::random_generator_from_block(&b).expect("valid block seed");
     let (post_b, b_user, b_sys) = rm
         .compute_state(
             &genesis_post,

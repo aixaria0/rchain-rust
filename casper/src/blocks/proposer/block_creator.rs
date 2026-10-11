@@ -95,7 +95,8 @@ impl BlockCreator {
                 i64::from(block_num),
                 creators_pk.clone(),
                 pre_state_hash,
-            );
+            )
+            .map_err(|e| e.to_string())?;
 
             // Pooled deploys filtered to the selected ids — computed FIRST so the slash/close seed
             // index below reflects the ACTUAL deploy count (`selected.len()`, matching replay's

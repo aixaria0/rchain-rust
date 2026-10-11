@@ -10,6 +10,7 @@ use rchain_models::ast::Par;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_models::rholang::RhoType::RhoName;
 use rchain_rholang::merging::vlong_encode;
+use std::fmt;
 
 /// Random-seed split index for the pre-charge deploy (port of `PreChargeSplitIndex`).
 pub const PRE_CHARGE_SPLIT_INDEX: u8 = 0;
@@ -17,6 +18,33 @@ pub const PRE_CHARGE_SPLIT_INDEX: u8 = 0;
 pub const USER_DEPLOY_SPLIT_INDEX: u8 = 1;
 /// Random-seed split index for the refund deploy (port of `RefundSplitIndex`).
 pub const REFUND_SPLIT_INDEX: u8 = 2;
+
+/// A block-random-seed component cannot be represented by the legacy 1-byte length prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockRandomSeedError {
+    ComponentTooLong {
+        component: &'static str,
+        len: usize,
+        max: usize,
+    },
+}
+
+impl fmt::Display for BlockRandomSeedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ComponentTooLong {
+                component,
+                len,
+                max,
+            } => write!(
+                f,
+                "block random seed {component} is {len} bytes; the legacy encoding allows at most {max}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BlockRandomSeedError {}
 
 /// A deterministic random seed derived from a block (port of `BlockRandomSeed`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,22 +111,18 @@ impl BlockRandomSeed {
     }
 
     /// Serialize the seed (port of the scodec `codecBlockRandomSeed`).
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
-        let mut bytes = var_size(self.shard_id.as_bytes())?;
+    pub fn encode(&self) -> Result<Vec<u8>, BlockRandomSeedError> {
+        let mut bytes = var_size("shard id", self.shard_id.as_bytes())?;
         bytes.extend(vlong_encode(self.block_number));
-        bytes.extend(var_size(self.sender.bytes())?);
+        bytes.extend(var_size("sender public key", self.sender.bytes())?);
         bytes.extend_from_slice(self.pre_state_hash.as_bytes());
         Ok(bytes)
     }
 
     /// Derive the random generator from this seed (port of `randomGenerator(BlockRandomSeed)`).
-    pub fn random_generator(&self) -> Blake2b512Random {
-        // `var_size`'s inputs (the ASCII shard id and the sender public key) are always far below
-        // 256 bytes, so the length prefix cannot overflow; `expect` documents that invariant.
-        let encoded = self
-            .encode()
-            .expect("block random seed components always fit a 1-byte length prefix");
-        Blake2b512Random::from_init(&encoded)
+    pub fn random_generator(&self) -> Result<Blake2b512Random, BlockRandomSeedError> {
+        let encoded = self.encode()?;
+        Ok(Blake2b512Random::from_init(&encoded))
     }
 
     /// `randomGenerator(shardId, blockNumber, sender, preStateHash)`.
@@ -107,18 +131,22 @@ impl BlockRandomSeed {
         block_number: i64,
         sender: PublicKey,
         pre_state_hash: Blake2b256Hash,
-    ) -> Blake2b512Random {
+    ) -> Result<Blake2b512Random, BlockRandomSeedError> {
         BlockRandomSeed::new(shard_id.to_string(), block_number, sender, pre_state_hash)
             .random_generator()
     }
 
     /// `randomGenerator(shardId)` (genesis).
-    pub fn random_generator_from_shard_id(shard_id: &str) -> Blake2b512Random {
+    pub fn random_generator_from_shard_id(
+        shard_id: &str,
+    ) -> Result<Blake2b512Random, BlockRandomSeedError> {
         BlockRandomSeed::from_shard_id(shard_id).random_generator()
     }
 
     /// `randomGenerator(block)`.
-    pub fn random_generator_from_block(block: &BlockMessage) -> Blake2b512Random {
+    pub fn random_generator_from_block(
+        block: &BlockMessage,
+    ) -> Result<Blake2b512Random, BlockRandomSeedError> {
         BlockRandomSeed::from_block(block).random_generator()
     }
 
@@ -127,56 +155,67 @@ impl BlockRandomSeed {
         shard_id: &str,
         index: u8,
         index2: u8,
-    ) -> Blake2b512Random {
-        BlockRandomSeed::random_generator_from_shard_id(shard_id)
+    ) -> Result<Blake2b512Random, BlockRandomSeedError> {
+        Ok(BlockRandomSeed::random_generator_from_shard_id(shard_id)?
             .split_byte(index)
-            .split_byte(index2)
+            .split_byte(index2))
     }
 
     /// The unforgeable name of the NonNegativeNumber contract (port of
     /// `nonNegativeMergeableTagName`).
-    pub fn non_negative_mergeable_tag_name(shard_id: &str) -> Par {
-        let mut rand =
-            BlockRandomSeed::split_random_number_from_genesis(shard_id, 3, USER_DEPLOY_SPLIT_INDEX);
+    pub fn non_negative_mergeable_tag_name(shard_id: &str) -> Result<Par, BlockRandomSeedError> {
+        let mut rand = BlockRandomSeed::split_random_number_from_genesis(
+            shard_id,
+            3,
+            USER_DEPLOY_SPLIT_INDEX,
+        )?;
         rand.next();
-        RhoName::apply_bytes(rand.next())
+        Ok(RhoName::apply_bytes(rand.next()))
     }
 
     /// The REV transfer unforgeable name (port of `transferUnforgeable`).
-    pub fn transfer_unforgeable(shard_id: &str) -> Par {
-        let mut rand =
-            BlockRandomSeed::split_random_number_from_genesis(shard_id, 6, USER_DEPLOY_SPLIT_INDEX);
+    pub fn transfer_unforgeable(shard_id: &str) -> Result<Par, BlockRandomSeedError> {
+        let mut rand = BlockRandomSeed::split_random_number_from_genesis(
+            shard_id,
+            6,
+            USER_DEPLOY_SPLIT_INDEX,
+        )?;
         for _ in 0..10 {
             rand.next();
         }
-        RhoName::apply_bytes(rand.next())
+        Ok(RhoName::apply_bytes(rand.next()))
     }
 
     /// The store-token unforgeable name (port of `storeTokenUnforgeable`).
-    pub fn store_token_unforgeable(shard_id: &str) -> Par {
-        let mut rand =
-            BlockRandomSeed::split_random_number_from_genesis(shard_id, 0, USER_DEPLOY_SPLIT_INDEX);
+    pub fn store_token_unforgeable(shard_id: &str) -> Result<Par, BlockRandomSeedError> {
+        let mut rand = BlockRandomSeed::split_random_number_from_genesis(
+            shard_id,
+            0,
+            USER_DEPLOY_SPLIT_INDEX,
+        )?;
         for _ in 0..9 {
             rand.next();
         }
-        RhoName::apply_bytes(rand.next())
+        Ok(RhoName::apply_bytes(rand.next()))
     }
 
     /// The REV vault unforgeable name (port of `revVaultUnforgeable`).
-    pub fn rev_vault_unforgeable(shard_id: &str) -> Par {
-        let mut rand =
-            BlockRandomSeed::split_random_number_from_genesis(shard_id, 6, USER_DEPLOY_SPLIT_INDEX);
-        RhoName::apply_bytes(rand.next())
+    pub fn rev_vault_unforgeable(shard_id: &str) -> Result<Par, BlockRandomSeedError> {
+        let mut rand = BlockRandomSeed::split_random_number_from_genesis(
+            shard_id,
+            6,
+            USER_DEPLOY_SPLIT_INDEX,
+        )?;
+        Ok(RhoName::apply_bytes(rand.next()))
     }
 }
 
 /// `variableSizeBytes(uint8, X)` — a 1-byte length prefix followed by the bytes.
-fn var_size(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let len = u8::try_from(bytes.len()).map_err(|_| {
-        format!(
-            "seed component too long for a 1-byte length prefix: {} bytes",
-            bytes.len()
-        )
+fn var_size(component: &'static str, bytes: &[u8]) -> Result<Vec<u8>, BlockRandomSeedError> {
+    let len = u8::try_from(bytes.len()).map_err(|_| BlockRandomSeedError::ComponentTooLong {
+        component,
+        len: bytes.len(),
+        max: u8::MAX as usize,
     })?;
     let mut out = Vec::with_capacity(bytes.len() + 1);
     out.push(len);
@@ -193,6 +232,20 @@ mod tests {
         assert_eq!(vlong_encode(0), vec![0x00]);
         assert_eq!(vlong_encode(1), vec![0x02]);
         assert_eq!(vlong_encode(5), vec![0x0a]);
+    }
+
+    #[test]
+    fn valid_v1_encoding_bytes_are_unchanged() {
+        let seed = BlockRandomSeed::new(
+            "root".to_string(),
+            1,
+            PublicKey::new(vec![0xaa, 0xbb]),
+            Blake2b256Hash::from_bytes([0x11; 32]),
+        );
+        let mut expected = vec![4, b'r', b'o', b'o', b't', 0x02, 2, 0xaa, 0xbb];
+        expected.extend_from_slice(&[0x11; 32]);
+
+        assert_eq!(seed.encode().unwrap(), expected);
     }
 
     #[test]
@@ -241,8 +294,50 @@ mod tests {
     }
 
     #[test]
+    fn oversized_sender_is_a_typed_error_not_a_panic() {
+        let seed = BlockRandomSeed::new(
+            "root".to_string(),
+            1,
+            PublicKey::new(vec![0; 256]),
+            Blake2b256Hash::create(&[]),
+        );
+
+        let err = match seed.random_generator() {
+            Ok(_) => panic!("an oversized sender must be refused"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err,
+            BlockRandomSeedError::ComponentTooLong {
+                component: "sender public key",
+                len: 256,
+                max: 255,
+            }
+        );
+    }
+
+    #[test]
+    fn oversized_shard_id_is_a_typed_error_not_a_panic() {
+        let seed = BlockRandomSeed::new(
+            "a".repeat(256),
+            1,
+            PublicKey::new(vec![]),
+            Blake2b256Hash::create(&[]),
+        );
+
+        assert_eq!(
+            seed.encode(),
+            Err(BlockRandomSeedError::ComponentTooLong {
+                component: "shard id",
+                len: 256,
+                max: 255,
+            })
+        );
+    }
+
+    #[test]
     fn random_generator_produces_names() {
-        let name = BlockRandomSeed::non_negative_mergeable_tag_name("root");
+        let name = BlockRandomSeed::non_negative_mergeable_tag_name("root").unwrap();
         assert!(!name.unforgeables.is_empty() || !name.exprs.is_empty());
     }
 }

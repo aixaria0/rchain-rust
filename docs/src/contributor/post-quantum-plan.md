@@ -123,9 +123,9 @@ So the quantum question for names is narrow:
 - **Names exported as hashes** (`RevAddress::from_unforgeable`, `rev_address.rs`, Keccak-256 of the id) are
   likewise hash-protected only.
 - **The real problem is size, not security.** The seed embeds the sender's key behind a **1-byte length
-  prefix** (`var_size`, `block_random_seed.rs:174`) and `random_generator` calls `.expect` on it
-  (`:96-100`). An ML-DSA-65 key is 1,952 bytes. As written, a PQ validator would panic the moment it proposed
-  a block.
+  prefix** (`var_size` in `block_random_seed.rs`). An ML-DSA-65 key is 1,952 bytes. Oversized components are
+  now refused with `BlockRandomSeedError::ComponentTooLong` and propagated through block creation/replay
+  instead of panicking, but the v1 seed format still cannot represent a PQ validator key.
 - **Genesis names are safe.** Genesis seeds use an empty sender key (`from_shard_id`), so the system contract
   names (`rev_vault_unforgeable`, `transfer_unforgeable`, and the others) do not change under any option below.
 
@@ -307,7 +307,9 @@ A hash migration is **not needed**. D5-b is recommended because it is the same k
 - `Validator([u8; 65])` with `Copy` is the largest mechanical change. Introduce a `ValidatorId([u8; 32])` (D4-b),
   keep `Copy`, and move the full key to a lookup. Without key IDs the type must become a heap-allocated
   variable-length key, losing `Copy` across ~40 files.
-- `var_size`'s 1-byte prefix in the random seed (§3) is the one place that would **panic**, not merely grow.
+- `var_size`'s 1-byte prefix in the random seed (§3) remains a 255-byte format limit, but the encoder now
+  returns `BlockRandomSeedError::ComponentTooLong` instead of panicking. A PQ validator key still requires
+  the versioned seed format in §3 before it can be used.
 - Protobuf `bytes` fields carry any length, so `BlockMessage` and `DeployDataProto` need no wire-format change
   for bigger signatures; the version bump (`models/src/block_version.rs:6`) and `sig_algorithm` string carry the
   semantic change.
@@ -397,7 +399,7 @@ sunset, M4 left as research.
 |---|---|---|---|
 | **P0″. Wallet hygiene (§16)** | Wallet keeps high-value funds at never-revealed addresses, sweeps whole balances, flags exposed accounts, manages one-time keys and M3 commitments | **No** | nothing; a wallet release |
 | **P0′. Opt-in PQ vaults (§15)** | `PQVault.rho` (hash-based one-time signatures in Rholang), client signer, phlo measurements, audit; deployed as an ordinary contract | **No** | nothing; can start immediately |
-| **P0. Groundwork** | ML-DSA (and SLH-DSA) in `crypto` behind a feature, **not** in `from_algorithm`; NIST KAT tests on host and wasm32; benchmarks; size budget measured on a real block; fix the `var_size` panic path into a typed error; `ValidatorId` type introduced internally | No | — |
+| **P0. Groundwork** | ML-DSA (and SLH-DSA) in `crypto` behind a feature, **not** in `from_algorithm`; NIST KAT tests on host and wasm32; benchmarks; size budget measured on a real block; `var_size` overflow returned as a typed error; `ValidatorId` type introduced internally | No | — |
 | **P1. Node-local and transport** | rustls `aws-lc-rs` provider with hybrid ML-KEM; hybrid ML-KEM in the OCapN Noise handshake; application-level ML-DSA node handshake; deploy-status by content ID alongside signature; wallet/client libraries (`rnode` CLI, JS client) able to produce ML-DSA deploys against a dev net | No | P0 |
 | **P2. Fork 1: block version 2** | `from_algorithm` gains `ml-dsa-44`/`ml-dsa-65` for v2 blocks; key IDs in `sender`, `bonds`, seed, `deployerId`; key registry; content-hash deploy IDs; new address version; phlo pricing for signature bytes; `mlDsa44Verify` system process; finality "never revert below LFS" rule | **Yes, coordinated**; a testnet restart today, so land it now (§14.2) | P0, P1; issue #83 fixed before validators rebond |
 | **P3. Transition window** | Validators rebond with PQ keys at epoch boundaries (D3-a); users move funds (M1) or commit (M3); monitor the share of value still on revealed secp256k1 keys | No new fork | P2 |
