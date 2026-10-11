@@ -422,8 +422,10 @@ rnode_bin() { # the verifier: $RECONCILE_RNODE, else `rnode` on PATH, else the b
 }
 
 # Refuse, naming the reason and what it means — the tool's whole contract is that a state it cannot
-# prove is a state it does not act on. Exit 4 is "the anchor could not be established", which §3 has
-# always used for that.
+# prove is a state it does not act on. **Exit 4 is that refusal in general, not only the anchor**: it
+# means the plan could not be established and nothing has been touched. §3's anchor refusals were its
+# first users; §4's disagreement between two nodes about one block's own numbers is the same kind of
+# answer — a precondition of the report that cannot be proved — and takes the same code.
 refuse() { # reason [more lines...]
   echo "  REFUSING: $1" >&2; shift
   local line
@@ -847,7 +849,15 @@ for (( h=MEET+1; h<=MAXH; h++ )); do
   # of it. The key is the block's **hash**; `obs_seen` also keys on the observing node, so a node that
   # answers with one block twice cannot inflate it either. `observers` keeps where it was seen, so the
   # dedupe is visible rather than silent.
-  declare -A obs_seen=() obs_sender=() obs_deploys=() obs_rejected=() obs_nodes=()
+  #
+  # **And the dedupe is where a disagreement has to be caught, not hidden.** Two nodes answering for
+  # one hash are answering about *one* block, so the sender, the deploy count and the rejected set are
+  # fixed by that hash — a node reporting different ones for it is wrong or lying, and taking the first
+  # answer would put a number into the operator's re-submission list that no node agrees with. The tool
+  # refuses instead (PR #309 raised this; it is the tool's own rule everywhere else — "a state it
+  # cannot prove is a state it does not act on"). Height, sender, `deployCount` and `rejectedDeploys`
+  # are all checked, because all four reach the report.
+  declare -A obs_seen=() obs_sender=() obs_deploys=() obs_rejected=() obs_nodes=() obs_first=()
   seen_bh=""; nblocks=0; nobs=0
   for n in "${NAMES[@]}"; do
     while read -r bh sender _post deploys rejected; do
@@ -858,7 +868,16 @@ for (( h=MEET+1; h<=MAXH; h++ )); do
         nblocks=$((nblocks+1)); seen_bh="$seen_bh $bh"
         obs_sender[$bh]="$sender"; obs_deploys[$bh]="${deploys:-0}"
         obs_rejected[$bh]="${rejected:-[]}"; obs_nodes[$bh]="\"$n\""
+        obs_first[$bh]="$n"
       else
+        if [ "${obs_sender[$bh]}" != "$sender" ] \
+           || [ "${obs_deploys[$bh]}" != "${deploys:-0}" ] \
+           || [ "${obs_rejected[$bh]}" != "${rejected:-[]}" ]; then
+          refuse "two nodes disagree about block $bh at height $h" \
+            "$n reports: sender=$sender deployCount=${deploys:-0} rejectedDeploys=${rejected:-[]}" \
+            "${obs_first[$bh]} reports: sender=${obs_sender[$bh]} deployCount=${obs_deploys[$bh]} rejectedDeploys=${obs_rejected[$bh]}" \
+            "A block's hash fixes its content, so these cannot both be right — one node is wrong or lying, and this report is what an operator re-submits deploys from. Nothing is acted on."
+        fi
         obs_nodes[$bh]="${obs_nodes[$bh]},\"$n\""
       fi
     done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")

@@ -283,6 +283,50 @@ blocks_at() {   # the five fields the section reads, last one never empty
         assert "5 deploy(s) above the point across 2 unique block(s)" in p.stdout, p.stdout
         print("PASS section 4 counts a block once and names the nodes that served it")
 
+    # --- section 4: two nodes may not disagree about one block's own numbers ----------------------
+    # RED before the fix: the first answer for a hash won, and a second node's answer for the *same*
+    # hash was only appended to `observers` — its sender, deploy count and rejected set were never
+    # compared. A block's hash fixes its content, so two different answers for one hash is one of the
+    # two being wrong (or lying), and the report is what an operator re-submits deploys from. The tool
+    # refuses instead, which is its rule everywhere else. PR #309 raised this; the green case above is
+    # the control, because it is the same shape with the second node agreeing.
+    #
+    # The **real `refuse`** is spliced in rather than stubbed, so what this asserts is the tool's own
+    # message and exit code and not a copy of them.
+    refuse_src = src[src.index("refuse() {") : src.index("jfield() {")]
+    agreed = 'h1 sender1 post1 3 ["deadbeef"]'
+    for name, second_node_answer in [
+        ("a different deploy count", 'h1 sender1 post1 4 ["deadbeef"]'),
+        ("a different sender", "h1 sender9 post1 3 [\"deadbeef\"]"),
+        ("a different rejected set", "h1 sender1 post1 3 []"),
+    ]:
+        with tempfile.TemporaryDirectory(prefix="reconcile-s4-conflict-") as d:
+            report = os.path.join(d, "deploys.jsonl")
+            script = (
+                "set -uo pipefail\n"
+                "MEET=0; MAXH=1; MASTER=A\n"
+                "NAMES=(A B)\n"
+                "declare -A HOST PORT\n"
+                "HOST[A]=A; PORT[A]=1; HOST[B]=B; PORT[B]=2\n"
+                "blocks_at() {   # the five fields the section reads, last one never empty\n"
+                '  [ "$3" = "1" ] || return 0\n'
+                '  if [ "$1" = A ]; then printf \'%s\\n\' \'' + agreed + "'\n"
+                "  else printf '%s\\n' '" + second_node_answer + "'; fi\n"
+                "  return 0\n"
+                "}\n"
+            ) + refuse_src + section4
+            p = subprocess.run(
+                ["bash", "-c", script], env={**os.environ, "RECONCILE_REPORT": report},
+                capture_output=True, text=True, timeout=10)
+            assert p.returncode == 4, (
+                f"{name}: expected the tool's refusal (exit 4), got {p.returncode}\n{p.stdout}{p.stderr}")
+            assert "REFUSING: two nodes disagree about block h1 at height 1" in p.stderr, p.stderr
+            assert agreed.split()[0] in p.stderr, p.stderr
+            assert (
+                Path(report).read_text().strip() == ""
+            ), f"{name}: the report was written despite the refusal"
+        print(f"PASS section 4 refuses when two nodes disagree — {name}")
+
     # --- section 10: it must assert, not print ---------------------------------------------------
     # RED before the fix on every negative case below: the old section printed each node's finalised
     # block and exited 0 whatever it said — which is exactly what the committed drill transcript
