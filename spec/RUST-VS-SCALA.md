@@ -372,6 +372,9 @@ internal invariants; equivocation rejection and finalizer fringe advancement now
 
 ## 5. Cross-links
 
+- [`RUST-AFFORDANCES.md`](RUST-AFFORDANCES.md) — the complement of this page: this one registers where the
+  port *differs from the reference*; that one records what the port could *build* because it is Rust, each
+  gain with its artefact and its JVM cost.
 - [`AUDIT.md`](AUDIT.md) — the check-off; [`audit/passes.md`](audit/passes.md) — the pass record and the Scala-deviation log (§6).
 - [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md) — the ρ→CoC type discipline and refinement types.
 - [`RHO-CALCULUS.md`](RHO-CALCULUS.md) — the ρ-calculus grammar, sorts, and operations.
