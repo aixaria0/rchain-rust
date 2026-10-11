@@ -67,7 +67,7 @@ four do not separate, and the distinction is what decides the disposition.
 
 | id | top event | source |
 |---|---|---|
-| **TE-1** | The chain halts and cannot recover | `testnet-acceptance.md` §2. **Live-witnessed 2026-10-08**: four divergent heads, finality frozen at 101 — `spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md` on branch `spec/te-1-witness` (not in this tree) |
+| **TE-1** | The chain halts and cannot recover | `testnet-acceptance.md` §2. **Live-witnessed 2026-10-08**: four divergent heads, finality frozen at 101 — `spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md`, **in this tree** since PR #298 (this cell read *"on branch `spec/te-1-witness` (not in this tree)"* for as long as that was true) |
 | **TE-2** | A fragment of the net reaches finality that the rest rejects | `testnet-acceptance.md` §2 |
 | **TE-3** | An outsider validator cannot safely join or leave | `testnet-acceptance.md` §2 |
 | **TE-4** | State, disk or memory exhaustion halts the net | `testnet-acceptance.md` §2 |
@@ -441,10 +441,12 @@ merge-report warn, the stall warn), `casper/src/dag.rs` (`insert` and its discip
 `docs/src/formal/progress.md` (the shape/cause vocabulary), `docs/src/spec/testnet-acceptance.md` §1–§2
 (the study nodes, the top events, the TE-1 recovery verdict),
 `spec/audit/evidence/n280-merge-loses-a-write-results.md`, the TE-1 witness at
-`spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md` **on branch `spec/te-1-witness`** — it is
-not in this tree, and every claim taken from it says so — and the reconciliation issue **#287**. ·
+`spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md` — which was on branch `spec/te-1-witness`
+when this pass ran and has been **in this tree** since PR #298, so a claim taken from it while it was a
+branch says so — and the reconciliation issue **#287**. ·
 ran: `git rev-parse HEAD`, `git status`,
-`git fetch`, `git show origin/spec/te-1-witness:<path>`, `grep`/`ls`/`sed` over the files above (read
+`git fetch`, `git show origin/spec/te-1-witness:<path>` (the file is readable in the tree now, so this
+was the step it took then), `grep`/`ls`/`sed` over the files above (read
 only), and `tools/check-hazop-worksheet.sh`. The anchors were re-derived in this pass; the ones on
 `casper/src/dag.rs:489/696/729/736` and the two test names in §3's F-U4-03/F-U5-02 were re-read directly
 after the earlier reads, because a citation this page publishes is a claim.
