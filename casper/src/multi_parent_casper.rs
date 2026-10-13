@@ -793,7 +793,12 @@ where
                 continue;
             }
         };
-        note_unrestorable_if_exhausted(dag, &record, &hash, source, log).await;
+        // **The note runs on the committed record** (law 75, `spec/Rchain/Attempts.lean`): the request it
+        // may raise asks the node to reset on the strength of a count, and a request raised *before* the
+        // `update_metadata` that persists that count has a premise the store may not hold — the write can
+        // fail, leaving the node having asked for a reset on a count one lower than any it stored. The
+        // clone carries the record past the move into the store.
+        let committed = record.clone();
         match dag.update_metadata(record).await {
             Ok(()) if cleared => {
                 log.warn(
@@ -808,7 +813,13 @@ where
             }
             // The attempt is spent either way (`revalidated_record` counts it), so a record that keeps
             // failing stops being retried at `RESTORE_ATTEMPT_LIMIT` rather than on every proposal.
-            Ok(()) => continue,
+            Ok(()) => {
+                // The write returned, so a request raised here names a count the store holds. A restored
+                // record takes the arm above — its budget is not spent, so the note there would be a
+                // no-op and is not called.
+                note_unrestorable_if_exhausted(dag, shard_id, &committed, &hash, source, log).await;
+                continue;
+            }
             Err(e) => log.error(
                 source,
                 &format!(
@@ -904,6 +915,7 @@ fn revalidated_record(
 /// arm keeps refusing and logs what it would have had to replay.
 async fn note_unrestorable_if_exhausted(
     dag: &dyn BlockDagStorage,
+    shard_id: &str,
     record: &BlockMetadata,
     hash: &BlockHash,
     source: LogSource,
@@ -934,12 +946,15 @@ async fn note_unrestorable_if_exhausted(
             blocks_above,
             refused,
         } => {
-            let raised = crate::interpreter_util::request_reset(ResetRequest {
-                anchor,
-                anchor_height,
-                blocks_above,
-                refused,
-            });
+            let raised = crate::interpreter_util::request_reset(
+                shard_id.to_string(),
+                ResetRequest {
+                    anchor,
+                    anchor_height,
+                    blocks_above,
+                    refused,
+                },
+            );
             let prefix = if raised {
                 "reset requested"
             } else {
@@ -1199,7 +1214,9 @@ async fn restore_divergent_justifications<F, Fut>(
                 continue;
             }
         };
-        note_unrestorable_if_exhausted(dag, &record, j, source, log).await;
+        // **The note runs on the committed record** (law 75, `spec/Rchain/Attempts.lean`): see where it
+        // is called, below the write. The clone carries the record past the move into the store.
+        let committed = record.clone();
 
         // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
         // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
@@ -1222,6 +1239,11 @@ async fn restore_divergent_justifications<F, Fut>(
             );
             continue;
         }
+
+        // **The note runs on the committed record** (law 75): the write returned, so a request raised
+        // here names a count the store holds. Above the write it would be a request whose premise the
+        // store may not have accepted.
+        note_unrestorable_if_exhausted(dag, shard_id, &committed, j, source, log).await;
 
         if restored {
             log.warn(

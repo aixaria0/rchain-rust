@@ -10114,3 +10114,56 @@ quietly dropped.
 `spec/Rchain/{Durability,Requests,Checkpoint,Attempts}.lean` with register rows 72–75;
 `casper/src/engine/reset.rs`, `casper/tests/reset.rs`, `rspace/src/rspace.rs`;
 `tools/check-hazop-worksheet.sh --gate` and `tools/check-lean-conformance.sh` (173 Rust witnesses ran).
+
+## 107. The durability rewinds, part 2: the stop, the shard, and the tool (C279–C283, #342's residue)
+
+§106 landed the HAZOP layer, four laws and three of the Rust halves, and named what it did not reach.
+This is that residue, closed in the same order — **a law written before the Rust** wherever the deviation
+earns one.
+
+**A law for the stop — 76.** §106's D3 was the sharpest thing it left: the reset's failed act says a node
+in that shape "must not keep serving", and the LFS sync terminal says "this node is stopping rather than
+serving a chain it never synced" — and **neither stopped anything**. Both are a `return Err` from a task
+nobody joins; the launched `node_launch` future's error was only logged, and `NodeProgram::serve` never
+awaited it, so the block receiver, the processor, the proposer and the API kept running. **Law 76
+(`Rchain/Stop.lean`)** states the requirement — a reported fault and the stop are *one step*, and it is
+the last step available — with its falsifier, `a_note_without_a_stop_leaves_the_node_serving`, exhibiting
+exactly the port's old state: the latch set, the listeners up. The register is now **76 laws / 100
+entries**.
+
+**The Rust halves.** Four, and law 76's is the one with a witness the gate runs:
+
+- **F-U12-03, the concluded stop (C279).** `shutdown::report_fatal` sets a latch the spawn wrapper writes
+  and `main`'s wait selects on — a third arm beside the listeners and the signal — so a failed reset, and
+  the terminal path that shares the sentence, **stop the process without draining**. No drain, because the
+  fault means a store has moved under a view that was not rebuilt, which is the state the reset's own
+  comment forbids serving from. Witnessed by
+  `node/src/runtime/shutdown.rs::a_reported_fatal_resolves_the_wait_with_the_first_reason`.
+- **F-U11-02, the reset cells are process-global (C280).** Both are keyed by the shard's lane
+  (`ShardId::to_string()`): a node may be a member of several shards, each with its own DAG, block store
+  and runtime, and the key is what makes "shard B takes shard A's request" **unrepresentable** rather than
+  refused. That ordering mattered: with F-U12-03 landed, a misdelivered request refused at the anchor
+  check would have killed the whole node. Keying over a config gate because the doctrine is to make the
+  bad state unrepresentable rather than to guard against it.
+- **F-U14-02, the request on the uncommitted record (C281).** `note_unrestorable_if_exhausted` now runs
+  *after* the `update_metadata` that persists the count, in both paths, so a request raised by it names a
+  count the store holds (law 75).
+- **F-U16-01/02, the reconciliation tool (C282, C283).** The aside names are to the second and the docker
+  branch **refuses an existing target**, where a same-minute retry used to re-tar the already-cleared
+  volume over the only good backup; and the systemd `--restore-from-master` branch now stages beside the
+  data dir and swaps each environment only once the whole copy has arrived, so the `"$n is unchanged"`
+  it prints is true when printed.
+
+**What this pass does not claim.** The tool's rows carry `candidate:` slugs, not laws — the tool is not
+modelled, and a shell refusal is not a theorem; the four rows whose falsifier is a fault-injection point
+the tree does not have (law 74's fold, law 75's write, F-U16-01's refusal, F-U16-02's swap) stay **owed**
+in the HAZOP's debt line rather than claimed. F-U11-02's law is owed too — law 73's model is a one-shot
+cell with one lane, and stating it per shard is a change to that model, not a citation. And the devnet arm
+that would exercise a real reset end to end remains **unrun**.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` (F-U11-02, F-U12-03, F-U14-02, F-U16-01/02, and the debt
+line at 22); `spec/Rchain/Stop.lean` with register row 76; `node/src/runtime/shutdown.rs`,
+`node/src/main.rs`, `node/src/runtime/node_runtime.rs`, `casper/src/interpreter_util.rs`,
+`casper/src/engine/reset.rs`, `casper/src/engine/node_launch.rs`,
+`casper/src/multi_parent_casper.rs`, `tools/reconcile-network.sh`;
+`tools/check-hazop-worksheet.sh --gate`, `tools/check-lean-conformance.sh` and the casper test suite.

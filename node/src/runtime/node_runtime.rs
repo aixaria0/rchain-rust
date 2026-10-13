@@ -1893,6 +1893,13 @@ async fn setup_shard_runtime(
                 LogSource::new("coop.rchain.node.runtime.Setup"),
                 &format!("NodeLaunch exited with error: {err}"),
             );
+            // **And the node actually stops** (§106's owed D3). `apply`'s error is a *concluded* stop
+            // — a failed reset, or the LFS sync terminal, each of which says "this node is stopping" in
+            // its own words — and a logged line is not a stop: this task ending leaves the block
+            // receiver, the processor, the proposer and the API serving a node whose stores may have
+            // moved under a view that was not rebuilt. The latch is what `main`'s wait selects on; the
+            // first reporter wins, so two shards that both fail still produce one reason.
+            crate::runtime::shutdown::report_fatal(format!("NodeLaunch exited with error: {err}"));
         }
     });
 
