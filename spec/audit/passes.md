@@ -10200,4 +10200,7 @@ the **acceptance-level** property F-U5-01 names is still **unrun**, and that the
 recorded way to stage it. That is the residue, stated rather than implied.
 
 **Evidence.** `spec/audit/evidence/reset-arm/run.md` (the reading) and `observe.log` (the sampler's output,
-136 lines). One host, one run; the devnet was torn down with `down -v` after the capture.
+136 lines). One host, one run; the devnet was torn down with `down -v` after the capture. The instrument the
+arm now needs is designed beside them (`instrument-design.md`): a synthetic spent record written into a
+stopped node's `block-metadata`, which reaches the drive loop's third exit — the half no test can — while
+being explicit that it exercises the re-entry and not the healing.
