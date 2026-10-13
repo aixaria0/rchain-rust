@@ -92,30 +92,35 @@ impl KeyedRateLimiter {
         let full = self.max_per_sec as f64;
         let mut buckets = self.buckets.lock().unpoison();
 
-        if !buckets.contains_key(key) {
+        // The cap is enforced before the entry is taken, so the `None` arm below means "not seen"
+        // rather than "refused" — and it is total: no panic, and no unreachable arm to leave.
+        if !buckets.contains_key(key) && buckets.len() >= self.max_keys {
+            // Drop the buckets that have refilled to full: they say nothing an unseen key does not,
+            // so keeping them is what would let the map grow without bound.
+            buckets.retain(|_, (tokens, last)| {
+                *tokens + now.duration_since(*last).as_secs_f64() * full < full
+            });
             if buckets.len() >= self.max_keys {
-                // Drop the buckets that have refilled to full: they say nothing an unseen key does
-                // not, so keeping them is what would let the map grow without bound.
-                buckets.retain(|_, (tokens, last)| {
-                    *tokens + now.duration_since(*last).as_secs_f64() * full < full
-                });
-                if buckets.len() >= self.max_keys {
-                    return false;
-                }
+                return false;
             }
-            buckets.insert(key.to_vec(), (full - 1.0, now));
-            return true;
         }
 
-        let (tokens, last) = buckets.get_mut(key).expect("just checked present");
-        let refill = now.duration_since(*last).as_secs_f64() * full;
-        *tokens = (*tokens + refill).min(full);
-        *last = now;
-        if *tokens >= 1.0 {
-            *tokens -= 1.0;
-            true
-        } else {
-            false
+        match buckets.get_mut(key) {
+            Some((tokens, last)) => {
+                let refill = now.duration_since(*last).as_secs_f64() * full;
+                *tokens = (*tokens + refill).min(full);
+                *last = now;
+                if *tokens >= 1.0 {
+                    *tokens -= 1.0;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                buckets.insert(key.to_vec(), (full - 1.0, now));
+                true
+            }
         }
     }
 
