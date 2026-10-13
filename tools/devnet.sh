@@ -235,6 +235,15 @@ cmd_build() {
   # is `debug = 0`, so without it the profile is addresses with no symbols. Read from the environment
   # rather than flags for the same reason the node's diagnostic knobs are: they change the *artifact*
   # under investigation, not the network being started.
+  #
+  # **They select a different Dockerfile, and that is the fix rather than the inconvenience.** A build
+  # argument that reaches `cargo` compiles a different binary, so the definition that accepts one must
+  # not be the definition a release is produced from (W-N7-03) — `docker/rnode/Dockerfile` no longer
+  # declares `RUSTFLAGS` or `CARGO_FEATURES` at all, and this is the only caller that passes them.
+  local dockerfile="docker/rnode/Dockerfile"
+  if [[ -n "${RNODE_BUILD_FEATURES:-}${RNODE_BUILD_RUSTFLAGS:-}${RNODE_BUILD_MALLOC_CONF:-}" ]]; then
+    dockerfile="docker/rnode/Dockerfile.profiling"
+  fi
   if [[ -n "${RNODE_BUILD_FEATURES:-}" ]]; then
     opts+=(--build-arg "CARGO_FEATURES=$RNODE_BUILD_FEATURES")
   fi
@@ -249,7 +258,7 @@ cmd_build() {
   if [[ -n "${RNODE_BUILD_MALLOC_CONF:-}" ]]; then
     opts+=(--build-arg "JEMALLOC_SYS_WITH_MALLOC_CONF=$RNODE_BUILD_MALLOC_CONF")
   fi
-  docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
+  docker build "${opts[@]}" -f "$dockerfile" -t "$IMAGE" .
 }
 
 # Write genesis files (N validators + optionally a funded deployer wallet) into `$1`.
