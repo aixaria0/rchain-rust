@@ -10167,3 +10167,37 @@ line at 22); `spec/Rchain/Stop.lean` with register row 76; `node/src/runtime/shu
 `casper/src/engine/reset.rs`, `casper/src/engine/node_launch.rs`,
 `casper/src/multi_parent_casper.rs`, `tools/reconcile-network.sh`;
 `tools/check-hazop-worksheet.sh --gate`, `tools/check-lean-conformance.sh` and the casper test suite.
+
+## 108. The reset arm, attempted: the staging route §101 named no longer reproduces (C284)
+
+§106 and §107 both left the **devnet arm** owed — F-U5-01's falsifier, *a diverged running node re-enters
+sync*, the acceptance-level instrument for the self-reset — and §101 had recorded it as **stageable but
+unrun**: *"now stageable with `up --validators 4 --fresh` (the §92 self-reject divergence needs no
+instrument)"*.
+
+**What ran.** `tools/devnet.sh build` (image at `731ac4b1c`, this tree), `down -v`, then
+`DEVNET_EXTRA_FLAGS_devnet_validator_{1,2,3}="--self-reset" tools/devnet.sh up --validators 4 --fresh` — the
+bootstrap plus three, which is the four bonded nodes §92's capture had, with the flag **confirmed present on
+each container** (`docker inspect … .Config.Cmd`). Sampled every 15 s for ~9 minutes.
+
+**What happened.** Nothing. Heights ran 98→270 (bootstrap), 149→277, 148→275, 144→271, and across the whole
+run every node recorded **zero** `[fringe-divergence]`, zero `Self-created block …` and zero reset lines,
+with `consecutiveSelfValidationFailures` 0, `autoproposeTimerHalted` false and `unrestorableRecords` 0
+throughout. The net produced ~170 blocks and stayed healthy.
+
+**Why, and this is the finding.** §92's self-reject came from the fringe-record store's **`min` tie-break**
+on one key: two honest blocks finalising one fringe from two bases wrote the key, the `min` chose a
+`state_hash`, and the node then refused its own block against the state that implied. That store is gone —
+law 66/67/68's record redesign retired `join_fringe_records`, its `min` and the in-memory map
+(`casper/src/dag.rs:812`, `models/src/block_metadata.rs:464`, `block-storage/src/test_support.rs:65`) — and
+the `[fringe-divergence]` string that survives is a **reader-side** report of distinct claims, not a store
+write. So §101's "stageable now" was true when written and is **false on this tree**: the divergence the
+route relied on was fixed, and the arm needs a **new instrument** rather than a longer run.
+
+**What this does not claim.** The reset's durable half, its boot guard and its ordering are pinned by
+`casper/tests/reset.rs` and run by the formal gate (§106, §107) — this run says nothing about those. It says
+the **acceptance-level** property F-U5-01 names is still **unrun**, and that the tree no longer has a
+recorded way to stage it. That is the residue, stated rather than implied.
+
+**Evidence.** `spec/audit/evidence/reset-arm/run.md` (the reading) and `observe.log` (the sampler's output,
+136 lines). One host, one run; the devnet was torn down with `down -v` after the capture.
