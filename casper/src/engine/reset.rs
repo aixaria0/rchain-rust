@@ -240,6 +240,7 @@ async fn purge_orphan_bodies(
 /// rewound under a view that was not, and a node in that shape serving on is worse than the refusal the
 /// reset replaces.
 pub async fn act_on_reset_request(
+    shard_id: &str,
     self_reset: bool,
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
@@ -248,15 +249,17 @@ pub async fn act_on_reset_request(
     source: LogSource,
 ) -> Result<Option<ResetRequest>, String> {
     // **Peek, do not take** (law 73, `spec/Rchain/Requests.lean`). A request is spent only by the act
-    // that commits; taking it first would lose it to a failure that destroyed nothing.
-    let Some(request) = crate::interpreter_util::reset_request() else {
+    // that commits; taking it first would lose it to a failure that destroyed nothing. *This shard's*
+    // request, too: the lane is the key, so a node that is a member of several shards cannot act on
+    // another's anchor (§107's D4).
+    let Some(request) = crate::interpreter_util::reset_request(shard_id) else {
         return Ok(None);
     };
     if !self_reset {
         // Consumed rather than left pending: a surface that showed a request for ever would be the same
         // silence in a different place, and the switch is a *terminal* configuration, not a transient
         // fault — which is why this arm takes and the pre-flight arm below does not.
-        let _ = crate::interpreter_util::take_reset_request();
+        let _ = crate::interpreter_util::take_reset_request(shard_id);
         log.warn(
             source,
             &format!(
@@ -289,7 +292,7 @@ pub async fn act_on_reset_request(
     }
     perform_reset(dag, block_store, runtime_manager, &request, log, source).await?;
     // The act committed; the request is spent now, and not one step earlier.
-    let _ = crate::interpreter_util::take_reset_request();
+    let _ = crate::interpreter_util::take_reset_request(shard_id);
     Ok(Some(request))
 }
 

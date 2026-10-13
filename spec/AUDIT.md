@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 313** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 318** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  107 of 313 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  112 of 318 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 313 are settled: **249 name the evidence that holds them** and **64 do not** — the
+All 318 are settled: **254 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -129,7 +129,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (313)
+### DONE (318)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -360,6 +360,11 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C276` | **The reset request was consumed before the act it asked for.** `act_on_reset_request` took the request as its opening statement and only then ran `perform_reset`, which can fail before touching any store — the anchor's body may be absent from the block store — so a failure spent the request with nothing done: the divergence untouched, no rule re-raising it in-process, and recovery only via a restart (re-derivable then only because the detector's count is persisted). **Closed 2026-10-13 (law 73, §106).** The act now peeks (`reset_request()`), runs the anchor pre-flight, and takes the request only once `perform_reset` has returned, so a failure that destroyed nothing leaves the request pending — actionable by the detector's next scan — and the node is left in the switch-off state: consistent, and still refusing. The switch-off arm still consumes, because that is a terminal configuration rather than a transient fault. | casper/src/engine/reset.rs/casper/tests/reset.rs | §106 |
 | `C277` | **The reset's completion record bracketed two durable effects of three.** `rewind_and_purge` wrote `ResetMarker{Rewound}` once the DAG rewind and the body purge had returned, and the caller moved the runtime's root *afterwards* — through `HistoryRepository::reset` to `validate_and_set_current_root`, itself a durable `CURRENT_ROOT` write. A crash between them left a `rewound` record claiming the stores agree while the root still named the state the rewind had dropped, and `resume_after_reset` read `rewound` and re-applied nothing, so the disagreement was permanent within the marker protocol — the class `reset_volatile`'s own doc names for the merge. **Closed 2026-10-13 (law 72, §106).** The two marker writes moved to the callers and now bracket all three effects, and the guard's `Rewinding` branch re-establishes the runtime root (it took no `RuntimeManager` before), so the repair is total over the record's effects and the bad state is gone by construction. | casper/src/engine/reset.rs/casper/tests/reset.rs | §106 |
 | `C278` | **A checkpoint discarded an overlay it had not folded.** `create_checkpoint` cleared the native overlay at `drain_native` before the only fallible step, the fold `checkpoint_with_native`, and wrote `last_native_*` before it too — so a fold that returned `Err` lost mutations it had never committed, while the hot-store side (read but not cleared) was left untouched: the two sides did not commit or fail together. **Closed 2026-10-13 (law 74, §106).** The overlay is snapshotted before the drain and restored if the fold fails, and `last_native_*` is written only once the fold has committed. | rspace/src/rspace.rs | §106 |
+| `C279` | **A concluded stop did not stop the node.** `apply`'s error was only logged — the launched `node_launch` future is never joined and `NodeProgram::serve` never awaits it — so a failed reset, and the LFS terminal path, left the block receiver, processor, proposer and API serving a node whose stores may have moved under a view that was not rebuilt: exactly the outcome both statements say must not happen. **Closed 2026-10-13 (law 76, §107).** `shutdown::report_fatal` sets a latch the spawn wrapper writes and `main`'s wait selects on, stopping the process without draining. | node/src/runtime/shutdown.rs/node/src/main.rs | §107 |
+| `C280` | **The reset cells were process-global while the reset state is per-shard.** `RESET_REQUEST`/`RESET_WAKE` were process statics, and `install_reset_waker` runs once per shard, so the last shard won: a request raised by one shard's validator path woke another shard's driver, which drove its own DAG with the first's anchor — refused, because the anchor is not in its block store. **Closed 2026-10-13 (§107).** Both cells are keyed by the shard's lane (`ShardId::to_string()`), so a request reaching another shard's driver is unrepresentable rather than refused — which matters more once a failed reset stops the process, because a refusal there would have been a whole-node kill. | casper/src/interpreter_util.rs/casper/src/engine/node_launch.rs | §107 |
+| `C281` | **The reset request was raised on the uncommitted record.** `note_unrestorable_if_exhausted` ran with the incremented-but-unpersisted `restore_attempts`, before the `update_metadata` that persists it, so a write that then failed left the node having asked for a reset on a record whose stored count is one lower. **Closed 2026-10-13 (law 75, §107).** The note now runs after the write in both paths, so a request raised by it names a count the store holds. | casper/src/multi_parent_casper.rs | §107 |
+| `C282` | **The reconciliation tool could overwrite its only good backup.** The aside names were to the minute, so two runs in one minute named the same file and the docker branch's `tar cf` wrote the second run's already-cleared volume over the first run's backup — the one copy of the state the operator still had. **Closed 2026-10-13 (§107).** The name is to the second and the branch refuses an existing target. | tools/reconcile-network.sh | §107 |
+| `C283` | **The tool's systemd restore overwrote in place while printing "unchanged".** `--restore-from-master` streamed a tar into the live data directory, never removing directories the survivor lacks, so a mid-stream failure left the joiner partially written while the message said it was unchanged — and joiner-only directories survived the restore, which is the divergence residue the mode exists to remove. **Closed 2026-10-13 (§107).** The branch stages beside the data dir and swaps each environment only once the whole copy has arrived. | tools/reconcile-network.sh | §107 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

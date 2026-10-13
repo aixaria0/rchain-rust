@@ -45,6 +45,10 @@ use rchain_shared::typed_store::{
     BytesCodec, KeyValueTypedStore, KeyValueTypedStoreCodec, SharedStore,
 };
 
+/// Every cell call in this file names one lane (§107's D4): the reset cells are process-wide and
+/// keyed by shard, and these tests drive a single shard.
+const LANE: &str = "test-shard";
+
 fn hash(byte: u8) -> BlockHash {
     let mut bytes = [0u8; 32];
     bytes[0] = byte;
@@ -161,7 +165,7 @@ async fn has(store: &BlockStore, h: BlockHash) -> bool {
 async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off()
 {
     // Whatever a previous run left in the cell: this test owns it from here.
-    let _ = take_reset_request();
+    let _ = take_reset_request(LANE);
 
     let dag = build_dag().await;
     let block_store = build_block_store().await;
@@ -206,10 +210,11 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
     // First half: a node whose operator has not opted in must *not* touch its stores, and must consume
     // the request rather than leaving it pending for ever.
     assert!(
-        rchain_casper::interpreter_util::request_reset(request.clone()),
+        rchain_casper::interpreter_util::request_reset(LANE.to_string(), request.clone()),
         "the request is raised"
     );
     let off = act_on_reset_request(
+        LANE,
         false,
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
@@ -221,7 +226,7 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
     .expect("a gated reset is not an error");
     assert!(off.is_none(), "the switch is off, so nothing acted");
     assert_eq!(
-        reset_request(),
+        reset_request(LANE),
         None,
         "and the request was consumed, not left pending"
     );
@@ -232,10 +237,11 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
 
     // --- the switch on ---------------------------------------------------------------------------
     assert!(
-        rchain_casper::interpreter_util::request_reset(request.clone()),
+        rchain_casper::interpreter_util::request_reset(LANE.to_string(), request.clone()),
         "a second request is accepted once the first is consumed"
     );
     let acted = act_on_reset_request(
+        LANE,
         true,
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
@@ -267,7 +273,7 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
         "the anchor's own body stays — the reset keeps what it rewinds to"
     );
     assert_eq!(
-        reset_request(),
+        reset_request(LANE),
         None,
         "taking the request is not undone by acting on it"
     );
@@ -286,10 +292,11 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
         refused: hash(2),
     };
     assert!(
-        rchain_casper::interpreter_util::request_reset(pending.clone()),
+        rchain_casper::interpreter_util::request_reset(LANE.to_string(), pending.clone()),
         "a request is raised again"
     );
     let unacted = act_on_reset_request(
+        LANE,
         true,
         &(bare_dag.clone() as Arc<dyn BlockDagStorage>),
         &bare_store,
@@ -304,12 +311,12 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
         "nothing acted — the anchor could not be read"
     );
     assert_eq!(
-        reset_request(),
+        reset_request(LANE),
         Some(pending.clone()),
         "and the request is still pending, not spent on a failure that destroyed nothing"
     );
     assert_eq!(
-        take_reset_request(),
+        take_reset_request(LANE),
         Some(pending),
         "and it is still takeable — the detector's next scan can act on it"
     );

@@ -412,35 +412,51 @@ pub struct ResetRequest {
     pub refused: BlockHash,
 }
 
-static RESET_REQUEST: std::sync::Mutex<Option<ResetRequest>> = std::sync::Mutex::new(None);
-static RESET_WAKE: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>> = std::sync::Mutex::new(None);
+/// **A shard's lane key** — the shard id as both halves derive it, `ShardId::to_string()`.
+///
+/// A node may be a member of several shards (`casper.shards`), each with its own DAG, block store and
+/// runtime, while these cells are process-wide. Without a key, a request raised by one shard's validator
+/// path reaches whichever shard installed its waker last, and that shard drives *its own* stores with
+/// the other's anchor — refused, because the anchor is not in its block store, and once a failed reset
+/// stops the node that misdelivery is a whole-node kill. Keying makes "shard B takes shard A's request"
+/// unrepresentable rather than guarded (2026-10-13, §107's D4).
+pub type ShardLane = String;
 
-/// **Install the waker the engine's drive loop waits on**, once, at boot. The engine owns where a
-/// reset would be performed — it holds the transport, the block store and the runtime — and the
+static RESET_REQUEST: std::sync::Mutex<BTreeMap<ShardLane, ResetRequest>> =
+    std::sync::Mutex::new(BTreeMap::new());
+static RESET_WAKE: std::sync::Mutex<BTreeMap<ShardLane, Arc<tokio::sync::Notify>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// **Install the waker the engine's drive loop waits on**, once per shard, at boot. The engine owns
+/// where a reset would be performed — it holds the transport, the block store and the runtime — and the
 /// detection happens deep in the validator path, which has none of them. So the two halves talk through
 /// this cell rather than through a new dependency: the detector records the request, and the driver
 /// wakes.
 ///
-/// Installing or replacing a driver also delivers a request already in the
-/// slot. Lock the request before the waker, as submission does, so a concurrent
-/// request either reaches this driver or is observed here as already pending.
-pub fn install_reset_waker(notify: Arc<tokio::sync::Notify>) {
+/// Installing or replacing a driver also delivers a request already in *that shard's* lane. Lock the
+/// request before the waker, as submission does, so a concurrent request either reaches this driver or
+/// is observed here as already pending.
+pub fn install_reset_waker(shard: ShardLane, notify: Arc<tokio::sync::Notify>) {
     let pending = RESET_REQUEST.lock().unpoison();
-    *RESET_WAKE.lock().unpoison() = Some(notify.clone());
-    if pending.is_some() {
+    RESET_WAKE
+        .lock()
+        .unpoison()
+        .insert(shard.clone(), notify.clone());
+    if pending.contains_key(&shard) {
         notify.notify_one();
     }
 }
 
-/// Record a reset request and wake the driver, if one is installed. Returns whether this call *set* it
-/// — a second request while one is pending changes nothing, and the driver takes the first.
-pub fn request_reset(request: ResetRequest) -> bool {
+/// Record a shard's reset request and wake its driver, if one is installed. Returns whether this call
+/// *set* it — a second request for the same shard while one is pending changes nothing, and that shard's
+/// driver takes the first.
+pub fn request_reset(shard: ShardLane, request: ResetRequest) -> bool {
     let mut slot = RESET_REQUEST.lock().unpoison();
-    if slot.is_some() {
+    if slot.contains_key(&shard) {
         return false;
     }
-    *slot = Some(request);
-    let wake = RESET_WAKE.lock().unpoison().clone();
+    slot.insert(shard.clone(), request);
+    let wake = RESET_WAKE.lock().unpoison().get(&shard).cloned();
     drop(slot);
     if let Some(notify) = wake {
         notify.notify_one();
@@ -448,16 +464,16 @@ pub fn request_reset(request: ResetRequest) -> bool {
     true
 }
 
-/// Take the pending request, if any. The driver takes it exactly once, which is what makes the reset
-/// idempotent under a burst of refusals: the first exhaustion acts, the rest of the scan finds the slot
-/// empty.
-pub fn take_reset_request() -> Option<ResetRequest> {
-    RESET_REQUEST.lock().unpoison().take()
+/// Take a shard's pending request, if any. The driver takes it exactly once, which is what makes the
+/// reset idempotent under a burst of refusals: the first exhaustion acts, the rest of the scan finds
+/// the lane empty. **Only the shard that raised a request can take it**, because the lane is the key.
+pub fn take_reset_request(shard: &str) -> Option<ResetRequest> {
+    RESET_REQUEST.lock().unpoison().remove(shard)
 }
 
-/// The pending request without taking it, for the status surface and for tests.
-pub fn reset_request() -> Option<ResetRequest> {
-    RESET_REQUEST.lock().unpoison().clone()
+/// A shard's pending request without taking it, for the status surface and for tests.
+pub fn reset_request(shard: &str) -> Option<ResetRequest> {
+    RESET_REQUEST.lock().unpoison().get(shard).cloned()
 }
 
 /// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
@@ -943,10 +959,11 @@ mod tests {
     /// process-wide and libtest runs a module's tests concurrently.
     #[tokio::test]
     async fn a_reset_request_is_raised_once_taken_once_and_wakes_the_driver() {
+        let lane = || "test-shard".to_string();
         let notify = Arc::new(tokio::sync::Notify::new());
-        install_reset_waker(notify.clone());
-        // Whatever a previous test left: this test owns the cell from here.
-        let _ = take_reset_request();
+        install_reset_waker(lane(), notify.clone());
+        // Whatever a previous test left: this test owns the lane from here.
+        let _ = take_reset_request(&lane());
 
         let first = ResetRequest {
             anchor: BlockHash::new([1u8; 32]),
@@ -960,15 +977,15 @@ mod tests {
         };
 
         assert!(
-            request_reset(first.clone()),
+            request_reset(lane(), first.clone()),
             "the first request is recorded"
         );
         assert!(
-            !request_reset(second),
+            !request_reset(lane(), second),
             "a second request while one is pending is refused rather than replacing it"
         );
         assert_eq!(
-            reset_request().as_ref(),
+            reset_request(&lane()).as_ref(),
             Some(&first),
             "the anchor the driver will rewind to is the first one asked for"
         );
@@ -977,45 +994,54 @@ mod tests {
             .await
             .expect("the request wakes a driver parked on the packet stream");
 
+        // **Another shard cannot take it** (2026-10-13, §107's D4). The lane is the key, so a request
+        // raised for one shard is invisible to every other: the misdelivery that would drive a second
+        // shard's stores with the first shard's anchor is unrepresentable rather than refused.
         assert_eq!(
-            take_reset_request(),
+            take_reset_request("another-shard"),
+            None,
+            "a request is only taken by the shard that raised it"
+        );
+
+        assert_eq!(
+            take_reset_request(&lane()),
             Some(first.clone()),
             "the driver takes it"
         );
         assert_eq!(
-            take_reset_request(),
+            take_reset_request(&lane()),
             None,
             "and takes it exactly once — a burst of refusals is one reset"
         );
 
         // A request can precede installation. The stored request, rather than
         // the old notification, must make the newly installed driver runnable.
-        *RESET_WAKE.lock().unpoison() = None;
-        assert!(request_reset(first.clone()));
+        RESET_WAKE.lock().unpoison().remove(&lane());
+        assert!(request_reset(lane(), first.clone()));
         let installed = Arc::new(tokio::sync::Notify::new());
-        install_reset_waker(installed.clone());
+        install_reset_waker(lane(), installed.clone());
         tokio::time::timeout(std::time::Duration::from_secs(1), installed.notified())
             .await
-            .expect("installing a waker delivers the request already in the slot");
-        assert_eq!(reset_request(), Some(first.clone()));
+            .expect("installing a waker delivers the request already in the lane");
+        assert_eq!(reset_request(&lane()), Some(first.clone()));
 
         // Handover while pending keeps the first request and wakes the new
         // driver, even after the previous driver consumed its notification.
         let replacement = Arc::new(tokio::sync::Notify::new());
-        install_reset_waker(replacement.clone());
+        install_reset_waker(lane(), replacement.clone());
         tokio::time::timeout(std::time::Duration::from_secs(1), replacement.notified())
             .await
             .expect("a replacement driver observes the same pending request");
-        assert_eq!(take_reset_request(), Some(first));
-        assert_eq!(take_reset_request(), None);
+        assert_eq!(take_reset_request(&lane()), Some(first));
+        assert_eq!(take_reset_request(&lane()), None);
 
         let idle = Arc::new(tokio::sync::Notify::new());
-        install_reset_waker(idle.clone());
+        install_reset_waker(lane(), idle.clone());
         assert!(
             tokio::time::timeout(std::time::Duration::ZERO, idle.notified())
                 .await
                 .is_err(),
-            "installing on an empty slot must not request a spurious reset"
+            "installing on an empty lane must not request a spurious reset"
         );
     }
 

@@ -438,7 +438,13 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     // no transport, no block store and no runtime — and the reset is performed *here*, where all three
     // are in scope. The request and the arms it refuses are `interpreter_util`'s.
     let reset_wake = Arc::new(tokio::sync::Notify::new());
-    crate::interpreter_util::install_reset_waker(reset_wake.clone());
+    // **This shard's lane** (§107's D4). The cells are process-wide while a node may be a member of
+    // several shards, so the key is what keeps a request raised by one shard from reaching another's
+    // driver — and once a failed reset stops the node, that misdelivery would be a whole-node kill.
+    // `ShardId::to_string()` is the value both halves derive, this side from the `ShardSpec` and the
+    // detector's from the same id.
+    let shard_lane = spec.shard_id.to_string();
+    crate::interpreter_util::install_reset_waker(shard_lane.clone(), reset_wake.clone());
 
     // The catch-up walk's door. The engine funnels a peer's `BlockRangeRequest` answers down it and the
     // walk owns the receiving end, so a *second* walk needs a second channel — which is why this is a
@@ -502,6 +508,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         // then testable without a transport, an importer or a spec, which an `apply`-level test would
         // need a large fixture for while testing five lines of `select!`.
         match crate::engine::reset::act_on_reset_request(
+            &shard_lane,
             self_reset,
             &dag,
             &block_store,

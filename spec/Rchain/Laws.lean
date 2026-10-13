@@ -4095,7 +4095,34 @@ def laws : List Law := [
       runs on it before the `update_metadata` that persists it (`casper/src/multi_parent_casper.rs:796` \
       and `:1202` precede `:797` and `:1214`). The node's read-modify-write half of the same node \
       (F-U14-01) is the shape law 73 states and is not modelled twice. HAZOP rows F-U14-01/02 \
-      (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
+      (docs/src/spec/failure-hazop.md). **Fixed 2026-10-13**: `note_unrestorable_if_exhausted` now runs \
+      *after* the `update_metadata` that persists the count, so a request raised by it names a count the \
+      store holds. `rustWitness` is owed — the write's failure path has no fault-injection point here." },
+
+  { number := 76, layer := "Casper",
+    statement := "**A concluded stop stops.** Once a fault the node cannot serve through is reported, \
+      the node is not serving and cannot return to serving: the report and the stop are one step, and it \
+      is the last step available",
+    status := .provedModel,
+    declarations := [`Rchain.ServeState, `Rchain.serveStep, `Rchain.serveSystem,
+      `Rchain.a_reported_fault_stops_the_node],
+    axioms := [],
+    rust := ["node/src/runtime/shutdown.rs", "node/src/main.rs",
+      "node/src/runtime/node_runtime.rs"],
+    rustWitness := ["node/src/runtime/shutdown.rs:a_reported_fatal_resolves_the_wait_with_the_first_reason"],
+    witness := [`Rchain.a_note_without_a_stop_leaves_the_node_serving,
+      `Rchain.a_reported_fault_reaches_a_stopped_state],
+    falsifiable := "The port's old shape, where reporting the fault leaves the node serving. \
+      `a_note_without_a_stop_leaves_the_node_serving` exhibits the reachable state it admits — the latch \
+      set, the listeners up — and `a_reported_fault_reaches_a_stopped_state` keeps the law from being \
+      vacuous.",
+    note := "**Two statements, one gap.** The self-reset's failed act and the LFS sync terminal both say \
+      \"this node is stopping\", and both were a `return Err` from a task nobody joins: the launched \
+      `node_launch` future's error was only logged and `NodeProgram::serve` never awaited it, so the \
+      receiver, processor, proposer and API kept serving a node whose stores may have moved under a view \
+      that was not rebuilt. **Fixed 2026-10-13**: `shutdown::report_fatal` sets a latch the spawn wrapper \
+      writes and `main`'s wait selects on, stopping the process without draining. HAZOP row F-U12-03 \
+      (docs/src/spec/failure-hazop.md)." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
