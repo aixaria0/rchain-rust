@@ -10046,3 +10046,5 @@ host, one run.
 ## 105. A queued reset must reach the installed driver (C275, #338)
 
 The request can exist before its waker. Installation previously recorded only the waker, leaving a pending request without a wake. The existing serial request test now fails on that ordering before the fix (CI run 38341642556, commit 0aff751). Installation takes the request lock before the waker lock, matching submission, and notifies the installed driver when the slot is occupied. Pending-driver handover and empty-slot installation are covered in the same test. This establishes local request delivery; it does not execute the full engine re-entry or prove global finalized-state safety.
+
+Verified on 47540f5 by CI run 38342542544: the delivery regression, existing DAG/store reset tests, formatting/static gates and dependency checks pass. Casper reports 437 passed, 0 failed, 1 ignored. C275 is closed for local delivery.
