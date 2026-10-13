@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 320** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 321** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  114 of 320 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  115 of 321 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 320 are settled: **256 name the evidence that holds them** and **64 do not** — the
+All 321 are settled: **257 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -129,7 +129,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (320)
+### DONE (321)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -367,6 +367,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C283` | **The tool's systemd restore overwrote in place while printing "unchanged".** `--restore-from-master` streamed a tar into the live data directory, never removing directories the survivor lacks, so a mid-stream failure left the joiner partially written while the message said it was unchanged — and joiner-only directories survived the restore, which is the divergence residue the mode exists to remove. **Closed 2026-10-13 (§107).** The branch stages beside the data dir and swaps each environment only once the whole copy has arrived. | tools/reconcile-network.sh | §107 |
 | `C284` | **The devnet staging route the record names no longer stages anything.** §101 recorded F-U5-01's arm as "stageable now (`up --validators 4 --fresh` self-diverges; §92)", and §106/§107 carried that forward as the route the unrun arm would use. On 2026-10-13 `up --validators 4 --fresh` with `--self-reset` armed ran ~9 minutes and ~170 blocks with zero `[fringe-divergence]`, zero self-reject and zero reset on all four nodes: the divergence §92 measured came from the fringe-record store's `min` tie-break, which law 66/67/68 retired, and the surviving `[fringe-divergence]` string is a reader-side report rather than a store write. **Closed 2026-10-13 (§108) as a corrected claim**: the route is recorded as non-reproducing. | docs/src/spec/failure-hazop.md/casper/src/dag.rs | §108 |
 | `C285` | **The staging instrument §108 recommended cannot stage the arm.** §108 proposed marking a record `validation_failed / Divergence / restore_attempts = LIMIT` in a stopped node's `block-metadata`; reading the code it was designed against refutes it. `restore_divergent_justifications` re-runs `validate_checks` on the block and `revalidated_record` answers `Restored` for a block that passes, so a merely-marked *valid* block is cleared rather than escalated — `restore_budget_is_spent` is only reached through a genuine revalidation, and marking a spent budget from the start skips the restore path because `restore_is_warranted` requires attempts left. **Closed 2026-10-13 (§109)**: the recommended route is recorded as refuted, and the route that survives is named with its constraint — a perturbed image whose difference is outside the genesis path (a difference touching genesis fails block #0, where the node is in `NodeSyncing` and the drive loop does not exist). | casper/src/multi_parent_casper.rs/casper/src/block_status.rs | §109 |
+| `C286` | **The reset's trigger is not reachable by an external instrument — measured, twice.** F-U5-01's arm (*a diverged running node re-enters sync*) had no working staging route after §108/#344 (the named route retired) and §109/#345 (the first replacement refuted by reading). Two more were attempted with runs: a **network partition** stages nothing — two heads formed and simply re-converged on reconnect, zero divergence markers, because the merge is a pure function of the parent set (`merge_determinism.rs` measured live); and a **state tamper** is *effective* — applied to every node it stalls the chain with `propose failed … active-bonds leaf not found in state`, the merge's own documented consequence of a wrong base — but its **aim cannot be held**, because the trigger needs the tampered block to be the greatest `(height, hash)` justification of a block the subject *validates* and a live net moves that target every block. **Closed 2026-10-13 (§110)** as a corrected close condition: the trigger is intrinsic by design — a `Divergence` is the node's own state or replay against a block everyone else accepts, and a trigger loose enough for an external edit would fire on a healthy node. The only remaining route is a perturbed *build*, which §109 records as exercising the engine re-entry without satisfying the falsifier. | casper/tests/merge_determinism.rs/casper/src/multi_parent_casper.rs | §110 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
