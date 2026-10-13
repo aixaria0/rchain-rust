@@ -260,6 +260,31 @@ fn charge_stream_budget(
     }
 }
 
+/// What a chunk costs its receiver, in bytes — **header or data**.
+///
+/// The aggregate budget and the per-stream size cap were both charged only inside the `Data` arm, so
+/// a peer could stream `MAX_STREAM_CHUNKS` header chunks and pay for none of them: `received` never
+/// moved, so `max_stream_message_size` never fired, and the only cost was one permit per chunk. A
+/// `ChunkHeader`'s `type_id`, `network_id` and claimed sender are all `string`/`bytes` fields with no
+/// bound of their own (`models/proto/routing.proto:77`), and a header is allocated, buffered into
+/// `chunks` and carried through reassembly exactly as a data chunk is — so it is charged exactly as
+/// one is (W-N12-04).
+///
+/// The *cost* of that is one budget unit per stream for a legitimate peer, because a real stream
+/// carries a single header (`chunker::chunk_packet`): the budget is `blobs × max_stream_message_size`
+/// = 16 × 256 MiB, so 4096 units, against which one is nothing. Charging headers cannot refuse a
+/// legitimate stream, which is the property that had to be checked before changing this.
+fn chunk_encoded_cost(chunk: &Chunk) -> usize {
+    match &chunk.content {
+        Some(chunk::Content::Data(d)) => d.content_data.len(),
+        Some(chunk::Content::Header(h)) => {
+            let sender = h.sender.as_ref().map_or(0, |n| n.id.len() + n.host.len());
+            h.type_id.len() + h.network_id.len() + sender
+        }
+        None => 0,
+    }
+}
+
 /// The streamed path's admission decision on a header chunk: the network id, and the claimed sender
 /// against the identity the certificate proves.
 ///
@@ -508,22 +533,24 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
             // size-checked it and charged it against the aggregate byte budget, so a peer whose header
             // was never going to verify still bought a full stream first.
             stream_header_admits(&self.network_id, proven.0.as_deref(), &chunk)?;
-            if let Some(chunk::Content::Data(d)) = &chunk.content {
-                received += d.content_data.len() as i64;
-                if received > self.max_stream_message_size {
-                    return Ok(Response::new(internal_server_error(&stream_error_message(
-                        &StreamError::MaxSizeReached,
-                    ))));
-                }
-                // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this
-                // bounds the sum over all of them, which is the number that multiplies.
-                if charge_stream_budget(&self.stream_bytes, &mut byte_permits, d.content_data.len())
-                    .is_err()
-                {
-                    return Ok(Response::new(internal_server_error(&stream_error_message(
-                        &StreamError::MaxSizeReached,
-                    ))));
-                }
+            // **Every chunk is charged, not only the data ones** (W-N12-04). The header arm used to
+            // fall through with no accounting at all, which made a header's `type_id`, `network_id`
+            // and sender free to size: `received` stayed put, so the per-stream cap never fired, and
+            // the aggregate budget saw only the data chunks. Both now see the same number.
+            let charged = chunk_encoded_cost(&chunk);
+            received += charged as i64;
+            if received > self.max_stream_message_size {
+                return Ok(Response::new(internal_server_error(&stream_error_message(
+                    &StreamError::MaxSizeReached,
+                ))));
+            }
+            // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this bounds
+            // the sum over all of them, which is the number that multiplies. A chunk of any size costs
+            // at least one unit, so an empty chunk is bounded by the same count that bounds the rest.
+            if charge_stream_budget(&self.stream_bytes, &mut byte_permits, charged).is_err() {
+                return Ok(Response::new(internal_server_error(&stream_error_message(
+                    &StreamError::MaxSizeReached,
+                ))));
             }
             chunks.push(chunk);
             if chunks.len() > MAX_STREAM_CHUNKS {
@@ -1058,6 +1085,67 @@ mod tests {
             super::stream_header_admits("testnet", Some(&s_key), &senderless).is_err(),
             "a header with no sender is not one whose identity is unknown-but-probably-fine"
         );
+    }
+
+    /// **A header chunk is charged for the bytes a peer chooses** (W-N12-04).
+    ///
+    /// The drain loop charged the per-stream size cap and the aggregate budget *inside its `Data`
+    /// arm only*, so a header chunk cost one permit and nothing else: `received` never moved, so
+    /// `max_stream_message_size` never fired, and `type_id`, `network_id` and the claimed sender —
+    /// all unbounded `string`/`bytes` on the wire — were free to size. `MAX_STREAM_CHUNKS` headers of
+    /// a megabyte each were a megabyte-times-100 000 the node would buffer.
+    ///
+    /// This pins the cost function, which is where the fix is; as with `stream_header_admits`, its
+    /// *placement* in the drain loop is verified by reading, because `tonic::Streaming` has no
+    /// constructor a test can call. Falsified by making the header arm return `0` — which is what the
+    /// old code did — and the first assertion goes red.
+    #[test]
+    fn a_header_chunk_is_charged_for_the_bytes_a_peer_chooses() {
+        let header = |type_id: &str, network_id: &str| Chunk {
+            content: Some(chunk::Content::Header(
+                rchain_models::comm::protocol::ChunkHeader {
+                    sender: Some(
+                        crate::peer_node::PeerNode::from(
+                            crate::peer_node::NodeIdentifier::new(vec![7u8; 40]),
+                            "a-host-of-thirty-characters-here".to_string(),
+                            Port::new(40400),
+                            Port::new(40404),
+                        )
+                        .to_node(),
+                    ),
+                    type_id: type_id.to_string(),
+                    compressed: false,
+                    content_length: 1,
+                    network_id: network_id.to_string(),
+                },
+            )),
+        };
+
+        let host_len = "a-host-of-thirty-characters-here".len();
+        assert_eq!(
+            super::chunk_encoded_cost(&header("BlockMessage", "testnet")),
+            "BlockMessage".len() + "testnet".len() + 40 + host_len,
+            "a header's price is its own fields — the ones a peer sizes"
+        );
+
+        // The property the row is about: a wider field costs strictly more, so a peer cannot make the
+        // node's buffering free by putting the weight in a field the accounting ignores.
+        let narrow = super::chunk_encoded_cost(&header("BlockMessage", "testnet"));
+        let wide = super::chunk_encoded_cost(&header(&"x".repeat(4_096), "testnet"));
+        assert!(
+            wide > narrow + 4_000,
+            "a 4 KiB type id must cost 4 KiB more ({narrow} → {wide})"
+        );
+
+        // And a data chunk is still charged its content, exactly as before.
+        let data = Chunk {
+            content: Some(chunk::Content::Data(
+                rchain_models::comm::protocol::ChunkData {
+                    content_data: vec![1, 2, 3],
+                },
+            )),
+        };
+        assert_eq!(super::chunk_encoded_cost(&data), 3);
     }
 
     /// **The dispatch bound.** With one slot and a handler that has not finished, a second inbound
