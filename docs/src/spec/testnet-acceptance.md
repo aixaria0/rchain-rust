@@ -2057,19 +2057,23 @@ here claims.
 
 Issue #214 is explicit that this is *not* a pass/fail item, so it is not presented as one. The instrument
 is a **rate and a class census**: register rows opened and closed per window, by class, measured **against
-a bounded-adversary statement**. That statement does not exist, so every `Against` cell reads `absent`,
-and the section cannot go green by construction — that is the honest shape of criterion 3, and it is
-deliberate.
+a bounded-adversary statement**. That statement **exists** — [`adversary.md`](adversary.md), *The bounded
+adversary this testnet claims to handle* — so every `Against` cell now names it rather than reading
+`absent`, and its rows were tested **apriori** by the wargame in that page
+([Table E](adversary.md#table-e--the-statement-test): two rows are *too narrow* — `operator error during
+recovery` and `key compromise` — which is a finding about the **statement**, not the node). The section
+still cannot go green by construction, which is the honest shape of criterion 3.
 
 | Window (ISO) | Register commits | Rows closed | By class | Against |
 |---|---|---|---|---|
-| 2026-W39 | 17 | `not counted` | `not counted` (see below) | `absent` |
-| 2026-W40 | 62 | `not counted` | `not counted` (see below) | `absent` |
+| 2026-W39 | 17 | `not counted` | `not counted` (see below) | `adversary.md §The census` |
+| 2026-W40 | 62 | `not counted` | `not counted` (see below) | `adversary.md §The census` |
 
 The class column reads `not counted` for a measured reason: **36 of the 242 `done` rows name a law or
 class; 206 carry an empty classification cell** (`spec/AUDIT.md`; `spec/findings.tsv`). The register
-therefore reports **volume, not class**. That is the precise, checkable content of "the bounded-adversary
-statement does not yet exist".
+therefore reports **volume, not class**. The wargame's ledger now supplies a **class vocabulary** for the
+rows it adds (`unauth-actuation`, `key-at-rest`, `disclosure`, …), so the fill rate is measurable going
+forward even though the 206 historical rows are not retro-migrated.
 
 The rate is the reason the gate is up: the register took **C195 through C207 in a single window**, and
 C207 alone meant the join path had **never worked on a network that merges**.
