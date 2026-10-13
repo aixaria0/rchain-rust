@@ -415,7 +415,7 @@ neither.
 
 | deviation | law that captures it, or the law owed | why |
 |---|---|---|
-| U15-01 | owed: a law that a checkpoint commits both overlays or neither | no existing law models the two-overlay commit; `Rchain/RSpace/*.lean` models the trie, not the overlay drain |
+| U15-01 | owed, and written first as law 74: **a checkpoint does not drain an overlay it has not folded** | no existing law models the overlay's drain against its fold; `Rchain/RSpace/*.lean` models the trie, not the clear |
 | U15-02 | owed: the same law, with the soft checkpoint's base as a modelled field | the missing field is the absent root |
 | U15-03 | law 49 / `Rchain/RSpace/Merkle.lean` cover content addressing; the *ordering* is owed | content-addressing makes the orphans harmless; the write order is not a modelled state |
 

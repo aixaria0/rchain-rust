@@ -4038,6 +4038,31 @@ def laws : List Law := [
       the request with nothing done; recovery is a restart, re-derivable only because the detector's \
       count (`restore_attempts`) is persisted. HAZOP row F-U11-03 (docs/src/spec/failure-hazop.md). \
       `rustWitness` is empty until the Rust fix lands." },
+
+  { number := 74, layer := "RSpace",
+    statement := "**A checkpoint does not drain an overlay it has not folded.** The hot-store and native \
+      overlays are folded into the trie before they are cleared, so an interrupted checkpoint loses \
+      nothing it has not committed — no reachable state has an overlay empty while its changes are \
+      unfolded",
+    status := .provedModel,
+    declarations := [`Rchain.CheckpointState, `Rchain.checkpointStep, `Rchain.checkpointSystem,
+      `Rchain.a_checkpoint_does_not_drain_what_it_has_not_folded],
+    axioms := [],
+    rust := ["rspace/src/rspace.rs", "rspace/src/native_store.rs"],
+    witness := [`Rchain.a_drain_before_the_fold_reaches_a_state_that_lost_the_overlay,
+      `Rchain.a_checkpoint_can_complete],
+    falsifiable := "The port's order, clearing the native overlay before the fold. \
+      `a_drain_before_the_fold_reaches_a_state_that_lost_the_overlay` exhibits the state it admits — the \
+      overlay empty, the changes unfolded — and `a_checkpoint_can_complete` keeps the law from being \
+      vacuous.",
+    note := "**The two overlays are not treated alike.** `create_checkpoint` reads the hot-store changes \
+      (`rspace/src/rspace.rs:604-605`, a snapshot that is not cleared) and clears the native overlay at \
+      `:606-609` (whose `drain_native` ends in `overlay.clear()`, `rspace/src/native_store.rs:477`) \
+      *before* the only fallible step, `checkpoint_with_native` (`:616-621`). A fold that returns `Err` \
+      therefore loses the native mutations and records the failed drain in `last_native_*`, while the \
+      hot-store side is untouched. The model is one overlay because the property is per-overlay — \
+      applying it to both is what \"both overlays or neither\" means. HAZOP rows F-U15-01/02 \
+      (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
