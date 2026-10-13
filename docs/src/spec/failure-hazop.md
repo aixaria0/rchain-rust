@@ -393,8 +393,8 @@ count survives a restart rather than handing the record a fresh budget.
 
 | deviation | law that captures it, or the law owed | why |
 |---|---|---|
-| U14-01 | law 53a/53b bound *whether* a record is revalidated; **owed: a law that one revalidation spends exactly one attempt** | the cap is modelled as a count, not as an atomic step, so the concurrency half has no theorem |
-| U14-02 | owed: the same law, ordered against the record's commit | it must say a request is raised only on a committed count |
+| U14-01 | law 73's shape — a two-phase operation on a cell is one step — applied to the count | the cap is a count, not a state, so the concurrency half is the split-read-write shape law 73 already states, and the fix is the Rust one-lock section |
+| U14-02 | owed, and written first as law 75: **a dependent action is taken only on a committed record** | the request must be raised on the committed count, not on the value the store has not accepted |
 
 ### U15 — The RSpace checkpoint
 

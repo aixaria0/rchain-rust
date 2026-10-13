@@ -4063,6 +4063,28 @@ def laws : List Law := [
       hot-store side is untouched. The model is one overlay because the property is per-overlay — \
       applying it to both is what \"both overlays or neither\" means. HAZOP rows F-U15-01/02 \
       (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
+
+  { number := 75, layer := "Casper",
+    statement := "**A dependent action is taken only on a committed record.** The refusal budget's \
+      increment and the reset request it can raise are ordered: no reachable state has the request raised \
+      while the record it rests on is uncommitted, so the request's premise is always durable",
+    status := .provedModel,
+    declarations := [`Rchain.AttemptState, `Rchain.attemptStep, `Rchain.attemptSystem,
+      `Rchain.a_dependent_action_is_taken_only_on_a_committed_record],
+    axioms := [],
+    rust := ["casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.a_raised_request_on_an_uncommitted_record_is_reachable,
+      `Rchain.a_committed_record_can_gate_an_action],
+    falsifiable := "The port's order, raising the request on the uncommitted record. \
+      `a_raised_request_on_an_uncommitted_record_is_reachable` exhibits the state it admits — the request \
+      raised, the record it rests on uncommitted — and `a_committed_record_can_gate_an_action` keeps the \
+      law from being vacuous.",
+    note := "**The request runs on the value the store has not yet accepted.** `revalidated_record` builds \
+      the incremented `BlockMetadata` and `note_unrestorable_if_exhausted` — which raises the request — \
+      runs on it before the `update_metadata` that persists it (`casper/src/multi_parent_casper.rs:796` \
+      and `:1202` precede `:797` and `:1214`). The node's read-modify-write half of the same node \
+      (F-U14-01) is the shape law 73 states and is not modelled twice. HAZOP rows F-U14-01/02 \
+      (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
