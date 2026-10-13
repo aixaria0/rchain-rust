@@ -10503,3 +10503,65 @@ nothing can falsify. Naming it here is what stops a fourth pass from trying a fo
 F-U5-01's cell (rewritten: *not owed — unstatable*); `spec/audit/evidence/reset-arm/` (the three attempts it
 supersedes); `casper/tests/merge_determinism.rs` and laws 72–76 (what remains checkable).
 
+
+---
+
+## 116. The bond cannot be checked at the packet dispatch, and that is the finding (W-N1-04, W-N1-07, W-N9-08, and the "remote peer · any valid cert" precondition)
+
+**The decision: the peer-admission seam is not built, and the residual is recorded rather than papered over.**
+
+The wargame's precondition table gives ten rows the precondition *`remote peer · any valid cert`*: the
+transport proves a peer holds a P-256 key and admits any keypair, so a stranger that generated a
+certificate a second ago is a peer. The planned remedy was a **bonded-identity seam at the packet
+dispatch, actuation-only** — gate the block-bearing packet types on the sender's bond, leave the sync
+and join paths open to any valid cert.
+
+**It cannot be built, and the reason is a fact about the tree rather than a shortage of effort.** At the
+dispatch the only subject available is the **node address** the certificate proves — a 20-byte keccak of
+the P-256 public point. A bond is keyed by a `Validator`: a 65-byte secp256k1 point
+(`models/src/validator.rs`). **Nothing in the tree maps one to the other.** `comm` holds no bond data at
+all, and `casper` never turns a `NodeIdentifier` into a `Validator` — `is_active_validator`
+(`casper/src/blocks/proposer/proposer.rs:105`) reads the newest block's bond map for a `Validator` it is
+already given, which is the propose path's own identity and not a peer's.
+
+Three routes to the mapping, and only two of them are sound:
+
+1. **Certify the validator key in the node's certificate** — the certificate carries the validator's
+   secp256k1 public key and a signature by that key over the node address, so a peer that proved
+   possession of the node key has also, verifiably, been named by a bonded validator key. Sound and
+   chain-tied. Costs a certificate-format change, a change to node identity generation, a verification
+   path in `comm`, **and** the bonded set still has to be published into `comm` — which is a second seam
+   on top of the first.
+2. **An operator-supplied list of permitted node addresses.** Cheap, needs no chain access, needs no
+   identity change — and is hand-maintained, so it goes stale the moment the validator set changes,
+   which is the failure the chain-tied version exists to avoid.
+3. **The peer announces its own validator key in-band.** Unsound, and worth stating so it is not
+   re-proposed: the announcement is exactly what an attacker forges, so a check on it admits the
+   attacker and refuses nobody.
+
+**Decided 2026-10-13: route 3 is out, routes 1 and 2 are declined for now, and the residual is this
+row.** The grounds are that the seam is **defence in depth and not the authorization boundary**, and
+that the harms the ten rows name have been closed *at the layers where they were real*:
+
+- the discovery server's decode cap, the Kademlia token keyed to an identity and charged after the
+  identity check, and the hosts a `Lookup` response names guarded on the way in (PR #350);
+- the streamed header decided when it arrives rather than after the stream is paid for (PR #350);
+- the transport's in-flight dispatch and stream bounds, which are the same bound they always were and
+  are keyed on nothing because they bound a *resource* rather than a *party* (W-N1-04's own shape).
+
+**What a non-bonded peer can still do, stated as a threat model rather than implied:** hold a valid
+certificate; open a connection; send packets, including block-bearing ones; request blocks. What it
+cannot do is have a block accepted — `deploy_signatures`, the bonds cache and the merge's own
+rejections are the authorization boundary, and none of them reads the transport's identity. So the
+residual is **resource cost, not authority**: a stranger may spend the node's bandwidth and CPU up to
+the bounds above, and may not spend its stake.
+
+**What would change this decision**, so it is not re-litigated from scratch: a bonded-set publication
+into `comm` for another reason (which would make route 1 a smaller change than it is today), or a
+measured resource attack that the existing bounds do not hold, or an operator who wants route 2 and
+will maintain it. None of the three exists today.
+
+**The wargame's join is the reason this is a row rather than a note.** Table F labels the ten rows
+`remote peer · any valid cert` and counts them among the 32 with no precondition; a reader who works
+down that table will reach them, so the decision lives beside them on `docs/src/spec/adversary.md` as
+well as here.

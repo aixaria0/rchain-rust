@@ -118,8 +118,20 @@ impl KeyedRateLimiter {
                 }
             }
             None => {
-                buckets.insert(key.to_vec(), (full - 1.0, now));
-                true
+                // **An unseen key starts with a full bucket, and a full bucket of less than one
+                // token admits nothing.** This is `RateLimiter`'s own "zero means closed, not
+                // unlimited" rule, and the keyed form broke it: it spent a token from `full`
+                // unconditionally, so a limiter configured to `0` — a plausible way to turn one
+                // ingress's bound off — admitted the first request from *every* key, which is a
+                // fail-open on the surface whose whole purpose is to bind a rate. Refused keys are
+                // not inserted, so the map still cannot be grown by a caller whose requests are all
+                // refused.
+                if full >= 1.0 {
+                    buckets.insert(key.to_vec(), (full - 1.0, now));
+                    true
+                } else {
+                    false
+                }
             }
         }
     }
@@ -159,6 +171,30 @@ mod tests {
         for _ in 0..5 {
             assert!(!limiter.allow());
         }
+    }
+
+    /// **And neither does the keyed form** — the same rule, on the limiter whose whole reason for
+    /// existing is that one caller must not spend another's allowance.
+    ///
+    /// This was a fail-open: the unseen-key arm spent a token from `full` unconditionally, so
+    /// `KeyedRateLimiter::new(0, …)` admitted the *first* request from every key it ever saw — a
+    /// limiter configured to zero admitting one request per caller, on an unauthenticated surface,
+    /// with the map still refusing to grow so nothing looked wrong. Found while wiring the HTTP
+    /// ingress onto this limiter, which is exactly where a bound of zero would have been used.
+    #[test]
+    fn a_keyed_limiter_of_zero_admits_nothing_either() {
+        let limiter = KeyedRateLimiter::new(0, 8);
+        for key in [b"alice".as_slice(), b"bob".as_slice(), b"carol".as_slice()] {
+            assert!(
+                !limiter.allow(key),
+                "a limiter of zero must refuse every key, including an unseen one"
+            );
+        }
+        assert_eq!(
+            limiter.tracked_keys(),
+            0,
+            "and a refused key must not be tracked, or the map is grown by callers it refuses"
+        );
     }
 
     /// The bucket refills, so a client that was refused is not refused forever.

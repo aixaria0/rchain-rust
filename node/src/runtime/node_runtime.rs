@@ -579,6 +579,10 @@ impl NodeProgram {
         let mut http = tokio::spawn({
             let host = host.clone();
             let stop = stop.clone();
+            // **Cloned before the closure, because the admin listener needs the same read.** The
+            // delegations route moved to the admin port (W-N3-03) and takes the PoS read with it; an
+            // `async move` that captures it here would take it from there.
+            let pos_read = pos_read.clone();
             async move {
                 // No gateway here: the cross-shard transaction routes are on the admin listener, which
                 // is loopback by default (AUDIT C121), and `HttpState` no longer carries the capability.
@@ -591,7 +595,7 @@ impl NodeProgram {
                     block_report_api,
                     shards,
                     status_provider,
-                    pos_read,
+                    pos_read.clone(),
                     max_connection_idle,
                     enable_reporting,
                     faucet_enabled,
@@ -630,6 +634,7 @@ impl NodeProgram {
                     enable_txn_api,
                     ocapn_dial,
                     enable_ocapn_dial,
+                    pos_read.clone(),
                     max_connection_idle,
                     stop,
                 )
@@ -1343,11 +1348,20 @@ pub async fn setup_node_program(
             (true, Some(key)) => {
                 // **One limiter for the node's whole OCapN surface**, shared by every capability and
                 // every session: each bridged delivery is a signed deploy paid for out of the node's own
-                // REV, so the bound has to be on the node, not per capability — two capabilities with a
-                // limiter each are a bound of twice the number (HAZOP row A3).
+                // REV, so the *total* has to be on the node — a limiter per capability instead of this
+                // is a bound of N times the number (HAZOP row A3).
                 let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
                     crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
                 ));
+                // **And a share of it per capability** (W-N8-02). The total alone is unfair rather
+                // than unsafe: the one object a peer loops on can spend the whole allowance while
+                // every other exported capability is refused. Keyed on the capability's designator,
+                // so the share is per object and the node's total spend is unchanged.
+                let capability_limiter =
+                    Arc::new(rchain_shared::rate_limiter::KeyedRateLimiter::new(
+                        crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC,
+                        crate::api::ocapn::MAX_TRACKED_CAPABILITIES,
+                    ));
                 vec![
                     (
                         crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
@@ -1356,6 +1370,7 @@ pub async fn setup_node_program(
                             key.clone(),
                             primary_id.to_string(),
                             limiter.clone(),
+                            capability_limiter.clone(),
                         )) as Arc<dyn Export>,
                     ),
                     (
@@ -1365,6 +1380,7 @@ pub async fn setup_node_program(
                             key.clone(),
                             primary_id.to_string(),
                             limiter,
+                            capability_limiter,
                         )),
                     ),
                 ]
@@ -1722,6 +1738,22 @@ async fn setup_shard_runtime(
                 // The tap runs on every validated block; if the propose queue is full or the
                 // proposer stream is gone, the request is dropped — and nothing else would say so.
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    // **A halted timer halts the tap too** (W-N4-08). The timer stops itself after a
+                    // burst of consecutive self-validation failures, and until this line it was the
+                    // only thing that stopped: the tap kept proposing on every validated block, so a
+                    // node the status surface called halted was still producing — on inbound traffic,
+                    // without an operator, which is the exact failure the halt exists to prevent.
+                    if tap_health.timer_halted() {
+                        // **Counted rather than silently dropped**, which is the shape this row is
+                        // about: a refusal nobody can see is the same defect as a report that cannot
+                        // become untrue. `push_proposer_health` is still called first, so the gauges
+                        // say the timer is halted beside the count of what that cost.
+                        push_proposer_health(&tap_metrics, &tap_source, &tap_health);
+                        tap_health
+                            .tap_suppressed_halted()
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
                     push_proposer_health(&tap_metrics, &tap_source, &tap_health);
                     let (otx, _orx) = tokio::sync::oneshot::channel();
                     if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
