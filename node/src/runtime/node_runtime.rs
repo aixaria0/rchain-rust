@@ -3043,10 +3043,27 @@ fn tap_validated_blocks(
 const ATTEST_MAX_BLOCK_AGE_MS: i64 =
     rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as i64;
 
-/// Whether a remote block with timestamp `block_ms` is still a live round at `now_ms`. A block stamped in
-/// the future (the proposer's clock ahead of ours) is live: skew must not silence a validator.
+/// How far ahead of this node's clock a remote block may be stamped and still be a live round.
+///
+/// **The forward half of the same window, and it was missing.** A block whose timestamp is in the
+/// future is live — the proposer's clock being ahead of ours must not silence a validator — but that
+/// was implemented as `now.saturating_sub(block)` being *small*, and `saturating_sub` clamps at
+/// `i64::MIN`… it clamps at *zero*: a block stamped in the year 3000 subtracts to `0`, which is well
+/// under the age bound, so **every far-future-stamped block read as perfectly live** (W-N14-02). The
+/// tap then fires on every replay of it, which is the amplification the age bound exists to prevent.
+///
+/// Symmetric with the age bound on purpose, and for the same reason: a block is a live round when its
+/// own timestamp is within one round-stall of now, in either direction. A validator whose clock drifts
+/// by more than fifteen seconds is not one whose blocks this node should be attesting to anyway.
+const ATTEST_MAX_CLOCK_SKEW_MS: i64 = ATTEST_MAX_BLOCK_AGE_MS;
+
+/// Whether a remote block with timestamp `block_ms` is still a live round at `now_ms`.
+///
+/// Both directions are bounded, and both are computed with saturating arithmetic: `block_ms` is wire
+/// data and may be `i64::MIN` or `i64::MAX`, so neither subtraction may be trusted to stay in range.
 fn attest_is_live(block_ms: i64, now_ms: i64) -> bool {
-    now_ms.saturating_sub(block_ms) <= ATTEST_MAX_BLOCK_AGE_MS
+    block_ms <= now_ms.saturating_add(ATTEST_MAX_CLOCK_SKEW_MS)
+        && now_ms.saturating_sub(block_ms) <= ATTEST_MAX_BLOCK_AGE_MS
 }
 
 /// Whether a validated block is a reason for this node to attest: any block from someone else.
@@ -3344,6 +3361,31 @@ mod attest_warranted_tests {
             attest_is_live(now + 5_000, now),
             "a peer's clock ahead of ours must not silence us"
         );
+    }
+
+    /// **A block stamped in the far future is not live** (W-N14-02).
+    ///
+    /// The forward bound is the half that was missing: `now.saturating_sub(block_ms)` gives `0` for any
+    /// stamp ahead of `now`, and `0 <= ATTEST_MAX_BLOCK_AGE_MS` is true, so a block dated in the year
+    /// 3000 was indistinguishable from one dated now — the tap answered every replay of it, which is
+    /// precisely the amplification the backstop bound exists to prevent.
+    ///
+    /// Falsified by restoring the one-sided form, under which every assertion below is `true`.
+    #[test]
+    fn a_block_stamped_far_in_the_future_is_not_answered() {
+        let now = 1_000_000_000;
+        assert!(
+            !attest_is_live(now + ATTEST_MAX_BLOCK_AGE_MS + 1, now),
+            "a block past the forward window is not a live round"
+        );
+        assert!(
+            !attest_is_live(now + 86_400_000, now),
+            "a block dated a day ahead must not prompt an attestation"
+        );
+        // The wire extremes must not wrap: `i64::MAX` saturates rather than overflowing into the
+        // window, and `i64::MIN` is history as far as the age bound is concerned.
+        assert!(!attest_is_live(i64::MAX, now), "the far end of the range");
+        assert!(!attest_is_live(i64::MIN, now), "and the near end");
     }
 
     #[test]
