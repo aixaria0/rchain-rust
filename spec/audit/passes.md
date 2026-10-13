@@ -10293,3 +10293,45 @@ numbers); `tools/reset-drill.sh` and `node/examples/tamper-fringe-claim.rs` (the
 `casper/tests/merge_determinism.rs` (the property E1 measured live);
 `casper/src/multi_parent_casper.rs:248-252` (the stall the all-node tamper produced) and `:302`/`:334-338`
 (the two branches the tamper had to cover).
+
+## 111. The standing reset marker, on the status surface (C287, F-U12-02)
+
+§106's HAZOP left one deviation with the ladder's R2 shape and nothing to show for it: **the reset
+marker's lifetime is unbounded.** `clear_reset_marker` has exactly one caller — the catch-up walk, and
+only when its frontier passes the anchor (`casper/src/engine/catchup.rs:276-296`) — so a node that resets
+and *cannot catch up* stays under a marker for ever, re-entering the boot guard at every restart, with the
+residue reported only in a boot-time log line. Nothing a probe could ask said a marker was standing at all.
+
+**The surface.** `GET /api/v1/status` gains **`resetMarker`** — null when the node is not mid-reset, else
+the record rendered with its **phase**, anchor and height. The phase is the part that matters: `Rewinding`
+is the state a boot repairs, `Rewound` is the state a boot only names, and an operator reading a stalled
+node needs to tell them apart. The rendered height is the age proxy the row asked for: **a marker that
+stands while `latestBlockNumber` does not move** is a repair that is not converging, which is readable
+without watching.
+
+**Where it is written, and why there.** The cell lives with the reset's other cells in
+`interpreter_util` (`note_reset_marker` / `reset_marker_state`), and it is written by the **marker store's
+own three methods** (`BlockDagKeyValueStorage::write_reset_marker`, `read_reset_marker`,
+`clear_reset_marker`, `casper/src/dag.rs`) rather than at the call sites. That is deliberate: every writer
+goes through those methods, so a future one cannot miss the surface, and the surface cannot drift from the
+store it reports — the same reason `drop_above`'s trait forward exists two methods up.
+
+**The envelope discipline moves with it, which is the part that is easy to forget.** A new status field is
+`nullable`-and-**always present**, and law 43's catalog checks a *key set* — so
+`spec/Rchain/Envelope.lean`'s `ApiStatus` row gained `resetMarker`, the corpus was re-emitted
+(`spec/conformance/envelope.tsv`), and `node/tests/lean_envelope_corpus.rs`'s fixture gained the field. The
+corpus test is the gate that holds the DTO's own serialization, the served OpenAPI schema and the Lean
+catalog to one shape; it passed on the first run after all four moved together, which is what it is for.
+
+**What this does not change.** The marker's lifetime is still unbounded — the row asked for a surface *or*
+a bound, and the surface is the honest half: a bound would have to guess at how long a legitimate repair
+may take, and the catch-up frontier is the only condition that knows. What changed is that a standing
+marker is now **observable**, so "this node has been repairing for an hour" is a reading rather than an
+inference from a log line nobody is watching.
+
+**Evidence.** `casper/src/interpreter_util.rs` (the cell, and
+`the_reset_marker_surface_follows_the_store`) · `casper/src/dag.rs` (the three writers) ·
+`node/src/api/dto.rs`, `node/src/api/conversion.rs`, `node/src/api/web_api_impl.rs`, `node/src/web/http.rs`
+(the field, the mapping, the schema) · `spec/Rchain/Envelope.lean` + `spec/conformance/envelope.tsv` +
+`node/tests/lean_envelope_corpus.rs` (the catalog and its consumers) ·
+`docs/src/spec/failure-hazop.md` F-U12-02.

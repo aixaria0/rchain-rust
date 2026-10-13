@@ -693,9 +693,15 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                     .to_string(),
             );
         };
-        store
+        let result = store
             .put(&[(RESET_MARKER_KEY.to_vec(), marker.encode())])
-            .await
+            .await;
+        // The surface follows the store (F-U12-02, §111): every writer reports what it wrote, so a marker
+        // standing on a node that cannot catch up is visible to a probe rather than only in a log line.
+        if result.is_ok() {
+            crate::interpreter_util::note_reset_marker(Some(marker));
+        }
+        result
     }
 
     async fn read_reset_marker(&self) -> Result<Option<ResetMarker>, String> {
@@ -708,14 +714,20 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             .into_iter()
             .next()
             .flatten();
-        raw.map(|bytes| ResetMarker::decode(&bytes)).transpose()
+        let marker = raw.map(|bytes| ResetMarker::decode(&bytes)).transpose()?;
+        crate::interpreter_util::note_reset_marker(marker.clone());
+        Ok(marker)
     }
 
     async fn clear_reset_marker(&self) -> Result<(), String> {
         let Some(store) = &self.reset_marker else {
             return Ok(());
         };
-        store.delete(&[RESET_MARKER_KEY.to_vec()]).await.map(|_| ())
+        let result = store.delete(&[RESET_MARKER_KEY.to_vec()]).await.map(|_| ());
+        if result.is_ok() {
+            crate::interpreter_util::note_reset_marker(None);
+        }
+        result
     }
 
     /// The equivocations the H-1 gate recorded (AUDIT C200) — see the field's own note for why they

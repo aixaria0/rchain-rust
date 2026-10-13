@@ -148,6 +148,13 @@ pub struct ApiStatus {
     /// the two distinguishable — before #318 it counted single refusals and climbed once per round on a
     /// healthy net.
     pub finality_stall_episodes: u64,
+    /// **The reset marker this node is standing under**, rendered — `None` when it is not mid-reset
+    /// (F-U12-02). The marker is cleared only when the catch-up frontier passes its anchor, so a node
+    /// that resets and never catches up keeps re-entering the boot guard; that lifetime was unbounded
+    /// **and silent**, and this is the surface the ladder's R2 asks for. Read it with `unrestorableRecords`:
+    /// a standing marker says the node is repairing, and one that stands while the height does not move
+    /// says the repair is not converging.
+    pub reset_marker: Option<String>,
     /// #280's ledger, counted: merges that returned a report which was not quiet — a dropped chain, or a
     /// violated invariant. The live incident produced no counter and no line anywhere moving; this is
     /// the number it would have moved, and the log still carries the detail.
@@ -330,6 +337,7 @@ mod tests {
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            reset_marker: None,
             non_quiet_merge_reports: 0,
             sync: None,
             poison_recoveries: 0,

@@ -271,6 +271,7 @@ fn dto_by_name(name: &str) -> Value {
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            reset_marker: None,
             non_quiet_merge_reports: 0,
             sync: None,
             poison_recoveries: 0,

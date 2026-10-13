@@ -34,6 +34,9 @@ pub fn to_api_status(
     health: &ProposerHealth,
     finality: &FinalityHealth,
     sync: Option<&SyncHealth>,
+    // F-U12-02: the reset marker's own reading, threaded in like `sync` rather than fetched here, so a
+    // caller that has no store still maps a status deterministically.
+    reset_marker: Option<String>,
     poison_recoveries: u64,
     tasks_panicked: u64,
     tasks_exited: u64,
@@ -62,6 +65,7 @@ pub fn to_api_status(
         finality_stall: finality.stall_reason.clone(),
         finality_stalled: finality.stall_sustained,
         finality_stall_episodes: finality.stall_episodes,
+        reset_marker,
         non_quiet_merge_reports: finality.non_quiet_merge_reports,
         // Law 69's other half: the sync task's own state, threaded in by the caller exactly as
         // `finality` is. **`None` travels as `null` rather than as a zeroed object** — a reader must be
@@ -267,7 +271,7 @@ mod tests {
         };
         // The sync reading is a parameter like `finality`, and the `None` arm is the ordinary one:
         // this process's sync task has returned.
-        let api = to_api_status(&status, &caps, &health, &finality, None, 11, 2, 40, 7);
+        let api = to_api_status(&status, &caps, &health, &finality, None, None, 11, 2, 40, 7);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
