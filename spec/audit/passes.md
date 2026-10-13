@@ -10239,3 +10239,57 @@ found false is corrected rather than quietly dropped, and §108 published one.
 **Evidence.** `spec/audit/evidence/reset-arm/instrument-design.md`'s correction, with its anchors;
 `casper/src/multi_parent_casper.rs` (the restore's revalidation), `casper/src/block_status.rs` (the cause
 map); `observe.log` beside it for the run the design was for.
+
+## 110. The reset arm, attempted twice more: a partition and a state tamper (C286)
+
+§108 tried the route §101 named and found it retired; §109 refuted the first replacement by reading. This
+pass *measured* the next two, as the new plan's Phase 1 requires — each experiment cheap enough to kill its
+own instrument, with the result written down either way.
+
+**A partition stages nothing.** `up --validators 4 --fresh`, `docker network disconnect` on one validator
+for 60 s: the two heads formed exactly as predicted (isolated node 98 and still producing; survivors
+144/142) — and on reconnect it simply **caught up** (98 → 148), with the falsifier's grep returning **0** for
+`state-hash disagreement`, for each of the five statuses, and for every link of the reset's chain, and
+`unrestorableRecords` 0 throughout. That is `casper/tests/merge_determinism.rs`'s property — the merge is a
+pure function of the parent set — measured live, and it agrees with the repo's own `n223-rejoin-results.md`
+R3 (*"nothing is refused"*). `e1-partition.md`.
+
+**A state tamper is effective and cannot be aimed.** The route the two refutations leave: edit the **state
+the merge computes its base from**. A dev-only helper (`node/examples/tamper-fringe-claim.rs`) rewrites, on
+a stopped node's volume, the greatest-height block's `post_state_hash` and its per-block
+`fringe_state_hash` — both fields, because which one is read depends on whether a fringe exists
+(`multi_parent_casper.rs:302` vs `:334-338`, and a fresh net is in the second). Six runs:
+
+- tampering one node's own newest block: **nothing** — and the run *diagnosed* it, because the printed true
+  claim was the empty state hash, which names the branch the merge actually takes;
+- tampering **every** node's greatest-height blocks: **the chain stalls**, every node logging
+  `propose failed … active-bonds leaf not found in state` — **the merge's own comment names that exact
+  stall as the consequence of a wrong base** (`:248-252`). So the tamper *reaches the computation*;
+- tampering one validator, then the three armed validators with the bootstrap left clean so it would keep
+  publishing: **both absorbed**, heights advancing, zero markers.
+
+**The conclusion, and it is about the trigger rather than about the drill.** The tamper works and the
+mechanism is sound; the **aim** cannot be held. The trigger needs the tampered block to be the greatest
+`(height, hash)` **justification of a block the subject validates** — and on a live net the target moves
+every block, while a freeze-and-restart cannot pin it: the snapshot's max is already below the net's, and a
+node re-fetching the block overwrites the tampered body with the true one.
+
+**So the reset's trigger is not reachable by an external instrument at all — and that is by design.** A
+`Divergence` must be *intrinsic*: the node's own state or replay against a block everyone else accepts. Any
+difference applied from outside is either overwritten by the re-sync or is not the block the merge selects.
+The narrowness is the feature — a trigger loose enough for an external edit would also fire on a healthy
+node, and the reset is destructive. It follows that the arm can be staged only by an **intrinsic**
+divergence, the perturbed *build* (the route §109/#345 recorded), and that route **exercises the drive
+loop's third exit without satisfying F-U5-01's falsifier**, because a code-diverged node rewinds and fails
+again rather than healing.
+
+**What this changes.** F-U5-01's cell now says the arm is unrun *and why it cannot be run this way*, with
+both attempts measured rather than asserted. The instrument is committed beside them
+(`tools/reset-drill.sh`) with a header that states its own status, so the next reader does not rebuild a
+route that has already been shown not to hold.
+
+**Evidence.** `spec/audit/evidence/reset-arm/e1-partition.md` and `e2-tamper.md` (the readings, with the
+numbers); `tools/reset-drill.sh` and `node/examples/tamper-fringe-claim.rs` (the instrument);
+`casper/tests/merge_determinism.rs` (the property E1 measured live);
+`casper/src/multi_parent_casper.rs:248-252` (the stall the all-node tamper produced) and `:302`/`:334-338`
+(the two branches the tamper had to cover).
