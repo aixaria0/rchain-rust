@@ -330,7 +330,7 @@ left to be rediscovered.)
 | deviation | law that captures it, or the law owed | why |
 |---|---|---|
 | U11-01 | law 53c (`rewindStep`, `strandSystemRewinding`) | the rewind's *availability* (anchored) and *effect* (a refusal is removed); the delivery half is Rust-only and not a state relation |
-| U11-02 | owed: the same request law, stated per shard | the shard lane is a Rust partition, not a modelled state |
+| U11-02 | **R1 — unrepresentable, and no theorem is owed.** The lane *is* the key (`ShardId::to_string()`), so "a request raised for shard A is taken by shard B" has no state to write; a per-lane model would make the bad state unwritable, and a law about an unwritable state restates its own definition — the register's `vacuous` status, which exists to stop exactly that | the shard lane is a Rust partition, and the doctrine is to make the bad state unrepresentable rather than to guard (or prove) against it |
 | U11-03 | owed, and written first as law 73: **a raised request is not spent until the act commits** | idempotent retry of a pre-commit failure — law 53c models the rewind as an *effect*, not as a retryable transaction |
 
 ### U12 — The durable rewind (metadata, bodies, marker)

@@ -10335,3 +10335,50 @@ inference from a log line nobody is watching.
 (the field, the mapping, the schema) · `spec/Rchain/Envelope.lean` + `spec/conformance/envelope.tsv` +
 `node/tests/lean_envelope_corpus.rs` (the catalog and its consumers) ·
 `docs/src/spec/failure-hazop.md` F-U12-02.
+
+## 112. The R3 rung closes over: each residue item's true state (—, F-U5-01)
+
+The plan that took PR #340's line ("full running-engine reset-to-sync re-entry") listed five residue items
+beside the arm. This pass **checked each one's true state rather than assuming it was owed** — and three of
+the five were already where the plan asked them to be, which is worth recording because a residue left
+unread is a residue somebody re-opens.
+
+1. **F-U5-02's inverse — already dispositioned, not owed.** The row is R3 with `the_refusal_is_persistent`
+   as its falsifier, and the theorem that answers it is law 53c's
+   `the_refusal_is_not_persistent_once_a_rule_rewinds`; §101's correction already records that the
+   reddening came from #125's restoring rule rather than from the rewind, and that the reset is a **prefix**
+   step rather than an unmark. Nothing to add.
+2. **F-U11-02's per-shard law — R1, and no theorem is owed.** The lane *is* the key
+   (`ShardId::to_string()`), so "a request raised for shard A is taken by shard B" has no state to write: a
+   per-lane model would make the bad state **unrepresentable**, and a law about an unwritable state
+   restates its own definition — the register's `vacuous` status, which exists to stop exactly that.
+   U11's Table C now says so, where it previously said "owed: the same request law, stated per shard".
+3. **F-U12-02's marker lifetime — closed.** §111 / C287: the standing marker is on the status surface, and
+   the HAZOP row carries the surface as its falsifier. The lifetime is still unbounded, and the row says
+   why that is the honest half.
+4. **The four owed falsifiers — each carries its seam decision *and its reason*, where the plan asked for
+   the reason rather than silence.** F-U14-02: the `update_metadata` failure path has no injection point.
+   F-U15-01: the fold's failure path needs a failing history store, which the rspace test modules hold
+   privately (a new double for one branch; the *mechanism* it guards is already pinned at
+   `rspace/src/native_store.rs`). F-U16-01 and F-U16-02: the tool has no test harness, so the refusal and
+   the swap are pinned by reading. All four were recorded when their fixes landed; this pass confirmed the
+   cells say so.
+5. **TE-6, the net-wide rung — exercised, and now named.** The reconciliation's two halves are already
+   measured: the **meet** over artefacts (§98, three arms including the lagging-validator and node-down
+   refusals) and the **store-level restore that converged a stalled net** (§103,
+   `n-reconcile-drill/restore-disarmed.txt`: heights 17/17/17/17 with identical per-height hashes and
+   finality resumed to 11 where every node had answered *"Finalized fringe is not available."*). What was
+   missing was the *name*: TE-6 appeared six times in the failure page and nowhere in the pass record, so
+   a reader following the top event found no run. It is named here.
+
+**What the rung still leaves, and it is one thing.** F-U5-01's own arm — *a diverged running node re-enters
+sync* — is **unrun**, for the reason §110 measured: no external instrument can stage the trigger, because a
+`Divergence` must be intrinsic and the trigger's narrowness is the feature. The only remaining route is the
+perturbed **build** (§109's correction), and that route **exercises the drive loop's third exit without
+satisfying the falsifier** — a code-diverged node rewinds and fails again rather than healing. That is the
+rung's honest edge, and it is stated rather than papered over.
+
+**Evidence.** Each item's own record: `docs/src/spec/failure-hazop.md` (F-U5-02, U11's Table C,
+F-U12-02, F-U14-02, F-U15-01, F-U16-01/02) · `spec/Rchain/Casper/Stranding.lean` (law 53c) ·
+`spec/audit/passes.md` §98 and §103 with `spec/audit/evidence/n-reconcile-drill/` ·
+§110 and §111 for the two items this rung closed.
