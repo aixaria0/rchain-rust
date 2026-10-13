@@ -117,7 +117,7 @@ sed -e 's/→/->/g' -e 's/·/@SEP@/g' "$page" \
       next
     }
     /^\|/ {
-      if (NF != 11) next
+      if (NF != 12) next
       id = $2; gsub(/[^A-Za-z0-9-]/, "", id)
       if (id !~ /^W-N[0-9]+-[0-9]+$/) next
       if (node == "") { problem("Table A row " id " appears before any node heading"); next }
@@ -129,10 +129,11 @@ sed -e 's/→/->/g' -e 's/·/@SEP@/g' "$page" \
       else if (w in rowset) rowseen[w] = 1
       else problem(node " " id ": guide word " w " is not declared a `row` for this node")
       im = trim($7); if (im != "inside" && im != "outside") problem(node " " id ": in-model [" im "] is not inside/outside")
-      vd = trim($8); if (!(vd in verdict)) problem(node " " id ": verdict [" vd "] is not CONFIRMED/NOT-RE-ESTABLISHED/REFUTED/UNSTATABLE")
-      disp = trim($9); dtok = disp; sub(/[ \t(].*$/, "", dtok)
+      prec = trim($8); if (prec == "" || prec == "—") problem(node " " id ": no precondition -- a row without a context is not a finding")
+      vd = trim($9); if (!(vd in verdict)) problem(node " " id ": verdict [" vd "] is not CONFIRMED/NOT-RE-ESTABLISHED/REFUTED/UNSTATABLE")
+      disp = trim($10); dtok = disp; sub(/[ \t(].*$/, "", dtok)
       if (dtok != "—" && dtok != "-" && dtok !~ /^R[1-4]$/) problem(node " " id ": disposition [" disp "] is not `—` or a rung R1..R4")
-      fals = trim($10)
+      fals = trim($11)
       if (fals == "") { problem(node " " id ": empty falsifier"); next }
       if (fals ~ /^owed:/) next
       okp = 0; oksym = 0; anycol = 0; lastp = ""; lastsym = ""
