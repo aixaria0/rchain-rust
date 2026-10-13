@@ -4070,7 +4070,10 @@ def laws : List Law := [
       therefore loses the native mutations and records the failed drain in `last_native_*`, while the \
       hot-store side is untouched. The model is one overlay because the property is per-overlay — \
       applying it to both is what \"both overlays or neither\" means. HAZOP rows F-U15-01/02 \
-      (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
+      (docs/src/spec/failure-hazop.md). **Fixed 2026-10-13**: `create_checkpoint` snapshots the native \
+      overlay before the drain and restores it if the fold fails, and writes `last_native_*` only after \
+      the fold has committed. `rustWitness` is empty: the fold's failure path has no fault-injection \
+      point in the rspace tests yet, so that falsifier is owed." },
 
   { number := 75, layer := "Casper",
     statement := "**A dependent action is taken only on a committed record.** The refusal budget's \
