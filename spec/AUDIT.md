@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 322** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 323** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  116 of 322 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  117 of 323 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 322 are settled: **258 name the evidence that holds them** and **64 do not** — the
+All 323 are settled: **259 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -129,7 +129,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (322)
+### DONE (323)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -369,6 +369,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C285` | **The staging instrument §108 recommended cannot stage the arm.** §108 proposed marking a record `validation_failed / Divergence / restore_attempts = LIMIT` in a stopped node's `block-metadata`; reading the code it was designed against refutes it. `restore_divergent_justifications` re-runs `validate_checks` on the block and `revalidated_record` answers `Restored` for a block that passes, so a merely-marked *valid* block is cleared rather than escalated — `restore_budget_is_spent` is only reached through a genuine revalidation, and marking a spent budget from the start skips the restore path because `restore_is_warranted` requires attempts left. **Closed 2026-10-13 (§109)**: the recommended route is recorded as refuted, and the route that survives is named with its constraint — a perturbed image whose difference is outside the genesis path (a difference touching genesis fails block #0, where the node is in `NodeSyncing` and the drive loop does not exist). | casper/src/multi_parent_casper.rs/casper/src/block_status.rs | §109 |
 | `C286` | **The reset's trigger is not reachable by an external instrument — measured, twice.** F-U5-01's arm (*a diverged running node re-enters sync*) had no working staging route after §108/#344 (the named route retired) and §109/#345 (the first replacement refuted by reading). Two more were attempted with runs: a **network partition** stages nothing — two heads formed and simply re-converged on reconnect, zero divergence markers, because the merge is a pure function of the parent set (`merge_determinism.rs` measured live); and a **state tamper** is *effective* — applied to every node it stalls the chain with `propose failed … active-bonds leaf not found in state`, the merge's own documented consequence of a wrong base — but its **aim cannot be held**, because the trigger needs the tampered block to be the greatest `(height, hash)` justification of a block the subject *validates* and a live net moves that target every block. **Closed 2026-10-13 (§110)** as a corrected close condition: the trigger is intrinsic by design — a `Divergence` is the node's own state or replay against a block everyone else accepts, and a trigger loose enough for an external edit would fire on a healthy node. The only remaining route is a perturbed *build*, which §109 records as exercising the engine re-entry without satisfying the falsifier. | casper/tests/merge_determinism.rs/casper/src/multi_parent_casper.rs | §110 |
 | `C287` | **The reset marker's lifetime was unbounded and silent.** `clear_reset_marker` has exactly one caller — the catch-up walk, and only when its frontier passes the anchor (`casper/src/engine/catchup.rs:276-296`) — so a node that resets and *cannot catch up* stays under a marker for ever, re-entering the boot guard at every restart, with the residue reported only in a boot-time log line: nothing a probe could ask said a marker was standing at all. **Closed 2026-10-13 (§111).** `GET /api/v1/status` gains `resetMarker` — null when the node is not mid-reset, else the record rendered with its **phase**, anchor and height, the phase being the part that separates the state a boot repairs (`Rewinding`) from the one it only names (`Rewound`). The cell is written by the marker store's own three methods (`casper/src/dag.rs`), so every writer drives it and the surface cannot drift from the store; a new status field is nullable-and-always-present, so law 43's catalog (`spec/Rchain/Envelope.lean`), the emitted corpus and its consumer moved with it. | casper/src/interpreter_util.rs/casper/src/dag.rs | §111 |
+| `C288` | **The perturbed build — the route §109 named as surviving — reaches the detector and stops at the anchor.** F-U5-01's trigger needs three things together: a genuine repeated `Divergence`, a spent budget, **and a finalised anchor with a height**. A build perturbed at `casper/src/multi_parent_casper.rs:468` (every non-genesis pre-state one byte off; never committed) produced the first two **96 times** — the perturbed node sat at height 1 while its three clean peers ran to 99, refusing every clean block — and could not produce the third: diverging from height 1 means never finalising, so `rewind_plan` named no anchor and the reset was withheld with `RefuseNoAnchor` (*"could not name a safe state: the 0 block(s) this node holds above genesis"*) — correctly, since there is nowhere to rewind *to*. **Closed 2026-10-13 (§113)** as the third and last route's measurement: the sharper the perturbation the less the node finalises, so the act is reachable only by a node that diverged *after* finalising something — the partial view divergence §110 showed no instrument can aim. F-U5-01's arm therefore has **no route at all** on this tree, external or built, and §109's expectation ("exercises the re-entry") is corrected: it exercises the **detector**. | casper/src/multi_parent_casper.rs/casper/src/interpreter_util.rs | §113 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

@@ -10382,3 +10382,41 @@ rung's honest edge, and it is stated rather than papered over.
 F-U12-02, F-U14-02, F-U15-01, F-U16-01/02) · `spec/Rchain/Casper/Stranding.lean` (law 53c) ·
 `spec/audit/passes.md` §98 and §103 with `spec/audit/evidence/n-reconcile-drill/` ·
 §110 and §111 for the two items this rung closed.
+
+## 113. The perturbed build reaches the detector, and the anchor refuses (C288, F-U5-01)
+
+§109's correction named the perturbed **build** as the route that survives both refutations: an *intrinsic*
+divergence, which is what §110 showed no external edit could aim at. This pass built it and ran it. **The
+route does not reach the act either, and §109's own expectation was too generous.**
+
+**The build.** One line, never committed, at `casper/src/multi_parent_casper.rs:468`: a non-genesis block's
+pre-state is computed with one byte flipped, so a clean node's block fails this node's
+`InvalidPreStateHash` — a `FailureCause::Divergence`, the class the restore budget spends. Genesis does not
+take that path, so the node still joins. The tree was reverted after the build.
+
+**What it measured.** The perturbed node sat at height **1** while its three clean peers ran to **99** — it
+refused every clean block, so the perturbation is exactly what it was for. And the trigger's halves
+**split**: the detector fired — `cannot restore block … (seq 2): its revalidation budget is spent after 3
+attempt(s) … unless a reset follows`, **96 times** — and the act was refused:
+`could not name a safe state: the 0 block(s) this node holds above genesis would have to be replayed from
+it`, the **`RefuseNoAnchor`** arm. A node that diverges from height 1 never finalises anything, so
+`rewind_plan` names no anchor, and the reset is withheld — correctly, because a node with nothing finalised
+above genesis has nowhere to rewind *to*.
+
+**The finding completes §110 rather than repeating it.** The trigger needs **three** things together: a
+genuine repeated `Divergence`, a spent budget, **and a finalised anchor with a height**. The external edits
+(§110) could not hold the aim; a *whole-build* perturbation cannot produce the anchor, and the sharper the
+perturbation the less the node finalises — so a perturbation reliable enough to be refused is one that
+refuses from the earliest block. The act is therefore reachable only by a node that diverged **after
+finalising something**: a *partial* view divergence, which is the same target §110 showed no instrument can
+aim, arrived at from the other side.
+
+**What it closes.** F-U5-01's arm has **no route at all** on this tree — external or built — and the reason
+is structural rather than a gap in the tooling: the three preconditions cannot be met simultaneously by
+anything that is not a genuine partial divergence. The row's close condition says so, and the two earlier
+attempts' instruments stay committed beside the reading so no future session rebuilds a route already
+shown not to hold.
+
+**Evidence.** `spec/audit/evidence/reset-arm/e3-perturbed.md` (the reading, with the four status readings
+and both log lines verbatim); `casper/src/multi_parent_casper.rs:468` (the perturbed site, reverted);
+`spec/audit/evidence/reset-arm/e1-partition.md` and `e2-tamper.md` (the two routes it completes).
