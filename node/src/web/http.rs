@@ -984,6 +984,7 @@ pub const OPENAPI_JSON: &str = r##"{
           "finalityStall": { "type": "string", "nullable": true, "description": "The merge gate's verdict on the last block this node validated, with the numbers that make it a diagnosis (supporting stake, partitions, candidates, and the partition size it measured against). Null when that derivation advanced. NOT an alarm: on a producing chain most blocks are refused by the stake gate, because a block justifies only the messages that existed when it was built — read finalityStalled for that" },
           "finalityStalled": { "type": "boolean", "description": "Whether this node is stalled right now: the derivation has been refused for longer than a round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary partial layers of a producing chain. This is the field to alarm on; finalityStall above is its diagnosis" },
           "finalityStallEpisodes": { "type": "integer", "format": "int64", "description": "Times this node has entered a finality stall — the sustained state finalityStalled reports — monotone, so 'stalled now' is distinguishable from 'stalled and recovered'" },
+          "resetMarker": { "type": "string", "nullable": true, "description": "The reset marker this node is standing under: the durable record a self-reset writes, rendered with its phase, anchor and height. Null when the node is not mid-reset. The marker is cleared only when the catch-up frontier passes its anchor, so one that stands while the height does not move says the repair is not converging (F-U12-02)" },
           "nonQuietMergeReports": { "type": "integer", "format": "int64", "description": "Merges whose report was not quiet: a chain dropped, or an invariant violated. The log carries the detail; this is the count the live incident would have moved" },
           "sync": { "type": "object", "nullable": true, "description": "The LFS sync task's own state while this node is in NodeSyncing — how many attempts it has started and why the last one failed. Null means the sync task has returned, which covers both a restored state and a node that never had to sync; it does NOT mean 'synced fine'", "properties": { "attempts": { "type": "integer", "format": "int64", "description": "Attempts the sync task has started" }, "lastFailure": { "type": "string", "nullable": true, "description": "The last named sync failure, verbatim; null while the attempt now running has not failed" } } },
           "poisonRecoveries": { "type": "integer", "format": "int64", "description": "Times a poisoned lock was recovered from, which means a panic happened while shared state was held. Process-wide and monotone" },
@@ -1643,6 +1644,7 @@ mod tests {
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            reset_marker: None,
             non_quiet_merge_reports: 0,
             // The "not syncing" arm: a node whose sync task has returned reports `sync: null`, which
             // is what every line above says in its own way.

@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use rchain_block_storage::block_store::BlockStore;
-use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::dag::dag_storage::{BlockDagStorage, ResetMarker};
 use rchain_block_storage::dag::finalizer::NoAdvance;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
@@ -474,6 +474,28 @@ pub fn take_reset_request(shard: &str) -> Option<ResetRequest> {
 /// A shard's pending request without taking it, for the status surface and for tests.
 pub fn reset_request(shard: &str) -> Option<ResetRequest> {
     RESET_REQUEST.lock().unpoison().get(shard).cloned()
+}
+
+/// **The reset marker this node is standing under** — the durable record, read onto the surface (F-U12-02,
+/// §111). The record is cleared only when the catch-up frontier passes its anchor, so a node that resets
+/// and never catches up keeps re-entering the boot guard, and **until now nothing said so anywhere a probe
+/// could ask**: the marker's lifetime was unbounded and silent. A surface is the R2 answer the ladder asks
+/// for, and it is the whole finding — a marker that stands is a node mid-repair, which an operator reading
+/// a stalled node needs to see.
+///
+/// Written by the marker store's own three methods (`casper/src/dag.rs`), so a future writer cannot miss
+/// it, and read by the status surface. `None` means this node is not mid-reset.
+static CURRENT_RESET_MARKER: std::sync::Mutex<Option<ResetMarker>> = std::sync::Mutex::new(None);
+
+/// Record what the marker store now holds. Called by every marker write, read and clear, so the surface
+/// cannot drift from the store it reports.
+pub fn note_reset_marker(marker: Option<ResetMarker>) {
+    *CURRENT_RESET_MARKER.lock().unpoison() = marker;
+}
+
+/// The standing marker, for the status surface.
+pub fn reset_marker_state() -> Option<ResetMarker> {
+    CURRENT_RESET_MARKER.lock().unpoison().clone()
 }
 
 /// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
@@ -1042,6 +1064,37 @@ mod tests {
                 .await
                 .is_err(),
             "installing on an empty lane must not request a spurious reset"
+        );
+    }
+
+    /// **The standing-marker surface follows the store** (F-U12-02, §111). The marker's lifetime is
+    /// unbounded — it is cleared only when the catch-up frontier passes its anchor — so a node that
+    /// resets and cannot catch up stands under one for ever, and before this cell nothing on any surface
+    /// said so. The cell is process-wide, so this test owns it; the *wiring* (every marker write, read
+    /// and clear driving it) is pinned in `casper/tests/reset.rs`'s crash test, which writes a real
+    /// marker through the storage trait.
+    #[test]
+    fn the_reset_marker_surface_follows_the_store() {
+        note_reset_marker(None);
+        assert!(
+            reset_marker_state().is_none(),
+            "no marker, nothing reported: a healthy node is not mid-reset"
+        );
+        let marker = ResetMarker {
+            anchor: BlockHash::new([7u8; 32]),
+            height: BlockHeight::try_from(5i64).expect("a height"),
+            phase: rchain_block_storage::dag::dag_storage::ResetPhase::Rewinding,
+        };
+        note_reset_marker(Some(marker.clone()));
+        assert_eq!(
+            reset_marker_state(),
+            Some(marker),
+            "a standing marker is reportable without reading the DAG"
+        );
+        note_reset_marker(None);
+        assert!(
+            reset_marker_state().is_none(),
+            "and the clear is reported too — a surface that kept reporting would alarm for ever"
         );
     }
 

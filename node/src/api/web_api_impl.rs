@@ -1058,6 +1058,23 @@ impl WebApi for WebApiImpl {
             &health,
             &finality,
             sync.as_ref(),
+            // F-U12-02: the durable reset marker, rendered. Read from the marker store's own cell — which
+            // every writer writes — so it cannot go stale behind the store it reports. A marker that
+            // stands is a node mid-repair: it is cleared only when the catch-up frontier passes its
+            // anchor, and until this field existed nothing on any surface said one was standing.
+            rchain_casper::interpreter_util::reset_marker_state().map(|m| {
+                use rchain_block_storage::dag::dag_storage::ResetPhase;
+                let phase = match m.phase {
+                    ResetPhase::Rewinding => "rewinding",
+                    ResetPhase::Rewound => "rewound",
+                };
+                format!(
+                    "{phase} to {} at height {} (the catch-up walk clears it when its frontier passes \
+                     that height)",
+                    m.anchor.to_hex(),
+                    i64::from(m.height)
+                )
+            }),
             rchain_rspace::lock::poison_recoveries(),
             // C254: the supervisor's counters. Every long-lived background task is watched by
             // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a

@@ -68,6 +68,7 @@ def envelopeCatalog : List EnvelopeRow :=
         "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode",
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
         "staleSnapshotSelfEquivocations", "finalityStall", "finalityStalled", "finalityStallEpisodes",
+        "resetMarker",
         "nonQuietMergeReports", "sync", "poisonRecoveries", "unrestorableRecords", "unrestorableBlock", "tasksPanicked", "tasksExited",
         "undeliveredSends"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",

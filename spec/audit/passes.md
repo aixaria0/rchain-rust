@@ -10293,3 +10293,209 @@ numbers); `tools/reset-drill.sh` and `node/examples/tamper-fringe-claim.rs` (the
 `casper/tests/merge_determinism.rs` (the property E1 measured live);
 `casper/src/multi_parent_casper.rs:248-252` (the stall the all-node tamper produced) and `:302`/`:334-338`
 (the two branches the tamper had to cover).
+
+## 111. The standing reset marker, on the status surface (C287, F-U12-02)
+
+§106's HAZOP left one deviation with the ladder's R2 shape and nothing to show for it: **the reset
+marker's lifetime is unbounded.** `clear_reset_marker` has exactly one caller — the catch-up walk, and
+only when its frontier passes the anchor (`casper/src/engine/catchup.rs:276-296`) — so a node that resets
+and *cannot catch up* stays under a marker for ever, re-entering the boot guard at every restart, with the
+residue reported only in a boot-time log line. Nothing a probe could ask said a marker was standing at all.
+
+**The surface.** `GET /api/v1/status` gains **`resetMarker`** — null when the node is not mid-reset, else
+the record rendered with its **phase**, anchor and height. The phase is the part that matters: `Rewinding`
+is the state a boot repairs, `Rewound` is the state a boot only names, and an operator reading a stalled
+node needs to tell them apart. The rendered height is the age proxy the row asked for: **a marker that
+stands while `latestBlockNumber` does not move** is a repair that is not converging, which is readable
+without watching.
+
+**Where it is written, and why there.** The cell lives with the reset's other cells in
+`interpreter_util` (`note_reset_marker` / `reset_marker_state`), and it is written by the **marker store's
+own three methods** (`BlockDagKeyValueStorage::write_reset_marker`, `read_reset_marker`,
+`clear_reset_marker`, `casper/src/dag.rs`) rather than at the call sites. That is deliberate: every writer
+goes through those methods, so a future one cannot miss the surface, and the surface cannot drift from the
+store it reports — the same reason `drop_above`'s trait forward exists two methods up.
+
+**The envelope discipline moves with it, which is the part that is easy to forget.** A new status field is
+`nullable`-and-**always present**, and law 43's catalog checks a *key set* — so
+`spec/Rchain/Envelope.lean`'s `ApiStatus` row gained `resetMarker`, the corpus was re-emitted
+(`spec/conformance/envelope.tsv`), and `node/tests/lean_envelope_corpus.rs`'s fixture gained the field. The
+corpus test is the gate that holds the DTO's own serialization, the served OpenAPI schema and the Lean
+catalog to one shape; it passed on the first run after all four moved together, which is what it is for.
+
+**What this does not change.** The marker's lifetime is still unbounded — the row asked for a surface *or*
+a bound, and the surface is the honest half: a bound would have to guess at how long a legitimate repair
+may take, and the catch-up frontier is the only condition that knows. What changed is that a standing
+marker is now **observable**, so "this node has been repairing for an hour" is a reading rather than an
+inference from a log line nobody is watching.
+
+**Evidence.** `casper/src/interpreter_util.rs` (the cell, and
+`the_reset_marker_surface_follows_the_store`) · `casper/src/dag.rs` (the three writers) ·
+`node/src/api/dto.rs`, `node/src/api/conversion.rs`, `node/src/api/web_api_impl.rs`, `node/src/web/http.rs`
+(the field, the mapping, the schema) · `spec/Rchain/Envelope.lean` + `spec/conformance/envelope.tsv` +
+`node/tests/lean_envelope_corpus.rs` (the catalog and its consumers) ·
+`docs/src/spec/failure-hazop.md` F-U12-02.
+
+## 112. The R3 rung closes over: each residue item's true state (—, F-U5-01)
+
+The plan that took PR #340's line ("full running-engine reset-to-sync re-entry") listed five residue items
+beside the arm. This pass **checked each one's true state rather than assuming it was owed** — and three of
+the five were already where the plan asked them to be, which is worth recording because a residue left
+unread is a residue somebody re-opens.
+
+1. **F-U5-02's inverse — already dispositioned, not owed.** The row is R3 with `the_refusal_is_persistent`
+   as its falsifier, and the theorem that answers it is law 53c's
+   `the_refusal_is_not_persistent_once_a_rule_rewinds`; §101's correction already records that the
+   reddening came from #125's restoring rule rather than from the rewind, and that the reset is a **prefix**
+   step rather than an unmark. Nothing to add.
+2. **F-U11-02's per-shard law — R1, and no theorem is owed.** The lane *is* the key
+   (`ShardId::to_string()`), so "a request raised for shard A is taken by shard B" has no state to write: a
+   per-lane model would make the bad state **unrepresentable**, and a law about an unwritable state
+   restates its own definition — the register's `vacuous` status, which exists to stop exactly that.
+   U11's Table C now says so, where it previously said "owed: the same request law, stated per shard".
+3. **F-U12-02's marker lifetime — closed.** §111 / C287: the standing marker is on the status surface, and
+   the HAZOP row carries the surface as its falsifier. The lifetime is still unbounded, and the row says
+   why that is the honest half.
+4. **The four owed falsifiers — each carries its seam decision *and its reason*, where the plan asked for
+   the reason rather than silence.** F-U14-02: the `update_metadata` failure path has no injection point.
+   F-U15-01: the fold's failure path needs a failing history store, which the rspace test modules hold
+   privately (a new double for one branch; the *mechanism* it guards is already pinned at
+   `rspace/src/native_store.rs`). F-U16-01 and F-U16-02: the tool has no test harness, so the refusal and
+   the swap are pinned by reading. All four were recorded when their fixes landed; this pass confirmed the
+   cells say so.
+5. **TE-6, the net-wide rung — exercised, and now named.** The reconciliation's two halves are already
+   measured: the **meet** over artefacts (§98, three arms including the lagging-validator and node-down
+   refusals) and the **store-level restore that converged a stalled net** (§103,
+   `n-reconcile-drill/restore-disarmed.txt`: heights 17/17/17/17 with identical per-height hashes and
+   finality resumed to 11 where every node had answered *"Finalized fringe is not available."*). What was
+   missing was the *name*: TE-6 appeared six times in the failure page and nowhere in the pass record, so
+   a reader following the top event found no run. It is named here.
+
+**What the rung still leaves, and it is one thing.** F-U5-01's own arm — *a diverged running node re-enters
+sync* — is **unrun**, for the reason §110 measured: no external instrument can stage the trigger, because a
+`Divergence` must be intrinsic and the trigger's narrowness is the feature. The only remaining route is the
+perturbed **build** (§109's correction), and that route **exercises the drive loop's third exit without
+satisfying the falsifier** — a code-diverged node rewinds and fails again rather than healing. That is the
+rung's honest edge, and it is stated rather than papered over.
+
+**Evidence.** Each item's own record: `docs/src/spec/failure-hazop.md` (F-U5-02, U11's Table C,
+F-U12-02, F-U14-02, F-U15-01, F-U16-01/02) · `spec/Rchain/Casper/Stranding.lean` (law 53c) ·
+`spec/audit/passes.md` §98 and §103 with `spec/audit/evidence/n-reconcile-drill/` ·
+§110 and §111 for the two items this rung closed.
+
+## 113. The perturbed build reaches the detector, and the anchor refuses (C288, F-U5-01)
+
+§109's correction named the perturbed **build** as the route that survives both refutations: an *intrinsic*
+divergence, which is what §110 showed no external edit could aim at. This pass built it and ran it. **The
+route does not reach the act either, and §109's own expectation was too generous.**
+
+**The build.** One line, never committed, at `casper/src/multi_parent_casper.rs:468`: a non-genesis block's
+pre-state is computed with one byte flipped, so a clean node's block fails this node's
+`InvalidPreStateHash` — a `FailureCause::Divergence`, the class the restore budget spends. Genesis does not
+take that path, so the node still joins. The tree was reverted after the build.
+
+**What it measured.** The perturbed node sat at height **1** while its three clean peers ran to **99** — it
+refused every clean block, so the perturbation is exactly what it was for. And the trigger's halves
+**split**: the detector fired — `cannot restore block … (seq 2): its revalidation budget is spent after 3
+attempt(s) … unless a reset follows`, **96 times** — and the act was refused:
+`could not name a safe state: the 0 block(s) this node holds above genesis would have to be replayed from
+it`, the **`RefuseNoAnchor`** arm. A node that diverges from height 1 never finalises anything, so
+`rewind_plan` names no anchor, and the reset is withheld — correctly, because a node with nothing finalised
+above genesis has nowhere to rewind *to*.
+
+**The finding completes §110 rather than repeating it.** The trigger needs **three** things together: a
+genuine repeated `Divergence`, a spent budget, **and a finalised anchor with a height**. The external edits
+(§110) could not hold the aim; a *whole-build* perturbation cannot produce the anchor, and the sharper the
+perturbation the less the node finalises — so a perturbation reliable enough to be refused is one that
+refuses from the earliest block. The act is therefore reachable only by a node that diverged **after
+finalising something**: a *partial* view divergence, which is the same target §110 showed no instrument can
+aim, arrived at from the other side.
+
+**What it closes.** F-U5-01's arm has **no route at all** on this tree — external or built — and the reason
+is structural rather than a gap in the tooling: the three preconditions cannot be met simultaneously by
+anything that is not a genuine partial divergence. The row's close condition says so, and the two earlier
+attempts' instruments stay committed beside the reading so no future session rebuilds a route already
+shown not to hold.
+
+**Evidence.** `spec/audit/evidence/reset-arm/e3-perturbed.md` (the reading, with the four status readings
+and both log lines verbatim); `casper/src/multi_parent_casper.rs:468` (the perturbed site, reverted);
+`spec/audit/evidence/reset-arm/e1-partition.md` and `e2-tamper.md` (the two routes it completes).
+
+## 114. The hardening is the finding, not the unrun arm (—, F-U5-01)
+
+Three passes (§108, §110, §113) spent three instruments failing to produce the state the self-reset
+repairs, and the pass record framed each as a *deficit* — the arm unrun. That framing was wrong, and this
+pass corrects it: **the tree has been hardened against the failure, and the three failures to stage it are
+the measurement of that.**
+
+The chain, and each step is measured rather than argued (`docs/src/spec/failure-hazop.md` §8 carries it in
+full): **the producer was deleted, not guarded** — the fringe-record `min` tie-break that produced §92's
+self-reject and TE-1's four heads was retired by law 66/67/68's per-block redesign, so two blocks that
+disagree are two visible claims rather than one rewritten value, and the class has no producer left
+(measured: zero `[fringe-divergence]` and zero self-rejections over ~170 blocks where the pre-fix build
+stalled three of four nodes); **the merge is now a pure function of the parent set** — `merge_determinism.rs`
+is the standing property and E1 measured it live, a partition's two heads re-converging because a node with
+a different block set computes the same answer; **and what remains is healed before the budget spends** —
+the restoring rule revalidates a view-dependent refusal up to three times and does not manufacture
+agreement, so the counter the reset acts on is a backstop for a *persistent* disagreement.
+
+**The instruments' failure is step four of that chain.** A partition could not create a difference; a state
+tamper *did* change the computation — it stalls the chain with the merge's own documented wrong-base error —
+but could not be aimed at the block the merge selects; and a whole-build perturbation produced the
+divergence and the spent budget **96 times** and then found **nothing to rewind to**, because a node that
+diverges before finalising has no anchor. The state R3 repairs therefore needs a **partial** divergence —
+one arising *after* a node has finalised — which is exactly the class the record redesign removed the
+producer of.
+
+**What the R3 backstop is for, and what this does not claim.** The disposition stays **R3**: a hard reset
+and catch-up is what the node does if it ever gets there. Its likelihood is what the hardening changed. So
+the rung's remaining duty is not to *drill* the reset but to keep it **safe if it ever fires** — the durable
+half, the two-phase crash marker, the boot repair, the fatal stop, and the ordered request-and-spend, each
+pinned by a test and, where the state is representable, by a law (72–76). That is a fire escape's standing:
+harden the building so it is never needed, and keep the escape sound and tested in pieces. **The hazard is
+not impossible** — a future regression, or a genuine disagreement no local restore heals (TE-6, the
+net-wide case, §112 item 5), would still need R3 or the reconciliation. The claim is narrower and
+checkable: the producers this tree had are gone, and the instruments that tried to re-create one could not.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` §8 (the hardening, quoted above) and F-U5-01's cell (which
+now leads with it); `spec/audit/evidence/reset-arm/{e1-partition,e2-tamper,e3-perturbed}.md` (the three
+measurements); `casper/tests/merge_determinism.rs` (the standing property E1 measured live);
+`casper/tests/reset.rs` and laws 72–76 (the backstop's own pieces).
+
+## 115. F-U5-01 is not a register item: the failure mode is unstatable on this build (—, F-U5-01)
+
+§114 made the hardening the finding. This pass draws the consequence for the *row*, because §108, §110 and
+§113 had each left F-U5-01 reading as an open item — "the arm is unrun" — and that reading is wrong in a way
+this repository has a rule against.
+
+**The progression, stated because it is real.** An inherently safe design *retires* the reproducible failure
+mode, and that is forward motion: the states F-U5-01's own reproductions exhibited (§92's self-reject,
+TE-1's four heads) can no longer be constructed from before. §8 of the failure page lays out the chain, each
+step measured.
+
+**And the limit, which is the part that had gone unsaid.** Retiring the old producer says nothing about what
+**this** build's failure mode would be. The old reproduction is evidence about the old build. No failure mode
+is statable for the current one: every candidate reduces either to *a future regression that reintroduces a
+producer* — a statement about a build that does not exist — or to a net-wide disagreement whose cause is by
+construction not in the tree (TE-6). **A failure mode nobody can name is a nebulous risk, not a register
+item**, and this repository's own rule says so from the other side: a statement nothing can falsify is not a
+statement (the register's `vacuous` status). An item that cannot be reproduced, cannot be named and cannot be
+falsified is that shape whatever column it sits in.
+
+**What changed, then.** F-U5-01's *deviation* — *there is no reset-and-resync path for a running node* — is
+**closed**: the path landed (R3), and its falsifier is the crash-repair test, which the HAZOP already names.
+The *arm* — *produce a diverged running node and watch it heal* — is **not owed and not done**: it is
+recorded as a **risk** in §8, kept **out of the debt** (the row's falsifier is a path, so it was never
+counted), and F-U5-01's own cell says so in its own words. What remains checkable is the backstop's own
+pieces — the durable half, the crash marker, the boot repair, the fatal stop, the ordering (laws 72–76,
+`casper/tests/reset.rs`) — and the `apply`-level wiring, which stays read rather than run.
+
+**Why this is worth a section rather than a cell edit.** Three passes treated a retired failure mode as an
+open coverage gap, and the register grew three rows (§110's C286, §113's C288) around a state no instrument
+could produce. That is the shape this repository's `vacuous` status exists to stop: work about a statement
+nothing can falsify. Naming it here is what stops a fourth pass from trying a fourth instrument.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` §8 (the hardening, the progression and its limit) and
+F-U5-01's cell (rewritten: *not owed — unstatable*); `spec/audit/evidence/reset-arm/` (the three attempts it
+supersedes); `casper/tests/merge_determinism.rs` and laws 72–76 (what remains checkable).
+
