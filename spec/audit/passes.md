@@ -10461,3 +10461,41 @@ checkable: the producers this tree had are gone, and the instruments that tried 
 now leads with it); `spec/audit/evidence/reset-arm/{e1-partition,e2-tamper,e3-perturbed}.md` (the three
 measurements); `casper/tests/merge_determinism.rs` (the standing property E1 measured live);
 `casper/tests/reset.rs` and laws 72–76 (the backstop's own pieces).
+
+## 115. F-U5-01 is not a register item: the failure mode is unstatable on this build (—, F-U5-01)
+
+§114 made the hardening the finding. This pass draws the consequence for the *row*, because §108, §110 and
+§113 had each left F-U5-01 reading as an open item — "the arm is unrun" — and that reading is wrong in a way
+this repository has a rule against.
+
+**The progression, stated because it is real.** An inherently safe design *retires* the reproducible failure
+mode, and that is forward motion: the states F-U5-01's own reproductions exhibited (§92's self-reject,
+TE-1's four heads) can no longer be constructed from before. §8 of the failure page lays out the chain, each
+step measured.
+
+**And the limit, which is the part that had gone unsaid.** Retiring the old producer says nothing about what
+**this** build's failure mode would be. The old reproduction is evidence about the old build. No failure mode
+is statable for the current one: every candidate reduces either to *a future regression that reintroduces a
+producer* — a statement about a build that does not exist — or to a net-wide disagreement whose cause is by
+construction not in the tree (TE-6). **A failure mode nobody can name is a nebulous risk, not a register
+item**, and this repository's own rule says so from the other side: a statement nothing can falsify is not a
+statement (the register's `vacuous` status). An item that cannot be reproduced, cannot be named and cannot be
+falsified is that shape whatever column it sits in.
+
+**What changed, then.** F-U5-01's *deviation* — *there is no reset-and-resync path for a running node* — is
+**closed**: the path landed (R3), and its falsifier is the crash-repair test, which the HAZOP already names.
+The *arm* — *produce a diverged running node and watch it heal* — is **not owed and not done**: it is
+recorded as a **risk** in §8, kept **out of the debt** (the row's falsifier is a path, so it was never
+counted), and F-U5-01's own cell says so in its own words. What remains checkable is the backstop's own
+pieces — the durable half, the crash marker, the boot repair, the fatal stop, the ordering (laws 72–76,
+`casper/tests/reset.rs`) — and the `apply`-level wiring, which stays read rather than run.
+
+**Why this is worth a section rather than a cell edit.** Three passes treated a retired failure mode as an
+open coverage gap, and the register grew three rows (§110's C286, §113's C288) around a state no instrument
+could produce. That is the shape this repository's `vacuous` status exists to stop: work about a statement
+nothing can falsify. Naming it here is what stops a fourth pass from trying a fourth instrument.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` §8 (the hardening, the progression and its limit) and
+F-U5-01's cell (rewritten: *not owed — unstatable*); `spec/audit/evidence/reset-arm/` (the three attempts it
+supersedes); `casper/tests/merge_determinism.rs` and laws 72–76 (what remains checkable).
+
