@@ -188,6 +188,13 @@ pub struct AdminState {
     pub enable_ocapn_dial: bool,
     /// Rate limiter for the dial route. See [`OCAPN_DIAL_RATE_LIMIT_PER_SEC`].
     pub ocapn_dial_rate_limiter: Arc<KeyedRateLimiter>,
+    /// **The PoS read, which is where a delegator's positions are served from** (W-N3-03).
+    ///
+    /// It was on `HttpState` and the route was on the public router, so `/api/v1/pos/delegations`
+    /// answered any caller's question about any delegator's portfolio. It is a *store query* keyed on
+    /// a caller-supplied key, not chain state a peer would read, and the admin listener is where this
+    /// codebase puts the surfaces that act with the operator's authority.
+    pub pos: Arc<dyn PosReadApi>,
 }
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
@@ -239,6 +246,16 @@ fn json_result<T: Serialize>(result: Result<T, BlockApiException>) -> Response {
 
 async fn api_status(State(state): State<HttpState>) -> Response {
     json_result(state.web_api.status().await)
+}
+
+/// `GET /api/v1/status/operator` — **the operator half of the status, on the admin listener**
+/// (W-N3-01).
+///
+/// A **distinct path** rather than the same path with a second schema, for two reasons: OpenAPI cannot
+/// hold two schemas at one path, and tooling that greps `/api/status` keeps working. The public
+/// `/api/status` no longer carries a single operator field.
+async fn api_operator_status(State(state): State<AdminState>) -> Response {
+    json_result(state.admin_web_api.operator_status().await)
 }
 
 async fn api_deploys(State(state): State<HttpState>) -> Response {
@@ -296,7 +313,7 @@ struct PosDelegationsQuery {
 }
 
 async fn api_pos_delegations(
-    State(state): State<HttpState>,
+    State(state): State<AdminState>,
     Query(query): Query<PosDelegationsQuery>,
 ) -> Response {
     // `400` rather than an empty list for a malformed key: an empty list is a *true answer* about a
@@ -924,6 +941,7 @@ pub const OPENAPI_JSON: &str = r##"{
       },
       "ApiStatus": {
         "type": "object",
+        "description": "**The chain-public half of the node's status** (W-N3-01). The operator half — divergence records, the safety halt, the report counters, the sync task's state, the durable reset marker — is `OperatorStatus`, served on the admin listener at /api/v1/status/operator and never here.",
         "properties": {
           "version": { "$ref": "#/components/schemas/VersionInfo" },
           "address": { "type": "string" },
@@ -936,10 +954,30 @@ pub const OPENAPI_JSON: &str = r##"{
           "autopropose": { "type": "boolean", "description": "Continuous block production" },
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
-          "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
+          "devMode": { "type": "boolean", "description": "Dev mode is on" }
+        }
+      },
+      "OperatorStatus": {
+        "type": "object",
+        "description": "**The operator half of the node's status**, served on the admin listener. A superset of `ApiStatus` by construction: every public property appears here too, so a client can move between the two routes without a shape change (W-N3-01).",
+        "properties": {
+          "version": { "$ref": "#/components/schemas/VersionInfo" },
+          "address": { "type": "string" },
+          "networkId": { "type": "string" },
+          "shardId": { "type": "string" },
+          "peers": { "type": "integer", "format": "int32" },
+          "nodes": { "type": "integer", "format": "int32" },
+          "minPhloPrice": { "type": "integer", "format": "int64" },
+          "latestBlockNumber": { "type": "integer", "format": "int64" },
+          "autopropose": { "type": "boolean", "description": "Continuous block production" },
+          "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
+          "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
           "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
+          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64", "description": "How many times this process's autopropose timer has stopped. The flag beside it is sticky and process-wide, so a restarted node reports false — an all-clear that the earlier halt never happened; a monotone count cannot reverse, which is what tells the two apart (W-N10-01)" },
+          "autoproposeTapSuppressed": { "type": "integer", "format": "int64", "description": "Autopropose requests the validated-block tap refused because the timer is halted. The halt is only a halt if the tap obeys it, and this is the measurement of what it cost (W-N4-08)" },
           "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64", "description": "Times the node's own block collided with its already-synced block at a sequence number derived from a stale parent set. Not a self-validation failure, so it does not halt the timer" },
           "finalityStall": { "type": "string", "nullable": true, "description": "The merge gate's verdict on the last block this node validated, with the numbers that make it a diagnosis (supporting stake, partitions, candidates, and the partition size it measured against). Null when that derivation advanced. NOT an alarm: on a producing chain most blocks are refused by the stake gate, because a block justifies only the messages that existed when it was built — read finalityStalled for that" },
           "finalityStalled": { "type": "boolean", "description": "Whether this node is stalled right now: the derivation has been refused for longer than a round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary partial layers of a producing chain. This is the field to alarm on; finalityStall above is its diagnosis" },
@@ -1316,7 +1354,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/pos", get(api_pos_status))
-        .route("/api/v1/pos/delegations", get(api_pos_delegations))
         .route("/api/v1/deployer/{key}", get(api_find_deployer))
         .route("/api/v1/deploys", get(api_deploys))
         .route(
@@ -1490,6 +1527,8 @@ pub fn admin_router(state: AdminState) -> Router {
     Router::new()
         .route("/api/propose", post(admin_propose))
         .route("/api/v1/propose", post(admin_propose))
+        .route("/api/v1/status/operator", get(api_operator_status))
+        .route("/api/v1/pos/delegations", get(api_pos_delegations))
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .merge(txn_routes)
         .merge(dial_routes)
@@ -1593,6 +1632,8 @@ pub async fn acquire_admin_http_server(
     enable_txn_api: bool,
     ocapn_dial: crate::api::ocapn::OcapnDialSlot,
     enable_ocapn_dial: bool,
+    // **The PoS read: this listener is where a delegator's positions are served** (W-N3-03).
+    pos: Arc<dyn PosReadApi>,
     max_connection_idle: Duration,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -1618,6 +1659,7 @@ pub async fn acquire_admin_http_server(
             OCAPN_DIAL_RATE_LIMIT_PER_SEC,
             MAX_TRACKED_PEERS,
         )),
+        pos,
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -1638,8 +1680,9 @@ pub async fn acquire_admin_http_server(
 mod tests {
     use super::*;
     use crate::api::dto::{
-        ApiStatus, DataAtNameResponse, DeployExecStatus, ExploratoryDeployResponse, FaucetResponse,
-        NodeCapabilities, PooledDeploy, PooledDeploys, RhoDataResponse, VersionInfo,
+        DataAtNameResponse, DeployExecStatus, ExploratoryDeployResponse, FaucetResponse,
+        NodeCapabilities, OperatorStatus, PooledDeploy, PooledDeploys, PublicStatus,
+        RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
     use crate::web::transaction::TransactionResponse;
@@ -1700,8 +1743,8 @@ mod tests {
         ))
     }
 
-    fn test_status() -> ApiStatus {
-        ApiStatus {
+    fn test_status() -> PublicStatus {
+        PublicStatus {
             version: VersionInfo {
                 api: "1.0".to_string(),
                 node: "2.0".to_string(),
@@ -1716,20 +1759,27 @@ mod tests {
             autopropose: true,
             propose_on_deploy: true,
             manual_propose: false,
-            admin_http: true,
             dev_mode: true,
+        }
+    }
+
+    /// The operator envelope, for `MockAdminWebApi`: the public core above plus the half that moved to
+    /// the admin listener (W-N3-01). The values are the "nothing to report" arm of each field, which is
+    /// what a healthy node answers.
+    fn test_operator_status() -> OperatorStatus {
+        OperatorStatus {
+            core: test_status(),
+            admin_http: true,
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
+            autopropose_timer_halt_episodes: 0,
+            autopropose_tap_suppressed: 0,
             stale_snapshot_self_equivocations: 0,
-            // The "nothing to report" arm of each new field, which is what a healthy node answers: no
-            // stall reason, no episodes, no non-quiet merge, no poison recovered from.
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
             reset_marker: None,
             non_quiet_merge_reports: 0,
-            // The "not syncing" arm: a node whose sync task has returned reports `sync: null`, which
-            // is what every line above says in its own way.
             sync: None,
             poison_recoveries: 0,
             unrestorable_records: 0,
@@ -1741,13 +1791,13 @@ mod tests {
     }
 
     struct MockWebApi {
-        status: ApiStatus,
+        status: PublicStatus,
         pooled_deploys: PooledDeploys,
     }
 
     #[async_trait]
     impl WebApi for MockWebApi {
-        async fn status(&self) -> Result<ApiStatus, BlockApiException> {
+        async fn status(&self) -> Result<PublicStatus, BlockApiException> {
             Ok(self.status.clone())
         }
 
@@ -1940,6 +1990,10 @@ mod tests {
 
         async fn propose_result(&self) -> Result<String, BlockApiException> {
             unimplemented!()
+        }
+
+        async fn operator_status(&self) -> Result<OperatorStatus, BlockApiException> {
+            Ok(test_operator_status())
         }
     }
 
@@ -2657,6 +2711,7 @@ mod tests {
                 TXN_RATE_LIMIT_PER_SEC,
                 MAX_TRACKED_PEERS,
             )),
+            pos: Arc::new(StubPosRead),
             ocapn_dial: Arc::new(std::sync::OnceLock::new()),
             enable_ocapn_dial: false,
             ocapn_dial_rate_limiter: Arc::new(KeyedRateLimiter::new(
@@ -2782,13 +2837,81 @@ mod tests {
         assert_eq!(json["pendingWithdrawals"][0]["blocksRemaining"], 60);
     }
 
+    /// **The operator status is on the admin listener and nowhere else** (W-N3-01).
+    ///
+    /// The two halves are asserted together, and the *public* half is the one that matters: a route
+    /// mounted by mistake is a leak, and the 404 is what says it is not mounted. Falsified by adding
+    /// the route to `router()` — which is exactly what the change removes.
+    #[tokio::test]
+    async fn the_operator_status_is_served_on_the_admin_listener_only() {
+        use tower::ServiceExt;
+
+        let request = || {
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/status/operator")
+                .body(axum::body::Body::empty())
+                .expect("a request")
+        };
+
+        let public = router(state())
+            .oneshot(request())
+            .await
+            .expect("a response");
+        assert_eq!(
+            public.status(),
+            StatusCode::NOT_FOUND,
+            "the public listener must not serve the operator half"
+        );
+
+        let served = admin_router(txn_state(None, false))
+            .oneshot(request())
+            .await
+            .expect("a response");
+        assert_eq!(served.status(), StatusCode::OK, "the admin listener does");
+    }
+
+    /// **And the delegations route moved with it** (W-N3-03): it answered any caller's question about
+    /// any delegator's portfolio from the public port, and it is a store query keyed on a
+    /// caller-supplied key rather than chain state a peer would read.
+    #[tokio::test]
+    async fn the_delegations_route_is_served_on_the_admin_listener_only() {
+        use tower::ServiceExt;
+
+        let request = || {
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/pos/delegations?delegator=07")
+                .body(axum::body::Body::empty())
+                .expect("a request")
+        };
+
+        let public = router(state())
+            .oneshot(request())
+            .await
+            .expect("a response");
+        assert_eq!(public.status(), StatusCode::NOT_FOUND);
+
+        let served = admin_router(txn_state(None, false))
+            .oneshot(request())
+            .await
+            .expect("a response");
+        assert_ne!(
+            served.status(),
+            StatusCode::NOT_FOUND,
+            "the route exists on the admin listener (here, refusing a key that is not 65 bytes)"
+        );
+    }
+
     /// **#193's read, rendered.** The stub answers for exactly one key (65 bytes of `0x07`) and
     /// returns an empty list for any other, so a handler that ignored `?delegator=` and returned a
     /// fixed list is visible here rather than passing.
     #[tokio::test]
     async fn api_v1_pos_delegations_answers_one_delegators_positions() {
+        // **The admin state**, because the route moved to the admin listener (W-N3-03): it was
+        // answering any caller's question about any delegator's portfolio from the public port.
         let response = api_pos_delegations(
-            State(state()),
+            State(txn_state(None, false)),
             Query(PosDelegationsQuery {
                 delegator: rchain_shared::base16::encode(&[7u8; 65]),
             }),
@@ -2807,7 +2930,7 @@ mod tests {
         // And a key that has never delegated gets an empty list — the scoping is the handler's, not
         // the stub's, so asking about a *different* key must not return the first one's position.
         let other = api_pos_delegations(
-            State(state()),
+            State(txn_state(None, false)),
             Query(PosDelegationsQuery {
                 delegator: rchain_shared::base16::encode(&[6u8; 65]),
             }),
@@ -2825,7 +2948,7 @@ mod tests {
     async fn api_v1_pos_delegations_refuses_a_key_it_cannot_parse() {
         for bad in ["nothex", "aabb", ""] {
             let response = api_pos_delegations(
-                State(state()),
+                State(txn_state(None, false)),
                 Query(PosDelegationsQuery {
                     delegator: bad.to_string(),
                 }),

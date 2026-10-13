@@ -443,6 +443,8 @@ mod tests {
             // A non-zero count on the primary only, so the router test can prove the primary answered
             // rather than the trait default (which is all zeros and records nothing).
             ProposerHealth {
+                autopropose_timer_halt_episodes: 0,
+                autopropose_tap_suppressed: 0,
                 consecutive_self_validation_failures: if self.shard_id.ends_with("root") {
                     7
                 } else {

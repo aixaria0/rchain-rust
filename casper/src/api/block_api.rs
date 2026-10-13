@@ -73,6 +73,17 @@ pub struct ProposerHealth {
     /// The shard's autopropose timer has stopped. Nothing restarts it but the process, and the value
     /// is therefore sticky: a later success does **not** clear it.
     pub autopropose_timer_halted: bool,
+    /// **How many times this process's autopropose timer has stopped** (W-N10-01).
+    ///
+    /// The flag above is sticky and process-wide, and that is a defect rather than a feature: a node
+    /// that restarts reports `false`, which reads as an all-clear that the *earlier* halt never
+    /// happened — so a reader cannot tell "halted now" from "restarted and healthy". A monotone
+    /// counter cannot reverse, so it survives the restart as the fact the flag loses. A clearing
+    /// writer would need a restart-aware generation stamp — more state, more ways to be wrong — which
+    /// is why this is a counter and not a second flag.
+    pub autopropose_timer_halt_episodes: u64,
+    /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
+    pub autopropose_tap_suppressed: u64,
     /// Stale-snapshot self-equivocations (§48): the node's own block collided with its already-synced
     /// block at the sequence number it derived. Not a self-validation failure — the DAG advanced under
     /// the proposal — so it is counted separately and does **not** halt the timer.
@@ -86,6 +97,12 @@ pub struct ProposerHealth {
 pub struct ProposeHealth {
     failures: Arc<AtomicU64>,
     timer_halted: Arc<AtomicBool>,
+    /// Monotone, and bumped only when the flag *transitions* to set — see [`ProposeHealth::note_timer_halted`].
+    timer_halt_episodes: Arc<AtomicU64>,
+    /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
+    /// Counted rather than silently dropped: the halt is only a halt if the tap obeys it, and a
+    /// refusal nobody can see is the shape that row is about.
+    tap_suppressed_halted: Arc<AtomicU64>,
     stale_snapshot_equivocations: Arc<AtomicU64>,
 }
 
@@ -107,9 +124,27 @@ impl ProposeHealth {
         self.stale_snapshot_equivocations.clone()
     }
 
+    /// The counter the validated-block tap bumps when it refuses to propose (W-N4-08).
+    pub fn tap_suppressed_halted(&self) -> &Arc<AtomicU64> {
+        &self.tap_suppressed_halted
+    }
+
+    /// Whether the autopropose timer has stopped. The cell the timer stops on, and the one the
+    /// validated-block tap has to consult: a halt that the tap ignores is not a halt (W-N4-08).
+    pub fn timer_halted(&self) -> bool {
+        self.timer_halted.load(Ordering::Relaxed)
+    }
+
     /// Record that the autopropose timer has stopped, called once immediately before its `break`.
+    ///
+    /// **The episode is counted on the transition, not on the call** (W-N10-01). `swap` returns the
+    /// previous value, so a second call — a restart's timer stopping again, or two halts in one
+    /// process — is the only thing that moves the count. A count of *calls* would be a count of how
+    /// often this was recorded, which is not a fact anyone wants.
     pub fn note_timer_halted(&self) {
-        self.timer_halted.store(true, Ordering::Relaxed);
+        if !self.timer_halted.swap(true, Ordering::Relaxed) {
+            self.timer_halt_episodes.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// All three values as one observation, so a reader cannot see a count from one instant and a flag
@@ -118,6 +153,8 @@ impl ProposeHealth {
         ProposerHealth {
             consecutive_self_validation_failures: self.failures.load(Ordering::Relaxed),
             autopropose_timer_halted: self.timer_halted.load(Ordering::Relaxed),
+            autopropose_timer_halt_episodes: self.timer_halt_episodes.load(Ordering::Relaxed),
+            autopropose_tap_suppressed: self.tap_suppressed_halted.load(Ordering::Relaxed),
             stale_snapshot_self_equivocations: self
                 .stale_snapshot_equivocations
                 .load(Ordering::Relaxed),
@@ -487,8 +524,48 @@ mod tests {
             ProposerHealth {
                 consecutive_self_validation_failures: 0,
                 autopropose_timer_halted: true,
+                autopropose_timer_halt_episodes: 1,
+                autopropose_tap_suppressed: 0,
                 stale_snapshot_self_equivocations: 0,
             }
         );
+    }
+
+    /// **A restart is distinguishable from never having halted** (W-N10-01).
+    ///
+    /// `autopropose_timer_halted` is sticky and process-wide, so on a node that restarts it reads
+    /// `false` — an all-clear which is indistinguishable from a node that never halted, because the
+    /// halt it is reporting on happened in a process that no longer exists. The episode counter is the
+    /// half that survives: monotone, so it cannot reverse into the same `false`.
+    ///
+    /// **The count is of halts, not of calls.** This is the assertion that makes it one: a second
+    /// `note_timer_halted` in the same process — a timer that stops twice, or a caller that records the
+    /// same halt twice — must not move it. Falsified by dropping the `swap` guard and storing
+    /// unconditionally, under which the count is 2 and this says so.
+    #[test]
+    fn a_second_halt_in_one_process_is_not_a_second_episode() {
+        let health = ProposeHealth::new();
+        assert_eq!(health.snapshot().autopropose_timer_halt_episodes, 0);
+
+        health.note_timer_halted();
+        assert_eq!(
+            health.snapshot().autopropose_timer_halt_episodes,
+            1,
+            "the first halt is an episode"
+        );
+        health.note_timer_halted();
+        health.note_timer_halted();
+        assert_eq!(
+            health.snapshot().autopropose_timer_halt_episodes,
+            1,
+            "and further notes of the *same* halt are not: the episode is the transition, not the call"
+        );
+
+        // The tap's own count is separate and monotone, so "the halt cost this many proposals" is a
+        // fact beside "the halt happened once" (W-N4-08).
+        health
+            .tap_suppressed_halted()
+            .fetch_add(3, Ordering::Relaxed);
+        assert_eq!(health.snapshot().autopropose_tap_suppressed, 3);
     }
 }
