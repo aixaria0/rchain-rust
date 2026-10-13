@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 318** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 319** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  112 of 318 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  113 of 319 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 318 are settled: **254 name the evidence that holds them** and **64 do not** — the
+All 319 are settled: **255 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -129,7 +129,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (318)
+### DONE (319)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -365,6 +365,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C281` | **The reset request was raised on the uncommitted record.** `note_unrestorable_if_exhausted` ran with the incremented-but-unpersisted `restore_attempts`, before the `update_metadata` that persists it, so a write that then failed left the node having asked for a reset on a record whose stored count is one lower. **Closed 2026-10-13 (law 75, §107).** The note now runs after the write in both paths, so a request raised by it names a count the store holds. | casper/src/multi_parent_casper.rs | §107 |
 | `C282` | **The reconciliation tool could overwrite its only good backup.** The aside names were to the minute, so two runs in one minute named the same file and the docker branch's `tar cf` wrote the second run's already-cleared volume over the first run's backup — the one copy of the state the operator still had. **Closed 2026-10-13 (§107).** The name is to the second and the branch refuses an existing target. | tools/reconcile-network.sh | §107 |
 | `C283` | **The tool's systemd restore overwrote in place while printing "unchanged".** `--restore-from-master` streamed a tar into the live data directory, never removing directories the survivor lacks, so a mid-stream failure left the joiner partially written while the message said it was unchanged — and joiner-only directories survived the restore, which is the divergence residue the mode exists to remove. **Closed 2026-10-13 (§107).** The branch stages beside the data dir and swaps each environment only once the whole copy has arrived. | tools/reconcile-network.sh | §107 |
+| `C284` | **The devnet staging route the record names no longer stages anything.** §101 recorded F-U5-01's arm as "stageable now (`up --validators 4 --fresh` self-diverges; §92)", and §106/§107 carried that forward as the route the unrun arm would use. On 2026-10-13 `up --validators 4 --fresh` with `--self-reset` armed ran ~9 minutes and ~170 blocks with zero `[fringe-divergence]`, zero self-reject and zero reset on all four nodes: the divergence §92 measured came from the fringe-record store's `min` tie-break, which law 66/67/68 retired, and the surviving `[fringe-divergence]` string is a reader-side report rather than a store write. **Closed 2026-10-13 (§108) as a corrected claim**: the route is recorded as non-reproducing. | docs/src/spec/failure-hazop.md/casper/src/dag.rs | §108 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
