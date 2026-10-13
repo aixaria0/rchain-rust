@@ -20,6 +20,7 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::validator::Validator;
 use rchain_shared::metrics::{Metrics, MetricsNop, Source};
+use rchain_shared::rate_limiter::KeyedRateLimiter;
 use rchain_shared::refined::{BlockHeight, SeqNum};
 use rchain_shared::typed_store::KeyValueTypedStore;
 
@@ -30,6 +31,23 @@ use crate::merging::BlockIndex;
 /// `add_deploy` chokepoint so a remote flood cannot exhaust the deploy store (documented Scala
 /// deviation — the Scala pool is unbounded).
 pub const MAX_POOLED_DEPLOYS: usize = 10_000;
+
+/// **Deploys admitted into the pool per deployer key per second.**
+///
+/// The pool bound above is a property of the *node*; this one is a property of the *submitter*, and
+/// they answer different attacks. With only the node-wide count, one identity's burst fills the pool
+/// and every other identity's deploy is refused — the pool was correctly bounded and the wrong
+/// counterparty paid for it. The subject here is the deployer public key, which is the only identity
+/// the node can actually hold a submitter to: the deploy carries it, and every ingress — the external
+/// gRPC service, the HTTP routes, the faucet — funnels through `add_deploy`.
+///
+/// Documented deviation, as above: the Scala node bounds neither.
+pub const MAX_DEPLOYS_PER_DEPLOYER_PER_SEC: u64 = 100;
+
+/// Distinct deployer keys the admission limiter will track at once. The map is itself a resource an
+/// unauthenticated caller would otherwise size, so it is capped; at the cap a new key is refused
+/// rather than admitted (`KeyedRateLimiter`).
+pub const MAX_TRACKED_DEPLOYERS: usize = 4_096;
 
 /// Build a `Message` from a `BlockMetadata` given the current message map (port of
 /// `BlockDagKeyValueStorage.messageFromBlockMetadata`). Returns `None` when a justification is
@@ -60,6 +78,23 @@ pub fn message_from_block_metadata(
 pub struct BlockDagKeyValueStorage {
     representation: tokio::sync::RwLock<Arc<DagRepresentation>>,
     lock: tokio::sync::Mutex<()>,
+    /// **Held across the pool's capacity check and its write** (the C113 class, one bound over).
+    ///
+    /// `MAX_POOLED_DEPLOYS` is a count of distinct deploys, so it has to be enforced on a count that
+    /// cannot change between the read and the insert. As two independent acquisitions of the store's
+    /// own lock it could: every concurrent caller read a count below the cap and every one of them
+    /// inserted, so the pool overshot the cap by the concurrency width — and this is the
+    /// unauthenticated ingress, so the width is whatever the caller makes it. One guard over both
+    /// makes the bound the bound it claims to be.
+    deploy_admission: tokio::sync::Mutex<()>,
+    /// **Deployer key → its own admission bucket** (see [`MAX_DEPLOYS_PER_DEPLOYER_PER_SEC`]).
+    ///
+    /// One node-wide bucket made the bound's subject the node, so a single identity could spend every
+    /// other identity's allowance. The key is the deploy's signer, taken at this chokepoint because
+    /// this is the first place it exists: the gRPC interceptor sees a request with no body and so
+    /// cannot know who is asking, and each ingress keeps its own limiter, so none of those is the
+    /// node-wide per-identity bound.
+    deploy_rate: KeyedRateLimiter,
     block_metadata_store: Arc<BlockMetadataStore>,
     deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
     deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
@@ -110,6 +145,11 @@ impl BlockDagKeyValueStorage {
         Ok(BlockDagKeyValueStorage {
             representation: tokio::sync::RwLock::new(Arc::new(representation)),
             lock: tokio::sync::Mutex::new(()),
+            deploy_admission: tokio::sync::Mutex::new(()),
+            deploy_rate: KeyedRateLimiter::new(
+                MAX_DEPLOYS_PER_DEPLOYER_PER_SEC,
+                MAX_TRACKED_DEPLOYERS,
+            ),
             block_metadata_store,
             deploy_index,
             deploy_store,
@@ -412,6 +452,17 @@ impl BlockDagKeyValueStorage {
     /// flag's own guard is unchanged even though its effect is gone.
     pub fn with_merge_divergence_injection(mut self, injection: u8) -> Self {
         self.merge_divergence_injection = injection;
+        self
+    }
+
+    /// Replace the per-deployer admission bound ([`MAX_DEPLOYS_PER_DEPLOYER_PER_SEC`]).
+    ///
+    /// A pool that is legitimately filled from one key — a fixture, or a node whose operator
+    /// pre-loads a batch — needs the pool's count bound without the submitter's rate bound. The
+    /// node leaves this at its default; it is here so the two bounds can be told apart in a test
+    /// rather than conflated.
+    pub fn with_deploy_rate(mut self, max_per_sec: u64, max_keys: usize) -> Self {
+        self.deploy_rate = KeyedRateLimiter::new(max_per_sec, max_keys);
         self
     }
 
@@ -1044,8 +1095,23 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
     }
 
     async fn add_deploy(&self, deploy: SignedDeployData) -> Result<(), String> {
+        // **The submitter's own bound, before the pool's.** The pool's COUNT is a property of the node;
+        // this is a property of the deployer, and without it one identity's burst fills the pool and
+        // every other identity is refused. Checked first, so a rate-refused deploy does not take the
+        // admission lock and does not touch the store. (W-N2-01.)
+        if !self.deploy_rate.allow(&deploy.deployer) {
+            return Err("deploy rate limit exceeded for this deployer".to_string());
+        }
+
         // Soft DoS bound: reject before writing once the pool reaches `MAX_POOLED_DEPLOYS`
         // distinct deploys (documented Scala deviation — the Scala pool is unbounded).
+        //
+        // The count and the insert are ONE commit point. Held apart — as they were — N concurrent
+        // callers all read a count below the cap and all insert, and the pool exceeds its own bound by
+        // the concurrency width on the node's unauthenticated ingress. `deploy_admission` is that
+        // commit point; the store's lock cannot be it, because it is taken and released by each of
+        // `count` and `put` separately.
+        let _admitted = self.deploy_admission.lock().await;
         if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS {
             return Err("deploy pool is full".to_string());
         }
@@ -1580,13 +1646,148 @@ mod tests {
 
     #[tokio::test]
     async fn add_deploy_rejects_when_pool_full() {
-        let storage = build_storage().await;
+        // The pool's COUNT bound, told apart from the submitter's RATE bound: one key fills it.
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
         for id in 0..MAX_POOLED_DEPLOYS {
             storage.add_deploy(deploy_with_id(id)).await.unwrap();
         }
         let err = storage.add_deploy(deploy_with_id(MAX_POOLED_DEPLOYS)).await;
         assert!(err.is_err(), "deploy pool must reject once full");
         assert!(err.unwrap_err().contains("full"));
+    }
+
+    /// A deploy store that answers `count` and *then* suspends, so the capacity check and the insert
+    /// are separated by a real suspension point.
+    ///
+    /// The suspension is after the read, deliberately: a store that suspends before reading hides the
+    /// race, because the callers re-read a count that has already moved. Any store with I/O behind it
+    /// (LMDB through the node's typed-store layer) has the other shape — the read is taken, the task
+    /// yields, and the count it is holding is stale by the time the insert runs.
+    struct YieldingCountStore(Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>);
+
+    #[async_trait]
+    impl KeyValueTypedStore<DeployId, SignedDeployData> for YieldingCountStore {
+        async fn get(&self, keys: &[DeployId]) -> Result<Vec<Option<SignedDeployData>>, String> {
+            self.0.get(keys).await
+        }
+        async fn put(&self, pairs: &[(DeployId, SignedDeployData)]) -> Result<(), String> {
+            self.0.put(pairs).await
+        }
+        async fn delete(&self, keys: &[DeployId]) -> Result<usize, String> {
+            self.0.delete(keys).await
+        }
+        async fn contains(&self, keys: &[DeployId]) -> Result<Vec<bool>, String> {
+            self.0.contains(keys).await
+        }
+        async fn to_map(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String> {
+            self.0.to_map().await
+        }
+        async fn count(&self) -> Result<usize, String> {
+            let n = self.0.count().await?;
+            tokio::task::yield_now().await;
+            Ok(n)
+        }
+    }
+
+    /// **The pool's bound is a bound under concurrency** (the C113 class, one bound over).
+    ///
+    /// The capacity check and the insert were two independent acquisitions of the store's lock, so
+    /// every caller in flight read a count below the cap and every one of them inserted — the pool
+    /// overshot `MAX_POOLED_DEPLOYS` by the concurrency width, on the node's *unauthenticated*
+    /// ingress. Eight callers against a pool one below the cap must admit exactly one, and the pool
+    /// must land on its cap rather than above it. Remove the `deploy_admission` guard and this test
+    /// admits eight.
+    #[tokio::test]
+    async fn add_deploy_admits_exactly_one_when_the_pool_is_one_below_the_cap() {
+        let inner: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BytesCodec),
+                Arc::new(SignedDeployDataCodec),
+            ));
+        let deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+            Arc::new(YieldingCountStore(inner.clone()));
+        let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BytesCodec),
+                Arc::new(BlockHashCodec),
+            ));
+        let storage = BlockDagKeyValueStorage::create(
+            empty_metadata_store().await,
+            deploy_index,
+            deploy_store,
+        )
+        .await
+        .unwrap()
+        .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
+
+        for id in 0..MAX_POOLED_DEPLOYS - 1 {
+            storage.add_deploy(deploy_with_id(id)).await.unwrap();
+        }
+
+        let base = MAX_POOLED_DEPLOYS;
+        let (r1, r2, r3, r4, r5, r6, r7, r8) = tokio::join!(
+            storage.add_deploy(deploy_with_id(base)),
+            storage.add_deploy(deploy_with_id(base + 1)),
+            storage.add_deploy(deploy_with_id(base + 2)),
+            storage.add_deploy(deploy_with_id(base + 3)),
+            storage.add_deploy(deploy_with_id(base + 4)),
+            storage.add_deploy(deploy_with_id(base + 5)),
+            storage.add_deploy(deploy_with_id(base + 6)),
+            storage.add_deploy(deploy_with_id(base + 7)),
+        );
+        let admitted = [r1, r2, r3, r4, r5, r6, r7, r8]
+            .iter()
+            .filter(|r| r.is_ok())
+            .count();
+        assert_eq!(
+            admitted, 1,
+            "eight concurrent callers against a pool one below the cap must admit exactly one"
+        );
+        assert_eq!(
+            inner.count().await.unwrap(),
+            MAX_POOLED_DEPLOYS,
+            "the pool must land exactly on its cap, not above it"
+        );
+    }
+
+    /// The same deploy from a named deployer, so the admission bound's *subject* can be varied.
+    fn deploy_by(deployer: u8, id: usize) -> SignedDeployData {
+        SignedDeployData {
+            deployer: vec![deployer],
+            ..deploy_with_id(id)
+        }
+    }
+
+    /// **One deployer cannot spend another deployer's allowance** (W-N2-01).
+    ///
+    /// The admission bound was one token bucket for the whole node, so its subject was the node and
+    /// not the caller: one identity's burst exhausted the allowance and refused every other
+    /// identity's deploys. The pool was bounded, correctly, and the wrong counterparty paid. Exhaust
+    /// one deployer completely; a second must be unaffected, and the refusal must name the *rate*
+    /// rather than the pool so the two bounds cannot be confused.
+    #[tokio::test]
+    async fn one_deployer_cannot_spend_another_deployers_allowance() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deploy_rate(3, MAX_TRACKED_DEPLOYERS);
+
+        for id in 0..3 {
+            storage.add_deploy(deploy_by(1, id)).await.unwrap();
+        }
+        let err = storage.add_deploy(deploy_by(1, 999)).await;
+        assert!(
+            err.as_ref().is_err_and(|e| e.contains("rate limit")),
+            "the fourth deploy from one key must be refused by its own rate bound, got {err:?}"
+        );
+
+        assert!(
+            storage.add_deploy(deploy_by(2, 0)).await.is_ok(),
+            "a second deployer's allowance is its own; the first deployer's flood must not refuse it"
+        );
     }
 
     // --- Deployer index (`GET /api/v1/deployer/{pubkey}`) ---

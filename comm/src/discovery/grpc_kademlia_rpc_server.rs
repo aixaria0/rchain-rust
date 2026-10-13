@@ -159,6 +159,7 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
 pub async fn serve(
     addr: SocketAddr,
     service: GrpcKademliaRpcServer,
+    max_message_size: usize,
     tls: Arc<rustls::ServerConfig>,
 ) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(addr)
@@ -171,7 +172,15 @@ pub async fn serve(
         crate::transport::grpc_transport_receiver::MAX_CONCURRENT_HANDSHAKES,
     );
     tonic::transport::Server::builder()
-        .add_service(KademliaRpcServiceServer::new(service))
+        // **The operator's inbound decode cap, installed here as it is on the transport** (AUDIT
+        // C113's class, one service over). Without this line the server falls back to tonic's default
+        // — 4 MiB, sixteen times the configured `protocol-server.grpc-max-recv-message-size` — so a
+        // certificate-bearing peer could force a decode four megabytes wide while the operator
+        // believed 256 KiB was in force. Both services are served by the same accept path, and now by
+        // the same bound, so they cannot drift in what they will admit.
+        .add_service(
+            KademliaRpcServiceServer::new(service).max_decoding_message_size(max_message_size),
+        )
         .serve_with_incoming(incoming)
         .await
         .map_err(|e| e.to_string())
@@ -274,7 +283,7 @@ mod tests {
         let tls = server_config(&server_cert, &server_key).expect("a server TLS config");
         let srv = server(h.clone());
         tokio::spawn(async move {
-            let _ = serve(addr, srv, tls).await;
+            let _ = serve(addr, srv, 262_144, tls).await;
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
 
