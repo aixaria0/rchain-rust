@@ -1,5 +1,52 @@
 # A staging instrument for the reset arm — design
 
+## Corrected 2026-10-13, before anything was built: the recommended route does not work
+
+**The synthetic spent record is refuted by the code it was designed against.** The recommendation below
+was that marking a record `validation_failed / Divergence / restore_attempts = LIMIT` would reach the
+reset. It cannot, and the reason is the restore's own shape: `restore_divergent_justifications` does not
+*trust* the record — it re-runs `validate_checks` on the block (`casper/src/multi_parent_casper.rs:1178`),
+and `revalidated_record` returns `Restored` for a block that passes. So a merely-*marked* valid block is
+**cleared**, not escalated: `restore_budget_is_spent` is only ever reached *through* a genuine
+revalidation, and a record can therefore be spent only by a block that **genuinely fails this node**.
+Marking harder (a spent budget from the start) skips the restore path entirely, because
+`restore_is_warranted` requires `restore_attempts < LIMIT`.
+
+**A second config route is refuted too, and it was the obvious one.** The devnet's own documented example
+for `DEVNET_EXTRA_FLAGS_*` is `--min-phlo-price 5` — and giving one node a different price does make it
+refuse a block its peers accept, but with `BlockStatus::ContainsLowCostDeploy`, whose cause is
+`FailureCause::Attributable`, **not** `Divergence` (`casper/src/block_status.rs:132-160`). No restore is
+attempted, no budget is spent, no reset.
+
+**What that leaves.** `Divergence` is exactly five statuses — `InvalidStateHash`, `InvalidPreStateHash`,
+`InvalidRejectedDeploy`, `InvalidBondsCache`, `UnjustifiedSlash` — and the map's own comment says why:
+*"decided by this node's state or replay"*. So the instrument must make the node's **state or replay
+compute differently**, and the only two ways are a different **code** or a different **trie** — and a trie
+edit that changes the computation is an edit to the inputs the node reads back, which breaks its own reads
+before it breaks a validation.
+
+**The route that survives: a perturbed image, with a constraint the genesis imposes.** Three nodes on this
+build and one on a build with a surgical difference — and the difference must be **outside the genesis
+path**, because a difference that touches genesis fails block #0, and a node whose DAG is empty is in
+`NodeSyncing` (the mismatch row below), where the drive loop — and so the reset — does not exist. The
+**merge** is the site that satisfies it: genesis has no justifications, so a perturbation in the fold of a
+block's parents' effects changes every non-genesis block and no genesis one. The perturbed node then
+validates genesis, enters the running phase, and fails the first merged block with `InvalidPreStateHash` —
+a `Divergence`, three revalidations, a spent budget, a reset.
+
+**What it would measure, and this part of the analysis below stands.** The engine **re-entry**: the drive
+loop's third exit, `act_on_reset_request`, `perform_reset`'s three durable effects under one completion
+record, and the catch-up walk restarting from the anchor — the half §106 and §107 both record as *read
+rather than run*. It would **not** satisfy F-U5-01's falsifier, because the perturbed node's state stays
+wrong: it would rewind and fail again, looping. So the arm would be **exercised, not satisfied** — the same
+boundary this document drew for the first route, reached by a different road.
+
+The sections below are kept as written, with the recommendation marked refuted, because the *analysis*
+that eliminated four other routes (requirements 1–4, the boot-only paths, the retired injection) is what
+the corrected route rests on.
+
+## (Original, with the recommendation refuted) 
+
 **Why this is needed.** §108 records the attempt at F-U5-01's devnet arm — *a diverged running node
 re-enters sync* — and its negative result: the route §101 named (`up --validators 4 --fresh`, the §92
 self-reject) stages nothing on this tree, because the divergence §92 measured came from the fringe-record
@@ -39,7 +86,7 @@ A two-root divergence (two nodes with different geneses) fails for the mismatch 
 older-image route (`RNODE_IMAGE_devnet_validator_N`) for a related one: a node that disagrees with the
 *majority* is a fork, and its own boot path — not its running loop — is where the disagreement first appears.
 
-## The recommended instrument: `tools/devnet.sh drill <node>`
+## (Refuted — see the correction above) The instrument the first draft recommended: `tools/devnet.sh drill <node>`
 
 1. `stop <node>`;
 2. a **dev-only helper** opens the node's `dagstorage` LMDB, in its `block-metadata` DB, and rewrites one

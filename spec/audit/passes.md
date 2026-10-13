@@ -10203,4 +10203,39 @@ recorded way to stage it. That is the residue, stated rather than implied.
 136 lines). One host, one run; the devnet was torn down with `down -v` after the capture. The instrument the
 arm now needs is designed beside them (`instrument-design.md`): a synthetic spent record written into a
 stopped node's `block-metadata`, which reaches the drive loop's third exit — the half no test can — while
-being explicit that it exercises the re-entry and not the healing.
+being explicit that it exercises the re-entry and not the healing. **That recommendation was refuted by
+reading before anything was built — §109.**
+
+## 109. The instrument design, refuted before it was built (C285)
+
+§108's design recommended a synthetic spent record and pointed at it as what the arm needs. Reading the
+code it was designed against refutes it, and refutes the obvious config route beside it.
+
+**The synthetic record cannot reach the reset.** `restore_divergent_justifications` does not trust the
+record: it re-runs `validate_checks` on the block (`casper/src/multi_parent_casper.rs:1178`) and
+`revalidated_record` answers `Restored` for a block that passes — so a merely-*marked* valid block is
+**cleared**, not escalated, and `restore_budget_is_spent` is only ever reached *through* a genuine
+revalidation. Marking a spent budget from the start skips the restore path entirely, because
+`restore_is_warranted` requires attempts left.
+
+**And `--min-phlo-price`** — the devnet's own documented example for `DEVNET_EXTRA_FLAGS_*` — refuses with
+`BlockStatus::ContainsLowCostDeploy`, whose cause is `FailureCause::Attributable` and **not** `Divergence`
+(`casper/src/block_status.rs:132-160`): no restore, no budget, no reset. (That the status reads a *node*
+input while being classified Attributable is the C198 nuance, not a route.)
+
+**What survives.** `Divergence` is exactly five statuses, all of them — the map's own words — "decided by
+this node's state or replay". So the instrument must make the node compute differently, which means a
+different **code** or a different **trie**, and a trie edit that changes the computation breaks the node's
+own reads first. The route is a **perturbed image**, with one constraint the genesis imposes: the
+difference must be **outside the genesis path**, or block #0 fails and the node sits in `NodeSyncing`,
+where the drive loop — and so the reset — does not exist. The **merge** satisfies it (genesis has no
+justifications); the perturbed node would validate genesis, enter the running phase, and fail the first
+merged block with `InvalidPreStateHash`.
+
+**What this changes.** The route is known and constrained, and the arm is still **unrun**, so F-U5-01 stays
+owed. What is *closed* is the wrong route, before it cost a build — this repository's rule is that a claim
+found false is corrected rather than quietly dropped, and §108 published one.
+
+**Evidence.** `spec/audit/evidence/reset-arm/instrument-design.md`'s correction, with its anchors;
+`casper/src/multi_parent_casper.rs` (the restore's revalidation), `casper/src/block_status.rs` (the cause
+map); `observe.log` beside it for the run the design was for.
