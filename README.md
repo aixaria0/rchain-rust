@@ -3,12 +3,12 @@
 Rholang's <!-- counts:laws -->76 laws<!-- counts:end --> are machine-checked in Lean 4 and Coq, and
 its authority cannot be forged — there is no syntax that writes a private name. Pre-testnet.
 
-**Whole classes of defect are absent by construction**: no `unsafe` in any of the thirteen crates, so
+**Whole classes of defect are absent by construction**: no `unsafe` in any of the fourteen crates, so
 memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
 Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
-**A small artifact, deliberately**: counted 2026-10-10, ~189,000 lines of Rust across 461 files compile
-to a single **37 MB** native binary — nothing to boot but the process, and no collector inside it to
+**A small artifact, deliberately**: recounted 2026-10-13, ~197,000 lines of Rust across 467 files
+compile to a single **43 MB** native binary — nothing to boot but the process, and no collector inside it to
 pause — so a validator runs on a commodity laptop with an NVMe.
 
 ## Provenance
@@ -66,7 +66,7 @@ code, and a stop-the-world collector is safe Rust — we simply do not ship one.
 engineering concern either way, and this node measures its own (see
 [hardware requirements](docs/src/node/validator-requirements.md)).
 
-**Decentralization.** Counted 2026-10-10, ~189,000 lines of Rust compile to a single 37 MB native binary
+**Decentralization.** Recounted 2026-10-13, ~197,000 lines of Rust compile to a single 43 MB native binary
 — no JVM and no collector in the process — so a validator runs on any modern desktop or laptop with an
 NVMe SSD.
 Validator operation sits within consumer-grade hardware, which is what makes the network genuinely
@@ -95,11 +95,11 @@ node leads.
 
 | | **This node** (pre-testnet) | **Solana** (~$70bn) | **Sui** (~$5bn) | **Bitcoin SV** (~$400m) |
 |---|---|---|---|---|
-| **Memory safety** | No `unsafe` anywhere — `#![forbid(unsafe_code)]` in all thirteen crates | 52 `unsafe` blocks in the loader alone; forbidden in one crate | `unsafe` in `sui-types`; not forbidden | C++ — assertions cannot be compiled out |
+| **Memory safety** | No `unsafe` anywhere — `#![forbid(unsafe_code)]` in all fourteen crates | 52 `unsafe` blocks in the loader alone; forbidden in one crate | `unsafe` in `sui-types`; not forbidden | C++ — assertions cannot be compiled out |
 | **Authority cannot be forged** | **Unrepresentable** — no syntax writes a private name; a name exists only to be received | Checked — a program-derived address has no key, but granting the privilege is a runtime check | **Unrepresentable** — a linear `UID`, minted from the transaction digest | Absent as a concept — authority is a private key |
 | **Authority cannot be captured** | **Unrepresentable, and proved** — a COMM moves only the datum sent, into the receiver's own environment; closedness is a theorem | Checked at runtime | Unrepresentable — no dynamic dispatch | Moot — there are no calls to capture through |
 | **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->76 laws<!-- counts:end -->; every registered witness resolves; zero `#[ignore]`d tests; the gate refuses `sorry`/`admit`/`opaque` | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
-| **Peer identity** | Mutual TLS — the certificate's key is bound to the identity the peer claims in the message | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
+| **Peer identity** | Mutual TLS — the certificate's key is **bound to the identity the peer claims in the message**, so a peer cannot speak as another. **Which keys are admitted is unconstrained**: any valid certificate is a peer. That is a recorded decision, not an oversight — block validation, not the transport, is the authorization boundary. Of the ten findings under this precondition, six are closed at the layer where the harm was real, one is refuted, and three are deliberately open with their arguments stated ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
 | **Cost model bounds attacker work** | ✓ **closed out the same day** — a per-block phlo cap, and the five operations that were charged less than their work now charge for it | ✗ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ✗ no step budget at all |
 
@@ -138,10 +138,11 @@ the **Rho Vision (formerly RChain Community)** collective:
 
 ## Layout
 
-The Cargo workspace has thirteen members — twelve crates ported from the original sbt modules
+The Cargo workspace has fourteen members — twelve crates ported from the original sbt modules
 (`sdk`, `shared`, `crypto`, `graphz`, `models`, `block-storage`, `comm`, `rspace`, `rholang`,
-`casper`, `node`, `rspace-bench`) plus `qucalc`, the Rust-first native AI + governance crate
-(Part VI of the book). The per-crate status, the layer map, the rewrite order, and the remaining work
+`casper`, `node`, `rspace-bench`), plus `ocapn`, the CapTP/OCapN transports that let a peer outside
+this node hold a chain-backed capability ([`docs/src/node/ocapn.md`](docs/src/node/ocapn.md)), and
+`qucalc`, the Rust-first native AI + governance crate (Part VI of the book). The per-crate status, the layer map, the rewrite order, and the remaining work
 are consolidated in
 [docs/src/contributor/architecture.md](docs/src/contributor/architecture.md).
 

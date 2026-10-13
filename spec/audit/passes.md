@@ -10540,14 +10540,28 @@ Three routes to the mapping, and only two of them are sound:
    attacker and refuses nobody.
 
 **Decided 2026-10-13: route 3 is out, routes 1 and 2 are declined for now, and the residual is this
-row.** The grounds are that the seam is **defence in depth and not the authorization boundary**, and
-that the harms the ten rows name have been closed *at the layers where they were real*:
+row.** The grounds are that the seam is **defence in depth and not the authorization boundary**.
 
-- the discovery server's decode cap, the Kademlia token keyed to an identity and charged after the
-  identity check, and the hosts a `Lookup` response names guarded on the way in (PR #350);
-- the streamed header decided when it arrives rather than after the stream is paid for (PR #350);
-- the transport's in-flight dispatch and stream bounds, which are the same bound they always were and
-  are keyed on nothing because they bound a *resource* rather than a *party* (W-N1-04's own shape).
+**The ten rows are W-N1-01 … W-N1-10, and they are not one thing.** Six were closed at the layer where
+the harm was real, all in PR #350 — W-N1-01 (the discovery server's decode cap), W-N1-03 (the hosts a
+`Lookup` response names, guarded on the way in), W-N1-05 (the Kademlia token keyed to an identity),
+W-N1-08 (that token charged *after* the identity check), W-N1-09 and W-N1-10 (the streamed header
+decided when it arrives rather than after the stream is paid for). **W-N1-02 is REFUTED**, with an
+artifact: the authentication does cover the headerless case.
+
+**Three are deliberately not closed, and a party-keyed seam would not have closed any of them:**
+
+- **W-N1-04** — there is no *rate* bound on the inbound transport surface. What bounds it is
+  **in-flight concurrency**, keyed on nothing because it bounds a *resource* rather than a *party*: a
+  peer may hold at most so many dispatches and so many streams, whichever peer it is. Keying that on a
+  bond would change who may hold them, not how many there are.
+- **W-N1-06** — a rate or concurrency rejection is reported as a *size* error (`ResourceExhausted` →
+  `CommError::MessageTooLarge`). This is a **registered deliberate deviation** (AUDIT C4) and a faithful
+  port of Scala's `processError`; un-pinning it is a decision with a paper trail, not a fix.
+- **W-N1-07** — a heartbeat moves its sender to the **end** of the bounded connection table, so a
+  heartbeating peer escapes oldest-first eviction. This mirrors Scala's `refreshConn`, and by the time a
+  heartbeat arrives the sender is **certificate-proven**, so entrenching an identifier costs the
+  attacker a handshake each.
 
 **What a non-bonded peer can still do, stated as a threat model rather than implied:** hold a valid
 certificate; open a connection; send packets, including block-bearing ones; request blocks. What it
