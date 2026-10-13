@@ -1280,10 +1280,9 @@ mod tests {
 
         let anchor = BlockHeight::try_from(2).unwrap();
         let dag: Arc<dyn BlockDagStorage> = storage.clone();
-        let (rewound, removed) =
-            crate::engine::reset::rewind_and_purge(&dag, &block_store, hash(2), anchor)
-                .await
-                .expect("the reset's durable half succeeds over healthy stores");
+        let (rewound, removed) = crate::engine::reset::rewind_and_purge(&dag, &block_store, anchor)
+            .await
+            .expect("the reset's durable half succeeds over healthy stores");
 
         assert_eq!(
             (rewound, removed),

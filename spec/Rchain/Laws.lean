@@ -4002,6 +4002,8 @@ def laws : List Law := [
       `Rchain.a_rewound_record_implies_every_effect_applied],
     axioms := [],
     rust := ["casper/src/engine/reset.rs", "rspace/src/history/history_repository.rs"],
+    rustWitness := ["casper/tests/reset.rs:a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker",
+      "casper/tests/reset.rs:the_guard_refuses_a_rewinding_whose_anchor_body_is_absent"],
     witness := [`Rchain.an_early_commit_reaches_a_record_that_lies,
       `Rchain.a_reset_can_complete],
     falsifiable := "The port's own order, recording the completion after the rewind and the purge but \
@@ -4015,7 +4017,9 @@ def laws : List Law := [
       leaves the record claiming the stores agree while a third does not, and the boot guard reading \
       `rewound` re-applies nothing (`reset.rs:140-151`). `reset_volatile`'s doc \
       (`history_repository.rs:346-358`) names the same class for the merge. HAZOP rows F-U13-01 and \
-      F-U13-02 (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
+      F-U13-02 (docs/src/spec/failure-hazop.md). The fix is in the tree: the two marker writes moved to \
+      the callers, around all three effects, and the guard's `Rewinding` branch re-establishes the \
+      runtime root — witnessed by the two reset tests named above." },
 
   { number := 73, layer := "Casper",
     statement := "**A raised request is not spent until the act commits.** The self-reset's request cell \

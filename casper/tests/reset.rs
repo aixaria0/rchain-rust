@@ -295,6 +295,10 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
 async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let dag = build_dag().await;
     let block_store = build_block_store().await;
+    let manager = Arc::new(common::build_runtime_manager().await);
+    // **A root the runtime knows**, so the guard's *third* effect — the runtime reset (law 72) — is the
+    // ordinary one and not a fabricated hash. The anchor carries it, as it does in the act's own test.
+    let root_state = StateHash::new(manager.get_history_repo().root().to_byte_array());
     let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
     let source = LogSource::new("test");
 
@@ -302,7 +306,11 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let mut parents: Vec<BlockHash> = Vec::new();
     for n in 0..4i64 {
         let h = hash(n as u8);
-        let post = StateHash::new([0u8; 32]);
+        let post = if n == 1 {
+            root_state
+        } else {
+            StateHash::new([0u8; 32])
+        };
         dag.insert(meta(h, &parents, n, n), block(h, post))
             .await
             .expect("the chain inserts");
@@ -345,6 +353,7 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let resumed = resume_after_reset(
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
+        &manager,
         &log,
         source,
     )
@@ -390,6 +399,7 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let second = resume_after_reset(
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
+        &manager,
         &log,
         source,
     )
@@ -409,6 +419,7 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
 async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
     let dag = build_dag().await;
     let block_store = build_block_store().await;
+    let manager = Arc::new(common::build_runtime_manager().await);
     let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
 
     let h = hash(0);
@@ -423,6 +434,7 @@ async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
     let resumed = resume_after_reset(
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
+        &manager,
         &log,
         LogSource::new("test"),
     )
@@ -437,5 +449,45 @@ async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
         dag.read_reset_marker().await.expect("readable"),
         None,
         "and it wrote nothing"
+    );
+}
+
+/// **The guard now reaches the anchor's *body*, because the third effect it re-applies is the runtime
+/// root** (law 72, `spec/Rchain/Durability.lean`). Before the fix a `Rewinding` guard re-applied two
+/// store operations and never read a body, so an anchor whose body was absent from the block store was
+/// invisible to it; with the fix the repair is total over the record's effects and the absent body is a
+/// refusal. Without the runtime step this test fails with `Ok(Some(anchor))` — the exact state a
+/// crash-window repair must not hand to the catch-up walk.
+#[tokio::test]
+async fn the_guard_refuses_a_rewinding_whose_anchor_body_is_absent() {
+    let dag = build_dag().await;
+    let block_store = build_block_store().await;
+    let manager = Arc::new(common::build_runtime_manager().await);
+    let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
+
+    let anchor = hash(1);
+    let anchor_height = BlockHeight::try_from(1).unwrap();
+    // The intent is recorded and nothing above the anchor exists, so the rewind and the purge are
+    // no-ops — the only thing that can stop the repair is the missing anchor, which is the point.
+    dag.write_reset_marker(ResetMarker {
+        anchor,
+        height: anchor_height,
+        phase: ResetPhase::Rewinding,
+    })
+    .await
+    .expect("the intent is recorded");
+
+    let err = resume_after_reset(
+        &(dag.clone() as Arc<dyn BlockDagStorage>),
+        &block_store,
+        &manager,
+        &log,
+        LogSource::new("test"),
+    )
+    .await
+    .expect_err("the guard refuses an anchor whose body it cannot read");
+    assert!(
+        err.contains("is not in this node's block store"),
+        "the refusal is the reset's own sentence about the anchor: {err}"
     );
 }
