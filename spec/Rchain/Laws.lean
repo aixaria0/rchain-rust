@@ -4030,6 +4030,7 @@ def laws : List Law := [
       `Rchain.a_request_is_not_spent_without_the_act],
     axioms := [],
     rust := ["casper/src/engine/reset.rs"],
+    rustWitness := ["casper/tests/reset.rs:a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off"],
     witness := [`Rchain.a_split_take_reaches_a_state_that_spent_the_request,
       `Rchain.a_raised_request_can_be_acted_on],
     falsifiable := "The port's split: taking the request and applying the effects in two statements. \
@@ -4041,7 +4042,10 @@ def laws : List Law := [
       which can fail before touching a store (the anchor body absent, `:246-258`). A failure there spends \
       the request with nothing done; recovery is a restart, re-derivable only because the detector's \
       count (`restore_attempts`) is persisted. HAZOP row F-U11-03 (docs/src/spec/failure-hazop.md). \
-      `rustWitness` is empty until the Rust fix lands." },
+      **Fixed 2026-10-13**: `act_on_reset_request` peeks (`reset_request()`) and runs the anchor \
+      pre-flight *before* the take, so a failure that destroyed nothing leaves the request pending — \
+      witnessed by the reset test named above; the switch-off arm still consumes, because that is a \
+      terminal configuration rather than a transient fault." },
 
   { number := 74, layer := "RSpace",
     statement := "**A checkpoint does not drain an overlay it has not folded.** The hot-store and native \

@@ -271,6 +271,48 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
         None,
         "taking the request is not undone by acting on it"
     );
+
+    // --- a failure that destroyed nothing leaves the request pending ---------------------------------
+    // **Law 73**: the pre-flight read runs before the take, so a reset whose anchor this node cannot
+    // read destroys nothing and leaves the request actionable. Under the old order the take ran first
+    // and spent it on a failure that had touched no store. A fresh DAG and block store make the anchor
+    // genuinely absent rather than already rewound to.
+    let bare_dag = build_dag().await;
+    let bare_store = build_block_store().await;
+    let pending = ResetRequest {
+        anchor: hash(1),
+        anchor_height: BlockHeight::try_from(1).unwrap(),
+        blocks_above: 0,
+        refused: hash(2),
+    };
+    assert!(
+        rchain_casper::interpreter_util::request_reset(pending.clone()),
+        "a request is raised again"
+    );
+    let unacted = act_on_reset_request(
+        true,
+        &(bare_dag.clone() as Arc<dyn BlockDagStorage>),
+        &bare_store,
+        &manager,
+        &log,
+        LogSource::new("test"),
+    )
+    .await
+    .expect("a pre-flight refusal is not an error");
+    assert!(
+        unacted.is_none(),
+        "nothing acted — the anchor could not be read"
+    );
+    assert_eq!(
+        reset_request(),
+        Some(pending.clone()),
+        "and the request is still pending, not spent on a failure that destroyed nothing"
+    );
+    assert_eq!(
+        take_reset_request(),
+        Some(pending),
+        "and it is still takeable — the detector's next scan can act on it"
+    );
 }
 
 /// **The reset's crash window, and the boot guard that closes it** (F-U5-01's owed marker, register

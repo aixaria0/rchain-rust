@@ -247,10 +247,16 @@ pub async fn act_on_reset_request(
     log: &Arc<dyn Log>,
     source: LogSource,
 ) -> Result<Option<ResetRequest>, String> {
-    let Some(request) = crate::interpreter_util::take_reset_request() else {
+    // **Peek, do not take** (law 73, `spec/Rchain/Requests.lean`). A request is spent only by the act
+    // that commits; taking it first would lose it to a failure that destroyed nothing.
+    let Some(request) = crate::interpreter_util::reset_request() else {
         return Ok(None);
     };
     if !self_reset {
+        // Consumed rather than left pending: a surface that showed a request for ever would be the same
+        // silence in a different place, and the switch is a *terminal* configuration, not a transient
+        // fault — which is why this arm takes and the pre-flight arm below does not.
+        let _ = crate::interpreter_util::take_reset_request();
         log.warn(
             source,
             &format!(
@@ -264,7 +270,26 @@ pub async fn act_on_reset_request(
         );
         return Ok(None);
     }
+    // **The pre-flight read runs before the take** (law 73). A reset whose anchor this node cannot read
+    // has destroyed nothing, so the request stays pending — actionable by the detector's next scan — and
+    // the node is left in the switch-off state: consistent, and still refusing. Every failure *after*
+    // the intent is recorded is fatal instead, because by then a store may have moved.
+    if let Err(e) = anchor_body(block_store, request.anchor).await {
+        log.warn(
+            source,
+            &format!(
+                "a reset was requested (rewind to {} at height {}) but cannot proceed: {e} — the request \
+                 stays pending and the node keeps refusing {} and its descendants (law 73, #320)",
+                request.anchor.to_hex(),
+                i64::from(request.anchor_height),
+                request.refused.to_hex(),
+            ),
+        );
+        return Ok(None);
+    }
     perform_reset(dag, block_store, runtime_manager, &request, log, source).await?;
+    // The act committed; the request is spent now, and not one step earlier.
+    let _ = crate::interpreter_util::take_reset_request();
     Ok(Some(request))
 }
 
