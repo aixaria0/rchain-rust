@@ -1411,9 +1411,15 @@ impl ChainCapability {
         let name = rchain_casper::shard_invoke::reply_channel(deploy_id);
         let deadline = Instant::now() + self.reply_timeout;
         loop {
+            // **Without the finality floor.** The value being waited for is in a block this node has
+            // just produced, and on a chain whose finality lags — or on every single-validator
+            // fixture, where it never advances past genesis — that block is above the floor by
+            // construction. The floored read is for a *caller* asking what a chain says; this is the
+            // node asking what its own deploy said, and waiting for finality here would mean the
+            // bridge could not answer at all (W-N3-04).
             let (data, _length) = self
                 .block_api
-                .get_listening_name_data_response(CHAIN_REPLY_DEPTH, &name)
+                .get_unfinalised_name_data_response(CHAIN_REPLY_DEPTH, &name)
                 .await?;
             if !data.is_empty() {
                 return match reply_outcome(&data) {

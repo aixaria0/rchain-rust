@@ -241,6 +241,32 @@ pub trait BlockApi: Send + Sync {
 
     async fn get_propose_result(&self) -> ApiErr<String>;
 
+    /// [`Self::get_listening_name_data_response`], **without the finality floor** — for reading the
+    /// reply channel of a deploy this node submitted itself.
+    ///
+    /// The floor is a rule about what a *caller* may read: a block above the last finalised one may
+    /// yet be rolled back, so a value read out of it is a value from a chain that does not exist yet
+    /// (W-N3-04). The OCapN bridge is not that caller. It waits on the reply channel of a deploy it
+    /// has just had included, and the value it is waiting for is in a block **this node produced** —
+    /// which, on a chain whose finality lags and on every single-validator fixture, where finality
+    /// never advances past genesis at all, is above the floor by construction. Waiting for that block
+    /// to finalise before answering would make the bridge unable to answer, which is a worse failure
+    /// than the one the floor prevents, and it is measured: the three multi-delivery OCapN
+    /// integration tests fail on the floored read and pass on this one.
+    ///
+    /// **Required rather than defaulted, and that is the fix rather than the ceremony.** A default
+    /// that forwarded to the floored read did exactly the wrong thing for the one implementation that
+    /// mattered — `ShardRoutingBlockApi` routes each call to the shard that owns the data, and a
+    /// wrapper that does not forward this one silently answers with the floored read, so the bridge
+    /// went back to timing out on chains whose finality lags. Measured: the three multi-delivery OCapN
+    /// integration tests fail with the default and pass with the forwarding. An implementation that
+    /// does not say what its unfinalised view is now does not compile.
+    async fn get_unfinalised_name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)>;
+
     async fn get_listening_name_data_response(
         &self,
         depth: i32,

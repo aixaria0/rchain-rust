@@ -192,6 +192,43 @@ pub async fn attestation_is_admissible(
 }
 
 impl BlockApiImpl {
+    /// The name-data read, with or without the finality floor.
+    ///
+    /// One body rather than two, because the only difference is the floor and a second copy is a
+    /// second place for the depth limit and the sort to drift. `finalised_only` is the public route;
+    /// the node's own reply read is the other (W-N3-04).
+    async fn name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+        finalised_only: bool,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+        if depth < 0 || depth > self.max_depth_limit {
+            return Err(format!(
+                "Your request on getListeningName depth {depth} exceed the max limit {}",
+                self.max_depth_limit
+            ));
+        }
+        let dag = self.dag.get_representation().await;
+        let floor = match finalised_only {
+            true => self.last_finalized_height().await?,
+            false => None,
+        };
+        let depth_with_limit = depth.min(self.max_depth_limit) as usize;
+        let sorted = sort_par_term(listening_name);
+        let mut out: Vec<DataWithBlockInfo> = Vec::new();
+        for hashes in readable_heights(&dag.height_map, floor, depth_with_limit) {
+            for h in hashes {
+                let block = self.get_block_unsafe(h).await?;
+                if let Some(d) = self.get_data_with_block_info(&sorted, &block).await? {
+                    out.push(d);
+                }
+            }
+        }
+        let len = out.len() as i32;
+        Ok((out, len))
+    }
+
     /// The height of the last finalised block, or `None` on a DAG that has finalised nothing.
     ///
     /// **The floor a read of chain data has to have** (W-N3-04). `height_map` is the whole DAG,
@@ -622,27 +659,17 @@ impl BlockApi for BlockApiImpl {
         depth: i32,
         listening_name: &Par,
     ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
-        if depth < 0 || depth > self.max_depth_limit {
-            return Err(format!(
-                "Your request on getListeningName depth {depth} exceed the max limit {}",
-                self.max_depth_limit
-            ));
-        }
-        let dag = self.dag.get_representation().await;
-        let floor = self.last_finalized_height().await?;
-        let depth_with_limit = depth.min(self.max_depth_limit) as usize;
-        let sorted = sort_par_term(listening_name);
-        let mut out: Vec<DataWithBlockInfo> = Vec::new();
-        for hashes in readable_heights(&dag.height_map, floor, depth_with_limit) {
-            for h in hashes {
-                let block = self.get_block_unsafe(h).await?;
-                if let Some(d) = self.get_data_with_block_info(&sorted, &block).await? {
-                    out.push(d);
-                }
-            }
-        }
-        let len = out.len() as i32;
-        Ok((out, len))
+        self.name_data_response(depth, listening_name, true).await
+    }
+
+    /// The same read with no finality floor, for the node's own reply channel — see the trait's doc
+    /// for why the bridge is not the caller the floor is written for.
+    async fn get_unfinalised_name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+        self.name_data_response(depth, listening_name, false).await
     }
 
     async fn get_listening_name_continuation_response(

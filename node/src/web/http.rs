@@ -2426,6 +2426,24 @@ mod tests {
         ) -> Result<rchain_models::block_metadata::BlockMetadata, String> {
             Err("no head in these tests".to_string())
         }
+        /// Delegates to the floored read: this double has no unfinalised view of its own, and the
+        /// method is required rather than defaulted so that is a decision rather than an oversight
+        /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+        async fn get_unfinalised_name_data_response(
+            &self,
+            depth: i32,
+            listening_name: &rchain_models::ast::Par,
+        ) -> Result<
+            (
+                Vec<rchain_models::casper::protocol::deploy_service::DataWithBlockInfo>,
+                i32,
+            ),
+            String,
+        > {
+            self.get_listening_name_data_response(depth, listening_name)
+                .await
+        }
+
         async fn get_listening_name_data_response(
             &self,
             depth: i32,
