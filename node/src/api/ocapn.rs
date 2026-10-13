@@ -136,23 +136,22 @@ pub const BRIDGED_DEPLOYMENTS_PER_SEC: u64 = 4;
 /// capability a peer is looping on can spend the whole allowance, and every other capability this
 /// node exports is refused for as long as it does. A share *under* the total answers that without
 /// moving the total — the same shape the deploy pool's own bound took, for the same reason.
-/// One, rather than four, because the point is that one capability cannot take the whole allowance:
-/// at a quarter of the total, four capabilities are served at once and a fifth waits its turn — the
-/// node's spend is unchanged and no single object can starve the rest of its surface.
-pub const BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC: u64 = 1;
+/// **A quarter, derived from the total rather than written beside it.** The point is that one
+/// capability cannot take the whole allowance: at a quarter, four capabilities are served at once and
+/// a fifth waits its turn — the node's spend is unchanged and no single object can starve the rest of
+/// its surface. Stated as its own number it could be edited to something that is *not* under the
+/// total, which would leave the first capability to arrive holding the entire budget, which is the
+/// state this exists to leave; derived, that cannot be done by editing one of the two.
+///
+/// A total below four therefore makes the share zero, and `KeyedRateLimiter` treats zero as *closed*
+/// rather than unlimited: the bridge stops loudly instead of quietly serving one caller per
+/// capability. That is the fail-safe direction, and it is why the zero case is a refusal rather than a
+/// special case here.
+pub const BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC: u64 = BRIDGED_DEPLOYMENTS_PER_SEC / 4;
 
 /// Distinct capabilities the share's map will track at once. Same rule as every other keyed bound
 /// here: the map is itself a resource, and at the cap a new key is refused rather than admitted.
 pub const MAX_TRACKED_CAPABILITIES: usize = 1_024;
-
-/// A share that is not strictly under the total protects nothing: at equal values the first capability
-/// to arrive is already at the whole budget, which is the state the share exists to leave. Checked at
-/// compile time rather than in a test, because it is a relation between two constants and a test
-/// would only restate them.
-const _: () = assert!(
-    BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC < BRIDGED_DEPLOYMENTS_PER_SEC,
-    "one capability's share of the chain bridge must be strictly under the total"
-);
 
 /// Phlo for a bridged deploy — the same budget the faucet and the 2PC coordinator use.
 const CHAIN_PHLO_LIMIT: i64 = 1_000_000;

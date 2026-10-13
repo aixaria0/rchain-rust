@@ -99,6 +99,18 @@ pub async fn add_deploy(
 pub const MAX_DEPLOY_TERM_BYTES: usize = 64 * 1024;
 
 /// Parse-check a deploy term, then add the deploy to the pool (port of `deploy`).
+///
+/// **The order is admit → parse → commit, and the order is the point** (W-N2-05, W-N12-03). It used
+/// to parse and fully normalize the term *first* and only then ask whether the deploy could be
+/// admitted, so every caller — including one the node was always going to refuse — bought the parse.
+/// On an unauthenticated ingress that is the amplification: the work is done before the decision that
+/// would have avoided it.
+///
+/// The admission is `dag.admit_deploy`, which charges the submitter's rate and its share of the pool;
+/// the commit is `dag.commit_deploy`, which re-checks the pool's capacity under the admission lock,
+/// where it is exact, and stores the deploy. Between them is the parse, and a parse that fails drops
+/// the permit, which returns the place — so a malformed term costs the node the parse and nothing
+/// else.
 pub async fn deploy(
     dag: &dyn BlockDagStorage,
     deploy: &SignedDeployData,
@@ -111,12 +123,20 @@ pub async fn deploy(
             deploy.data.term.len()
         )));
     }
+    let permit = dag
+        .admit_deploy(&deploy.deployer)
+        .await
+        .map_err(parsing_error)?;
     // Normalize against the deploy's environment (deployer id / deploy id), so a term that
     // references `rho:rchain:deployerId`/`deployId` parses the same way it will when processed.
     let normalizer_env = NormalizerEnv::new(deploy);
     rchain_rholang::normalizer::source_to_adt_with_env(&deploy.data.term, normalizer_env.to_env())
         .map_err(|e| parsing_error(format!("Error in parsing term: \n{e}")))?;
-    add_deploy(dag, deploy).await.map_err(parsing_error)
+    let id = deploy.sig.clone();
+    dag.commit_deploy(permit, deploy.clone())
+        .await
+        .map_err(parsing_error)?;
+    Ok(id)
 }
 
 async fn get_block_unsafe(
