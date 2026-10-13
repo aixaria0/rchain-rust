@@ -392,14 +392,21 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         }
     } else {
         // **A node that reset itself is not simply reconnecting** (F-U5-01's crash window, register
-        // C274). Its DAG was deliberately truncated to an anchor, so running on what it holds would be
-        // running on a chain it chose to leave — and if the process died between the reset's two store
-        // operations, its block store holds bodies the DAG does not, which the receiver reads as
-        // *"stored but not yet validated"* and re-injects above the anchor. `resume_after_reset` repairs
-        // both and names the anchor the catch-up walk below must start from. With no marker this is the
+        // C274; law 72). Its DAG was deliberately truncated to an anchor, so running on what it holds
+        // would be running on a chain it chose to leave — and if the process died part-way through the
+        // reset's durable effects, its block store holds bodies the DAG does not, which the receiver
+        // reads as *"stored but not yet validated"* and re-injects above the anchor. `resume_after_reset`
+        // re-applies **every** effect the completion record brackets — the two stores and the runtime
+        // root — and names the anchor the catch-up walk below must start from. With no marker this is the
         // ordinary reconnection it has always been.
-        if let Some(anchor) =
-            crate::engine::reset::resume_after_reset(&dag, &block_store, &log, source).await?
+        if let Some(anchor) = crate::engine::reset::resume_after_reset(
+            &dag,
+            &block_store,
+            &runtime_manager,
+            &log,
+            source,
+        )
+        .await?
         {
             if boot_anchor.is_some_and(|named| named != anchor) {
                 log.warn(

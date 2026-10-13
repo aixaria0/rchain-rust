@@ -24,6 +24,16 @@ The property every row below is dispositioned against is the requirement, stated
 a design intent, the eleven IEC 61882 guide words each dispositioned, and a row per credible deviation.
 The study nodes **U1–U10 are reused verbatim**, so a hazard appears once and is dispositioned here.
 
+**Extended 2026-10-13 — the durability nodes U11–U16.** This pass studied the node's *functions*. A later
+one studies its **durability** — every place it discards or rewinds durable state — which is a different
+grain and needed its own nodes. U11–U16 are this pass's own, derived against `dev` at the merge of #340
+(`9b88b0825`); the citations above are unchanged and remain against `5fc591e33`. Each new node carries a
+**Table C — law coverage** naming the law a deviation instantiates, or the law it owes. That column is the
+**Lean4-first rule**: a deviation an existing law does not already capture is a deviation whose law is
+written — as a theorem, in `spec/Rchain/`, with a `witness` and a bumped `lawCeiling` — **before** any Rust
+changes. A `candidate:` slug would be the register's marker that the property has *no theorem*, which this
+pass does not accept where the state is representable.
+
 **Companion, not a replacement.** The hazards and their root-cause analysis live in
 `testnet-acceptance.md` §1 as rows `H-U*-*`; this page does not restate them. What it adds is the
 **disposition** — which rung of the ladder below the deviation lands on, what the node does today, and
@@ -291,6 +301,152 @@ contested there in CH-U10-03 and this pass does not reopen it). The folds are it
 | **F-U10-02** | AFTER | **The halt is sticky and not persisted**, so a restart makes the surface forget a halt it just reported | `ProposeHealth` is three `Arc<Atomic*>` fields (`casper/src/api/block_api.rs:85`); `note_timer_halted` is the only write (`:111`, called from `node/src/runtime/node_runtime.rs:1745`) and there is **no `store(false)` anywhere**; the process reads a fresh `false` after a restart | loud while the process lives; **forgotten after a restart** — an operator restarting to clear an alarm gets a false all-clear | Historic | R2 | owed: a test that a halt survives, or is re-derived at, a restart |
 | **F-U10-03** | OTHER THAN | **`[pos]` diagnostics bypass the log sink** — three sites write to stderr with `eprintln!`, not the `Log` source, so they are outside rate-limiting, log routing and any scrape | `casper/src/blocks/proposer/proposer.rs:232`, `:861`, `:897` all call `eprintln!` where the module has a `log` in scope | loud on the terminal, invisible to every surface that reads the `Log` sink | —  | R2 | owed: route the three `[pos]` sites through the module's `Log` source |
 
+### U11 — The reset request's lifecycle
+
+**Design intent.** A spent restore budget raises exactly one request for a shard; the request reaches the
+driver that can act on it; and it is consumed only at the point of commitment, so a failure before any
+durable effect leaves it actionable rather than spent.
+
+**Guide words.** row: NO, AS WELL AS, EARLY · folded: MORE → NO, LESS → NO, PART OF → NO, AFTER → NO, OTHER THAN → AS WELL AS, BEFORE → EARLY, LATE → EARLY · vacuous: REVERSE (the lifecycle is one directed sequence — raise, deliver, take, act — so there is no inverse to deviate from)
+
+The consolidation is the node's own. A request that cannot name a height is not raised at all
+(`reset_decision`'s two refusing arms), so PART OF and LESS collapse into "no request"; an out-of-order
+delivery (BEFORE, LATE, AFTER) is the same failure as no delivery; and MORE is *not* a deviation — a
+second request while one is pending changes nothing that matters, because `notify_one` **stores a permit**
+when no driver is waiting, so the first request's single wake is not lost. (That the guarantee rests on
+the primitive's permit retention rather than on this module is why it is folded here and stated, not
+left to be rediscovered.)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U11-01** | NO | **A request raised before a driver is installed was stranded**: the detector records it, but nothing wakes a driver, and the later request that would re-wake it is refused because the slot is already occupied | `request_reset` stores the request and notifies only when a waker is present (`casper/src/interpreter_util.rs:429-441`) → before #340 `install_reset_waker` overwrote the cell without observing the pending slot (`:423-425`), and a duplicate request returns `false` at the `slot.is_some()` guard (`:432`) *before* any notify → a request raised between a detector scan and the waker's installation had no wake at all | **loud** (the detector's `log.error` fires) but the node never resets; **closed 2026-10-13 (#340, register C275)**: installation now takes the request lock before the waker lock and notifies when the slot is occupied | Drift | R2 | casper/src/interpreter_util.rs::a_reset_request_is_raised_once_taken_once_and_wakes_the_driver |
+| **F-U11-02** | AS WELL AS | **The cells are process-global while the reset state is per-shard**: a request raised in shard A wakes whichever shard installed the waker last | `RESET_REQUEST`/`RESET_WAKE` are process statics (`casper/src/interpreter_util.rs:415-416`); `install_reset_waker` runs once per shard (`casper/src/engine/node_launch.rs:434`, from the shard loop at `node/src/runtime/node_runtime.rs:1230-1243`), so the last shard wins; `take_reset_request` is not shard-scoped, so shard B consumes A's request and drives its own DAG with A's anchor | silent: shard A never sees its own request; shard B refuses it (A's anchor is not in B's block store) | Drift | R2 | owed: per-shard lanes, and the test that a request is only taken by the shard that raised it |
+| **F-U11-03** | EARLY | **The request is consumed before the act**: `act_on_reset_request` took it, then `perform_reset` could fail before touching any store (the anchor body may be absent), spending the request with nothing done | `take_reset_request()` was the first statement; the anchor read that can fail was inside `perform_reset` | loud (`apply` returns the error) but the request was gone and there was no in-process retry; recovery was a restart, re-derivable only because `restore_attempts` is persisted. **Closed 2026-10-13 (law 73, C276)**: the act peeks (`reset_request()`), runs the anchor pre-flight, and only takes the request once `perform_reset` has returned — so a failure that destroyed nothing leaves the request pending and the detector's next scan can act on it | Unrestorable | R2 | casper/tests/reset.rs::a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U11-01 | law 53c (`rewindStep`, `strandSystemRewinding`) | the rewind's *availability* (anchored) and *effect* (a refusal is removed); the delivery half is Rust-only and not a state relation |
+| U11-02 | owed: the same request law, stated per shard | the shard lane is a Rust partition, not a modelled state |
+| U11-03 | owed, and written first as law 73: **a raised request is not spent until the act commits** | idempotent retry of a pre-commit failure — law 53c models the rewind as an *effect*, not as a retryable transaction |
+
+### U12 — The durable rewind (metadata, bodies, marker)
+
+**Design intent.** A rewind either completes and is recorded, or is repaired at boot — never half-applied
+and unrecorded — and the bodies it drops go with the metadata so nothing can serve or re-inject them.
+
+**Guide words.** row: PART OF, AFTER · folded: MORE → PART OF, LATE → AFTER, EARLY → PART OF, NO → PART OF, LESS → PART OF, BEFORE → PART OF, AS WELL AS → PART OF, OTHER THAN → PART OF · vacuous: REVERSE (a rewind is a one-way truncation)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U12-01** | PART OF | **The rewind is two store operations with no transaction between them**, so a crash between them leaves bodies the DAG does not hold — the receiver's own re-injection set | `drop_above` rewrites `block-metadata` in the `dagstorage` LMDB environment while `block_store.delete` removes bodies from the separate `blockstorage` environment (`casper/src/storage.rs:47-56`; no cross-store batch or two-phase commit exists anywhere in `shared/src/lmdb.rs`) → the window → **closed 2026-10-11 (#328, C274)**: a two-phase `ResetMarker` brackets the pair and `resume_after_reset` repairs a `Rewinding` at boot | **loud and repaired**: the marker is read at boot, the rewind re-applied, and the bodies purged by predicate (`casper/src/engine/reset.rs:105-186`) | Drift | R3 | casper/tests/reset.rs::a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker |
+| **F-U12-02** | AFTER | **The marker's lifetime is unbounded on a node that cannot catch up**: it is cleared only when the catch-up frontier passes the anchor, so a node that resets and never catches up re-enters the boot guard at every restart | `clear_reset_marker` has exactly one caller, `run_catchup`, and only when `frontier > marker.height` (`casper/src/engine/catchup.rs:276-296`); a walk that times out or ends below the anchor leaves it → intended (the doc says the condition is the walk's result, not its exit reason) — but the residue is a durable artifact that outlives its reset with no bound and no surface | loud (the boot guard warns each time) and **unbounded**: nothing reports how long a marker has stood | Historic | R2 | owed: a surface reporting a standing marker's age, or a bound on its lifetime |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U12-01 | law 53c models the rewind's effect; **owed: a law that a completion record brackets every durable effect** | `rewindStep` is a pure state relation and says nothing about two stores, a marker, or a crash — the durability half is the subject here |
+| U12-02 | owed: the same completion-record law, with the marker's clearing as its release condition | the law must state *when* the record may be released, not only that it is written |
+
+### U13 — The runtime root
+
+**Design intent.** When the reset completes, the runtime's durable root names the anchor's state, so the
+node validates and serves from the state it rewound to.
+
+**Guide words.** row: AFTER, PART OF · folded: LATE → AFTER, EARLY → PART OF, NO → PART OF, LESS → PART OF, MORE → PART OF, BEFORE → PART OF, AS WELL AS → PART OF, OTHER THAN → PART OF · vacuous: REVERSE (the root is a single pointer, not a directed operation)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U13-01** | AFTER | **The runtime root is written *after* the completion marker**, so a crash between the two leaves the record claiming the stores agree while `CURRENT_ROOT` still names the dropped tip | `rewind_and_purge` wrote `Rewound` and only then did `perform_reset` call `runtime().reset()` → `HistoryRepository::reset` → `roots_repository.validate_and_set_current_root` (`rspace/src/history/history_repository.rs:337`), a durable write; `reset_volatile`'s own doc (`:346-358`) names this exact class for the merge ("a crash between the two leaves `CURRENT_ROOT` naming an ancestor … resumes from neither state") | **silent** before the fix: `resume_after_reset` on a `Rewound` marker re-applies nothing, so the disagreement was permanent within the marker protocol. **Closed 2026-10-13 (law 72, C277)**: the two marker writes moved to the callers, around all three effects, so a `Rewound` record is now written only once the root has moved — the state is gone by construction | Split | R1 | casper/tests/reset.rs::the_guard_refuses_a_rewinding_whose_anchor_body_is_absent |
+| **F-U13-02** | PART OF | **The boot repair covered two of the three durable effects**: the `Rewinding` branch re-applied the rewind and the body purge but not the root, because the guard held no `RuntimeManager` | `resume_after_reset`'s signature took `dag`, `block_store`, `log`, `source` only (`casper/src/engine/reset.rs:105-110`); its caller (`casper/src/engine/node_launch.rs:401-402`) *does* hold the `RuntimeManager` | loud at the point of failure, but a node that crashed after the rewind and before the root write repaired two-thirds of its reset and then served from the wrong base. **Closed 2026-10-13 (law 72, C277)**: the guard now takes the manager and re-establishes the root, and refuses an anchor whose body it cannot read | Drift | R2 | casper/tests/reset.rs::a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U13-01 | owed: the completion-record law (U12), whose shape is *three effects, one record* | no existing law orders a record against a set of durable effects |
+| U13-02 | owed: the same law's repair clause | the guard's repair must be total over the effects the record brackets |
+
+### U14 — The refusal budget
+
+**Design intent.** An attempt is spent exactly once per revalidation; the cap bounds the process; and the
+count survives a restart rather than handing the record a fresh budget.
+
+**Guide words.** row: MORE, AS WELL AS · folded: LATE → MORE, NO → MORE, LESS → MORE, PART OF → AS WELL AS, OTHER THAN → AS WELL AS, BEFORE → MORE, AFTER → MORE, EARLY → MORE · vacuous: REVERSE (the count is monotone; it is never decremented)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U14-01** | MORE | **The read-modify-write of `restore_attempts` is two separately-locked operations**, so two concurrent restores of one hash can both read `n` and both write `n + 1` — two revalidations spending one attempt | the read is `dag.lookup` (`casper/src/multi_parent_casper.rs:726`, `:1138`) and the write is `dag.update_metadata` (`:797`, `:1214`), and the insert lock is taken only *inside* `update_metadata` (`casper/src/dag.rs:961-974`) → the pair is crash-atomic (one `store.put`) but not concurrent-atomic | silent: the cap is reached one revalidation early or late, and nothing counts the discrepancy | Drift | R2 | owed: the read-modify-write under one lock, with the test that a concurrent double-restore spends two attempts |
+| **F-U14-02** | AS WELL AS | **The reset request is raised on the uncommitted record**: `note_unrestorable_if_exhausted` runs with the incremented-but-unpersisted `restore_attempts`, so a request can be raised for a count the store then fails to record | the call sites at `casper/src/multi_parent_casper.rs:796` and `:1202` run *before* the `update_metadata` that persists the record (`:797`, `:1214`) → if the write then fails, the node has already asked for a reset on a record whose stored count is one lower | loud (the detector logged) but the request's premise is not durable | Drift | R2 | owed: raise the request after the commit, with the test that a failed record write spends no request |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U14-01 | law 73's shape — a two-phase operation on a cell is one step — applied to the count | the cap is a count, not a state, so the concurrency half is the split-read-write shape law 73 already states, and the fix is the Rust one-lock section |
+| U14-02 | owed, and written first as law 75: **a dependent action is taken only on a committed record** | the request must be raised on the committed count, not on the value the store has not accepted |
+
+### U15 — The RSpace checkpoint
+
+**Design intent.** A checkpoint commits the hot-store overlay and the native overlay together, or
+neither.
+
+**Guide words.** row: PART OF, EARLY, AFTER · folded: MORE → PART OF, LESS → PART OF, NO → PART OF, AS WELL AS → PART OF, OTHER THAN → PART OF, BEFORE → EARLY, LATE → AFTER · vacuous: REVERSE (a checkpoint is a one-way commit)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U15-01** | EARLY | **`create_checkpoint` drains the native overlay before the trie fold**, so a fold failure loses it while the hot-store side is left untouched — the two sides do not commit or fail together | `native_store.drain_native()` clears the overlay (`rspace/src/native_store.rs:477`) at `rspace/src/rspace.rs:604-609`, and `last_native_changes`/`last_native_drain` are written there — all *before* `checkpoint_with_native`, the only `?` in the function (`:616-621`) | **silent**: on a fold error the native mutations were gone from memory and not in the trie, and `last_native_*` held the failed checkpoint's drain. **Closed 2026-10-13 (law 74, C278)**: the overlay is snapshotted before the drain and restored if the fold fails, and `last_native_*` is written only once the fold has committed — the state a failed fold leaves is the state it started in | Split | R1 | owed: a fault-injection point for the fold, which the rspace tests do not yet have |
+| **F-U15-02** | PART OF | **A `SoftCheckpoint` carries no root**, so a revert rebuilds the snapshot over the history base *at revert time* — a hard checkpoint between the snapshot and the revert silently restores old overlay over a new base | `SoftCheckpoint` holds the cache snapshot, log, produce counter and native snapshot, no root (`rspace/src/checkpoint.rs:14-21`); `revert_to_soft_checkpoint` re-reads `history.root()` at revert time (`rspace/src/rspace.rs:698-707`) | silent but **latent**: no production caller runs a hard checkpoint between a soft checkpoint and its revert (the per-deploy fallback is taken and reverted inside one `validate`) | Historic | R2 | owed: either a root on the soft checkpoint, or a guard, with a test of the interleaving |
+| **F-U15-03** | AFTER | **The hard commit is leaf-before-root**: the new root is recorded last, so an interrupted commit leaves orphaned leaves and trie nodes that are not reachable from any root | leaves are written (`rspace/src/history/history_repository.rs:302-313`), then trie nodes (`:316`), then the root (`:317`) — three independent transactions in one LMDB environment, not one | not loud; the orphans are harmless because content-addressed, but the record's partial state is the programme's **named atomicity deviation** | Drift | R2 | owed: the deviation is documented (`docs/src/spec/failure-hazop.md` §1's ladder target); a test would pin the reachability, not the write order |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U15-01 | owed, and written first as law 74: **a checkpoint does not drain an overlay it has not folded** | no existing law models the overlay's drain against its fold; `Rchain/RSpace/*.lean` models the trie, not the clear |
+| U15-02 | owed: the same law, with the soft checkpoint's base as a modelled field | the missing field is the absent root |
+| U15-03 | law 49 / `Rchain/RSpace/Merkle.lean` cover content addressing; the *ordering* is owed | content-addressing makes the orphans harmless; the write order is not a modelled state |
+
+### U16 — The operator's reconciliation
+
+**Design intent.** A recovery the operator runs is resumable, never overwrites its own asides, and states
+what it adopted rather than implying a quorum it did not compute.
+
+**Guide words.** row: PART OF, MORE, AFTER · folded: AS WELL AS → MORE, NO → PART OF, LESS → PART OF, EARLY → PART OF, LATE → PART OF, BEFORE → PART OF, OTHER THAN → PART OF · vacuous: REVERSE (the tool performs one directed recovery)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U16-01** | MORE | **The aside names collide at minute resolution**, so a retry within the same minute **overwrites the only good backup** on the docker path — the operator's one guarantee ("never deleted") fails exactly when it is needed | `TS=$(date -u +%Y%m%d-%H%M)` (`tools/reconcile-network.sh:922`, `:953`); the docker branch's `tar cf "$backup"` (`:282-283`) writes the same-named file again → a second same-minute run re-tars the *already-cleared* volume over the first (good) backup | loud on the terminal, but the data is gone; the systemd branch `mv`s into the existing dir instead (mangled, not lost) | Unrestorable | R2 | owed: second-resolution names, and a refusal to overwrite an existing backup |
+| **F-U16-02** | AFTER | **The systemd `--restore-from-master` branch overwrites in place and prints "unchanged"**: a mid-stream `tar` failure leaves the joiner partially written while the message says it was not | `tools/reconcile-network.sh:229-238` streams a `tar` into the live data dir, never removing envs the master lacks (joiner-only files survive → divergence residue), and prints `"the copy failed — $n is unchanged"` on failure; the docker branch (`:196-228`) is the careful copy-beside-then-swap | loud but **false**: the message contradicts the state | Drift | R2 | owed: the systemd branch copies beside and swaps, and the message reports the real outcome |
+| **F-U16-03** | PART OF | **The tool keeps no durable intent journal**, so a partial application is reconstructible only from the timestamped asides — unlike the node's own reset, there is no phase record a later run can read | the step-5 move loop (`tools/reconcile-network.sh:953-958`) and the step-5b copy loop (`:906-935`) write no marker; a crash mid-loop leaves some nodes moved and others not, with nothing on disk saying so | loud (each refusal names itself and exits with its own code) but **not resumable**: a retry recomputes the meet against a half-mutated net and may refuse | Drift | R4 | owed: a journal or a `--resume`, stating which nodes were already applied |
+
+**`dagstorage` travels in `CHAIN_ENVS`** (`tools/reconcile-network.sh:180`), and the reset marker lives in
+a `reset-marker` DB inside `dagstorage` — so step 5b copies a marker onto a joiner and step 5's docker
+`rm -rf` clears one. Recorded in F-U16-03's RCA rather than given a row: it is a consequence of the same
+absence of a phase record.
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U16-01 | owed: nothing in the register speaks of an operator's asides | the register is the node's mathematics; the tool is not modelled |
+| U16-02 | owed: — | same |
+| U16-03 | owed: — | the pointer of an absent law: the tool's phases are not modelled |
+
 ## 4. The fault tree
 
 ```
@@ -456,7 +612,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 13 · node-words owed: 44
+**Debt.** falsifiers owed: 23 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.

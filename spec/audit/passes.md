@@ -10048,3 +10048,69 @@ host, one run.
 The request can exist before its waker. Installation previously recorded only the waker, leaving a pending request without a wake. The existing serial request test now fails on that ordering before the fix (CI run 38341642556, commit 0aff751). Installation takes the request lock before the waker lock, matching submission, and notifies the installed driver when the slot is occupied. Pending-driver handover and empty-slot installation are covered in the same test. This establishes local request delivery; it does not execute the full engine re-entry or prove global finalized-state safety.
 
 Verified on 47540f5 by CI run 38342542544: the delivery regression, existing DAG/store reset tests, formatting/static gates and dependency checks pass. Casper reports 437 passed, 0 failed, 1 ignored. C275 is closed for local delivery.
+
+## 106. The durability rewinds: a HAZOP, and the laws it owed (C276–C278, #340's line)
+
+PR #340 fixed one delivery bug in the self-reset and drew a line: *"full running-engine reset-to-sync
+re-entry and universal finalized-state rollback safety remain separate acceptance boundaries"*. This pass
+took that line as its subject — not as an audit-plus-fix, but as the repository's own method applied at
+its own altitude: **HAZOP, root-cause analysis, and Lean4 first**. Every failure state is mathematically
+representable, so a deviation is either *demonstrated* to be an instance of an existing law, or it earns a
+**new law written before any Rust**.
+
+**The HAZOP layer.** `docs/src/spec/failure-hazop.md` gained six study nodes, one per rewind site — U11
+the reset request's lifecycle, U12 the durable rewind, U13 the runtime root, U14 the refusal budget, U15
+the RSpace checkpoint, U16 the operator's reconciliation. Each dispositions all eleven IEC 61882 guide
+words, carries Table A deviations with an RCA chain, and adds a **Table C — law coverage** naming the law
+a deviation instantiates or the one it owes. Thirty-eight rows, twenty-three falsifiers owed, checked by
+`tools/check-hazop-worksheet.sh --gate`.
+
+**What an existing law already captured, and what it did not.** Law 53c's `rewindStep`
+(`Rchain/Casper/Stranding.lean`) gives the rewind's *availability* (an anchored state) and its *effect* (a
+refusal is removed) — but it is a pure state relation: it says nothing about durability, crashes, or a
+completion record, which is the whole subject here. So four laws were written first, modelled on law 51's
+`System`:
+
+- **law 72** — a completion record brackets every durable effect (`Rchain/Durability.lean`);
+- **law 73** — a raised request is not spent until the act commits (`Rchain/Requests.lean`);
+- **law 74** — a checkpoint does not drain an overlay it has not folded (`Rchain/Checkpoint.lean`);
+- **law 75** — a dependent action is taken only on a committed record (`Rchain/Attempts.lean`).
+
+Each carries a **falsifier theorem that is red on the code as it stood** —
+`an_early_commit_reaches_a_record_that_lies`, `a_split_take_reaches_a_state_that_spent_the_request`,
+`a_drain_before_the_fold_reaches_a_state_that_lost_the_overlay`,
+`a_raised_request_on_an_uncommitted_record_is_reachable` — and a non-vacuity witness. The register moved
+from 71 laws / 95 entries to **75 / 99**.
+
+**The Rust halves that landed** — law 72's and 73's with witnesses the formal gate runs, law 74's without
+one, because its falsifier needs a fault-injection point the rspace tests do not yet have:
+
+- the reset wrote `ResetMarker{Rewound}` when the two *stores* had returned and moved the runtime root
+  *afterwards* — a durable `CURRENT_ROOT` write — so a crash between them left a record claiming the
+  stores agree while the root named the dropped state, and the boot guard repaired nothing. The two
+  marker writes now bracket all three effects, and the guard's `Rewinding` branch re-establishes the root
+  (`casper/src/engine/reset.rs`, `casper/tests/reset.rs`);
+- the reset request is spent only by the act that commits: the act peeks, runs the anchor pre-flight, and
+  takes only once `perform_reset` has returned, so a failure that destroyed nothing leaves the request
+  pending;
+- `create_checkpoint` snapshots the native overlay before the drain and restores it if the fold fails, and
+  records `last_native_*` only after the fold has committed (`rspace/src/rspace.rs`).
+
+**What this pass does not claim.** The Rust halves of law 75, of F-U11-02 (the reset cells are
+process-global while the reset state is per-shard), of F-U13's own crash-window falsifier, of F-U15-02/03
+(the soft checkpoint's absent root; the leaf-before-root commit) and of F-U16 (the reconciliation tool's
+missing journal, its same-minute aside collision, and its in-place systemd restore) are **owed**, each
+named with its law or its `candidate:` slug in the HAZOP's Table C. The devnet arm that would exercise a
+real reset end to end — stageable since §92 — is unrun.
+
+**A correction this pass made to its own work.** The first draft carried a row (U11-02) claiming a
+duplicate request strands a pending one. Reading `request_reset` against tokio's `Notify` shows the
+opposite: `notify_one` stores a permit when no driver is waiting, so the first request's wake is not lost.
+The row was wrong, the word is folded, and the debt adjusted — recorded here because a worksheet's
+citations are claims, and this repository's rule is that a claim found false is corrected rather than
+quietly dropped.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` (nodes U11–U16 and the debt line);
+`spec/Rchain/{Durability,Requests,Checkpoint,Attempts}.lean` with register rows 72–75;
+`casper/src/engine/reset.rs`, `casper/tests/reset.rs`, `rspace/src/rspace.rs`;
+`tools/check-hazop-worksheet.sh --gate` and `tools/check-lean-conformance.sh` (173 Rust witnesses ran).
