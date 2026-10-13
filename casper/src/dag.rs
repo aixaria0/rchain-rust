@@ -19,6 +19,7 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::validator::Validator;
+use rchain_shared::lock::Unpoison;
 use rchain_shared::metrics::{Metrics, MetricsNop, Source};
 use rchain_shared::rate_limiter::KeyedRateLimiter;
 use rchain_shared::refined::{BlockHeight, SeqNum};
@@ -49,6 +50,20 @@ pub const MAX_DEPLOYS_PER_DEPLOYER_PER_SEC: u64 = 100;
 /// rather than admitted (`KeyedRateLimiter`).
 pub const MAX_TRACKED_DEPLOYERS: usize = 4_096;
 
+/// **How many of the pool's slots one deployer's deploys may hold at once.**
+///
+/// The rate bound above says how *fast* a deployer may be admitted; this says how much of the pool
+/// it may end up owning. They answer different attacks, and the pool's own cap answers neither on its
+/// own: with only `MAX_POOLED_DEPLOYS`, one identity that paces itself under the rate limit fills all
+/// ten thousand slots in a hundred seconds and every other identity's deploy is then refused by a
+/// full pool — the bound held, and the wrong counterparty paid for it (W-N2-04, W-N2-10). A tenth of
+/// the pool is no limit on any honest deployer, whose deploys leave the pool as blocks include them.
+///
+/// A deployer's deploys leave the pool on expiry (`Self::expire_deploys`) and on inclusion in a block
+/// (`Self::insert`), and both decrement the share — a share that never came back would be a permanent
+/// lockout, which is the shape this is most likely to be wrong in.
+pub const MAX_POOLED_DEPLOYS_PER_DEPLOYER: usize = 1_000;
+
 /// Build a `Message` from a `BlockMetadata` given the current message map (port of
 /// `BlockDagKeyValueStorage.messageFromBlockMetadata`). Returns `None` when a justification is
 /// absent from `msg_map` (the Scala `Map.apply` throws).
@@ -73,6 +88,44 @@ pub fn message_from_block_metadata(
     })
 }
 
+/// Count a deploy store by deployer — the starting point for [`MAX_POOLED_DEPLOYS_PER_DEPLOYER`].
+///
+/// A node that restarts with deploys already pooled has to start from what is stored rather than
+/// from zero, or every deployer's share would be handed out a second time on top of what it holds.
+async fn pooled_by_deployer(
+    deploy_store: &Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
+) -> Result<std::collections::HashMap<Vec<u8>, usize>, String> {
+    let mut counts: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
+    for deploy in deploy_store.to_map().await?.into_values() {
+        *counts.entry(deploy.deployer).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+/// Return one slot to `deployer`'s share, dropping the entry at zero.
+///
+/// An entry at zero carries nothing a missing one does not, and keeping it would let the map outlive
+/// the deploys it counts — the rule `KeyedRateLimiter` applies to a bucket that has refilled.
+fn release_deployer_slot(
+    pooled_by_deployer: &std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>,
+    deployer: &[u8],
+) {
+    let mut pooled = pooled_by_deployer.lock().unpoison();
+    match pooled.get_mut(deployer) {
+        Some(held) if *held > 1 => *held -= 1,
+        Some(_) => {
+            pooled.remove(deployer);
+        }
+        // Already gone. Two removal paths can see the same deploy — an expiry and a block that
+        // includes it — and the second releasing a slot the first already returned is the fail-*safe*
+        // direction: the share reads one too small, so a deployer may hold one deploy more than its
+        // quota until a restart rebuilds the map from the store. The opposite, a *missed* release,
+        // would be a permanent lockout, which is why every release happens only after the delete it
+        // accompanies has succeeded.
+        None => {}
+    }
+}
+
 /// The concrete block DAG storage (port of `BlockDagKeyValueStorage`). Fringe pruning (the
 /// `BlockIndex` cache) and deploy-pool expiry run on finalization.
 pub struct BlockDagKeyValueStorage {
@@ -95,6 +148,14 @@ pub struct BlockDagKeyValueStorage {
     /// cannot know who is asking, and each ingress keeps its own limiter, so none of those is the
     /// node-wide per-identity bound.
     deploy_rate: KeyedRateLimiter,
+    /// **Deployer key → how many of the pool's slots its deploys occupy** (see
+    /// [`MAX_POOLED_DEPLOYS_PER_DEPLOYER`]).
+    ///
+    /// Counts *stored* deploys, not admissions: incremented where a deploy is written to the pool and
+    /// decremented at both places one leaves it. An entry is dropped at zero rather than kept, so the
+    /// map cannot grow past the number of deployers currently holding a slot — which is bounded by
+    /// the pool itself, not by the caller.
+    pooled_by_deployer: std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>,
     block_metadata_store: Arc<BlockMetadataStore>,
     deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
     deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
@@ -150,6 +211,10 @@ impl BlockDagKeyValueStorage {
                 MAX_DEPLOYS_PER_DEPLOYER_PER_SEC,
                 MAX_TRACKED_DEPLOYERS,
             ),
+            // **A restarted node's pool is not empty**, and the share has to start from what is
+            // actually stored rather than from zero — a node that comes back with a full pool would
+            // otherwise admit a fresh ten thousand deploys per deployer on top of what it holds.
+            pooled_by_deployer: std::sync::Mutex::new(pooled_by_deployer(&deploy_store).await?),
             block_metadata_store,
             deploy_index,
             deploy_store,
@@ -642,7 +707,7 @@ impl BlockDagKeyValueStorage {
     /// expired; proposer selection is the actual next-block gate.
     async fn expire_deploys(&self, latest_block_number: i64) -> Result<(), String> {
         let pooled = self.deploy_store.to_map().await?;
-        let expired: Vec<DeployId> = pooled
+        let expired: Vec<(DeployId, Vec<u8>)> = pooled
             .iter()
             .filter(|(_, d)| {
                 crate::validate::deploy_expired_at_block(
@@ -651,10 +716,16 @@ impl BlockDagKeyValueStorage {
                     crate::multi_parent_casper::DEPLOY_LIFESPAN,
                 )
             })
-            .map(|(id, _)| id.clone())
+            .map(|(id, d)| (id.clone(), d.deployer.clone()))
             .collect();
         if !expired.is_empty() {
-            self.deploy_store.delete(&expired).await?;
+            let ids: Vec<DeployId> = expired.iter().map(|(id, _)| id.clone()).collect();
+            self.deploy_store.delete(&ids).await?;
+            // Return each deployer's share of the pool. An expired deploy has left it, so holding
+            // the share would lock its deployer out for a deploy the node no longer has.
+            for (_, deployer) in &expired {
+                release_deployer_slot(&self.pooled_by_deployer, deployer);
+            }
         }
         Ok(())
     }
@@ -928,12 +999,27 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             .map(|d| d.deploy.sig.clone())
             .collect();
         if !deploy_hashes.is_empty() {
+            // **Which of these were in *this* node's pool.** A block routinely carries deploys this
+            // node never held — it was not the proposer, or the deploy expired here first — and
+            // returning a slot for one of those would credit a deployer for a slot it never spent
+            // (W-N2-04). One batched read, bounded by the block's own deploy count.
+            let pooled_here = self.deploy_store.get(&deploy_hashes).await?;
+            let released: Vec<Vec<u8>> = pooled_here
+                .iter()
+                .flatten()
+                .map(|d| d.deployer.clone())
+                .collect();
+
             let pairs: Vec<(DeployId, BlockHash)> = deploy_hashes
                 .iter()
                 .map(|h| (h.clone(), block.block_hash))
                 .collect();
             self.deploy_index.put(&pairs).await?;
             self.deploy_store.delete(&deploy_hashes).await?;
+            // The deploy has left the pool, so its share of it goes with it.
+            for deployer in &released {
+                release_deployer_slot(&self.pooled_by_deployer, deployer);
+            }
         }
 
         // Mark the newly-finalized blocks' metadata with their member fringe.
@@ -1115,9 +1201,29 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS {
             return Err("deploy pool is full".to_string());
         }
-        self.deploy_store
-            .put(&[(deploy.sig.clone(), deploy)])
-            .await?;
+
+        // **The submitter's share of the pool, checked in the same commit point as the node's.**
+        // Without it, one identity that paces itself under the rate limit above owns every slot and
+        // every other identity is then refused by a full pool — the bound holds and the wrong
+        // counterparty pays (W-N2-04, W-N2-10). The check and the claim are one operation under the
+        // map's own lock, so two concurrent admits for one deployer cannot both see the last slot.
+        let deployer = deploy.deployer.clone();
+        {
+            let mut pooled = self.pooled_by_deployer.lock().unpoison();
+            let held = pooled.get(&deployer).copied().unwrap_or(0);
+            if held >= MAX_POOLED_DEPLOYS_PER_DEPLOYER {
+                return Err("this deployer holds its share of the deploy pool".to_string());
+            }
+            pooled.insert(deployer.clone(), held + 1);
+        }
+
+        if let Err(e) = self.deploy_store.put(&[(deploy.sig.clone(), deploy)]).await {
+            // Give the share back. A store fault is not the deployer's, and a slot that was never
+            // taken yet never returned is a permanent lockout — the failure mode this accounting is
+            // most likely to have.
+            release_deployer_slot(&self.pooled_by_deployer, &deployer);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -1646,16 +1752,92 @@ mod tests {
 
     #[tokio::test]
     async fn add_deploy_rejects_when_pool_full() {
-        // The pool's COUNT bound, told apart from the submitter's RATE bound: one key fills it.
+        // The pool's COUNT bound, told apart from the submitter's RATE bound **and from its share**.
+        // It used to say "one key fills it", and that was the defect: the line below now needs ten
+        // distinct deployers to fill ten thousand slots, which is the bound doing its job — see
+        // `one_deployer_cannot_hold_the_whole_pool` for the other half.
         let storage = build_storage_over_unshared(empty_metadata_store().await)
             .await
             .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
+        let distinct_deployers = MAX_POOLED_DEPLOYS.div_ceil(MAX_POOLED_DEPLOYS_PER_DEPLOYER);
         for id in 0..MAX_POOLED_DEPLOYS {
-            storage.add_deploy(deploy_with_id(id)).await.unwrap();
+            storage
+                .add_deploy(deploy_by((id / MAX_POOLED_DEPLOYS_PER_DEPLOYER) as u8, id))
+                .await
+                .unwrap();
         }
-        let err = storage.add_deploy(deploy_with_id(MAX_POOLED_DEPLOYS)).await;
+        assert!(
+            distinct_deployers >= 2,
+            "if one deployer could fill the pool this test would not be testing the pool's bound"
+        );
+        let err = storage
+            .add_deploy(deploy_by(distinct_deployers as u8, MAX_POOLED_DEPLOYS))
+            .await;
         assert!(err.is_err(), "deploy pool must reject once full");
         assert!(err.unwrap_err().contains("full"));
+    }
+
+    /// **One deployer cannot hold the whole pool** (W-N2-04, W-N2-10).
+    ///
+    /// The pool's cap was a node-wide count with a node-wide refusal, so one identity that paced
+    /// itself under the rate limit owned every slot and every other identity was then refused by a
+    /// *full pool* — the bound held, and the wrong counterparty paid for it. The share is per
+    /// deployer, and this pins both halves of that: the deployer that reaches its share is refused,
+    /// and a different deployer is admitted while the pool as a whole is barely used.
+    #[tokio::test]
+    async fn one_deployer_cannot_hold_the_whole_pool() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
+
+        for id in 0..MAX_POOLED_DEPLOYS_PER_DEPLOYER {
+            storage.add_deploy(deploy_by(0, id)).await.unwrap();
+        }
+        let err = storage
+            .add_deploy(deploy_by(0, MAX_POOLED_DEPLOYS_PER_DEPLOYER))
+            .await
+            .expect_err("a deployer at its share must be refused");
+        assert!(
+            err.contains("share"),
+            "and the refusal must name the share rather than the pool — the pool is 90% empty: {err}"
+        );
+
+        // The pool is nearly empty *and* another deployer is untouched: both are what makes this a
+        // per-submitter bound rather than a node-wide one.
+        assert!(
+            storage.deploy_store.count().await.unwrap() < MAX_POOLED_DEPLOYS,
+            "the share must refuse long before the pool's own cap"
+        );
+        storage.add_deploy(deploy_by(1, 999_999)).await.unwrap();
+    }
+
+    /// **The share comes back when the deploy leaves the pool** (W-N2-04).
+    ///
+    /// The failure this guards is the one that turns a quota into a permanent lockout: a share that
+    /// is claimed on the way in and never returned. Both removal paths return it — expiry here, and
+    /// inclusion in a block in the test below — and the deployer must be admitted again afterwards.
+    #[tokio::test]
+    async fn a_deployers_share_returns_when_its_deploys_leave_the_pool() {
+        let storage = build_storage_over_unshared(empty_metadata_store().await)
+            .await
+            .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
+
+        for id in 0..MAX_POOLED_DEPLOYS_PER_DEPLOYER {
+            storage.add_deploy(deploy_by(0, id)).await.unwrap();
+        }
+        assert!(storage
+            .add_deploy(deploy_by(0, MAX_POOLED_DEPLOYS_PER_DEPLOYER + 1))
+            .await
+            .is_err());
+
+        // Every pooled deploy expires at this height (`valid_after_block_number` is 0 and the
+        // lifespan is 50), so the whole share returns at once.
+        storage.expire_deploys(1_000).await.unwrap();
+
+        storage
+            .add_deploy(deploy_by(0, 999_999))
+            .await
+            .expect("a deployer whose deploys have left the pool must be admitted again");
     }
 
     /// A deploy store that answers `count` and *then* suspends, so the capacity check and the insert
@@ -1724,20 +1906,27 @@ mod tests {
         .unwrap()
         .with_deploy_rate(u64::MAX, MAX_TRACKED_DEPLOYERS);
 
+        // **Filled by ten distinct deployers, and the concurrent callers are eight more.** One key
+        // cannot fill this pool any more (see `one_deployer_cannot_hold_the_whole_pool`), so filling
+        // it takes ten — and the callers below must be fresh deployers, or the *share* bound would
+        // refuse them and this would stop testing the pool's.
         for id in 0..MAX_POOLED_DEPLOYS - 1 {
-            storage.add_deploy(deploy_with_id(id)).await.unwrap();
+            storage
+                .add_deploy(deploy_by((id / MAX_POOLED_DEPLOYS_PER_DEPLOYER) as u8, id))
+                .await
+                .unwrap();
         }
 
         let base = MAX_POOLED_DEPLOYS;
         let (r1, r2, r3, r4, r5, r6, r7, r8) = tokio::join!(
-            storage.add_deploy(deploy_with_id(base)),
-            storage.add_deploy(deploy_with_id(base + 1)),
-            storage.add_deploy(deploy_with_id(base + 2)),
-            storage.add_deploy(deploy_with_id(base + 3)),
-            storage.add_deploy(deploy_with_id(base + 4)),
-            storage.add_deploy(deploy_with_id(base + 5)),
-            storage.add_deploy(deploy_with_id(base + 6)),
-            storage.add_deploy(deploy_with_id(base + 7)),
+            storage.add_deploy(deploy_by(10, base)),
+            storage.add_deploy(deploy_by(11, base + 1)),
+            storage.add_deploy(deploy_by(12, base + 2)),
+            storage.add_deploy(deploy_by(13, base + 3)),
+            storage.add_deploy(deploy_by(14, base + 4)),
+            storage.add_deploy(deploy_by(15, base + 5)),
+            storage.add_deploy(deploy_by(16, base + 6)),
+            storage.add_deploy(deploy_by(17, base + 7)),
         );
         let admitted = [r1, r2, r3, r4, r5, r6, r7, r8]
             .iter()

@@ -10,11 +10,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{middleware, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::watch;
@@ -30,7 +31,7 @@ use rchain_comm::rp::rp_conf::RPConf;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::validator::Validator;
 use rchain_shared::base16;
-use rchain_shared::rate_limiter::RateLimiter;
+use rchain_shared::rate_limiter::KeyedRateLimiter;
 use rchain_shared::refined::{Port, ShardId};
 
 use crate::api::admin_web_api::AdminWebApi;
@@ -38,7 +39,7 @@ use crate::api::dto::{
     BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DeployRequest,
     ExploreDeployRequest, FaucetRequest, TxnRecordDto, TxnRequest,
 };
-use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
+use crate::api::grpc::{DEFAULT_API_RATE_LIMIT_PER_SEC, MAX_TRACKED_PEERS};
 use crate::api::web_api::WebApi;
 use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
@@ -78,6 +79,14 @@ const TXN_RATE_LIMIT_PER_SEC: u64 = 10;
 /// host, so it is bounded like the transaction routes rather than like a read.
 const OCAPN_DIAL_RATE_LIMIT_PER_SEC: u64 = 2;
 
+/// The subject an ingress bound uses when the request carries no connection information.
+///
+/// That happens when a router is called directly rather than served — which is what the tests do. One
+/// shared bucket is the honest reading: the bound still applies and its subject is simply "everyone",
+/// exactly as it was before the bound was keyed. Deliberately **not** a bypass, because a bypass would
+/// be indistinguishable from the defect.
+const UNATTRIBUTED_PEER: &[u8] = b"unattributed-peer";
+
 /// Comm state needed by `GET /status` (port of the `ConnectionsCell`/`NodeDiscovery`/`RPConfAsk`
 /// arguments of `StatusInfo.service`).
 #[derive(Clone)]
@@ -116,7 +125,7 @@ pub struct HttpState {
     pub enable_reporting: bool,
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
     /// deviation: the Scala HTTP deploy routes are unlimited).
-    pub deploy_rate_limiter: Arc<RateLimiter>,
+    pub deploy_rate_limiter: Arc<KeyedRateLimiter>,
     /// Rate limiter for `/api/v1/explore-deploy` and its by-block-hash sibling — **separate from
     /// `deploy_rate_limiter` since AUDIT R36**, because they are different resources.
     ///
@@ -129,9 +138,9 @@ pub struct HttpState {
     /// sharing, and "explore is more expensive per request, so it deserves a stricter number" is a
     /// policy question with no oracle behind it — the Scala's HTTP deploy routes are unlimited — so it
     /// is left where it was rather than answered by a guess.
-    pub explore_rate_limiter: Arc<RateLimiter>,
+    pub explore_rate_limiter: Arc<KeyedRateLimiter>,
     /// Rate limiter for the devnet faucet endpoint.
-    pub faucet_rate_limiter: Arc<RateLimiter>,
+    pub faucet_rate_limiter: Arc<KeyedRateLimiter>,
     /// Whether the faucet routes are mounted at all — dev mode **and** a deployer key, which is the
     /// handler's own condition, carried here so the mount and the handler cannot disagree (AUDIT
     /// R34). When false the routes do not exist and the documented **404** is what a caller gets.
@@ -169,7 +178,7 @@ pub struct AdminState {
     /// the asymmetry AUDIT C121 rests on. The limit is lower than the deploy API's 100/s on purpose:
     /// one admitted request can open up to [`MAX_TXN_LEGS`] node-signed deploys and drives a 2PC
     /// transaction that holds per-phase timeouts.
-    pub txn_rate_limiter: Arc<RateLimiter>,
+    pub txn_rate_limiter: Arc<KeyedRateLimiter>,
     /// The node's **outbound** OCapN surface (issue #249), published by the listener once its
     /// transports are bound. An empty slot means no transport is bound — the listener has not started
     /// or has none configured — and the dial route answers 503 rather than dialing with no layer.
@@ -178,7 +187,7 @@ pub struct AdminState {
     /// default: it is an egress primitive, so it gets an explicit switch, as `enable_txn_api` does.
     pub enable_ocapn_dial: bool,
     /// Rate limiter for the dial route. See [`OCAPN_DIAL_RATE_LIMIT_PER_SEC`].
-    pub ocapn_dial_rate_limiter: Arc<RateLimiter>,
+    pub ocapn_dial_rate_limiter: Arc<KeyedRateLimiter>,
 }
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
@@ -397,13 +406,6 @@ async fn admin_ocapn_dial(
         Ok(dialer) => dialer,
         Err(response) => return response,
     };
-    if !state.ocapn_dial_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("ocapn dial rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     let Some(swiss) = base16::decode(&req.swiss) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -449,13 +451,6 @@ async fn api_txn_run(State(state): State<AdminState>, Json(req): Json<TxnRequest
         Ok(gateway) => gateway,
         Err(response) => return response,
     };
-    if !state.txn_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("transaction rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     if req.legs.len() > MAX_TXN_LEGS {
         return (
             StatusCode::BAD_REQUEST,
@@ -551,35 +546,14 @@ async fn api_txn_list(State(state): State<AdminState>) -> Response {
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
-    if !state.deploy_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("deploy rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     json_result(state.web_api.deploy(&req).await)
 }
 
 async fn api_faucet(State(state): State<HttpState>, Json(req): Json<FaucetRequest>) -> Response {
-    if !state.faucet_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("faucet rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     json_result(state.web_api.faucet(&req.address).await)
 }
 
 async fn api_explore_deploy(State(state): State<HttpState>, Json(term): Json<String>) -> Response {
-    if !state.explore_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("explore-deploy rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     json_result(state.web_api.exploratory_deploy(&term, None, false).await)
 }
 
@@ -587,13 +561,6 @@ async fn api_explore_deploy_by_block_hash(
     State(state): State<HttpState>,
     Json(req): Json<ExploreDeployRequest>,
 ) -> Response {
-    if !state.explore_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("explore-deploy rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     let block_hash = if req.block_hash.is_empty() {
         None
     } else {
@@ -697,13 +664,6 @@ async fn api_get_transaction(State(state): State<HttpState>, Path(hash): Path<St
     // route).
     if !state.enable_reporting {
         return (StatusCode::NOT_FOUND, ()).into_response();
-    }
-    if !state.deploy_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("deploy rate limit exceeded".to_string()),
-        )
-            .into_response();
     }
     json_result(state.web_api.get_transaction(&hash).await)
 }
@@ -1216,13 +1176,6 @@ async fn reporting_trace(
     if !state.enable_reporting {
         return (StatusCode::NOT_FOUND, ()).into_response();
     }
-    if !state.deploy_rate_limiter.allow() {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json("deploy rate limit exceeded".to_string()),
-        )
-            .into_response();
-    }
     // Validate-on-ingress: a malformed block hash (non-hex / wrong length) must be a 400, not a
     // panic in `BlockHash::from_hex`.
     let hash = match BlockHash::try_from_hex(&query.block_hash) {
@@ -1248,27 +1201,103 @@ async fn admin_propose(State(state): State<AdminState>) -> Response {
     json_result(state.admin_web_api.propose().await)
 }
 
+/// **The ingress bound, keyed on the peer and applied before the body is decoded.**
+///
+/// Two defects in one function. Its subject was the *node* — one process-wide bucket per route — so
+/// one caller's burst refused every other caller's request and each route starved the others'
+/// budget: the bound held, and the wrong counterparty paid (W-N2-01, W-N2-02, W-N2-08). And it ran
+/// *inside* the handler, after axum's `Json` extractor had already decoded the body, so a caller
+/// could make the node decode as many payloads as it liked and only then be told it was over the
+/// limit (W-N2-06, W-N2-09).
+///
+/// **What this bounds is the decode, not the deploys.** The deployer's own bound is downstream at
+/// `BlockDagKeyValueStorage::add_deploy`, keyed on the deployer public key — the only identity the
+/// node can hold a submitter to, and one that does not exist until the body has been read. This layer
+/// is what stops one peer spending another's decode budget in the window before that, and it is why
+/// keying it on the address is not a substitute for the downstream bound but a different bound over a
+/// different resource.
+///
+/// As a `route_layer` it runs before the handler's extractors, which is the whole point of it being a
+/// layer rather than three lines at the top of each handler.
+async fn peer_rate_limit(
+    State((limiter, message)): State<(Arc<KeyedRateLimiter>, &'static str)>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let key: Vec<u8> = match request.extensions().get::<ConnectInfo<SocketAddr>>() {
+        Some(ConnectInfo(addr)) => addr.ip().to_string().into_bytes(),
+        // No connection information: this router was built without
+        // `into_make_service_with_connect_info`, which is what the tests do when they call it
+        // directly. One shared bucket — see [`UNATTRIBUTED_PEER`].
+        None => UNATTRIBUTED_PEER.to_vec(),
+    };
+    if !limiter.allow(&key) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(message.to_string())).into_response();
+    }
+    next.run(request).await
+}
+
 /// Build the public HTTP routes (port of `acquireHttpServer`'s route map: `/version`, `/metrics`,
 /// `/status`, the `/api` JSON routes, `/reporting` + `/api/trace`, the `/api/v1` routes, and the
 /// `/api/v1/openapi.json` OpenAPI document).
 pub fn router(state: HttpState) -> Router {
     let faucet_enabled = state.faucet_enabled;
-    let mut routes = Router::new()
-        .route("/version", get(version))
-        .route("/metrics", get(metrics))
-        .route("/status", get(status))
-        .route("/reporting/trace", get(reporting_trace))
-        .route("/api/trace", get(reporting_trace))
-        .route("/api/status", get(api_status))
-        .route("/api/capabilities", get(api_capabilities))
-        .route("/api/shards", get(api_shards))
-        .route("/api/deploys", get(api_deploys))
+
+    // **Each ingress bound is a layer over exactly its own routes.** Applied to the whole router, one
+    // limiter would serve every route — which is the AUDIT R36 defect in a new spelling, and the
+    // reason these are sub-routers rather than one `.layer()` at the end. The layer runs *before* the
+    // handler's extractors, so a request is refused before its body is decoded.
+    let deploy_routes = Router::new()
         .route("/api/deploy", post(api_deploy))
+        .route("/api/v1/deploy", post(api_deploy))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                state.deploy_rate_limiter.clone(),
+                "deploy rate limit exceeded",
+            ),
+            peer_rate_limit,
+        ));
+    let explore_routes = Router::new()
         .route("/api/explore-deploy", post(api_explore_deploy))
         .route(
             "/api/explore-deploy-by-block-hash",
             post(api_explore_deploy_by_block_hash),
         )
+        .route("/api/v1/explore-deploy", post(api_explore_deploy))
+        .route(
+            "/api/v1/explore-deploy-by-block-hash",
+            post(api_explore_deploy_by_block_hash),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            (
+                state.explore_rate_limiter.clone(),
+                "explore-deploy rate limit exceeded",
+            ),
+            peer_rate_limit,
+        ));
+    // The reporting routes share the deploy limiter, as they did when it was a handler check: they
+    // are a different resource from a deploy, but the same bound covered them and this change is not
+    // the place to re-price them.
+    let reporting_routes = Router::new()
+        .route("/reporting/trace", get(reporting_trace))
+        .route("/api/trace", get(reporting_trace))
+        .route("/api/transactions/{hash}", get(api_get_transaction))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                state.deploy_rate_limiter.clone(),
+                "deploy rate limit exceeded",
+            ),
+            peer_rate_limit,
+        ));
+
+    let mut routes = Router::new()
+        .route("/version", get(version))
+        .route("/metrics", get(metrics))
+        .route("/status", get(status))
+        .route("/api/status", get(api_status))
+        .route("/api/capabilities", get(api_capabilities))
+        .route("/api/shards", get(api_shards))
+        .route("/api/deploys", get(api_deploys))
         .route("/api/data-at-name", post(api_data_at_name))
         .route(
             "/api/data-at-name-by-block-hash",
@@ -1283,7 +1312,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/blocks/{depth}", get(api_get_blocks_by_depth))
         .route("/api/deploy/{deploy_id}", get(api_find_deploy))
         .route("/api/is-finalized/{hash}", get(api_is_finalized))
-        .route("/api/transactions/{hash}", get(api_get_transaction))
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
@@ -1291,15 +1319,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/pos/delegations", get(api_pos_delegations))
         .route("/api/v1/deployer/{key}", get(api_find_deployer))
         .route("/api/v1/deploys", get(api_deploys))
-        .route("/api/v1/deploy", post(api_deploy))
         .route(
             "/api/v1/deploy-status/{deploy_signature}",
             get(api_v1_deploy_status),
-        )
-        .route("/api/v1/explore-deploy", post(api_explore_deploy))
-        .route(
-            "/api/v1/explore-deploy-by-block-hash",
-            post(api_explore_deploy_by_block_hash),
         )
         .route(
             "/api/v1/data-at-name-by-block-hash",
@@ -1312,7 +1334,10 @@ pub fn router(state: HttpState) -> Router {
             "/api/v1/finality-attestation",
             get(api_finality_attestation),
         )
-        .route("/api/v1/openapi.json", get(api_v1_openapi));
+        .route("/api/v1/openapi.json", get(api_v1_openapi))
+        .merge(deploy_routes)
+        .merge(explore_routes)
+        .merge(reporting_routes);
 
     // **The faucet is mounted only when it is switched on** (AUDIT R34).
     //
@@ -1328,9 +1353,18 @@ pub fn router(state: HttpState) -> Router {
     // `acquire_http_server` rather than re-derived, so the two cannot disagree about when the faucet
     // is on.
     if faucet_enabled {
-        routes = routes
-            .route("/api/faucet", post(api_faucet))
-            .route("/api/v1/faucet", post(api_faucet));
+        routes = routes.merge(
+            Router::new()
+                .route("/api/faucet", post(api_faucet))
+                .route("/api/v1/faucet", post(api_faucet))
+                .route_layer(middleware::from_fn_with_state(
+                    (
+                        state.faucet_rate_limiter.clone(),
+                        "faucet rate limit exceeded",
+                    ),
+                    peer_rate_limit,
+                )),
+        );
     }
 
     routes.layer(CorsLayer::permissive()).with_state(state)
@@ -1418,25 +1452,47 @@ pub fn admin_router(state: AdminState) -> Router {
     } else {
         CorsLayer::new()
     };
-    Router::new()
-        .route("/api/propose", post(admin_propose))
-        .route("/api/v1/propose", post(admin_propose))
-        // The cross-shard transaction surface (AUDIT C121). It used to be mounted on the **public**
-        // router, where the coordinator's fund-moving handler had no caller identity, no rate limit and
-        // no bound on the leg vector — on a server that binds `0.0.0.0` by default. It belongs on the
-        // privileged listener for the same reason `/api/propose` does: both act with the node's own key,
-        // and this one spends from its account. `gateway_or_not_found` still answers 404 on a node that
-        // is not a gateway or has the feature off, so the 404 a client sees has not changed meaning.
+    // The cross-shard transaction surface (AUDIT C121). It used to be mounted on the **public**
+    // router, where the coordinator's fund-moving handler had no caller identity, no rate limit and
+    // no bound on the leg vector — on a server that binds `0.0.0.0` by default. It belongs on the
+    // privileged listener for the same reason `/api/propose` does: both act with the node's own key,
+    // and this one spends from its account. `gateway_or_not_found` still answers 404 on a node that
+    // is not a gateway or has the feature off, so the 404 a client sees has not changed meaning.
+    //
+    // Its bound is a `route_layer` for the same two reasons as the public routes': the subject is the
+    // peer rather than the node, and it runs before the body is decoded (W-N2-01, W-N2-06). This
+    // listener is loopback unless the operator publishes it, so the peer is usually local — but
+    // `enable-devnet-admin-public` is exactly the case where it is not, and a bound whose subject is
+    // the node is the wrong bound in that case too.
+    let txn_routes = Router::new()
         .route("/api/txn", get(api_txn_list).post(api_txn_run))
         .route("/api/txn/{txn_id}", get(api_txn_status))
         .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
         .route("/api/v1/txn/{txn_id}", get(api_txn_status))
-        // The node-started OCapN dial (issue #249). Served on the privileged listener for the same
-        // reason the txn routes are: it makes the node act on the caller's word — dial a peer the
-        // caller names and fetch what it points at. `dialer_or_not_found` answers 404 when
-        // `enable-ocapn-dial` is off, so a node without the feature has an unchanged surface.
+        .route_layer(middleware::from_fn_with_state(
+            (state.txn_rate_limiter.clone(), "txn rate limit exceeded"),
+            peer_rate_limit,
+        ));
+    // The node-started OCapN dial (issue #249). Served on the privileged listener for the same
+    // reason the txn routes are: it makes the node act on the caller's word — dial a peer the
+    // caller names and fetch what it points at. `dialer_or_not_found` answers 404 when
+    // `enable-ocapn-dial` is off, so a node without the feature has an unchanged surface.
+    let dial_routes = Router::new()
         .route("/api/v1/ocapn/dial", post(admin_ocapn_dial))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                state.ocapn_dial_rate_limiter.clone(),
+                "ocapn dial rate limit exceeded",
+            ),
+            peer_rate_limit,
+        ));
+
+    Router::new()
+        .route("/api/propose", post(admin_propose))
+        .route("/api/v1/propose", post(admin_propose))
         .route("/api/v1/openapi.json", get(api_v1_openapi))
+        .merge(txn_routes)
+        .merge(dial_routes)
         .layer(cors)
         // Outermost, so a cross-origin request is refused before any handler on this router runs —
         // including the ones that spend the node's REV. See `admin_origin_guard` for why it is a layer
@@ -1488,9 +1544,18 @@ pub async fn acquire_http_server(
         status_provider,
         pos,
         enable_reporting,
-        deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
-        explore_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
-        faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
+        deploy_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            DEFAULT_API_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
+        explore_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            DEFAULT_API_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
+        faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            FAUCET_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
         faucet_enabled,
     })
     .layer(TimeoutLayer::with_status_code(
@@ -1499,10 +1564,17 @@ pub async fn acquire_http_server(
     ));
     // Graceful shutdown (AUDIT C144): on the operator's word this stops accepting and lets the
     // connections already in flight finish, so a stop is not a truncation of somebody's request.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(stop_requested(stop))
-        .await
-        .map_err(|e| e.to_string())
+    //
+    // **Served with connection information**, which is what the ingress bound is keyed on: without
+    // `into_make_service_with_connect_info` the peer address never reaches the request and
+    // `peer_rate_limit` would fall back to one shared bucket — the bound this change removed.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(stop_requested(stop))
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Bind and serve the admin HTTP routes (port of `web/acquireAdminHttpServer`).
@@ -1536,20 +1608,30 @@ pub async fn acquire_admin_http_server(
         enable_devnet_cors,
         gateway,
         enable_txn_api,
-        txn_rate_limiter: Arc::new(RateLimiter::new(TXN_RATE_LIMIT_PER_SEC)),
+        txn_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            TXN_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
         ocapn_dial,
         enable_ocapn_dial,
-        ocapn_dial_rate_limiter: Arc::new(RateLimiter::new(OCAPN_DIAL_RATE_LIMIT_PER_SEC)),
+        ocapn_dial_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            OCAPN_DIAL_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
         max_connection_idle,
     ));
-    // The same stop path as the public server (AUDIT C144).
-    axum::serve(listener, app)
-        .with_graceful_shutdown(stop_requested(stop))
-        .await
-        .map_err(|e| e.to_string())
+    // The same stop path as the public server (AUDIT C144), and the same connection information for
+    // the same reason: this listener's bounds are keyed on the peer too.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(stop_requested(stop))
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -1773,9 +1855,18 @@ mod tests {
             // this, so a value the assertions can name stands in.
             pos: Arc::new(StubPosRead),
             enable_reporting: true,
-            deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
-            explore_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
-            faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
+            deploy_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                DEFAULT_API_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
+            explore_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                DEFAULT_API_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
+            faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                FAUCET_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
             // On by default in the tests, because the router tests drive the faucet route; the
             // off case is pinned by its own test below.
             faucet_enabled: true,
@@ -2077,26 +2168,137 @@ mod tests {
 
     /// The deploy route is rate-limited, and an exhausted limiter is a 429 — not a silent drop and
     /// not an unbounded accept. (A limiter configured to zero is closed, so this needs no sleep.)
+    ///
+    /// **Driven through the router**, which is where the bound now lives: it is a `route_layer`, so it
+    /// runs before the handler and before the body is decoded. Calling the handler directly would test
+    /// nothing — the check is not in it.
     #[tokio::test]
     async fn api_deploy_returns_429_when_the_limiter_is_exhausted() {
+        use tower::ServiceExt;
+
         let mut s = state();
-        s.deploy_rate_limiter = Arc::new(RateLimiter::new(0));
-        let request: DeployRequest = serde_json::from_value(serde_json::json!({
-            "data": {
-                "term": "Nil",
-                "timestamp": 0,
-                "phloPrice": 1,
-                "phloLimit": 1,
-                "validAfterBlockNumber": 0,
-                "shardId": "/root"
-            },
-            "deployer": "",
-            "signature": "",
-            "sigAlgorithm": "secp256k1"
-        }))
-        .expect("deploy request");
-        let response = api_deploy(State(s), Json(request)).await;
+        s.deploy_rate_limiter = Arc::new(KeyedRateLimiter::new(0, MAX_TRACKED_PEERS));
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/deploy")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "data": {
+                        "term": "Nil",
+                        "timestamp": 0,
+                        "phloPrice": 1,
+                        "phloLimit": 1,
+                        "validAfterBlockNumber": 0,
+                        "shardId": "/root"
+                    },
+                    "deployer": "",
+                    "signature": "",
+                    "sigAlgorithm": "secp256k1"
+                }))
+                .expect("json"),
+            ))
+            .expect("a request");
+        let response = router(s).oneshot(request).await.expect("a response");
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// **One peer's burst does not refuse another peer's request** (W-N2-01, W-N2-02, W-N2-08).
+    ///
+    /// The bound's subject was the *node*: one process-wide bucket per route, so an exhausted limiter
+    /// refused every caller — the bound held, and the wrong counterparty paid. It is the peer address
+    /// now, so one peer's burst must leave another's allowance untouched. This is the assertion that
+    /// distinguishes a keyed bound from an unkeyed one; nothing about the single-peer case can.
+    ///
+    /// Falsified by keying on anything constant — the node, or the empty key — under which the third
+    /// request is a 429 as well.
+    #[tokio::test]
+    async fn one_peers_burst_does_not_refuse_another_peers_request() {
+        use tower::ServiceExt;
+
+        fn deploy_from(addr: SocketAddr) -> axum::http::Request<axum::body::Body> {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/deploy")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "data": {
+                            "term": "Nil", "timestamp": 0, "phloPrice": 1, "phloLimit": 1,
+                            "validAfterBlockNumber": 0, "shardId": "/root"
+                        },
+                        "deployer": "", "signature": "", "sigAlgorithm": "secp256k1"
+                    }))
+                    .expect("json"),
+                ))
+                .expect("a request");
+            // What `into_make_service_with_connect_info` puts there in production.
+            request.extensions_mut().insert(ConnectInfo(addr));
+            request
+        }
+
+        let mut s = state();
+        // One token each, so a single request exhausts a peer's allowance.
+        s.deploy_rate_limiter = Arc::new(KeyedRateLimiter::new(1, MAX_TRACKED_PEERS));
+        let alice: SocketAddr = "192.0.2.1:5000".parse().expect("addr");
+        let bob: SocketAddr = "192.0.2.2:5000".parse().expect("addr");
+
+        let first = router(s.clone())
+            .oneshot(deploy_from(alice))
+            .await
+            .expect("a response");
+        assert_ne!(
+            first.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a peer's first request is within its allowance"
+        );
+        let second = router(s.clone())
+            .oneshot(deploy_from(alice))
+            .await
+            .expect("a response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "and its second is over it"
+        );
+        let bobs = router(s)
+            .oneshot(deploy_from(bob))
+            .await
+            .expect("a response");
+        assert_ne!(
+            bobs.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "another peer's allowance is its own — one caller's burst must not refuse every caller, \
+             which is the defect this keying removes"
+        );
+    }
+
+    /// **The bound runs before the body is decoded** (W-N2-06, W-N2-09).
+    ///
+    /// It used to be three lines at the top of the handler, *after* axum's `Json` extractor had
+    /// already decoded the body — so a caller could make the node decode as many payloads as it liked
+    /// and only then be told it was over the limit. The body here is **not valid JSON**: if the
+    /// extractor ran first the answer would be a 4xx about the body, and a 429 is the proof that the
+    /// layer refused the request before anything read it.
+    #[tokio::test]
+    async fn the_ingress_bound_refuses_a_body_it_never_decoded() {
+        use tower::ServiceExt;
+
+        let mut s = state();
+        s.deploy_rate_limiter = Arc::new(KeyedRateLimiter::new(0, MAX_TRACKED_PEERS));
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/deploy")
+            .header("content-type", "application/json")
+            // Deliberately not JSON, and deliberately large enough that decoding it is real work.
+            .body(axum::body::Body::from("not json at all"))
+            .expect("a request");
+        let response = router(s).oneshot(request).await.expect("a response");
+        assert_eq!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a refused peer must be refused before its body is decoded, not after"
+        );
     }
 
     /// **A node without the faucet does not mount the route, so the documented 404 is the answer**
@@ -2153,31 +2355,49 @@ mod tests {
     /// same limiter** — the state the row describes — and then the deploy request is a 429.
     #[tokio::test]
     async fn an_explore_flood_does_not_spend_the_deploy_budget() {
-        let mut s = state();
-        s.explore_rate_limiter = Arc::new(RateLimiter::new(0));
+        use tower::ServiceExt;
 
-        let explore = api_explore_deploy(State(s.clone()), Json("Nil".to_string())).await;
+        let mut s = state();
+        s.explore_rate_limiter = Arc::new(KeyedRateLimiter::new(0, MAX_TRACKED_PEERS));
+
+        let explore = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/explore-deploy")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#""Nil""#))
+            .expect("a request");
+        let response = router(s.clone())
+            .oneshot(explore)
+            .await
+            .expect("a response");
         assert_eq!(
-            explore.status(),
+            response.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "explore is closed"
         );
 
-        let request: DeployRequest = serde_json::from_value(serde_json::json!({
-            "data": {
-                "term": "Nil",
-                "timestamp": 0,
-                "phloPrice": 1,
-                "phloLimit": 1,
-                "validAfterBlockNumber": 0,
-                "shardId": "/root"
-            },
-            "deployer": "",
-            "signature": "",
-            "sigAlgorithm": "secp256k1"
-        }))
-        .expect("deploy request");
-        let response = api_deploy(State(s), Json(request)).await;
+        let deploy = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/deploy")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "data": {
+                        "term": "Nil",
+                        "timestamp": 0,
+                        "phloPrice": 1,
+                        "phloLimit": 1,
+                        "validAfterBlockNumber": 0,
+                        "shardId": "/root"
+                    },
+                    "deployer": "",
+                    "signature": "",
+                    "sigAlgorithm": "secp256k1"
+                }))
+                .expect("json"),
+            ))
+            .expect("a request");
+        let response = router(s).oneshot(deploy).await.expect("a response");
         assert_ne!(
             response.status(),
             StatusCode::TOO_MANY_REQUESTS,
@@ -2415,10 +2635,16 @@ mod tests {
             enable_devnet_cors: false,
             gateway,
             enable_txn_api,
-            txn_rate_limiter: Arc::new(RateLimiter::new(TXN_RATE_LIMIT_PER_SEC)),
+            txn_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                TXN_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
             ocapn_dial: Arc::new(std::sync::OnceLock::new()),
             enable_ocapn_dial: false,
-            ocapn_dial_rate_limiter: Arc::new(RateLimiter::new(OCAPN_DIAL_RATE_LIMIT_PER_SEC)),
+            ocapn_dial_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                OCAPN_DIAL_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
         }
     }
 

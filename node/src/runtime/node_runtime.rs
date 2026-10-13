@@ -1343,11 +1343,20 @@ pub async fn setup_node_program(
             (true, Some(key)) => {
                 // **One limiter for the node's whole OCapN surface**, shared by every capability and
                 // every session: each bridged delivery is a signed deploy paid for out of the node's own
-                // REV, so the bound has to be on the node, not per capability — two capabilities with a
-                // limiter each are a bound of twice the number (HAZOP row A3).
+                // REV, so the *total* has to be on the node — a limiter per capability instead of this
+                // is a bound of N times the number (HAZOP row A3).
                 let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
                     crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
                 ));
+                // **And a share of it per capability** (W-N8-02). The total alone is unfair rather
+                // than unsafe: the one object a peer loops on can spend the whole allowance while
+                // every other exported capability is refused. Keyed on the capability's designator,
+                // so the share is per object and the node's total spend is unchanged.
+                let capability_limiter =
+                    Arc::new(rchain_shared::rate_limiter::KeyedRateLimiter::new(
+                        crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC,
+                        crate::api::ocapn::MAX_TRACKED_CAPABILITIES,
+                    ));
                 vec![
                     (
                         crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
@@ -1356,6 +1365,7 @@ pub async fn setup_node_program(
                             key.clone(),
                             primary_id.to_string(),
                             limiter.clone(),
+                            capability_limiter.clone(),
                         )) as Arc<dyn Export>,
                     ),
                     (
@@ -1365,6 +1375,7 @@ pub async fn setup_node_program(
                             key.clone(),
                             primary_id.to_string(),
                             limiter,
+                            capability_limiter,
                         )),
                     ),
                 ]
