@@ -307,29 +307,31 @@ contested there in CH-U10-03 and this pass does not reopen it). The folds are it
 driver that can act on it; and it is consumed only at the point of commitment, so a failure before any
 durable effect leaves it actionable rather than spent.
 
-**Guide words.** row: NO, MORE, AS WELL AS, EARLY · folded: BEFORE → NO, LATE → NO, AFTER → MORE, LESS → EARLY, OTHER THAN → AS WELL AS, PART OF → NO · vacuous: REVERSE (the lifecycle is one directed sequence — raise, deliver, take, act — so there is no inverse to deviate from)
+**Guide words.** row: NO, AS WELL AS, EARLY · folded: MORE → NO, LESS → NO, PART OF → NO, AFTER → NO, OTHER THAN → AS WELL AS, BEFORE → EARLY, LATE → EARLY · vacuous: REVERSE (the lifecycle is one directed sequence — raise, deliver, take, act — so there is no inverse to deviate from)
 
-The consolidation is the node's own: a request that cannot name a height is not raised at all
-(`reset_decision`'s two refusing arms), so PART OF and LESS collapse into "no request", and an
-out-of-order delivery (BEFORE, LATE) is the same failure as no delivery (NO).
+The consolidation is the node's own. A request that cannot name a height is not raised at all
+(`reset_decision`'s two refusing arms), so PART OF and LESS collapse into "no request"; an out-of-order
+delivery (BEFORE, LATE, AFTER) is the same failure as no delivery; and MORE is *not* a deviation — a
+second request while one is pending changes nothing that matters, because `notify_one` **stores a permit**
+when no driver is waiting, so the first request's single wake is not lost. (That the guarantee rests on
+the primitive's permit retention rather than on this module is why it is folded here and stated, not
+left to be rediscovered.)
 
 ### Table A — deviations
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U11-01** | NO | **A request raised before a driver is installed was stranded**: the detector records it, but nothing wakes a driver, and a later request cannot re-wake it because the slot is already occupied | `request_reset` stores the request and notifies only when a waker is present (`casper/src/interpreter_util.rs:429-441`) → before #340 `install_reset_waker` overwrote the cell without observing the pending slot (`:423-425`) → a request raised between a detector scan and the waker's installation had no wake at all | **loud** (the detector's `log.error` fires) but the node never resets; **closed 2026-10-13 (#340, register C275)**: installation now takes the request lock before the waker lock and notifies when the slot is occupied | Drift | R2 | casper/src/interpreter_util.rs::a_reset_request_is_raised_once_taken_once_and_wakes_the_driver |
-| **F-U11-02** | MORE | **A duplicate request neither stores nor notifies**, so once a driver has consumed the first notification no later detector scan can re-wake it — the delivery rests on a single wake reaching a live driver | `request_reset` returns `false` at the `slot.is_some()` guard *before* the notify (`casper/src/interpreter_util.rs:432`), so the only wake a pending request ever receives is the one issued when it was first stored | silent past the detector's own line: the request sits in the cell with no wake pending | Drift | R2 | owed: a re-notify on a duplicate request, and the test that a pending request re-wakes the driver |
-| **F-U11-03** | AS WELL AS | **The cells are process-global while the reset state is per-shard**: a request raised in shard A wakes whichever shard installed the waker last | `RESET_REQUEST`/`RESET_WAKE` are process statics (`casper/src/interpreter_util.rs:415-416`); `install_reset_waker` runs once per shard (`casper/src/engine/node_launch.rs:434`, from the shard loop at `node/src/runtime/node_runtime.rs:1230-1243`), so the last shard wins; `take_reset_request` is not shard-scoped, so shard B consumes A's request and drives its own DAG with A's anchor | silent: shard A never sees its own request; shard B refuses it (A's anchor is not in B's block store) | Drift | R2 | owed: per-shard lanes, and the test that a request is only taken by the shard that raised it |
-| **F-U11-04** | EARLY | **The request is consumed before the act**: `act_on_reset_request` takes it, then `perform_reset` can fail before touching any store (the anchor body may be absent), spending the request with nothing done | `take_reset_request()` is the first statement (`casper/src/engine/reset.rs:215`); the anchor read that can fail is inside `perform_reset` (`:246-258`) | loud (`apply` returns the error) but the request is gone and there is no in-process retry; recovery is a restart, re-derivable only because `restore_attempts` is persisted | Unrestorable | R2 | owed: a request that survives a pre-commit failure, with the test that it does |
+| **F-U11-01** | NO | **A request raised before a driver is installed was stranded**: the detector records it, but nothing wakes a driver, and the later request that would re-wake it is refused because the slot is already occupied | `request_reset` stores the request and notifies only when a waker is present (`casper/src/interpreter_util.rs:429-441`) → before #340 `install_reset_waker` overwrote the cell without observing the pending slot (`:423-425`), and a duplicate request returns `false` at the `slot.is_some()` guard (`:432`) *before* any notify → a request raised between a detector scan and the waker's installation had no wake at all | **loud** (the detector's `log.error` fires) but the node never resets; **closed 2026-10-13 (#340, register C275)**: installation now takes the request lock before the waker lock and notifies when the slot is occupied | Drift | R2 | casper/src/interpreter_util.rs::a_reset_request_is_raised_once_taken_once_and_wakes_the_driver |
+| **F-U11-02** | AS WELL AS | **The cells are process-global while the reset state is per-shard**: a request raised in shard A wakes whichever shard installed the waker last | `RESET_REQUEST`/`RESET_WAKE` are process statics (`casper/src/interpreter_util.rs:415-416`); `install_reset_waker` runs once per shard (`casper/src/engine/node_launch.rs:434`, from the shard loop at `node/src/runtime/node_runtime.rs:1230-1243`), so the last shard wins; `take_reset_request` is not shard-scoped, so shard B consumes A's request and drives its own DAG with A's anchor | silent: shard A never sees its own request; shard B refuses it (A's anchor is not in B's block store) | Drift | R2 | owed: per-shard lanes, and the test that a request is only taken by the shard that raised it |
+| **F-U11-03** | EARLY | **The request is consumed before the act**: `act_on_reset_request` takes it, then `perform_reset` can fail before touching any store (the anchor body may be absent), spending the request with nothing done | `take_reset_request()` is the first statement (`casper/src/engine/reset.rs:215`); the anchor read that can fail is inside `perform_reset` (`:246-258`) | loud (`apply` returns the error) but the request is gone and there is no in-process retry; recovery is a restart, re-derivable only because `restore_attempts` is persisted | Unrestorable | R2 | owed: a request that survives a pre-commit failure, with the test that it does |
 
 ### Table C — law coverage
 
 | deviation | law that captures it, or the law owed | why |
 |---|---|---|
-| U11-01 | law 53c (`rewindStep`, `strandSystemRewinding`) | the rewind's *availability* (anchored) and *effect* (a refusal is removed) — the delivery half is Rust-only and not a state relation |
-| U11-02 | owed: a law that a request once set is always deliverable | no existing law speaks of the signal cell; the property is representable as a two-state machine |
-| U11-03 | owed: the same law, stated per shard | the shard lane is a Rust partition, not a modelled state |
-| U11-04 | owed: idempotent retry of a pre-commit failure | law 53c models the rewind as an *effect*, not as a retryable transaction |
+| U11-01 | law 53c (`rewindStep`, `strandSystemRewinding`) | the rewind's *availability* (anchored) and *effect* (a refusal is removed); the delivery half is Rust-only and not a state relation |
+| U11-02 | owed: the same request law, stated per shard | the shard lane is a Rust partition, not a modelled state |
+| U11-03 | owed, and written first as law 73: **a raised request is not spent until the act commits** | idempotent retry of a pre-commit failure — law 53c models the rewind as an *effect*, not as a retryable transaction |
 
 ### U12 — The durable rewind (metadata, bodies, marker)
 
@@ -610,7 +612,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 27 · node-words owed: 44
+**Debt.** falsifiers owed: 26 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.

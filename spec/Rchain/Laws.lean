@@ -4016,6 +4016,28 @@ def laws : List Law := [
       `rewound` re-applies nothing (`reset.rs:140-151`). `reset_volatile`'s doc \
       (`history_repository.rs:346-358`) names the same class for the merge. HAZOP rows F-U13-01 and \
       F-U13-02 (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
+
+  { number := 73, layer := "Casper",
+    statement := "**A raised request is not spent until the act commits.** The self-reset's request cell \
+      is cleared by, and only by, the step that applies the reset's effects: no reachable state has the \
+      request taken with nothing applied, so a raised request is always still actionable",
+    status := .provedModel,
+    declarations := [`Rchain.RequestState, `Rchain.spendRequestStep, `Rchain.spendSystem,
+      `Rchain.a_request_is_not_spent_without_the_act],
+    axioms := [],
+    rust := ["casper/src/engine/reset.rs"],
+    witness := [`Rchain.a_split_take_reaches_a_state_that_spent_the_request,
+      `Rchain.a_raised_request_can_be_acted_on],
+    falsifiable := "The port's split: taking the request and applying the effects in two statements. \
+      `a_split_take_reaches_a_state_that_spent_the_request` exhibits the reachable state that admits — \
+      the cell empty, nothing applied, and nothing to re-raise it in-process — and \
+      `a_raised_request_can_be_acted_on` keeps the law from being vacuous.",
+    note := "**The port takes first and acts second.** `act_on_reset_request` calls `take_reset_request()` \
+      as its opening statement (`casper/src/engine/reset.rs:215`) and only then runs `perform_reset`, \
+      which can fail before touching a store (the anchor body absent, `:246-258`). A failure there spends \
+      the request with nothing done; recovery is a restart, re-derivable only because the detector's \
+      count (`restore_attempts`) is persisted. HAZOP row F-U11-03 (docs/src/spec/failure-hazop.md). \
+      `rustWitness` is empty until the Rust fix lands." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
