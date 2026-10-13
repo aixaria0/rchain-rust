@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 309** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 309** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  103 of 309 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  104 of 310 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 309 are settled: **245 name the evidence that holds them** and **64 do not** — the
+All 310 are settled: **246 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -124,10 +124,11 @@ verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason cl
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
-### In progress — none
+### IN PROGRESS (1)
 
-Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
-that it is empty is the fact, and it is said rather than shown as a table with no rows.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C275` | A pending reset request was stranded when registered before driver-waker installation. Installation now inherits the pending request while holding request then waker locks, the same order as submission. The serial regression covers before-install delivery, pending-driver replacement, first-request-wins, exactly-once take and empty-slot installation. No live incidence is claimed. | The new before-install assertion fails on unchanged production code at 0aff751 (CI run 38341642556). It must pass after the fix, together with the existing reset suite. Full engine re-entry and universal finalized-state safety are separate boundaries. | §105 |
 
 ### DONE (309)
 

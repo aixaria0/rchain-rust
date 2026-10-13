@@ -420,8 +420,16 @@ static RESET_WAKE: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>> = std::syn
 /// detection happens deep in the validator path, which has none of them. So the two halves talk through
 /// this cell rather than through a new dependency: the detector records the request, and the driver
 /// wakes.
+///
+/// Installing or replacing a driver also delivers a request already in the
+/// slot. Lock the request before the waker, as submission does, so a concurrent
+/// request either reaches this driver or is observed here as already pending.
 pub fn install_reset_waker(notify: Arc<tokio::sync::Notify>) {
-    *RESET_WAKE.lock().unpoison() = Some(notify);
+    let pending = RESET_REQUEST.lock().unpoison();
+    *RESET_WAKE.lock().unpoison() = Some(notify.clone());
+    if pending.is_some() {
+        notify.notify_one();
+    }
 }
 
 /// Record a reset request and wake the driver, if one is installed. Returns whether this call *set* it
@@ -969,7 +977,11 @@ mod tests {
             .await
             .expect("the request wakes a driver parked on the packet stream");
 
-        assert_eq!(take_reset_request(), Some(first.clone()), "the driver takes it");
+        assert_eq!(
+            take_reset_request(),
+            Some(first.clone()),
+            "the driver takes it"
+        );
         assert_eq!(
             take_reset_request(),
             None,

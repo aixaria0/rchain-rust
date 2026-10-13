@@ -10042,3 +10042,7 @@ read false.
 **Evidence.** `spec/audit/evidence/n328-quorum/` — `results.md` (the reading), `run.txt` (the raw capture),
 `attestation-lines.txt` (the collected lines), driven by `n328-quorum-run.sh` in the same directory. One
 host, one run.
+
+## 105. A queued reset must reach the installed driver (C275, #338)
+
+The request can exist before its waker. Installation previously recorded only the waker, leaving a pending request without a wake. The existing serial request test now fails on that ordering before the fix (CI run 38341642556, commit 0aff751). Installation takes the request lock before the waker lock, matching submission, and notifies the installed driver when the slot is occupied. Pending-driver handover and empty-slot installation are covered in the same test. This establishes local request delivery; it does not execute the full engine re-entry or prove global finalized-state safety.
