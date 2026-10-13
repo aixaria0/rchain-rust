@@ -260,6 +260,40 @@ fn charge_stream_budget(
     }
 }
 
+/// The streamed path's admission decision on a header chunk: the network id, and the claimed sender
+/// against the identity the certificate proves.
+///
+/// **Exactly the circuit breaker's rule**, deliberately — extracted so the decision can run in the
+/// drain loop, where it refuses a stream before the stream is paid for, rather than only in
+/// `stream_handler::collect`, which runs after every chunk has been buffered, size-checked and
+/// charged (W-N1-09/W-N1-10). Because the rule is the same one the breaker applies, moving it earlier
+/// cannot admit anything `collect` would have refused; it only refuses sooner. A non-header chunk
+/// decides nothing and is admitted to the loop.
+fn stream_header_admits(
+    network_id: &str,
+    proven: Option<&str>,
+    chunk: &Chunk,
+) -> Result<(), Status> {
+    let Some(chunk::Content::Header(h)) = &chunk.content else {
+        return Ok(());
+    };
+    if h.network_id != network_id {
+        return Err(Status::permission_denied("Wrong network id"));
+    }
+    let claimed = h
+        .sender
+        .as_ref()
+        .and_then(|n| PeerNode::from_node(n).ok())
+        .map(|p| p.s_key())
+        .ok_or_else(|| Status::permission_denied("stream header carries no verifiable sender"))?;
+    if proven != Some(claimed.as_str()) {
+        return Err(Status::permission_denied(
+            "Stream sender does not match the identity its certificate proves",
+        ));
+    }
+    Ok(())
+}
+
 fn stream_byte_budget(blobs: usize, max_stream_message_size: i64) -> usize {
     // Written as an explicit match rather than as a fallible conversion with a zero default — the
     // *silent* class `tools/audit-type-system.sh` refuses, and it refused the first draft of this
@@ -468,6 +502,12 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
         // exists to bound.
         let mut byte_permits: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
         while let Some(chunk) = incoming.message().await? {
+            // **The authentication decision runs when the header arrives, not after the whole stream
+            // has been paid for** (W-N1-09/W-N1-10). The circuit breaker below is the backstop, but it
+            // runs inside `collect` — by which time this loop has already buffered every chunk,
+            // size-checked it and charged it against the aggregate byte budget, so a peer whose header
+            // was never going to verify still bought a full stream first.
+            stream_header_admits(&self.network_id, proven.0.as_deref(), &chunk)?;
             if let Some(chunk::Content::Data(d)) = &chunk.content {
                 received += d.content_data.len() as i64;
                 if received > self.max_stream_message_size {
@@ -926,6 +966,97 @@ mod tests {
             d.calls.load(Ordering::SeqCst),
             1,
             "an unproven sender must not reach the dispatcher"
+        );
+    }
+
+    /// **The streamed header's admission decision is a unit, and it is the breaker's own rule**
+    /// (W-N1-09/W-N1-10).
+    ///
+    /// The streamed path made this decision only inside `stream_handler::collect`, which runs *after*
+    /// the drain loop has buffered, size-checked and budget-charged every chunk — so a stream whose
+    /// header could never verify still bought a full stream first. The decision now runs when the
+    /// header arrives, and it is this function.
+    ///
+    /// **What is pinned here is the decision, not its placement.** `tonic::Streaming` has no
+    /// constructor a test can call, so the drain loop that calls this first is verified by reading it,
+    /// exactly as this module already states for the aggregate budget. The rule being *the breaker's*
+    /// is what makes the placement safe: a check that refuses a subset of what `collect` refuses can
+    /// only refuse sooner, never more.
+    #[test]
+    fn a_stream_header_is_admitted_only_for_the_identity_its_certificate_proves() {
+        let peer = |id: Vec<u8>, host: &str| {
+            PeerNode::from(
+                crate::peer_node::NodeIdentifier::new(id),
+                host.into(),
+                Port::new(40400),
+                Port::new(40404),
+            )
+        };
+        let proven = peer(vec![1, 2, 3], "host");
+        let other = peer(vec![0x22; 20], "elsewhere");
+        let header = |p: &PeerNode, net: &str| Chunk {
+            content: Some(chunk::Content::Header(
+                rchain_models::comm::protocol::ChunkHeader {
+                    sender: Some(p.to_node()),
+                    type_id: "BlockMessage".to_string(),
+                    compressed: false,
+                    content_length: 1,
+                    network_id: net.to_string(),
+                },
+            )),
+        };
+        let s_key = proven.s_key();
+
+        // The honest case, and a data chunk, which decides nothing.
+        assert!(
+            super::stream_header_admits("testnet", Some(&s_key), &header(&proven, "testnet"))
+                .is_ok()
+        );
+        let data = Chunk {
+            content: Some(chunk::Content::Data(
+                rchain_models::comm::protocol::ChunkData {
+                    content_data: vec![1, 2, 3],
+                },
+            )),
+        };
+        assert!(super::stream_header_admits("testnet", Some(&s_key), &data).is_ok());
+
+        // The spoof: the certificate proves one node and the header claims another.
+        assert_eq!(
+            super::stream_header_admits("testnet", Some(&s_key), &header(&other, "testnet"))
+                .expect_err("a sender its certificate does not prove must be refused at the header")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        // The wrong network.
+        assert_eq!(
+            super::stream_header_admits("testnet", Some(&s_key), &header(&proven, "mainnet"))
+                .expect_err("a wrong-network header must be refused")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        // No proof at all: client auth is mandatory, so this is a broken invariant, not "unverified".
+        assert_eq!(
+            super::stream_header_admits("testnet", None, &header(&proven, "testnet"))
+                .expect_err("a stream with no proven identity must be refused")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        // A header carrying no sender at all.
+        let senderless = Chunk {
+            content: Some(chunk::Content::Header(
+                rchain_models::comm::protocol::ChunkHeader {
+                    sender: None,
+                    type_id: "BlockMessage".to_string(),
+                    compressed: false,
+                    content_length: 1,
+                    network_id: "testnet".to_string(),
+                },
+            )),
+        };
+        assert!(
+            super::stream_header_admits("testnet", Some(&s_key), &senderless).is_err(),
+            "a header with no sender is not one whose identity is unknown-but-probably-fine"
         );
     }
 

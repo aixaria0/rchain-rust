@@ -356,8 +356,15 @@ pub async fn create_comm_state(
         let kademlia_tls =
             rchain_comm::transport::hostname_trust_manager::server_config(&cert, &key)
                 .map_err(|e| format!("kademlia server TLS: {e}"))?;
+        // The same cap the peer transport honours: the discovery service is reached by the same
+        // certificate-bearing peers over the same accept path, so it is bounded by the same operator
+        // key (W-N1-01). Read here, not in the task, so the future captures a `usize` and not `conf`.
+        let kademlia_max_recv =
+            usize::try_from(conf.protocol_server.grpc_max_recv_message_size).unwrap_or(262144);
         rchain_shared::supervise::spawn_supervised("kademlia-serve", async move {
-            if let Err(e) = kademlia_serve(discovery_addr, server, kademlia_tls).await {
+            if let Err(e) =
+                kademlia_serve(discovery_addr, server, kademlia_max_recv, kademlia_tls).await
+            {
                 log.error(source, &format!("Kademlia RPC server failed: {e}"));
             }
         });
