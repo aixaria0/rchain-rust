@@ -10420,3 +10420,44 @@ shown not to hold.
 **Evidence.** `spec/audit/evidence/reset-arm/e3-perturbed.md` (the reading, with the four status readings
 and both log lines verbatim); `casper/src/multi_parent_casper.rs:468` (the perturbed site, reverted);
 `spec/audit/evidence/reset-arm/e1-partition.md` and `e2-tamper.md` (the two routes it completes).
+
+## 114. The hardening is the finding, not the unrun arm (—, F-U5-01)
+
+Three passes (§108, §110, §113) spent three instruments failing to produce the state the self-reset
+repairs, and the pass record framed each as a *deficit* — the arm unrun. That framing was wrong, and this
+pass corrects it: **the tree has been hardened against the failure, and the three failures to stage it are
+the measurement of that.**
+
+The chain, and each step is measured rather than argued (`docs/src/spec/failure-hazop.md` §8 carries it in
+full): **the producer was deleted, not guarded** — the fringe-record `min` tie-break that produced §92's
+self-reject and TE-1's four heads was retired by law 66/67/68's per-block redesign, so two blocks that
+disagree are two visible claims rather than one rewritten value, and the class has no producer left
+(measured: zero `[fringe-divergence]` and zero self-rejections over ~170 blocks where the pre-fix build
+stalled three of four nodes); **the merge is now a pure function of the parent set** — `merge_determinism.rs`
+is the standing property and E1 measured it live, a partition's two heads re-converging because a node with
+a different block set computes the same answer; **and what remains is healed before the budget spends** —
+the restoring rule revalidates a view-dependent refusal up to three times and does not manufacture
+agreement, so the counter the reset acts on is a backstop for a *persistent* disagreement.
+
+**The instruments' failure is step four of that chain.** A partition could not create a difference; a state
+tamper *did* change the computation — it stalls the chain with the merge's own documented wrong-base error —
+but could not be aimed at the block the merge selects; and a whole-build perturbation produced the
+divergence and the spent budget **96 times** and then found **nothing to rewind to**, because a node that
+diverges before finalising has no anchor. The state R3 repairs therefore needs a **partial** divergence —
+one arising *after* a node has finalised — which is exactly the class the record redesign removed the
+producer of.
+
+**What the R3 backstop is for, and what this does not claim.** The disposition stays **R3**: a hard reset
+and catch-up is what the node does if it ever gets there. Its likelihood is what the hardening changed. So
+the rung's remaining duty is not to *drill* the reset but to keep it **safe if it ever fires** — the durable
+half, the two-phase crash marker, the boot repair, the fatal stop, and the ordered request-and-spend, each
+pinned by a test and, where the state is representable, by a law (72–76). That is a fire escape's standing:
+harden the building so it is never needed, and keep the escape sound and tested in pieces. **The hazard is
+not impossible** — a future regression, or a genuine disagreement no local restore heals (TE-6, the
+net-wide case, §112 item 5), would still need R3 or the reconciliation. The claim is narrower and
+checkable: the producers this tree had are gone, and the instruments that tried to re-create one could not.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` §8 (the hardening, quoted above) and F-U5-01's cell (which
+now leads with it); `spec/audit/evidence/reset-arm/{e1-partition,e2-tamper,e3-perturbed}.md` (the three
+measurements); `casper/tests/merge_determinism.rs` (the standing property E1 measured live);
+`casper/tests/reset.rs` and laws 72–76 (the backstop's own pieces).
