@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 324** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 0 · DONE 325** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  118 of 324 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  119 of 325 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 324 are settled: **260 name the evidence that holds them** and **64 do not** — the
+All 325 are settled: **261 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -129,10 +129,11 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (324)
+### DONE (325)
 
 | id | what | evidence | account |
 |---|---|---|---|
+| `290` | The peer-admission seam is not built, and the residual is recorded. Ten wargame rows carry the precondition `remote peer · any valid cert`: the transport proves a peer holds a P-256 key and admits any keypair. The planned remedy was a bonded-identity seam at the packet dispatch, actuation-only. **It cannot be built:** the subject at the dispatch is the node address a certificate proves, and a bond is keyed by a `Validator` — a 65-byte secp256k1 point — and nothing in the tree maps one to the other (`comm` holds no bond data; `casper` never turns a `NodeIdentifier` into a `Validator`). The three routes are: certify the validator key in the node certificate (sound, but a certificate-format change plus a second seam to publish the bonded set into `comm`); an operator-maintained list of node addresses (cheap, goes stale when the validator set moves); or the peer announcing its own validator key, which is unsound because the announcement is what an attacker forges. Decided 2026-10-13: the third is out and the first two are declined for now — the seam is defence in depth and not the authorization boundary, and every harm the ten rows name has been closed at the layer where it was real. What a non-bonded peer retains is resource cost, not authority: it may spend the node's bandwidth and CPU up to the dispatch and stream bounds, and it may not have a block accepted — `deploy_signatures`, the bonds cache and the merge's rejections are the boundary, and none of them reads the transport's identity. | is_active_validator/NodeIdClientVerifier | §116 |
 | `C1` | unauthenticated arbitrary-rholang Repl on `0.0.0.0` | — | §5 |
 | `C2` | transport `stream` buffered all chunks before the size breaker | max_stream_message_size | §5 |
 | `C3` | `send` spawned a task per inbound message, unbounded | — | §5 |

@@ -385,6 +385,19 @@ form of the finding, and the reason the bound is stated rather than assumed.
 
 ## What the preconditions add up to
 
+**The `remote peer · any valid cert` row was adjudicated on 2026-10-13 and the seam is deliberately not
+built** (register C290, `spec/audit/passes.md` §116). The remedy the rows imply — a bonded-identity
+allow-list at the packet dispatch — cannot be built: the subject there is the node address a
+certificate proves, a bond is keyed by a 65-byte secp256k1 `Validator`, and **nothing in the tree maps
+one to the other**. The sound route (certify the validator key in the node certificate) is a
+certificate-format change *and* still needs the bonded set published into `comm`; the cheap route (an
+operator-maintained address list) goes stale as the validator set moves; and a peer announcing its own
+validator key is unsound, because that announcement is the thing an attacker forges. **What the ten rows
+retain is resource cost, not authority:** a stranger may spend the node's bandwidth and CPU up to the
+dispatch and stream bounds, and may not have a block accepted — `deploy_signatures`, the bonds cache and
+the merge's rejections are the authorization boundary, and none of them reads the transport's identity.
+Read §116 before re-proposing it; that section also names what would change the decision.
+
 | precondition | rows | what it means |
 |---|---|---|
 | `remote · default config` | 17 | an exploit on an unconfigured node |
