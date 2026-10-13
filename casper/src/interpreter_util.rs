@@ -420,8 +420,16 @@ static RESET_WAKE: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>> = std::syn
 /// detection happens deep in the validator path, which has none of them. So the two halves talk through
 /// this cell rather than through a new dependency: the detector records the request, and the driver
 /// wakes.
+///
+/// Installing or replacing a driver also delivers a request already in the
+/// slot. Lock the request before the waker, as submission does, so a concurrent
+/// request either reaches this driver or is observed here as already pending.
 pub fn install_reset_waker(notify: Arc<tokio::sync::Notify>) {
-    *RESET_WAKE.lock().unpoison() = Some(notify);
+    let pending = RESET_REQUEST.lock().unpoison();
+    *RESET_WAKE.lock().unpoison() = Some(notify.clone());
+    if pending.is_some() {
+        notify.notify_one();
+    }
 }
 
 /// Record a reset request and wake the driver, if one is installed. Returns whether this call *set* it
@@ -969,11 +977,45 @@ mod tests {
             .await
             .expect("the request wakes a driver parked on the packet stream");
 
-        assert_eq!(take_reset_request(), Some(first), "the driver takes it");
+        assert_eq!(
+            take_reset_request(),
+            Some(first.clone()),
+            "the driver takes it"
+        );
         assert_eq!(
             take_reset_request(),
             None,
             "and takes it exactly once — a burst of refusals is one reset"
+        );
+
+        // A request can precede installation. The stored request, rather than
+        // the old notification, must make the newly installed driver runnable.
+        *RESET_WAKE.lock().unpoison() = None;
+        assert!(request_reset(first.clone()));
+        let installed = Arc::new(tokio::sync::Notify::new());
+        install_reset_waker(installed.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(1), installed.notified())
+            .await
+            .expect("installing a waker delivers the request already in the slot");
+        assert_eq!(reset_request(), Some(first.clone()));
+
+        // Handover while pending keeps the first request and wakes the new
+        // driver, even after the previous driver consumed its notification.
+        let replacement = Arc::new(tokio::sync::Notify::new());
+        install_reset_waker(replacement.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(1), replacement.notified())
+            .await
+            .expect("a replacement driver observes the same pending request");
+        assert_eq!(take_reset_request(), Some(first));
+        assert_eq!(take_reset_request(), None);
+
+        let idle = Arc::new(tokio::sync::Notify::new());
+        install_reset_waker(idle.clone());
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, idle.notified())
+                .await
+                .is_err(),
+            "installing on an empty slot must not request a spurious reset"
         );
     }
 
