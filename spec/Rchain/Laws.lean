@@ -3991,6 +3991,31 @@ def laws : List Law := [
       says so. The step's terminal condition is an **idealisation** — the Rust frontier is the local \
       DAG's and can exceed a peer's advertised tip — so the bound statements describe a narrower machine \
       than the Rust; the window arithmetic itself was verified correct and faithful to `catchup.rs`." },
+
+  { number := 72, layer := "Casper",
+    statement := "**A completion record brackets every durable effect.** The reset's marker may be \
+      written only once *every* effect it brackets has been applied — the DAG rewind, the body purge, \
+      and the runtime's durable root. No reachable state has the record written with an effect missing, \
+      and the boot repair re-applies the whole set from any half-applied state",
+    status := .provedModel,
+    declarations := [`Rchain.ResetState, `Rchain.resetStep, `Rchain.resetSystem,
+      `Rchain.a_rewound_record_implies_every_effect_applied],
+    axioms := [],
+    rust := ["casper/src/engine/reset.rs", "rspace/src/history/history_repository.rs"],
+    witness := [`Rchain.an_early_commit_reaches_a_record_that_lies,
+      `Rchain.a_reset_can_complete],
+    falsifiable := "The port's own order, recording the completion after the rewind and the purge but \
+      before the runtime root. `an_early_commit_reaches_a_record_that_lies` exhibits the state that \
+      order admits — a `rewound` record with the root unmoved — so the law is red on the code as it \
+      stands and `a_reset_can_complete` keeps it from being vacuous.",
+    note := "**Why the record must bracket all three effects.** `rewind_and_purge` writes the marker when \
+      the first two have returned (`casper/src/engine/reset.rs:81`), and the runtime root is written \
+      *afterwards* (`:261-266`), through `HistoryRepository::reset` → `validate_and_set_current_root` \
+      (`rspace/src/history/history_repository.rs:337`), itself a durable write. A crash between the two \
+      leaves the record claiming the stores agree while a third does not, and the boot guard reading \
+      `rewound` re-applies nothing (`reset.rs:140-151`). `reset_volatile`'s doc \
+      (`history_repository.rs:346-358`) names the same class for the merge. HAZOP rows F-U13-01 and \
+      F-U13-02 (docs/src/spec/failure-hazop.md). `rustWitness` is empty until the Rust fix lands." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
