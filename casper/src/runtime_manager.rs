@@ -2113,5 +2113,43 @@ mod tests {
             "a slashed validator must be gone from `pos:active` at the post-state — if it is still \
              here, this is C201's defect and the live run's repeated `Slash` is explained by it"
         );
+
+        // **And the two roots this block sits between are two different denominators** (W-N9-03).
+        //
+        // The row: the attestation guard measures reachable stake against
+        // `compute_bonds(pre_state_hash)` (`proposer.rs`'s `pre_state_bonds` — the conflict-merge
+        // state the block is built on) while the finaliser measures it against
+        // `compute_bonds(prev_fringe_state)` (`multi_parent_casper.rs` — the root the previous fringe
+        // finalised). Those are the same map only while no bond change lands between them, and this
+        // fixture is exactly that shape: the genesis post-state *is* the fringe, and the slashing block
+        // sits above it and has not been finalised through it. So a node proposing on top of that
+        // block reads the guard's root (the block's pre-state, both stakes) while a finaliser closing
+        // the fringe reads the fringe's root (one stake left).
+        //
+        // Nothing here decides which denominator is the right one for the quorum — that is a
+        // consensus-rule change and its own unit. What this pins is the row's premise, measured rather
+        // than argued: the two numbers exist for one decision, and they move the denominator with
+        // them.
+        let at_the_fringe = before.clone();
+        let above_it = after.clone();
+        let stake =
+            |m: &BTreeMap<Validator, NonNegI64>| -> i64 { m.values().map(|s| i64::from(*s)).sum() };
+        assert_eq!(
+            stake(&at_the_fringe),
+            200,
+            "the control: the genesis post-state — the fringe this block is above — carries both stakes"
+        );
+        assert_ne!(
+            at_the_fringe, above_it,
+            "**the two roots disagree once a bond change is between them** (W-N9-03): the guard's \
+             `compute_bonds(pre_state_hash)` and the finaliser's `compute_bonds(prev_fringe_state)` \
+             are the same map only while nothing changes the bond set, and this block does"
+        );
+        assert_eq!(
+            stake(&above_it),
+            100,
+            "and the denominator a quorum is measured against halves — 200 against 100 is the same \
+             quorum read as a different fraction of the same chain"
+        );
     }
 }

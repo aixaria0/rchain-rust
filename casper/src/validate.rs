@@ -2028,6 +2028,47 @@ mod effectful_tests {
         );
     }
 
+    /// **The same evidence is proved by one receiver and not by another** (W-N9-06).
+    ///
+    /// The row: a slash is justified by equivocation evidence, and that route is adjudicated against
+    /// the *receiving* node's own DAG — so one slashing block is valid for a caught-up node and refused
+    /// `UnjustifiedSlash` by an honest node that has not yet received the victim's first block. Bond
+    /// maps then diverge between the two branching views, which is the split-shaped consequence the
+    /// adversary statement forbids.
+    ///
+    /// The test above exercises one DAG and never compares two receivers' views. This is the second
+    /// receiver, and the difference between the two assertions is the whole of the row.
+    ///
+    /// Falsified by putting the evidence *inside* the slashing block (which would make the verdict a
+    /// function of what was signed rather than of what the receiver happens to hold) — the second
+    /// assertion then reads `true`.
+    #[tokio::test]
+    async fn the_same_evidence_is_proved_by_one_receiver_and_not_by_another() {
+        let me = identity(0x11);
+        let held = signed_block(&me, 3, 0x01);
+        let conflict = signed_block(&me, 3, 0x02);
+        let offender = Validator::from_slice(&me.public_key.bytes());
+        let evidence = evidence_for(&conflict);
+
+        let caught_up = dag_holding(&[held.clone()]);
+        let behind = dag_holding(&[]);
+
+        assert!(
+            equivocation_is_proved(&caught_up, &offender, &evidence)
+                .await
+                .unwrap(),
+            "a node holding the victim's first block adjudicates the evidence"
+        );
+        assert!(
+            !equivocation_is_proved(&behind, &offender, &evidence)
+                .await
+                .unwrap(),
+            "**and a node that has not received it refuses the same evidence** (W-N9-06): the \
+             verdict is a fact about the receiver's DAG, not about what was signed, so two honest \
+             nodes disagree about a slashing block and their bond maps follow them apart"
+        );
+    }
+
     /// **The evidence is a header, and its size is fixed by its own fields** (AUDIT C200).
     ///
     /// This is the arm that keeps a peer from writing into consensus state: the payload rides in a

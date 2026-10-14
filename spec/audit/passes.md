@@ -11188,3 +11188,41 @@ carrying proposer-signed **stale** timestamps. No instrument in this tree can mi
 what would close it instead: one time bound applied wherever block time is consumed, not only at the tap.
 
 **Counted.** The page went from 18 owed to 13 in this commit, by reading column 10 of every row.
+
+## 132. The three live defects, armed — and one of them is also fixed (C317–C319)
+
+Three rows whose deviations are real and whose falsifiers were owed. All three are armed here. One of
+them could be closed where it stands; two cannot, and the reason is written down rather than implied:
+**both remaining fixes change a consensus rule or a block format**, which is its own unit — the
+precedent W-N14-03 already set (C297, §119).
+
+**W-N9-08 — armed, and the artefact is fixed (C317).** A real validator key over a hash nothing ever
+produced is accepted by `verify_attestation`, and it always will be: the tool is offline, holding one
+JSON document, with no chain, no bond map and no quorum, so it cannot check the claim. The row's class is
+an observability gap, and that is what is closed: the verdict names the statement the signature covers
+("this sender signed this block hash over this nonce") beside the three it does not establish — that the
+block was finalised, that the sender is bonded, that a quorum agrees. An operator, or the reconciliation
+meet that weighs these, reads a claim rather than a bare `verified`.
+
+**W-N9-03 — armed; the fix is a rule change (C318).** The guard measures reachable stake against
+`compute_bonds(pre_state_hash)` and the finaliser against `compute_bonds(prev_fringe_state)`, and those
+are different maps the moment a bond change sits between the two roots. The arm is that shape, measured:
+the genesis post-state *is* the fringe, one slashing block sits above it un-finalised, and the stake the
+denominator is measured against halves — 200 against 100. **Which root is correct is not decided here.**
+Choosing one changes the quorum rule, so the fix is named for its own unit: one root, and the rule that
+says which.
+
+**W-N9-06 — armed; the fix is a format change (C319).** One evidence header, two honest receivers, two
+verdicts: the node holding the victim's first block adjudicates the equivocation, and the node that has
+not received that block refuses the *same evidence* — `UnjustifiedSlash` — so the two take their bond
+maps apart. The fix is not a check but a *payload*: the slashing block has to carry its own evidence, so
+that the verdict is a function of what was signed rather than of what the receiver happens to hold.
+That is a block-format change and therefore a hard fork, named here and taken nowhere in this unit.
+
+**The arms, stated as instruments.** W-N9-03's is the existing post-state bond read extended to the
+*other* root, because the numbers only matter beside each other; W-N9-06's is the existing evidence test
+extended to a second receiver, because one DAG cannot show a receiver-dependence; W-N9-08's is the row's
+own construction — a genuine signature over an invented hash — with the verdict's words asserted, since
+the words are the fix.
+
+**Counted.** The page went from 13 owed to 10 in this commit, by reading column 10 of every row.
