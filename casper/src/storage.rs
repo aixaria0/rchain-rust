@@ -196,7 +196,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// **The deploy pool is bounded in bytes, not in slots times a wire size** (W-N12-05).
     ///
     /// The row's arithmetic: the pool's bound is `MAX_POOLED_DEPLOYS` deploys and a deploy may be 16 MiB
@@ -227,6 +226,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn mapping_has_expected_databases() {
         let mapping = rnode_db_mapping();
         let ids: Vec<&str> = mapping.iter().map(|(db, _)| db.id.as_str()).collect();
