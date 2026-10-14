@@ -500,26 +500,29 @@ fn a_peer_dials_the_node_over_websocket_and_reaches_its_ertp_capability() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **One session's single delivery does not refuse another session's** (W-N8-02).
+/// **Two sessions contend for one capability's share, and one of them gets nothing** (W-N8-02).
 ///
-/// The row: the bridge's bridged-deploy budget is spent **across sessions**, so one peer taking it
-/// denies another. This arm is that claim in its sharpest form — **one** delivery from a second
-/// session, then the first session's single ask — because the arm that preceded it flooded, and its
-/// reading turned out to depend on how dense the flood was.
+/// The row: the bridge's bridged-deploy budget is spent **across sessions**, so one peer asking takes
+/// what another peer needed. This arm is that claim in the form that holds still.
 ///
-/// **Both readings are on the record, and the difference between them is the finding.** Measured
-/// 2026-10-14: with a flood of ~110 deliveries in four seconds the honest session was served; with
-/// **541** (CI run 38626906805) it was refused with the share's own sentence, "one capability may take
-/// at most 1 of the chain bridge's 4 deploys per second". And here, one spend then one ask, it is
-/// served every time. So the sharp form of the row does not reproduce: taking the capability's share
-/// yourself does not deny the next peer, and what a *flood* does to that share depends on how fast the
-/// flood is — which the bound's one-per-second refill makes machine-dependent rather than
-/// property-dependent. A cell that claimed either reading alone would be claiming the runner's speed.
+/// **Three readings went into getting here, and the two that did not hold are the finding.** (1) A
+/// flood of ~110 deliveries in four seconds left the honest session served — but **541** on a loaded
+/// CI runner got it refused with the share's own sentence. (2) A *single* spend followed by a single
+/// ask was then served here, three runs over, and refused on CI. The reason both flipped is one
+/// number: the share refills at **one per second**, so what a second ask sees is where in the refill
+/// window it lands — and that is decided by how long the first delivery's *reply* took (a block round
+/// trip), which is the runner's speed and not the rule's behaviour.
 ///
-/// Falsified in the other direction by a build in which B is refused after A's single spend — the
-/// assertion below names that reading, and it is the one CI's dense flood produced.
+/// **So the arm is contention: two asks with no window between them.** Both sessions send, neither
+/// waits for its answer, and the node takes them in whatever order it reaches them. One spends the
+/// share and the other draws the bound's sentence, whichever order that happens in — which is the row
+/// as a property rather than as a race: the honest peer that asks second gets nothing, and nothing
+/// gives it priority.
+///
+/// Falsified by giving each session its own share: both asks are then served, and the assertion below
+/// names that reading.
 #[test]
-fn one_sessions_single_delivery_does_not_refuse_another_sessions() {
+fn two_sessions_contend_for_one_capabilitys_share_and_one_gets_nothing() {
     let dir = common::temp_dir("ocapn-starvation");
     let ports = common::free_ports(6);
     let mut conf = common::deploy_conf(&dir, &ports);
@@ -533,7 +536,7 @@ fn one_sessions_single_delivery_does_not_refuse_another_sessions() {
         wait_for_ocapn(ports[5]).await;
         wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
 
-        async fn dial(port: u16, seed: u8) -> Session {
+        async fn dial(port: u16, seed: u8, designator: &str) -> Session {
             let dialer = TcpTestingOnly::bind("127.0.0.1:0")
                 .await
                 .expect("bind the dialing side");
@@ -541,9 +544,15 @@ fn one_sessions_single_delivery_does_not_refuse_another_sessions() {
                 .new_outgoing_connection(&locator(port))
                 .await
                 .expect("dial the node");
-            // A seeded identity rather than `Identity::fresh`, so these are two *distinct* peers: the
-            // row is about one session denying another, which a shared identity would confound.
-            let identity = Identity::from_seed([seed; 32], locator(0)).expect("a session key");
+            // **Two designators, not two keys under one name.** Both sessions dialling at once under
+            // the same designator is a *crossed hello* to the node, which aborts one of them
+            // ("Crossed hellos mitigated" — measured on the first run of this arm) and leaves the
+            // other with a closed session. A seeded identity rather than `Identity::fresh` keeps the
+            // keys distinct as well: the row is about one peer denying another, which a shared
+            // identity would confound.
+            let mut mine = locator(0);
+            mine.designator = designator.to_string();
+            let identity = Identity::from_seed([seed; 32], mine).expect("a session key");
             Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
                 .await
                 .expect("the node should complete the handshake")
@@ -556,51 +565,71 @@ fn one_sessions_single_delivery_does_not_refuse_another_sessions() {
             resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
         };
 
-        // A: one delivery, served — this is the spend.
-        let mut first = dial(ports[5], 11).await;
-        let capability = fetch(&mut first, ERTP_SWISS).await;
-        first
-            .send_message(&ask(capability).to_syrup())
-            .await
-            .expect("A sends its one delivery");
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), first.recv_message())
-            .await
-            .expect("A's delivery is answered")
-            .expect("read the reply")
-            .expect("a reply, not a closed connection");
-        let served = Deliver::from_syrup(&reply).expect("a delivery");
-        assert_eq!(
-            served.args[0],
-            Value::Symbol("fulfill".into()),
-            "**A's delivery has to be served for this arm to have spent anything** (W-N8-02): \
-             otherwise the refusal below would be about a budget nobody used — A got {:?}",
-            served.args.get(1)
-        );
+        let mut first = dial(ports[5], 11, "contender-a").await;
+        let mut second = dial(ports[5], 12, "contender-b").await;
+        let first_capability = fetch(&mut first, ERTP_SWISS).await;
+        let second_capability = fetch(&mut second, ERTP_SWISS).await;
 
-        // B: a *different* session's single delivery, immediately afterwards. If the share belongs to
-        // the capability rather than to the session, the second peer pays for the first's call.
-        let mut second = dial(ports[5], 12).await;
-        let capability = fetch(&mut second, ERTP_SWISS).await;
+        // **Both ask, neither waits.** The window between them is one round trip on this host — a
+        // microsecond — so the two land inside one refill second whatever the machine is doing.
+        first
+            .send_message(&ask(first_capability).to_syrup())
+            .await
+            .expect("the first session asks");
         second
-            .send_message(&ask(capability).to_syrup())
+            .send_message(&ask(second_capability).to_syrup())
             .await
-            .expect("B sends its one delivery");
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), second.recv_message())
-            .await
-            .expect("B's delivery is answered — a break is an answer, silence is not")
-            .expect("read the reply")
-            .expect("a reply, not a closed connection");
-        let denied = Deliver::from_syrup(&reply).expect("a delivery");
+            .expect("the second session asks");
+
+        // Read both answers. The served one waits for its block; the refused one gets a break at once.
+        let mut served = 0;
+        let mut denied = 0;
+        let mut denial = String::new();
+        for (session, who) in [(&mut first, "first"), (&mut second, "second")] {
+            let reply =
+                tokio::time::timeout(std::time::Duration::from_secs(120), session.recv_message())
+                    .await
+                    .unwrap_or_else(|_| panic!("{who} was never answered — a break is an answer"))
+                    .expect("read the reply")
+                    .expect("a reply, not a closed connection");
+            // **A refusal reaches a peer in either of two shapes** — wrapped in the delivery that
+            // resolves onto it, or as the bare `[<break> reason>]` record — and an arm that knew only
+            // one of them read a refusal as a parse error. Measured here, on the first run of this
+            // arm.
+            let (label, detail) = match Deliver::from_syrup(&reply) {
+                Ok(delivered) => (
+                    delivered.args.first().cloned(),
+                    delivered.args.get(1).cloned(),
+                ),
+                Err(_) => match &reply {
+                    Value::Record(fields) => (fields.first().cloned(), fields.get(1).cloned()),
+                    other => panic!("{who} got neither a delivery nor a record: {other:?}"),
+                },
+            };
+            match label {
+                Some(Value::Symbol(l)) if l == "fulfill" => served += 1,
+                Some(Value::Symbol(l)) if l == "break" => {
+                    denied += 1;
+                    denial = format!("{detail:?}");
+                }
+                other => panic!("{who} got something else: {other:?}"),
+            }
+        }
+
         assert_eq!(
-            denied.args[0],
-            Value::Symbol("fulfill".into()),
-            "**held: one session's spend does not refuse another session's ask** (W-N8-02). The \
-             neighbour that *does* reproduce is a flood dense enough to exhaust the shared total — \
-             541 deliveries in four seconds on a loaded CI runner, against ~110 here — and that \
-             difference is the finding rather than a flake: the bound refills at one per second, so \
-             what the honest session sees is where in the refill window it lands. A `break` here \
-             would mean the sharp form of the row reproduces: {:?}",
-            denied.args.get(1)
+            served, 1,
+            "**one of the two sessions is served and the other is not** (W-N8-02): the capability's \
+             share of the bridge's budget is one per second and it is not per session, so the second \
+             asker gets nothing ({served} served, {denied} refused: {denial}). Two served would mean \
+             each session has its own share — which would refute the row"
+        );
+        assert_eq!(
+            denied, 1,
+            "and exactly one is refused, so the contention is the bound and not an error: {denial}"
+        );
+        assert!(
+            denial.contains("1 of the chain bridge's 4"),
+            "the refusal is the share's own sentence rather than another bound: {denial}"
         );
 
         drop(first);
@@ -1248,7 +1277,12 @@ async fn fetch(client: &mut Session, swiss: &[u8]) -> Desc {
         .await
         .expect("read the fetch reply")
         .expect("a reply");
-    let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+    // **The raw message is in the failure**, because "not a delivery" does not say what arrived —
+    // and a refusal reaches a peer in more than one shape.
+    let delivered = match Deliver::from_syrup(&reply) {
+        Ok(delivered) => delivered,
+        Err(e) => panic!("the fetch reply is not a delivery ({e}): {reply:?}"),
+    };
     assert_eq!(delivered.args[0], Value::Symbol("fulfill".into()));
     match Desc::from_syrup(&delivered.args[1]).expect("a descriptor") {
         Desc::ImportObject(position) => Desc::Export(position),

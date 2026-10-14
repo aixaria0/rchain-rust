@@ -11333,23 +11333,29 @@ clock that does not move the node's own time source would measure the arm rather
 a falsifier that was taken, a decision with a reason, or a citation to the work that armed it — which is
 what the page's own rule asks for and what `tools/check-wargame.sh` now checks.
 
-## 136. The starvation arm's reading depended on the flood's density (C330)
+## 136. Three instruments for one row, and the two that did not hold (C330)
 
-`W-N8-02` was closed in §130 as `held` on a flooding arm, and CI refused it: at **541** deliveries in
-four seconds the honest session drew the bound's own sentence ("one capability may take at most 1 of the
-chain bridge's 4 deploys per second"), where this box's ~110 left it served. The row's deviation
-therefore *does* reproduce — under a flood dense enough to keep the shared share drained.
+`W-N8-02` was closed in §130 as `held` on a flooding arm, and CI refused it. Getting the row to a
+reading that holds still took three instruments, and the two failures are the finding.
 
-**Both readings are real and the difference is not a flake.** The bound refills at one per second, so
-what an honest session sees depends on where in the refill window it lands, and that depends on how fast
-the flooding session gets its deliveries out — a property of the runner, not of the rule. A cell
-claiming either reading alone would be claiming a machine's speed, which is the same defect as an arm
-whose verdict flips run to run (the first draft of this very arm did, and it was recorded then as
-"measured its own impatience").
+**(1) The flood.** ~110 deliveries in four seconds left the honest session *served* here; **541** on a
+loaded CI runner got it *refused* with the share's own sentence. Both readings are real, and the
+difference is one number: the share refills at **one per second**, so what a second asker sees is where
+in the refill window it lands — and a flood's density is the runner's speed, not the rule's behaviour.
 
-**So the arm is now the sharp form, which is stable.** One session *spends* the capability's share — its
-own delivery served, and that is asserted rather than assumed — and then a second session asks once. It
-is served, every run, three times over. That is `held` for the row's sharp claim: taking the share
-yourself does not deny the next peer. The dense-flood reading is kept in the arm's own doc comment and
-in the cell, so the next reader gets both measurements rather than the one that happened to be taken
-here.
+**(2) One spend, then one ask.** This does not depend on a flood's density and it still flipped: served
+here three runs over, refused on CI. The reason is the same number — the window between the two asks is
+the first delivery's *reply*, which waits for a block, so the second ask lands either side of the refill
+depending on how fast that block came.
+
+**(3) Contention, which has no window to straddle.** Both sessions ask with nothing between them: one
+spends the share and the other draws the bound's sentence, and the node's order of reaching them does
+not matter because the assertion is that *exactly one* is served. That is the row as a property rather
+than as a race, and it holds run after run. Two further instrument faults died on the way: a refusal
+arrives as a **bare `[<break> reason>]` record** as often as inside a delivery, and two sessions dialling
+at once under one designator are a *crossed hello* to the node, which aborts one of them.
+
+**What this section is for.** The row's verdict was `CONFIRMED` and the deviation does reproduce — but a
+cell that had recorded either of the first two readings alone would have been recording a machine's
+speed. The three instruments, the two flips and the two faults are here so the next reader inherits the
+measurement rather than the luck.

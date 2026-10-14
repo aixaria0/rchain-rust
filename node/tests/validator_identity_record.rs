@@ -166,7 +166,12 @@ fn a_second_boot_with_a_changed_key_file_is_neither_refused_nor_recorded() {
         let node = common::start(&conf, ports[2], ports[0]).await;
         wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
         node.shutdown();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // **Two seconds, because the next boot opens the same data directory.** LMDB takes an
+        // exclusive lock on it, so a second boot that arrives before the first has closed does not
+        // merely race — it fails to open the store, and this arm would then be measuring shutdown
+        // latency on whatever machine it runs on. (CI's runner is slower than this box by enough to
+        // matter; the number is a margin, not a measurement.)
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         let after_first = top_level_files(&dir);
         assert!(
@@ -187,7 +192,12 @@ fn a_second_boot_with_a_changed_key_file_is_neither_refused_nor_recorded() {
         //     `/api/blocks` is the node fully started.
         wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
         node.shutdown();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // **Two seconds, because the next boot opens the same data directory.** LMDB takes an
+        // exclusive lock on it, so a second boot that arrives before the first has closed does not
+        // merely race — it fails to open the store, and this arm would then be measuring shutdown
+        // latency on whatever machine it runs on. (CI's runner is slower than this box by enough to
+        // matter; the number is a margin, not a measurement.)
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // (2) Nothing records either key — not the one that built the chain, not the one it is now
         //     signing with. A "loud identity-change record" would be a file here naming one of them.
