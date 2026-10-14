@@ -800,3 +800,47 @@ async fn a_halt_written_before_the_restart_is_read_at_the_next_boot() {
     // used, so a future second key cannot silently split the record from its reader.
     assert_eq!(HALT_RECORD_KEY, b"autopropose-halt");
 }
+
+/// **A reset record that contradicts the operator's anchor refuses the boot** (W-N11-01).
+///
+/// The row: at boot the store's reset record chose where the node rewinds, and an operator-named
+/// `--sync-anchor` that disagreed with it was only *warned about* — so on a data directory the
+/// operator did not create, the record (a planted one, in the wargame's case) selected the restore
+/// point ahead of the operator's stated intent. C274 made the record win on the merits — it is the
+/// state the store actually holds — and what was missing is that two contradicting anchors are not a
+/// state to pick from in silence. The decision is `boot_anchor_after_reset`: agreement and absence are
+/// silent, a contradiction names **both** anchors and chooses neither.
+///
+/// **What this does not cover, said rather than implied.** The boot path itself — `NodeLaunch::apply`
+/// calls this — needs a transport, a runtime and a comm layer, and is not driven here. The call site
+/// is one statement the compiler holds; the decision is what the row is about.
+#[test]
+fn a_reset_record_that_contradicts_the_named_anchor_refuses_boot() {
+    use rchain_casper::engine::reset::boot_anchor_after_reset;
+
+    let recorded = BlockHash::new([3u8; 32]);
+    let named = BlockHash::new([4u8; 32]);
+
+    assert_eq!(
+        boot_anchor_after_reset(Some(recorded), recorded)
+            .expect("agreement is not a contradiction"),
+        recorded,
+        "an anchor that agrees with the record boots on the record, with no complaint"
+    );
+    assert_eq!(
+        boot_anchor_after_reset(None, recorded).expect("nothing named"),
+        recorded,
+        "with nothing named there is nothing to contradict"
+    );
+
+    let err = boot_anchor_after_reset(Some(named), recorded)
+        .expect_err("a contradiction is not a choice the node makes for the operator");
+    assert!(
+        err.contains(&named.to_hex()),
+        "both anchors are named: {err}"
+    );
+    assert!(
+        err.contains(&recorded.to_hex()),
+        "both anchors are named: {err}"
+    );
+}

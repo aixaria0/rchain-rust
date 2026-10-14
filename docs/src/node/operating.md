@@ -94,15 +94,20 @@ loopback port **40402** (propose/repl are not network-reachable — `spec/AUDIT.
 not set up for you:
 
 1. **A validator key.** The genesis block must be signed, so provide a secp256k1 private key (32
-   bytes, base16) through the *hidden* `--validator-private-key` flag:
+   bytes, base16) as a **file**, through `--validator-private-key-path`:
 
    ```sh
-   rnode run -s --validator-private-key 67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530
+   rnode run -s --validator-private-key-path /var/lib/rnode/validator.hex
    ```
 
-   Without it the node exits with `To create genesis block node must provide validator private key`.
+   **There is no flag that takes the hex itself.** `--validator-private-key <hex>` existed and was
+   removed (W-N11-05): a secret in `argv` is readable by any local process through
+   `/proc/<pid>/cmdline`, and hiding the flag from `--help` hides it from the operator, not from the
+   host. A command line that still passes it is refused at parse time, naming this route.
 
-   Prefer `--validator-private-key-path`, which reads the key from a file. The file may hold either a
+   Without a key the node exits with `To create genesis block node must provide validator private key`.
+
+   The file may hold either a
    64-character base16 scalar (surrounding whitespace ignored) or an unencrypted PKCS#8 `PRIVATE KEY`
    PEM, as produced by `openssl ecparam -name secp256k1 -genkey`:
 
@@ -140,7 +145,7 @@ For a localhost-only node, use `127.0.0.1` and skip the UPnP probe and external-
 
 ```sh
 rnode run -s \
-  --validator-private-key 67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530 \
+  --validator-private-key-path /var/lib/rnode/validator.hex \
   --host 127.0.0.1 --api-host 127.0.0.1 --no-upnp
 ```
 

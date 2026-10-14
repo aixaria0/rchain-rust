@@ -201,11 +201,9 @@ pub fn from_options(options: &Options) -> Hocon {
             "casper.validator-public-key",
             &run.validator_public_key,
         );
-        opt_str(
-            &mut e,
-            "casper.validator-private-key",
-            &run.validator_private_key,
-        );
+        // **No `casper.validator-private-key` from here** (W-N11-05): the command-line flag that fed
+        // it is gone, so this mapping would write a `None` and the key reaches the config file's own
+        // key (`hocon.rs`) or the path route beside it. A secret does not travel on a command line.
         opt_path(
             &mut e,
             "casper.validator-private-key-path",

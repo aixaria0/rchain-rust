@@ -157,8 +157,10 @@ impl Configuration {
 /// config and then silently dropped — leaving the node with no validator identity, no
 /// diagnostic, and (in standalone mode) a genesis ceremony that cannot be signed.
 /// Resolving it here also lets operators keep the secret off the command line:
-/// `--validator-private-key <hex>` is visible to any local process via `ps` or
-/// `/proc/<pid>/cmdline`, a file path is not.
+/// `--validator-private-key <hex>` was visible to any local process via `ps` or
+/// `/proc/<pid>/cmdline`, a file path is not — and that flag is now **gone** (W-N11-05),
+/// refused at parse time so the two routes left are this path and the config file's own
+/// `casper.validator-private-key`.
 ///
 /// Precedence: an explicit `validator-private-key` always wins; the path is consulted
 /// only when that is absent. A path that is set but unreadable or not a key is a hard
@@ -1173,7 +1175,7 @@ mod tests {
             --api-permit-keep-alive-time 111111seconds --api-max-connection-idle 111111seconds \
             --api-max-connection-age 111111seconds --api-max-connection-age-grace 111111seconds \
             --data-dir /var/lib/rnode --shard-name root --validator-public-key 111111 \
-            --validator-private-key 111111 --validator-private-key-path /var/lib/rnode/pem.key \
+            --validator-private-key-path /var/lib/rnode/pem.key \
             --casper-loop-interval 111111seconds --requested-blocks-timeout 111111seconds \
             --max-number-of-parents 111111 --fork-choice-stale-threshold 111111seconds \
             --fork-choice-check-if-stale-interval 111111seconds --synchrony-constraint-threshold 111111 \
@@ -1269,7 +1271,10 @@ mod tests {
             },
             casper: CasperConf {
                 validator_public_key: Some("111111".to_string()),
-                validator_private_key: Some("111111".to_string()),
+                // **`None` from the command line, and that is the change** (W-N11-05): the flag that
+                // put the scalar in `/proc/<pid>/cmdline` is gone, so the hex field is empty here and
+                // the path route beside it is what `resolve_validator_private_key` resolves at boot.
+                validator_private_key: None,
                 validator_private_key_path: Some(PathBuf::from("/var/lib/rnode/pem.key")),
                 shards: root_shard_spec(
                     GenesisBlockData {
