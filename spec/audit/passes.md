@@ -10927,6 +10927,19 @@ substitute for a measurement**:
   property and the refusal *message* already decides it: a deploy the admission refuses answers "rate
   limit" and never "parsing term".
 
+Two node-level rows closed the same way, one by writing the guard the row says is missing:
+
+- **W-N4-03** — the faucet is mounted on the **public** listener (`web::http::router`), gated on dev mode
+  plus a deployer key and on nothing about who is asking. The existing test proved the *delivery*; what it
+  did not assert is *who* gets it, so its drip now arrives from a caller with no credential naming a
+  foreign `Origin`, and the assertion says so. Writing the guard the row names — refuse a request that
+  carries an `Origin` — reddens it at exactly that line, which is what makes the cell a falsifier rather
+  than a description.
+- **W-N4-05** — the admin listener's exposure is its *bind*, and the test pins which one the flag
+  chooses: loopback by default, `0.0.0.0` when the operator asks. The row's second half ("a remote host's
+  POST is served") is that same fact observed from off this box, which an in-process fixture cannot be;
+  the cell says so rather than implying the remote arm ran.
+
 was not partial at all. Its falsifier describes building a block stamped `i64::MAX` and
   reading it back, and the existing timestamp test **already asserts that direction**: a block stamped a
   day after its parents is accepted (the backlog case, C289's registered deviation) while one past the

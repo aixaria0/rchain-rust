@@ -327,13 +327,26 @@ fn faucet_delivery_is_successful_finalized_and_idempotent() {
             .expect("recipient balance from finalized state");
         assert!(before < 30_000_000, "recipient must be eligible before the drip");
 
+        // **The caller is a stranger, and that is the point** (W-N4-03). The faucet is mounted on the
+        // *public* listener (`web::http::router`), gated on dev mode plus a deployer key and on nothing
+        // about who is asking: no credential is presented here and the request names a foreign Origin,
+        // and the node still signs and submits a REV transfer from its own funded wallet. The row's
+        // precondition is exactly this configuration, and this line is the falsifier: an unauthenticated
+        // remote caller is served, with a drip it did not pay for.
         let drip = client
             .post(format!("{base}/api/v1/faucet"))
+            .header("Origin", "http://evil.example")
+            .header("Host", "evil.example")
             .json(&serde_json::json!({"address": RECIPIENT}))
             .send()
             .await
             .expect("POST faucet");
-        assert_eq!(drip.status(), 200, "faucet submission must be accepted");
+        assert_eq!(
+            drip.status(),
+            200,
+            "faucet submission must be accepted — from an unauthenticated caller naming a foreign origin, \
+             which is the row (W-N4-03)"
+        );
         let drip: serde_json::Value = drip.json().await.expect("faucet response json");
         let deploy_id = drip["deployId"]
             .as_str()
