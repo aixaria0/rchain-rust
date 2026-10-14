@@ -457,6 +457,50 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// **A PEM keyfile is unlocked from the environment** (W-N5-03).
+    ///
+    /// The row's class is key-at-rest, and its deviation is that the password guarding a key *on disk*
+    /// has a non-interactive route **through the environment**: `RNODE_VALIDATOR_PASSWORD` is read
+    /// before the console is ever consulted, so the secret that protects the keyfile at rest lives in
+    /// the process environment for as long as the node runs — and, per W-N6-04, nothing clears it.
+    ///
+    /// Both directions, because either alone proves nothing: with the variable set the keyfile unlocks
+    /// and the console is never prompted; with it unset and no terminal the same call fails. The second
+    /// half is what keeps the first from being a fact about the console rather than about the route.
+    #[test]
+    fn the_env_var_unlocks_the_pem_keyfile_without_a_console() {
+        let dir = temp_dir("env-unlock");
+        let mut gen = ScriptedConsole::new(&["secret", "secret"]);
+        generate_key(&mut gen, &dir).expect("keygen writes an encrypted keyfile");
+        let key_path = dir.join("rnode.key");
+        assert!(key_path.is_file(), "the fixture's keyfile");
+
+        // (1) The environment is enough: no prompt reaches the console.
+        std::env::set_var(VALIDATOR_PASSWORD_ENV_VAR, "secret");
+        let mut console = ScriptedConsole::default();
+        let key = resolve_private_key(None, Some(&key_path), &mut console)
+            .expect("the environment unlocks the keyfile");
+        assert_eq!(key.bytes().len(), 32, "a decrypted secp256k1 scalar");
+        assert!(
+            console.printed().is_empty(),
+            "**the password was taken from the environment, so the console was never asked** \
+             (W-N5-03): the non-interactive route exists, which is the deviation"
+        );
+
+        // (2) And without it, a console with nothing to give cannot open the file — so (1) is the
+        //     environment's doing and not the keyfile being unprotected.
+        std::env::remove_var(VALIDATOR_PASSWORD_ENV_VAR);
+        let mut empty = ScriptedConsole::default();
+        let err = resolve_private_key(None, Some(&key_path), &mut empty)
+            .expect_err("no variable and no terminal: the keyfile does not open");
+        assert!(
+            err.join(" ").to_lowercase().contains("decrypt"),
+            "and it fails for the password's reason rather than another: {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An empty password is refused with its own message, and the scripted console then supplies a
     /// real one — so "refuse and retry" is distinguished from "refuse and give up".
     #[test]

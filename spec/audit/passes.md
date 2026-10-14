@@ -11226,3 +11226,40 @@ own construction — a genuine signature over an invented hash — with the verd
 the words are the fix.
 
 **Counted.** The page went from 13 owed to 10 in this commit, by reading column 10 of every row.
+
+## 133. Four rows another session was probing, taken here (C320–C323)
+
+These four were being worked in a second checkout of this repository — `W-N5-01`, `W-N5-03`, `W-N5-05`
+and `W-N2-05`, with probes uncommitted in a shared working tree. The rule agreed for this unit was
+*check, then take if unclaimed*: on 2026-10-14 nothing of theirs had landed on `dev`, the probe files
+were still untracked, and their branch had not moved — so the rows are taken here, in this unit's own
+tests, rather than left owed against work nobody had claimed.
+
+**Two of the four readings disagree with the row, and the reading wins.**
+
+**W-N2-05 — armed, and the deviation is live.** A byte-identical re-submission of a deploy is
+**admitted again**, and the pool still holds exactly one copy afterwards. That contrast is the row
+precisely: "admitted once" is true of the pool and false of the work, because the pool keys on the
+signature and nothing asks the pool before the term is parsed and normalised. The arm asserts both
+halves — the second admission *and* the single copy — so an implementation that started accumulating
+copies would read differently rather than silently.
+
+**W-N5-01 — armed, and the reading is the reverse of the row's story.** The row expected a
+command-line `--validator-private-key-path` to be shadowed by a config-file hex, and measured it is;
+what the row did not say is *why*, and the why is worse than the what: precedence is decided per
+**form** (an explicit hex beats a path) and not per **layer**, so the config file — the lower layer —
+wins over the command line, because it used the higher-precedence form. An operator who typed the flag
+gets the file's key, with no word from any layer.
+
+**W-N5-03 — armed.** The non-interactive route to an encrypted keyfile is the environment: with
+`RNODE_VALIDATOR_PASSWORD` set the key unlocks and the console is never prompted, and without it a
+console with nothing to give fails for the password's reason. The second half is the control that keeps
+the first a fact about the route rather than about the console. It is the same secret W-N6-04 finds
+sitting in `/proc/1/environ`.
+
+**W-N5-05 — armed.** A node configured with a public key its private key does not derive starts and
+serves. The field is parsed, mapped and read by **nothing** in the runtime — the only reader of a
+`validator-public-key` anywhere is the `bond-status` subcommand's own argument, which is a different
+thing with the same name.
+
+**Counted.** The page went from 10 owed to 6 in this commit, by reading column 10 of every row.

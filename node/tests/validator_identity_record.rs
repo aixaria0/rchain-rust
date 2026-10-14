@@ -57,6 +57,61 @@ fn top_level_files(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// **A configured validator public key that the private key does not derive is never compared**
+/// (W-N5-05).
+///
+/// The row: the signing identity is derived from `casper.validator-private-key` alone, and
+/// `casper.validator-public-key` — a key the operator configures, and the one every *other* surface
+/// reports — is never checked against it. So a node can sign under one identity while its
+/// configuration names another, and nothing refuses: the class is authority-widening, because the
+/// identity that acts is not the identity the operator believes they configured.
+///
+/// The arm boots a node whose two configured keys genuinely differ and asserts it **starts**. The
+/// reading is the boot, not a log line: this node is read-only until genesis is announced, so an
+/// answering `/api/blocks` is the node fully up and computing with the private key's identity.
+///
+/// Falsified by the startup check the row asks for — a boot that derives the public key from the
+/// private one and refuses when the two disagree — after which `common::start` never reaches a
+/// serving node.
+#[test]
+fn a_configured_validator_public_key_the_private_key_does_not_derive_does_not_refuse_boot() {
+    use rchain_casper::validator_identity::ValidatorIdentity;
+    use rchain_shared::base16;
+
+    // A second secp256k1 scalar, distinct from the harness's bonded one.
+    const OTHER: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+
+    test_runtime().block_on(async {
+        let dir = temp_dir("validator-public-key-mismatch");
+        let ports = free_ports(5);
+        let mut conf = deploy_conf(&dir, &ports);
+
+        let signing = ValidatorIdentity::from_hex(common::VALIDATOR_PRIV_HEX)
+            .expect("the harness's bonded identity");
+        let other = ValidatorIdentity::from_hex(OTHER).expect("a different identity");
+        let signing_pub = base16::encode(signing.public_key.bytes());
+        let other_pub = base16::encode(other.public_key.bytes());
+        assert_ne!(signing_pub, other_pub, "the two keys have to differ");
+
+        // **The operator's stated identity is the one the private key does not derive.**
+        conf.casper.validator_public_key = Some(other_pub.clone());
+
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
+
+        eprintln!(
+            "W-N5-05 fired: configured validator-public-key {other_pub} against the identity the \
+             private key derives {signing_pub}; the node started and is serving"
+        );
+
+        // The reading, asserted rather than narrated: the node is up. Everything below it signs with
+        // the private key's identity, and the configured public key is inert — reading it anywhere in
+        // the runtime is what would make this test unnecessary.
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
 /// **A changed key file on the second boot is neither refused nor recorded** (W-N5-06).
 ///
 /// Two boots over one data directory, with the validator key given *by path* both times and a
