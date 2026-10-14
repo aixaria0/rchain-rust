@@ -11015,3 +11015,34 @@ what `--validator-private-key-path` reads and what the key loader accepts — so
 of the exposure. What *would* be one is a file another user can read, and nothing asserted this one cannot;
 `the_ceremonys_key_file_is_owner_only` does, and a hand-rolled `std::fs::write` (mode from the umask)
 reddens it.
+
+## 128. The check that read three of the page's rows as nothing at all (C313)
+
+`tools/check-wargame.sh` promises that every Table A row is decided and evidenced. It opened its row
+branch with `if (NF != 12) next` — a row whose shape was wrong was **skipped**, not refused — and it
+read every field by position, the falsifier at position 11 (the header's tenth column).
+
+Three rows of `docs/src/spec/adversary.md` were written with an eleventh cell and **no closing
+delimiter** (W-N2-06, W-N2-09, W-N4-02: each carried a "— not armed" note appended after its
+falsifier). The missing delimiter and the extra cell cancel in a field count, so those rows had twelve
+fields like every other row and were skipped on *no* grounds at all: their falsifiers had never been
+read, and two guide words (W-N2's LATE and EARLY) were carried by those very rows and nowhere else, so
+coverage the page claimed rested on rows no check could see. The page's own Table B header was also
+missing a column in this tool's doc comment — the contract a reader copies was nine columns wide while
+the page is ten.
+
+**The repair is one shape, applied twice.** A Table A row must now have exactly the cell count its own
+header declares — *cells*, not fields, because the delimiter's absence is what hid these — and every
+field is read **by column name** against that header rather than by position. The `next` became a
+`problem()`, the totals line prints what was refused (`97 rows (0 unread)`, so a skip would be visible
+rather than implied), and the header itself is checked for the ten columns the reader indexes.
+
+**Falsified in both directions.** An eleventh cell planted on a closed row (W-N3-04) reddens with
+`12 cells where the header declares 10`; the three rows that were invisible redden with `11 cells where
+the header declares 10` until their note is folded into the falsifier cell. And the check now reports
+what it always should have: a row whose guide word has no other carrier fails as well, which is what
+happens when a row it cannot read is removed from the census.
+
+**What it still cannot do, said rather than implied.** It reads the *shape* of the header, not the
+meaning of a cell: a falsifier naming the wrong test in the right column passes, and `owed:` remains a
+legal cell — this check asks whether the citation resolves, not whether it is the right citation.
