@@ -75,7 +75,7 @@ def envelopeCatalog : List EnvelopeRow :=
         "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode",
         "adminHttp",
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
-        "autoproposeTimerHaltEpisodes", "autoproposeTapSuppressed",
+        "autoproposeTimerHaltEpisodes", "autoproposeHalt", "autoproposeTapSuppressed",
         "staleSnapshotSelfEquivocations", "finalityStall", "finalityStalled", "finalityStallEpisodes",
         "resetMarker",
         "nonQuietMergeReports", "sync", "poisonRecoveries", "unrestorableRecords", "unrestorableBlock", "tasksPanicked", "tasksExited",

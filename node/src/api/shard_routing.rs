@@ -153,6 +153,24 @@ impl BlockApi for ShardRoutingBlockApi {
         self.primary_api().get_propose_result().await
     }
 
+    /// **Every member**, because a halt is per shard and the operator clearing one is clearing a
+    /// fault, not choosing a shard. Clearing a shard that is not halted is a no-op, so fanning out is
+    /// safe; the reverse — resuming only one member — would leave the others halted with no route to
+    /// reach them.
+    async fn clear_autopropose_halt(&self) -> Result<(), String> {
+        let mut failed: Vec<String> = Vec::new();
+        for (shard_id, api) in &self.shards {
+            if let Err(e) = api.clear_autopropose_halt().await {
+                failed.push(format!("{shard_id}: {e}"));
+            }
+        }
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+
     async fn get_unfinalised_name_data_response(
         &self,
         depth: i32,
@@ -350,6 +368,7 @@ impl BlockApi for ShardRoutingBlockApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::api::block_api::HaltStatus;
     use rchain_casper::runtime_manager::ReplySource;
     use rchain_models::block_metadata::SlashSeverity;
     use std::sync::Mutex;
@@ -443,7 +462,7 @@ mod tests {
             // A non-zero count on the primary only, so the router test can prove the primary answered
             // rather than the trait default (which is all zeros and records nothing).
             ProposerHealth {
-                autopropose_timer_halt_episodes: 0,
+                autopropose_halt: HaltStatus::default(),
                 autopropose_tap_suppressed: 0,
                 consecutive_self_validation_failures: if self.shard_id.ends_with("root") {
                     7
@@ -482,6 +501,11 @@ mod tests {
             self.record("get_propose_result");
             Ok(self.shard_id.clone())
         }
+        async fn clear_autopropose_halt(&self) -> Result<(), String> {
+            self.record("clear_autopropose_halt");
+            Ok(())
+        }
+
         /// Delegates to the recorded read: this double has no unfinalised view of its own, and the
         /// method is required rather than defaulted so that is a decision rather than an oversight —
         /// the production wrapper over it had to forward the call for real.

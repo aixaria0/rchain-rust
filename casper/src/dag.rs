@@ -7,7 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::{
-    BlockDagStorage, DeployId, DeployPermit, DeployerLookup, ResetMarker, RESET_MARKER_KEY,
+    BlockDagStorage, DeployId, DeployPermit, DeployerLookup, HaltRecord, ResetMarker,
+    HALT_RECORD_KEY, RESET_MARKER_KEY,
 };
 
 use rchain_block_storage::dag::finalizer::Message;
@@ -171,10 +172,16 @@ pub struct BlockDagKeyValueStorage {
     /// CLI still parses, and reported as armed-but-inert on every insert. See
     /// [`Self::with_merge_divergence_injection`].
     merge_divergence_injection: u8,
-    /// **Where this node records a reset it performed** (F-U5-01, register C274). Attached by
-    /// [`Self::with_reset_marker`]; `None` in fixtures that never reset, and then the write refuses —
-    /// which is what stops a reset from running with no way for a crash to be repaired. See
-    /// [`ResetMarker`] for what the record has to say and why it is two phases.
+    /// **The shard's durable records** — the store a reset writes itself into (F-U5-01, register C274)
+    /// and the one an autopropose halt writes itself into (W-N10-01, F-U10-02). One store, one reserved
+    /// key each: [`RESET_MARKER_KEY`] and [`HALT_RECORD_KEY`], both literals so neither can collide with
+    /// a block entry or with the other.
+    ///
+    /// Attached by [`Self::with_reset_marker`], whose name records which record needed it first; `None`
+    /// in fixtures that do neither, and then both writes refuse — which is what stops a reset from
+    /// running with no way for a crash to be repaired, and makes a halt's durability a fact the surface
+    /// states rather than assumes. See [`ResetMarker`] for why that record is two phases, and
+    /// [`HaltRecord`] for why this one is not.
     reset_marker: Option<Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>>,
 }
 
@@ -840,6 +847,55 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             crate::interpreter_util::note_reset_marker(None);
         }
         result
+    }
+
+    /// **The same store, a second reserved key** — see [`HaltRecord`] for why the halt needs a durable
+    /// record at all, and why this one is obeyed rather than merely reported.
+    ///
+    /// A store that is absent refuses, like the reset marker's write and for the same reason: a backend
+    /// that cannot record the halt must not look like one that did. Unlike that write, the caller here
+    /// has already decided to stop — so the refusal becomes `durable: false` on the reading the surface
+    /// serves rather than an aborted halt.
+    async fn write_halt_record(&self, record: HaltRecord) -> Result<(), String> {
+        let Some(store) = &self.reset_marker else {
+            return Err(
+                "this DAG storage has no durable-records store attached, so this shard's autopropose \
+                 halt would be honoured by this process and forgotten by the next"
+                    .to_string(),
+            );
+        };
+        store
+            .put(&[(HALT_RECORD_KEY.to_vec(), record.encode())])
+            .await
+    }
+
+    async fn read_halt_record(&self) -> Result<Option<HaltRecord>, String> {
+        // **Refused, not `Ok(None)`, and the difference is the whole row.** `Ok(None)` would say "no
+        // halt on record", which is a *claim about the chain's history* that a backend with nowhere to
+        // keep the record cannot make. A refusal leaves the boot seed at `durable: false` — "unknown" —
+        // where an empty answer would read as "never halted", the two states W-N10-01 exists to keep
+        // apart.
+        let Some(store) = &self.reset_marker else {
+            return Err(
+                "this DAG storage has no durable-records store attached, so this shard's autopropose \
+                 halt history cannot be read — unknown, not empty"
+                    .to_string(),
+            );
+        };
+        let raw = store
+            .get(&[HALT_RECORD_KEY.to_vec()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten();
+        raw.map(|bytes| HaltRecord::decode(&bytes)).transpose()
+    }
+
+    async fn clear_halt_record(&self) -> Result<(), String> {
+        let Some(store) = &self.reset_marker else {
+            return Ok(());
+        };
+        store.delete(&[HALT_RECORD_KEY.to_vec()]).await.map(|_| ())
     }
 
     /// The equivocations the H-1 gate recorded (AUDIT C200) — see the field's own note for why they

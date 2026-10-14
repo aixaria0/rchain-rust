@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rchain_block_storage::dag::dag_storage::DeployId;
 use rchain_models::ast::Par;
@@ -19,7 +19,21 @@ use rchain_shared::base16;
 use rchain_shared::refined::NonNegI64;
 use serde::{Deserialize, Serialize};
 
+use rchain_block_storage::dag::dag_storage::{BlockDagStorage, HaltRecord};
+use rchain_shared::lock::Unpoison;
+
 use crate::runtime_manager::CapturedReply;
+
+/// Milliseconds since the unix epoch, or `0` for a clock before it.
+///
+/// Total rather than fallible: a halt whose date could not be read is still a halt, and the count
+/// beside it is what a reader acts on.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// A block-api error (the Scala `BlockApi.Error = String`).
 pub type ApiErr<A> = Result<A, String>;
@@ -55,6 +69,25 @@ pub struct Capabilities {
     pub dev_mode: bool,
 }
 
+/// **The shard's autopropose halt, as the surface reads it** (W-N10-01, F-U10-02).
+///
+/// Three facts rather than the one boolean that used to stand for them: when the shard last halted,
+/// how many times it has, and whether the record of the latest one reached the store. The flag alone
+/// could not tell "halted" from "never halted" after a restart, and the operator's *prescribed* remedy
+/// for a halt is a restart — so the remedy was what destroyed the record of the fault.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HaltStatus {
+    /// When the shard last halted, in milliseconds since the unix epoch. `None` is **no halt on
+    /// record**, which is a different fact from "halted at the epoch".
+    pub at: Option<i64>,
+    /// How many times this shard's timer has halted — the durable count, so it climbs across restarts
+    /// where a per-process one would restart at zero.
+    pub episodes: u64,
+    /// Whether the latest halt reached the store. `false` means this process is honouring a halt the
+    /// next one will not know about — said rather than implied.
+    pub durable: bool,
+}
+
 /// **A shard's proposer health, as the API reports it.**
 ///
 /// **The flag names its trigger, and that is the point.** Three paths feed the proposer queue — the
@@ -73,19 +106,13 @@ pub struct ProposerHealth {
     /// The shard's autopropose timer has stopped. Nothing restarts it but the process, and the value
     /// is therefore sticky: a later success does **not** clear it.
     pub autopropose_timer_halted: bool,
-    /// **How many times this process's autopropose timer has stopped** (W-N10-01).
+    /// **The shard's autopropose halt** — when, how many, and whether it is on record.
     ///
-    /// **What this does not do, stated because a first draft of it claimed otherwise.** It is an
-    /// in-memory count, so after a restart it is zero — exactly like the flag beside it. The ambiguity
-    /// the row names is therefore *not* resolved: `autoproposeTimerHalted: false` still reads the same
-    /// on a node that never halted and on one that halted and restarted. That case is F-U10-02, open
-    /// since #157, and its fix is a **durable record** — the shape the reset marker already has —
-    /// which is a store write on the halt path and a different unit of work.
-    ///
-    /// What it is worth: a count that cannot reverse within the process it describes, so a reader can
-    /// see the flag *has* been set and how many distinct stops the timer has had. Beside a sticky
-    /// boolean that is a small increment, and it is recorded here as one rather than as a fix.
-    pub autopropose_timer_halt_episodes: u64,
+    /// This replaces an in-memory episode count whose own doc said it did *not* survive a restart. It
+    /// did not, and saying so is what left F-U10-02 open; the record is durable now, and **obeyed**: a
+    /// shard whose record stands does not start its timer, so a restart cannot silently resume
+    /// production on a fault nobody has cleared. See [`HaltStatus`].
+    pub autopropose_halt: HaltStatus,
     /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
     pub autopropose_tap_suppressed: u64,
     /// Stale-snapshot self-equivocations (§48): the node's own block collided with its already-synced
@@ -102,11 +129,22 @@ pub struct ProposeHealth {
     failures: Arc<AtomicU64>,
     timer_halted: Arc<AtomicBool>,
     /// Monotone, and bumped only when the flag *transitions* to set — see [`ProposeHealth::note_timer_halted`].
+    /// **Seeded from the durable record at boot**, so it is the shard's count and not this process's.
     timer_halt_episodes: Arc<AtomicU64>,
     /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
     /// Counted rather than silently dropped: the halt is only a halt if the tap obeys it, and a
     /// refusal nobody can see is the shape that row is about.
     tap_suppressed_halted: Arc<AtomicU64>,
+    /// **The halt on record**, as this process knows it: what the store held at boot, updated by
+    /// [`ProposeHealth::note_timer_halted`]. The mirror is what keeps the surface from drifting from
+    /// the store it reports — the same rule `note_reset_marker` follows for the reset marker.
+    halt_record: Arc<Mutex<Option<HaltRecord>>>,
+    /// **Whether the latest halt reached the store.** `false` means this process honours a halt the
+    /// next one will not know about, which the surface says rather than implying durability.
+    halt_durable: Arc<AtomicBool>,
+    /// **The clear's wake.** A halted timer parks here instead of breaking, so the admin route resumes
+    /// it in-process rather than the operator needing a second restart to get a live timer back.
+    resume: Arc<tokio::sync::Notify>,
     stale_snapshot_equivocations: Arc<AtomicU64>,
 }
 
@@ -139,15 +177,120 @@ impl ProposeHealth {
         self.timer_halted.load(Ordering::Relaxed)
     }
 
-    /// Record that the autopropose timer has stopped, called once immediately before its `break`.
+    /// **Seed the cell from the durable record at boot** (W-N10-01) — the read that lets a halt
+    /// outlive the process that took it.
     ///
-    /// **The episode is counted on the transition, not on the call** (W-N10-01). `swap` returns the
-    /// previous value, so a second call — a restart's timer stopping again, or two halts in one
-    /// process — is the only thing that moves the count. A count of *calls* would be a count of how
-    /// often this was recorded, which is not a fact anyone wants.
-    pub fn note_timer_halted(&self) {
-        if !self.timer_halted.swap(true, Ordering::Relaxed) {
-            self.timer_halt_episodes.fetch_add(1, Ordering::Relaxed);
+    /// Called after the shard's store exists and **before its timer is spawned**; a seed placed after
+    /// the spawn races the first tick, which is the way this is most likely to be got wrong.
+    pub fn seed_halt(&self, record: Option<HaltRecord>) {
+        if record.is_some() {
+            self.timer_halted.store(true, Ordering::Relaxed);
+        }
+        self.timer_halt_episodes
+            .store(record.map(|r| r.episodes).unwrap_or(0), Ordering::Relaxed);
+        self.halt_durable.store(record.is_some(), Ordering::Relaxed);
+        *self.halt_record.lock().unpoison() = record;
+    }
+
+    /// **Read this shard's halt record from the store and seed the cell from it** — the boot read that
+    /// lets a halt outlive the process that took it (W-N10-01, F-U10-02).
+    ///
+    /// Extracted from `setup_shard_runtime` so the seed — the line most likely to be dropped without a
+    /// test noticing — is a function a test drives through the *real* store rather than a
+    /// re-implementation of it. It must be called after the shard's store exists and **before its timer
+    /// is spawned**; a seed placed after the spawn races the first tick.
+    ///
+    /// **A read that fails is not a boot refusal**, and the error is returned rather than swallowed so
+    /// the caller can say so: this is the record of an observability fact, and refusing to start over
+    /// it would trade a silence for an outage. The cell is seeded empty either way, which reads as
+    /// `durable: false` — **"unknown", not "never halted"**.
+    pub async fn seed_halt_from_store(&self, dag: &dyn BlockDagStorage) -> Result<(), String> {
+        match dag.read_halt_record().await {
+            Ok(record) => {
+                self.seed_halt(record);
+                Ok(())
+            }
+            Err(e) => {
+                self.seed_halt(None);
+                Err(e)
+            }
+        }
+    }
+
+    /// Record that the autopropose timer has stopped, and hand back **the record the caller must
+    /// persist** — the timer cannot write the store itself, and it has already decided to stop, so it
+    /// cannot refuse either.
+    ///
+    /// **The episode is counted on the transition, not on the call**: `swap` returns the previous
+    /// value, so a second call in one process is not a second halt. The count starts from what the
+    /// store held, so it is the shard's count across restarts.
+    pub fn note_timer_halted(&self) -> HaltRecord {
+        let first = !self.timer_halted.swap(true, Ordering::Relaxed);
+        let episodes = if first {
+            self.timer_halt_episodes.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            self.timer_halt_episodes.load(Ordering::Relaxed)
+        };
+        // `durable: false` until the caller's write returns — the pessimistic half, because a reading
+        // that claims durability the write has not established is the defect this record exists for.
+        let record = HaltRecord {
+            at_ms: now_ms(),
+            episodes,
+            durable: false,
+        };
+        self.halt_durable.store(false, Ordering::Relaxed);
+        *self.halt_record.lock().unpoison() = Some(record);
+        record
+    }
+
+    /// Record whether [`Self::note_timer_halted`]'s write reached the store.
+    pub fn mark_halt_durable(&self, durable: bool) {
+        self.halt_durable.store(durable, Ordering::Relaxed);
+        if let Some(record) = self.halt_record.lock().unpoison().as_mut() {
+            record.durable = durable;
+        }
+    }
+
+    /// **The one way out of a halt**: forget it, and wake a parked timer so production resumes without
+    /// a restart. Reached by `POST /api/v1/autopropose/resume` on the admin listener.
+    ///
+    /// **The failure counter is cleared with the flag, or the resume is a formality.** The halt fires on
+    /// `consecutive_self_validation_failures >= MAX`, and a halted timer is not proposing — so nothing
+    /// clears that counter while the halt stands. Waking the timer with it still at the threshold would
+    /// re-halt on the very next tick, before any proposal could succeed and clear it, which would make
+    /// the operator's one way out a no-op. Clearing it is what lets the retry the halt was deferring
+    /// actually happen; a successful propose then clears it the ordinary way if the fault is gone, and a
+    /// persisting fault re-halts after `MAX` more — which is the honest outcome, not a lost cause.
+    pub fn clear_halt(&self) {
+        self.timer_halted.store(false, Ordering::Relaxed);
+        self.failures.store(0, Ordering::Relaxed);
+        self.halt_durable.store(true, Ordering::Relaxed);
+        *self.halt_record.lock().unpoison() = None;
+        // `notify_one`, not `notify_waiters`: a permit is *stored* when nobody is parked, so a clear
+        // that lands between the timer's halt and its park is not lost. `notify_waiters` wakes only
+        // waiters already registered, which is a lost-wakeup race on the one path out of a halt.
+        self.resume.notify_one();
+    }
+
+    /// The clear's wake, for a halted timer to park on.
+    pub fn resumed(&self) -> Arc<tokio::sync::Notify> {
+        self.resume.clone()
+    }
+
+    /// **Park until this shard is not halted** — the autopropose timer's own gate (W-N10-01).
+    ///
+    /// Extracted from the timer loop so the obedience is a function a test can drive rather than five
+    /// lines buried in a spawned task. Its whole content is the flag check: the timer used to consult
+    /// only `consecutive_self_validation_failures`, so a halt *seeded from the store at boot* would be
+    /// reported by the surface while the loop kept proposing — the tap obeying the halt and the timer
+    /// not, which is W-N4-08's defect one level up. Deleting the check (returning immediately) is the
+    /// mutation that lets a node report a halt it does not honour.
+    ///
+    /// It parks on the notify rather than returning an error, so the operator's
+    /// `POST /api/v1/autopropose/resume` resumes this shard **in-process**.
+    pub async fn park_while_halted(&self) {
+        while self.timer_halted() {
+            self.resume.notified().await;
         }
     }
 
@@ -157,7 +300,11 @@ impl ProposeHealth {
         ProposerHealth {
             consecutive_self_validation_failures: self.failures.load(Ordering::Relaxed),
             autopropose_timer_halted: self.timer_halted.load(Ordering::Relaxed),
-            autopropose_timer_halt_episodes: self.timer_halt_episodes.load(Ordering::Relaxed),
+            autopropose_halt: HaltStatus {
+                at: self.halt_record.lock().unpoison().as_ref().map(|r| r.at_ms),
+                episodes: self.timer_halt_episodes.load(Ordering::Relaxed),
+                durable: self.halt_durable.load(Ordering::Relaxed),
+            },
             autopropose_tap_suppressed: self.tap_suppressed_halted.load(Ordering::Relaxed),
             stale_snapshot_self_equivocations: self
                 .stale_snapshot_equivocations
@@ -302,6 +449,15 @@ pub trait BlockApi: Send + Sync {
     /// went back to timing out on chains whose finality lags. Measured: the three multi-delivery OCapN
     /// integration tests fail with the default and pass with the forwarding. An implementation that
     /// does not say what its unfinalised view is now does not compile.
+    /// **Clear an autopropose halt and let this shard produce again** (W-N10-01, F-U10-02) — the one
+    /// way out of a halt that is now durable, reached by `POST /api/v1/autopropose/resume`.
+    ///
+    /// **Required rather than defaulted**, for the reason `get_unfinalised_name_data_response` records:
+    /// a default would let a wrapper answer this for one shard and silently do nothing for the rest,
+    /// which is the same defect as the halt itself — a surface that says one thing and a node that does
+    /// another. An implementation that does not say what it clears does not compile.
+    async fn clear_autopropose_halt(&self) -> Result<(), String>;
+
     async fn get_unfinalised_name_data_response(
         &self,
         depth: i32,
@@ -523,16 +679,23 @@ mod tests {
         health.note_timer_halted();
         // The node recovers and proposes: the count clears, the halt does not.
         proposer_handle.store(0, Ordering::Relaxed);
-        assert_eq!(
-            health.snapshot(),
-            ProposerHealth {
-                consecutive_self_validation_failures: 0,
-                autopropose_timer_halted: true,
-                autopropose_timer_halt_episodes: 1,
-                autopropose_tap_suppressed: 0,
-                stale_snapshot_self_equivocations: 0,
-            }
+        let snap = health.snapshot();
+        assert_eq!(snap.consecutive_self_validation_failures, 0);
+        assert!(
+            snap.autopropose_timer_halted,
+            "a success clears the count, not the halt"
         );
+        assert_eq!(snap.autopropose_halt.episodes, 1, "one halt is one episode");
+        assert!(
+            snap.autopropose_halt.at.is_some(),
+            "a halt on record names when it happened"
+        );
+        assert!(
+            !snap.autopropose_halt.durable,
+            "the write has not returned yet, so the record is not yet durable"
+        );
+        assert_eq!(snap.autopropose_tap_suppressed, 0);
+        assert_eq!(snap.stale_snapshot_self_equivocations, 0);
     }
 
     /// **The count is of halts, not of calls** (W-N10-01).
@@ -543,24 +706,27 @@ mod tests {
     ///
     /// **This test does not assert anything about a restart, and the first version of this comment
     /// claimed it did.** `autopropose_timer_halted`'s real ambiguity — a restarted node reporting
-    /// `false`, indistinguishable from one that never halted — is untouched by an in-memory counter,
-    /// which is also zero after a restart. That case is F-U10-02 and needs a durable record; see the
-    /// field's own doc.
+    /// `false`, indistinguishable from one that never halted — was untouched by the in-memory counter
+    /// this test exercises. That case is F-U10-02, and it is answered one level up: the durable record
+    /// and the boot seed (see [`ProposeHealth::seed_halt`] and
+    /// `casper/tests/reset.rs::a_halt_written_before_the_restart_is_read_at_the_next_boot`). The
+    /// in-process count here still counts *transitions*, which is correct whether the seed came from
+    /// the store or from zero.
     #[test]
     fn a_second_halt_in_one_process_is_not_a_second_episode() {
         let health = ProposeHealth::new();
-        assert_eq!(health.snapshot().autopropose_timer_halt_episodes, 0);
+        assert_eq!(health.snapshot().autopropose_halt.episodes, 0);
 
         health.note_timer_halted();
         assert_eq!(
-            health.snapshot().autopropose_timer_halt_episodes,
+            health.snapshot().autopropose_halt.episodes,
             1,
             "the first halt is an episode"
         );
         health.note_timer_halted();
         health.note_timer_halted();
         assert_eq!(
-            health.snapshot().autopropose_timer_halt_episodes,
+            health.snapshot().autopropose_halt.episodes,
             1,
             "and further notes of the *same* halt are not: the episode is the transition, not the call"
         );

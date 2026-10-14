@@ -148,6 +148,40 @@ async fn build_block_store() -> BlockStore {
         .expect("block store")
 }
 
+/// The same DAG storage **without** the durable-records store attached — the backend that has nowhere
+/// to keep a halt record. It is the fixture for the third state: a read that cannot be answered must
+/// read as "unknown", not as "never halted".
+async fn build_dag_without_marker_store() -> Arc<BlockDagKeyValueStorage> {
+    let fresh = || -> SharedStore {
+        Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )))
+    };
+    let metadata = Arc::new(
+        BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+            fresh(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMetadataCodec),
+        )))
+        .await
+        .expect("metadata store"),
+    );
+    let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> = Arc::new(
+        KeyValueTypedStoreCodec::new(fresh(), Arc::new(BytesCodec), Arc::new(BlockHashCodec)),
+    );
+    let deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+        Arc::new(KeyValueTypedStoreCodec::new(
+            fresh(),
+            Arc::new(BytesCodec),
+            Arc::new(SignedDeployDataCodec),
+        ));
+    Arc::new(
+        BlockDagKeyValueStorage::create(metadata, deploy_index, deploy_store)
+            .await
+            .expect("dag storage"),
+    )
+}
+
 async fn has(store: &BlockStore, h: BlockHash) -> bool {
     store
         .contains(&[h])
@@ -539,4 +573,114 @@ async fn the_guard_refuses_a_rewinding_whose_anchor_body_is_absent() {
         err.contains("is not in this node's block store"),
         "the refusal is the reset's own sentence about the anchor: {err}"
     );
+}
+
+/// **A halt survives the restart, and the next boot reads it** (W-N10-01, F-U10-02).
+///
+/// The row: the autopropose halt was process-scoped where the fault outlives the process, and the
+/// operator's *prescribed* remedy for a halt is a restart — so the remedy was exactly what destroyed
+/// the record of the fault. This drives the durable record through a real store, the same way
+/// [`a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker`] drives the reset marker.
+///
+/// **The falsifiers, stated.** (a) Make `write_halt_record` a no-op: the fresh read below is `None`
+/// and the boot seed says "not halted", so the assertion after the seed fails. (b) Drop the seed —
+/// make `seed_halt_from_store` return `Ok(())` without reading, or delete the call in
+/// `setup_shard_runtime`: the cell stays un-halted and the same assertion fails, because this drives
+/// the *real* `seed_halt_from_store` over a real store rather than `seed_halt` directly. (c) Revert the
+/// timer's gate to `failures` only (`ProposeHealth::park_while_halted`): the obedience is a separate
+/// assertion, in `node_runtime.rs::a_halted_timer_does_not_tick_until_the_halt_is_cleared`.
+///
+/// **The third state, which is the whole point.** A read that *fails* must not become a boot refusal
+/// and must not read as "never halted": `seed_halt(None)` leaves `durable: false`, which is the surface
+/// saying it cannot vouch for the reading. That arm is asserted here as the `None` case.
+#[tokio::test]
+async fn a_halt_written_before_the_restart_is_read_at_the_next_boot() {
+    use rchain_block_storage::dag::dag_storage::{HaltRecord, HALT_RECORD_KEY};
+    use rchain_casper::api::block_api::ProposeHealth;
+
+    let dag = build_dag().await;
+
+    // --- the halt, before the restart -------------------------------------------------------------
+    let written = HaltRecord {
+        at_ms: 1_700_000_000_000,
+        episodes: 2,
+        durable: false,
+    };
+    dag.write_halt_record(written)
+        .await
+        .expect("the halt reaches the store");
+
+    // --- the next boot, over the same store --------------------------------------------------------
+    let read = dag
+        .read_halt_record()
+        .await
+        .expect("the record is readable")
+        .expect("a halt was written, so one is on record");
+    assert_eq!(
+        read.at_ms, written.at_ms,
+        "the instant survives the restart"
+    );
+    assert_eq!(read.episodes, 2, "and the count with it");
+    assert!(
+        read.durable,
+        "a value that came out of the store is durable by construction — the decode sets the flag, \
+         so a record read back is never reported as un-vouched"
+    );
+
+    // **The boot seed, through the real store** — the same call `setup_shard_runtime` makes, so
+    // dropping *that* line (the mutation this arm exists to catch) reddens this assertion.
+    let health = ProposeHealth::new();
+    assert!(!health.timer_halted(), "a fresh cell is not halted");
+    health
+        .seed_halt_from_store(dag.as_ref())
+        .await
+        .expect("a healthy store reads");
+    assert!(
+        health.timer_halted(),
+        "the boot seed makes a restarted node report the halt the flag alone would have lost"
+    );
+    assert_eq!(
+        health.snapshot().autopropose_halt.episodes,
+        2,
+        "and the episode count is the shard's, not this process's"
+    );
+    assert_eq!(
+        health.snapshot().autopropose_halt.at,
+        Some(1_700_000_000_000),
+        "and the date the halt was taken, which the surface carries beside the flag"
+    );
+
+    // --- the one way out ---------------------------------------------------------------------------
+    dag.clear_halt_record()
+        .await
+        .expect("the clear reaches the store");
+    assert!(
+        dag.read_halt_record()
+            .await
+            .expect("readable after a clear")
+            .is_none(),
+        "the clear is durable — a node that resumed and restarted does not halt again on a stale record"
+    );
+
+    // --- the third state: unknown is not empty -----------------------------------------------------
+    // A store that cannot be read seeds 'unknown' — `durable: false` — which reads differently from
+    // 'never halted'. Driven through the same call, over a DAG with no durable-records store attached.
+    let storeless = build_dag_without_marker_store().await;
+    let unknown = ProposeHealth::new();
+    assert!(
+        unknown
+            .seed_halt_from_store(storeless.as_ref())
+            .await
+            .is_err(),
+        "a backend with nowhere to keep the record refuses to answer, rather than answering empty"
+    );
+    assert!(!unknown.timer_halted());
+    assert!(
+        !unknown.snapshot().autopropose_halt.durable,
+        "a read that failed seeds 'unknown', which reads differently from 'never halted'"
+    );
+
+    // The reserved key is a property of the store, not of this test: assert it is the one the write
+    // used, so a future second key cannot silently split the record from its reader.
+    assert_eq!(HALT_RECORD_KEY, b"autopropose-halt");
 }

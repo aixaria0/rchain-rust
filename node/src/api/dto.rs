@@ -125,6 +125,24 @@ pub struct PublicStatus {
     pub dev_mode: bool,
 }
 
+/// **The shard's autopropose halt**, beside the episode count the surface already carried — which
+/// this makes durable (W-N10-01, F-U10-02).
+///
+/// **Three facts the one boolean could not carry.** `autoproposeTimerHalted` is this process's flag;
+/// this says *when* the shard last halted, and whether the reading can be trusted. The scheduled
+/// remedy for a halt is a restart, so the flag alone was an all-clear that erased the fault.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaltStatusDto {
+    /// When the shard last halted, in milliseconds since the unix epoch. `null` is **no halt on
+    /// record** — unless `durable` is `false`, in which case it is *unknown*.
+    pub at: Option<i64>,
+    /// Whether this reading reflects the store. `false` means the halt record could not be read or
+    /// written, so the node cannot vouch for `at` — said rather than implied, because "unknown" and
+    /// "never halted" are the two readings this whole row is about confusing.
+    pub durable: bool,
+}
+
 /// **What an operator's own surface may read, and nothing else does**: the operator half of the
 /// node's status.
 ///
@@ -144,18 +162,25 @@ pub struct OperatorStatus {
     /// cleared by a successful propose — this is what tells "quiet" from "broken" on a chain whose
     /// steady state is a node that produces nothing until work arrives.
     pub consecutive_self_validation_failures: u64,
-    /// #157: the shard's autopropose **timer** has stopped, and nothing restarts it but the process.
-    /// Deliberately not called `halted`: the tap and the admin `POST /api/propose` keep running, so a
-    /// node can have a stopped timer and still be producing blocks.
-    pub autopropose_timer_halted: bool,
-    /// **How many times this process's autopropose timer has stopped** (W-N10-01), counted on the
-    /// transition rather than on the call.
+    /// #157: the shard's autopropose **timer** has stopped. Deliberately not called `halted`: the tap
+    /// and the admin `POST /api/propose` keep running, so a node can have a stopped timer and still be
+    /// producing blocks.
     ///
-    /// **It is not a restart-surviving record**, and saying so here matters because the flag beside it
-    /// makes the reading ambiguous: after a restart this is `0` exactly like `autoproposeTimerHalted`,
-    /// so `false` still cannot be told from "never halted". That is F-U10-02 (open since #157) and its
-    /// fix is a durable record on the halt path — see `ProposeHealth`'s own doc.
+    /// **Two things restart it now**: the process (the halt is durable and re-seeded at boot), and the
+    /// operator's `POST /api/v1/autopropose/resume` on the admin listener, which clears the record and
+    /// wakes the parked timer in-process.
+    pub autopropose_timer_halted: bool,
+    /// **How many times this shard's autopropose timer has stopped** (W-N10-01), counted on the
+    /// transition rather than on the call and **seeded from the durable record at boot**, so it is the
+    /// shard's count and not this process's.
+    ///
+    /// A flat field rather than nested inside [`HaltStatusDto`] because consumers of this surface are
+    /// written against it. The durability of the value is carried by the `durable` flag beside it, not
+    /// by this field's position.
     pub autopropose_timer_halt_episodes: u64,
+    /// **The shard's autopropose halt**: when, and whether the record is trustworthy. See
+    /// [`HaltStatusDto`].
+    pub autopropose_halt: HaltStatusDto,
     /// Autopropose requests the validated-block **tap** refused because the timer is halted (W-N4-08).
     /// Beside the episode count because it is the measurement of what the halt cost: without it, the
     /// halt was a flag the tap ignored.

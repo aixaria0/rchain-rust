@@ -662,6 +662,17 @@ impl BlockApi for BlockApiImpl {
         self.name_data_response(depth, listening_name, true).await
     }
 
+    /// **The one way out of a durable halt** — see the trait's doc.
+    ///
+    /// The store is cleared **first**, and its failure is propagated: a timer woken before the record
+    /// is gone would resume, halt again on the next failure, and find the old record still standing —
+    /// so a clear that did not reach the store cannot be allowed to read as a resume.
+    async fn clear_autopropose_halt(&self) -> Result<(), String> {
+        self.dag.clear_halt_record().await?;
+        self.propose_health.clear_halt();
+        Ok(())
+    }
+
     /// The same read with no finality floor, for the node's own reply channel — see the trait's doc
     /// for why the bridge is not the caller the floor is written for.
     async fn get_unfinalised_name_data_response(

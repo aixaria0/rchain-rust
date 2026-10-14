@@ -105,6 +105,79 @@ impl ResetMarker {
     }
 }
 
+/// **What a shard must remember, across a restart, about an autopropose halt it took** (W-N10-01,
+/// F-U10-02).
+///
+/// **Why a flag was not enough.** `autopropose_timer_halted` is an in-memory cell, so a node that
+/// halted and was then restarted reports `false` — indistinguishable from a node that never halted.
+/// And the operator's *prescribed* remedy for a halt is a restart (`AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES`
+/// at `node/src/runtime/node_runtime.rs`), so the remedy itself is what destroyed the record of the
+/// fault. This is the record that survives it.
+///
+/// **It is obeyed, not merely reported** (decided 2026-10-14). A shard whose record stands does not
+/// start its autopropose timer, so a restart does not silently resume production on a fault nobody has
+/// cleared. There is exactly one way out — `POST /api/v1/autopropose/resume` on the admin listener — and
+/// the "exactly one" is the point: a record that halted a node with no way to stop halting is the same
+/// class of defect as one that could not clear, which is W-N11-01's class (an on-disk record choosing
+/// what the node does).
+///
+/// **Not a `ResetMarker`.** That record is *two-phased* because its write has a caller that can refuse
+/// (`write_reset_marker`'s default does). This one is written by the timer *after* it has decided to
+/// stop, so there is nothing left to abort — the write either reaches the store or it does not, and
+/// [`HaltRecord::durable`] is how the surface says which.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HaltRecord {
+    /// When the halt was most recently taken, in milliseconds since the unix epoch. A date is what
+    /// separates "halted a minute ago" from "halted last week", which a bare flag cannot.
+    pub at_ms: i64,
+    /// **Monotone**: how many times this shard's timer has halted. A count cannot reverse, so it is the
+    /// half that survives where the flag's `false` cannot.
+    pub episodes: u64,
+    /// Whether the write that produced this record reached the store.
+    ///
+    /// `false` means this process is honouring a halt the *next* process will not know about — the
+    /// store was absent or the write failed. The surface says so rather than implying a durability it
+    /// does not have.
+    pub durable: bool,
+}
+
+/// The halt record's one key: a literal, so it cannot collide with a block entry or with
+/// [`RESET_MARKER_KEY`] in the store they share.
+pub const HALT_RECORD_KEY: &[u8] = b"autopropose-halt";
+
+impl HaltRecord {
+    /// `at_ms` (big-endian i64, 8) ++ `episodes` (big-endian u64, 8). Fixed width, so a decode cannot
+    /// be ambiguous and a truncated value is refused rather than guessed at — the property
+    /// [`ResetMarker`]'s own codec keeps and the reason it is trusted.
+    ///
+    /// `durable` is **not** encoded: a record that is in the store is durable by construction, and one
+    /// that is not is not there to decode. The flag is a fact about the write, not about the bytes.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16);
+        out.extend_from_slice(&self.at_ms.to_be_bytes());
+        out.extend_from_slice(&self.episodes.to_be_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != 16 {
+            return Err(format!(
+                "a halt record is 16 bytes (at_ms ++ episodes) and this one is {}",
+                bytes.len()
+            ));
+        }
+        let mut at = [0u8; 8];
+        at.copy_from_slice(&bytes[..8]);
+        let mut episodes = [0u8; 8];
+        episodes.copy_from_slice(&bytes[8..]);
+        Ok(HaltRecord {
+            at_ms: i64::from_be_bytes(at),
+            episodes: u64::from_be_bytes(episodes),
+            durable: true,
+        })
+    }
+}
+
 /// What a node knows about one deployer key: a block that includes a deploy it signed, and the height
 /// from which that knowledge is complete.
 ///
@@ -213,6 +286,32 @@ pub trait BlockDagStorage: Send + Sync {
     /// Clear the marker once the node has caught up past its anchor. The default does nothing, for the
     /// same reason the read answers `None`: a backend with no marker has nothing to clear.
     async fn clear_reset_marker(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// **Record that this shard's autopropose timer has halted** (see [`HaltRecord`]) — the write that
+    /// lets a restart know about a fault it would otherwise forget.
+    ///
+    /// **The default refuses rather than doing nothing**, like `write_reset_marker`'s and for the same
+    /// reason: a backend that cannot record the halt must not look like one that did. The difference is
+    /// what the caller does with the refusal — the timer has already decided to stop, so it cannot
+    /// abort; it records `durable: false` on the reading the surface serves instead.
+    async fn write_halt_record(&self, _record: HaltRecord) -> Result<(), String> {
+        Err(
+            "this DAG storage cannot record an autopropose halt (no `write_halt_record` impl)"
+                .to_string(),
+        )
+    }
+
+    /// The halt this shard took, if it took one. The default answers *no*, which is honest for a
+    /// backend that records nothing.
+    async fn read_halt_record(&self) -> Result<Option<HaltRecord>, String> {
+        Ok(None)
+    }
+
+    /// **Forget the halt** — the one way out, reached by `POST /api/v1/autopropose/resume` on the admin
+    /// listener. The default does nothing, for the same reason the read answers `None`.
+    async fn clear_halt_record(&self) -> Result<(), String> {
         Ok(())
     }
 
@@ -385,5 +484,37 @@ mod tests {
         .encode();
         bad_height[32..40].copy_from_slice(&(-1i64).to_be_bytes());
         assert!(ResetMarker::decode(&bad_height).is_err(), "negative height");
+    }
+
+    /// **The halt record's wire form is fixed-width too, and a decode is strict** (W-N10-01, F-U10-02).
+    ///
+    /// Same rule as the marker's codec and for the same reason: a boot that read a malformed record
+    /// would be deciding what to do with a store it does not understand. It refuses rather than guessing,
+    /// and `durable` is `true` on the way out because a value that came *from* the store is durable by
+    /// construction — the flag is a fact about the write, not about the bytes, so it is not encoded.
+    #[test]
+    fn a_halt_record_round_trips_and_a_malformed_one_is_refused() {
+        let record = HaltRecord {
+            at_ms: 1_700_000_000_000,
+            episodes: 7,
+            durable: false,
+        };
+        let bytes = record.encode();
+        assert_eq!(bytes.len(), 16, "at_ms (8) ++ episodes (8)");
+        let decoded = HaltRecord::decode(&bytes).unwrap();
+        assert_eq!(decoded.at_ms, record.at_ms);
+        assert_eq!(decoded.episodes, record.episodes);
+        assert!(
+            decoded.durable,
+            "a record read from the store is durable by construction, whatever the writer believed"
+        );
+
+        assert!(HaltRecord::decode(&[0u8; 15]).is_err(), "short");
+        assert!(HaltRecord::decode(&[0u8; 17]).is_err(), "long");
+        assert!(HaltRecord::decode(&[]).is_err(), "empty");
+        assert_ne!(
+            HALT_RECORD_KEY, RESET_MARKER_KEY,
+            "the two records share a store, so their keys must not"
+        );
     }
 }

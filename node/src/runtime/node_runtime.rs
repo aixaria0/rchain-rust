@@ -1699,6 +1699,32 @@ async fn setup_shard_runtime(
             spec.shard_id
         ));
     }
+    // **The halt this shard took before this process** (W-N10-01, F-U10-02).
+    //
+    // Read here — after the shard's store exists and **before the timer is spawned below** — because a
+    // seed placed after the spawn races the first tick, and the ordering is the part of this most
+    // likely to be got wrong silently. `read_halt_record` is on the DAG's trait, so this reaches the
+    // same store the reset marker writes to, under its own reserved key.
+    //
+    // **A read that fails is not a boot refusal.** Unlike the reset marker's read — where a failure
+    // means an un-repaired rewind, so propagating `?` is right — this is the record of an
+    // observability fact, and refusing to start over it would trade a silence for an outage. It seeds
+    // the empty record with `durable: false`, which is the surface saying it cannot vouch for the
+    // reading: "unknown", not "never halted".
+    if let Err(e) = propose_health
+        .seed_halt_from_store(parts.dag.as_ref())
+        .await
+    {
+        log.warn(
+            LogSource::new("coop.rchain.node.runtime.Setup"),
+            &format!(
+                "could not read the autopropose halt record for shard {}: {e} — this shard's halt \
+                 history is unknown, not empty",
+                spec.shard_id
+            ),
+        );
+    }
+
     let importer = create_rspace_importer(&parts.store_manager).await?;
     let exporter = create_rspace_exporter(&parts.store_manager).await?;
     let shard_id = spec.shard_id.to_string();
@@ -1781,23 +1807,54 @@ async fn setup_shard_runtime(
                 let timer_metrics = metrics.clone();
                 let timer_source = health_source.clone();
                 let timer_health = propose_health.clone();
+                let timer_dag = parts.dag.clone();
                 rchain_shared::supervise::spawn_supervised("autopropose-timer", async move {
+                    // **A record that says halted means this shard does not produce** (W-N10-01).
+                    //
+                    // The gate is `park_while_halted`, which checks the *flag* — the thing nothing
+                    // consulted at boot before this, where only the failure counter below was read.
+                    // Without it a halt seeded from the store would be *reported* by the surface while
+                    // this loop kept proposing: the tap obeying the halt and the timer not, which is
+                    // W-N4-08's defect one level up. It parks before the first tick as well as each tick
+                    // after, so a seeded halt never produces once.
+                    timer_health.park_while_halted().await;
                     let mut interval = tokio::time::interval(AUTOPROPOSE_INTERVAL);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         interval.tick().await;
+                        timer_health.park_while_halted().await;
                         let failures = timer_failures.load(Ordering::Relaxed);
                         if failures >= AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES {
-                            timer_health.note_timer_halted();
+                            // **The record is written here, and the write is what makes the halt
+                            // outlive this process.** The timer cannot refuse it — it has already
+                            // decided to stop, so there is nothing left to abort — so a failed write is
+                            // reported rather than raised, and the surface keeps `durable: false`: the
+                            // node saying that this process honours a halt the next one will not know
+                            // about. `mark_halt_durable(true)` is the only thing that clears it.
+                            let record = timer_health.note_timer_halted();
+                            match timer_dag.write_halt_record(record).await {
+                                Ok(()) => timer_health.mark_halt_durable(true),
+                                Err(e) => timer_log.error(
+                                    LogSource::new("coop.rchain.node.runtime.Setup"),
+                                    &format!(
+                                        "shard {timer_shard} halted but its record could not be \
+                                         written: {e} — this process honours the halt and the next one \
+                                         will not know about it"
+                                    ),
+                                ),
+                            }
                             push_proposer_health(&timer_metrics, &timer_source, &timer_health);
                             timer_log.error(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(
                                     "block production for shard {timer_shard} halted after \
-                                     {failures} consecutive self-validation failures"
+                                     {failures} consecutive self-validation failures; clear it with \
+                                     POST /api/v1/autopropose/resume"
                                 ),
                             );
-                            break;
+                            // The next turn of the loop parks here, because `note_timer_halted` set
+                            // the flag this gate reads.
+                            continue;
                         }
                         push_proposer_health(&timer_metrics, &timer_source, &timer_health);
                         let (otx, _orx) = tokio::sync::oneshot::channel();
@@ -3368,6 +3425,58 @@ mod proposer_health_metric_tests {
         assert!(
             recovered.contains("rchain_proposer_shard_0_autopropose_timer_halted 1"),
             "a recovered node must still report its stopped timer:\n{recovered}"
+        );
+    }
+
+    /// **A halted shard does not tick until the halt is cleared** (W-N10-01) — the *obedience* half of
+    /// F-U10-02, driven through the timer's own gate rather than a copy of it.
+    ///
+    /// A halt *seeded from the store at boot* must stop production, not merely be reported. The earlier
+    /// code consulted only `consecutive_self_validation_failures`, so a node could report halted on the
+    /// surface while the timer kept proposing — the tap obeying the halt and the timer not, which is
+    /// W-N4-08's defect one level up.
+    ///
+    /// **The falsifier.** Make `park_while_halted` return immediately (drop the `timer_halted` check)
+    /// and the task below sets `ticked` while the halt still stands, which the first assertion catches.
+    #[tokio::test]
+    async fn a_halted_timer_does_not_tick_until_the_halt_is_cleared() {
+        use rchain_block_storage::dag::dag_storage::HaltRecord;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let health = ProposeHealth::new();
+        // The state a restart leaves: the record was read at boot and seeded into the cell.
+        health.seed_halt(Some(HaltRecord {
+            at_ms: 1,
+            episodes: 1,
+            durable: true,
+        }));
+
+        let ticked = Arc::new(AtomicBool::new(false));
+        let gate_health = health.clone();
+        let gate_ticked = ticked.clone();
+        let handle = tokio::spawn(async move {
+            gate_health.park_while_halted().await;
+            gate_ticked.store(true, Ordering::SeqCst);
+        });
+
+        // It must not get past the gate while the halt stands.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !ticked.load(Ordering::SeqCst),
+            "a halted shard does not tick — the halt is obeyed, not just reported"
+        );
+
+        // The operator's clear resumes it in-process, without a restart.
+        health.clear_halt();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("the clear releases the gate")
+            .expect("the parked task did not panic");
+        assert!(
+            ticked.load(Ordering::SeqCst),
+            "and production resumes on the operator's word"
         );
     }
 }

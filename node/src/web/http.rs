@@ -79,6 +79,12 @@ const TXN_RATE_LIMIT_PER_SEC: u64 = 10;
 /// host, so it is bounded like the transaction routes rather than like a read.
 const OCAPN_DIAL_RATE_LIMIT_PER_SEC: u64 = 2;
 
+/// Rate limit for the autopropose-resume route (W-N10-01, F-U10-02). Deliberately tiny: the route
+/// clears a durable halt and wakes a parked timer, which is an operator act performed once, not a
+/// control loop. A bound here is not for throughput — it is so that a page in a browser or a retrying
+/// script cannot hammer the node's own actuator, the same reason the sibling admin routes have one.
+const RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC: u64 = 1;
+
 /// The subject an ingress bound uses when the request carries no connection information.
 ///
 /// That happens when a router is called directly rather than served — which is what the tests do. One
@@ -195,6 +201,11 @@ pub struct AdminState {
     /// a caller-supplied key, not chain state a peer would read, and the admin listener is where this
     /// codebase puts the surfaces that act with the operator's authority.
     pub pos: Arc<dyn PosReadApi>,
+    /// Rate limiter for the autopropose-resume route (W-N10-01). Every sibling actuator on this
+    /// listener consults one; the resume route gets the same treatment because it is what pages an
+    /// operator's browser (and a retrying script) would otherwise hit unbounded. See
+    /// [`RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC`].
+    pub resume_rate_limiter: Arc<KeyedRateLimiter>,
 }
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
@@ -975,8 +986,9 @@ pub const OPENAPI_JSON: &str = r##"{
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
-          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
-          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64", "description": "How many times this process's autopropose timer has stopped. Counting transitions, so a second note of the same halt does not move it — and NOT a restart-surviving record: it is in memory, so it is 0 after a restart exactly like the flag beside it, which leaves `autoproposeTimerHalted: false` ambiguous between 'never halted' and 'halted, then restarted' (W-N10-01, F-U10-02; the fix for that is a durable record)" },
+          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped. Two things restart it: the process (the halt is durable, re-seeded at boot), and POST /api/v1/autopropose/resume on the admin listener, which clears the record and wakes the parked timer in-process. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
+          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64", "description": "How many times this shard's autopropose timer has stopped. Counting transitions, so a second note of the same halt does not move it; seeded from the durable record at boot, so it is the shard's count and not this process's (W-N10-01)" },
+          "autoproposeHalt": { "type": "object", "description": "The autopropose halt on record: when it happened and whether the record is trustworthy. A null `at` with `durable: true` means no halt is on record; `durable: false` means the record could not be read or written, so the node cannot vouch for it — 'unknown' and 'never halted' are the two readings this field exists to keep apart (W-N10-01, F-U10-02)", "properties": { "at": { "type": "integer", "format": "int64", "nullable": true, "description": "When the shard last halted, in milliseconds since the unix epoch; null is no halt on record, unless durable is false" }, "durable": { "type": "boolean", "description": "Whether this reading reflects the store: false means the halt record could not be read or written, so the node cannot vouch for `at`" } } },
           "autoproposeTapSuppressed": { "type": "integer", "format": "int64", "description": "Autopropose requests the validated-block tap refused because the timer is halted. The halt is only a halt if the tap obeys it, and this is the measurement of what it cost (W-N4-08)" },
           "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64", "description": "Times the node's own block collided with its already-synced block at a sequence number derived from a stale parent set. Not a self-validation failure, so it does not halt the timer" },
           "finalityStall": { "type": "string", "nullable": true, "description": "The merge gate's verdict on the last block this node validated, with the numbers that make it a diagnosis (supporting stake, partitions, candidates, and the partition size it measured against). Null when that derivation advanced. NOT an alarm: on a producing chain most blocks are refused by the stake gate, because a block justifies only the messages that existed when it was built — read finalityStalled for that" },
@@ -1237,6 +1249,16 @@ async fn reporting_trace(
 
 async fn admin_propose(State(state): State<AdminState>) -> Response {
     json_result(state.admin_web_api.propose().await)
+}
+
+/// `POST /api/v1/autopropose/resume` — clear the durable autopropose halt and wake the parked timer
+/// (W-N10-01, F-U10-02).
+///
+/// The one way out of a halt that survives a restart. Served on the admin listener, behind
+/// `admin_origin_guard` and the resume rate limiter, for the reason every actuator here is: it changes
+/// what the node does on the caller's word.
+async fn admin_resume_autopropose(State(state): State<AdminState>) -> Response {
+    json_result(state.admin_web_api.resume_autopropose().await)
 }
 
 /// **The ingress bound, keyed on the peer and applied before the body is decoded.**
@@ -1524,6 +1546,22 @@ pub fn admin_router(state: AdminState) -> Router {
             peer_rate_limit,
         ));
 
+    // The autopropose-resume actuator (W-N10-01, F-U10-02). A durable halt is *obeyed*, so the
+    // operator's way out cannot be "restart and hope" — this route clears the record on every member
+    // shard and wakes the parked timer. It is an actuator on the privileged listener for the same
+    // reason `/api/propose` is: it changes what the node does, on the caller's word. Bounded like its
+    // siblings rather than left open, because a page the operator visits is exactly the caller that
+    // should not be able to hammer it.
+    let resume_routes = Router::new()
+        .route("/api/v1/autopropose/resume", post(admin_resume_autopropose))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                state.resume_rate_limiter.clone(),
+                "autopropose resume rate limit exceeded",
+            ),
+            peer_rate_limit,
+        ));
+
     Router::new()
         .route("/api/propose", post(admin_propose))
         .route("/api/v1/propose", post(admin_propose))
@@ -1532,6 +1570,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .merge(txn_routes)
         .merge(dial_routes)
+        .merge(resume_routes)
         .layer(cors)
         // Outermost, so a cross-origin request is refused before any handler on this router runs —
         // including the ones that spend the node's REV. See `admin_origin_guard` for why it is a layer
@@ -1660,6 +1699,10 @@ pub async fn acquire_admin_http_server(
             MAX_TRACKED_PEERS,
         )),
         pos,
+        resume_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -1681,7 +1724,7 @@ mod tests {
     use super::*;
     use crate::api::dto::{
         DataAtNameResponse, DeployExecStatus, ExploratoryDeployResponse, FaucetResponse,
-        NodeCapabilities, OperatorStatus, PooledDeploy, PooledDeploys, PublicStatus,
+        HaltStatusDto, NodeCapabilities, OperatorStatus, PooledDeploy, PooledDeploys, PublicStatus,
         RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
@@ -1773,6 +1816,10 @@ mod tests {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             autopropose_timer_halt_episodes: 0,
+            autopropose_halt: HaltStatusDto {
+                at: None,
+                durable: false,
+            },
             autopropose_tap_suppressed: 0,
             stale_snapshot_self_equivocations: 0,
             finality_stall: None,
@@ -1994,6 +2041,10 @@ mod tests {
 
         async fn operator_status(&self) -> Result<OperatorStatus, BlockApiException> {
             Ok(test_operator_status())
+        }
+
+        async fn resume_autopropose(&self) -> Result<String, BlockApiException> {
+            Ok("resumed".to_string())
         }
     }
 
@@ -2483,6 +2534,10 @@ mod tests {
         /// Delegates to the floored read: this double has no unfinalised view of its own, and the
         /// method is required rather than defaulted so that is a decision rather than an oversight
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+        async fn clear_autopropose_halt(&self) -> Result<(), String> {
+            Ok(())
+        }
+
         async fn get_unfinalised_name_data_response(
             &self,
             depth: i32,
@@ -2716,6 +2771,10 @@ mod tests {
             enable_ocapn_dial: false,
             ocapn_dial_rate_limiter: Arc::new(KeyedRateLimiter::new(
                 OCAPN_DIAL_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
+            resume_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC,
                 MAX_TRACKED_PEERS,
             )),
         }
@@ -3083,6 +3142,68 @@ mod tests {
             !String::from_utf8_lossy(&body).contains("at most"),
             "the bound itself must reach the gateway, not the refusal: {}",
             String::from_utf8_lossy(&body)
+        );
+    }
+
+    /// **N4/MORE — the spend route shares the produce route's one credentialless gate.** The admin
+    /// router's only caller check is `admin_origin_guard` (`web::http`, the layer at the bottom of
+    /// [`admin_router`]), which reads no identity and admits any request carrying no `Origin` (CSRF
+    /// requires a browser). `/api/txn` signs every phase deploy with the node's validator key and
+    /// escrows REV from that key's own vault, so a caller that reaches the listener past the bind and
+    /// sends no `Origin` is admitted to a *spend* on the same terms as a `propose` — the guard does
+    /// not scale with the authority behind it.
+    ///
+    /// Fires when the origin-less POST reaches the spend handler (a `400` from the handler, not the
+    /// guard's `403`). Refuted only if the guard refused a credentialless caller to the spend route
+    /// while admitting the same caller to propose (one identity for one authority).
+    #[tokio::test]
+    async fn the_spend_route_shares_the_produce_routes_credentialless_gate() {
+        use tower::ServiceExt;
+
+        let body = || axum::body::Body::from(r#"{"txnId":"aabb","legs":[]}"#);
+
+        // The one thing the guard refuses: a cross-origin request. It is refused on the spend route
+        // exactly as on propose, which is what makes the arm below a differential rather than a
+        // guard that waves everything through.
+        let cross_origin = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/txn")
+            .header("origin", "http://evil.example")
+            .header("host", "127.0.0.1:40404")
+            .header("content-type", "application/json")
+            .body(body())
+            .unwrap();
+        let refused = admin_router(txn_state(Some(gateway().await), true))
+            .oneshot(cross_origin)
+            .await
+            .expect("a response");
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "a cross-origin POST must be refused before any handler runs"
+        );
+
+        // A no-Origin, no-credential caller is admitted past the guard to the *spend* handler, which
+        // reads no identity either: the answer is the handler's own refusal, not the guard's.
+        let credentialless = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/txn")
+            .header("content-type", "application/json")
+            .body(body())
+            .unwrap();
+        let admitted = admin_router(txn_state(Some(gateway().await), true))
+            .oneshot(credentialless)
+            .await
+            .expect("a response");
+        assert_ne!(
+            admitted.status(),
+            StatusCode::FORBIDDEN,
+            "the guard admits a credentialless caller to the route that spends the validator's REV"
+        );
+        assert_eq!(
+            admitted.status(),
+            StatusCode::BAD_REQUEST,
+            "the response is the handler's (empty leg list), so the spend handler was reached"
         );
     }
 

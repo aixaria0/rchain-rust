@@ -14,8 +14,8 @@ use rchain_shared::base16;
 
 use super::dto::{
     DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
-    ExploratoryDeployResponse, NodeCapabilities, OperatorStatus, PooledDeploy, PublicStatus,
-    RhoDataResponse, RhoExprWithBlock, SignatureException, SyncStatus, VersionInfo,
+    ExploratoryDeployResponse, HaltStatusDto, NodeCapabilities, OperatorStatus, PooledDeploy,
+    PublicStatus, RhoDataResponse, RhoExprWithBlock, SignatureException, SyncStatus, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
 
@@ -65,7 +65,13 @@ pub fn to_operator_status(
         admin_http: caps.admin_http,
         consecutive_self_validation_failures: health.consecutive_self_validation_failures,
         autopropose_timer_halted: health.autopropose_timer_halted,
-        autopropose_timer_halt_episodes: health.autopropose_timer_halt_episodes,
+        // The durable count, which is what the key always claimed to be (W-N10-01): it was an
+        // in-memory count when this line was written, and a restart reset it.
+        autopropose_timer_halt_episodes: health.autopropose_halt.episodes,
+        autopropose_halt: HaltStatusDto {
+            at: health.autopropose_halt.at,
+            durable: health.autopropose_halt.durable,
+        },
         autopropose_tap_suppressed: health.autopropose_tap_suppressed,
         stale_snapshot_self_equivocations: health.stale_snapshot_self_equivocations,
         finality_stall: finality.stall_reason.clone(),
@@ -202,6 +208,7 @@ pub fn to_data_at_name_response(dbs: &[DataWithBlockInfo], length: i32) -> DataA
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::api::block_api::HaltStatus;
     use rchain_models::ast::Expr;
     use rchain_models::casper::protocol::deploy_service::{
         BondInfo, Status, VersionInfo as CasperVersionInfo,
@@ -263,7 +270,11 @@ mod tests {
         let health = ProposerHealth {
             consecutive_self_validation_failures: 3,
             autopropose_timer_halted: true,
-            autopropose_timer_halt_episodes: 1,
+            autopropose_halt: HaltStatus {
+                at: Some(1_700_000_000_000),
+                episodes: 1,
+                durable: true,
+            },
             autopropose_tap_suppressed: 4,
             stale_snapshot_self_equivocations: 5,
         };
@@ -310,9 +321,15 @@ mod tests {
         // the configured mode above says nothing about whether the proposer is failing.
         assert_eq!(api.consecutive_self_validation_failures, 3);
         assert!(api.autopropose_timer_halted);
-        // W-N10-01: the **episode count** beside the sticky flag, which is what survives a restart —
-        // the flag alone reads `false` on a node that restarted after halting.
+        // W-N10-01: the **episode count** beside the sticky flag, counted on the transition. It is the
+        // durable count now — seeded from the store at boot — so unlike the flag it does not start at
+        // zero on a node that restarted after halting.
         assert_eq!(api.autopropose_timer_halt_episodes, 1);
+        // …and the halt on record: *when* it happened and whether the record is trustworthy. `at` is a
+        // different fact from the flag — `null` means no halt on record, which a restarted node with a
+        // lost record reads as `durable: false` rather than as "never halted".
+        assert_eq!(api.autopropose_halt.at, Some(1_700_000_000_000));
+        assert!(api.autopropose_halt.durable);
         // W-N4-08: and what the halt cost, counted where it was refused. Without the tap's count the
         // halt was a flag the tap ignored.
         assert_eq!(api.autopropose_tap_suppressed, 4);
@@ -398,6 +415,9 @@ mod tests {
             "unrestorableBlock",
             "unrestorableRecords",
             "autoproposeTimerHalted",
+            "autoproposeTimerHaltEpisodes",
+            "autoproposeHalt",
+            "autoproposeTapSuppressed",
             "consecutiveSelfValidationFailures",
             "staleSnapshotSelfEquivocations",
             "finalityStall",
