@@ -1001,6 +1001,28 @@ async fn note_unrestorable_if_exhausted(
         ),
     );
     let plan = dag.get_representation().await.rewind_plan();
+    // **A view that cannot place the anchor is not a store that cannot** (W-N11-06). `(Some, None)` is
+    // a node with a finalised block it cannot locate — its height map leaves out validation-failed
+    // blocks — and the row's harm is that this shape ends in *no reset at all*: `--self-reset` cannot
+    // fire and the operator's only recovery is a wipe. But the reset works from the **store**, not from
+    // the view (`drop_above` takes a height and keeps the block at it), and the block's own
+    // `block_num` is part of what its hash commits to and sits in the metadata store. So the store is
+    // asked. A read that *fails* leaves the plan exactly as the view gave it — the refusal below, not
+    // an action: a store fault is not a reason to rewind.
+    let plan = if plan.anchor.is_some() && plan.anchor_height.is_none() {
+        let placed = match plan.anchor {
+            Some(anchor) => dag
+                .lookup(&anchor)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.block_num),
+            None => None,
+        };
+        place_the_anchor(plan, placed)
+    } else {
+        plan
+    };
     match reset_decision(&plan, *hash) {
         // **The one arm that can act.** The first request wins and the driver takes it once, so a scan
         // that gives up on several blocks in one pass asks for one reset rather than one per block.
@@ -1063,6 +1085,27 @@ async fn note_unrestorable_if_exhausted(
         ),
     }
     report_reset_dry_run(&plan, hash, source, log).await;
+}
+
+/// **The rewind plan with its anchor placed, when the store can place it** (W-N11-06).
+///
+/// The middle arm of the decision below refuses because the *view* cannot name the anchor's height —
+/// its height map leaves out validation-failed blocks — and the row's harm is that this ends in no
+/// reset at all, with a wipe as the operator's only recovery. The height is not lost, though:
+/// `drop_above` works from the store, and the block's own `block_num` is part of what its hash commits
+/// to. This is the placement, kept pure so the decision stays testable without a DAG — the caller
+/// reads the metadata store and hands the height in.
+///
+/// Vacuously the same plan for every other shape: an anchor the view already placed is not
+/// second-guessed by the store, and a stored height with no anchor places nothing.
+fn place_the_anchor(plan: RewindPlan, stored_height: Option<BlockHeight>) -> RewindPlan {
+    match (plan.anchor, plan.anchor_height, stored_height) {
+        (Some(_), None, Some(height)) => RewindPlan {
+            anchor_height: Some(height),
+            ..plan
+        },
+        _ => plan,
+    }
 }
 
 /// **What a spent restore budget implies, given the view's rewind plan** (#320).
@@ -1785,6 +1828,76 @@ mod tests {
             self.lines.lock().expect("log lock").push(msg.to_string());
         }
         fn error(&self, _source: LogSource, _msg: &str) {}
+    }
+
+    /// **An anchor the view cannot place is placed from the store** (W-N11-06).
+    ///
+    /// The row: `(Some(anchor), None)` — a node whose last-finalised block is missing from its own
+    /// height map, which omits validation-failed blocks — produced `RefuseNoHeight`, the detector only
+    /// logged it, and `--self-reset` could not fire, so the operator's only recovery was a wipe. The
+    /// height is not gone: `drop_above` works from the store, and the block's `block_num` is part of
+    /// what its hash commits to. Placed, the same plan becomes the arm that acts.
+    ///
+    /// Falsified by dropping the placement — the plan stays unplaceable, and this finds the refusal the
+    /// tree produced.
+    #[test]
+    fn an_anchor_the_view_cannot_place_is_placed_from_the_store() {
+        let anchor = BlockHash::new([7u8; 32]);
+        let refused = BlockHash::new([9u8; 32]);
+        let height = BlockHeight::try_from(41i64).expect("a height");
+        let unplaceable = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: None,
+            blocks_above: 4,
+        };
+
+        assert_eq!(
+            reset_decision(&unplaceable, refused),
+            ResetDecision::RefuseNoHeight {
+                anchor,
+                blocks_above: 4
+            },
+            "unplaced, this is the refusal the row names: no reset, and a wipe as the only recovery"
+        );
+
+        let placed = place_the_anchor(unplaceable.clone(), Some(height));
+        assert_eq!(
+            placed.anchor_height,
+            Some(height),
+            "the store names the height"
+        );
+        assert_eq!(
+            reset_decision(&placed, refused),
+            ResetDecision::Act {
+                anchor,
+                anchor_height: height,
+                blocks_above: 4,
+                refused,
+            },
+            "and placed, it is the arm that acts"
+        );
+
+        // **The store does not overrule a view that could place it.** A plan the view already located
+        // keeps the view's height, and a height with no anchor places nothing — otherwise a store
+        // lookup could move a rewind the view had already decided.
+        let view_placed = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: Some(height),
+            blocks_above: 1,
+        };
+        assert_eq!(
+            place_the_anchor(
+                view_placed.clone(),
+                Some(BlockHeight::try_from(99i64).expect("a height"))
+            ),
+            view_placed
+        );
+        let no_anchor = RewindPlan {
+            anchor: None,
+            anchor_height: None,
+            blocks_above: 3,
+        };
+        assert_eq!(place_the_anchor(no_anchor.clone(), Some(height)), no_anchor);
     }
 
     /// **The rewind's two sentences name one height** (W-N11-10).

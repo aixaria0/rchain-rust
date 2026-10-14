@@ -46,6 +46,7 @@ use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_casper::state::ProposerState;
 use rchain_casper::storage::{
     rnode_key_value_store_manager, shard_data_dir, RESET_MARKER_DB, SHARD_ID_MARKER,
+    STORE_FORMAT_MARKER, STORE_FORMAT_VERSION,
 };
 use rchain_casper::validator_identity::ValidatorIdentity;
 use rchain_comm::discovery::grpc_kademlia_rpc::GrpcKademliaRpc;
@@ -2470,6 +2471,13 @@ async fn check_shard_data_dir(
     dag: &dyn BlockDagStorage,
     block_store: &BlockStore,
 ) -> Result<(), String> {
+    // **The store's format is checked before its shard** (W-N11-03). A store written by a *newer*
+    // build is a format this one does not know, and the shard-id check below would not notice: the
+    // id marker is a plain file and reads the same. Before this, the only guard on a data directory
+    // was which shard owned it, so an older binary — or an image at a base pinned only by tag — ran
+    // over a newer store and was accepted, which is the reverse of the advance the upgrade is.
+    check_store_format(dir)?;
+
     let marker = dir.join(SHARD_ID_MARKER);
     let expected = spec.shard_id.to_string();
     let recorded = std::fs::read_to_string(&marker)
@@ -2512,6 +2520,55 @@ async fn check_shard_data_dir(
             })
         }
     }
+}
+
+/// **Refuse a store written by a newer build, and stamp the ones this build opens** (W-N11-03).
+///
+/// Split out of [`check_shard_data_dir`] because it is a property of the *directory*, not of the
+/// shard: it takes no store handle, so the decision is testable without a node — and the falsifier
+/// below drives all four states (absent, equal, older, newer, malformed) directly.
+///
+/// The three answers, and only the third is a refusal:
+///
+/// * **no marker** — a store from a build that has no stamp, or a fresh directory. It is stamped with
+///   this build's version and read. An absent stamp is not evidence of an old store, and inventing a
+///   refusal for it would refuse every existing deployment on upgrade;
+/// * **this build's version or a lower one** — the ordinary case, and the *intended* direction of an
+///   upgrade (an older store is advanced by this build);
+/// * **a higher one** — the store was written by a newer build, whose rows this one does not know how
+///   to read. Refused with both numbers, the same shape the shard-id refusal uses.
+///
+/// A marker that is not a number is refused rather than guessed at: it was written by something, and
+/// "something wrote this and it is not a version" is not a state to read a store from.
+fn check_store_format(dir: &std::path::Path) -> Result<(), String> {
+    let marker = dir.join(STORE_FORMAT_MARKER);
+    let recorded = std::fs::read_to_string(&marker)
+        .ok()
+        .map(|v| v.trim().to_string());
+    let Some(recorded) = recorded else {
+        return std::fs::write(&marker, STORE_FORMAT_VERSION.to_string()).map_err(|e| {
+            format!(
+                "cannot write the store-format marker to {}: {e}",
+                marker.display()
+            )
+        });
+    };
+    let version: u32 = recorded.parse().map_err(|_| {
+        format!(
+            "the data directory {} carries a store-format marker this build cannot read: '{recorded}' \
+             (this build writes {STORE_FORMAT_VERSION})",
+            dir.display()
+        )
+    })?;
+    if version > STORE_FORMAT_VERSION {
+        return Err(format!(
+            "the data directory {} was written by a newer build (store format {version}, this build \
+             writes {STORE_FORMAT_VERSION}); reading a format it does not know is how a downgrade \
+             silently becomes an advance — start the newer build, or point this one at a copy",
+            dir.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3042,6 +3099,55 @@ mod tests {
         );
 
         drop(importer);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A store from a newer build is refused; the ones this build opens are stamped** (W-N11-03).
+    ///
+    /// The row: the only guard on a data directory was which shard owned it, and the mapping's own
+    /// rule is that an upgraded node "leaves any existing rows on disk and ignores them" — so an older
+    /// binary, or an image at a base pinned only by tag, ran over a newer store and was accepted,
+    /// which is a downgrade read as an advance. All four states are driven here, because three of
+    /// them must **not** refuse: an absent marker is stamped (or every existing deployment would
+    /// refuse to boot on upgrade), an equal one is the ordinary boot, and a lower one is the intended
+    /// direction of an advance. Only a higher one — and a marker that is not a number at all — refuse.
+    ///
+    /// Falsified by dropping the comparison (accept every version) and by inverting it (refuse the
+    /// older store, which is the bug this is not allowed to have).
+    #[test]
+    fn a_store_from_a_newer_build_is_refused_and_this_build_stamps_what_it_opens() {
+        let dir = temp_dir("node-runtime-store-format");
+        let marker = dir.join(STORE_FORMAT_MARKER);
+
+        // Absent: stamped with this build's version, and read.
+        check_store_format(&dir).expect("a fresh directory is stamped, not refused");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            STORE_FORMAT_VERSION.to_string(),
+            "the store this build opens says which format it is"
+        );
+
+        // Equal, and older: both are boots of a store this build may read.
+        check_store_format(&dir).expect("its own version");
+        std::fs::write(&marker, "0").unwrap();
+        check_store_format(&dir).expect("an older store is the advance an upgrade is for");
+
+        // Newer: refused, naming both numbers.
+        let newer = STORE_FORMAT_VERSION + 1;
+        std::fs::write(&marker, newer.to_string()).unwrap();
+        let err = check_store_format(&dir).expect_err("a newer store is not this build's to read");
+        assert!(err.contains("newer build"), "{err}");
+        assert!(err.contains(&newer.to_string()), "both versions: {err}");
+        assert!(
+            err.contains(&STORE_FORMAT_VERSION.to_string()),
+            "both versions: {err}"
+        );
+
+        // And a marker that is not a version is refused rather than guessed at.
+        std::fs::write(&marker, "not-a-version").unwrap();
+        let err = check_store_format(&dir).expect_err("a marker that is not a number");
+        assert!(err.contains("not-a-version"), "{err}");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
