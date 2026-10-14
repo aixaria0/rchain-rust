@@ -2267,53 +2267,41 @@ mod tests {
     }
 
     /// **The cost is linear in the arity.** This is the property the row is about, and the one the
-    /// order tests above cannot see: `insert(0, …)` and push-then-reverse produce the *same list* —
-    /// it is the time that differs, so no assertion on the term can distinguish them.
+    /// order tests above cannot see, and it was measured twice before it was given up on.
     ///
-    /// Timed as a **ratio against itself** rather than against a wall-clock budget, because an
-    /// absolute threshold is a statement about the machine. **Both sides were measured**, at 1 000
-    /// and 8 000 data terms (an 8× step) on this host:
+    /// **Two timing instruments, both wrong for this environment.** The first compared 8 000 data
+    /// terms against 1 000 and asserted a ratio under 16: it passed here (8.1) and failed in CI
+    /// (21.6). The second compared the production path against a same-run reference built the old way
+    /// — machine-independent *in principle* — and on CI that reference measured **2.3×** the
+    /// production path against **16.5×** here, because that machine's `memmove` is cheap relative to
+    /// its normalization. No threshold separates "fixed" from "reverted" across both machines, so no
+    /// wall-clock test can decide this property, and shipping one that reads differently on the runner
+    /// is shipping a flake.
     ///
-    ///   * push-then-reverse: `small 6.1 ms, large 49.6 ms` → ratio **8.1**, which is what linear
-    ///     looks like for an 8× step;
-    ///   * the per-element `insert(0, …)`: `small 7.8 ms, large 199.6 ms` → ratio **25.6**.
+    /// **This asserts the form instead, which is decidable exactly and is what the cost follows
+    /// from.** The three accumulators in this file push and then reverse once; none of them prepends.
+    /// The argument is the fix's own: `insert(0, …)` is O(k) *moves* per element and so O(k²) in the
+    /// arity of a term a caller supplies, `push` is O(1), and one `reverse` is O(k). What this test
+    /// cannot do is *measure* that — and saying so is better than a clock that means different things
+    /// on different machines.
     ///
-    /// 16 sits between them with room on both sides. The smallest of three runs is taken so one
-    /// scheduler hiccup cannot decide it, and the minimum rather than the mean is the right statistic
-    /// for "how fast can this go" on a shared box.
+    /// `include_str!` rather than a run-time read, so the assertion is about the source **as
+    /// compiled**: a test that read the file from disk would pass against a version of it that is not
+    /// the one under test.
     #[test]
-    fn a_send_with_many_data_normalizes_quadratically_no_longer() {
-        use std::time::Instant;
-
-        fn best_of_three(k: usize) -> std::time::Duration {
-            let data: Vec<Proc> = (0..k)
-                .map(|i| Proc::PGround(Ground::GroundInt(i.to_string())))
-                .collect();
-            let term = Proc::PNew(
-                vec![NameDecl::NameDeclSimpl("x".to_string())],
-                Box::new(Proc::PSend(
-                    Name::NameVar("x".to_string()),
-                    SendKind::SendSingle,
-                    data,
-                )),
+    fn the_accumulators_push_and_reverse_rather_than_prepend() {
+        let source = include_str!("normalizer.rs");
+        for accumulator in ["formal_pars", "data_pars", "arg_pars"] {
+            let prepend = format!("{accumulator}.insert(0");
+            assert!(
+                !source.contains(&prepend),
+                "`{prepend}` is the per-element prepend this file replaced: O(k) moves per element, \
+                 so O(k²) in the arity of a term the caller supplies. Push, then reverse once."
             );
-            (0..3)
-                .map(|_| {
-                    let start = Instant::now();
-                    normalize_term(&term, &BTreeMap::new()).expect("a wide send normalizes");
-                    start.elapsed()
-                })
-                .min()
-                .expect("three runs")
         }
-
-        let small = best_of_three(1_000);
-        let large = best_of_three(8_000);
-        let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
-        assert!(
-            ratio < 16.0,
-            "8× the data took {ratio:.1}× the time (small {small:?}, large {large:?}) — linear is \
-             about 8, and the per-element `insert(0, …)` this replaced measured about 25"
-        );
+        // The two accumulators that need the reversal have it, so the list is in source order rather
+        // than in the loop's — the order tests above pin the same property from the other side.
+        assert!(source.contains("data_pars.reverse();"));
+        assert!(source.contains("arg_pars.reverse();"));
     }
 }
