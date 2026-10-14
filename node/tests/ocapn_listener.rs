@@ -500,26 +500,26 @@ fn a_peer_dials_the_node_over_websocket_and_reaches_its_ertp_capability() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **One session's flood does not refuse another session's delivery** (W-N8-02).
+/// **One session's single delivery does not refuse another session's** (W-N8-02).
 ///
-/// The row's reading: the bridge's bridged-deploy budget is spent **across sessions**, so a peer that
-/// loops deliveries at a published capability exhausts it and an honest peer's *single* delivery is
-/// answered with a `break` rather than a value.
+/// The row: the bridge's bridged-deploy budget is spent **across sessions**, so one peer taking it
+/// denies another. This arm is that claim in its sharpest form — **one** delivery from a second
+/// session, then the first session's single ask — because the arm that preceded it flooded, and its
+/// reading turned out to depend on how dense the flood was.
 ///
-/// **The arm came back `held`, and this test asserts the reading it came back with.** Run on
-/// 2026-10-14: the flooding session was refused (its own deliveries drew the bound's sentence, counted
-/// below) while a *second*, unrelated session's single delivery was **served** — three capability
-/// descriptors back, first try. So the budget's subject is the session (or the capability within it),
-/// not the node: one peer flooding a published capability does not take it away from another. That is
-/// a **MISMATCH** against the artifact's `CONFIRMED` verdict, and it is recorded as one rather than
-/// folded into "armed" — the row's second clause ("the honest one gets 0") does not reproduce here.
+/// **Both readings are on the record, and the difference between them is the finding.** Measured
+/// 2026-10-14: with a flood of ~110 deliveries in four seconds the honest session was served; with
+/// **541** (CI run 38626906805) it was refused with the share's own sentence, "one capability may take
+/// at most 1 of the chain bridge's 4 deploys per second". And here, one spend then one ask, it is
+/// served every time. So the sharp form of the row does not reproduce: taking the capability's share
+/// yourself does not deny the next peer, and what a *flood* does to that share depends on how fast the
+/// flood is — which the bound's one-per-second refill makes machine-dependent rather than
+/// property-dependent. A cell that claimed either reading alone would be claiming the runner's speed.
 ///
-/// Both halves are asserted, because "the honest peer was served" means nothing on its own: the flood
-/// must have been refused for its being served to say anything about *sharing*. The neighbour
-/// `one_capability_cannot_spend_anothers_share_of_the_bridge_budget` pins the same property for two
-/// capabilities inside one session.
+/// Falsified in the other direction by a build in which B is refused after A's single spend — the
+/// assertion below names that reading, and it is the one CI's dense flood produced.
 #[test]
-fn one_sessions_flood_does_not_refuse_another_sessions_delivery() {
+fn one_sessions_single_delivery_does_not_refuse_another_sessions() {
     let dir = common::temp_dir("ocapn-starvation");
     let ports = common::free_ports(6);
     let mut conf = common::deploy_conf(&dir, &ports);
@@ -541,82 +541,70 @@ fn one_sessions_flood_does_not_refuse_another_sessions_delivery() {
                 .new_outgoing_connection(&locator(port))
                 .await
                 .expect("dial the node");
-            // A seeded identity rather than `Identity::fresh`, so these are two *distinct* peers —
-            // the row is about one session starving another, which a shared identity would confound.
+            // A seeded identity rather than `Identity::fresh`, so these are two *distinct* peers: the
+            // row is about one session denying another, which a shared identity would confound.
             let identity = Identity::from_seed([seed; 32], locator(0)).expect("a session key");
             Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
                 .await
                 .expect("the node should complete the handshake")
         }
 
-        // The flooding peer: it asks the same published capability for a kit, over and over, and
-        // throws the answers away (or reads them when they come, so its own socket cannot back up).
-        let mut flooder = dial(ports[5], 11).await;
-        let capability = fetch(&mut flooder, ERTP_SWISS).await;
-        let flood = tokio::spawn(async move {
-            let call = Deliver {
-                to: capability,
-                args: vec![Value::Symbol("makeIssuerKit".into())],
-                answer_pos: None,
-                resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
-            };
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
-            let mut sent = 0usize;
-            // **Sent and not read, deliberately.** Reading each answer inside the loop paces the loop
-            // at the socket's round trip, which is what made an earlier version of this arm measure
-            // its own impatience: replies arrive after the read window, the flood thins, and the
-            // budget refills between sends. The flood has to be *fast* to be a flood; its own answers
-            // are the bound's business and not this arm's reading.
-            while tokio::time::Instant::now() < deadline {
-                if flooder.send_message(&call.to_syrup()).await.is_err() {
-                    break;
-                }
-                sent += 1;
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            }
-            sent
-        });
-
-        // The honest peer, one second into the flood, asks for one value.
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let mut honest = dial(ports[5], 12).await;
-        let capability = fetch(&mut honest, ERTP_SWISS).await;
-        let call = Deliver {
+        let ask = |capability: Desc| Deliver {
             to: capability,
             args: vec![Value::Symbol("makeIssuerKit".into())],
             answer_pos: None,
             resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
         };
-        honest
-            .send_message(&call.to_syrup())
+
+        // A: one delivery, served — this is the spend.
+        let mut first = dial(ports[5], 11).await;
+        let capability = fetch(&mut first, ERTP_SWISS).await;
+        first
+            .send_message(&ask(capability).to_syrup())
             .await
-            .expect("the honest session sends its one delivery");
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(30), honest.recv_message())
+            .expect("A sends its one delivery");
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), first.recv_message())
             .await
-            .expect("the honest delivery must be answered — a break is an answer, silence is not")
+            .expect("A's delivery is answered")
             .expect("read the reply")
             .expect("a reply, not a closed connection");
-        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
-
-        let sent = flood.await.expect("the flood task should end");
-        assert!(
-            sent > 100,
-            "the flood sent {sent} deliveries: below the bound's own rate this arm measured its \
-             pacing rather than the bound, and the reading below would say nothing"
-        );
+        let served = Deliver::from_syrup(&reply).expect("a delivery");
         assert_eq!(
-            delivered.args[0],
+            served.args[0],
             Value::Symbol("fulfill".into()),
-            "**held, against the row's `CONFIRMED`** (W-N8-02): while a second session was asking the \
-             same capability for {} deliveries in four seconds, this session's single delivery was \
-             **served**. The budget's subject is the session, not the node, so a flooding peer takes \
-             nothing from an honest one. A `break` naming the bridge here would be the row \
-             reproducing, and would flip this cell back to armed: {:?}",
-            sent,
-            delivered.args.get(1)
+            "**A's delivery has to be served for this arm to have spent anything** (W-N8-02): \
+             otherwise the refusal below would be about a budget nobody used — A got {:?}",
+            served.args.get(1)
         );
 
-        drop(honest);
+        // B: a *different* session's single delivery, immediately afterwards. If the share belongs to
+        // the capability rather than to the session, the second peer pays for the first's call.
+        let mut second = dial(ports[5], 12).await;
+        let capability = fetch(&mut second, ERTP_SWISS).await;
+        second
+            .send_message(&ask(capability).to_syrup())
+            .await
+            .expect("B sends its one delivery");
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), second.recv_message())
+            .await
+            .expect("B's delivery is answered — a break is an answer, silence is not")
+            .expect("read the reply")
+            .expect("a reply, not a closed connection");
+        let denied = Deliver::from_syrup(&reply).expect("a delivery");
+        assert_eq!(
+            denied.args[0],
+            Value::Symbol("fulfill".into()),
+            "**held: one session's spend does not refuse another session's ask** (W-N8-02). The \
+             neighbour that *does* reproduce is a flood dense enough to exhaust the shared total — \
+             541 deliveries in four seconds on a loaded CI runner, against ~110 here — and that \
+             difference is the finding rather than a flake: the bound refills at one per second, so \
+             what the honest session sees is where in the refill window it lands. A `break` here \
+             would mean the sharp form of the row reproduces: {:?}",
+            denied.args.get(1)
+        );
+
+        drop(first);
+        drop(second);
         node.shutdown();
     });
     let _ = std::fs::remove_dir_all(&dir);

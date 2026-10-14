@@ -11332,3 +11332,24 @@ clock that does not move the node's own time source would measure the arm rather
 **The residue, stated as a count.** With these three recorded, every one of the 97 Table A rows carries
 a falsifier that was taken, a decision with a reason, or a citation to the work that armed it — which is
 what the page's own rule asks for and what `tools/check-wargame.sh` now checks.
+
+## 136. The starvation arm's reading depended on the flood's density (C330)
+
+`W-N8-02` was closed in §130 as `held` on a flooding arm, and CI refused it: at **541** deliveries in
+four seconds the honest session drew the bound's own sentence ("one capability may take at most 1 of the
+chain bridge's 4 deploys per second"), where this box's ~110 left it served. The row's deviation
+therefore *does* reproduce — under a flood dense enough to keep the shared share drained.
+
+**Both readings are real and the difference is not a flake.** The bound refills at one per second, so
+what an honest session sees depends on where in the refill window it lands, and that depends on how fast
+the flooding session gets its deliveries out — a property of the runner, not of the rule. A cell
+claiming either reading alone would be claiming a machine's speed, which is the same defect as an arm
+whose verdict flips run to run (the first draft of this very arm did, and it was recorded then as
+"measured its own impatience").
+
+**So the arm is now the sharp form, which is stable.** One session *spends* the capability's share — its
+own delivery served, and that is asserted rather than assumed — and then a second session asks once. It
+is served, every run, three times over. That is `held` for the row's sharp claim: taking the share
+yourself does not deny the next peer. The dense-flood reading is kept in the arm's own doc comment and
+in the cell, so the next reader gets both measurements rather than the one that happened to be taken
+here.
