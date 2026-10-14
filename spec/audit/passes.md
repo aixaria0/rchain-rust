@@ -10720,3 +10720,52 @@ It is the same class as the fuzz modes that never executed and the two `#144` wo
 gates can never fire: **a check that exists, passes when run by hand, and is obeyed by nothing.** The
 wargame table is where this remediation's rows come from, so a table that drifts is a table whose rows
 nobody re-reads.
+
+## 121. What the denominator does not reach (C301–C303)
+
+The three passes have thirty study nodes between them — the wargame's W-N1…N14, the acceptance
+worksheet's U1…U10, `failure-hazop.md`'s U11…U16 — and **every one is about running a node**:
+transport, deploy ingress, public read, admin, key lifecycle, host, build, OCapN, validator,
+observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge,
+LFS sync, bonding, deploy pool, wire, storage, operator surface, reset, rewind, runtime root, refusal
+budget, RSpace checkpoint, reconciliation. **None is about the chain** — what strangers run on it —
+which is the thing this software exists to do.
+
+Two facts make that concrete rather than rhetorical. `spec/review-ledger.tsv` lists **all thirty
+system processes** as `T3 deferred` (not deep-read), which is the whole contract layer including
+`rho:io:http`, `rho:crypto:*`, `rho:gov:*`, `rho:qucalc:*`, `rho:rchain:pos`, `revVault`,
+`multiSigRevVault` and `rho:registry:*`; and the ledger's own `roster self` row records that its
+machinery is gone and that **no adversarial review of the ledger itself has run** — while the ledger
+is the denominator every other count on the register is a fraction of. `effect-scheduler` appears in
+no audit artifact at all.
+
+This pass read the surfaces outside that denominator and filed nineteen findings in
+`spec/audit/evidence/coverage-gap-f9521edd7.md`, each labelled **verified by reading** or
+**agent-reported**. Two are closed here; the rest are owed, and the first of those is named below.
+
+**C302 — four settings that were parsed, documented and read by nothing.** `synchrony-constraint-
+threshold` and `height-constraint-threshold` are documented in `defaults.conf` as *proposer* guards,
+and the Scala oracle enforced both; here every occurrence of either is config plumbing, so nothing
+outside `node/src/configuration` reads them. The two `fork-choice-*` settings are read by nothing at
+all. They now join `check_inert_config`'s nine — the class whose own error text states the rule:
+*a setting that does nothing must not look as though it did.* A safety bound that silently does
+nothing is worse than one that is refused, because the operator believes they have it.
+
+**C303 — the acceptance page cites a constant the code deleted.** `FAUCET_MAX_DRIPS_PER_ADDRESS`
+appears four times on `testnet-acceptance.md` — §1's H-U7-07, two §2 barrier rows and §2.5's pair P9 —
+and nowhere in `node/src`. The per-address drip *budget* is now a finalised-balance eligibility rule
+(`web_api_impl.rs::finalized_rev_balance`). The page carries the substitution; it also carries the
+honest half, that P9's shared cause is a statement about a counter that no longer exists and so the
+row is owed a re-derivation rather than a renamed symbol.
+
+**What is owed, and it is the sharpest of the nineteen.** The genesis adaptation
+(`casper/src/genesis/standard_deploys.rs::registry_epilogue_adapted`) registers the contract's **own
+bundle** where the Scala registered a method-whitelisting **dispatcher**, and its own doc comment
+records the step as deliberate — *"The head keeps whatever the contract did before the epilogue —
+`MultiSigRevVault`'s `extractState` arm, for instance"*. `bundle+` is write-only, and write-only
+permits sending method-calls, which is exactly how `revVault!("transfer", …)` works for every user, so
+a registry lookup reaches `extractState` — the arm whose only job is `ret!({"authKeyUnf": *_authKey})`.
+**That is a confirmed leak.** Whether it is also a *theft* turns on one step this pass did not settle:
+whether an attacker can rebuild the exact term `bundle0{(*_authKey, shape)}` from a name received over
+a channel. Rholang has no term splice, and the answer is a genesis-replay arm. **Reading it is the
+first thing the next pass does.**

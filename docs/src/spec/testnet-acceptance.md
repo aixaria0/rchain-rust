@@ -33,7 +33,7 @@
 > turns on that:** P9's shared cause — "the drip increment precedes the submit" — is a statement about
 > a counter that no longer exists, so the barrier that shares a cause with its threat may not be the
 > same barrier at all. That row is owed a re-derivation, recorded in
-> `spec/audit/evidence/coverage-gap-f9521edd7/findings.md` (E4).
+> `spec/audit/evidence/coverage-gap-f9521edd7.md` (E4).
 
 > **What this page is, in one sentence.** A HAZOP worksheet and a bow-tie analysis of the node, and the
 > acceptance checklist that falls out of them, written so that nothing can be marked green without a
