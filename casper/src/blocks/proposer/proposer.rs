@@ -1394,6 +1394,108 @@ mod tests {
         );
     }
 
+    /// A DAG that answers cleanly and does not list the key: the other arm of the same refusal.
+    struct UnbondedDag {
+        newest: BlockHash,
+    }
+
+    #[async_trait::async_trait]
+    impl BlockDagStorage for UnbondedDag {
+        async fn get_representation(
+            &self,
+        ) -> Arc<rchain_block_storage::dag::representation::DagRepresentation> {
+            Arc::new(
+                rchain_block_storage::dag::representation::DagRepresentation {
+                    dag_set: Arc::new(BTreeSet::new()),
+                    child_map: Arc::new(std::collections::BTreeMap::new()),
+                    height_map: Arc::new(std::collections::BTreeMap::from([(
+                        BlockHeight::try_from(1).unwrap(),
+                        BTreeSet::from([self.newest]),
+                    )])),
+                    dag_message_state:
+                        rchain_block_storage::dag::message_state::DagMessageState::empty(),
+                },
+            )
+        }
+
+        /// The answer that is *not* an error: a block whose bond map does not list the sender.
+        async fn lookup(
+            &self,
+            _block_hash: &BlockHash,
+        ) -> Result<Option<rchain_models::block_metadata::BlockMetadata>, String> {
+            Ok(Some(rchain_models::block_metadata::BlockMetadata {
+                block_hash: self.newest,
+                block_num: BlockHeight::try_from(1).unwrap(),
+                sender: Validator::new([9u8; 65]),
+                seq_num: rchain_shared::refined::SeqNum::zero(),
+                justifications: BTreeSet::new(),
+                bonds_map: std::collections::BTreeMap::new(),
+                validated: true,
+                validation_failed: false,
+                slashable: false,
+                failure_cause: None,
+                slash_severity: SlashSeverity::Unspecified,
+                restore_attempts: 0,
+                fringe: BTreeSet::new(),
+                fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+                member_of_fringe: None,
+            }))
+        }
+
+        async fn insert(
+            &self,
+            _block_metadata: rchain_models::block_metadata::BlockMetadata,
+            _block: BlockMessage,
+        ) -> Result<(), String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn lookup_by_deploy_id(&self, _d: &DeployId) -> Result<Option<BlockHash>, String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn add_deploy(&self, _d: SignedDeployData) -> Result<(), String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn pooled_deploys(
+            &self,
+        ) -> Result<std::collections::BTreeMap<DeployId, SignedDeployData>, String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn contains_deploy_in_pool(&self, _d: &DeployId) -> Result<bool, String> {
+            todo!("not on the is_active_validator path")
+        }
+    }
+
+    /// **A DAG that answers "not bonded" gets its own refusal** (W-N5-07).
+    ///
+    /// The row asks that `finality_attestation` refuse an identity that is not a bonded validator. The
+    /// test above pins the *error* arm — a DAG that cannot be read must not answer "unbonded" — and
+    /// this is the other half: a DAG that answers cleanly and does not list the key must be refused
+    /// with the sentence about the active set, **not** the one about not being able to tell. A caller
+    /// that cannot tell the two apart reads a store fault as a bonding fact, which is AUDIT C67's class
+    /// one arm over.
+    ///
+    /// Falsified by folding the arms back together: answer the "cannot decide" sentence for `Ok(false)`
+    /// and this fails while the test above still passes.
+    #[tokio::test]
+    async fn a_dag_that_answers_not_bonded_is_refused_with_its_own_sentence() {
+        let dag: Arc<dyn BlockDagStorage> = Arc::new(UnbondedDag {
+            newest: BlockHash::new([0x33; 32]),
+        });
+        let key = [0x22u8; rchain_models::validator::LENGTH];
+
+        let err = crate::api::block_api_impl::attestation_is_admissible(&dag, &key)
+            .await
+            .expect_err("an identity the active set does not list must be refused");
+        assert!(
+            err.contains("not in the active validator set"),
+            "the refusal must say the node is not in the set: {err}"
+        );
+        assert!(
+            !err.contains("cannot decide"),
+            "and it must not read as a fault, which is the other arm's sentence: {err}"
+        );
+    }
+
     /// A DAG whose pool is whatever the test hands it, and which has never seen a deploy — so the replay
     /// guard never fires. Every other trait method is off the selection path.
     struct PoolDag {

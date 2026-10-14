@@ -10892,3 +10892,28 @@ meaning anything.
 **What the sweep leaves.** Forty-two rows, of which the unarmed ones cluster — the OCapN rows, the build
 and container posture rows, nine live defects, two live measurements, and the two whose falsifier names a
 missing instrument. The next passes take those clusters, and this one's contribution is the map.
+
+## 125. The partials: three rows that needed one arm, not a test (C310)
+
+The sweeps called fourteen rows PARTIAL — a neighbouring assertion existed and the row's own property did
+not. Three of them turned out to need one arm added where the neighbour already lived, and two of the
+three were **placements** rather than behaviours:
+
+- **W-N5-07** — `attestation_is_admissible` has two refusals with two sentences: "not in the active
+  validator set" and "cannot decide whether this node is bonded". Only the *error* arm was tested. The
+  new arm drives a DAG that answers cleanly and does not list the key, and asserts the first sentence and
+  **not** the second — a caller that cannot tell them apart reads a store fault as a bonding fact, which
+  is AUDIT C67's class one arm over. Folding the two sentences together reddens it while the older test
+  still passes.
+- **W-N2-07** — `expire_deploys` had a test that drove the *function*. The row's falsifier asks for the
+  case where nothing finalises, which is the ordinary quiet chain: the pool must expire on the **insert
+  path** or the proposer is handed work the next block must reject, held for the process lifetime. The
+  new test inserts a block at height 51 and asserts the expired deploy is gone; deleting the
+  `self.expire_deploys(..)` call from `insert` reddens it, and the direct test still passes — which is the
+  difference between the two.
+- **W-N14-01** was not partial at all. Its falsifier describes building a block stamped `i64::MAX` and
+  reading it back, and the existing timestamp test **already asserts that direction**: a block stamped a
+  day after its parents is accepted (the backlog case, C289's registered deviation) while one past the
+  drift behind them is refused. The cell now cites the test rather than describing the drill, and the row
+  closes as armed. It was also never in the owed count — like W-N1-06, its cell had been written out in
+  full, so "70 owed" was two more than the cells that actually said so, and the sweep is what found it.

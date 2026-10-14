@@ -1928,6 +1928,40 @@ mod tests {
         );
     }
 
+    /// **The pool is expired on the insert path, with no finalisation driven** (W-N2-07).
+    ///
+    /// The test above drives `expire_deploys` directly, so it pins the function and not its placement.
+    /// The row's falsifier asks for the case where *nothing finalises*: on a chain whose fringe has not
+    /// moved — a quiet net, a validator that is the only one speaking — nothing goes final, so a pool
+    /// that expired deploys only when a block was finalised would keep handing the proposer work the
+    /// next block must reject, and hold it for the process lifetime. `insert` expires the pool on every
+    /// insert (`dag.rs`'s `self.expire_deploys(latest_block_number)`), and this is the assertion that it
+    /// is *there*: delete the call and this fails while the direct test above still passes.
+    #[tokio::test]
+    async fn inserting_a_block_expires_the_pool_with_no_finalisation() {
+        let storage = build_storage().await;
+        let mut deploy = deploy_with_id(1);
+        deploy.data.valid_after_block_number = 1;
+        let id = deploy.sig.clone();
+        storage.add_deploy(deploy).await.unwrap();
+        assert!(
+            storage.contains_deploy_in_pool(&id).await.unwrap(),
+            "the deploy is pooled and nothing has happened yet"
+        );
+
+        // One block at height 51, inserted. No finalisation is driven anywhere in this test.
+        let h = hash(51);
+        storage
+            .insert(meta(h, &[], 51), block(h))
+            .await
+            .expect("the insert path accepts a block");
+        assert!(
+            !storage.contains_deploy_in_pool(&id).await.unwrap(),
+            "inserting past the lifespan must expire the pool: block 51 rejects valid_after=1, and \
+             nothing finalised to tell the pool so"
+        );
+    }
+
     #[tokio::test]
     async fn add_deploy_rejects_when_pool_full() {
         // The pool's COUNT bound, told apart from the submitter's RATE bound **and from its share**.
