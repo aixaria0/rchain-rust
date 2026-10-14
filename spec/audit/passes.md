@@ -10579,3 +10579,103 @@ will maintain it. None of the three exists today.
 `remote peer · any valid cert` and counts them among the 32 with no precondition; a reader who works
 down that table will reach them, so the decision lives beside them on `docs/src/spec/adversary.md` as
 well as here.
+
+## 117. The point is a point: four sentences that promised more than they did (C291–C294)
+
+The rows PR #355 deferred, closed where they were code. Each is the same shape in a different
+sentence: a line that *claimed* something about the state it acts on, and the state was not what the
+line said.
+
+**W-N11-01 — the boot anchor was chosen silently (C291).** A node whose store carries a reset record
+boots on that record, and that is right: the record is the state the store actually holds — its DAG was
+truncated to the anchor and its runtime repaired to it — so `--sync-anchor` naming something else cannot
+be honoured without running on a chain the store does not have. C274 made the record win on those
+merits. What C274 left was the *manner*: the disagreement produced a `log.warn` and the node booted on
+the record anyway. On a data directory the operator did not create — the wargame's host that "supplies
+the data directory supplies the restore point" — that is a planted record choosing where the node
+rewinds, ahead of the operator's stated intent, with a warning as the only trace.
+`engine::reset::boot_anchor_after_reset` now refuses and names both anchors and both ways out: drop
+`--sync-anchor` (or set it to the recorded anchor) to boot on the reset, or clear the record
+deliberately, which is an act rather than an override. It is a function of its own so the decision is
+testable without a transport, a runtime and a comm layer;
+`casper/tests/reset.rs::a_reset_record_that_contradicts_the_named_anchor_refuses_boot` drives agreement,
+absence and contradiction, and says in its own doc which part of the boot path it does not cover.
+
+**W-N11-05 — the key travelled on `argv` (C292).** `--validator-private-key <hex>` put the node's
+signing identity in `/proc/<pid>/cmdline`, readable by any local process; `hide = true` hid the flag
+from the help text and not from the host. The flag is **gone** — not deprecated, not warned about: a
+command line that still passes it is refused at parse time, and clap's own near-miss suggestion names
+`--validator-private-key-path`. The other three routes are untouched: the path flag, the config file's
+own `casper.validator-private-key` (a file, not a command line), and an encrypted PEM with
+`RNODE_VALIDATOR_PASSWORD`. The falsifier is
+`node/src/configuration/commandline/options.rs::the_validator_key_cannot_be_given_on_the_command_line`,
+and it asserts the refusal *names the replacement* rather than leaving an operator to guess.
+
+**W-N11-08 — an absent source was a licence to keep the joiner's own (C293).** LMDB creates an
+environment on first write, so the survivor may legitimately lack one the joiner holds; the copy loop
+`continue`d over it and left the joiner's copy standing — the divergence residue the mode exists to
+remove. It is now moved **aside** (`<env>.reconcile-orphan`) on both the docker and the systemd paths,
+by the tool's own "aside, never gone" rule, and the run says so.
+
+**W-N11-10 — two sentences, two heights (C294).** The acting line printed the anchor's height and the
+dry-run line `height + 1` for the same block, so the only sentence a ship-dark build emits told an
+operator the rewind target sat one block later than the reset uses. `rewind_sentence` now writes the
+block and its height once and both callers format the rest around it, which is what makes the second
+half of the falsifier a *source* assertion: the phrase may appear once and only once in the file.
+
+**What this unit did not build, and where those rows close instead.** W-N11-04, W-N11-07 and W-N11-09
+are the reconcile tool's other three faces and their home is already the register: C259 owns the
+store-level restore (the bound now lands there — the copy refuses to adopt blocks above the point
+unless the operator repeats the assertion with `RECONCILE_ADOPT_ABOVE=1`, and every adopted environment
+is printed as a manifest of files, size and a digest of the file list), and C269 owns the
+operator-named anchor (the meet is no longer bypassed silently: what was named is *adopted
+deliberately* or not at all). W-N11-06 and W-N9-02 are deliberate and keep their homes, C274/C288 and
+C196. The copy loop — the part of the tool nothing drove — now has cases in
+`tests/reconcile-regression.py`: a `docker` stub that rewrites the container script onto temporary
+volumes, so the orphan move and the manifest are asserted offline rather than by reading.
+
+## 118. The upgrade guards, named rather than built (C295–C298)
+
+Four rows whose honest answer is "not fixed, and here is why" — recorded because rule 3 gives that
+answer exactly one home. None of them is a defect nobody noticed; each is a decision about *what would
+have to exist first*, and writing it down is what keeps it from being rediscovered as a surprise.
+
+**W-N11-02 — the deployer-index cursor is unauthenticated (C295).** `DEPLOYER_INDEXED_FROM_KEY` at `0`
+— the "index complete" value — makes the backfill return immediately, so a host that sets it suppresses
+the migration for every block below the pre-upgrade tip, and the node's own deployer-lookup answers come
+back empty while the surface reports the index complete. Closing it means a cursor whose *legitimacy* is
+checkable against the index it describes — "complete" is a claim about the store, so the store has to be
+able to refuse it — which is a store-format decision (its own stamp, its own migration) rather than a
+guard bolted onto the reader. Until then the row is `candidate:a-cursor-must-be-checkable-against-its-index`:
+the property is stated and unproved, and the falsifier — seed the cursor at 0 with blocks unindexed and
+assert the node re-indexes or refuses — is owed with it.
+
+**W-N11-03 — no store names its format (C296).** `rnode_db_mapping`'s own rule is that an upgraded node
+"leaves any existing rows on disk and ignores them", and the only data-directory marker is the shard id,
+so an older binary — or an attacker-supplied image at a base pinned only by tag — running over a newer
+store is accepted, silently, as an advance. A format-version stamp is a store-format change: shipping the
+stamp without the migration would refuse stores this build can read, which is a worse failure than the
+one it prevents. The stamp, what it would carry, and the refusal it would produce are
+`candidate:a-store-names-its-format-before-it-is-read`.
+
+**W-N14-03 — a contract cannot weigh the time it is handed (C297).** The proposer's `timestamp` is
+republished verbatim to every Rholang contract through `rho:block:data`. RC7 landed the **lower** bound
+(a block stamped before its parents is refused) and made the attestation tap's age bound two-sided, so
+the value is no longer unbounded in either direction — but the reply is still a bare integer, and
+nothing in it lets a contract distinguish a consensus-backed time from a validator's chosen one. The
+remedy is a provenance a contract can see, and the shape of that is a decision about the block-data
+surface rather than a bound: `candidate:a-reported-value-carries-its-provenance`.
+
+**W-N14-04 — the bound applies at the tap and not wherever time is consumed (C298).** The same row
+from the other side: blocking one consumer of block time (the attestation tap) bounds a *part* of the
+node, not the node's notion of time. `block_summary` now bounds acceptance too, but the contract-read
+path and the deploy/not-due-retry path still act on a replayed block's clock. The residual is one rule
+applied wherever block time is consumed: `candidate:a-bound-applies-wherever-the-value-is-consumed`,
+with the measurement that would price it — proposals produced per replayed block — owed to a live rig
+rather than to this unit.
+
+**What would change these decisions**, so none of the four is re-argued from scratch: a store-format
+change landing for another reason (which makes the stamp near-free and turns C295 and C296 into the
+migration's own work); a contract that must reason about time on-chain (which forces the provenance
+question C297 names); or a live measurement showing a proposal is produced from a block older than any
+bound allows (which moves C298 from residual to defect).
