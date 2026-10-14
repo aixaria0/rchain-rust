@@ -165,6 +165,41 @@ pub async fn resume_after_reset(
     Ok(Some(marker.anchor))
 }
 
+/// **Which anchor a node boots on when the store's reset record and the operator's `--sync-anchor`
+/// disagree** (W-N11-01, C274).
+///
+/// The record is the state this store holds: the reset truncated the DAG to that anchor and repaired
+/// the runtime to it, so it is the only anchor the catch-up walk can honestly start from — and C274
+/// made it win for exactly that reason. What C274 left was the *manner*: the operator's named anchor
+/// differing from the record's produced a `log.warn` and the node booted on the record anyway. On a
+/// store the operator did not create — the wargame's host that "supplies the data directory supplies
+/// the restore point" — that is a planted record choosing where the node rewinds, ahead of the
+/// operator's stated intent, with nothing but a warning between. Two contradicting anchors are not a
+/// state to pick from silently, so this refuses and names both.
+///
+/// The ways out are the operator's and each is deliberate: drop `--sync-anchor` (or set it to the
+/// recorded anchor) to boot on the reset; or clear the reset record, which is an act rather than an
+/// override, if the named anchor is what is meant. Vacuously `Ok` for an anchor that agrees and for no
+/// anchor at all, so nothing here fires on an ordinary boot.
+pub fn boot_anchor_after_reset(
+    named: Option<BlockHash>,
+    recorded: BlockHash,
+) -> Result<BlockHash, String> {
+    match named {
+        Some(named) if named != recorded => Err(format!(
+            "--sync-anchor names {} but this node's store carries a reset record for {}: the record is \
+             the state this store actually holds — the reset truncated its DAG to that anchor and \
+             repaired its runtime to it — so booting on the named anchor would unwind a completed \
+             reset. Nothing was chosen for you. Drop --sync-anchor (or set it to the recorded anchor) \
+             to boot on the reset; if the named anchor is what you mean, clear the reset record \
+             deliberately, which is an act rather than an override",
+            named.to_hex(),
+            recorded.to_hex()
+        )),
+        _ => Ok(recorded),
+    }
+}
+
 /// Read a block's body from the store, refusing with the reset's own sentence when it is absent.
 ///
 /// **Both halves of the reset need the anchor's body** — the act, to reset the runtime to its state, and

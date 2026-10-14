@@ -12,6 +12,25 @@ use rchain_shared::store_manager::{Db, LmdbEnvConfig, GB, TB};
 /// silently re-point a shard at another shard's chain. See `node`'s `check_shard_data_dir`.
 pub const SHARD_ID_MARKER: &str = "shard-id";
 
+/// **The file recording the format of the store beside it** (W-N11-03), written on first boot by a
+/// build that knows about it and checked on every later one.
+///
+/// The row: `rnode_db_mapping`'s own rule is that an upgraded node "leaves any existing rows on disk
+/// and ignores them", and the only data-directory marker was the shard id — so an *older* binary, or
+/// an image at a base pinned only by tag, running over a *newer* store was accepted silently, which is
+/// the reverse of the advance the upgrade is supposed to be. A store this build opens is stamped with
+/// [`STORE_FORMAT_VERSION`]; a store stamped with a **higher** one refuses to open. A lower one is an
+/// advance and is accepted, which is the intended direction.
+///
+/// **What it cannot do, said rather than implied:** a store written by a build that predates this
+/// marker carries none, so it is stamped with this build's version and read — an absent stamp is not
+/// evidence of anything. Bump `STORE_FORMAT_VERSION` whenever the layout below changes; the number is
+/// a promise about the rows, and nothing derives it.
+pub const STORE_FORMAT_MARKER: &str = "store-format";
+
+/// The store format this build writes. See [`STORE_FORMAT_MARKER`].
+pub const STORE_FORMAT_VERSION: u32 = 1;
+
 /// The gateway's durable coordinator-record database ([`crate::gateway::ledger`]). Node-local: it
 /// is deliberately **not** part of a shard's content-addressed state, because a coordinator's votes
 /// and decision belong to one node and must not enter another shard's state hash.

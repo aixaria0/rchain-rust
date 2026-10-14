@@ -192,6 +192,52 @@ pub struct BlockDagKeyValueStorage {
 /// refuses an empty key, which is why it is not the empty string).
 pub const DEPLOYER_INDEXED_FROM_KEY: &[u8] = b"indexed-from";
 
+/// The deployer index's **second** non-key entry: the store's own record count at the moment the
+/// backfill declared the index complete, big-endian `u64` (W-N11-02).
+///
+/// **Because `0` alone is a claim about a store the writer need not have looked at.** The cursor says
+/// "the index is complete", and a host that writes `0` into it suppresses the whole backfill: the node
+/// then reports the index complete while every block below the pre-upgrade tip was never indexed, and
+/// its deployer lookups answer empty. Recording *what* the completion covered makes the claim
+/// checkable in one `count()` against the store it describes — a completion whose count does not match
+/// is not believed, and the walk runs. 12 bytes for the same reason the cursor uses 12: deployer
+/// entries are keyed by a 32-byte hash and cannot collide with it.
+pub const DEPLOYER_INDEX_COUNT_KEY: &[u8] = b"indexed-count";
+
+/// **Whether the recorded completion describes the index it claims to describe** (W-N11-02).
+///
+/// Three answers, and two of them mean "walk": a completion with no recorded count (a store from a
+/// build before this one) cannot be vouched for, and one whose count disagrees with the store is
+/// describing something else. Only a completion that matches is trusted. The check is one `get` and
+/// one `count` — the codec-backed store answers `count` from `num_records`, so this is not a scan.
+async fn completion_matches_the_index(
+    index: &dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>,
+) -> Result<bool, String> {
+    let Some(bytes) = index
+        .get(&[DEPLOYER_INDEX_COUNT_KEY.to_vec()])
+        .await?
+        .into_iter()
+        .next()
+        .flatten()
+    else {
+        return Ok(false);
+    };
+    let recorded = decode_count(&bytes)?;
+    Ok(index.count().await? as u64 == recorded)
+}
+
+/// The record count a completion was written with. Refused rather than guessed, like
+/// [`decode_height`].
+fn decode_count(bytes: &[u8]) -> Result<u64, String> {
+    let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+        format!(
+            "deployer index: malformed indexed-count entry ({} bytes)",
+            bytes.len()
+        )
+    })?;
+    Ok(u64::from_be_bytes(arr))
+}
+
 impl BlockDagKeyValueStorage {
     /// Rebuild the in-memory DAG representation from the stores (port of `BlockDagKeyValueStorage.create`).
     pub async fn create(
@@ -457,7 +503,11 @@ impl BlockDagKeyValueStorage {
             return Ok(0);
         };
         let upto = self.deployer_indexed_from.load(Ordering::SeqCst);
-        if upto <= 0 {
+        // **`0` is a claim, so it is checked against the store before it is believed** (W-N11-02).
+        // The row: a host that sets the cursor to `0` — the "index complete" value — makes the backfill
+        // return here, so the node reports an index that was never built and answers deployer lookups
+        // with nothing. A completion that does not describe this store is walked instead.
+        if upto <= 0 && completion_matches_the_index(index.as_ref()).await? {
             return Ok(0);
         }
         // Every block in the DAG, not the height map: the height map leaves out validation-failed
@@ -484,11 +534,28 @@ impl BlockDagKeyValueStorage {
             index_deployers(index.as_ref(), &block).await?;
         }
         let _guard = self.lock.lock().await;
+        // **The completion is written with what it covers** (W-N11-02): the store's own record count,
+        // measured with both marker entries present so the number is stable across boots (the marker
+        // rows are records too, and a count taken before the second one existed would disagree with
+        // every later count of the same store).
         index
             .put(&[(
-                DEPLOYER_INDEXED_FROM_KEY.to_vec(),
-                0i64.to_be_bytes().to_vec(),
+                DEPLOYER_INDEX_COUNT_KEY.to_vec(),
+                0u64.to_be_bytes().to_vec(),
             )])
+            .await?;
+        let total = index.count().await? as u64;
+        index
+            .put(&[
+                (
+                    DEPLOYER_INDEXED_FROM_KEY.to_vec(),
+                    0i64.to_be_bytes().to_vec(),
+                ),
+                (
+                    DEPLOYER_INDEX_COUNT_KEY.to_vec(),
+                    total.to_be_bytes().to_vec(),
+                ),
+            ])
             .await?;
         self.deployer_indexed_from.store(0, Ordering::SeqCst);
         Ok(hashes.len())
@@ -3287,6 +3354,89 @@ mod tests {
              restoring rule's success path is a no-op that reports success. If this assertion fails, a \
              real update path landed — invert it (C173's clearing branch, and the self-clearing step a \
              proposer needs when its own record is spent — `casper/tests/finalization.rs`, #156)"
+        );
+    }
+
+    /// **A completion record that does not describe the index is not believed** (W-N11-02).
+    ///
+    /// The row: the cursor's "complete" value is a claim *about the store*, and a host that writes it —
+    /// a planted data directory, or the key set by hand — makes the backfill return without indexing
+    /// anything, so the node reports the index complete while every block below the cut was never
+    /// indexed and its deployer lookups answer empty. The completion now carries the record count it
+    /// was written with, so the claim is checkable in one `count()`, and one that does not match is
+    /// walked instead of believed.
+    ///
+    /// **Falsified by believing the claim again** — dropping the check, which is what the tree did —
+    /// under which the first call below returns 0 blocks read and the lookup still answers `block:
+    /// None`. The second call is the other half: once the walk has stamped the store, the completion
+    /// *is* believed, so the check costs one walk and not one per boot.
+    #[tokio::test]
+    async fn a_completion_record_that_does_not_describe_the_index_is_not_believed() {
+        let metadata_store = empty_metadata_store().await;
+        let block_store: Arc<dyn KeyValueTypedStore<BlockHash, BlockMessage>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BlockHashCodec),
+                Arc::new(rchain_block_storage::dag::codecs::BlockMessageCodec),
+            ));
+        let (h1, h2) = (hash(1), hash(2));
+        {
+            let old = build_storage_over(metadata_store.clone()).await;
+            for (h, parents, height, keys) in
+                [(h1, vec![], 0, vec![7u8]), (h2, vec![h1], 1, vec![8u8])]
+            {
+                let b = block_signed_by(h, &keys);
+                block_store.put(&[(h, b.clone())]).await.unwrap();
+                old.insert(meta_seq(h, &parents, height), b).await.unwrap();
+            }
+        }
+
+        let index = deployer_index_store();
+
+        // **The plant, before the index is attached** — which is the order a planted data directory
+        // arrives in, and the order that matters: `with_deployer_index` reads the stored cursor, so a
+        // `0` planted first is the `0` the node boots believing. (Planting it after the attach instead
+        // leaves the in-memory cursor at the tip, and the backfill walks for the ordinary reason — the
+        // first draft of this test did that and stayed green under the mutation.)
+        index
+            .put(&[(
+                DEPLOYER_INDEXED_FROM_KEY.to_vec(),
+                0i64.to_be_bytes().to_vec(),
+            )])
+            .await
+            .unwrap();
+
+        let upgraded = build_storage_over_unshared(metadata_store)
+            .await
+            .with_deployer_index(index.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            upgraded
+                .backfill_deployer_index(&block_store)
+                .await
+                .unwrap(),
+            2,
+            "a completion that does not describe this store is walked, not believed"
+        );
+        assert_eq!(
+            upgraded
+                .lookup_by_deployer(&deployer_index_key(&[7u8; 65]))
+                .await
+                .unwrap()
+                .block,
+            Some(h1),
+            "and the deployers the plant hid are indexed by that walk"
+        );
+
+        assert_eq!(
+            upgraded
+                .backfill_deployer_index(&block_store)
+                .await
+                .unwrap(),
+            0,
+            "the completion the walk wrote does describe the store, so the next boot believes it"
         );
     }
 }

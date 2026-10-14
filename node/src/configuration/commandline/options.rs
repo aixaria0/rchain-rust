@@ -504,11 +504,15 @@ pub struct Run {
     #[arg(long = "validator-public-key")]
     pub validator_public_key: Option<String>,
 
-    /// Base16 encoding of the private key for signing proposed blocks (hidden).
-    #[arg(long = "validator-private-key", hide = true)]
-    pub validator_private_key: Option<String>,
-
     /// Path to the base16 encoded private key for signing proposed blocks.
+    ///
+    /// **The flag this replaced is gone, deliberately** (W-N11-05). `--validator-private-key <hex>`
+    /// put the node's signing identity in `/proc/<pid>/cmdline`, where any local process may read it;
+    /// it was hidden from the help text, which hides it from the operator and not from the host. The
+    /// three other routes are unchanged — this path, the config file's `casper.validator-private-key`
+    /// (not on a command line), and `RNODE_VALIDATOR_PASSWORD` for an encrypted PEM — so nothing on
+    /// the command line carries the scalar, and a command line that still passes the old flag is
+    /// refused at parse time rather than silently seeding a node whose secret is public.
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
@@ -711,6 +715,37 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Options, clap::Error> {
         Options::try_parse_from(std::iter::once("rnode").chain(args.iter().copied()))
+    }
+
+    /// **The validator key cannot be given on the command line** (W-N11-05).
+    ///
+    /// The row: `--validator-private-key <hex>` put the node's signing identity in
+    /// `/proc/<pid>/cmdline`, readable by any local process, and `hide = true` hid the flag from the
+    /// help text rather than from the host. The route is gone — a secret reaches the node through a
+    /// file path, the config file's own key, or an encrypted PEM's passphrase, none of which is argv —
+    /// and this is the falsifier: the flag is a parse error, and the error points at the route that
+    /// replaces it rather than leaving an operator to guess.
+    ///
+    /// It does not assert that no secret can appear in a *typed* command line (nothing can prevent
+    /// that); it asserts the node refuses to take one from there, which is the half that is the
+    /// node's to decide.
+    #[test]
+    fn the_validator_key_cannot_be_given_on_the_command_line() {
+        let err = parse(&[
+            "run",
+            "--validator-private-key",
+            "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530",
+        ])
+        .expect_err("the headerless key route must be refused");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--validator-private-key"),
+            "the refusal names the flag it refuses: {rendered}"
+        );
+        assert!(
+            rendered.contains("--validator-private-key-path"),
+            "and points at the route that replaces it: {rendered}"
+        );
     }
 
     #[test]

@@ -10579,3 +10579,144 @@ will maintain it. None of the three exists today.
 `remote peer · any valid cert` and counts them among the 32 with no precondition; a reader who works
 down that table will reach them, so the decision lives beside them on `docs/src/spec/adversary.md` as
 well as here.
+
+## 117. The point is a point: four sentences that promised more than they did (C291–C294)
+
+The rows PR #355 deferred, closed where they were code. Each is the same shape in a different
+sentence: a line that *claimed* something about the state it acts on, and the state was not what the
+line said.
+
+**W-N11-01 — the boot anchor was chosen silently (C291).** A node whose store carries a reset record
+boots on that record, and that is right: the record is the state the store actually holds — its DAG was
+truncated to the anchor and its runtime repaired to it — so `--sync-anchor` naming something else cannot
+be honoured without running on a chain the store does not have. C274 made the record win on those
+merits. What C274 left was the *manner*: the disagreement produced a `log.warn` and the node booted on
+the record anyway. On a data directory the operator did not create — the wargame's host that "supplies
+the data directory supplies the restore point" — that is a planted record choosing where the node
+rewinds, ahead of the operator's stated intent, with a warning as the only trace.
+`engine::reset::boot_anchor_after_reset` now refuses and names both anchors and both ways out: drop
+`--sync-anchor` (or set it to the recorded anchor) to boot on the reset, or clear the record
+deliberately, which is an act rather than an override. It is a function of its own so the decision is
+testable without a transport, a runtime and a comm layer;
+`casper/tests/reset.rs::a_reset_record_that_contradicts_the_named_anchor_refuses_boot` drives agreement,
+absence and contradiction, and says in its own doc which part of the boot path it does not cover.
+
+**W-N11-05 — the key travelled on `argv` (C292).** `--validator-private-key <hex>` put the node's
+signing identity in `/proc/<pid>/cmdline`, readable by any local process; `hide = true` hid the flag
+from the help text and not from the host. The flag is **gone** — not deprecated, not warned about: a
+command line that still passes it is refused at parse time, and clap's own near-miss suggestion names
+`--validator-private-key-path`. The other three routes are untouched: the path flag, the config file's
+own `casper.validator-private-key` (a file, not a command line), and an encrypted PEM with
+`RNODE_VALIDATOR_PASSWORD`. The falsifier is
+`node/src/configuration/commandline/options.rs::the_validator_key_cannot_be_given_on_the_command_line`,
+and it asserts the refusal *names the replacement* rather than leaving an operator to guess.
+
+**W-N11-08 — an absent source was a licence to keep the joiner's own (C293).** LMDB creates an
+environment on first write, so the survivor may legitimately lack one the joiner holds; the copy loop
+`continue`d over it and left the joiner's copy standing — the divergence residue the mode exists to
+remove. It is now moved **aside** (`<env>.reconcile-orphan`) on both the docker and the systemd paths,
+by the tool's own "aside, never gone" rule, and the run says so.
+
+**W-N11-10 — two sentences, two heights (C294).** The acting line printed the anchor's height and the
+dry-run line `height + 1` for the same block, so the only sentence a ship-dark build emits told an
+operator the rewind target sat one block later than the reset uses. `rewind_sentence` now writes the
+block and its height once and both callers format the rest around it, which is what makes the second
+half of the falsifier a *source* assertion: the phrase may appear once and only once in the file.
+
+**What this unit did not build, and where those rows close instead.** W-N11-04, W-N11-07 and W-N11-09
+are the reconcile tool's other three faces and their home is already the register: C259 owns the
+store-level restore (the bound now lands there — the copy refuses to adopt blocks above the point
+unless the operator repeats the assertion with `RECONCILE_ADOPT_ABOVE=1`, and every adopted environment
+is printed as a manifest of files, size and a digest of the file list), and C269 owns the
+operator-named anchor (the meet is no longer bypassed silently: what was named is *adopted
+deliberately* or not at all). W-N11-06 and W-N9-02 are deliberate and keep their homes, C274/C288 and
+C196. The copy loop — the part of the tool nothing drove — now has cases in
+`tests/reconcile-regression.py`: a `docker` stub that rewrites the container script onto temporary
+volumes, so the orphan move and the manifest are asserted offline rather than by reading.
+
+## 118. The upgrade guards: a cursor that is checked, a store that names its format, an anchor the store can place (C295, C296, C299)
+
+Three rows whose answer turned out to be code after all — the first draft of this pass recorded two of
+them as residuals, and building them showed the residual was in the *design*, not in the work.
+
+**W-N11-02 — the completion record now describes the store (C295).** `DEPLOYER_INDEXED_FROM_KEY` at `0`
+is the "index complete" value, and the backfill returned on it: a host that wrote that key suppressed
+the whole walk, so the node reported an index it had never built and its deployer lookups answered
+empty. The completion is now written *with the store's own record count*
+(`DEPLOYER_INDEX_COUNT_KEY`), so "complete" is a claim the store can refuse — one `get` and one
+`count`, and a mismatch is walked instead of believed. A completion with no count at all (a store from
+a build before this one) is not believed either, so an upgraded store is walked once and stamped; the
+second call in `a_completion_record_that_does_not_describe_the_index_is_not_believed` asserts that the
+stamp is then trusted, which is what keeps the check from costing a walk per boot. The first draft of
+that test planted the cursor *after* attaching the index, which left the in-memory cursor at the tip
+and stayed green under the mutation — the plant has to come first, in the order a planted data
+directory arrives.
+
+**W-N11-03 — the store names its format, and a newer one is refused (C296).** The mapping's own rule is
+that an upgraded node "leaves any existing rows on disk and ignores them", and the only guard on a data
+directory was which shard owned it — so an older binary, or an image at a base pinned only by tag, ran
+over a *newer* store and was accepted: a downgrade read as an advance. `check_store_format` runs beside
+the shard-id check and reads `store-format`, which every store this build opens is stamped with. A
+higher version is refused with both numbers, an absent marker is stamped (or every existing deployment
+would refuse to boot on upgrade), and a lower one is accepted — that being the direction an upgrade is.
+The marker that is not a number is refused rather than guessed at. **What it cannot do** is stated in
+`storage.rs`: a store written by a build that predates the marker carries none, so it is stamped and
+read, and bumping `STORE_FORMAT_VERSION` when the layout changes is a promise nothing derives.
+
+**W-N11-06 — the anchor the view cannot place is placed from the store (C299).** A node whose
+last-finalised block is missing from its own height map (that map leaves out validation-failed blocks)
+produced `RefuseNoHeight`: the detector logged it and nothing acted, `--self-reset` could not fire, and
+the operator's only recovery was a wipe. The height was never lost — `drop_above` works from the store,
+and the block's `block_num` is part of what its hash commits to — so `place_the_anchor` asks the
+metadata store when the view comes back unplaceable, and the same plan then takes the arm that acts. A
+read that *fails* leaves the plan as the view gave it, which is the refusal: a store fault is not a
+reason to rewind. The store does not overrule a view that could place the anchor, so a rewind the view
+had already located cannot be moved by this.
+
+## 119. The clock: what can be bounded, and why the rest must not be (C297, C298)
+
+The two rows W-N14-03 and W-N14-04 ask for a bound "wherever block time is consumed" and for the
+proposer's timestamp to carry a provenance a contract can weigh. Working them through, both come to the
+same wall, and it is not a wall of effort — it is the one `validate.rs` already names for the other
+half of this row: **a wall-clock comparison in a consensus rule decides validity differently on every
+validator, and that forks the chain.**
+
+- **What can be bounded, is.** The attestation tap is gated on the block's own stamp in *both*
+  directions (`attest_is_live`, `ATTEST_MAX_CLOCK_SKEW_MS`), and that is legitimate precisely because
+  the tap is a **local decision to propose**: a node that declines to attest has not rejected anyone's
+  block, so two nodes disagreeing about liveness here costs a round and nothing else. The acceptance
+  path is bounded too, but **relative to the block's parents** (`block_timestamp`,
+  `MAX_BLOCK_TIMESTAMP_DRIFT_MS`), never against this node's clock — that bound is deterministic, which
+  is the only kind that may live in validation.
+- **W-N14-04 — the bound that is still not where the row asked (C298).** The sites that remain ungated
+  are this node's own triggers: a deploy arriving, and the not-due retry. Both are local proposals, not
+  validity rules, and both exist to do the work the network handed this node — which is why the comment
+  at `ATTEST_MAX_BLOCK_AGE_MS` says so out loud rather than leaving it to be rediscovered. Adding a
+  wall-clock bound there would not close a hole; it would trade a liveness path for a rule that cannot
+  be checked by a peer.
+- **W-N14-03 — the provenance a contract cannot be given (C297).** `rho:block:data` answers with a bare
+  integer, and every Rholang contract on the network pattern-matches that reply. Changing its *shape*
+  to carry where the value came from is a change to what every contract receives — consensus-visible,
+  and therefore a fork — so it belongs to a hard-fork unit with an activation gate (issue #51's
+  tracker) and not to a remediation pass. What a client can be told is separate and cheap, and the
+  block API's own description is where that lives.
+
+**What would change these decisions**, so neither is re-argued from scratch: a hard-fork window with an
+activation gate (which makes C297 a normal change), or a measured case of a node proposing from a block
+older than any bound allows *and* that being harmful (which moves C298 from decision to defect). The
+measurement for the second — proposals produced per replayed block — is owed to a live rig.
+
+## 120. The gate that ran nowhere (C300)
+
+`tools/check-wargame.sh` was written in #348 to check `docs/src/spec/adversary.md`'s claim about
+*itself* — every study node dispositions all eleven guide words, every Table A row carries a decided
+verdict, a persona and a falsifier, the calibration is declared — and **nothing called it**: not
+`ci.yml`, not `tools/todo.sh`, not another gate. The sibling check is wired
+(`emit-findings-register.sh --check` runs from `tools/audit-status.sh`), so the class was visible in the
+record and unowned in the workflow. It now runs beside `check-hazop-worksheet.sh` in CI's static gates,
+which is where the other page-integrity gates live.
+
+It is the same class as the fuzz modes that never executed and the two `#144` workflows whose `if:`
+gates can never fire: **a check that exists, passes when run by hand, and is obeyed by nothing.** The
+wargame table is where this remediation's rows come from, so a table that drifts is a table whose rows
+nobody re-reads.

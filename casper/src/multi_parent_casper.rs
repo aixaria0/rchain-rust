@@ -1001,6 +1001,41 @@ async fn note_unrestorable_if_exhausted(
         ),
     );
     let plan = dag.get_representation().await.rewind_plan();
+    // **A view that cannot place the anchor is not a store that cannot** (W-N11-06). `(Some, None)` is
+    // a node with a finalised block it cannot locate — its height map leaves out validation-failed
+    // blocks — and the row's harm is that this shape ends in *no reset at all*: `--self-reset` cannot
+    // fire and the operator's only recovery is a wipe. But the reset works from the **store**, not from
+    // the view (`drop_above` takes a height and keeps the block at it), and the block's own
+    // `block_num` is part of what its hash commits to and sits in the metadata store. So the store is
+    // asked. A read that *fails* leaves the plan exactly as the view gave it — the refusal below, not
+    // an action: a store fault is not a reason to rewind.
+    let plan = if plan.anchor.is_some() && plan.anchor_height.is_none() {
+        let placed = match plan.anchor {
+            Some(anchor) => match dag.lookup(&anchor).await {
+                Ok(meta) => meta.map(|m| m.block_num),
+                Err(e) => {
+                    // **A store fault is not a reason to rewind, and it is not silence either.** The
+                    // plan stays exactly as the view gave it, which is the refusal below; what the
+                    // error must not become is a discarded `Result` — "could not read" and "not there"
+                    // are different answers, and only the second is a fact about the block (the audit's
+                    // silent class, and it is right).
+                    log.warn(
+                        source.clone(),
+                        &format!(
+                            "the reset's anchor {} could not be read from the metadata store, so the \
+                             height it would rewind to cannot be named this pass: {e}",
+                            anchor.to_hex()
+                        ),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        place_the_anchor(plan, placed)
+    } else {
+        plan
+    };
     match reset_decision(&plan, *hash) {
         // **The one arm that can act.** The first request wins and the driver takes it once, so a scan
         // that gives up on several blocks in one pass asks for one reset rather than one per block.
@@ -1030,12 +1065,10 @@ async fn note_unrestorable_if_exhausted(
             log.warn(
                 source,
                 &format!(
-                    "{prefix}: rewind to the last finalized block {} (height {}), drop the {} block(s) \
-                     above it and catch up from there. The dropped blocks are re-requested from peers, \
-                     and the rewind is to a block the network finalised, so nothing committed is lost \
-                     (#320)",
-                    anchor.to_hex(),
-                    i64::from(anchor_height),
+                    "{prefix}: {}, drop the {} block(s) above it and catch up from there. The dropped \
+                     blocks are re-requested from peers, and the rewind is to a block the network \
+                     finalised, so nothing committed is lost (#320)",
+                    rewind_sentence(&anchor, anchor_height),
                     blocks_above,
                 ),
             );
@@ -1065,6 +1098,27 @@ async fn note_unrestorable_if_exhausted(
         ),
     }
     report_reset_dry_run(&plan, hash, source, log).await;
+}
+
+/// **The rewind plan with its anchor placed, when the store can place it** (W-N11-06).
+///
+/// The middle arm of the decision below refuses because the *view* cannot name the anchor's height —
+/// its height map leaves out validation-failed blocks — and the row's harm is that this ends in no
+/// reset at all, with a wipe as the operator's only recovery. The height is not lost, though:
+/// `drop_above` works from the store, and the block's own `block_num` is part of what its hash commits
+/// to. This is the placement, kept pure so the decision stays testable without a DAG — the caller
+/// reads the metadata store and hands the height in.
+///
+/// Vacuously the same plan for every other shape: an anchor the view already placed is not
+/// second-guessed by the store, and a stored height with no anchor places nothing.
+fn place_the_anchor(plan: RewindPlan, stored_height: Option<BlockHeight>) -> RewindPlan {
+    match (plan.anchor, plan.anchor_height, stored_height) {
+        (Some(_), None, Some(height)) => RewindPlan {
+            anchor_height: Some(height),
+            ..plan
+        },
+        _ => plan,
+    }
 }
 
 /// **What a spent restore budget implies, given the view's rewind plan** (#320).
@@ -1122,6 +1176,25 @@ fn reset_decision(plan: &RewindPlan, refused: BlockHash) -> ResetDecision {
     }
 }
 
+/// **The rewind's target and its height, written once** (W-N11-10).
+///
+/// Two sentences describe this block: the acting line ("reset requested: rewind to …") and the
+/// dry-run line ("the reset's numbers, for the record: rewind to …"), and they named different heights
+/// for the same anchor hash — `anchor_height` in one, `anchor_height + 1` in the other — for as long as
+/// both existed. The dry run is the only one a ship-dark build emits, so an operator reading it was
+/// told the rewind target sat one block later than the reset actually uses.
+///
+/// Two sentences that must agree about one number are one sentence. This is the half they share, and
+/// `the_two_rewind_sentences_name_one_height` drives both callers and asserts that neither writes a
+/// literal of its own — a mutation that reintroduces one reddens it.
+fn rewind_sentence(anchor: &BlockHash, anchor_height: BlockHeight) -> String {
+    format!(
+        "rewind to the last finalized block {} (height {})",
+        anchor.to_hex(),
+        i64::from(anchor_height)
+    )
+}
+
 /// **What a per-node reset would drop, computed and logged, and nothing dropped** (C249's R3).
 ///
 /// The reset ships **dark**, deliberately: the primitive it would call exists
@@ -1149,11 +1222,9 @@ async fn report_reset_dry_run(
         (Some(anchor), Some(height)) => log.warn(
             source,
             &format!(
-                "the reset's numbers, for the record: rewind to the last finalized block {} (height \
-                 {}), {} block(s) above it dropped and re-requested, and the block this node gave up on \
-                 is {} (AUDIT C249; #320)",
-                anchor.to_hex(),
-                i64::from(height) + 1,
+                "the reset's numbers, for the record: {}, {} block(s) above it dropped and re-requested, \
+                 and the block this node gave up on is {} (AUDIT C249; #320)",
+                rewind_sentence(&anchor, height),
                 plan.blocks_above,
                 refused.to_hex(),
             ),
@@ -1738,6 +1809,153 @@ mod tests {
             reset_decision(&plan, refused),
             ResetDecision::RefuseNoAnchor { blocks_above: 1 },
             "a height without an anchor is not a state the planner produces"
+        );
+    }
+
+    /// A logger that keeps its lines, so a test can read a sentence a node would print — the same shape
+    /// `node_syncing`'s test module uses.
+    #[derive(Default)]
+    struct RecordingLog {
+        lines: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingLog {
+        fn last(&self) -> String {
+            self.lines
+                .lock()
+                .expect("log lock")
+                .last()
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    impl Log for RecordingLog {
+        fn is_trace_enabled(&self, _source: LogSource) -> bool {
+            false
+        }
+        fn trace(&self, _source: LogSource, _msg: &str) {}
+        fn debug(&self, _source: LogSource, _msg: &str) {}
+        fn info(&self, _source: LogSource, _msg: &str) {}
+        fn warn(&self, _source: LogSource, msg: &str) {
+            self.lines.lock().expect("log lock").push(msg.to_string());
+        }
+        fn error(&self, _source: LogSource, _msg: &str) {}
+    }
+
+    /// **An anchor the view cannot place is placed from the store** (W-N11-06).
+    ///
+    /// The row: `(Some(anchor), None)` — a node whose last-finalised block is missing from its own
+    /// height map, which omits validation-failed blocks — produced `RefuseNoHeight`, the detector only
+    /// logged it, and `--self-reset` could not fire, so the operator's only recovery was a wipe. The
+    /// height is not gone: `drop_above` works from the store, and the block's `block_num` is part of
+    /// what its hash commits to. Placed, the same plan becomes the arm that acts.
+    ///
+    /// Falsified by dropping the placement — the plan stays unplaceable, and this finds the refusal the
+    /// tree produced.
+    #[test]
+    fn an_anchor_the_view_cannot_place_is_placed_from_the_store() {
+        let anchor = BlockHash::new([7u8; 32]);
+        let refused = BlockHash::new([9u8; 32]);
+        let height = BlockHeight::try_from(41i64).expect("a height");
+        let unplaceable = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: None,
+            blocks_above: 4,
+        };
+
+        assert_eq!(
+            reset_decision(&unplaceable, refused),
+            ResetDecision::RefuseNoHeight {
+                anchor,
+                blocks_above: 4
+            },
+            "unplaced, this is the refusal the row names: no reset, and a wipe as the only recovery"
+        );
+
+        let placed = place_the_anchor(unplaceable.clone(), Some(height));
+        assert_eq!(
+            placed.anchor_height,
+            Some(height),
+            "the store names the height"
+        );
+        assert_eq!(
+            reset_decision(&placed, refused),
+            ResetDecision::Act {
+                anchor,
+                anchor_height: height,
+                blocks_above: 4,
+                refused,
+            },
+            "and placed, it is the arm that acts"
+        );
+
+        // **The store does not overrule a view that could place it.** A plan the view already located
+        // keeps the view's height, and a height with no anchor places nothing — otherwise a store
+        // lookup could move a rewind the view had already decided.
+        let view_placed = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: Some(height),
+            blocks_above: 1,
+        };
+        assert_eq!(
+            place_the_anchor(
+                view_placed.clone(),
+                Some(BlockHeight::try_from(99i64).expect("a height"))
+            ),
+            view_placed
+        );
+        let no_anchor = RewindPlan {
+            anchor: None,
+            anchor_height: None,
+            blocks_above: 3,
+        };
+        assert_eq!(place_the_anchor(no_anchor.clone(), Some(height)), no_anchor);
+    }
+
+    /// **The rewind's two sentences name one height** (W-N11-10).
+    ///
+    /// The row: the acting line printed `anchor_height` and the dry-run line `anchor_height + 1` for
+    /// the same anchor hash — and the dry run is the only sentence a ship-dark build emits, so an
+    /// operator reading it was told the rewind target sat one block later than the reset uses. The
+    /// falsifiers are two, because the defect had two halves: the dry run must *render* the shared
+    /// phrase (reintroduce the offset and the first assertion fails), and neither caller may write the
+    /// height itself again (the second). The second is a source assertion by the same argument
+    /// `the_accumulators_push_and_reverse_rather_than_prepend` makes — `include_str!`, so it is about
+    /// the source as compiled rather than a file on disk.
+    #[tokio::test]
+    async fn the_two_rewind_sentences_name_one_height() {
+        let anchor = BlockHash::new([7u8; 32]);
+        let refused = BlockHash::new([9u8; 32]);
+        let height = BlockHeight::try_from(41i64).expect("a height");
+        let plan = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: Some(height),
+            blocks_above: 12,
+        };
+
+        let recorder = Arc::new(RecordingLog::default());
+        let log: Arc<dyn Log> = recorder.clone();
+        report_reset_dry_run(&plan, &refused, LogSource::new("test"), &log).await;
+        let line = recorder.last();
+        assert!(
+            line.contains(&rewind_sentence(&anchor, height)),
+            "the dry run must name the block at the height the reset uses: {line}"
+        );
+        assert!(
+            line.contains("(height 41)"),
+            "and the height is the anchor's own, not the anchor's plus one: {line}"
+        );
+
+        // Assembled rather than written, so this test's own text is not one of the occurrences it
+        // counts — a source scan whose needle appears in the scan reads 2 however the code is written.
+        let source = include_str!("multi_parent_casper.rs");
+        let needle = ["rewind to the last finalized", "block"].join(" ");
+        assert_eq!(
+            source.matches(&needle).count(),
+            1,
+            "the phrase belongs to `rewind_sentence` alone: a literal in either caller is how the two \
+             sentences came to disagree by one (W-N11-10)"
         );
     }
 

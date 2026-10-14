@@ -408,17 +408,14 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         )
         .await?
         {
-            if boot_anchor.is_some_and(|named| named != anchor) {
-                log.warn(
-                    source,
-                    &format!(
-                        "--sync-anchor names a block this node did not rewind to; the reset's own \
-                         anchor {} wins, because it is the state this store actually holds",
-                        anchor.to_hex()
-                    ),
-                );
-            }
-            boot_anchor = Some(anchor);
+            // **A contradicting pair is refused, not resolved with a warning** (W-N11-01): see
+            // [`crate::engine::reset::boot_anchor_after_reset`] for why the record wins and why
+            // picking in silence is the defect — on a store the operator did not create, the record
+            // is a planted restore point.
+            boot_anchor = Some(crate::engine::reset::boot_anchor_after_reset(
+                boot_anchor,
+                anchor,
+            )?);
         } else {
             log.info(source, "Reconnecting to existing network...");
         }

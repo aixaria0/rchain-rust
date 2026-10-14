@@ -329,12 +329,13 @@ Build and run the `rnode` binary (Rust pinned in `rust-toolchain.toml`):
 ```sh
 cargo build --release -p rchain-node --bin rnode
 rnode run -s \
-  --validator-private-key 67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530 \
+  --validator-private-key-path /var/lib/rnode/validator.hex \
   --host 127.0.0.1 --api-host 127.0.0.1 --no-upnp
 ```
 
-Standalone (`run -s`) is the **genesis master**: it needs a secp256k1 `--validator-private-key`
-(32-byte base16; the PEM-path flag is parsed but not wired into the runtime) and a
+Standalone (`run -s`) is the **genesis master**: it needs a secp256k1 key file of 32 bytes base16
+through `--validator-private-key-path` — there is no flag that takes the hex itself, because that put
+the scalar in `/proc/<pid>/cmdline` (W-N11-05) — and a
 `~/.rnode/genesis/wallets.txt` (must exist; may be empty — `bonds.txt` auto-generates). The API host
 must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`). Deploy serves on
 **40401**; Propose/Repl on loopback **40402**. Full instructions:
