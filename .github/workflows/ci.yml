@@ -216,6 +216,16 @@ jobs:
         # because a number nothing checks is a number that rots.
         run: tools/check-hazop-worksheet.sh --gate
 
+      - name: Artefact-producing build paths are pin-locked and unparameterised
+        # Two wargame rows name a gate rather than a test, and neither existed: `every build path
+        # passes --locked` (the lock file is a promise the build has to keep) and `the shipped
+        # artefact is not parameterised by build args` (a build argument that reaches `cargo`
+        # compiles a different binary, so the definition a release is produced from must not accept
+        # one). `tools/check-build-paths.sh` checks both, and the profiling Dockerfile — the one
+        # that *is* allowed to parameterise — is checked to still be --locked, so the exemption is
+        # for the args and not for the pin.
+        run: tools/check-build-paths.sh --gate
+
       - name: The wargame section's completeness claim
         # **Written in #348 and never called by anything until now.** `docs/src/spec/adversary.md`
         # claims something about *itself* — that every study node dispositions all eleven guide words,

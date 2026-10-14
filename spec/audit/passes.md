@@ -10862,3 +10862,156 @@ thirteen cells read as `owed:` *and* carried a citation beside them, and `check-
 the `owed:` marker was still the field it reads. The citations are now in the column they belong to, and
 the count the page reports went from 92 owed to **70**. A gate that reads one column cannot notice an edit
 that writes another, which is why the cell-by-cell count is printed here and not inferred.
+
+## 124. Most of the debt was a page nobody had updated (C309)
+
+PR #359 left 70 rows carrying `owed:`. The first thing this pass did was the thing the two before it
+skipped: **for each of the 70, read the candidate tests' assertions and ask whether the row's own property
+is already pinned.** Two sweeps, forty and twenty-nine rows, every row answered ARMED / PARTIAL / NOT
+ARMED with the test that makes it. The answer moved the number before a line of code changed:
+
+**Twenty-eight rows were already armed, and the page had never been told.** Twenty-one of them by work
+this programme's own PRs landed — the durable halt and the per-shard counters (#355: W-N10-01/-02,
+W-N10-03/-04), the boot anchor, the store format and the deployer-index completion (#357: W-N11-01/-02/
+-03/-05, and its reconcile harness for W-N11-07/-08/-09) — and seven by tests that were already in the
+tree, several of which name a wargame row in their own doc comment. The cells now cite them; the owed
+count is **42**.
+
+**The sweep corrected two claims of its own.** The gate refused a citation to
+`node/src/build_provenance.rs` — the file is `node/build_provenance.rs`, at the crate root, and a
+generated path is exactly what the check exists to catch. And W-N1-06 turned out not to be owed at all:
+its cell has read "already fires — `comm/src/transport/grpc_transport.rs:386-389` asserts …" since the
+wargame, so the count of 70 was one too many for this row's purposes and the citation pass left it alone.
+
+**Why the number is worth writing down.** The wargame's own pre-registration claims the falsifier column
+overstates arming; that claim had never been checked row by row, and checking it is what turned two thirds
+of the "debt" into citations. A column that says `owed:` for work already done is not a conservative
+error: it hides the rows that are genuinely unarmed among ones that are not, which is how a count stops
+meaning anything.
+
+**What the sweep leaves.** Forty-two rows, of which the unarmed ones cluster — the OCapN rows, the build
+and container posture rows, nine live defects, two live measurements, and the two whose falsifier names a
+missing instrument. The next passes take those clusters, and this one's contribution is the map.
+
+## 125. The partials: three rows that needed one arm, not a test (C310)
+
+The sweeps called fourteen rows PARTIAL — a neighbouring assertion existed and the row's own property did
+not. Three of them turned out to need one arm added where the neighbour already lived, and two of the
+three were **placements** rather than behaviours:
+
+- **W-N5-07** — `attestation_is_admissible` has two refusals with two sentences: "not in the active
+  validator set" and "cannot decide whether this node is bonded". Only the *error* arm was tested. The
+  new arm drives a DAG that answers cleanly and does not list the key, and asserts the first sentence and
+  **not** the second — a caller that cannot tell them apart reads a store fault as a bonding fact, which
+  is AUDIT C67's class one arm over. Folding the two sentences together reddens it while the older test
+  still passes.
+- **W-N2-07** — `expire_deploys` had a test that drove the *function*. The row's falsifier asks for the
+  case where nothing finalises, which is the ordinary quiet chain: the pool must expire on the **insert
+  path** or the proposer is handed work the next block must reject, held for the process lifetime. The
+  new test inserts a block at height 51 and asserts the expired deploy is gone; deleting the
+  `self.expire_deploys(..)` call from `insert` reddens it, and the direct test still passes — which is the
+  difference between the two.
+- **W-N14-01** Two more of the fourteen closed the same way — by **citation to a decision or to the committed
+substitute for a measurement**:
+
+- **W-N12-01** wanted a k-vs-2k *time ratio*. That test was written twice and refuted twice (8.1 here,
+  21.6 on the runner; then the reference arm at 16.5× here, 2.3× there), and the committed assertion is
+  the *form* the cost follows from: the three accumulators push and reverse once and never prepend. The
+  cell cites that test and says why the ratio is not committed — a clock test that reads differently on
+  the runner is a flake with a citation.
+- **W-N12-02** wanted an element-count breadth cap. A breadth rule in the parser is **fork-visible** —
+  the oracle accepts a wide term, so refusing one here would reject a block the oracle accepts — and the
+  bound that exists is on the wire form of a deploy at this node's ingress. C289 registered the residual,
+  and the cell cites it rather than inventing a cap the chain would disagree with.
+- **W-N12-03** wanted a timing measurement of the parse-before-admission ordering. The ordering is the
+  property and the refusal *message* already decides it: a deploy the admission refuses answers "rate
+  limit" and never "parsing term".
+
+Two node-level rows closed the same way, one by writing the guard the row says is missing:
+
+- **W-N4-03** — the faucet is mounted on the **public** listener (`web::http::router`), gated on dev mode
+  plus a deployer key and on nothing about who is asking. The existing test proved the *delivery*; what it
+  did not assert is *who* gets it, so its drip now arrives from a caller with no credential naming a
+  foreign `Origin`, and the assertion says so. Writing the guard the row names — refuse a request that
+  carries an `Origin` — reddens it at exactly that line, which is what makes the cell a falsifier rather
+  than a description.
+- **W-N4-05** — the admin listener's exposure is its *bind*, and the test pins which one the flag
+  chooses: loopback by default, `0.0.0.0` when the operator asks. The row's second half ("a remote host's
+  POST is served") is that same fact observed from off this box, which an in-process fixture cannot be;
+  the cell says so rather than implying the remote arm ran.
+
+was not partial at all. Its falsifier describes building a block stamped `i64::MAX` and
+  reading it back, and the existing timestamp test **already asserts that direction**: a block stamped a
+  day after its parents is accepted (the backlog case, C289's registered deviation) while one past the
+  drift behind them is refused. The cell now cites the test rather than describing the drill, and the row
+  closes as armed. It was also never in the owed count — like W-N1-06, its cell had been written out in
+  full, so "70 owed" was two more than the cells that actually said so, and the sweep is what found it.
+
+## 126. The build rows and the container (C311)
+
+Four rows from the build cluster, three of them closed by writing the instrument the row names rather than
+by finding a test:
+
+- **W-N7-04** and **W-N7-03** are the two rows in the wargame whose falsifier *is* a gate — "a gate
+  asserting every build path passes `--locked`" and "the shipped artefact is not parameterised by build
+  args" — and neither gate existed, though **both properties already held in the code**: the release
+  Dockerfile passes `--locked` and declares no cargo-reaching `ARG`, and the profiling variant is the one
+  that does. `tools/check-build-paths.sh` checks both, is wired into CI beside the other static gates, and
+  fires in both directions: dropping `--locked` from the release build fails check 1, and adding `ARG
+  RUSTFLAGS` back fails check 2. It also checks that the *profiling* Dockerfile still declares
+  `CARGO_FEATURES` — so the exemption is a checked fact and not an assumption — and that both
+  definitions' base images stay digest-pinned.
+- **W-N6-01** is a *posture* measurement with no exploit to run: the finding is the configuration. The
+  new arm reads the running container's own report and finds nothing containing a compromise inside the
+  node — `CapDrop=null`, `ReadonlyRootfs=false`, `SecurityOpt=null`. A container's posture does not depend
+  on the binary inside it, so the runner gained an `--arms` selector and this one ran against the image
+  already built rather than paying a full in-image rebuild to observe one field set.
+
+**W-N7-02 and W-N7-06 remain** — the first needs a swapped binary and a self-verification check that does
+not exist (the artefact's identity is the image digest, which is a decision to cite rather than a test to
+write), and the second needs a release-artefact consumer, which is a CI instrument and not something this
+tree can hold.
+
+## 127. Two residuals about the artefact and its inputs (C312)
+
+Two rows whose honest answer is a decision with a reason, recorded here because rule 3 gives that answer
+exactly one home.
+
+**W-N7-02 — a node does not verify its own binary.** The row: swap one byte in the shipped `rnode` (or
+bind-mount a replacement) and the node boots and serves the same `/version`; nothing checks that the
+artefact running is the artefact built. **Not built, deliberately:** a startup self-check would need the
+binary to carry a signature and a key to verify it against, and the key would live on the same host as the
+binary — so the check would be defeated by exactly the access it defends against. What the project relies
+on instead is the **identity of the artefact**: the image's base refs are digest-pinned
+(`tools/check-workflow-pins.sh`) and the build records the commit it was built from, which `/version`
+reports (`node/build_provenance.rs`). An operator who wants to know what is running compares the image
+digest they deployed against the one they built; a node that took the hash of itself would be answering a
+question it cannot answer about a host that is already compromised.
+
+**W-N7-07 — the vendored contracts are held to their own twin.** `tools/audit-vendored-sources.sh` diffs
+`resources/*.rho` against `vendored-originals/*.rho`, so a change applied to *both* copies passes: the
+check catches drift between the two trees and not divergence from the upstream the contracts came from.
+Closing that properly means pinning each vendored file to a digest taken **from upstream** and checking
+the copies against *that* — a network fetch at pin time, which is a CI instrument and not something a test
+in this tree can hold. The residual is stated rather than papered over, and what would close it is named:
+the upstream digests, recorded once and then checked mechanically.
+
+**What is not owed here.** Both rows are `read`-class findings whose falsifier needs an artefact or an
+upstream that this repository does not hold; the cells now say which.
+
+Two more rows closed in the same pass, both by writing the assertion their falsifier names:
+
+- **W-N1-07** — the heartbeat's *consequence*. The reorder test beside it pins `refresh_conn` and not what
+  the reorder is for; the new test fills the table to its 1024 cap, lets the oldest peer speak, adds one
+  more, and asserts the speaker survives while the silent front peer is the one evicted.
+- **W-N12-05** — the pool's bound is **bytes**, not entries. The row does the arithmetic itself: 10 000
+  pooled deploys × a 16 MiB wire term is ~160 GB, so a count bound is not a byte bound. The environment is
+  a 1 GB LMAP map, asserted exactly and asserted to be far below the slot arithmetic; a cap derived from
+  the count reddens it.
+
+**W-N5-04** closed the same way and with a correction to its own text: the ceremony's `<pubkey>.sk` is a
+**bare base16 scalar in a 0600 file**, which is this project's key form everywhere else — it is exactly
+what `--validator-private-key-path` reads and what the key loader accepts — so "plaintext" is a misreading
+of the exposure. What *would* be one is a file another user can read, and nothing asserted this one cannot;
+`the_ceremonys_key_file_is_owner_only` does, and a hand-rolled `std::fs::write` (mode from the umask)
+reddens it.

@@ -1,0 +1,1 @@
+W-N6-01	violated	arm_container_posture	nothing contains a compromise inside the node: CapDrop=null ReadonlyRootfs=false SecurityOpt=null (docker_opts passes no --cap-drop, --read-only or --security-opt, so the container keeps every default capability and a writable root)

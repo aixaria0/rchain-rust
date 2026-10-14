@@ -48,12 +48,17 @@ VALIDATORS=3
 KEEP=0
 BOOT=1
 OUT=""
+ARMS="all"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --validators) VALIDATORS="${2:?}"; shift 2 ;;
     --keep)       KEEP=1; shift ;;
     --no-boot)    BOOT=0; shift ;;
     --out)        OUT="${2:?}"; shift 2 ;;
+    # **One arm at a time, when one arm is what changed.** Some arms do not depend on the binary at all
+    # (a container's posture is a property of how it was started), and rebuilding the image to re-run
+    # sixteen others to observe one of them is a waste this selector exists to avoid.
+    --arms)       ARMS="${2:?}"; shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -365,6 +370,25 @@ arm_steady_state() {
     "the chain advanced unattended, height $h0 -> $h1: block arrival is itself the proposal trigger"
 }
 
+# **W-N6-01 — nothing contains a compromise inside the node.**
+#
+# The row: a devnet node runs with the operator's defaults and nothing else — no capability drop, no
+# read-only root, no seccomp or apparmor profile — so a process that gets a foothold inside a node is not
+# contained by the container it runs in. This is a **posture** measurement: the evidence is the empty
+# fields the container reports about itself, which is the honest instrument for "the hardening is absent"
+# (there is no exploit to run — the finding is the configuration).
+arm_container_posture() {
+  local arm=arm_container_posture c caps ro sec
+  c="$(container 0)"
+  caps="$(docker inspect -f '{{json .HostConfig.CapDrop}}' "$c" 2>/dev/null)"
+  ro="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$c" 2>/dev/null)"
+  sec="$(docker inspect -f '{{json .HostConfig.SecurityOpt}}' "$c" 2>/dev/null)"
+  observe W-N6-01 "$arm" \
+    '[[ "$caps" == "null" || "$caps" == "[]" ]] && [[ "$ro" == "false" ]] && [[ "$sec" == "null" || "$sec" == "[]" ]]' \
+    "the node's container is hardened (CapDrop=$caps ReadonlyRootfs=$ro SecurityOpt=$sec)" \
+    "nothing contains a compromise inside the node: CapDrop=$caps ReadonlyRootfs=$ro SecurityOpt=$sec (docker_opts passes no --cap-drop, --read-only or --security-opt, so the container keeps every default capability and a writable root)"
+}
+
 # --- the run ------------------------------------------------------------------------------------
 
 # The pre-signed deploy fixture (term "Nil"), the same one `tools/devnet-test.sh` uses: valid, and the
@@ -417,9 +441,9 @@ fi
 
 echo ""
 echo "==> phase 1 arms (a proposing net)"
-arm_steady_state
-arm_public_reads
-arm_deploy_admission
+for a in arm_steady_state arm_container_posture arm_public_reads arm_deploy_admission; do
+  [[ "$ARMS" == "all" || ",$ARMS," == *",$a,"* ]] && "$a"
+done
 
 if [[ "$BOOT" == "1" ]]; then
   echo ""
@@ -434,7 +458,7 @@ fi
 
 echo ""
 echo "==> phase 2 arms (a quiet net; with --no-boot these run against the net as it stands)"
-arm_admin_actuator
+[[ "$ARMS" == "all" || ",$ARMS," == *",arm_admin_actuator,"* ]] && arm_admin_actuator
 
 # --- the summary --------------------------------------------------------------------------------
 
