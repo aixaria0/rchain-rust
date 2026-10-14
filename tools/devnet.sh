@@ -370,7 +370,13 @@ wait_for_http() {
 wait_for_peer_http() {
   local name="$1" port="$2" url body block_num
   url="http://localhost:${port}/api/v1/status"
-  for (( attempt=1; attempt<=120; attempt++ )); do
+  # **How long a joining peer gets to serve genesis.** 120 seconds is generous on an idle machine and
+  # is not on a loaded one: the adversarial-arm runner saturates the host with parallel clients, and a
+  # peer that is still replaying under that load has been seen to miss the window and be healthy a
+  # minute later. An override rather than a bigger constant, because the right number is a property of
+  # the host and not of the net.
+  local tries="${DEVNET_WAIT_TRIES:-120}"
+  for (( attempt=1; attempt<=tries; attempt++ )); do
     if ! docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -qx true; then
       echo "$name stopped before it synced genesis and became ready" >&2
       return 1

@@ -10769,3 +10769,96 @@ a registry lookup reaches `extractState` — the arm whose only job is `ret!({"a
 whether an attacker can rebuild the exact term `bundle0{(*_authKey, shape)}` from a name received over
 a channel. Rholang has no term splice, and the answer is a genesis-replay arm. **Reading it is the
 first thing the next pass does.**
+## 122. One devnet boot, sixteen falsifiers, and the four that came back different (C304–C307)
+
+The wargame's 97 rows carry 92 `owed:` falsifiers. Classification of the run's full text gives 26 that
+need nothing but a stock three-validator net and a client on this host — so the unit built
+**`tools/wargame-arms.sh`**: one `devnet.sh up`, four arms against that boot, a verdict **per row**, a
+teardown under a trap. Two runs, every verdict identical; the numbers are in
+`spec/audit/evidence/wargame/arms-f9521edd7/results.md`.
+
+**The vocabulary is not pass/fail, and that is the design.** A row is `CONFIRMED` when the deviation is
+real, so arming it means *reproducing the deviation*. Each row comes back `violated` (reproduced),
+`held` (not reproducible on this tree — which is what a fix landing after the wargame looks like), or
+`inapplicable` (with the reason). The expected verdict is read from the run's own artifact, so a
+disagreement prints as MISMATCH rather than folding into "armed". Sixteen rows ran; thirteen closed.
+
+**Three rows reproduced, and each is a defect confirmed by a run rather than by reading:**
+
+- **W-N4-01, W-N6-02 (C305)** — an unidentified caller on the admin port made the node propose:
+  `POST /api/propose` with no credential answered `Success! Block … created and added`. The rows name
+  the actuator; the run names the caller it acts for.
+- **W-N4-06 (C305)** — a forged `Origin`/`Host` pair passed the guard, because both headers are the
+  caller's own: the guard compares two things a non-browser client sets. The node acted.
+- **W-N9-02 (C305)** — five of five explicit proposes produced a block, height 3 → 8. That is the pace
+  bound not applying to a caller-driven propose, which C196 makes deliberate; the row's falsifier was a
+  measurement nothing had taken, and this is it.
+- **W-N3-02, W-N3-05 (C304)** — the public API answers over plain HTTP (`http` 200, `https` 000), and
+  `POST /api/explore-deploy` executed a caller-supplied unsigned term on that unauthenticated port.
+- **W-N4-04 (C306)** — the chain advanced 175 → 209 with no client asking it to: block arrival is
+  itself the proposal trigger, which is attest-on-new-blocks' default.
+
+**Four rows did not reproduce, and the reason is the finding:**
+
+- **W-N2-01, W-N2-02, W-N2-08, W-N12-06 (C307)** — the row says the admission bound is one
+  process-global token bucket. On this tree it has a subject: a 200-deploy burst drew **88 × 429** for
+  the flooding identity, and *the same identity* was then admitted over gRPC, as was a second identity.
+  The surfaces are not one pool and no caller starves another. That is RC1's fix (#352, "give every
+  bound a subject") showing up exactly where the wargame predicted it would not be.
+- **W-N3-01 (C304)** — the public status carries the public key set only; the operator keys are gone,
+  which is the #352 split.
+- **W-N3-03 (C304)** — the delegator-scoped read is not on the public port (404) and answers on the
+  admin port (200): the route moved, and with it the audience.
+
+**Three rows could not be run, and the cell says so rather than leaving `owed:` to read as "a drill
+nobody ran":** W-N2-06 (decode-before-429 is not observable from the response alone), W-N2-09 (an
+invalid-signature flood needs a signed-but-wrong deploy this runner cannot mint), and W-N4-02 (the
+devnet is single-shard, so the gateway route answers 422 before any caller identity is considered).
+
+**What the first three runs taught, all of it now in the code, because a rig that lies is worse than no
+rig.** `POST /api/propose` answers `"Success! …"` when it acts and `"another propose is in progress"`
+when the node is busy — the first version read both as a refusal and reported four actuator rows as
+held. `explore-deploy` takes a bare JSON *string*. The admission bound is reached by a 200-wide burst,
+not by 40 sequential requests. And the actuator rows need a *quiet* node: with autopropose on every
+explicit propose collides, and on a multi-node quiet net a joining peer has no finalised fringe to sync
+from — the state `reconcile-network.sh` exists for — so that phase runs `--validators 1
+--no-autopropose`. Two supporting fixes: `DEVNET_WAIT_TRIES` (a peer joining under the arms' parallel
+load missed a hardcoded 120-second window and was healthy a minute later), and a report written on
+every exit path (an aborted run used to leave the previous run's report under this run's name).
+
+**Not in this pass, and named rather than implied:** the ten remaining host-drivable rows — W-N1-01/-02/
+-03/-04/-05/-08 (peer transport and Kademlia) and W-N1-09/-10, W-N12-04/-07 (the stream RPC) — need a
+client that can build a malformed `Protocol` frame and present its own certificate, and a fixture that
+binds the discovery port. That is a Rust unit, not a shell arm, and it is the next one.
+
+## 123. The transport and Kademlia falsifiers were already armed, and the page did not say so (C308)
+
+The ten remaining host-drivable rows were the ones this session first described as needing "a Rust client
+that can build a malformed `Protocol` frame and present its own certificate, and a fixture that binds the
+discovery port". That was wrong, and reading the two modules showed it: **eight of the ten are already
+asserted by tests in `comm`**, several of which name their wargame row in their own doc comment —
+`a_stream_header_is_admitted_only_for_the_identity_its_certificate_proves` says "(W-N1-09/W-N1-10)", and
+`refused_kademlia_requests_do_not_spend_the_allowance` says "(W-N1-08)" and names W-N1-05 in its prose. The
+page's `owed:` cells had simply never been updated to cite them, which is the same "already-armed but
+unmarked" gap the red-hat pre-registration claims exists across the table.
+
+**One row needed a test, and it is written.** W-N1-01 says the Kademlia service is served with no inbound
+decode cap. `serve` installs one (tonic's default is 4 MiB, sixteen times the operator's configured
+`protocol-server.grpc-max-recv-message-size`, so the omission would have let a peer force a decode four
+megabytes wide while the operator believed 256 KiB was in force) — and nothing asserted it. The new test
+boots the real server with the operator's 256 KiB, sends a 1 MiB `Lookup`, and asserts the **handler never
+sees it**: "refused at the decode" and "decoded and then refused" are different facts about this surface,
+and only the first is the bound. Deleting the `.max_decoding_message_size(..)` line lets the message
+through and reddens it, which is what makes it a falsifier.
+
+**One row is a decision, not a test.** W-N1-04 (no *rate* bound on the inbound transport) is §116's
+subject and register C290's: the bound is in-flight **concurrency**, keyed on nothing because it bounds a
+resource rather than a party, and `a_full_dispatch_queue_is_refused` is that bound. The cell cites §116
+rather than pretending a rate bound exists.
+
+**And one correction of this pass's own making.** The first attempt at these citations wrote them into a
+trailing field of the table — the wargame's falsifier is column 10, and the edit appended an eleventh — so
+thirteen cells read as `owed:` *and* carried a citation beside them, and `check-wargame.sh` passed because
+the `owed:` marker was still the field it reads. The citations are now in the column they belong to, and
+the count the page reports went from 92 owed to **70**. A gate that reads one column cannot notice an edit
+that writes another, which is why the cell-by-cell count is printed here and not inferred.
