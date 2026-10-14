@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 1 · DONE 357** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 360** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  152 of 358 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  155 of 361 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 358 are settled: **294 name the evidence that holds them** and **64 do not** — the
+All 361 are settled: **297 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -130,7 +130,7 @@ defects this register had not recorded (C164, C165).
 |---|---|---|---|
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 
-### DONE (357)
+### DONE (360)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -405,6 +405,9 @@ defects this register had not recorded (C164, C165).
 | `C321` | **Precedence is decided per form and not per layer.** A hex in the config *file* silently beats `--validator-private-key-path` on the command line, because `resolve_validator_private_key` asks "an explicit hex wins; the path only when that is absent" of the *merged* config, where a lower layer's hex and a higher layer's path are simply both present. The operator's flag is ignored with no word from any layer -- the warning the row asks for does not exist. | node/src/configuration/configuration.rs | §133 |
 | `C322` | **The non-interactive route to a key at rest is the environment.** With `RNODE_VALIDATOR_PASSWORD` set an encrypted keyfile unlocks and the console is never prompted; without it, a console with nothing to give fails for the password's reason. The second half is the control: it keeps the first a fact about the route rather than about the console. The same secret is the one W-N6-04 finds sitting in `/proc/1/environ`. | node/src/runtime/node_main.rs | §133 |
 | `C323` | **A configured validator public key is never compared.** A node configured with a public key its private key does not derive starts and serves: the field is parsed, mapped into the config and read by nothing in the runtime -- the only `validator-public-key` a running node reads is the `bond-status` subcommand's own argument, a different thing with the same name. | node/tests/validator_identity_record.rs | §133 |
+| `C324` | **The validator password sits in the node's own environment.** `RNODE_VALIDATOR_PASSWORD` is set on the node's PID 1 and nothing clears or redacts it, so a same-host reader of /proc/1/environ has it in the clear. The arm sets the variable -- the row's precondition, the documented non-interactive route -- and reads the running process's environment back. | tools/wargame-arms.sh/ | §134 |
+| `C325` | **The devnet's keys are file-protected after all.** The row's falsifier predicted the absence of any `--validator-private-key-path` under tools/; the devnet passes exactly that flag, the node's argv names /var/lib/rnode/validator.hex, and the file is mode 600 inside the container with the loader refusing anything looser (W-N5-09). A held reading against a CONFIRMED verdict: the premise moved. | tools/wargame-arms.sh/ | §134 |
+| `C326` | **A flood of unauthenticated deploys spends no admission token.** The flood is the pre-signed fixture with one hex digit of its signature moved -- no crypto needed, which the old runner called impossible -- sent 200-wide, and then the same identity's real deploy over the other surface is admitted (116 and 110 requests past the surface bound in two runs): the signature is verified before the token is taken. | tools/wargame-arms.sh/ | §134 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

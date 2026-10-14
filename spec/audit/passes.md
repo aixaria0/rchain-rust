@@ -11263,3 +11263,35 @@ serves. The field is parsed, mapped and read by **nothing** in the runtime — t
 thing with the same name.
 
 **Counted.** The page went from 10 owed to 6 in this commit, by reading column 10 of every row.
+
+## 134. The container's environment and its key file, and a flood that spends nothing (C324–C326)
+
+Three rows on the rig, all from arms added to `tools/wargame-arms.sh` and run against one devnet boot.
+Two runs, same verdicts; the run's table and its per-arm outputs are in
+`spec/audit/evidence/wargame/arms-cedd17d0b/`.
+
+**W-N6-04 — armed.** `RNODE_VALIDATOR_PASSWORD` is set on the node's own PID 1 and nothing in the node
+clears or redacts it, so a same-host reader of `/proc/1/environ` has the password in the clear. The arm
+sets the variable — that is the row's *precondition*, the documented non-interactive route, not a fault
+injected here — and then reads the running process's environment back out.
+
+**W-N6-05 — held, and a MISMATCH.** The row's falsifier predicted "the absence of any
+`--validator-private-key-path` in `tools/`". The devnet passes exactly that flag: the node's argv names
+`/var/lib/rnode/validator.hex`, and that file is **mode 600** inside the container, with the loader
+refusing anything looser (W-N5-09). So the file-protected form *is* what this net exercises and the
+row's premise has moved under it.
+
+**W-N2-09 — held, and a MISMATCH.** The flood is the pre-signed deploy fixture with **one hex digit of
+its signature moved** — no crypto needed, which is what the old runner recorded as impossible ("an
+invalid-signature flood needs a signed-but-wrong deploy, which this runner cannot mint") — sent 200-wide
+at the deploy route, and then the **same identity** submits a real deploy over the other surface. It is
+admitted both runs (116 and 110 requests past the surface bound), so the unauthenticated garbage spent
+no admission token: the signature is verified before the token is taken, which is the order W-N2-02's
+fix put in front of it. The stale `inapplicable` record for this row is **removed** rather than left
+beside the new arm, because two records for one row is how a table grows a second, quieter answer.
+
+**An instrument's failure worth recording.** The first run of this unit was cut short and its table is
+not committed: the runner's script was **edited while it was running**, and a shell reads a script by
+byte offset — so the edit landed inside a line the interpreter had not reached and phase 2 died on a
+syntax error it could not have read. The corrupted run's directory was deleted rather than committed,
+and the two runs that count were taken with the file left alone.
