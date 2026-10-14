@@ -339,6 +339,14 @@ pub struct OperatorStatus {
 pub struct SyncStatus {
     /// Attempts the sync task has **started**.
     pub attempts: u32,
+    /// **Since process start**, and no other scope is possible: the count is the sync task's own, and
+    /// the task restarts with the process — persisting it would claim a continuity the task does not
+    /// have. Named rather than left implicit, for the same reason as `poisonRecoveriesScope` (W-N10-02).
+    ///
+    /// The **scope** half of W-N10-02 deliberately does not apply to this object: LFS sync is
+    /// shard-blind (`node_runtime`'s `setup_shard` refuses to sync a multi-shard node for exactly that
+    /// reason), so a per-shard reading of it would be an invention.
+    pub attempts_scope: String,
     /// The last named failure's message, verbatim. `null` while the attempt now running has not failed.
     pub last_failure: Option<String>,
 }

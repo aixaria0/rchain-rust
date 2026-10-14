@@ -126,6 +126,7 @@ pub fn to_operator_status(
         // not failed yet", and only the absence of the object says the first.
         sync: sync.map(|s| SyncStatus {
             attempts: s.attempts,
+            attempts_scope: SINCE_PROCESS_START.to_string(),
             last_failure: s.last_failure.clone(),
         }),
         poison_recoveries,
@@ -435,6 +436,64 @@ mod tests {
         // W-N10-04: the per-shard map travels, and `None` here is the caller's choice — the `Some`
         // shape is pinned by `admin_web_api_impl`'s own test, where the router supplies the members.
         assert_eq!(api.shards, None);
+    }
+
+    /// **The sync reading names its scope** (W-N10-02).
+    ///
+    /// The `Some` arm is the one an operator sees on a node latched in `NodeSyncing`, and it is the
+    /// arm the durable-counter question does *not* apply to: the count is the sync task's own and the
+    /// task restarts with the process. This pins that the label travels, so a later change cannot drop
+    /// it silently — the counter beside three shard-history counters with no label would read as though
+    /// it shared their lifetime.
+    #[test]
+    fn the_sync_reading_labels_its_scope() {
+        let core = PublicStatus {
+            version: VersionInfo {
+                api: "1.0".into(),
+                node: "n".into(),
+            },
+            address: "addr".into(),
+            network_id: "testnet".into(),
+            shard_id: "/root".into(),
+            peers: 0,
+            nodes: 0,
+            min_phlo_price: 0,
+            latest_block_number: 0,
+            autopropose: false,
+            propose_on_deploy: false,
+            manual_propose: true,
+            dev_mode: false,
+        };
+        let sync = SyncHealth {
+            attempts: 4,
+            last_failure: Some("no peers answered".to_string()),
+        };
+        let api = to_operator_status(
+            core,
+            &Capabilities {
+                autopropose: false,
+                propose_on_deploy: false,
+                manual_propose: true,
+                admin_http: false,
+                dev_mode: false,
+            },
+            &ProposerHealth::default(),
+            &FinalityHealth::default(),
+            Some(&sync),
+            None,
+            0,
+            0,
+            0,
+            0,
+            None,
+        );
+        let s = api.sync.expect("the reading travels");
+        assert_eq!(s.attempts, 4);
+        assert_eq!(s.last_failure.as_deref(), Some("no peers answered"));
+        assert_eq!(
+            s.attempts_scope, "SinceProcessStart",
+            "the count is the sync task's own, and the task restarts with the process"
+        );
     }
 
     /// **The per-shard map carries a non-primary shard's halt** (W-N10-04).
