@@ -1030,12 +1030,10 @@ async fn note_unrestorable_if_exhausted(
             log.warn(
                 source,
                 &format!(
-                    "{prefix}: rewind to the last finalized block {} (height {}), drop the {} block(s) \
-                     above it and catch up from there. The dropped blocks are re-requested from peers, \
-                     and the rewind is to a block the network finalised, so nothing committed is lost \
-                     (#320)",
-                    anchor.to_hex(),
-                    i64::from(anchor_height),
+                    "{prefix}: {}, drop the {} block(s) above it and catch up from there. The dropped \
+                     blocks are re-requested from peers, and the rewind is to a block the network \
+                     finalised, so nothing committed is lost (#320)",
+                    rewind_sentence(&anchor, anchor_height),
                     blocks_above,
                 ),
             );
@@ -1122,6 +1120,25 @@ fn reset_decision(plan: &RewindPlan, refused: BlockHash) -> ResetDecision {
     }
 }
 
+/// **The rewind's target and its height, written once** (W-N11-10).
+///
+/// Two sentences describe this block: the acting line ("reset requested: rewind to …") and the
+/// dry-run line ("the reset's numbers, for the record: rewind to …"), and they named different heights
+/// for the same anchor hash — `anchor_height` in one, `anchor_height + 1` in the other — for as long as
+/// both existed. The dry run is the only one a ship-dark build emits, so an operator reading it was
+/// told the rewind target sat one block later than the reset actually uses.
+///
+/// Two sentences that must agree about one number are one sentence. This is the half they share, and
+/// `the_two_rewind_sentences_name_one_height` drives both callers and asserts that neither writes a
+/// literal of its own — a mutation that reintroduces one reddens it.
+fn rewind_sentence(anchor: &BlockHash, anchor_height: BlockHeight) -> String {
+    format!(
+        "rewind to the last finalized block {} (height {})",
+        anchor.to_hex(),
+        i64::from(anchor_height)
+    )
+}
+
 /// **What a per-node reset would drop, computed and logged, and nothing dropped** (C249's R3).
 ///
 /// The reset ships **dark**, deliberately: the primitive it would call exists
@@ -1149,11 +1166,9 @@ async fn report_reset_dry_run(
         (Some(anchor), Some(height)) => log.warn(
             source,
             &format!(
-                "the reset's numbers, for the record: rewind to the last finalized block {} (height \
-                 {}), {} block(s) above it dropped and re-requested, and the block this node gave up on \
-                 is {} (AUDIT C249; #320)",
-                anchor.to_hex(),
-                i64::from(height) + 1,
+                "the reset's numbers, for the record: {}, {} block(s) above it dropped and re-requested, \
+                 and the block this node gave up on is {} (AUDIT C249; #320)",
+                rewind_sentence(&anchor, height),
                 plan.blocks_above,
                 refused.to_hex(),
             ),
@@ -1738,6 +1753,83 @@ mod tests {
             reset_decision(&plan, refused),
             ResetDecision::RefuseNoAnchor { blocks_above: 1 },
             "a height without an anchor is not a state the planner produces"
+        );
+    }
+
+    /// A logger that keeps its lines, so a test can read a sentence a node would print — the same shape
+    /// `node_syncing`'s test module uses.
+    #[derive(Default)]
+    struct RecordingLog {
+        lines: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingLog {
+        fn last(&self) -> String {
+            self.lines
+                .lock()
+                .expect("log lock")
+                .last()
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    impl Log for RecordingLog {
+        fn is_trace_enabled(&self, _source: LogSource) -> bool {
+            false
+        }
+        fn trace(&self, _source: LogSource, _msg: &str) {}
+        fn debug(&self, _source: LogSource, _msg: &str) {}
+        fn info(&self, _source: LogSource, _msg: &str) {}
+        fn warn(&self, _source: LogSource, msg: &str) {
+            self.lines.lock().expect("log lock").push(msg.to_string());
+        }
+        fn error(&self, _source: LogSource, _msg: &str) {}
+    }
+
+    /// **The rewind's two sentences name one height** (W-N11-10).
+    ///
+    /// The row: the acting line printed `anchor_height` and the dry-run line `anchor_height + 1` for
+    /// the same anchor hash — and the dry run is the only sentence a ship-dark build emits, so an
+    /// operator reading it was told the rewind target sat one block later than the reset uses. The
+    /// falsifiers are two, because the defect had two halves: the dry run must *render* the shared
+    /// phrase (reintroduce the offset and the first assertion fails), and neither caller may write the
+    /// height itself again (the second). The second is a source assertion by the same argument
+    /// `the_accumulators_push_and_reverse_rather_than_prepend` makes — `include_str!`, so it is about
+    /// the source as compiled rather than a file on disk.
+    #[tokio::test]
+    async fn the_two_rewind_sentences_name_one_height() {
+        let anchor = BlockHash::new([7u8; 32]);
+        let refused = BlockHash::new([9u8; 32]);
+        let height = BlockHeight::try_from(41i64).expect("a height");
+        let plan = RewindPlan {
+            anchor: Some(anchor),
+            anchor_height: Some(height),
+            blocks_above: 12,
+        };
+
+        let recorder = Arc::new(RecordingLog::default());
+        let log: Arc<dyn Log> = recorder.clone();
+        report_reset_dry_run(&plan, &refused, LogSource::new("test"), &log).await;
+        let line = recorder.last();
+        assert!(
+            line.contains(&rewind_sentence(&anchor, height)),
+            "the dry run must name the block at the height the reset uses: {line}"
+        );
+        assert!(
+            line.contains("(height 41)"),
+            "and the height is the anchor's own, not the anchor's plus one: {line}"
+        );
+
+        // Assembled rather than written, so this test's own text is not one of the occurrences it
+        // counts — a source scan whose needle appears in the scan reads 2 however the code is written.
+        let source = include_str!("multi_parent_casper.rs");
+        let needle = ["rewind to the last finalized", "block"].join(" ");
+        assert_eq!(
+            source.matches(&needle).count(),
+            1,
+            "the phrase belongs to `rewind_sentence` alone: a literal in either caller is how the two \
+             sentences came to disagree by one (W-N11-10)"
         );
     }
 
