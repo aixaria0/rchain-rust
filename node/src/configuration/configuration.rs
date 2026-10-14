@@ -1354,6 +1354,43 @@ mod tests {
         assert_eq!(config, expected);
     }
 
+    /// **The scalar survives in the config as a plain `String`** (W-N5-08).
+    ///
+    /// The row: the only scrub of the validator scalar is `PrivateKey::drop`
+    /// (`crypto/src/private_key.rs`), which zeroizes the key the *crypto* type holds. The runtime does
+    /// not hold that one — it holds whatever this resolver put in `casper.validator_private_key`, a
+    /// plain `Option<String>` (`casper/src/conf.rs`), so the 64-hex is still in the heap for the life
+    /// of the process and nothing overwrites it.
+    ///
+    /// The reading is taken at the two moments the node has already taken what it needs: after the
+    /// resolution, and after the identity has been derived from it. The row's recorded verdict is
+    /// `NOT-RE-ESTABLISHED` — the referee could not confirm the deviation — so this is where the tree
+    /// decides it rather than an assertion written around the verdict.
+    #[test]
+    fn the_validator_scalar_survives_in_the_config_string_after_the_identity_is_built() {
+        const HEX: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+        let mut conf = default_expected();
+        conf.casper.validator_private_key = Some(HEX.to_string());
+
+        // What the runtime will do with it: derive the identity. That is the whole consumption of the
+        // scalar, and it leaves the string untouched.
+        let identity = rchain_casper::validator_identity::ValidatorIdentity::from_hex(HEX)
+            .expect("a valid key");
+        assert!(!identity.public_key.bytes().is_empty());
+
+        assert_eq!(
+            conf.casper.validator_private_key.as_deref(),
+            Some(HEX),
+            "**the whole scalar is still in the config field after the identity was built** \
+             (W-N5-08): the only scrub is `PrivateKey::drop`, and the config holds a `String`"
+        );
+        assert_eq!(
+            conf.casper.validator_private_key.as_deref().map(str::len),
+            Some(64),
+            "and it is the scalar itself, not a digest of it"
+        );
+    }
+
     /// A validator key given *by path* must end up in the hex field the runtime reads.
     /// Before this, `--validator-private-key-path` was parsed and then dropped, so a
     /// node configured that way ran with no validator identity and said nothing.

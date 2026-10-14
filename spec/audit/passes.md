@@ -11145,3 +11145,46 @@ all and no abort comes — the session simply sits there. The order the row is a
 ocapn-level arm is where it can be observed.
 
 **Counted.** The page went from 23 owed to 18 in this commit, by reading column 10 of every row.
+
+## 131. The validator's own rows: four readings, and one bound that stays at the tap (C316)
+
+Five rows, four arms and one decision. Two of the arms **re-established** deviations the referee had
+recorded as `NOT-RE-ESTABLISHED`, which is the other direction of mismatch and is recorded as one.
+
+**W-N9-01 — armed, and the row is refuted.** The claim was that past `ATTESTATION_HORIZON` the guard
+suppresses "unconditionally" once `attestation_inputs` returns `new_state_transition = false`, so an
+honest validator can silence finality with no fault of its own. The horizon withdraws the **licence to
+attest promptly**, not the ability: with a quorum in reach and the cadence due the guard attests anyway,
+and a caller's explicit propose is never silenced by it. The one arm that does withhold is the arm where
+nothing is reachable — which is exactly the half the row read as a stall. The two decisions are now
+asserted beside the two the test already pinned.
+
+**W-N9-04 — armed.** A `Proposer` with the flag armed emits the block and its twin, and the twin's
+*body* is in the block store. **The body, not just the hash**, because a peer answers a hash
+announcement by asking for the block: the flag's first version broadcast 45 twins that nobody could
+receive, so it measured nothing. Dropping the `put_block` write reddens exactly that assertion and
+nothing else, which is the check that the arm is about the store rather than about the twin's shape
+(the neighbour test already pins the shape).
+
+**W-N5-06 — armed, re-establishing a NOT-RE-ESTABLISHED verdict.** Two boots over one data directory
+with different key files: the second comes up under an identity the chain has never seen, and no file in
+the data directory names either key. The control matters here — the same directory *does* keep its
+`shard-id` and `store-format` markers, so the absence is a fact about a directory that writes markers and
+not a directory nobody looked at. The first draft of this arm wrote its key files *into* the data
+directory and then found them; the fix was to move the fixture out, which is worth recording because the
+failure looked like a finding.
+
+**W-N5-08 — armed, re-establishing the same.** `casper.validator_private_key` is a plain
+`Option<String>` and it still holds the whole 64-hex after the identity has been derived from it. The
+only scrub in the tree is `PrivateKey::drop`, which zeroizes the crypto type's copy — the config's copy
+is a `String` with no drop glue that touches it. So the referee's `NOT-RE-ESTABLISHED` was too generous,
+and this is the reading that says so.
+
+**W-N14-04 — decided, not armed.** The age bound is applied at the attestation tap and nowhere else, and
+the code says why: *"only the tap is gated: a deploy and the not-due retry still propose, so a
+catching-up node that is handed work does it."* That is a deliberate choice about catch-up, and the
+row's falsifier — proposals produced per replayed block handed to a catching-up node — needs blocks
+carrying proposer-signed **stale** timestamps. No instrument in this tree can mint one, so the cell names
+what would close it instead: one time bound applied wherever block time is consumed, not only at the tap.
+
+**Counted.** The page went from 18 owed to 13 in this commit, by reading column 10 of every row.
