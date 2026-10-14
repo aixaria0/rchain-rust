@@ -10946,3 +10946,28 @@ was not partial at all. Its falsifier describes building a block stamped `i64::M
   drift behind them is refused. The cell now cites the test rather than describing the drill, and the row
   closes as armed. It was also never in the owed count — like W-N1-06, its cell had been written out in
   full, so "70 owed" was two more than the cells that actually said so, and the sweep is what found it.
+
+## 126. The build rows and the container (C311)
+
+Four rows from the build cluster, three of them closed by writing the instrument the row names rather than
+by finding a test:
+
+- **W-N7-04** and **W-N7-03** are the two rows in the wargame whose falsifier *is* a gate — "a gate
+  asserting every build path passes `--locked`" and "the shipped artefact is not parameterised by build
+  args" — and neither gate existed, though **both properties already held in the code**: the release
+  Dockerfile passes `--locked` and declares no cargo-reaching `ARG`, and the profiling variant is the one
+  that does. `tools/check-build-paths.sh` checks both, is wired into CI beside the other static gates, and
+  fires in both directions: dropping `--locked` from the release build fails check 1, and adding `ARG
+  RUSTFLAGS` back fails check 2. It also checks that the *profiling* Dockerfile still declares
+  `CARGO_FEATURES` — so the exemption is a checked fact and not an assumption — and that both
+  definitions' base images stay digest-pinned.
+- **W-N6-01** is a *posture* measurement with no exploit to run: the finding is the configuration. The
+  new arm reads the running container's own report and finds nothing containing a compromise inside the
+  node — `CapDrop=null`, `ReadonlyRootfs=false`, `SecurityOpt=null`. A container's posture does not depend
+  on the binary inside it, so the runner gained an `--arms` selector and this one ran against the image
+  already built rather than paying a full in-image rebuild to observe one field set.
+
+**W-N7-02 and W-N7-06 remain** — the first needs a swapped binary and a self-verification check that does
+not exist (the artefact's identity is the image digest, which is a decision to cite rather than a test to
+write), and the second needs a release-artefact consumer, which is a CI instrument and not something this
+tree can hold.
