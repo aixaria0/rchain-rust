@@ -22,7 +22,7 @@ The executable semantics of the language are the K-framework rules under
 [`legacy/rholang/src/main/k/rholang/`](https://github.com/rchain-community/rchain-rust/blob/1b7583649/legacy/rholang/src/main/k/rholang/) — the operational
 definition of Laws 2–6.
 
-## The three gates
+## The gates
 
 | Gate | What it refuses | Runs as |
 |---|---|---|
@@ -30,7 +30,10 @@ definition of Laws 2–6.
 | [`tools/audit-type-system.sh`](../../../tools/audit-type-system.sh) | any production `panic!`/`unsafe`/silent conversion in the Rust crates — the no-silent-partiality discipline | `coverage.yml` |
 | [`tools/audit-status.sh`](../../../tools/audit-status.sh) | a check-off that disagrees with `spec/findings.tsv`, a malformed row, a `todo` that names nothing, a `done` row whose evidence resolves to nothing, **a law cell naming a law the register does not define**, an open row naming no law, and more than `LAWLESS_CEILING` classified-free rows (a ratchet: the residue is printed every run). **2.5 s** — this replaced `tools/audit-test-register.sh` (1,453 lines, 78 s), which checked that documents agreed with each other |
 | [`tools/audit-vendored-sources.sh`](../../../tools/audit-vendored-sources.sh) | an edit to the oracle's own vendored source text, which is a specification change wearing a comment's clothes |
-| ~~`tools/audit-test-register.sh`~~ | deleted 2026-09-27. Kept here so a reader arriving from an old citation knows where it went |ource file with neither a test nor an exemption, and a law row that claims coverage without evidence | `make check-register`, and `coverage.yml` |
+| [`tools/check-review-ledger.sh`](../../../tools/check-review-ledger.sh) | a source file with neither a test nor an exemption, and a law row that claims coverage without evidence | `make check-register`, and `coverage.yml` |
+| [`tools/check-wargame.sh`](../../../tools/check-wargame.sh) | a Table A row whose cell count disagrees with the page's own header, a row with no decided verdict or no falsifier, a falsifier naming a path or symbol that does not exist in the tree, and a page that declares no referee calibration | `ci.yml`'s static gates |
+| [`tools/check-build-paths.sh`](../../../tools/check-build-paths.sh) | an artefact-producing `cargo build`/`install` that does not pass `--locked`, a release Dockerfile that declares a build argument reaching `cargo`, and a base image that is not digest-pinned | `ci.yml`'s static gates |
+| ~~`tools/audit-test-register.sh`~~ | deleted 2026-09-27. Kept here so a reader arriving from an old citation knows where it went | was `make check-register` |
 
 **A change to a law is a change to three files**: the Lean definition, the corpus emitted from it, and
 the Rust consumer. The gate is what makes that true rather than aspirational — `make spec` is only the

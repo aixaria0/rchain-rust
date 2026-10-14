@@ -23,7 +23,7 @@ IV.
 | The ρ→CoC type-system spec | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) |
 | How Rust made the Scala fragility explicit (bugs caught, production-readiness) | [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) |
 | What the language let the architecture *build* — the architectural gains, each with its artefact | [`spec/RUST-AFFORDANCES.md`](spec/RUST-AFFORDANCES.md) |
-| **Audit check-off** — what the adversarial audit has left, in three states (`todo` · `in progress` · `done`), with the unread T1 coverage that bounds any claim it makes. Start here. | [`spec/AUDIT.md`](spec/AUDIT.md) |
+| **Audit check-off** — what the adversarial audit has left, in three states (`todo` · `in progress` · `done`), with the T1 coverage that bounds any claim it makes (all 89 modules read, closed 2026-09-27). Start here. | [`spec/AUDIT.md`](spec/AUDIT.md) |
 | The audit's **pass record** — the evidence behind every check-off row: one section per pass, and the Scala-deviation register (§6). This is what a row's `§` cites. | [`spec/audit/passes.md`](spec/audit/passes.md) |
 | Native system contracts (registry/PoS/vault state model + replay determinism) | [`spec/RUST-FIRST.md`](spec/RUST-FIRST.md) |
 | Test-coverage audit & gap analysis — machine-checked: the per-crate inventory, the law property matrix, the risk tiers, the exempt-module table, and the census that requires every source file to be tested or exempt | [`spec/TEST-COVERAGE.md`](spec/TEST-COVERAGE.md) |

@@ -2097,11 +2097,25 @@ still cannot go green by construction, which is the honest shape of criterion 3.
 | 2026-W39 | 17 | `not counted` | `not counted` (see below) | `adversary.md §The census` |
 | 2026-W40 | 62 | `not counted` | `not counted` (see below) | `adversary.md §The census` |
 
-The class column reads `not counted` for a measured reason: **36 of the 242 `done` rows name a law or
-class; 206 carry an empty classification cell** (`spec/AUDIT.md`; `spec/findings.tsv`). The register
+The class column reads `not counted` for a measured reason, recounted 2026-10-14: **158 of the 364
+`done` rows name a law or class; 206 carry an empty classification cell** (`spec/AUDIT.md`;
+`spec/findings.tsv`). The register
 therefore reports **volume, not class**. The wargame's ledger now supplies a **class vocabulary** for the
 rows it adds (`unauth-actuation`, `key-at-rest`, `disclosure`, …), so the fill rate is measurable going
 forward even though the 206 historical rows are not retro-migrated.
+
+**Where the census stands, 2026-10-14.** The two windows above are the ones this pass measured. What has
+changed since is the close-out of the wargame's falsifiers: the register grew from **250 rows at the end
+of W40 to 365** today, and every one of the wargame's 97 Table A rows now carries a taken falsifier, a
+gate citation, an arm run or a recorded decision — its page reads `owed:` on no row at all (pass record
+§128–§136; register C313–C330).
+
+**And `Rows closed` stays `not counted`, which a check confirms rather than assumes.**
+`git log --date=format:'%G-W%V' -- spec/findings.tsv` shows the file arriving with **201 rows already
+`done`**: the register was authored retroactively, so a row's `done` state records the day it was
+*written up*, not the day its defect was closed — and a rate read off it would measure the writing, not
+the work. The class column's fill rate is the figure that is measurable here, and it has moved from 36 of
+242 to **158 of 364**.
 
 The rate is the reason the gate is up: the register took **C195 through C207 in a single window**, and
 C207 alone meant the join path had **never worked on a network that merges**.

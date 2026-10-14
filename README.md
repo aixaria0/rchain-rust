@@ -7,7 +7,7 @@ its authority cannot be forged — there is no syntax that writes a private name
 memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
 Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
-**A small artifact, deliberately**: recounted 2026-10-13, ~197,000 lines of Rust across 467 files
+**A small artifact, deliberately**: recounted 2026-10-14, ~202,000 lines of Rust across 471 files
 compile to a single **43 MB** native binary — nothing to boot but the process, and no collector inside it to
 pause — so a validator runs on a commodity laptop with an NVMe.
 
@@ -66,7 +66,7 @@ code, and a stop-the-world collector is safe Rust — we simply do not ship one.
 engineering concern either way, and this node measures its own (see
 [hardware requirements](docs/src/node/validator-requirements.md)).
 
-**Decentralization.** Recounted 2026-10-13, ~197,000 lines of Rust compile to a single 43 MB native binary
+**Decentralization.** Recounted 2026-10-14, ~202,000 lines of Rust compile to a single 43 MB native binary
 — no JVM and no collector in the process — so a validator runs on any modern desktop or laptop with an
 NVMe SSD.
 Validator operation sits within consumer-grade hardware, which is what makes the network genuinely

@@ -3,8 +3,8 @@
 <!-- Split out of `spec/AUDIT.md` on 2026-09-27. This is the evidence, kept word for word: one
      section per audit pass, in the order the passes ran. The check-off a reader wants first is
      `spec/AUDIT.md`; this file is what its rows cite. Do not reorganise it -- `§N` is cited from
-     `spec/`, `docs/` and the source tree, and the pointer check in `tools/audit-test-register.sh`
-     resolves every one of them against a heading here. -->
+     `spec/`, `docs/` and the source tree, and the pointer check in `tools/emit-findings-register.sh`
+     (its `section` column) resolves every one of them against a heading here. -->
 
 `spec/AUDIT.md` records what each finding came to; this is where each was found, why it was
 believed, how it was falsified and what the fix does not do. The sections are the four audit
