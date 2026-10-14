@@ -1354,6 +1354,108 @@ mod tests {
         assert_eq!(config, expected);
     }
 
+    /// **The scalar survives in the config as a plain `String`** (W-N5-08).
+    ///
+    /// The row: the only scrub of the validator scalar is `PrivateKey::drop`
+    /// (`crypto/src/private_key.rs`), which zeroizes the key the *crypto* type holds. The runtime does
+    /// not hold that one — it holds whatever this resolver put in `casper.validator_private_key`, a
+    /// plain `Option<String>` (`casper/src/conf.rs`), so the 64-hex is still in the heap for the life
+    /// of the process and nothing overwrites it.
+    ///
+    /// The reading is taken at the two moments the node has already taken what it needs: after the
+    /// resolution, and after the identity has been derived from it. The row's recorded verdict is
+    /// `NOT-RE-ESTABLISHED` — the referee could not confirm the deviation — so this is where the tree
+    /// decides it rather than an assertion written around the verdict.
+    #[test]
+    fn the_validator_scalar_survives_in_the_config_string_after_the_identity_is_built() {
+        const HEX: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+        let mut conf = default_expected();
+        conf.casper.validator_private_key = Some(HEX.to_string());
+
+        // What the runtime will do with it: derive the identity. That is the whole consumption of the
+        // scalar, and it leaves the string untouched.
+        let identity = rchain_casper::validator_identity::ValidatorIdentity::from_hex(HEX)
+            .expect("a valid key");
+        assert!(!identity.public_key.bytes().is_empty());
+
+        assert_eq!(
+            conf.casper.validator_private_key.as_deref(),
+            Some(HEX),
+            "**the whole scalar is still in the config field after the identity was built** \
+             (W-N5-08): the only scrub is `PrivateKey::drop`, and the config holds a `String`"
+        );
+        assert_eq!(
+            conf.casper.validator_private_key.as_deref().map(str::len),
+            Some(64),
+            "and it is the scalar itself, not a digest of it"
+        );
+    }
+
+    /// **Two layers disagree about the validator key, and the node takes one without a word**
+    /// (W-N5-01).
+    ///
+    /// The row: `casper.validator-private-key` in the config file and `--validator-private-key-path`
+    /// on the command line are two ways to say the same thing, and the layered config lets them
+    /// disagree. The documented precedence is real — one of them wins — but nothing tells the operator
+    /// that the other was ignored, so a node that comes up on the *wrong* identity against a config
+    /// the operator edited looks exactly like one that came up on the right one.
+    ///
+    /// **The reading is sharper than the row, and it is the other way round.** The arm was written
+    /// expecting the command line to win; measured on 2026-10-14, the *config file* wins — so a
+    /// `--validator-private-key-path` an operator typed is ignored by a hex sitting in a file the
+    /// operator may not even have edited. The reason is that precedence is decided **per form and not
+    /// per layer**: `resolve_validator_private_key` reads "an explicit hex always wins; the path is
+    /// consulted only when that is absent", and it asks that of the *merged* config, where a lower
+    /// layer's hex and a higher layer's path are both simply present. Nothing warns.
+    ///
+    /// Falsified by the warning or error the row asks for, or by a resolution that weighs layers
+    /// before forms — either reddens the assertions below.
+    #[test]
+    fn a_config_files_key_overrides_the_command_lines_path_without_a_word() {
+        // The key the file layer names, and the key the command line's path holds. Two different
+        // identities, so the resolved one says which layer was believed.
+        const FILE_HEX: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+        const PATH_HEX: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+        let dir = std::env::temp_dir().join(format!("rchain_layered_key_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp dir");
+        let key_path = dir.join("cli.hex");
+        rchain_crypto::util::key_util::write_private_key(&key_path, format!("{PATH_HEX}\n"))
+            .expect("the command-line key file");
+
+        let conf = build_run(
+            "layered_key",
+            &[
+                "--validator-private-key-path",
+                key_path.to_str().expect("a path"),
+            ],
+            Some(&format!(
+                "casper {{ validator-private-key = \"{FILE_HEX}\" }}\n"
+            )),
+        )
+        .expect("the node builds: the two layers disagreeing is not an error");
+
+        let resolved = conf
+            .casper
+            .validator_private_key
+            .as_deref()
+            .expect("a key was resolved");
+        assert_eq!(
+            resolved, FILE_HEX,
+            "**the config file's key won, and the command line's flag was ignored** (W-N5-01): the \
+             operator typed `--validator-private-key-path`, the node read the file layer's hex \
+             instead, and the build said nothing. Precedence here is decided per *form* (an explicit \
+             hex beats a path) and not per *layer*, so the higher layer lost"
+        );
+        assert_ne!(
+            resolved, PATH_HEX,
+            "and the key the flag named is not the key in use — which is the whole of the row, one \
+             layer deeper than it claims"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A validator key given *by path* must end up in the hex field the runtime reads.
     /// Before this, `--validator-private-key-path` was parsed and then dropped, so a
     /// node configured that way ran with no validator identity and said nothing.

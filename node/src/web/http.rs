@@ -2363,6 +2363,55 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
+    /// **The limiter is consulted before the deploy body is decoded** (W-N2-06).
+    ///
+    /// The row: the rate check ran *inside* the handler, so axum's `Json` extractor had already
+    /// decoded the body — and a deploy may be 16 MiB on the wire — before the caller was told it was
+    /// over the limit. An over-limit flood therefore still paid the full decode, and the bound the
+    /// limiter exists to be is a bound on admitted work, not on work already done.
+    ///
+    /// The order is observable from outside because a **body that cannot be decoded at all** has to
+    /// be answered by whichever ran first: the limiter (429) or the extractor (400). The second arm
+    /// is what makes the first a fact about the *order* rather than about the route — the same
+    /// malformed body, with the bound slack, is refused by the extractor, so the route does read
+    /// bodies and arm 1's 429 can only mean it never got there.
+    ///
+    /// Falsified by moving the check back into the handler: arm 1 answers 400 and the assertion on
+    /// the status reddens.
+    #[tokio::test]
+    async fn the_limiter_is_consulted_before_the_deploy_body_is_decoded() {
+        use tower::ServiceExt;
+
+        // Malformed *and* not small: nothing here is JSON, and the size is what the row's flood pays.
+        let body = vec![b'x'; 64 * 1024];
+        let build = || {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/deploy")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.clone()))
+                .expect("a request")
+        };
+
+        let mut s = state();
+        s.deploy_rate_limiter = Arc::new(KeyedRateLimiter::new(0, MAX_TRACKED_PEERS));
+        let response = router(s).oneshot(build()).await.expect("a response");
+        assert_eq!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "an over-limit request is refused before its body is read, so a body that cannot be \
+             decoded must not turn the refusal into the extractor's 400 (W-N2-06)"
+        );
+
+        let response = router(state()).oneshot(build()).await.expect("a response");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "and the same body is the extractor's refusal once the bound lets it through — without \
+             this arm the 429 above would be consistent with a route that never reads a body"
+        );
+    }
+
     /// **One peer's burst does not refuse another peer's request** (W-N2-01, W-N2-02, W-N2-08).
     ///
     /// The bound's subject was the *node*: one process-wide bucket per route, so an exhausted limiter

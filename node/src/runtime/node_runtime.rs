@@ -1796,33 +1796,26 @@ async fn setup_shard_runtime(
                 // The tap runs on every validated block; if the propose queue is full or the
                 // proposer stream is gone, the request is dropped — and nothing else would say so.
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                    // **A halted timer halts the tap too** (W-N4-08). The timer stops itself after a
-                    // burst of consecutive self-validation failures, and until this line it was the
-                    // only thing that stopped: the tap kept proposing on every validated block, so a
-                    // node the status surface called halted was still producing — on inbound traffic,
-                    // without an operator, which is the exact failure the halt exists to prevent.
-                    if tap_health.timer_halted() {
-                        // **Counted rather than silently dropped**, which is the shape this row is
-                        // about: a refusal nobody can see is the same defect as a report that cannot
-                        // become untrue. `push_proposer_health` is still called first, so the gauges
-                        // say the timer is halted beside the count of what that cost.
-                        push_proposer_health(&tap_metrics, &tap_source, &tap_health);
-                        tap_health
-                            .tap_suppressed_halted()
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return;
-                    }
+                    // **A halted timer halts the tap too** (W-N4-08), and the decision is
+                    // [`fire_autopropose_tap`]'s so that a test can drive it.
+                    //
+                    // The push comes first because *both* paths used to make it — the suppression was
+                    // counted beside a fresh gauge reading, and an unhalted tap pushed before it
+                    // enqueued — so hoisting it here is the same writes in the same order, with the
+                    // guard now standing between them and the queue instead of around one of them.
                     push_proposer_health(&tap_metrics, &tap_source, &tap_health);
-                    let (otx, _orx) = tokio::sync::oneshot::channel();
-                    if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
-                        tap_log.warn(
-                            LogSource::new("coop.rchain.node.runtime.Setup"),
-                            &format!(
-                                "autopropose request not queued ({e}) — no block will be proposed \
-                                 for this trigger"
-                            ),
-                        );
-                    }
+                    fire_autopropose_tap(&tap_health, || {
+                        let (otx, _orx) = tokio::sync::oneshot::channel();
+                        if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
+                            tap_log.warn(
+                                LogSource::new("coop.rchain.node.runtime.Setup"),
+                                &format!(
+                                    "autopropose request not queued ({e}) — no block will be \
+                                     proposed for this trigger"
+                                ),
+                            );
+                        }
+                    });
                 });
 
                 // Periodic timer: the event-driven tap only fires on a validated block or a deploy,
@@ -2121,6 +2114,34 @@ async fn setup_shard_runtime(
     }
 
     Ok(ShardRuntime { parts, peer_tx })
+}
+
+/// **Fire the autopropose tap for one validated block, unless the timer is halted** (W-N4-08).
+///
+/// The row: the halt stopped the periodic timer and *only* the timer. The tap went on proposing on
+/// every validated block, so a node whose status surface read `autoproposeTimerHalted: true` kept
+/// producing — on inbound traffic, with no operator — which is the exact failure the halt exists to
+/// prevent. The tap was the missing half; a halt that the surface reports and the producer ignores
+/// is a report that cannot become untrue.
+///
+/// **Why it is a function rather than four lines inside the closure.** The two things the row is
+/// about are "is a request handed to the queue" and "is the refusal counted", and neither is visible
+/// from outside a `move` closure that owns its queue, its log and its health cell. Lifting the
+/// decision out is what makes the arm drivable: `enqueue` is a parameter, so a test can pass one that
+/// counts, and the halt is a fact about [`ProposeHealth`], so a test can set it.
+///
+/// Returns `true` when the request was handed over, `false` when the halt suppressed it — in which
+/// case the suppression has been counted, because a refusal nobody can see is the same defect as a
+/// report that cannot become untrue.
+fn fire_autopropose_tap(health: &ProposeHealth, enqueue: impl FnOnce()) -> bool {
+    if health.timer_halted() {
+        health
+            .tap_suppressed_halted()
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return false;
+    }
+    enqueue();
+    true
 }
 
 /// Assemble the node program (port of `Setup.setupNodeProgram`, minus the comm/discovery/proposer/
@@ -3625,6 +3646,68 @@ mod proposer_health_metric_tests {
             ticked.load(Ordering::SeqCst),
             "and production resumes on the operator's word"
         );
+    }
+}
+
+#[cfg(test)]
+mod autopropose_tap_tests {
+    use super::fire_autopropose_tap;
+    use rchain_casper::api::block_api::ProposeHealth;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    /// **A halted timer halts the tap too** (W-N4-08).
+    ///
+    /// The row: the halt stopped the timer and nothing else, so the tap kept proposing on every
+    /// validated block — the status surface said `autoproposeTimerHalted: true` while the node went
+    /// on producing on inbound traffic. Two directions, and both are asserted: an unhalted tap hands
+    /// the request over, a halted one hands over nothing **and counts what it refused**.
+    ///
+    /// Falsified by dropping the guard (the second arm's enqueue fires) or by counting before the
+    /// check rather than after it (the first arm's counter moves off zero) — the counter is what
+    /// distinguishes a refusal the operator can see from one the node swallows.
+    #[test]
+    fn a_halted_timer_suppresses_the_tap_and_counts_what_it_refused() {
+        let health = ProposeHealth::new();
+        let enqueued = Arc::new(AtomicU64::new(0));
+        let note = {
+            let enqueued = enqueued.clone();
+            move || {
+                enqueued.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+
+        // Not halted: the tap fires, and nothing was suppressed.
+        assert!(fire_autopropose_tap(&health, note.clone()));
+        assert_eq!(
+            enqueued.load(Ordering::Relaxed),
+            1,
+            "an unhalted tap hands its request over"
+        );
+        assert_eq!(
+            health.tap_suppressed_halted().load(Ordering::Relaxed),
+            0,
+            "and counts no suppression on the way"
+        );
+
+        // Halted: nothing is handed over, and the refusal is visible.
+        health.note_timer_halted();
+        assert!(!fire_autopropose_tap(&health, note.clone()));
+        assert_eq!(
+            enqueued.load(Ordering::Relaxed),
+            1,
+            "**a halted tap enqueues nothing** — this is the row"
+        );
+        assert_eq!(
+            health.tap_suppressed_halted().load(Ordering::Relaxed),
+            1,
+            "and the request it did not send is counted rather than dropped in silence"
+        );
+
+        // Twice, so the cell is a count of what the halt cost rather than a flag saying it happened.
+        assert!(!fire_autopropose_tap(&health, note));
+        assert_eq!(enqueued.load(Ordering::Relaxed), 1);
+        assert_eq!(health.tap_suppressed_halted().load(Ordering::Relaxed), 2);
     }
 }
 

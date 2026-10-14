@@ -156,8 +156,25 @@ pub fn verify_attestation(json_text: &str, expected_nonce: &str) -> Result<Strin
         ));
     }
 
+    // **What this proves, and what it does not, written into the artefact the operator reads**
+    // (W-N9-08).
+    //
+    // The row: a Byzantine validator can sign "I finalised X" for a block the network never finalised,
+    // and this verifier accepts it — because it checks the signature over the prehash and nothing else.
+    // It *cannot* check the claim, and pretending otherwise would be the worse defect: this is an
+    // offline tool holding one JSON document, with no chain, no bond map and no quorum of
+    // attestations. What is left is to stop the verdict from reading as though it had: the signature
+    // covers a *statement*, and the statement is named here, beside the three things this tool does not
+    // establish. An operator (or `tools/reconcile-network.sh`, whose meet weighs these) then reads the
+    // claim rather than a bare `verified`.
     let verdict = json!({
         "verified": true,
+        "proves": "this sender signed this block hash over this nonce",
+        "doesNotProve": [
+            "that the block was finalised — the network may never have seen it",
+            "that the sender is bonded on the shard a recovery reads",
+            "that a quorum agrees: one attestation is one validator's claim, and a claim can be false",
+        ],
         "blockHash": attestation.block_hash.to_lowercase(),
         "sender": attestation.sender.to_lowercase(),
         "nonce": expected_nonce.to_lowercase(),
@@ -331,5 +348,72 @@ mod tests {
         let err =
             verify_attestation(&text, &other).expect_err("a stale attestation is not an answer");
         assert!(err.contains("REFUSED") && err.contains("nonce"), "{err}");
+    }
+
+    /// **A signature over a claim is not the claim** (W-N9-08).
+    ///
+    /// The row's construction: a validator signs "I finalised X" for a block the network never
+    /// finalised. Here that is a **real key over a hash nothing in this tree ever produced**, which is
+    /// the strongest form of the lie — and the tool accepts it, because a signature over
+    /// `blake2b256(tag‖nonce‖hash)` is all it has ever checked.
+    ///
+    /// The arm pins both halves. The acceptance is the row (so the cell states the deviation rather
+    /// than a fix that did not happen), and the verdict's own words are the closure: it names the
+    /// statement the signature covers and the three it does not establish. A verifier that cannot
+    /// check a claim must not answer as though it had — this is an offline tool with one JSON document,
+    /// no chain, no bond map and no quorum, and the artefact now says so.
+    ///
+    /// Falsified by dropping `doesNotProve` (or by a verdict that read as a finality check), which the
+    /// assertions below redden on.
+    #[test]
+    fn a_signature_over_a_claim_the_network_never_made_is_accepted_and_the_verdict_says_so() {
+        let identity = identity();
+        let nonce = "cc".repeat(16);
+        // Nothing produced this: not a block, not a state, not a height — a hash invented for the arm.
+        let invented = BlockHash::new([0x5a; 32]);
+        let sig = identity
+            .attest_finality(&base16::decode(&nonce).unwrap(), &invented)
+            .unwrap();
+        let attestation = FinalityAttestation {
+            block_hash: base16::encode(invented.as_bytes()),
+            nonce: nonce.clone(),
+            sender: base16::encode(identity.public_key.bytes()),
+            sig_algorithm: identity.sig_algorithm.clone(),
+            sig: base16::encode(&sig),
+        };
+
+        let verdict = verify_attestation(&serde_json::to_string(&attestation).unwrap(), &nonce)
+            .expect("the signature is genuine, and a signature is all this tool can see");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&verdict).expect("the verdict is JSON");
+
+        assert_eq!(
+            parsed["verified"],
+            json!(true),
+            "**the deviation stands: a signed claim about a block that never existed is accepted** \
+             (W-N9-08) — the tool has no chain to check it against"
+        );
+        assert_eq!(
+            parsed["blockHash"].as_str().unwrap(),
+            base16::encode(invented.as_bytes()),
+            "and it names the invented hash, because that is what was signed"
+        );
+        assert_eq!(
+            parsed["proves"].as_str(),
+            Some("this sender signed this block hash over this nonce"),
+            "the verdict names the statement the signature covers, rather than claiming finality"
+        );
+        let limits: Vec<String> = parsed["doesNotProve"]
+            .as_array()
+            .expect("the verdict lists what it does not establish")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        for needle in ["finalised", "bonded", "quorum"] {
+            assert!(
+                limits.iter().any(|l| l.contains(needle)),
+                "the limit on `{needle}` must be on the artefact an operator reads: {limits:?}"
+            );
+        }
     }
 }

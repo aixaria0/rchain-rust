@@ -2539,6 +2539,7 @@ mod attestation_suppression_tests {
 #[cfg(test)]
 mod equivocation_injection_tests {
     use super::equivocation_twin;
+    use super::ProposeSource;
     use crate::proto_util::hash_block;
     use crate::validate::block_signature;
     use crate::validator_identity::ValidatorIdentity;
@@ -2621,6 +2622,127 @@ mod equivocation_injection_tests {
             twin.timestamp,
             first.timestamp + 1,
             "the one field the twin moves — informational, and covered by the hash"
+        );
+    }
+
+    /// **The injection reaches the wire and the store** (W-N9-04).
+    ///
+    /// The test above pins what the twin *is*; this pins that a `Proposer` with the flag armed emits
+    /// one. The row: with `--equivocation-injection` the node signs a second, content-distinct block at
+    /// the same `(sender, seq_num)` and broadcasts it — the safety split reached from the honest
+    /// signing path, on an operator's word. That flag is outside the bounded-adversary model (the
+    /// operator is trusted), which is why this is a reverse arm rather than an in-model finding.
+    ///
+    /// **Two assertions, because announcing a twin is not enough.** A peer answers a hash announcement
+    /// by *asking for the block*, so a twin announced and not held is one nobody ever receives — which
+    /// is what the flag's first version measured (45 twins broadcast, no refusal anywhere, no slash).
+    /// The effect must see both blocks and the store must hold the twin's body.
+    ///
+    /// Falsified by dropping the `put_block` write: the store assertion reddens while the effect still
+    /// sees two blocks, which is the defect the comment at the write names.
+    #[tokio::test]
+    async fn the_injection_puts_a_second_block_on_the_wire_and_in_the_store() {
+        use crate::multi_parent_casper::ValidateError;
+        use rchain_block_storage::block_store::BlockStore;
+        use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+        use rchain_shared::log::NopLog;
+        use rchain_shared::store::InMemoryKeyValueStore;
+        use rchain_shared::typed_store::KeyValueTypedStoreCodec;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::Arc;
+
+        let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            Arc::new(tokio::sync::Mutex::new(Box::new(
+                InMemoryKeyValueStore::default(),
+            ))),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let id = identity();
+        let created = block(&id);
+
+        let get_seq: Arc<dyn Fn(Validator) -> super::BoxFuture<i64> + Send + Sync> =
+            Arc::new(|_v| Box::pin(async { 0 }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> super::BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_id| Box::pin(async { Ok(true) }));
+        let create: Arc<
+            dyn Fn(
+                    &ValidatorIdentity,
+                    super::ProposeSource,
+                ) -> super::BoxFuture<Result<super::BlockCreatorResult, String>>
+                + Send
+                + Sync,
+        > = {
+            let created = created.clone();
+            Arc::new(move |_v, _s| {
+                let created = created.clone();
+                Box::pin(async move { Ok(super::BlockCreatorResult::Created(created)) })
+            })
+        };
+        let validate: Arc<
+            dyn Fn(&BlockMessage) -> super::BoxFuture<Result<(), ValidateError>> + Send + Sync,
+        > = Arc::new(|_b| Box::pin(async { Ok(()) }));
+        let seen: Arc<std::sync::Mutex<Vec<BlockMessage>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let effect: Arc<dyn Fn(&BlockMessage) -> super::BoxFuture<()> + Send + Sync> = {
+            let seen = seen.clone();
+            Arc::new(move |b| {
+                seen.lock().unwrap().push(b.clone());
+                Box::pin(async {})
+            })
+        };
+
+        let proposer = super::Proposer::new(
+            get_seq,
+            check_active,
+            create,
+            validate,
+            effect,
+            id.clone(),
+            Arc::new(NopLog),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            true, // **the flag under test**
+            store.clone(),
+        );
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let (_result, block_opt) = proposer
+            .propose(ProposeSource::Explicit { is_async: false }, tx)
+            .await
+            .expect("the proposal runs");
+        let emitted = block_opt.expect("a block was created");
+
+        let broadcast = seen.lock().unwrap().clone();
+        assert_eq!(
+            broadcast.len(),
+            2,
+            "**the injection put a second block on the wire**: the block and its twin, both emitted \
+             to the propose effect (W-N9-04)"
+        );
+        assert_eq!(
+            broadcast[0].block_hash, emitted.block_hash,
+            "the real block first"
+        );
+        let twin = &broadcast[1];
+        assert_eq!(
+            twin.sender, emitted.sender,
+            "the twin is the same validator's"
+        );
+        assert_eq!(twin.seq_num, emitted.seq_num, "at the same sequence number");
+        assert_ne!(twin.block_hash, emitted.block_hash, "and a different block");
+
+        // And the *body* is held, which is what makes the announcement answerable: a peer asks for
+        // the block by hash, so a twin nobody stored is a twin nobody receives.
+        let stored = store
+            .get(&[twin.block_hash.clone()])
+            .await
+            .expect("the store answers");
+        assert_eq!(
+            stored[0].as_ref().map(|b| b.block_hash.clone()),
+            Some(twin.block_hash.clone()),
+            "the twin's body is in the block store, not only its hash on the wire"
         );
     }
 }
@@ -3487,6 +3609,12 @@ mod quiet_chain_tests {
     /// **The horizon is where the licence ends, and only the licence.** A deploy-bearing block that is
     /// still unfinalised past it is still something to finalise, so the guard falls back to the cadence
     /// rather than to silence.
+    ///
+    /// **This is also W-N9-01's arm, and it is the row's refutation.** The row read the horizon as a
+    /// stall: `attestation_inputs` returns `new_state_transition = false` past it, and the guard was
+    /// said to suppress "unconditionally" on that alone — an honest validator silencing finality with
+    /// no fault of its own. The assertions below are the two decisions the horizon actually leaves,
+    /// and only one of them withholds.
     #[test]
     fn the_licence_ends_at_the_horizon_and_the_work_does_not() {
         let tip = BlockHeight::try_from(100).unwrap();
@@ -3505,6 +3633,32 @@ mod quiet_chain_tests {
             attestation_inputs(at(ATTESTATION_HORIZON + 1), tip),
             (false, false),
             "past the horizon the deploy no longer licenses a prompt attestation"
+        );
+
+        // **What that `false` does *not* mean, which is the whole of W-N9-01.** The row read it as
+        // silence: "with quorum_reachable false (or new_state_transition false) attestation_suppressed
+        // returns true unconditionally", so an honest validator holding one deploy-bearing fringe past
+        // the horizon could stop finality by itself — the shape the statement says cannot happen. The
+        // first arm is the refutation. Past the horizon the node has lost the *licence to attest
+        // promptly*, not the ability: with a quorum in reach and the cadence due it attests anyway,
+        // and an explicit propose always does.
+        assert!(
+            !attestation_suppressed(false, false, true, true, true),
+            "a deploy past the horizon still attests while a quorum is reachable and the cadence is \
+             due — the row that read the horizon as silence is refuted (W-N9-01)"
+        );
+        assert!(
+            !attestation_suppressed(false, false, true, false, false),
+            "and a caller's explicit propose is never silenced by it"
+        );
+        assert!(
+            attestation_suppressed(false, false, true, false, true),
+            "with the cadence not due it is quiet — which is the anti-storm rule, not the horizon"
+        );
+        assert!(
+            attestation_suppressed(false, false, false, true, true),
+            "with no quorum in reach it withholds, and that is the half the row mistook for a stall: \
+             there is nothing reachable to attest to"
         );
     }
 

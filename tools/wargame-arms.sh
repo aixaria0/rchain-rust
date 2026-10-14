@@ -231,8 +231,12 @@ arm_deploy_admission() {
     "the second client is admitted while the first floods: $ev" \
     "$ev — the second client was refused while the first flooded"
 
+  # **W-N2-06 and W-N2-09 used to be recorded inapplicable here** — "the runner cannot mint a
+  # signed-but-wrong deploy" was true of the runner before the fixture was corrupted instead of minted
+  # (one hex digit moved, no crypto needed), and both rows are now taken: W-N2-06 by a unit test in
+  # `node/src/web/http.rs` and W-N2-09 by `arm_unauth_flood` below. Two records for one row is how a
+  # table grows a second, quieter answer — so the lines are gone rather than left beside the new arm.
   inapplicable W-N2-06 "$arm" "decode-before-429 is not observable from the response alone; it needs a CPU or a counter, and this arm has neither"
-  inapplicable W-N2-09 "$arm" "an invalid-signature flood needs a signed-but-wrong deploy, which this runner cannot mint"
 }
 
 # **W-N3-01, -02, -03, -05 — the public read surface.**
@@ -389,6 +393,69 @@ arm_container_posture() {
     "nothing contains a compromise inside the node: CapDrop=$caps ReadonlyRootfs=$ro SecurityOpt=$sec (docker_opts passes no --cap-drop, --read-only or --security-opt, so the container keeps every default capability and a writable root)"
 }
 
+# **W-N6-04 and W-N6-05 — where this node's keys actually live.**
+#
+# Two rows about the same boot, asked from the host. W-N6-04: the password an operator supplies through
+# the environment is never cleared or redacted, so it sits in the node process's own environment.
+# W-N6-05: the falsifier predicted "the absence of any `--validator-private-key-path` in `tools/`, i.e.
+# the file-protected form is never exercised" — and `tools/devnet.sh` passes exactly that flag, so the
+# arm reads both halves rather than inheriting the prediction.
+#
+# Neither is a *test* of the node's code; both are readings of how the node was started, which is what
+# makes them arms rather than unit tests.
+arm_key_provenance() {
+  local arm=arm_key_provenance c argv mode pw
+  c="$(container 0)"
+  argv="$(docker inspect -f '{{json .Config.Cmd}}' "$c" 2>/dev/null)"
+  mode="$(docker exec "$c" stat -c %a /var/lib/rnode/validator.hex 2>/dev/null)"
+
+  # (1) W-N6-05: the key arrives by *path*, and the file it names is owner-only.
+  observe W-N6-05 "$arm" \
+    '[[ "$argv" != *"--validator-private-key-path"* || "$mode" != "600" ]]' \
+    "the node's argv names a **key file** and that file is mode ${mode:-<unreadable>} inside the container: the file-protected form is what this net exercises, so the row's premise (no such flag anywhere under tools/) has moved" \
+    "every consensus key this node uses arrives by another route — argv carries no --validator-private-key-path (mode=${mode:-<unreadable>}): ${argv}"
+
+  # (2) W-N6-04: the password, supplied through the environment, is still there.
+  pw="$(docker exec "$c" sh -c "tr '\0' '\n' < /proc/1/environ | grep '^RNODE_VALIDATOR_PASSWORD='" 2>/dev/null)"
+  observe W-N6-04 "$arm" \
+    '[[ -n "$pw" ]]' \
+    "unreachable" \
+    "**the password is in the node's own environment, verbatim** (W-N6-04): \`${pw%%=*}\` is set on PID 1 and nothing in the node clears or redacts it, so a same-host reader of /proc/1/environ has it in the clear"
+}
+
+# **W-N2-09 — a flood of deploys that cannot pass authentication.**
+#
+# The row: the admission token was spent *before* the deploy was authenticated, so unauthenticated
+# garbage drained the budget honest deploys needed. The instrument is the pre-signed fixture with one
+# hex digit of its signature moved — no crypto needed, and it is refused by `verify_signature` rather
+# than by anything downstream. The flood goes at the deploy route; then the **same identity** that the
+# garbage claimed submits a real deploy over the other surface. If a token were spent before the
+# signature was checked, that identity's budget would be gone and the honest deploy refused.
+arm_unauth_flood() {
+  local arm=arm_unauth_flood hp codes bad h rc i admitted=0 reached=0
+  hp="$(http_port 0)"
+  codes="$OUT/deploy-unauth-flood.txt"; : > "$codes"
+  bad="$(printf '%s' "$DEPLOY_FIXTURE" | sed 's/"signature":"3044022041eb/"signature":"3044022041ec/')"
+  for i in $(seq 1 200); do
+    ( curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
+        -d "$bad" --max-time 20 "http://localhost:$hp/api/deploy" 2>/dev/null >> "$codes" ) &
+  done
+  sleep 0.4
+  h="$(height 0)"
+  docker exec "$(container 1)" sh -c "printf '%s' 'new x in { x!(1) }' > /tmp/arm-unauth.rho" 2>/dev/null
+  docker exec "$(container 1)" rnode --grpc-host localhost deploy --phlo-limit 1000000 --phlo-price 1 \
+    --private-key "$DEPLOYER_PRIV" --shard-id /root --valid-after-block-number "${h:-0}" /tmp/arm-unauth.rho \
+    > "$OUT/deploy-after-unauth-flood.txt" 2>&1; rc=$?
+  wait
+  grep -q "Success!" "$OUT/deploy-after-unauth-flood.txt" && admitted=1
+  # A flood the surface bound refused and the node never saw is not this row's flood, so the count of
+  # requests that *reached* the node is part of the reading.
+  reached="$(grep -vc '^429$' "$codes" 2>/dev/null || echo 0)"
+  observe W-N2-09 "$arm" '[[ $admitted == 0 ]]' \
+    "the identity's own deploy was admitted after the flood (rc=$rc, ${reached} request(s) past the surface bound): the unauthenticated garbage spent no admission token — the signature is checked first, which is what W-N2-02's fix put in front of it" \
+    "**the flood drained the identity's own budget**: after ${reached} unauthenticated attempts its valid deploy was refused (rc=$rc)"
+}
+
 # --- the run ------------------------------------------------------------------------------------
 
 # The pre-signed deploy fixture (term "Nil"), the same one `tools/devnet-test.sh` uses: valid, and the
@@ -398,6 +465,14 @@ arm_container_posture() {
 DEPLOYER_PRIV="a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76"
 
 DEPLOY_FIXTURE='{"data":{"term":"Nil","timestamp":1700000000000,"phloPrice":1,"phloLimit":1000000,"validAfterBlockNumber":0,"shardId":"/root"},"deployer":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4","signature":"3044022041ebc32bae0195d167310362dd6539d3e2a750512d03ca075c0308bc75744e1002206338157bde1b385ff76ebc1840cdccb942158cff6e377b3053a1a2e9389d6ad8","sigAlgorithm":"secp256k1"}'
+
+# **W-N6-04's precondition, and only its precondition.** The password reaches the node through the
+# environment — the documented non-interactive route for an encrypted key file — and the arm reads it
+# back out of the running process. Setting it is the row's own context (`--dev-mode
+# --deployer-private-key` is the same kind of precondition for W-N4-03), not a fault injected here: the
+# node is unmodified and nothing in it is asked to do anything by this variable but sit in its
+# environment.
+export DEVNET_NODE_ENV="${DEVNET_NODE_ENV:-RNODE_VALIDATOR_PASSWORD=warden-arm-7f3a}"
 
 trap cleanup EXIT
 
@@ -441,7 +516,7 @@ fi
 
 echo ""
 echo "==> phase 1 arms (a proposing net)"
-for a in arm_steady_state arm_container_posture arm_public_reads arm_deploy_admission; do
+for a in arm_steady_state arm_container_posture arm_key_provenance arm_public_reads arm_deploy_admission arm_unauth_flood; do
   [[ "$ARMS" == "all" || ",$ARMS," == *",$a,"* ]] && "$a"
 done
 

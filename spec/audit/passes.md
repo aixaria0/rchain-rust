@@ -11015,3 +11015,347 @@ what `--validator-private-key-path` reads and what the key loader accepts — so
 of the exposure. What *would* be one is a file another user can read, and nothing asserted this one cannot;
 `the_ceremonys_key_file_is_owner_only` does, and a hand-rolled `std::fs::write` (mode from the umask)
 reddens it.
+
+## 128. The check that read three of the page's rows as nothing at all (C313)
+
+`tools/check-wargame.sh` promises that every Table A row is decided and evidenced. It opened its row
+branch with `if (NF != 12) next` — a row whose shape was wrong was **skipped**, not refused — and it
+read every field by position, the falsifier at position 11 (the header's tenth column).
+
+Three rows of `docs/src/spec/adversary.md` were written with an eleventh cell and **no closing
+delimiter** (W-N2-06, W-N2-09, W-N4-02: each carried a "— not armed" note appended after its
+falsifier). The missing delimiter and the extra cell cancel in a field count, so those rows had twelve
+fields like every other row and were skipped on *no* grounds at all: their falsifiers had never been
+read, and two guide words (W-N2's LATE and EARLY) were carried by those very rows and nowhere else, so
+coverage the page claimed rested on rows no check could see. The page's own Table B header was also
+missing a column in this tool's doc comment — the contract a reader copies was nine columns wide while
+the page is ten.
+
+**The repair is one shape, applied twice.** A Table A row must now have exactly the cell count its own
+header declares — *cells*, not fields, because the delimiter's absence is what hid these — and every
+field is read **by column name** against that header rather than by position. The `next` became a
+`problem()`, the totals line prints what was refused (`97 rows (0 unread)`, so a skip would be visible
+rather than implied), and the header itself is checked for the ten columns the reader indexes.
+
+**Falsified in both directions.** An eleventh cell planted on a closed row (W-N3-04) reddens with
+`12 cells where the header declares 10`; the three rows that were invisible redden with `11 cells where
+the header declares 10` until their note is folded into the falsifier cell. And the check now reports
+what it always should have: a row whose guide word has no other carrier fails as well, which is what
+happens when a row it cannot read is removed from the census.
+
+**What it still cannot do, said rather than implied.** It reads the *shape* of the header, not the
+meaning of a cell: a falsifier naming the wrong test in the right column passes, and `owed:` remains a
+legal cell — this check asks whether the citation resolves, not whether it is the right citation.
+
+## 129. Five rows the tree had already answered, and the page had not been told (C314)
+
+Four of the five needed nothing but reading the code the cell names; one needed the arm its neighbour
+already had. Each is named with what the *tree* says, because the cells were written before it.
+
+**W-N2-06 — the rate check fires after the body is decoded.** It does not any more, and had not for some
+time: the bound is a `route_layer` over exactly the deploy routes (`node/src/web/http.rs:1356-1365`), and
+its own comment cites this row. The instrument the cell asked for ("decode allocations/CPU before the
+first 429") is no longer the only way to see it, because the *order* is observable from outside:
+`the_limiter_is_consulted_before_the_deploy_body_is_decoded` sends a **malformed** 64 KiB body to an
+exhausted limiter and asserts `429` — a status the extractor could not produce for that body — then sends
+the same body with the bound slack and asserts `400`, which is what makes the first arm a fact about the
+order rather than about the route.
+
+**W-N2-09 — the rate token is spent before authentication.** Also the other way now: `verify_signature`
+(`casper/src/api/block_api_impl.rs:530`) runs before `admit_deploy`'s per-deployer token
+(`casper/src/dag.rs:1341`), and the DAG's own comment says why the halves exist — so the submitter's
+bounds refuse a flood *before* the node pays to parse it. Taking this falsifier needs a flood that
+outruns two limiters at once, because the DAG's per-deployer rate and each HTTP/gRPC surface's rate are
+all 100/s: one surface cannot drain the deeper bound, which is what the last run measured as "the surfaces
+are not one pool". **Left owed here, taken on the rig** (commit 6), where both surfaces can be driven at
+once — a unit test would either fake the DAG or take a minute to be flaky.
+
+**W-N4-07 — the node dials a caller-named internal target.** Reproduced by
+`the_admin_route_makes_the_node_dial_a_peer_and_refuses_a_link_local_target`: with
+`enable-ocapn-dial` set, the route is handed a sturdyref whose hint is loopback, the node dials it and
+fetches the object (200), and the only unconditional refusals are link-local and the metadata endpoint
+(502). The row is CONFIRMED and this is its falsifier *taken*, not a claim that the surface is closed —
+what would refute it is a policy that refuses a caller-named internal target by default.
+
+**W-N8-04 — a peer that proved nothing mints a kit.** Reproduced by
+`a_captp_peer_holds_an_ertp_issuer_and_calls_it`: a client on `tcp-testing-only` holding an
+`Identity::fresh` (no bond, no registration, no proof of any kind) asks `rho:rchain:ertp` for
+`makeIssuerKit` and is handed three capabilities. Same shape as W-N4-07: the committed test *is* the
+deviation, and the row stays CONFIRMED until a registry insert is gated on the caller's identity, which
+is W-N8-01's missing half.
+
+**W-N4-08 — the tap proposes while the flag says halted.** This one is the **reverse** of the row as
+written, and the cell says so: the tap is halted with the timer now. `fire_autopropose_tap` was lifted
+out of the closure that owned its queue, log and health cell — the row is about two things no closure
+can show from outside, whether a request is handed over and whether the refusal is counted — and
+`a_halted_timer_suppresses_the_tap_and_counts_what_it_refused` drives both arms. Red without the guard,
+green with it.
+
+**Counted.** The page went from 27 owed to 23 in this commit, and the four cells that closed are column
+10 of their rows — the count is taken by reading that column, not by trusting a note.
+
+## 130. The capability wire: three deviations reproduced, two rows held against their verdicts (C315)
+
+Five of W-N8's six owed cells close here, and the rig's vocabulary earns its keep: two of the five came
+back **held** against the artifact's `CONFIRMED`, which is a MISMATCH and is recorded as one rather than
+folded into "armed".
+
+**W-N8-01 — armed.** A stranger's delivery to `revVault/getBalance` over `tcp-testing-only` is answered
+by a deploy the *node* signs, out of the node's own wallet: the balance the capability returns is the
+genesis wallet's less the phlo that very delivery spent, so the absent million is the node's key. The
+cell's second half — that the node records which session asked — is what is missing, and the cell says
+so.
+
+**W-N8-03 — armed.** A relay this test owns sits between the peer and the websocket listener, copies both
+directions, and reads the node's records verbatim: the node's own `no such export` refusal is in the
+bytes it forwarded. The peer's direction carries websocket's per-frame mask, which the cell names as
+framing rather than confidentiality, because the masking key travels in the header the relay is already
+copying.
+
+**W-N8-08 — armed.** The object runs before the answer position is checked (`ocapn/src/conn.rs:761`
+before `:817`/`:835`), and the arm proves the order with an object that counts how often it was
+delivered to: two, where a check-first order reads one. Hoisting the check reddens it at exactly that
+assertion. For a chain-backed capability "the object ran" *is* the bridge's submitted deploy.
+
+**W-N8-02 — held, and a MISMATCH.** The row says the looped session exhausts the shared limiter and the
+honest one gets nothing. Measured: a second session sent more than a hundred deliveries at the same
+capability in four seconds and an unrelated session's single delivery was **served**, first try, three
+descriptors back. The budget's subject is the session, not the node.
+
+**W-N8-05 — held, and a MISMATCH.** The row says each ephemeral session key is a distinct peer and no
+peer has continuity across reconnects. Measured: three dials — two sharing an identity, a third with a
+fresh key and the same claimed name — leave the registry holding **one** peer. What binds a peer is the
+designator it asserts, not the key it mints, so the row's two clauses do not reproduce; the shape that
+does is the inversion (a stranger *claims* a name rather than adding peers), and that is C243's row.
+
+**Three instruments failed before these readings were worth anything, and each failure looked like a
+result.** (1) The wallet balance cannot count deploys: a deploy's phlo *limit* is pre-charged and the
+unused part refunded, so a balance read counts net execution cost — hundreds of phlo, not the million a
+delivery's own reading shows while its pre-charge is held. (2) A block cannot witness a submission in
+dev mode: `proposer.rs:1162` injects a dummy deploy when the pool is empty, so a block appears with the
+work or without it. (3) The flood's own reply histogram is not a reading *either*: counting each answer
+inside the loop paces the loop at the socket's round trip, so the flood thins and the budget refills
+between sends — which is how a first draft of W-N8-02 read the opposite of the truth.
+
+**And one arm was built and discarded rather than shipped**, which is worth recording so nobody rebuilds
+it: a node-side W-N8-08 arm reading the deploy *pool* through `/api/deploys`. It cannot work. The bridge
+only returns its `Act` after the deploy it submitted lands in a block, so with propose-on-deploy on the
+pool has drained by the time the refusal arrives, and with it off the bridge's delivery never returns at
+all and no abort comes — the session simply sits there. The order the row is about is real, and the
+ocapn-level arm is where it can be observed.
+
+**Counted.** The page went from 23 owed to 18 in this commit, by reading column 10 of every row.
+
+## 131. The validator's own rows: four readings, and one bound that stays at the tap (C316)
+
+Five rows, four arms and one decision. Two of the arms **re-established** deviations the referee had
+recorded as `NOT-RE-ESTABLISHED`, which is the other direction of mismatch and is recorded as one.
+
+**W-N9-01 — armed, and the row is refuted.** The claim was that past `ATTESTATION_HORIZON` the guard
+suppresses "unconditionally" once `attestation_inputs` returns `new_state_transition = false`, so an
+honest validator can silence finality with no fault of its own. The horizon withdraws the **licence to
+attest promptly**, not the ability: with a quorum in reach and the cadence due the guard attests anyway,
+and a caller's explicit propose is never silenced by it. The one arm that does withhold is the arm where
+nothing is reachable — which is exactly the half the row read as a stall. The two decisions are now
+asserted beside the two the test already pinned.
+
+**W-N9-04 — armed.** A `Proposer` with the flag armed emits the block and its twin, and the twin's
+*body* is in the block store. **The body, not just the hash**, because a peer answers a hash
+announcement by asking for the block: the flag's first version broadcast 45 twins that nobody could
+receive, so it measured nothing. Dropping the `put_block` write reddens exactly that assertion and
+nothing else, which is the check that the arm is about the store rather than about the twin's shape
+(the neighbour test already pins the shape).
+
+**W-N5-06 — armed, re-establishing a NOT-RE-ESTABLISHED verdict.** Two boots over one data directory
+with different key files: the second comes up under an identity the chain has never seen, and no file in
+the data directory names either key. The control matters here — the same directory *does* keep its
+`shard-id` and `store-format` markers, so the absence is a fact about a directory that writes markers and
+not a directory nobody looked at. The first draft of this arm wrote its key files *into* the data
+directory and then found them; the fix was to move the fixture out, which is worth recording because the
+failure looked like a finding.
+
+**W-N5-08 — armed, re-establishing the same.** `casper.validator_private_key` is a plain
+`Option<String>` and it still holds the whole 64-hex after the identity has been derived from it. The
+only scrub in the tree is `PrivateKey::drop`, which zeroizes the crypto type's copy — the config's copy
+is a `String` with no drop glue that touches it. So the referee's `NOT-RE-ESTABLISHED` was too generous,
+and this is the reading that says so.
+
+**W-N14-04 — decided, not armed.** The age bound is applied at the attestation tap and nowhere else, and
+the code says why: *"only the tap is gated: a deploy and the not-due retry still propose, so a
+catching-up node that is handed work does it."* That is a deliberate choice about catch-up, and the
+row's falsifier — proposals produced per replayed block handed to a catching-up node — needs blocks
+carrying proposer-signed **stale** timestamps. No instrument in this tree can mint one, so the cell names
+what would close it instead: one time bound applied wherever block time is consumed, not only at the tap.
+
+**Counted.** The page went from 18 owed to 13 in this commit, by reading column 10 of every row.
+
+## 132. The three live defects, armed — and one of them is also fixed (C317–C319)
+
+Three rows whose deviations are real and whose falsifiers were owed. All three are armed here. One of
+them could be closed where it stands; two cannot, and the reason is written down rather than implied:
+**both remaining fixes change a consensus rule or a block format**, which is its own unit — the
+precedent W-N14-03 already set (C297, §119).
+
+**W-N9-08 — armed, and the artefact is fixed (C317).** A real validator key over a hash nothing ever
+produced is accepted by `verify_attestation`, and it always will be: the tool is offline, holding one
+JSON document, with no chain, no bond map and no quorum, so it cannot check the claim. The row's class is
+an observability gap, and that is what is closed: the verdict names the statement the signature covers
+("this sender signed this block hash over this nonce") beside the three it does not establish — that the
+block was finalised, that the sender is bonded, that a quorum agrees. An operator, or the reconciliation
+meet that weighs these, reads a claim rather than a bare `verified`.
+
+**W-N9-03 — armed; the fix is a rule change (C318).** The guard measures reachable stake against
+`compute_bonds(pre_state_hash)` and the finaliser against `compute_bonds(prev_fringe_state)`, and those
+are different maps the moment a bond change sits between the two roots. The arm is that shape, measured:
+the genesis post-state *is* the fringe, one slashing block sits above it un-finalised, and the stake the
+denominator is measured against halves — 200 against 100. **Which root is correct is not decided here.**
+Choosing one changes the quorum rule, so the fix is named for its own unit: one root, and the rule that
+says which.
+
+**W-N9-06 — armed; the fix is a format change (C319).** One evidence header, two honest receivers, two
+verdicts: the node holding the victim's first block adjudicates the equivocation, and the node that has
+not received that block refuses the *same evidence* — `UnjustifiedSlash` — so the two take their bond
+maps apart. The fix is not a check but a *payload*: the slashing block has to carry its own evidence, so
+that the verdict is a function of what was signed rather than of what the receiver happens to hold.
+That is a block-format change and therefore a hard fork, named here and taken nowhere in this unit.
+
+**The arms, stated as instruments.** W-N9-03's is the existing post-state bond read extended to the
+*other* root, because the numbers only matter beside each other; W-N9-06's is the existing evidence test
+extended to a second receiver, because one DAG cannot show a receiver-dependence; W-N9-08's is the row's
+own construction — a genuine signature over an invented hash — with the verdict's words asserted, since
+the words are the fix.
+
+**Counted.** The page went from 13 owed to 10 in this commit, by reading column 10 of every row.
+
+## 133. Four rows another session was probing, taken here (C320–C323)
+
+These four were being worked in a second checkout of this repository — `W-N5-01`, `W-N5-03`, `W-N5-05`
+and `W-N2-05`, with probes uncommitted in a shared working tree. The rule agreed for this unit was
+*check, then take if unclaimed*: on 2026-10-14 nothing of theirs had landed on `dev`, the probe files
+were still untracked, and their branch had not moved — so the rows are taken here, in this unit's own
+tests, rather than left owed against work nobody had claimed.
+
+**Two of the four readings disagree with the row, and the reading wins.**
+
+**W-N2-05 — armed, and the deviation is live.** A byte-identical re-submission of a deploy is
+**admitted again**, and the pool still holds exactly one copy afterwards. That contrast is the row
+precisely: "admitted once" is true of the pool and false of the work, because the pool keys on the
+signature and nothing asks the pool before the term is parsed and normalised. The arm asserts both
+halves — the second admission *and* the single copy — so an implementation that started accumulating
+copies would read differently rather than silently.
+
+**W-N5-01 — armed, and the reading is the reverse of the row's story.** The row expected a
+command-line `--validator-private-key-path` to be shadowed by a config-file hex, and measured it is;
+what the row did not say is *why*, and the why is worse than the what: precedence is decided per
+**form** (an explicit hex beats a path) and not per **layer**, so the config file — the lower layer —
+wins over the command line, because it used the higher-precedence form. An operator who typed the flag
+gets the file's key, with no word from any layer.
+
+**W-N5-03 — armed.** The non-interactive route to an encrypted keyfile is the environment: with
+`RNODE_VALIDATOR_PASSWORD` set the key unlocks and the console is never prompted, and without it a
+console with nothing to give fails for the password's reason. The second half is the control that keeps
+the first a fact about the route rather than about the console. It is the same secret W-N6-04 finds
+sitting in `/proc/1/environ`.
+
+**W-N5-05 — armed.** A node configured with a public key its private key does not derive starts and
+serves. The field is parsed, mapped and read by **nothing** in the runtime — the only reader of a
+`validator-public-key` anywhere is the `bond-status` subcommand's own argument, which is a different
+thing with the same name.
+
+**Counted.** The page went from 10 owed to 6 in this commit, by reading column 10 of every row.
+
+## 134. The container's environment and its key file, and a flood that spends nothing (C324–C326)
+
+Three rows on the rig, all from arms added to `tools/wargame-arms.sh` and run against one devnet boot.
+Two runs, same verdicts; the run's table and its per-arm outputs are in
+`spec/audit/evidence/wargame/arms-cedd17d0b/`.
+
+**W-N6-04 — armed.** `RNODE_VALIDATOR_PASSWORD` is set on the node's own PID 1 and nothing in the node
+clears or redacts it, so a same-host reader of `/proc/1/environ` has the password in the clear. The arm
+sets the variable — that is the row's *precondition*, the documented non-interactive route, not a fault
+injected here — and then reads the running process's environment back out.
+
+**W-N6-05 — held, and a MISMATCH.** The row's falsifier predicted "the absence of any
+`--validator-private-key-path` in `tools/`". The devnet passes exactly that flag: the node's argv names
+`/var/lib/rnode/validator.hex`, and that file is **mode 600** inside the container, with the loader
+refusing anything looser (W-N5-09). So the file-protected form *is* what this net exercises and the
+row's premise has moved under it.
+
+**W-N2-09 — held, and a MISMATCH.** The flood is the pre-signed deploy fixture with **one hex digit of
+its signature moved** — no crypto needed, which is what the old runner recorded as impossible ("an
+invalid-signature flood needs a signed-but-wrong deploy, which this runner cannot mint") — sent 200-wide
+at the deploy route, and then the **same identity** submits a real deploy over the other surface. It is
+admitted both runs (116 and 110 requests past the surface bound), so the unauthenticated garbage spent
+no admission token: the signature is verified before the token is taken, which is the order W-N2-02's
+fix put in front of it. The stale `inapplicable` record for this row is **removed** rather than left
+beside the new arm, because two records for one row is how a table grows a second, quieter answer.
+
+**An instrument's failure worth recording.** The first run of this unit was cut short and its table is
+not committed: the runner's script was **edited while it was running**, and a shell reads a script by
+byte offset — so the edit landed inside a line the interpreter had not reached and phase 2 died on a
+syntax error it could not have read. The corrupted run's directory was deleted rather than committed,
+and the two runs that count were taken with the file left alone.
+
+## 135. Three rows whose honest answer is a decision (C327, C328, C329)
+
+The last three owed cells are the ones no instrument in this tree reaches, and each is recorded with
+the reason and with what would close it. None is closed by a claim that the deviation is absent.
+
+**The heading names the three numbers separately rather than as a range**, and that is not style:
+`tools/check-wargame.sh` resolves a `spec/audit/passes.md::C<n>` citation by looking for that number in
+this file, so an en-dash range leaves the middle one absent and the row's citation dangles.
+
+**W-N4-02 — the actuator has no caller identity to weigh.** The row wants "one identity for one
+authority": a caller refused a spend should also be refused a propose. Neither route reads an identity
+at all — the guard is the origin/bind pair — so there is nothing to compare and no spend-refusal the
+node can express. The row's own precondition is a **multi-shard** boot, and the reading it rests on is
+wrong in the page itself: `node/src/web/http.rs`'s gateway gate refuses with **404**, not the 422 the
+cell quotes. What would close it is an identity on the actuator routes, which is a node-API change and
+its own unit.
+
+**W-N7-06 — one channel for the artefact and its digest.** `.github/workflows/build-rnode.yml` uploads
+`rnode` and `rnode.sha256` as **one** artefact, and `gh run download` is the only way to obtain either,
+so a consumer reading both from that channel cannot notice a substitution that moves both. Closing it is
+not a test but a release-process decision: publish the digest on a second, independent channel. The
+falsifier is literally "obtain the artefact and its digest through the one channel", which is a CI/ops
+instrument.
+
+**W-N9-05 — the clock's behaviour, which this box cannot move.** The predicate is already pinned
+(`the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound` takes synthetic `now` values, and
+the row says so). What is owed is what the *clock* does: step it by ≥15 s while the round gate is held
+and watch whether the escape fires and whether the emitted block reuses a `seq_num`. The devnet's
+containers share the host clock and hold no `CAP_SYS_TIME`, so a container cannot step it, and the node
+exposes no seam — `now_ms()` reads `std::time::SystemTime` directly. What would close it: an injectable
+clock on the proposer, or an image carrying `libfaketime`. Both are named rather than faked: a fake
+clock that does not move the node's own time source would measure the arm rather than the node.
+
+**The residue, stated as a count.** With these three recorded, every one of the 97 Table A rows carries
+a falsifier that was taken, a decision with a reason, or a citation to the work that armed it — which is
+what the page's own rule asks for and what `tools/check-wargame.sh` now checks.
+
+## 136. Three instruments for one row, and the two that did not hold (C330)
+
+`W-N8-02` was closed in §130 as `held` on a flooding arm, and CI refused it. Getting the row to a
+reading that holds still took three instruments, and the two failures are the finding.
+
+**(1) The flood.** ~110 deliveries in four seconds left the honest session *served* here; **541** on a
+loaded CI runner got it *refused* with the share's own sentence. Both readings are real, and the
+difference is one number: the share refills at **one per second**, so what a second asker sees is where
+in the refill window it lands — and a flood's density is the runner's speed, not the rule's behaviour.
+
+**(2) One spend, then one ask.** This does not depend on a flood's density and it still flipped: served
+here three runs over, refused on CI. The reason is the same number — the window between the two asks is
+the first delivery's *reply*, which waits for a block, so the second ask lands either side of the refill
+depending on how fast that block came.
+
+**(3) Contention, which has no window to straddle.** Both sessions ask with nothing between them: one
+spends the share and the other draws the bound's sentence, and the node's order of reaching them does
+not matter because the assertion is that *exactly one* is served. That is the row as a property rather
+than as a race, and it holds run after run. Two further instrument faults died on the way: a refusal
+arrives as a **bare `[<break> reason>]` record** as often as inside a delivery, and two sessions dialling
+at once under one designator are a *crossed hello* to the node, which aborts one of them.
+
+**What this section is for.** The row's verdict was `CONFIRMED` and the deviation does reproduce — but a
+cell that had recorded either of the first two readings alone would have been recording a machine's
+speed. The three instruments, the two flips and the two faults are here so the next reader inherits the
+measurement rather than the luck.
