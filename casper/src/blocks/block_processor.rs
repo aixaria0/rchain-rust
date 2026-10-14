@@ -11,6 +11,7 @@ use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
 
 use crate::block_status::BlockStatus;
+use crate::interpreter_util::ShardHealth;
 use crate::merging::BlockIndex;
 use crate::multi_parent_casper::ValidateError;
 use crate::protocol::comm_util::CommUtil;
@@ -35,6 +36,7 @@ pub async fn validate_and_add_to_dag<F, Fut>(
     max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
+    health: &ShardHealth,
 ) -> Result<Result<(), BlockStatus>, String>
 where
     F: Fn(BlockHash) -> Fut,
@@ -50,6 +52,7 @@ where
         max_number_of_parents,
         block_index,
         log,
+        health,
     )
     .await;
     let (block_meta, status) = match result {
@@ -101,6 +104,7 @@ pub async fn apply<F, Fut>(
     comm_util: Arc<CommUtil>,
     block_index: F,
     log: Arc<dyn Log>,
+    health: ShardHealth,
 ) where
     F: Fn(BlockHash) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>> + Send + 'static,
@@ -127,6 +131,7 @@ pub async fn apply<F, Fut>(
             let block_index = block_index.clone();
             let block = block.clone();
             let log = log.clone();
+            let health = health.clone();
             handles.push(tokio::spawn(async move {
                 crate::multi_parent_casper::validate(
                     dag.as_ref(),
@@ -138,6 +143,7 @@ pub async fn apply<F, Fut>(
                     max_number_of_parents,
                     &block_index,
                     &log,
+                    &health,
                 )
                 .await
             }));

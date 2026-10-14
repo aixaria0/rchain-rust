@@ -77,9 +77,13 @@ def envelopeCatalog : List EnvelopeRow :=
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
         "autoproposeTimerHaltEpisodes", "autoproposeHalt", "autoproposeTapSuppressed",
         "staleSnapshotSelfEquivocations", "finalityStall", "finalityStalled", "finalityStallEpisodes",
+        "finalityCountersDurable",
         "resetMarker",
-        "nonQuietMergeReports", "sync", "poisonRecoveries", "unrestorableRecords", "unrestorableBlock", "tasksPanicked", "tasksExited",
-        "undeliveredSends"] }
+        "nonQuietMergeReports", "sync", "poisonRecoveries", "poisonRecoveriesScope",
+        "unrestorableRecords", "unrestorableBlock",
+        "tasksPanicked", "tasksPanickedScope", "tasksExited", "tasksExitedScope",
+        "undeliveredSends", "undeliveredSendsScope",
+        "shards"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
       keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet", "faucetRemaining"] }
   , { name := "LightBlockInfo", endpoint := "the `block` field of most responses",

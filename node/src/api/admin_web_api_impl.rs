@@ -36,11 +36,6 @@ impl AdminWebApi for AdminWebApiImpl {
             .map_err(BlockApiException)
     }
 
-    /// **The operator half of the status** (W-N3-01), read here rather than on the public listener.
-    ///
-    /// Everything it needs is reachable from `self.block_api` plus four process-wide counters — which
-    /// is why this is a method on the admin API and not a new dependency threaded into `HttpState`:
-    /// the capability was never the missing part, the *route* was on the wrong listener.
     /// **The way out of a durable halt** (W-N10-01, F-U10-02) — see the trait's doc.
     ///
     /// The fan-out to every member shard is the router's `clear_autopropose_halt`, and its error names
@@ -57,6 +52,11 @@ impl AdminWebApi for AdminWebApiImpl {
             .map_err(BlockApiException)
     }
 
+    /// **The operator half of the status** (W-N3-01), read here rather than on the public listener.
+    ///
+    /// Everything it needs is reachable from `self.block_api` plus four process-wide counters — which
+    /// is why this is a method on the admin API and not a new dependency threaded into `HttpState`:
+    /// the capability was never the missing part, the *route* was on the wrong listener.
     async fn operator_status(&self) -> Result<OperatorStatus, BlockApiException> {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
@@ -69,6 +69,9 @@ impl AdminWebApi for AdminWebApiImpl {
         // this surface instead of only on stderr. `None` is the ordinary reading — the task has
         // returned — and it is not the same as a completed sync.
         let sync = self.block_api.sync_health().await;
+        // **Every member shard's health** (W-N10-04), which is what makes a non-primary shard's halt
+        // visible: the flat fields above are the primary's, and only this map reaches the others.
+        let shards = self.block_api.health_by_shard().await;
         let core = super::conversion::to_public_status(&status, &caps);
         Ok(super::conversion::to_operator_status(
             core,
@@ -100,6 +103,7 @@ impl AdminWebApi for AdminWebApiImpl {
             // C254's other residual: `rchain_shared::chan` counts every send a closed channel
             // swallowed, and nothing published the count.
             rchain_shared::chan::undelivered_sends(),
+            Some(shards),
         ))
     }
 }
@@ -108,7 +112,7 @@ impl AdminWebApi for AdminWebApiImpl {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use rchain_casper::api::block_api::{ApiErr, Capabilities};
+    use rchain_casper::api::block_api::{ApiErr, Capabilities, FinalityHealth, ShardHealthEntry};
     use rchain_casper::runtime_manager::CapturedReply;
     use rchain_models::ast::Par;
     use rchain_models::block_metadata::BlockMetadata;
@@ -117,6 +121,7 @@ mod tests {
         BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
         Status,
     };
+    use std::collections::BTreeMap;
 
     struct StubBlockApi;
     #[async_trait]
@@ -147,6 +152,20 @@ mod tests {
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
         async fn clear_autopropose_halt(&self) -> Result<(), String> {
             Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
         }
 
         async fn get_unfinalised_name_data_response(

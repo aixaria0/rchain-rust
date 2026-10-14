@@ -20,7 +20,7 @@ use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
 
 use crate::block_status::BlockStatus;
-use crate::interpreter_util::{validate_block_checkpoint, ResetRequest};
+use crate::interpreter_util::{validate_block_checkpoint, ResetRequest, ShardHealth};
 use crate::merging::{
     rejections_of_fringe, BlockIndex, DeployChainIndex, MergeOutcome, MergeReport, MergeScope,
     ParentsMergedState, RejectionsMap,
@@ -737,6 +737,7 @@ pub async fn clear_own_failure_record<F, Fut>(
     block_index: &F,
     sender: &Validator,
     log: &Arc<dyn Log>,
+    health: &ShardHealth,
 ) -> bool
 where
     F: Fn(BlockHash) -> Fut,
@@ -817,6 +818,7 @@ where
             max_number_of_parents,
             block_index,
             log,
+            health,
         )
         .await;
         // **A fault is not a verdict** (C253's E3/E5). `Internal` says *this node* could not run the
@@ -864,7 +866,10 @@ where
                 // The write returned, so a request raised here names a count the store holds. A restored
                 // record takes the arm above — its budget is not spent, so the note there would be a
                 // no-op and is not called.
-                note_unrestorable_if_exhausted(dag, shard_id, &committed, &hash, source, log).await;
+                note_unrestorable_if_exhausted(
+                    dag, shard_id, &committed, &hash, source, log, health,
+                )
+                .await;
                 continue;
             }
             Err(e) => log.error(
@@ -967,11 +972,23 @@ async fn note_unrestorable_if_exhausted(
     hash: &BlockHash,
     source: LogSource,
     log: &Arc<dyn Log>,
+    // **This shard's health cells** (W-N10-02): the count of blocks given up on is the shard's history,
+    // so it is this shard's cell and it is persisted here — the event is rare, so every one is stored.
+    health: &ShardHealth,
 ) {
     if !restore_budget_is_spent(record) {
         return;
     }
-    crate::interpreter_util::note_unrestorable(&hash.to_hex(), i64::from(record.seq_num));
+    health.note_unrestorable(&hash.to_hex(), i64::from(record.seq_num));
+    if let Err(e) = health.persist_counters(dag).await {
+        log.warn(
+            source.clone(),
+            &format!(
+                "a block was given up on but the count was not recorded: {e} — this shard will \
+                 under-report it in the next process"
+            ),
+        );
+    }
     log.error(
         source,
         &format!(
@@ -1186,6 +1203,7 @@ async fn restore_divergent_justifications<F, Fut>(
     max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
+    health: &ShardHealth,
 ) where
     F: Fn(BlockHash) -> Fut,
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
@@ -1238,6 +1256,7 @@ async fn restore_divergent_justifications<F, Fut>(
             max_number_of_parents,
             block_index,
             log,
+            health,
         )
         .await;
         let (record, restored) = match revalidated_record(&stored, outcome) {
@@ -1290,7 +1309,7 @@ async fn restore_divergent_justifications<F, Fut>(
         // **The note runs on the committed record** (law 75): the write returned, so a request raised
         // here names a count the store holds. Above the write it would be a request whose premise the
         // store may not have accepted.
-        note_unrestorable_if_exhausted(dag, shard_id, &committed, j, source, log).await;
+        note_unrestorable_if_exhausted(dag, shard_id, &committed, j, source, log, health).await;
 
         if restored {
             log.warn(
@@ -1323,6 +1342,7 @@ pub async fn validate<F, Fut>(
     max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
+    health: &ShardHealth,
 ) -> Result<BlockMetadata, ValidateError>
 where
     F: Fn(BlockHash) -> Fut,
@@ -1338,6 +1358,7 @@ where
         max_number_of_parents,
         block_index,
         log,
+        health,
     )
     .await;
 
@@ -1351,6 +1372,7 @@ where
         max_number_of_parents,
         block_index,
         log,
+        health,
     )
     .await
 }
@@ -1372,6 +1394,7 @@ async fn validate_checks<F, Fut>(
     max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
+    health: &ShardHealth,
 ) -> Result<BlockMetadata, ValidateError>
 where
     F: Fn(BlockHash) -> Fut,
@@ -1407,7 +1430,7 @@ where
 
     // Replay validation.
     let (block_metadata, validated) =
-        validate_block_checkpoint(runtime, dag, block_store, block, block_index, log)
+        validate_block_checkpoint(runtime, dag, block_store, block, block_index, log, health)
             .await
             .map_err(|e| ValidateError::Internal(format!("validateBlockCheckpoint failed: {e}")))?;
     match validated {

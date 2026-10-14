@@ -575,6 +575,100 @@ async fn the_guard_refuses_a_rewinding_whose_anchor_body_is_absent() {
     );
 }
 
+/// **The shard's stall, merge and give-up counters survive a restart** (W-N10-02).
+///
+/// The row: `STALL_EPISODES`, `NON_QUIET_MERGE_REPORTS` and `UNRESTORABLE_RECORDS` were process-global
+/// statics, so an operator who restarted to clear an alarm was told the shard had never stalled. The
+/// three are now one shard's cells, written on a *transition* rather than on every observation, and
+/// stored beside the reset marker and the halt record.
+///
+/// **The falsifiers, stated.** (a) Make `write_health_counters` a no-op: the fresh read is `None`, so
+/// the seeded cell is zero and the assertion after the seed fails. (b) Persist the counter on every
+/// observation instead of on the transition — the *second* assertion below (a non-transition leaves the
+/// store untouched) is what catches it, and it is why this test drives a run of refusals rather than
+/// one. (c) Drop the boot seed (make `seed_counters` a no-op): the fresh cell stays at zero.
+#[tokio::test]
+async fn the_shard_health_counters_survive_a_restart() {
+    use rchain_block_storage::dag::dag_storage::HealthCounters;
+    use rchain_casper::interpreter_util::ShardHealth;
+
+    let dag = build_dag().await;
+
+    // --- before the restart: a sustained stall, a non-quiet merge, a block given up on -------------
+    let before = ShardHealth::new();
+    let partial = rchain_block_storage::dag::finalizer::NoAdvance::Support {
+        supporting: 100,
+        total: 400,
+        full_partitions: 1,
+        candidates: 1,
+        partition: 4,
+    };
+    // Seven refusals are *pacing* on a four-sender net, so nothing is written yet — the transition is
+    // what the caller persists, and the store must still be empty.
+    for _ in 0..7 {
+        assert!(!before.note_finality_stall(Some(&partial)));
+    }
+    assert!(
+        dag.read_health_counters()
+            .await
+            .expect("readable")
+            .is_none(),
+        "a run that has not reached the threshold is not a transition, so nothing is written yet"
+    );
+    // The eighth refusal reaches `2 * partition` and *is* the transition.
+    assert!(before.note_finality_stall(Some(&partial)));
+    before
+        .persist_counters(dag.as_ref())
+        .await
+        .expect("the transition persists");
+    before.note_non_quiet_merge_report();
+    before.note_unrestorable("deadbeef", 42);
+    before
+        .persist_counters(dag.as_ref())
+        .await
+        .expect("the give-up persists");
+
+    // --- the restart ------------------------------------------------------------------------------
+    let stored = dag
+        .read_health_counters()
+        .await
+        .expect("the record is readable")
+        .expect("a transition was recorded");
+    assert_eq!(stored.stall_episodes, 1, "one stall episode");
+    assert_eq!(stored.non_quiet_merge_reports, 1);
+    assert_eq!(stored.unrestorable_records, 1);
+
+    let after = ShardHealth::new();
+    assert_eq!(after.stall_episodes(), 0, "a fresh cell starts at zero");
+    assert!(!after.counters_durable());
+    after.seed_counters(Some(stored));
+    assert_eq!(after.stall_episodes(), 1, "the shard's stall history");
+    assert_eq!(after.non_quiet_merge_reports(), 1, "its merge history");
+    assert_eq!(after.unrestorable_records(), 1, "and what it gave up on");
+    // **The current-state cells are NOT seeded**, which is the decision rather than an omission: a
+    // restarted shard that observed nothing has no current verdict.
+    assert_eq!(after.finality_stall_reason(), None);
+    assert!(!after.finality_stall_sustained());
+    assert_eq!(after.unrestorable_block(), None);
+    assert!(
+        after.counters_durable(),
+        "a seeded cell says its counts are the shard's"
+    );
+
+    // --- and a store that cannot answer reads as **unknown**, not as zero -------------------------
+    let storeless = build_dag_without_marker_store().await;
+    let unknown = ShardHealth::new();
+    assert!(
+        unknown.persist_counters(storeless.as_ref()).await.is_err(),
+        "a backend with nowhere to keep the counters refuses to claim it did"
+    );
+    assert!(
+        !unknown.counters_durable(),
+        "and the surface says so rather than letting the zero read as 'never stalled'"
+    );
+    let _ = HealthCounters::default();
+}
+
 /// **A halt survives the restart, and the next boot reads it** (W-N10-01, F-U10-02).
 ///
 /// The row: the autopropose halt was process-scoped where the fault outlives the process, and the

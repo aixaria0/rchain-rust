@@ -7,8 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::{
-    BlockDagStorage, DeployId, DeployPermit, DeployerLookup, HaltRecord, ResetMarker,
-    HALT_RECORD_KEY, RESET_MARKER_KEY,
+    BlockDagStorage, DeployId, DeployPermit, DeployerLookup, HaltRecord, HealthCounters,
+    ResetMarker, HALT_RECORD_KEY, HEALTH_COUNTERS_KEY, RESET_MARKER_KEY,
 };
 
 use rchain_block_storage::dag::finalizer::Message;
@@ -172,16 +172,18 @@ pub struct BlockDagKeyValueStorage {
     /// CLI still parses, and reported as armed-but-inert on every insert. See
     /// [`Self::with_merge_divergence_injection`].
     merge_divergence_injection: u8,
-    /// **The shard's durable records** — the store a reset writes itself into (F-U5-01, register C274)
-    /// and the one an autopropose halt writes itself into (W-N10-01, F-U10-02). One store, one reserved
-    /// key each: [`RESET_MARKER_KEY`] and [`HALT_RECORD_KEY`], both literals so neither can collide with
-    /// a block entry or with the other.
+    /// **The shard's durable records** — the store a reset writes itself into (F-U5-01, register C274),
+    /// the one an autopropose halt writes itself into (W-N10-01, F-U10-02), and the one this shard's
+    /// monotone health counters write into (W-N10-02). One store, one reserved key each:
+    /// [`RESET_MARKER_KEY`], [`HALT_RECORD_KEY`] and [`HEALTH_COUNTERS_KEY`], all literals so none can
+    /// collide with a block entry or with the others.
     ///
     /// Attached by [`Self::with_reset_marker`], whose name records which record needed it first; `None`
-    /// in fixtures that do neither, and then both writes refuse — which is what stops a reset from
-    /// running with no way for a crash to be repaired, and makes a halt's durability a fact the surface
-    /// states rather than assumes. See [`ResetMarker`] for why that record is two phases, and
-    /// [`HaltRecord`] for why this one is not.
+    /// in fixtures that use none of them, and then every write refuses — which is what stops a reset
+    /// from running with no way for a crash to be repaired, and makes a halt's durability a fact the
+    /// surface states rather than assumes. See [`ResetMarker`] for why that record is two phases,
+    /// [`HaltRecord`] for why this one is not, and [`HealthCounters`] for why its three counters are
+    /// persisted on a transition rather than on every observation.
     reset_marker: Option<Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<u8>>>>,
 }
 
@@ -896,6 +898,42 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             return Ok(());
         };
         store.delete(&[HALT_RECORD_KEY.to_vec()]).await.map(|_| ())
+    }
+
+    /// **The shard's monotone health counters, in the same store under a third reserved key** (see
+    /// [`HealthCounters`]). The write that stops a restart from understating them (W-N10-02).
+    async fn write_health_counters(&self, counters: HealthCounters) -> Result<(), String> {
+        let Some(store) = &self.reset_marker else {
+            return Err(
+                "this DAG storage has no durable-records store attached, so this shard's health \
+                 counters would be forgotten by the next process"
+                    .to_string(),
+            );
+        };
+        store
+            .put(&[(HEALTH_COUNTERS_KEY.to_vec(), counters.encode())])
+            .await
+    }
+
+    /// The counters this shard last recorded. **Refused when the store is absent**, like
+    /// `read_halt_record` and for the same reason: "no counters recorded" is a claim about the shard's
+    /// history that a backend with nowhere to keep them cannot make, and an empty answer would read as
+    /// "never stalled" rather than "unknown".
+    async fn read_health_counters(&self) -> Result<Option<HealthCounters>, String> {
+        let Some(store) = &self.reset_marker else {
+            return Err(
+                "this DAG storage has no durable-records store attached, so this shard's health \
+                 counters cannot be read"
+                    .to_string(),
+            );
+        };
+        let raw = store
+            .get(&[HEALTH_COUNTERS_KEY.to_vec()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten();
+        raw.map(|bytes| HealthCounters::decode(&bytes)).transpose()
     }
 
     /// The equivocations the H-1 gate recorded (AUDIT C200) — see the field's own note for why they

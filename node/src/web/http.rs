@@ -994,15 +994,62 @@ pub const OPENAPI_JSON: &str = r##"{
           "finalityStall": { "type": "string", "nullable": true, "description": "The merge gate's verdict on the last block this node validated, with the numbers that make it a diagnosis (supporting stake, partitions, candidates, and the partition size it measured against). Null when that derivation advanced. NOT an alarm: on a producing chain most blocks are refused by the stake gate, because a block justifies only the messages that existed when it was built — read finalityStalled for that" },
           "finalityStalled": { "type": "boolean", "description": "Whether this node is stalled right now: the derivation has been refused for longer than a round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary partial layers of a producing chain. This is the field to alarm on; finalityStall above is its diagnosis" },
           "finalityStallEpisodes": { "type": "integer", "format": "int64", "description": "Times this node has entered a finality stall — the sustained state finalityStalled reports — monotone, so 'stalled now' is distinguishable from 'stalled and recovered'" },
+          "finalityCountersDurable": { "type": "boolean", "description": "Whether finalityStallEpisodes, nonQuietMergeReports and unrestorableRecords are the *shard's* history (true) or this process's running totals (false). False means the shard's record could not be read or written, so a restarted node would otherwise read as one that never stalled (W-N10-02)" },
           "resetMarker": { "type": "string", "nullable": true, "description": "The reset marker this node is standing under: the durable record a self-reset writes, rendered with its phase, anchor and height. Null when the node is not mid-reset. The marker is cleared only when the catch-up frontier passes its anchor, so one that stands while the height does not move says the repair is not converging (F-U12-02)" },
           "nonQuietMergeReports": { "type": "integer", "format": "int64", "description": "Merges whose report was not quiet: a chain dropped, or an invariant violated. The log carries the detail; this is the count the live incident would have moved" },
           "sync": { "type": "object", "nullable": true, "description": "The LFS sync task's own state while this node is in NodeSyncing — how many attempts it has started and why the last one failed. Null means the sync task has returned, which covers both a restored state and a node that never had to sync; it does NOT mean 'synced fine'", "properties": { "attempts": { "type": "integer", "format": "int64", "description": "Attempts the sync task has started" }, "lastFailure": { "type": "string", "nullable": true, "description": "The last named sync failure, verbatim; null while the attempt now running has not failed" } } },
           "poisonRecoveries": { "type": "integer", "format": "int64", "description": "Times a poisoned lock was recovered from, which means a panic happened while shared state was held. Process-wide and monotone" },
+          "poisonRecoveriesScope": { "type": "string", "description": "Always 'SinceProcessStart': the count is this process's, so a restart correctly zeroes it. Named so a reader does not compare it with the shard-history counters above as though the two had one lifetime (W-N10-02)" },
           "unrestorableRecords": { "type": "integer", "format": "int64", "description": "Blocks this node has given up on: a divergence record whose revalidation budget is spent and which still fails here, so the node refuses it and its descendants for the process lifetime. Nothing resets a running node yet; this is the counter a reset would act on" },
           "unrestorableBlock": { "type": "string", "nullable": true, "description": "The block the node last gave up on, as '<hash> (seq <n>)'. Null when it never has" },
           "tasksPanicked": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have panicked. Before the supervisor these deaths were invisible: a bare tokio::spawn whose handle was dropped" },
+          "tasksPanickedScope": { "type": "string", "description": "Always 'SinceProcessStart' — a supervised task's death is this process's event (W-N10-02)" },
           "tasksExited": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have returned normally, counted apart from panics because a return is the quieter death — nothing announces it anywhere" },
-          "undeliveredSends": { "type": "integer", "format": "int64", "description": "Sends a closed channel swallowed. Every production send goes through rchain_shared::chan, which keeps the decision and counts it; monotone and process-wide, so a message dropped into a closed channel is a number a probe can read rather than a silence" }
+          "tasksExitedScope": { "type": "string", "description": "Always 'SinceProcessStart' — see tasksPanickedScope (W-N10-02)" },
+          "undeliveredSends": { "type": "integer", "format": "int64", "description": "Sends a closed channel swallowed. Every production send goes through rchain_shared::chan, which keeps the decision and counts it; monotone and process-wide, so a message dropped into a closed channel is a number a probe can read rather than a silence" },
+          "undeliveredSendsScope": { "type": "string", "description": "Always 'SinceProcessStart' — the count lives in a process-wide cell, and a restart correctly zeroes it (W-N10-02)" },
+          "shards": { "type": "object", "nullable": true, "description": "**Every member shard's health, keyed by shard id** (W-N10-04), and total over the node's members. The flat fields above are the *primary's* reading; a non-primary shard whose autopropose timer has halted is visible here and nowhere else. Null when the caller is not a node with members", "additionalProperties": { "$ref": "#/components/schemas/ShardHealthDto" } }
+        }
+      },
+      "ShardHealthDto": {
+        "type": "object",
+        "description": "One member shard's health, the value of an entry in OperatorStatus.shards. The map's key is the shard id, which is the scope — there is deliberately no scope field here, because a second place to say what the key says is a second place for the two to disagree (W-N10-04)",
+        "properties": {
+          "proposer": { "$ref": "#/components/schemas/ProposerHealthDto" },
+          "finality": { "$ref": "#/components/schemas/FinalityHealthDto" }
+        }
+      },
+      "ProposerHealthDto": {
+        "type": "object",
+        "description": "One shard's proposer health, as the per-shard map carries it (W-N10-04). The same facts as the flat fields, attributable to a named member",
+        "properties": {
+          "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64" },
+          "autoproposeTimerHalted": { "type": "boolean" },
+          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64" },
+          "autoproposeHalt": { "$ref": "#/components/schemas/HaltStatusDto" },
+          "autoproposeTapSuppressed": { "type": "integer", "format": "int64" },
+          "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64" }
+        }
+      },
+      "FinalityHealthDto": {
+        "type": "object",
+        "description": "One shard's finality-and-merge health, as the per-shard map carries it (W-N10-03/04)",
+        "properties": {
+          "stallReason": { "type": "string", "nullable": true },
+          "stallSustained": { "type": "boolean" },
+          "stallEpisodes": { "type": "integer", "format": "int64" },
+          "nonQuietMergeReports": { "type": "integer", "format": "int64" },
+          "unrestorableRecords": { "type": "integer", "format": "int64" },
+          "unrestorableBlock": { "type": "string", "nullable": true },
+          "countersDurable": { "type": "boolean", "description": "Whether the three counts are the shard's history (true) or this process's totals (false) — see OperatorStatus.finalityCountersDurable (W-N10-02)" }
+        }
+      },
+      "HaltStatusDto": {
+        "type": "object",
+        "description": "The autopropose halt on record: when it happened and whether the record is trustworthy (W-N10-01, F-U10-02)",
+        "properties": {
+          "at": { "type": "integer", "format": "int64", "nullable": true },
+          "durable": { "type": "boolean" }
         }
       },
       "DeployData": {
@@ -1732,6 +1779,7 @@ mod tests {
     use async_trait::async_trait;
     use axum::body::to_bytes;
     use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+    use rchain_casper::api::block_api::{FinalityHealth, ShardHealthEntry};
     use rchain_casper::reporting::noop;
     use rchain_casper::runtime_manager::CapturedReply;
     use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
@@ -1741,6 +1789,7 @@ mod tests {
     use rchain_shared::metrics::Metrics as _;
     use rchain_shared::store::InMemoryKeyValueStore;
     use rchain_shared::typed_store::{Codec, KeyValueTypedStoreCodec, SharedStore};
+    use std::collections::BTreeMap;
     use std::marker::PhantomData;
 
     struct JsonCodec<T>(PhantomData<T>);
@@ -1825,15 +1874,21 @@ mod tests {
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            finality_counters_durable: true,
             reset_marker: None,
             non_quiet_merge_reports: 0,
             sync: None,
             poison_recoveries: 0,
+            poison_recoveries_scope: "SinceProcessStart".to_string(),
             unrestorable_records: 0,
             unrestorable_block: None,
             tasks_panicked: 0,
+            tasks_panicked_scope: "SinceProcessStart".to_string(),
             tasks_exited: 0,
+            tasks_exited_scope: "SinceProcessStart".to_string(),
             undelivered_sends: 0,
+            undelivered_sends_scope: "SinceProcessStart".to_string(),
+            shards: None,
         }
     }
 
@@ -2536,6 +2591,20 @@ mod tests {
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
         async fn clear_autopropose_halt(&self) -> Result<(), String> {
             Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
         }
 
         async fn get_unfinalised_name_data_response(

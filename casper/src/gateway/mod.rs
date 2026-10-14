@@ -518,7 +518,7 @@ mod tests {
     use crate::runtime_manager::CapturedReply;
 
     use super::*;
-    use crate::api::block_api::{ApiErr, Capabilities};
+    use crate::api::block_api::{ApiErr, Capabilities, FinalityHealth, ShardHealthEntry};
     use crate::construct_deploy;
     use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
     use rchain_models::ast::Par;
@@ -587,6 +587,20 @@ mod tests {
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
         async fn clear_autopropose_halt(&self) -> Result<(), String> {
             Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
         }
 
         async fn get_unfinalised_name_data_response(

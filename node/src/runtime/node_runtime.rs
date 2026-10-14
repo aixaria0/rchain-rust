@@ -38,6 +38,7 @@ use rchain_casper::blocks::proposer::proposer::{ProposeSource, Proposer, Propose
 use rchain_casper::conf::ShardSpec;
 use rchain_casper::dag::BlockDagKeyValueStorage;
 use rchain_casper::engine::node_launch::{self, PeerMessage};
+use rchain_casper::interpreter_util::ShardHealth;
 use rchain_casper::merging::BlockIndex;
 use rchain_casper::protocol::comm_util::{CommUtil, ConnectionsCell};
 use rchain_casper::reporting::{rho_reporter, ReportingCasper};
@@ -840,6 +841,7 @@ pub fn wire_block_processing(
     log: Arc<dyn Log>,
     autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
+    health: ShardHealth,
 ) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
     wire_block_processing_observed(
         comm_state,
@@ -851,6 +853,7 @@ pub fn wire_block_processing(
         autopropose,
         attest_on_new_blocks,
         None,
+        health,
     )
 }
 
@@ -864,6 +867,7 @@ fn wire_block_processing_observed(
     autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
     attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
     queue_metrics: Option<(Arc<MetricsRegistry>, usize)>,
+    health: ShardHealth,
 ) -> (mpsc::Sender<BlockMessage>, mpsc::Sender<BlockMessage>) {
     let (incoming_blocks_tx, incoming_blocks_rx) =
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
@@ -988,6 +992,7 @@ fn wire_block_processing_observed(
         comm_state.comm_util.clone(),
         block_index,
         log,
+        health,
     );
     tokio::spawn(processor);
 
@@ -1673,6 +1678,11 @@ async fn setup_shard_runtime(
     // reports it and the autopropose loop below is what writes it. One cell per shard, shared by
     // `Clone`.
     let propose_health = ProposeHealth::new();
+    // **This shard's finality-and-merge cells** (W-N10-02, W-N10-03) — created beside the proposer's,
+    // for the same reason: the validation path writes them and the `BlockApiImpl` this shard builds
+    // reports them, so the cell exists before either. `Clone` shares the cells rather than copying
+    // them. See [`ShardHealth`].
+    let shard_health = ShardHealth::new();
     let mut parts = setup_shard(
         conf,
         spec,
@@ -1683,6 +1693,7 @@ async fn setup_shard_runtime(
         validator_opt.clone(),
         metrics.clone(),
         propose_health.clone(),
+        shard_health.clone(),
     )
     .await?;
     // LFS sync is shard-blind: the fringe exchange carries no shard id, so a multi-shard node could
@@ -1723,6 +1734,26 @@ async fn setup_shard_runtime(
                 spec.shard_id
             ),
         );
+    }
+
+    // **The shard's own health counters, seeded the same way** (W-N10-02). Read here — after the store
+    // exists and before the validation path starts — so the surface reports the shard's history rather
+    // than this process's. A read that fails seeds zeros rather than refusing to boot: these are
+    // observations, and refusing to start over one would trade a silence for an outage. The two
+    // *current-state* cells are deliberately not seeded — see [`ShardHealth::seed_counters`].
+    match parts.dag.read_health_counters().await {
+        Ok(counters) => shard_health.seed_counters(counters),
+        Err(e) => {
+            shard_health.seed_counters(None);
+            log.warn(
+                LogSource::new("coop.rchain.node.runtime.Setup"),
+                &format!(
+                    "could not read the health counters for shard {}: {e} — this shard's stall and \
+                     merge history is unknown, not empty",
+                    spec.shard_id
+                ),
+            );
+        }
     }
 
     let importer = create_rspace_importer(&parts.store_manager).await?;
@@ -1952,6 +1983,7 @@ async fn setup_shard_runtime(
         autopropose,
         attest_on_new_blocks,
         Some((metrics, index)),
+        shard_health.clone(),
     );
 
     // This shard's slice of the peer-message stream (fed by the router).
@@ -2071,6 +2103,7 @@ async fn setup_shard_runtime(
             consecutive_failures.clone(),
             stale_snapshot_equivocations.clone(),
             conf.casper.equivocation_injection,
+            shard_health.clone(),
         );
         let proposer_stream = proposer_instance::create(
             proposer_parts.queue_rx,
@@ -2107,6 +2140,7 @@ pub async fn setup_shard(
     validator_opt: Option<ValidatorIdentity>,
     metrics: Arc<MetricsRegistry>,
     propose_health: ProposeHealth,
+    shard_health: ShardHealth,
 ) -> Result<ShardParts, String> {
     let data_dir = shard_data_dir(&conf.storage.data_dir, index, &spec.shard_id);
     let store_manager = rnode_key_value_store_manager(&data_dir);
@@ -2348,6 +2382,7 @@ pub async fn setup_shard(
         conf.api_server.enable_devnet_cors,
         std::collections::BTreeSet::new(),
         propose_health,
+        shard_health,
     ));
 
     let report_store: Arc<dyn KeyValueTypedStore<BlockHash, BlockEventInfo>> = Arc::new(
@@ -2638,6 +2673,7 @@ mod tests {
             None,
             metrics_for_test(),
             ProposeHealth::new(),
+            ShardHealth::new(),
         )
         .await
         .expect("setup_shard should assemble");
@@ -2689,6 +2725,7 @@ mod tests {
             None,
             metrics_for_test(),
             ProposeHealth::new(),
+            ShardHealth::new(),
         )
         .await
         .expect("primary shard");
@@ -2702,6 +2739,7 @@ mod tests {
             None,
             metrics_for_test(),
             ProposeHealth::new(),
+            ShardHealth::new(),
         )
         .await
         .expect("child shard");
@@ -2743,6 +2781,7 @@ mod tests {
             None,
             metrics_for_test(),
             ProposeHealth::new(),
+            ShardHealth::new(),
         )
         .await
         {
@@ -2919,6 +2958,7 @@ mod tests {
             None,
             metrics_for_test(),
             ProposeHealth::new(),
+            ShardHealth::new(),
         )
         .await
         .expect("first assembly");
@@ -2963,6 +3003,7 @@ mod tests {
             None,
             metrics_for_test(),
             ProposeHealth::new(),
+            ShardHealth::new(),
         )
         .await
         {

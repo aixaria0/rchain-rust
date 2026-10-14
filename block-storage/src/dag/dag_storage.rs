@@ -145,6 +145,66 @@ pub struct HaltRecord {
 /// [`RESET_MARKER_KEY`] in the store they share.
 pub const HALT_RECORD_KEY: &[u8] = b"autopropose-halt";
 
+/// **The per-shard health counters that must survive a restart** (W-N10-02).
+///
+/// **Why these three and not the rest.** The health surface carries counters of two lifetimes, and the
+/// distinction is the finding: `stall_episodes`, `non_quiet_merge_reports` and `unrestorable_records`
+/// count events **this shard's history** contains, so a restart that zeroes them understates what
+/// happened — an operator restarting to clear an alarm is told the shard has never stalled. The others
+/// (`poison_recoveries`, the supervisor's `tasks_*`, `undelivered_sends`, `sync.attempts`) are the
+/// *process's* own running totals, correctly zero after a restart, and are labelled `SinceProcessStart`
+/// on the wire rather than being persisted.
+///
+/// **Written on the transition, not on the observation.** A block is validated every round and most are
+/// refused by the stake gate, so "persist the counter" would be a store write per validated block. The
+/// writers call for a persist only when a counter actually moves — an episode begins, a merge reports
+/// non-quiet, a record is given up on — which is rare by construction.
+///
+/// **Not a two-phased record like [`ResetMarker`] or an obeyed one like [`HaltRecord`].** Nothing reads
+/// these to decide what the node *does*: they are observations, seeded at boot so the surface reports
+/// the shard's history rather than this process's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HealthCounters {
+    pub stall_episodes: u64,
+    pub non_quiet_merge_reports: u64,
+    pub unrestorable_records: u64,
+}
+
+/// The health counters' one key, a literal for the same reason as the other two.
+pub const HEALTH_COUNTERS_KEY: &[u8] = b"shard-health-counters";
+
+impl HealthCounters {
+    /// Three big-endian u64s, 24 bytes. Fixed width, so a decode cannot be ambiguous and a truncated
+    /// value is refused rather than guessed at — the codec property [`ResetMarker`]'s and
+    /// [`HaltRecord`]'s both keep.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(24);
+        out.extend_from_slice(&self.stall_episodes.to_be_bytes());
+        out.extend_from_slice(&self.non_quiet_merge_reports.to_be_bytes());
+        out.extend_from_slice(&self.unrestorable_records.to_be_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != 24 {
+            return Err(format!(
+                "health counters are 24 bytes (three u64s) and this value is {}",
+                bytes.len()
+            ));
+        }
+        let read = |i: usize| {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+            u64::from_be_bytes(b)
+        };
+        Ok(HealthCounters {
+            stall_episodes: read(0),
+            non_quiet_merge_reports: read(1),
+            unrestorable_records: read(2),
+        })
+    }
+}
+
 impl HaltRecord {
     /// `at_ms` (big-endian i64, 8) ++ `episodes` (big-endian u64, 8). Fixed width, so a decode cannot
     /// be ambiguous and a truncated value is refused rather than guessed at — the property
@@ -313,6 +373,27 @@ pub trait BlockDagStorage: Send + Sync {
     /// listener. The default does nothing, for the same reason the read answers `None`.
     async fn clear_halt_record(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// **Record this shard's monotone health counters** (see [`HealthCounters`]) — the write that stops
+    /// a restart from understating them (W-N10-02).
+    ///
+    /// **The default refuses**, like `write_reset_marker`'s and `write_halt_record`'s: a backend that
+    /// cannot record them must not look like one that did. Unlike the halt's write, the caller here is
+    /// the *validation path*, which is already past its decision and cannot refuse either — so it is
+    /// here that the surface's honesty rule lives: a counter that could not be written is reported on
+    /// the reading (the parent's `durable`-style qualification), not silently dropped.
+    async fn write_health_counters(&self, _counters: HealthCounters) -> Result<(), String> {
+        Err(
+            "this DAG storage cannot record health counters (no `write_health_counters` impl)"
+                .to_string(),
+        )
+    }
+
+    /// The health counters this shard last recorded, if any. The default answers `None`, which is
+    /// honest for a backend that records nothing — the surface reads it as "since process start".
+    async fn read_health_counters(&self) -> Result<Option<HealthCounters>, String> {
+        Ok(None)
     }
 
     async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String>;
@@ -516,5 +597,32 @@ mod tests {
             HALT_RECORD_KEY, RESET_MARKER_KEY,
             "the two records share a store, so their keys must not"
         );
+    }
+
+    /// **The health counters' codec, and the keys that keep the three records apart** (W-N10-02).
+    #[test]
+    fn health_counters_round_trip_and_a_malformed_one_is_refused() {
+        let counters = HealthCounters {
+            stall_episodes: 3,
+            non_quiet_merge_reports: 0,
+            unrestorable_records: 1,
+        };
+        let bytes = counters.encode();
+        assert_eq!(bytes.len(), 24, "three big-endian u64s");
+        assert_eq!(HealthCounters::decode(&bytes).unwrap(), counters);
+
+        assert!(HealthCounters::decode(&[0u8; 23]).is_err(), "short");
+        assert!(HealthCounters::decode(&[0u8; 25]).is_err(), "long");
+
+        // A zeroed record is a real record, and it decodes to zeros rather than being confused with the
+        // absent case — "counters recorded as zero" and "no counters on record" are different facts.
+        assert_eq!(
+            HealthCounters::decode(&[0u8; 24]).unwrap(),
+            HealthCounters::default()
+        );
+
+        // All three records share one store, so their keys must all differ.
+        assert_ne!(HEALTH_COUNTERS_KEY, RESET_MARKER_KEY);
+        assert_ne!(HEALTH_COUNTERS_KEY, HALT_RECORD_KEY);
     }
 }

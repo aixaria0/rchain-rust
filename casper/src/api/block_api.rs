@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -345,6 +346,11 @@ pub struct FinalityHealth {
     pub unrestorable_records: u64,
     /// …and *which* block, as `<hash> (seq <n>)` — the count says it happened, this says where.
     pub unrestorable_block: Option<String>,
+    /// **Whether the three counters above are the shard's** (W-N10-02): `true` when they were seeded
+    /// from (or written to) the shard's record, `false` when the store could not be reached — in which
+    /// case they are this process's and the surface says so rather than letting a restart read as a
+    /// shard that never stalled.
+    pub counters_durable: bool,
 }
 
 /// The LFS sync task's own state, in the [`FinalityHealth`] shape — what `GET /api/v1/status` carries
@@ -363,6 +369,15 @@ pub struct SyncHealth {
     /// The last named failure's message, verbatim. `None` while the attempt now running has not
     /// failed.
     pub last_failure: Option<String>,
+}
+
+/// **One member shard's health**, as the per-shard map carries it (W-N10-04): the shard's proposer
+/// (including its autopropose halt) and its finality observations, together, because a consumer
+/// reading one shard's health wants both and two maps for two facts is two lookups that can disagree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShardHealthEntry {
+    pub proposer: ProposerHealth,
+    pub finality: FinalityHealth,
 }
 
 /// The block API (port of `BlockApi[F]`). Implementations read from the block store/DAG and drive
@@ -391,23 +406,27 @@ pub trait BlockApi: Send + Sync {
         ProposerHealth::default()
     }
 
-    /// C249's F-U10-01: the merge's and finality's observations.
+    /// C249's F-U10-01: the merge's and finality's observations, **of this implementation's primary
+    /// shard**. Every shard's reading is [`health_by_shard`](Self::health_by_shard).
     ///
-    /// **The default reads this process's own counters rather than defaulting to `Default`**, and that
-    /// differs from [`proposer_health`](Self::proposer_health) on purpose. Proposer health is a per-shard
-    /// *cell* an implementation must hold, so a stub has nothing real to report; these are process-wide
-    /// statics that the validation path writes, so reading them is correct for every implementation and
-    /// a stub reports the truth rather than a polite zero.
-    async fn finality_health(&self) -> FinalityHealth {
-        FinalityHealth {
-            stall_reason: crate::interpreter_util::finality_stall_reason(),
-            stall_sustained: crate::interpreter_util::finality_stall_sustained(),
-            stall_episodes: crate::interpreter_util::finality_stall_episodes(),
-            non_quiet_merge_reports: crate::interpreter_util::non_quiet_merge_reports(),
-            unrestorable_records: crate::interpreter_util::unrestorable_records(),
-            unrestorable_block: crate::interpreter_util::unrestorable_block(),
-        }
-    }
+    /// **A required method now, and the change is the finding.** It used to default to reading seven
+    /// process-global statics, with a deliberate argument that a stub "reports the truth rather than a
+    /// polite zero". The statics were the defect: a refusal in one shard appeared in every shard's
+    /// health (W-N10-03), and a restart zeroed counters the shard's own history had moved (W-N10-02).
+    /// With one cell per shard there is no process-wide reading left for a default to return, and a
+    /// defaulted method is the #352 defect — a wrapper that does not forward it silently answers the
+    /// old thing. So it is required, and a stub's honest answer is `FinalityHealth::default()`, which
+    /// this trait's docs say is "nothing observed" and never "observed healthy".
+    async fn finality_health(&self) -> FinalityHealth;
+
+    /// **Every member shard's proposer-and-finality health, keyed by shard id** (W-N10-04).
+    ///
+    /// A node's `proposer_health` and `finality_health` are its **primary's**; a shard whose timer has
+    /// halted off the primary was invisible before this. The map is **total over the node's members** —
+    /// a partial map beside the total flat fields is a trap for a consumer that zips them — and the
+    /// router builds it by merging its members, so a wrapper that failed to forward it would be a
+    /// compile error rather than a silent omission.
+    async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry>;
 
     /// Law 69's other half: the LFS sync task's own state — how many attempts it has started and why
     /// the last one failed. **`None` is a reading too**: it means the task has returned, which covers

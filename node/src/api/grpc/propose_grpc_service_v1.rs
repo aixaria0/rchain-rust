@@ -40,7 +40,9 @@ impl ProposeGrpcServiceV1 {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
+    use rchain_casper::api::block_api::{
+        ApiErr, BlockApi, Capabilities, FinalityHealth, ShardHealthEntry,
+    };
     use rchain_casper::runtime_manager::CapturedReply;
     use rchain_models::ast::Par;
     use rchain_models::block_metadata::BlockMetadata;
@@ -49,6 +51,7 @@ mod tests {
         BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
         Status,
     };
+    use std::collections::BTreeMap;
 
     struct StubBlockApi {
         create_result: ApiErr<String>,
@@ -83,6 +86,20 @@ mod tests {
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
         async fn clear_autopropose_halt(&self) -> Result<(), String> {
             Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
         }
 
         async fn get_unfinalised_name_data_response(

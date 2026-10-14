@@ -21,7 +21,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
-use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities, DeployerInfo, ProposerHealth};
+use rchain_casper::api::block_api::{
+    ApiErr, BlockApi, Capabilities, DeployerInfo, FinalityHealth, ProposerHealth, ShardHealthEntry,
+};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
@@ -121,6 +123,26 @@ impl BlockApi for ShardRoutingBlockApi {
     /// third field was added beside the two #157 ones).
     async fn proposer_health(&self) -> ProposerHealth {
         self.primary_api().proposer_health().await
+    }
+
+    /// The **primary** shard's finality-and-merge health. The flat reading is the node's primary by
+    /// construction; every member's is [`Self::health_by_shard`].
+    async fn finality_health(&self) -> FinalityHealth {
+        self.primary_api().finality_health().await
+    }
+
+    /// **Every member's health, merged** (W-N10-04).
+    ///
+    /// Each member answers with a one-entry map keyed by its own id, so merging them is the whole
+    /// implementation — and it is why this is a *required* method rather than a defaulted one: a
+    /// wrapper that did not forward it would silently answer the primary alone, which is exactly the
+    /// row. `ShardRegistry` holds every member, so the map is total over the node's shards.
+    async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+        let mut all = BTreeMap::new();
+        for api in self.shards.values() {
+            all.extend(api.health_by_shard().await);
+        }
+        all
     }
 
     /// Dispatch by the shard named in the deploy; reject a non-member shard outright.
@@ -461,21 +483,49 @@ mod tests {
             self.record("proposer_health");
             // A non-zero count on the primary only, so the router test can prove the primary answered
             // rather than the trait default (which is all zeros and records nothing).
+            let primary = self.shard_id.ends_with("root");
             ProposerHealth {
-                autopropose_halt: HaltStatus::default(),
+                // **The non-primary carries the halt marker** (W-N10-04): the row is that a shard whose
+                // timer has halted off the primary was invisible, so the fixture makes exactly that
+                // shard the halted one and the primary the healthy one.
+                autopropose_halt: if primary {
+                    HaltStatus::default()
+                } else {
+                    HaltStatus {
+                        at: Some(1_700_000_000_000),
+                        episodes: 2,
+                        durable: true,
+                    }
+                },
                 autopropose_tap_suppressed: 0,
-                consecutive_self_validation_failures: if self.shard_id.ends_with("root") {
-                    7
-                } else {
-                    0
-                },
-                autopropose_timer_halted: false,
-                stale_snapshot_self_equivocations: if self.shard_id.ends_with("root") {
-                    5
-                } else {
-                    0
-                },
+                consecutive_self_validation_failures: if primary { 7 } else { 0 },
+                autopropose_timer_halted: !primary,
+                stale_snapshot_self_equivocations: if primary { 5 } else { 0 },
             }
+        }
+
+        async fn finality_health(&self) -> FinalityHealth {
+            self.record("finality_health");
+            // Distinct per shard, so a map test can tell which member answered.
+            FinalityHealth {
+                stall_episodes: if self.shard_id.ends_with("root") {
+                    3
+                } else {
+                    9
+                },
+                ..FinalityHealth::default()
+            }
+        }
+
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            self.record("health_by_shard");
+            BTreeMap::from([(
+                self.shard_id.clone(),
+                ShardHealthEntry {
+                    proposer: self.proposer_health().await,
+                    finality: self.finality_health().await,
+                },
+            )])
         }
         async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
             self.record("pooled_deploys");
@@ -719,6 +769,53 @@ mod tests {
             primary,
             child,
         )
+    }
+
+    /// **The map reaches every member, and a non-primary's halt is in it** (W-N10-04).
+    ///
+    /// The row: `proposer_health` delegates to `primary_api()` alone, so a shard whose autopropose
+    /// timer has halted off the primary is invisible — the flat reading is healthy while a member is
+    /// stopped. Reverting `health_by_shard` to the primary alone (or making it a defaulted method on
+    /// the trait, which the wrapper would then not forward) reddens this.
+    ///
+    /// **Three members, not two**, so the assertion is that the map is *total* rather than that it
+    /// happens to contain the one member the test planted.
+    #[tokio::test]
+    async fn health_by_shard_reports_every_member_and_the_non_primarys_halt() {
+        let primary = Arc::new(StubApi::new("/root"));
+        let child = Arc::new(StubApi::new("/root/child"));
+        let grandchild = Arc::new(StubApi::new("/root/child/grandchild"));
+        let mut shards: BTreeMap<ShardId, Arc<dyn BlockApi>> = BTreeMap::new();
+        shards.insert(shard("/root"), primary.clone());
+        shards.insert(shard("/root/child"), child.clone());
+        shards.insert(shard("/root/child/grandchild"), grandchild.clone());
+        let api = ShardRoutingBlockApi::new(shards, shard("/root")).unwrap();
+
+        let health = api.health_by_shard().await;
+        assert_eq!(
+            health.len(),
+            3,
+            "**total** over the node's members, not just the one the fixture needs: {health:?}"
+        );
+
+        // The flat reading is the primary's, and the primary is healthy here.
+        assert!(
+            !api.proposer_health().await.autopropose_timer_halted,
+            "the flat field reports the primary, which has not halted"
+        );
+
+        // The non-primaries carry the marker, and the map says so.
+        for id in ["/root/child", "/root/child/grandchild"] {
+            assert!(
+                health[id].proposer.autopropose_timer_halted,
+                "{id}'s halt must reach the surface: {health:?}"
+            );
+            assert_eq!(health[id].proposer.autopropose_halt.episodes, 2);
+        }
+        assert!(!health["/root"].proposer.autopropose_timer_halted);
+        // The finality reading is per-shard too, so the map is not just the proposer again.
+        assert_eq!(health["/root"].finality.stall_episodes, 3);
+        assert_eq!(health["/root/child"].finality.stall_episodes, 9);
     }
 
     #[tokio::test]

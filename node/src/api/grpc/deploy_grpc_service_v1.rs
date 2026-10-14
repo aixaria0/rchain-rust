@@ -238,7 +238,7 @@ mod tests {
     use rchain_block_storage::block_store::BlockStore;
     use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
     use rchain_block_storage::dag::dag_storage::DeployId;
-    use rchain_casper::api::block_api::{ApiErr, Capabilities};
+    use rchain_casper::api::block_api::{ApiErr, Capabilities, FinalityHealth, ShardHealthEntry};
     use rchain_casper::api::block_report_api::{BlockReportApi, ReportStore};
     use rchain_casper::reporting::noop;
     use rchain_models::block_metadata::BlockMetadata;
@@ -248,6 +248,7 @@ mod tests {
     use rchain_models::casper::protocol::report::BlockEventInfo;
     use rchain_shared::store::InMemoryKeyValueStore;
     use rchain_shared::typed_store::{Codec, KeyValueTypedStoreCodec, SharedStore};
+    use std::collections::BTreeMap;
 
     /// The report store's codec, copied from `node/src/web/http.rs`'s fixture (the plan's
     /// deliberate duplication over a shared `#[cfg(test)] pub` module).
@@ -331,6 +332,20 @@ mod tests {
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
         async fn clear_autopropose_halt(&self) -> Result<(), String> {
             Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
         }
 
         async fn get_unfinalised_name_data_response(
