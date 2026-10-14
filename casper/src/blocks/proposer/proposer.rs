@@ -29,6 +29,7 @@ use rchain_shared::refined::{BlockHeight, NonNegI64};
 
 use super::block_creator::BlockCreator;
 use super::propose_result::{BlockCreatorResult, ProposeResult, ProposeStatus};
+use crate::interpreter_util::ShardHealth;
 use crate::merging::BlockIndex;
 use crate::multi_parent_casper::{get_pre_state_for_new_block, ValidateError, DEPLOY_LIFESPAN};
 use crate::runtime_manager::RuntimeManager;
@@ -471,6 +472,9 @@ impl Proposer {
         consecutive_failures: Arc<AtomicU64>,
         stale_snapshot_equivocations: Arc<AtomicU64>,
         equivocation_injection: bool,
+        // **This shard's finality-and-merge health** (W-N10-02/03), held like the two counters above:
+        // the proposer drives `validate` on its own blocks, so it is one of the writers.
+        health: ShardHealth,
     ) -> Proposer
     where
         F: Fn(BlockHash) -> Fut + Send + Sync + 'static,
@@ -523,6 +527,7 @@ impl Proposer {
             // **How many proposals this validator has declined waiting for the round to close.** Local to
             // the proposer on purpose: the round's own clock is DAG-derived and measured from a tip that a
             // refusal freezes, so it cannot say when the wait has gone on too long. This can.
+            let health = health.clone();
             let blocked_since_advance: Arc<std::sync::atomic::AtomicI64> =
                 Arc::new(std::sync::atomic::AtomicI64::new(0));
             // **When this validator was first seen blocked**, so the wait has a clock that does not depend on
@@ -540,6 +545,7 @@ impl Proposer {
                 let blocked_since_ms = blocked_since_ms.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
                 let log = log.clone();
+                let health = health.clone();
                 let max_number_of_parents = max_number_of_parents;
                 Box::pin(async move {
                     create_block(
@@ -557,6 +563,7 @@ impl Proposer {
                         &blocked_since_advance,
                         &blocked_since_ms,
                         source,
+                        &health,
                     )
                     .await
                 })
@@ -572,6 +579,7 @@ impl Proposer {
             let block_index = block_index.clone();
             let shard_id = shard_id.clone();
             let log = log.clone();
+            let health = health.clone();
             Arc::new(move |block: &BlockMessage| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
@@ -580,6 +588,7 @@ impl Proposer {
                 let block = block.clone();
                 let shard_id = shard_id.clone();
                 let log = log.clone();
+                let health = health.clone();
                 let max_number_of_parents = max_number_of_parents;
                 Box::pin(async move {
                     match crate::multi_parent_casper::validate(
@@ -592,6 +601,7 @@ impl Proposer {
                         max_number_of_parents,
                         block_index.as_ref(),
                         &log,
+                        &health,
                     )
                     .await
                     {
@@ -769,6 +779,7 @@ async fn create_block<'a, F, Fut>(
     blocked_since_advance: &std::sync::atomic::AtomicI64,
     blocked_since_ms: &std::sync::atomic::AtomicI64,
     source: ProposeSource,
+    health: &ShardHealth,
 ) -> Result<BlockCreatorResult, String>
 where
     F: Fn(BlockHash) -> Fut + Sync,
@@ -797,6 +808,7 @@ where
         block_index,
         &creators_validator_for_parents,
         log,
+        health,
     )
     .await;
     // **One block per validator per round, with a way out.** Every validator enforces the rule the numbers

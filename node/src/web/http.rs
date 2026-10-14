@@ -79,6 +79,12 @@ const TXN_RATE_LIMIT_PER_SEC: u64 = 10;
 /// host, so it is bounded like the transaction routes rather than like a read.
 const OCAPN_DIAL_RATE_LIMIT_PER_SEC: u64 = 2;
 
+/// Rate limit for the autopropose-resume route (W-N10-01, F-U10-02). Deliberately tiny: the route
+/// clears a durable halt and wakes a parked timer, which is an operator act performed once, not a
+/// control loop. A bound here is not for throughput — it is so that a page in a browser or a retrying
+/// script cannot hammer the node's own actuator, the same reason the sibling admin routes have one.
+const RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC: u64 = 1;
+
 /// The subject an ingress bound uses when the request carries no connection information.
 ///
 /// That happens when a router is called directly rather than served — which is what the tests do. One
@@ -195,6 +201,11 @@ pub struct AdminState {
     /// a caller-supplied key, not chain state a peer would read, and the admin listener is where this
     /// codebase puts the surfaces that act with the operator's authority.
     pub pos: Arc<dyn PosReadApi>,
+    /// Rate limiter for the autopropose-resume route (W-N10-01). Every sibling actuator on this
+    /// listener consults one; the resume route gets the same treatment because it is what pages an
+    /// operator's browser (and a retrying script) would otherwise hit unbounded. See
+    /// [`RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC`].
+    pub resume_rate_limiter: Arc<KeyedRateLimiter>,
 }
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
@@ -975,22 +986,70 @@ pub const OPENAPI_JSON: &str = r##"{
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
-          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
-          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64", "description": "How many times this process's autopropose timer has stopped. Counting transitions, so a second note of the same halt does not move it — and NOT a restart-surviving record: it is in memory, so it is 0 after a restart exactly like the flag beside it, which leaves `autoproposeTimerHalted: false` ambiguous between 'never halted' and 'halted, then restarted' (W-N10-01, F-U10-02; the fix for that is a durable record)" },
+          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped. Two things restart it: the process (the halt is durable, re-seeded at boot), and POST /api/v1/autopropose/resume on the admin listener, which clears the record and wakes the parked timer in-process. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
+          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64", "description": "How many times this shard's autopropose timer has stopped. Counting transitions, so a second note of the same halt does not move it; seeded from the durable record at boot, so it is the shard's count and not this process's (W-N10-01)" },
+          "autoproposeHalt": { "type": "object", "description": "The autopropose halt on record: when it happened and whether the record is trustworthy. A null `at` with `durable: true` means no halt is on record; `durable: false` means the record could not be read or written, so the node cannot vouch for it — 'unknown' and 'never halted' are the two readings this field exists to keep apart (W-N10-01, F-U10-02)", "properties": { "at": { "type": "integer", "format": "int64", "nullable": true, "description": "When the shard last halted, in milliseconds since the unix epoch; null is no halt on record, unless durable is false" }, "durable": { "type": "boolean", "description": "Whether this reading reflects the store: false means the halt record could not be read or written, so the node cannot vouch for `at`" } } },
           "autoproposeTapSuppressed": { "type": "integer", "format": "int64", "description": "Autopropose requests the validated-block tap refused because the timer is halted. The halt is only a halt if the tap obeys it, and this is the measurement of what it cost (W-N4-08)" },
           "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64", "description": "Times the node's own block collided with its already-synced block at a sequence number derived from a stale parent set. Not a self-validation failure, so it does not halt the timer" },
           "finalityStall": { "type": "string", "nullable": true, "description": "The merge gate's verdict on the last block this node validated, with the numbers that make it a diagnosis (supporting stake, partitions, candidates, and the partition size it measured against). Null when that derivation advanced. NOT an alarm: on a producing chain most blocks are refused by the stake gate, because a block justifies only the messages that existed when it was built — read finalityStalled for that" },
           "finalityStalled": { "type": "boolean", "description": "Whether this node is stalled right now: the derivation has been refused for longer than a round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary partial layers of a producing chain. This is the field to alarm on; finalityStall above is its diagnosis" },
-          "finalityStallEpisodes": { "type": "integer", "format": "int64", "description": "Times this node has entered a finality stall — the sustained state finalityStalled reports — monotone, so 'stalled now' is distinguishable from 'stalled and recovered'" },
+          "finalityStallEpisodes": { "type": "integer", "format": "int64", "description": "Times this shard has entered a finality stall — the sustained state finalityStalled reports — monotone, so 'stalled now' is distinguishable from 'stalled and recovered'. Persisted, so it survives the restart an operator's alarm would otherwise be cleared by; read it with finalityCountersDurable, which is false when the store could not be reached and the count is this process's instead (W-N10-02)" },
+          "finalityCountersDurable": { "type": "boolean", "description": "Whether finalityStallEpisodes, nonQuietMergeReports and unrestorableRecords are the *shard's* history (true) or this process's running totals (false). False means the shard's record could not be read or written, so a restarted node would otherwise read as one that never stalled (W-N10-02)" },
           "resetMarker": { "type": "string", "nullable": true, "description": "The reset marker this node is standing under: the durable record a self-reset writes, rendered with its phase, anchor and height. Null when the node is not mid-reset. The marker is cleared only when the catch-up frontier passes its anchor, so one that stands while the height does not move says the repair is not converging (F-U12-02)" },
-          "nonQuietMergeReports": { "type": "integer", "format": "int64", "description": "Merges whose report was not quiet: a chain dropped, or an invariant violated. The log carries the detail; this is the count the live incident would have moved" },
-          "sync": { "type": "object", "nullable": true, "description": "The LFS sync task's own state while this node is in NodeSyncing — how many attempts it has started and why the last one failed. Null means the sync task has returned, which covers both a restored state and a node that never had to sync; it does NOT mean 'synced fine'", "properties": { "attempts": { "type": "integer", "format": "int64", "description": "Attempts the sync task has started" }, "lastFailure": { "type": "string", "nullable": true, "description": "The last named sync failure, verbatim; null while the attempt now running has not failed" } } },
+          "nonQuietMergeReports": { "type": "integer", "format": "int64", "description": "Merges whose report was not quiet: a chain dropped, or an invariant violated. The log carries the detail; this is the count the live incident would have moved. Persisted with the stall episodes above, so the merge history is the shard's rather than the process's (W-N10-02)" },
+          "sync": { "type": "object", "nullable": true, "description": "The LFS sync task's own state while this node is in NodeSyncing — how many attempts it has started and why the last one failed. Null means the sync task has returned, which covers both a restored state and a node that never had to sync; it does NOT mean 'synced fine'", "properties": { "attempts": { "type": "integer", "format": "int64", "description": "Attempts the sync task has started" }, "attemptsScope": { "type": "string", "description": "Always 'SinceProcessStart': the count is the sync task's own and the task restarts with the process, so persisting it would claim a continuity it does not have (W-N10-02). The *scope* half of that row deliberately does not apply here — LFS sync is shard-blind, so a per-shard reading of it would be an invention" }, "lastFailure": { "type": "string", "nullable": true, "description": "The last named sync failure, verbatim; null while the attempt now running has not failed" } } },
           "poisonRecoveries": { "type": "integer", "format": "int64", "description": "Times a poisoned lock was recovered from, which means a panic happened while shared state was held. Process-wide and monotone" },
-          "unrestorableRecords": { "type": "integer", "format": "int64", "description": "Blocks this node has given up on: a divergence record whose revalidation budget is spent and which still fails here, so the node refuses it and its descendants for the process lifetime. Nothing resets a running node yet; this is the counter a reset would act on" },
+          "poisonRecoveriesScope": { "type": "string", "description": "Always 'SinceProcessStart': the count is this process's, so a restart correctly zeroes it. Named so a reader does not compare it with the shard-history counters above as though the two had one lifetime (W-N10-02)" },
+          "unrestorableRecords": { "type": "integer", "format": "int64", "description": "Blocks this shard has given up on: a divergence record whose revalidation budget is spent and which still fails here, so the node refuses it and its descendants for the process lifetime. Persisted with the two counters above, so the count is the shard's (W-N10-02). Nothing resets a running node yet; this is the counter a reset would act on" },
           "unrestorableBlock": { "type": "string", "nullable": true, "description": "The block the node last gave up on, as '<hash> (seq <n>)'. Null when it never has" },
           "tasksPanicked": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have panicked. Before the supervisor these deaths were invisible: a bare tokio::spawn whose handle was dropped" },
+          "tasksPanickedScope": { "type": "string", "description": "Always 'SinceProcessStart' — a supervised task's death is this process's event (W-N10-02)" },
           "tasksExited": { "type": "integer", "format": "int64", "description": "Supervised background tasks that have returned normally, counted apart from panics because a return is the quieter death — nothing announces it anywhere" },
-          "undeliveredSends": { "type": "integer", "format": "int64", "description": "Sends a closed channel swallowed. Every production send goes through rchain_shared::chan, which keeps the decision and counts it; monotone and process-wide, so a message dropped into a closed channel is a number a probe can read rather than a silence" }
+          "tasksExitedScope": { "type": "string", "description": "Always 'SinceProcessStart' — see tasksPanickedScope (W-N10-02)" },
+          "undeliveredSends": { "type": "integer", "format": "int64", "description": "Sends a closed channel swallowed. Every production send goes through rchain_shared::chan, which keeps the decision and counts it; monotone and process-wide, so a message dropped into a closed channel is a number a probe can read rather than a silence" },
+          "undeliveredSendsScope": { "type": "string", "description": "Always 'SinceProcessStart' — the count lives in a process-wide cell, and a restart correctly zeroes it (W-N10-02)" },
+          "shards": { "type": "object", "nullable": true, "description": "**Every member shard's health, keyed by shard id** (W-N10-04), and total over the node's members. The flat fields above are the *primary's* reading; a non-primary shard whose autopropose timer has halted is visible here and nowhere else. Null when the caller is not a node with members", "additionalProperties": { "$ref": "#/components/schemas/ShardHealthDto" } }
+        }
+      },
+      "ShardHealthDto": {
+        "type": "object",
+        "description": "One member shard's health, the value of an entry in OperatorStatus.shards. The map's key is the shard id, which is the scope — there is deliberately no scope field here, because a second place to say what the key says is a second place for the two to disagree (W-N10-04)",
+        "properties": {
+          "proposer": { "$ref": "#/components/schemas/ProposerHealthDto" },
+          "finality": { "$ref": "#/components/schemas/FinalityHealthDto" }
+        }
+      },
+      "ProposerHealthDto": {
+        "type": "object",
+        "description": "One shard's proposer health, as the per-shard map carries it (W-N10-04). The same facts as the flat fields, attributable to a named member",
+        "properties": {
+          "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64" },
+          "autoproposeTimerHalted": { "type": "boolean" },
+          "autoproposeTimerHaltEpisodes": { "type": "integer", "format": "int64" },
+          "autoproposeHalt": { "$ref": "#/components/schemas/HaltStatusDto" },
+          "autoproposeTapSuppressed": { "type": "integer", "format": "int64" },
+          "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64" }
+        }
+      },
+      "FinalityHealthDto": {
+        "type": "object",
+        "description": "One shard's finality-and-merge health, as the per-shard map carries it (W-N10-03/04)",
+        "properties": {
+          "stallReason": { "type": "string", "nullable": true },
+          "stallSustained": { "type": "boolean" },
+          "stallEpisodes": { "type": "integer", "format": "int64" },
+          "nonQuietMergeReports": { "type": "integer", "format": "int64" },
+          "unrestorableRecords": { "type": "integer", "format": "int64" },
+          "unrestorableBlock": { "type": "string", "nullable": true },
+          "countersDurable": { "type": "boolean", "description": "Whether the three counts are the shard's history (true) or this process's totals (false) — see OperatorStatus.finalityCountersDurable (W-N10-02)" }
+        }
+      },
+      "HaltStatusDto": {
+        "type": "object",
+        "description": "The autopropose halt on record: when it happened and whether the record is trustworthy (W-N10-01, F-U10-02)",
+        "properties": {
+          "at": { "type": "integer", "format": "int64", "nullable": true },
+          "durable": { "type": "boolean" }
         }
       },
       "DeployData": {
@@ -1237,6 +1296,16 @@ async fn reporting_trace(
 
 async fn admin_propose(State(state): State<AdminState>) -> Response {
     json_result(state.admin_web_api.propose().await)
+}
+
+/// `POST /api/v1/autopropose/resume` — clear the durable autopropose halt and wake the parked timer
+/// (W-N10-01, F-U10-02).
+///
+/// The one way out of a halt that survives a restart. Served on the admin listener, behind
+/// `admin_origin_guard` and the resume rate limiter, for the reason every actuator here is: it changes
+/// what the node does on the caller's word.
+async fn admin_resume_autopropose(State(state): State<AdminState>) -> Response {
+    json_result(state.admin_web_api.resume_autopropose().await)
 }
 
 /// **The ingress bound, keyed on the peer and applied before the body is decoded.**
@@ -1524,6 +1593,22 @@ pub fn admin_router(state: AdminState) -> Router {
             peer_rate_limit,
         ));
 
+    // The autopropose-resume actuator (W-N10-01, F-U10-02). A durable halt is *obeyed*, so the
+    // operator's way out cannot be "restart and hope" — this route clears the record on every member
+    // shard and wakes the parked timer. It is an actuator on the privileged listener for the same
+    // reason `/api/propose` is: it changes what the node does, on the caller's word. Bounded like its
+    // siblings rather than left open, because a page the operator visits is exactly the caller that
+    // should not be able to hammer it.
+    let resume_routes = Router::new()
+        .route("/api/v1/autopropose/resume", post(admin_resume_autopropose))
+        .route_layer(middleware::from_fn_with_state(
+            (
+                state.resume_rate_limiter.clone(),
+                "autopropose resume rate limit exceeded",
+            ),
+            peer_rate_limit,
+        ));
+
     Router::new()
         .route("/api/propose", post(admin_propose))
         .route("/api/v1/propose", post(admin_propose))
@@ -1532,6 +1617,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .merge(txn_routes)
         .merge(dial_routes)
+        .merge(resume_routes)
         .layer(cors)
         // Outermost, so a cross-origin request is refused before any handler on this router runs —
         // including the ones that spend the node's REV. See `admin_origin_guard` for why it is a layer
@@ -1660,6 +1746,10 @@ pub async fn acquire_admin_http_server(
             MAX_TRACKED_PEERS,
         )),
         pos,
+        resume_rate_limiter: Arc::new(KeyedRateLimiter::new(
+            RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC,
+            MAX_TRACKED_PEERS,
+        )),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -1681,7 +1771,7 @@ mod tests {
     use super::*;
     use crate::api::dto::{
         DataAtNameResponse, DeployExecStatus, ExploratoryDeployResponse, FaucetResponse,
-        NodeCapabilities, OperatorStatus, PooledDeploy, PooledDeploys, PublicStatus,
+        HaltStatusDto, NodeCapabilities, OperatorStatus, PooledDeploy, PooledDeploys, PublicStatus,
         RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
@@ -1689,6 +1779,7 @@ mod tests {
     use async_trait::async_trait;
     use axum::body::to_bytes;
     use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+    use rchain_casper::api::block_api::{FinalityHealth, ShardHealthEntry};
     use rchain_casper::reporting::noop;
     use rchain_casper::runtime_manager::CapturedReply;
     use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
@@ -1698,6 +1789,7 @@ mod tests {
     use rchain_shared::metrics::Metrics as _;
     use rchain_shared::store::InMemoryKeyValueStore;
     use rchain_shared::typed_store::{Codec, KeyValueTypedStoreCodec, SharedStore};
+    use std::collections::BTreeMap;
     use std::marker::PhantomData;
 
     struct JsonCodec<T>(PhantomData<T>);
@@ -1773,20 +1865,30 @@ mod tests {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             autopropose_timer_halt_episodes: 0,
+            autopropose_halt: HaltStatusDto {
+                at: None,
+                durable: false,
+            },
             autopropose_tap_suppressed: 0,
             stale_snapshot_self_equivocations: 0,
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            finality_counters_durable: true,
             reset_marker: None,
             non_quiet_merge_reports: 0,
             sync: None,
             poison_recoveries: 0,
+            poison_recoveries_scope: "SinceProcessStart".to_string(),
             unrestorable_records: 0,
             unrestorable_block: None,
             tasks_panicked: 0,
+            tasks_panicked_scope: "SinceProcessStart".to_string(),
             tasks_exited: 0,
+            tasks_exited_scope: "SinceProcessStart".to_string(),
             undelivered_sends: 0,
+            undelivered_sends_scope: "SinceProcessStart".to_string(),
+            shards: None,
         }
     }
 
@@ -1994,6 +2096,10 @@ mod tests {
 
         async fn operator_status(&self) -> Result<OperatorStatus, BlockApiException> {
             Ok(test_operator_status())
+        }
+
+        async fn resume_autopropose(&self) -> Result<String, BlockApiException> {
+            Ok("resumed".to_string())
         }
     }
 
@@ -2483,6 +2589,21 @@ mod tests {
         /// Delegates to the floored read: this double has no unfinalised view of its own, and the
         /// method is required rather than defaulted so that is a decision rather than an oversight
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+        async fn clear_autopropose_halt(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
+        }
+
         async fn get_unfinalised_name_data_response(
             &self,
             depth: i32,
@@ -2716,6 +2837,10 @@ mod tests {
             enable_ocapn_dial: false,
             ocapn_dial_rate_limiter: Arc::new(KeyedRateLimiter::new(
                 OCAPN_DIAL_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_PEERS,
+            )),
+            resume_rate_limiter: Arc::new(KeyedRateLimiter::new(
+                RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC,
                 MAX_TRACKED_PEERS,
             )),
         }
@@ -3083,6 +3208,68 @@ mod tests {
             !String::from_utf8_lossy(&body).contains("at most"),
             "the bound itself must reach the gateway, not the refusal: {}",
             String::from_utf8_lossy(&body)
+        );
+    }
+
+    /// **N4/MORE — the spend route shares the produce route's one credentialless gate.** The admin
+    /// router's only caller check is `admin_origin_guard` (`web::http`, the layer at the bottom of
+    /// [`admin_router`]), which reads no identity and admits any request carrying no `Origin` (CSRF
+    /// requires a browser). `/api/txn` signs every phase deploy with the node's validator key and
+    /// escrows REV from that key's own vault, so a caller that reaches the listener past the bind and
+    /// sends no `Origin` is admitted to a *spend* on the same terms as a `propose` — the guard does
+    /// not scale with the authority behind it.
+    ///
+    /// Fires when the origin-less POST reaches the spend handler (a `400` from the handler, not the
+    /// guard's `403`). Refuted only if the guard refused a credentialless caller to the spend route
+    /// while admitting the same caller to propose (one identity for one authority).
+    #[tokio::test]
+    async fn the_spend_route_shares_the_produce_routes_credentialless_gate() {
+        use tower::ServiceExt;
+
+        let body = || axum::body::Body::from(r#"{"txnId":"aabb","legs":[]}"#);
+
+        // The one thing the guard refuses: a cross-origin request. It is refused on the spend route
+        // exactly as on propose, which is what makes the arm below a differential rather than a
+        // guard that waves everything through.
+        let cross_origin = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/txn")
+            .header("origin", "http://evil.example")
+            .header("host", "127.0.0.1:40404")
+            .header("content-type", "application/json")
+            .body(body())
+            .unwrap();
+        let refused = admin_router(txn_state(Some(gateway().await), true))
+            .oneshot(cross_origin)
+            .await
+            .expect("a response");
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "a cross-origin POST must be refused before any handler runs"
+        );
+
+        // A no-Origin, no-credential caller is admitted past the guard to the *spend* handler, which
+        // reads no identity either: the answer is the handler's own refusal, not the guard's.
+        let credentialless = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/txn")
+            .header("content-type", "application/json")
+            .body(body())
+            .unwrap();
+        let admitted = admin_router(txn_state(Some(gateway().await), true))
+            .oneshot(credentialless)
+            .await
+            .expect("a response");
+        assert_ne!(
+            admitted.status(),
+            StatusCode::FORBIDDEN,
+            "the guard admits a credentialless caller to the route that spends the validator's REV"
+        );
+        assert_eq!(
+            admitted.status(),
+            StatusCode::BAD_REQUEST,
+            "the response is the handler's (empty leg list), so the spend handler was reached"
         );
     }
 

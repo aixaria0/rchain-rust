@@ -39,6 +39,7 @@ use rchain_shared::refined::{BlockHeight, SeqNum};
 use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
 use rchain_shared::typed_store::KeyValueTypedStoreCodec;
 
+use rchain_casper::interpreter_util::ShardHealth;
 use rchain_casper::multi_parent_casper::{
     clear_own_failure_record, validate, RESTORE_ATTEMPT_LIMIT, RESTORE_BUDGET_PER_BLOCK,
 };
@@ -226,7 +227,8 @@ async fn drive(
 
     // The parent bound is off (`0`) — this test is about the restoring rule, and #153's check is
     // exercised by its own tests in `validate.rs`.
-    let _ = validate(&*dag, &store, &rm, &b, "root", 0, 0, &index, &log).await;
+    let health = ShardHealth::new();
+    let _ = validate(&*dag, &store, &rm, &b, "root", 0, 0, &index, &log, &health).await;
 
     dag
 }
@@ -464,8 +466,19 @@ async fn the_node_targets_only_its_own_spent_record() {
     let log: Arc<dyn Log> = Arc::new(NopLog);
     let index = |_h: BlockHash| async move { Err("no index in this test".to_string()) };
 
-    let cleared =
-        clear_own_failure_record(&*dag, &store, &rm, "root", 0, 0, &index, &node, &log).await;
+    let cleared = clear_own_failure_record(
+        &*dag,
+        &store,
+        &rm,
+        "root",
+        0,
+        0,
+        &index,
+        &node,
+        &log,
+        &ShardHealth::new(),
+    )
+    .await;
 
     assert!(
         !cleared,

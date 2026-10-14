@@ -4,6 +4,7 @@
 //! not use would warn there — hence the module-wide `dead_code` allowance below.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rchain_casper::runtime_manager::{
@@ -84,7 +85,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
-use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
+use rchain_casper::api::block_api::{
+    ApiErr, BlockApi, Capabilities, FinalityHealth, ShardHealthEntry,
+};
 use rchain_casper::gateway::GatewayLeg;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
@@ -246,6 +249,21 @@ impl BlockApi for TestShardApi {
     /// Delegates to the floored read: this double has no unfinalised view of its own, and the method
     /// is required rather than defaulted so that is a decision rather than an oversight
     /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+    async fn clear_autopropose_halt(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+    /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+    async fn finality_health(&self) -> FinalityHealth {
+        FinalityHealth::default()
+    }
+
+    /// A stub is not a node, so it has no member shards to map.
+    async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+        BTreeMap::new()
+    }
+
     async fn get_unfinalised_name_data_response(
         &self,
         depth: i32,

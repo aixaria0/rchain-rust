@@ -125,6 +125,71 @@ pub struct PublicStatus {
     pub dev_mode: bool,
 }
 
+/// **The shard's autopropose halt**, beside the episode count the surface already carried — which
+/// this makes durable (W-N10-01, F-U10-02).
+///
+/// **Three facts the one boolean could not carry.** `autoproposeTimerHalted` is this process's flag;
+/// this says *when* the shard last halted, and whether the reading can be trusted. The scheduled
+/// remedy for a halt is a restart, so the flag alone was an all-clear that erased the fault.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaltStatusDto {
+    /// When the shard last halted, in milliseconds since the unix epoch. `null` is **no halt on
+    /// record** — unless `durable` is `false`, in which case it is *unknown*.
+    pub at: Option<i64>,
+    /// Whether this reading reflects the store. `false` means the halt record could not be read or
+    /// written, so the node cannot vouch for `at` — said rather than implied, because "unknown" and
+    /// "never halted" are the two readings this whole row is about confusing.
+    pub durable: bool,
+}
+
+/// **The one shard's proposer health**, as the per-shard map carries it (W-N10-04).
+///
+/// The same facts the flat fields beside it carry, but attributable to a named member: a node whose
+/// non-primary shard has halted reports a healthy `autoproposeTimerHalted` at the top level, because
+/// that field is the **primary's**. This is where the other members' halts are.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposerHealthDto {
+    pub consecutive_self_validation_failures: u64,
+    pub autopropose_timer_halted: bool,
+    pub autopropose_timer_halt_episodes: u64,
+    pub autopropose_halt: HaltStatusDto,
+    pub autopropose_tap_suppressed: u64,
+    pub stale_snapshot_self_equivocations: u64,
+}
+
+/// **The one shard's finality-and-merge health**, as the per-shard map carries it (W-N10-03/04).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalityHealthDto {
+    pub stall_reason: Option<String>,
+    pub stall_sustained: bool,
+    /// The **shard's** stall count — persisted across a restart (W-N10-02). `countersDurable: false`
+    /// means the store could not be read or written, in which case this is this *process's* count and
+    /// the node says so rather than letting it read as the shard's history.
+    pub stall_episodes: u64,
+    pub non_quiet_merge_reports: u64,
+    pub unrestorable_records: u64,
+    pub unrestorable_block: Option<String>,
+    /// Whether the three counts above are the shard's history (`true`) or this process's running
+    /// totals (`false`) — the same honesty rule [`HaltStatusDto::durable`] keeps.
+    pub counters_durable: bool,
+}
+
+/// **One member shard's health, keyed by shard id** (W-N10-04) — the value of `OperatorStatus::shards`.
+///
+/// **No `scope` field on this object, and that is deliberate**: the map's key *is* the scope. A
+/// per-object string would be a second place to say what the key already says, and the two could
+/// disagree. The scopes that need saying are on the **flat** status, where fields of different
+/// lifetimes sit beside one another.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShardHealthDto {
+    pub proposer: ProposerHealthDto,
+    pub finality: FinalityHealthDto,
+}
+
 /// **What an operator's own surface may read, and nothing else does**: the operator half of the
 /// node's status.
 ///
@@ -144,18 +209,25 @@ pub struct OperatorStatus {
     /// cleared by a successful propose — this is what tells "quiet" from "broken" on a chain whose
     /// steady state is a node that produces nothing until work arrives.
     pub consecutive_self_validation_failures: u64,
-    /// #157: the shard's autopropose **timer** has stopped, and nothing restarts it but the process.
-    /// Deliberately not called `halted`: the tap and the admin `POST /api/propose` keep running, so a
-    /// node can have a stopped timer and still be producing blocks.
-    pub autopropose_timer_halted: bool,
-    /// **How many times this process's autopropose timer has stopped** (W-N10-01), counted on the
-    /// transition rather than on the call.
+    /// #157: the shard's autopropose **timer** has stopped. Deliberately not called `halted`: the tap
+    /// and the admin `POST /api/propose` keep running, so a node can have a stopped timer and still be
+    /// producing blocks.
     ///
-    /// **It is not a restart-surviving record**, and saying so here matters because the flag beside it
-    /// makes the reading ambiguous: after a restart this is `0` exactly like `autoproposeTimerHalted`,
-    /// so `false` still cannot be told from "never halted". That is F-U10-02 (open since #157) and its
-    /// fix is a durable record on the halt path — see `ProposeHealth`'s own doc.
+    /// **Two things restart it now**: the process (the halt is durable and re-seeded at boot), and the
+    /// operator's `POST /api/v1/autopropose/resume` on the admin listener, which clears the record and
+    /// wakes the parked timer in-process.
+    pub autopropose_timer_halted: bool,
+    /// **How many times this shard's autopropose timer has stopped** (W-N10-01), counted on the
+    /// transition rather than on the call and **seeded from the durable record at boot**, so it is the
+    /// shard's count and not this process's.
+    ///
+    /// A flat field rather than nested inside [`HaltStatusDto`] because consumers of this surface are
+    /// written against it. The durability of the value is carried by the `durable` flag beside it, not
+    /// by this field's position.
     pub autopropose_timer_halt_episodes: u64,
+    /// **The shard's autopropose halt**: when, and whether the record is trustworthy. See
+    /// [`HaltStatusDto`].
+    pub autopropose_halt: HaltStatusDto,
     /// Autopropose requests the validated-block **tap** refused because the timer is halted (W-N4-08).
     /// Beside the episode count because it is the measurement of what the halt cost: without it, the
     /// halt was a flag the tap ignored.
@@ -178,11 +250,18 @@ pub struct OperatorStatus {
     /// round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary
     /// partial layers of a producing round.
     pub finality_stalled: bool,
-    /// …and how many times this process has entered a stall, so a reader can tell "stalled now" from
+    /// …and how many times this **shard** has entered a stall, so a reader can tell "stalled now" from
     /// "stalled and recovered" without watching. Counts the sustained state above, which is what makes
     /// the two distinguishable — before #318 it counted single refusals and climbed once per round on a
-    /// healthy net.
+    /// healthy net. **Persisted** (W-N10-02): the count is the shard's history and survives the restart
+    /// an operator's alarm would otherwise be cleared by. Read it with `finalityCountersDurable`, which
+    /// is false when the store could not be reached and the count is therefore this process's.
     pub finality_stall_episodes: u64,
+    /// **Whether the three shard-history counters are the shard's** (W-N10-02) — `stallEpisodes`,
+    /// `nonQuietMergeReports` and `unrestorableRecords` below. `false` means the store could not be read
+    /// or written, so they are this *process's* running totals; saying so keeps a restarted node from
+    /// reading as one that never stalled.
+    pub finality_counters_durable: bool,
     /// **The reset marker this node is standing under**, rendered — `None` when it is not mid-reset
     /// (F-U12-02). The marker is cleared only when the catch-up frontier passes its anchor, so a node
     /// that resets and never catches up keeps re-entering the boot guard; that lifetime was unbounded
@@ -210,6 +289,10 @@ pub struct OperatorStatus {
     /// Monotone and process-wide, because the poisoning is: the panic happened in whichever thread held
     /// the guard (`rspace::lock`). Counted rather than silently absorbed, which is F-U9-03.
     pub poison_recoveries: u64,
+    /// **Since process start**, and no other scope is possible: the poisoning is the process's, so a
+    /// restart correctly zeroes it. Named rather than left implicit so a reader does not compare it with
+    /// the shard-history counters above as though the two had one lifetime (W-N10-02).
+    pub poison_recoveries_scope: String,
     /// **How many blocks this node has given up on** (C249's R3 gap): a divergence record whose
     /// revalidation budget is spent and which still fails here, so the node refuses it and its
     /// descendants for the process lifetime. Nothing resets a running node yet — this is the
@@ -222,15 +305,31 @@ pub struct OperatorStatus {
     /// that was running from one that died at startup. A panic reached stderr; a plain early return
     /// reached nothing at all.
     pub tasks_panicked: u64,
+    /// **Since process start** — a supervised task's death is this process's event (see
+    /// `poison_recoveries_scope`).
+    pub tasks_panicked_scope: String,
     /// …and how many have **returned**, which is the quieter death and the reason the two are counted
     /// apart: a panic announces itself once, a return does not announce itself anywhere.
     pub tasks_exited: u64,
+    /// **Since process start** — see `poison_recoveries_scope`.
+    pub tasks_exited_scope: String,
     /// **How many sends a closed channel swallowed** (C254). Every production `send` goes through
     /// `rchain_shared::chan`, which keeps the decision *and* counts it, so the count is the other half
     /// of the closed-channel door — the door made the event loud at the call site, this makes it
     /// countable on a surface. Monotone and process-wide. It was counted from the day the door landed
     /// and published by nothing, which its own module doc said out loud.
     pub undelivered_sends: u64,
+    /// **Since process start** — the count lives in `rchain_shared::chan`'s process-wide cell, and a
+    /// restart correctly zeroes it. See `poison_recoveries_scope`.
+    pub undelivered_sends_scope: String,
+
+    /// **Every member shard's health, keyed by shard id** (W-N10-04) — **total** over the node's
+    /// members, because a partial map beside the total flat fields is a trap for a consumer that zips
+    /// them. The flat fields above are the **primary's** reading; a non-primary shard whose autopropose
+    /// timer has halted is visible here and nowhere else. `null` when the caller is not a node with
+    /// members (a stub), which law 43's catalog carries as a nullable-but-always-present key.
+    #[serde(default)]
+    pub shards: Option<std::collections::BTreeMap<String, ShardHealthDto>>,
 }
 
 /// The LFS sync task's state, carried under `sync` on the status response (law 69's other half).
@@ -242,6 +341,14 @@ pub struct OperatorStatus {
 pub struct SyncStatus {
     /// Attempts the sync task has **started**.
     pub attempts: u32,
+    /// **Since process start**, and no other scope is possible: the count is the sync task's own, and
+    /// the task restarts with the process — persisting it would claim a continuity the task does not
+    /// have. Named rather than left implicit, for the same reason as `poisonRecoveriesScope` (W-N10-02).
+    ///
+    /// The **scope** half of W-N10-02 deliberately does not apply to this object: LFS sync is
+    /// shard-blind (`node_runtime`'s `setup_shard` refuses to sync a multi-shard node for exactly that
+    /// reason), so a per-shard reading of it would be an invention.
+    pub attempts_scope: String,
     /// The last named failure's message, verbatim. `null` while the attempt now running has not failed.
     pub last_failure: Option<String>,
 }

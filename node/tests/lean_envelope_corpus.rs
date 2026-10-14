@@ -27,8 +27,8 @@ use rchain_models::casper::protocol::deploy_service::{
     BondInfo, DeployInfo, FinalityAttestation, LightBlockInfo, RawBlock,
 };
 use rchain_node::api::dto::{
-    ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, NodeCapabilities, OperatorStatus,
-    PooledDeploys, PublicStatus, RhoDataResponse, VersionInfo,
+    ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, HaltStatusDto, NodeCapabilities,
+    OperatorStatus, PooledDeploys, PublicStatus, RhoDataResponse, VersionInfo,
 };
 use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
@@ -290,20 +290,30 @@ fn dto_by_name(name: &str) -> Value {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             autopropose_timer_halt_episodes: 0,
+            autopropose_halt: HaltStatusDto {
+                at: None,
+                durable: false,
+            },
             autopropose_tap_suppressed: 0,
             stale_snapshot_self_equivocations: 0,
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            finality_counters_durable: false,
             reset_marker: None,
             non_quiet_merge_reports: 0,
             sync: None,
             poison_recoveries: 0,
+            poison_recoveries_scope: "SinceProcessStart".to_string(),
             unrestorable_records: 0,
             unrestorable_block: None,
             tasks_panicked: 0,
+            tasks_panicked_scope: "SinceProcessStart".to_string(),
             tasks_exited: 0,
+            tasks_exited_scope: "SinceProcessStart".to_string(),
             undelivered_sends: 0,
+            undelivered_sends_scope: "SinceProcessStart".to_string(),
+            shards: None,
         }),
         "NodeCapabilities" => to_json(&NodeCapabilities {
             autopropose: false,

@@ -148,6 +148,40 @@ async fn build_block_store() -> BlockStore {
         .expect("block store")
 }
 
+/// The same DAG storage **without** the durable-records store attached — the backend that has nowhere
+/// to keep a halt record. It is the fixture for the third state: a read that cannot be answered must
+/// read as "unknown", not as "never halted".
+async fn build_dag_without_marker_store() -> Arc<BlockDagKeyValueStorage> {
+    let fresh = || -> SharedStore {
+        Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )))
+    };
+    let metadata = Arc::new(
+        BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+            fresh(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMetadataCodec),
+        )))
+        .await
+        .expect("metadata store"),
+    );
+    let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> = Arc::new(
+        KeyValueTypedStoreCodec::new(fresh(), Arc::new(BytesCodec), Arc::new(BlockHashCodec)),
+    );
+    let deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+        Arc::new(KeyValueTypedStoreCodec::new(
+            fresh(),
+            Arc::new(BytesCodec),
+            Arc::new(SignedDeployDataCodec),
+        ));
+    Arc::new(
+        BlockDagKeyValueStorage::create(metadata, deploy_index, deploy_store)
+            .await
+            .expect("dag storage"),
+    )
+}
+
 async fn has(store: &BlockStore, h: BlockHash) -> bool {
     store
         .contains(&[h])
@@ -539,4 +573,230 @@ async fn the_guard_refuses_a_rewinding_whose_anchor_body_is_absent() {
         err.contains("is not in this node's block store"),
         "the refusal is the reset's own sentence about the anchor: {err}"
     );
+}
+
+/// **The shard's stall, merge and give-up counters survive a restart** (W-N10-02).
+///
+/// The row: `STALL_EPISODES`, `NON_QUIET_MERGE_REPORTS` and `UNRESTORABLE_RECORDS` were process-global
+/// statics, so an operator who restarted to clear an alarm was told the shard had never stalled. The
+/// three are now one shard's cells, written on a *transition* rather than on every observation, and
+/// stored beside the reset marker and the halt record.
+///
+/// **The falsifiers, stated.** (a) Make `write_health_counters` a no-op: the fresh read is `None`, so
+/// the seeded cell is zero and the assertion after the seed fails. (b) Drop the boot seed (make
+/// `seed_counters` a no-op): the fresh cell stays at zero. (c) **Persist on the observation instead of
+/// on the transition** — the first seven refusals below go through the rule the validation path uses
+/// ([`ShardHealth::record_finality_stall`]) and the store must still be empty when they are done, so a
+/// variant that writes every time is caught here rather than staying green.
+#[tokio::test]
+async fn the_shard_health_counters_survive_a_restart() {
+    use rchain_block_storage::dag::dag_storage::HealthCounters;
+    use rchain_casper::interpreter_util::ShardHealth;
+
+    let dag = build_dag().await;
+
+    // --- before the restart: a sustained stall, a non-quiet merge, a block given up on -------------
+    let before = ShardHealth::new();
+    let partial = rchain_block_storage::dag::finalizer::NoAdvance::Support {
+        supporting: 100,
+        total: 400,
+        full_partitions: 1,
+        candidates: 1,
+        partition: 4,
+    };
+    // Seven refusals are *pacing* on a four-sender net, so nothing is written yet: the transition is
+    // what the rule persists, and the store must still be empty. This drives the rule the validation
+    // path calls rather than the counter and the write separately, so "persist on every observation"
+    // is a mutation this can see.
+    for _ in 0..7 {
+        before
+            .record_finality_stall(Some(&partial), dag.as_ref())
+            .await
+            .expect("a below-threshold observation records nothing and succeeds");
+    }
+    assert!(
+        dag.read_health_counters()
+            .await
+            .expect("readable")
+            .is_none(),
+        "a run that has not reached the threshold is not a transition, so nothing is written yet"
+    );
+    // The eighth refusal reaches `2 * partition` and *is* the transition.
+    before
+        .record_finality_stall(Some(&partial), dag.as_ref())
+        .await
+        .expect("the transition persists");
+    before.note_non_quiet_merge_report();
+    before.note_unrestorable("deadbeef", 42);
+    before
+        .persist_counters(dag.as_ref())
+        .await
+        .expect("the give-up persists");
+
+    // --- the restart ------------------------------------------------------------------------------
+    let stored = dag
+        .read_health_counters()
+        .await
+        .expect("the record is readable")
+        .expect("a transition was recorded");
+    assert_eq!(stored.stall_episodes, 1, "one stall episode");
+    assert_eq!(stored.non_quiet_merge_reports, 1);
+    assert_eq!(stored.unrestorable_records, 1);
+
+    let after = ShardHealth::new();
+    assert_eq!(after.stall_episodes(), 0, "a fresh cell starts at zero");
+    assert!(!after.counters_durable());
+    after.seed_counters(Ok(Some(stored)));
+    assert_eq!(after.stall_episodes(), 1, "the shard's stall history");
+    assert_eq!(after.non_quiet_merge_reports(), 1, "its merge history");
+    assert_eq!(after.unrestorable_records(), 1, "and what it gave up on");
+    // **The current-state cells are NOT seeded**, which is the decision rather than an omission: a
+    // restarted shard that observed nothing has no current verdict.
+    assert_eq!(after.finality_stall_reason(), None);
+    assert!(!after.finality_stall_sustained());
+    assert_eq!(after.unrestorable_block(), None);
+    assert!(
+        after.counters_durable(),
+        "a seeded cell says its counts are the shard's"
+    );
+
+    // --- and a shard that has never transitioned is **not** "unknown" -------------------------------
+    // The third shape of the boot read, and the arm a healthy live node hits: nothing on record means
+    // the shard's history is zero, which is a fact the node can vouch for.
+    let fresh = ShardHealth::new();
+    fresh.seed_counters(Ok(None));
+    assert_eq!(fresh.stall_episodes(), 0);
+    assert!(
+        fresh.counters_durable(),
+        "a fresh shard's zero is its own history, not an unknown — the live two-shard arm caught the \
+         first version reading `false` here"
+    );
+
+    // The read that *failed* is the one that is unknown.
+    let unread = ShardHealth::new();
+    unread.seed_counters(Err("the store refused".to_string()));
+    assert!(!unread.counters_durable());
+
+    // --- and a store that cannot answer reads as **unknown**, not as zero -------------------------
+    let storeless = build_dag_without_marker_store().await;
+    let unknown = ShardHealth::new();
+    assert!(
+        unknown.persist_counters(storeless.as_ref()).await.is_err(),
+        "a backend with nowhere to keep the counters refuses to claim it did"
+    );
+    assert!(
+        !unknown.counters_durable(),
+        "and the surface says so rather than letting the zero read as 'never stalled'"
+    );
+    let _ = HealthCounters::default();
+}
+
+/// **A halt survives the restart, and the next boot reads it** (W-N10-01, F-U10-02).
+///
+/// The row: the autopropose halt was process-scoped where the fault outlives the process, and the
+/// operator's *prescribed* remedy for a halt is a restart — so the remedy was exactly what destroyed
+/// the record of the fault. This drives the durable record through a real store, the same way
+/// [`a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker`] drives the reset marker.
+///
+/// **The falsifiers, stated.** (a) Make `write_halt_record` a no-op: the fresh read below is `None`
+/// and the boot seed says "not halted", so the assertion after the seed fails. (b) Drop the seed —
+/// make `seed_halt_from_store` return `Ok(())` without reading, or delete the call in
+/// `setup_shard_runtime`: the cell stays un-halted and the same assertion fails, because this drives
+/// the *real* `seed_halt_from_store` over a real store rather than `seed_halt` directly. (c) Revert the
+/// timer's gate to `failures` only (`ProposeHealth::park_while_halted`): the obedience is a separate
+/// assertion, in `node_runtime.rs::a_halted_timer_does_not_tick_until_the_halt_is_cleared`.
+///
+/// **The third state, which is the whole point.** A read that *fails* must not become a boot refusal
+/// and must not read as "never halted": `seed_halt(None)` leaves `durable: false`, which is the surface
+/// saying it cannot vouch for the reading. That arm is asserted here as the `None` case.
+#[tokio::test]
+async fn a_halt_written_before_the_restart_is_read_at_the_next_boot() {
+    use rchain_block_storage::dag::dag_storage::{HaltRecord, HALT_RECORD_KEY};
+    use rchain_casper::api::block_api::ProposeHealth;
+
+    let dag = build_dag().await;
+
+    // --- the halt, before the restart -------------------------------------------------------------
+    let written = HaltRecord {
+        at_ms: 1_700_000_000_000,
+        episodes: 2,
+        durable: false,
+    };
+    dag.write_halt_record(written)
+        .await
+        .expect("the halt reaches the store");
+
+    // --- the next boot, over the same store --------------------------------------------------------
+    let read = dag
+        .read_halt_record()
+        .await
+        .expect("the record is readable")
+        .expect("a halt was written, so one is on record");
+    assert_eq!(
+        read.at_ms, written.at_ms,
+        "the instant survives the restart"
+    );
+    assert_eq!(read.episodes, 2, "and the count with it");
+    assert!(
+        read.durable,
+        "a value that came out of the store is durable by construction — the decode sets the flag, \
+         so a record read back is never reported as un-vouched"
+    );
+
+    // **The boot seed, through the real store** — the same call `setup_shard_runtime` makes, so
+    // dropping *that* line (the mutation this arm exists to catch) reddens this assertion.
+    let health = ProposeHealth::new();
+    assert!(!health.timer_halted(), "a fresh cell is not halted");
+    health
+        .seed_halt_from_store(dag.as_ref())
+        .await
+        .expect("a healthy store reads");
+    assert!(
+        health.timer_halted(),
+        "the boot seed makes a restarted node report the halt the flag alone would have lost"
+    );
+    assert_eq!(
+        health.snapshot().autopropose_halt.episodes,
+        2,
+        "and the episode count is the shard's, not this process's"
+    );
+    assert_eq!(
+        health.snapshot().autopropose_halt.at,
+        Some(1_700_000_000_000),
+        "and the date the halt was taken, which the surface carries beside the flag"
+    );
+
+    // --- the one way out ---------------------------------------------------------------------------
+    dag.clear_halt_record()
+        .await
+        .expect("the clear reaches the store");
+    assert!(
+        dag.read_halt_record()
+            .await
+            .expect("readable after a clear")
+            .is_none(),
+        "the clear is durable — a node that resumed and restarted does not halt again on a stale record"
+    );
+
+    // --- the third state: unknown is not empty -----------------------------------------------------
+    // A store that cannot be read seeds 'unknown' — `durable: false` — which reads differently from
+    // 'never halted'. Driven through the same call, over a DAG with no durable-records store attached.
+    let storeless = build_dag_without_marker_store().await;
+    let unknown = ProposeHealth::new();
+    assert!(
+        unknown
+            .seed_halt_from_store(storeless.as_ref())
+            .await
+            .is_err(),
+        "a backend with nowhere to keep the record refuses to answer, rather than answering empty"
+    );
+    assert!(!unknown.timer_halted());
+    assert!(
+        !unknown.snapshot().autopropose_halt.durable,
+        "a read that failed seeds 'unknown', which reads differently from 'never halted'"
+    );
+
+    // The reserved key is a property of the store, not of this test: assert it is the one the write
+    // used, so a future second key cannot silently split the record from its reader.
+    assert_eq!(HALT_RECORD_KEY, b"autopropose-halt");
 }

@@ -859,7 +859,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
+    use rchain_casper::api::block_api::{
+        ApiErr, BlockApi, Capabilities, FinalityHealth, ShardHealthEntry,
+    };
     use rchain_models::ast::Par;
     use rchain_models::block_metadata::BlockMetadata;
     use rchain_models::casper::protocol::casper_message::SignedDeployData;
@@ -868,6 +870,7 @@ mod tests {
     };
     use rchain_models::proto::casper::propose_service_client::ProposeServiceClient;
     use rchain_models::proto::casper::propose_service_server::ProposeServiceServer;
+    use std::collections::BTreeMap;
 
     /// The block API double: it answers `status` and the propose reads, and refuses everything else —
     /// a double that answered everything would let a delegation bug pass. `refuse` turns those
@@ -910,6 +913,21 @@ mod tests {
         /// Delegates to the floored read: this double has no unfinalised view of its own, and the
         /// method is required rather than defaulted so that is a decision rather than an oversight
         /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+        async fn clear_autopropose_halt(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        /// A stub has no finality cell to read, so it reports **nothing observed** — which this
+        /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
+        async fn finality_health(&self) -> FinalityHealth {
+            FinalityHealth::default()
+        }
+
+        /// A stub is not a node, so it has no member shards to map.
+        async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+            BTreeMap::new()
+        }
+
         async fn get_unfinalised_name_data_response(
             &self,
             depth: i32,

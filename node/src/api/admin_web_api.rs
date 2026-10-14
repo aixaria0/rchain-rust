@@ -17,4 +17,16 @@ pub trait AdminWebApi: Send + Sync {
     /// data, so a later change cannot mount this route on the public router by reaching for a field —
     /// it would have to move a capability, which is the reviewable act.
     async fn operator_status(&self) -> Result<OperatorStatus, BlockApiException>;
+
+    /// **The one way out of a durable autopropose halt** (W-N10-01, F-U10-02).
+    ///
+    /// The halt survives a restart and is *obeyed* — a shard under one does not start its timer — so
+    /// the operator's remedy cannot be "restart and hope". This clears the record on **every** member
+    /// shard and wakes each parked timer, so production resumes without a second restart.
+    ///
+    /// A per-shard resume is deliberately not offered: a halt is a fault this node's proposer hit, not
+    /// a choice of shard, and clearing a shard that is not halted is a no-op. The returned string names
+    /// the shards whose clear *failed*, which is the case an operator has to know about — a clear that
+    /// did not reach the store must not read as a resume.
+    async fn resume_autopropose(&self) -> Result<String, BlockApiException>;
 }

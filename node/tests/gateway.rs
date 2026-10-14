@@ -103,6 +103,80 @@ fn gateway_node_runs_two_shards_with_their_own_genesis() {
     });
 }
 
+/// **Every member shard's health reaches the operator surface, on a real two-shard node**
+/// (W-N10-03's scope half and W-N10-04's surface half, live).
+///
+/// The unit arms pin the cells and the router; this is the one the rows actually point at — a node
+/// that is genuinely a member of two shards, read from outside through its own admin listener. Before
+/// the fix the operator status carried **one** shard's numbers as the node's, and there was no way to
+/// see the other member at all.
+///
+/// **Why it can fail.** `shards` must be total over the memberships the node boots (two here), each
+/// entry must carry its own proposer and finality reading, and `countersDurable` must be true — which
+/// it only is if the boot read reached the shard's record, so this also exercises W-N10-02's seed on
+/// a real store rather than an in-memory fixture.
+#[test]
+fn the_operator_status_reports_every_member_shards_health() {
+    common::test_runtime().block_on(async {
+        let dir = temp_dir("gateway-per-shard-health");
+        let ports = free_ports(4);
+        let http_port = ports[0];
+        let admin_port = ports[1];
+        let conf = gateway_conf(&dir, &ports, VALIDATOR_PRIV_HEX);
+        let node = start(&conf, ports[2], http_port).await;
+        let base = format!("http://127.0.0.1:{http_port}");
+        let admin = format!("http://127.0.0.1:{admin_port}");
+        let client = reqwest::Client::new();
+
+        wait_for_shards_ready(&client, &base).await;
+        let op = poll_json(
+            &client,
+            &format!("{admin}/api/v1/status/operator"),
+            "operator status",
+        )
+        .await;
+
+        // The flat fields are the **primary's** reading, which is what the row is about: on this node
+        // they describe `/root` and say nothing about `/root/child`.
+        assert_eq!(op["shardId"], "/root");
+        // …and the map is where every member is.
+        let shards = op["shards"]
+            .as_object()
+            .expect("the per-shard map is present and is an object");
+        assert_eq!(
+            shards.len(),
+            2,
+            "**total** over the node's memberships: {shards:?}"
+        );
+        let mut ids: Vec<&String> = shards.keys().collect();
+        ids.sort();
+        assert_eq!(ids, vec!["/root", "/root/child"]);
+        for (id, entry) in shards {
+            assert!(
+                entry["proposer"]["autoproposeTimerHalted"].is_boolean(),
+                "{id}: the member's own proposer reading: {entry}"
+            );
+            assert!(
+                entry["finality"]["stallEpisodes"].is_number(),
+                "{id}: …and its own finality reading: {entry}"
+            );
+            assert_eq!(
+                entry["finality"]["countersDurable"], true,
+                "{id}: the boot seed reached this shard's record, so its counters are its own history \
+                 rather than this process's"
+            );
+            // The proposer entry carries the halt record too, so a halted member is readable as one.
+            assert!(
+                entry["proposer"]["autoproposeHalt"].is_object(),
+                "{id}: the halt on record travels with each member: {entry}"
+            );
+        }
+
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
 /// The node coordinates a cross-shard transaction itself: `POST /api/v1/txn` escrows on both of its
 /// own shards and commits, and the durable record is readable back by id.
 ///

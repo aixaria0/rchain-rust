@@ -1,6 +1,8 @@
 //! Web API protobuf conversion functions (port of the conversion fns in `api/WebApi.scala`).
 
-use rchain_casper::api::block_api::{Capabilities, FinalityHealth, ProposerHealth, SyncHealth};
+use rchain_casper::api::block_api::{
+    Capabilities, FinalityHealth, ProposerHealth, ShardHealthEntry, SyncHealth,
+};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::signatures_alg::from_algorithm;
@@ -14,10 +16,45 @@ use rchain_shared::base16;
 
 use super::dto::{
     DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
-    ExploratoryDeployResponse, NodeCapabilities, OperatorStatus, PooledDeploy, PublicStatus,
-    RhoDataResponse, RhoExprWithBlock, SignatureException, SyncStatus, VersionInfo,
+    ExploratoryDeployResponse, FinalityHealthDto, HaltStatusDto, NodeCapabilities, OperatorStatus,
+    PooledDeploy, ProposerHealthDto, PublicStatus, RhoDataResponse, RhoExprWithBlock,
+    ShardHealthDto, SignatureException, SyncStatus, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
+
+/// **The scope of a counter that is the process's own running total** (W-N10-02). A string on the wire
+/// rather than a boolean, because it names *what* the number counts — a reader comparing it with the
+/// shard-history counters beside it does not have to guess why one restarts at zero and the other does
+/// not.
+pub const SINCE_PROCESS_START: &str = "SinceProcessStart";
+
+/// Map one casper [`ShardHealthEntry`] to its DTO (W-N10-04).
+fn to_shard_health_dto(entry: &ShardHealthEntry) -> ShardHealthDto {
+    ShardHealthDto {
+        proposer: ProposerHealthDto {
+            consecutive_self_validation_failures: entry
+                .proposer
+                .consecutive_self_validation_failures,
+            autopropose_timer_halted: entry.proposer.autopropose_timer_halted,
+            autopropose_timer_halt_episodes: entry.proposer.autopropose_halt.episodes,
+            autopropose_halt: HaltStatusDto {
+                at: entry.proposer.autopropose_halt.at,
+                durable: entry.proposer.autopropose_halt.durable,
+            },
+            autopropose_tap_suppressed: entry.proposer.autopropose_tap_suppressed,
+            stale_snapshot_self_equivocations: entry.proposer.stale_snapshot_self_equivocations,
+        },
+        finality: FinalityHealthDto {
+            stall_reason: entry.finality.stall_reason.clone(),
+            stall_sustained: entry.finality.stall_sustained,
+            stall_episodes: entry.finality.stall_episodes,
+            non_quiet_merge_reports: entry.finality.non_quiet_merge_reports,
+            unrestorable_records: entry.finality.unrestorable_records,
+            unrestorable_block: entry.finality.unrestorable_block.clone(),
+            counters_durable: entry.finality.counters_durable,
+        },
+    }
+}
 
 /// **The public half, and it takes no operator data — which is the point of the split** (W-N3-01).
 ///
@@ -59,18 +96,28 @@ pub fn to_operator_status(
     tasks_panicked: u64,
     tasks_exited: u64,
     undelivered_sends: u64,
+    // **Every member shard's health** (W-N10-04), gathered by the caller from `health_by_shard`. Threaded
+    // like `sync` rather than fetched here, so a caller that has no members maps a status deterministically.
+    shards: Option<std::collections::BTreeMap<String, ShardHealthEntry>>,
 ) -> OperatorStatus {
     OperatorStatus {
         core,
         admin_http: caps.admin_http,
         consecutive_self_validation_failures: health.consecutive_self_validation_failures,
         autopropose_timer_halted: health.autopropose_timer_halted,
-        autopropose_timer_halt_episodes: health.autopropose_timer_halt_episodes,
+        // The durable count, which is what the key always claimed to be (W-N10-01): it was an
+        // in-memory count when this line was written, and a restart reset it.
+        autopropose_timer_halt_episodes: health.autopropose_halt.episodes,
+        autopropose_halt: HaltStatusDto {
+            at: health.autopropose_halt.at,
+            durable: health.autopropose_halt.durable,
+        },
         autopropose_tap_suppressed: health.autopropose_tap_suppressed,
         stale_snapshot_self_equivocations: health.stale_snapshot_self_equivocations,
         finality_stall: finality.stall_reason.clone(),
         finality_stalled: finality.stall_sustained,
         finality_stall_episodes: finality.stall_episodes,
+        finality_counters_durable: finality.counters_durable,
         reset_marker,
         non_quiet_merge_reports: finality.non_quiet_merge_reports,
         // Law 69's other half: the sync task's own state, threaded in by the caller exactly as
@@ -79,14 +126,24 @@ pub fn to_operator_status(
         // not failed yet", and only the absence of the object says the first.
         sync: sync.map(|s| SyncStatus {
             attempts: s.attempts,
+            attempts_scope: SINCE_PROCESS_START.to_string(),
             last_failure: s.last_failure.clone(),
         }),
         poison_recoveries,
+        poison_recoveries_scope: SINCE_PROCESS_START.to_string(),
         unrestorable_records: finality.unrestorable_records,
         unrestorable_block: finality.unrestorable_block.clone(),
         tasks_panicked,
+        tasks_panicked_scope: SINCE_PROCESS_START.to_string(),
         tasks_exited,
+        tasks_exited_scope: SINCE_PROCESS_START.to_string(),
         undelivered_sends,
+        undelivered_sends_scope: SINCE_PROCESS_START.to_string(),
+        shards: shards.map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), to_shard_health_dto(v)))
+                .collect()
+        }),
     }
 }
 
@@ -202,6 +259,7 @@ pub fn to_data_at_name_response(dbs: &[DataWithBlockInfo], length: i32) -> DataA
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::api::block_api::HaltStatus;
     use rchain_models::ast::Expr;
     use rchain_models::casper::protocol::deploy_service::{
         BondInfo, Status, VersionInfo as CasperVersionInfo,
@@ -263,7 +321,11 @@ mod tests {
         let health = ProposerHealth {
             consecutive_self_validation_failures: 3,
             autopropose_timer_halted: true,
-            autopropose_timer_halt_episodes: 1,
+            autopropose_halt: HaltStatus {
+                at: Some(1_700_000_000_000),
+                episodes: 1,
+                durable: true,
+            },
             autopropose_tap_suppressed: 4,
             stale_snapshot_self_equivocations: 5,
         };
@@ -276,6 +338,7 @@ mod tests {
             non_quiet_merge_reports: 2,
             unrestorable_records: 1,
             unrestorable_block: Some("ab12 (seq 9)".to_string()),
+            counters_durable: true,
         };
         // The sync reading is a parameter like `finality`, and the `None` arm is the ordinary one:
         // this process's sync task has returned.
@@ -294,6 +357,7 @@ mod tests {
             2,
             40,
             7,
+            None,
         );
         assert_eq!(core.version.api, "1.0");
         assert_eq!(core.address, "addr");
@@ -310,9 +374,15 @@ mod tests {
         // the configured mode above says nothing about whether the proposer is failing.
         assert_eq!(api.consecutive_self_validation_failures, 3);
         assert!(api.autopropose_timer_halted);
-        // W-N10-01: the **episode count** beside the sticky flag, which is what survives a restart —
-        // the flag alone reads `false` on a node that restarted after halting.
+        // W-N10-01: the **episode count** beside the sticky flag, counted on the transition. It is the
+        // durable count now — seeded from the store at boot — so unlike the flag it does not start at
+        // zero on a node that restarted after halting.
         assert_eq!(api.autopropose_timer_halt_episodes, 1);
+        // …and the halt on record: *when* it happened and whether the record is trustworthy. `at` is a
+        // different fact from the flag — `null` means no halt on record, which a restarted node with a
+        // lost record reads as `durable: false` rather than as "never halted".
+        assert_eq!(api.autopropose_halt.at, Some(1_700_000_000_000));
+        assert!(api.autopropose_halt.durable);
         // W-N4-08: and what the halt cost, counted where it was refused. Without the tap's count the
         // halt was a flag the tap ignored.
         assert_eq!(api.autopropose_tap_suppressed, 4);
@@ -354,6 +424,247 @@ mod tests {
         // confused with "synced fine". The `Some` shape needs a running sync task, and its decision is
         // pinned in `node_syncing`'s own test where the statics live.
         assert_eq!(api.sync, None);
+        // W-N10-02: the durable flag travels with the shard-history counters, so a node whose store
+        // could not be reached says its counts are this process's rather than the shard's.
+        assert!(api.finality_counters_durable);
+        // …and the four counters that are the process's own are **labelled** rather than left to read
+        // as though they shared the counters' lifetime.
+        assert_eq!(api.poison_recoveries_scope, "SinceProcessStart");
+        assert_eq!(api.tasks_panicked_scope, "SinceProcessStart");
+        assert_eq!(api.tasks_exited_scope, "SinceProcessStart");
+        assert_eq!(api.undelivered_sends_scope, "SinceProcessStart");
+        // W-N10-04: the per-shard map travels, and `None` here is the caller's choice — the `Some`
+        // shape is pinned by `admin_web_api_impl`'s own test, where the router supplies the members.
+        assert_eq!(api.shards, None);
+    }
+
+    /// **The sync reading names its scope** (W-N10-02).
+    ///
+    /// The `Some` arm is the one an operator sees on a node latched in `NodeSyncing`, and it is the
+    /// arm the durable-counter question does *not* apply to: the count is the sync task's own and the
+    /// task restarts with the process. This pins that the label travels, so a later change cannot drop
+    /// it silently — the counter beside three shard-history counters with no label would read as though
+    /// it shared their lifetime.
+    #[test]
+    fn the_sync_reading_labels_its_scope() {
+        let core = PublicStatus {
+            version: VersionInfo {
+                api: "1.0".into(),
+                node: "n".into(),
+            },
+            address: "addr".into(),
+            network_id: "testnet".into(),
+            shard_id: "/root".into(),
+            peers: 0,
+            nodes: 0,
+            min_phlo_price: 0,
+            latest_block_number: 0,
+            autopropose: false,
+            propose_on_deploy: false,
+            manual_propose: true,
+            dev_mode: false,
+        };
+        let sync = SyncHealth {
+            attempts: 4,
+            last_failure: Some("no peers answered".to_string()),
+        };
+        let api = to_operator_status(
+            core,
+            &Capabilities {
+                autopropose: false,
+                propose_on_deploy: false,
+                manual_propose: true,
+                admin_http: false,
+                dev_mode: false,
+            },
+            &ProposerHealth::default(),
+            &FinalityHealth::default(),
+            Some(&sync),
+            None,
+            0,
+            0,
+            0,
+            0,
+            None,
+        );
+        let s = api.sync.expect("the reading travels");
+        assert_eq!(s.attempts, 4);
+        assert_eq!(s.last_failure.as_deref(), Some("no peers answered"));
+        assert_eq!(
+            s.attempts_scope, "SinceProcessStart",
+            "the count is the sync task's own, and the task restarts with the process"
+        );
+    }
+
+    /// **The shard's history reaches the wire under the names the row uses** (W-N10-02).
+    ///
+    /// The row states its defect by wire name — `finalityStallEpisodes`, `nonQuietMergeReports` — because
+    /// that is what an operator reads and what the row's evidence quotes. Making the counters durable
+    /// changes nothing anyone can see unless the counting value *arrives*, so this pins the last link in
+    /// a chain the other falsifiers pin in pieces: `casper/tests/reset.rs` pins store → cell, and the
+    /// live arm in `node/tests/gateway.rs` pins cell → surface on a running node. This one reads the
+    /// **serialized** form, because a *key name* is not a property of the struct: a dropped field, a
+    /// rename, or a lost `rename_all` shows up here and nowhere else.
+    ///
+    /// Falsified by moving any of the three keys or the durability flag: the assertions below are the
+    /// operator's reading, and a counter no surface names is not a report.
+    #[test]
+    fn the_shard_history_counts_reach_the_wire_under_the_rows_names() {
+        let core = PublicStatus {
+            version: VersionInfo {
+                api: "1.0".into(),
+                node: "n".into(),
+            },
+            address: "addr".into(),
+            network_id: "testnet".into(),
+            shard_id: "/root".into(),
+            peers: 0,
+            nodes: 0,
+            min_phlo_price: 0,
+            latest_block_number: 0,
+            autopropose: true,
+            propose_on_deploy: false,
+            manual_propose: false,
+            dev_mode: false,
+        };
+        // The shard's history as a restarted node reads it back: non-zero, and the store answered.
+        let finality = FinalityHealth {
+            stall_episodes: 9,
+            non_quiet_merge_reports: 4,
+            unrestorable_records: 1,
+            counters_durable: true,
+            ..FinalityHealth::default()
+        };
+        let api = to_operator_status(
+            core,
+            &Capabilities {
+                autopropose: true,
+                propose_on_deploy: false,
+                manual_propose: false,
+                admin_http: false,
+                dev_mode: false,
+            },
+            &ProposerHealth::default(),
+            &finality,
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            None,
+        );
+        let json = serde_json::to_value(&api).expect("the operator status serializes");
+        for (key, want) in [
+            ("finalityStallEpisodes", 9u64),
+            ("nonQuietMergeReports", 4),
+            ("unrestorableRecords", 1),
+        ] {
+            assert_eq!(
+                json[key].as_u64(),
+                Some(want),
+                "the row's own name for this count, carrying the shard's history: {key} in {json}"
+            );
+        }
+        assert_eq!(
+            json["finalityCountersDurable"].as_bool(),
+            Some(true),
+            "and the flag that says the counts are the shard's travels beside them: {json}"
+        );
+    }
+
+    /// **The per-shard map carries a non-primary shard's halt** (W-N10-04).
+    ///
+    /// The row: `ShardRoutingBlockApi::proposer_health` reads `primary_api()` alone, so a non-primary
+    /// shard whose timer has halted is invisible — the top-level `autoproposeTimerHalted` is the
+    /// primary's, and on a healthy primary it says `false` while another member is stopped. This drives
+    /// the conversion with two members, one halted, and asserts the map says which.
+    #[test]
+    fn the_per_shard_map_carries_each_members_halt() {
+        use std::collections::BTreeMap;
+        let core = PublicStatus {
+            version: VersionInfo {
+                api: "1.0".into(),
+                node: "n".into(),
+            },
+            address: "addr".into(),
+            network_id: "testnet".into(),
+            shard_id: "/root".into(),
+            peers: 0,
+            nodes: 0,
+            min_phlo_price: 0,
+            latest_block_number: 0,
+            autopropose: true,
+            propose_on_deploy: false,
+            manual_propose: false,
+            dev_mode: false,
+        };
+        let caps = Capabilities {
+            autopropose: true,
+            propose_on_deploy: false,
+            manual_propose: false,
+            admin_http: true,
+            dev_mode: false,
+        };
+        let halted = ProposerHealth {
+            autopropose_timer_halted: true,
+            autopropose_halt: HaltStatus {
+                at: Some(1_700_000_000_000),
+                episodes: 2,
+                durable: true,
+            },
+            ..ProposerHealth::default()
+        };
+        let shards = BTreeMap::from([
+            (
+                "/root".to_string(),
+                ShardHealthEntry {
+                    proposer: ProposerHealth::default(),
+                    finality: FinalityHealth::default(),
+                },
+            ),
+            (
+                "/root/child".to_string(),
+                ShardHealthEntry {
+                    proposer: halted,
+                    finality: FinalityHealth {
+                        stall_episodes: 9,
+                        counters_durable: true,
+                        ..FinalityHealth::default()
+                    },
+                },
+            ),
+        ]);
+        let api = to_operator_status(
+            core,
+            &caps,
+            &ProposerHealth::default(),
+            &FinalityHealth::default(),
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            Some(shards),
+        );
+        // The flat field is the **primary's**, and the primary is healthy.
+        assert!(
+            !api.autopropose_timer_halted,
+            "the flat field is the primary's reading, which is the row's whole point"
+        );
+        let map = api.shards.expect("the map travels");
+        assert_eq!(map.len(), 2, "**total** over the node's members");
+        assert!(!map["/root"].proposer.autopropose_timer_halted);
+        assert!(
+            map["/root/child"].proposer.autopropose_timer_halted,
+            "the non-primary's halt is visible here and nowhere else"
+        );
+        assert_eq!(
+            map["/root/child"].proposer.autopropose_halt.at,
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(map["/root/child"].finality.stall_episodes, 9);
     }
 
     /// **The public status carries no operator key** (W-N3-01), asserted on the *serialized* form
@@ -398,6 +709,15 @@ mod tests {
             "unrestorableBlock",
             "unrestorableRecords",
             "autoproposeTimerHalted",
+            "autoproposeTimerHaltEpisodes",
+            "autoproposeHalt",
+            "autoproposeTapSuppressed",
+            "finalityCountersDurable",
+            "poisonRecoveriesScope",
+            "tasksPanickedScope",
+            "tasksExitedScope",
+            "undeliveredSendsScope",
+            "shards",
             "consecutiveSelfValidationFailures",
             "staleSnapshotSelfEquivocations",
             "finalityStall",

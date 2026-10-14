@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use rchain_block_storage::block_store::BlockStore;
-use rchain_block_storage::dag::dag_storage::{BlockDagStorage, ResetMarker};
+use rchain_block_storage::dag::dag_storage::{BlockDagStorage, HealthCounters, ResetMarker};
 use rchain_block_storage::dag::finalizer::NoAdvance;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
@@ -231,36 +231,254 @@ static LAST_STALL_DESC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new
 /// hundreds of blocks to a readable number of lines (#70's measurement ran ~160 blocks at finality 44).
 const STALL_LOG_INTERVAL: i64 = 100;
 
-/// The last finality verdict this process observed, for the **machine-readable** surface — C249's
-/// F-U10-01, and the reason this cell is not `LAST_STALL_DESC`.
+/// **One shard's health cells** (W-N10-02, W-N10-03, C249's F-U10-01).
 ///
-/// That one is the *log's* rate limiter: it holds the last line it let through, and it is only written
-/// when the limit allows one. A status surface reading it would report a stale reason for up to
-/// `STALL_LOG_INTERVAL` heights — precisely while an operator is looking. This is written on **every**
-/// observation, so it is the current verdict or nothing at all, and an observation that advanced
-/// clears it.
+/// **Why one cell per shard rather than the process-global statics these once were.** The surface
+/// answered a *node-wide* question with a *shard-local* fact: a refusal in one shard appeared in every
+/// shard's finality health (W-N10-03), and a restart zeroed counters whose events are the shard's own
+/// history (W-N10-02). It is threaded exactly as `ProposeHealth` is — created in `setup_shard_runtime`
+/// beside it, handed into `setup_shard`, held by `BlockApiImpl` beside its `shard_id`, read as a field.
 ///
-/// **It is the per-observation verdict, not an alarm.** On a producing chain most blocks are refused by
-/// the stake gate, because a block justifies only the messages that existed when it was built (#318);
-/// what makes a *stall* is that the refusals keep coming, which is [`CURRENT_STALL_SUSTAINED`] and
-/// [`STALL_EPISODES`]. The description on the wire says so; before #318 it read as "why finality is not
-/// advancing", which is what made a healthy net look broken.
-static CURRENT_STALL_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// **Not a registry, and the reason is the reset lane's own.** `RESET_REQUEST`/`RESET_WAKE` are keyed by
+/// `ShardLane` because the reset *detector* is shard-blind — it has the id and nothing else. Every
+/// writer here is shard-*bearing* and already holds the shard it is validating (`validate_checks` takes
+/// `shard_id`), so a process-wide map would put a lock on the block-validation path to re-derive a key
+/// that was about to be dropped anyway.
+#[derive(Clone, Debug, Default)]
+pub struct ShardHealth {
+    /// The last finality verdict this shard observed, for the **machine-readable** surface — C249's
+    /// F-U10-01, and the reason this cell is not `LAST_STALL_DESC`.
+    ///
+    /// That one is the *log's* rate limiter: it holds the last line it let through, and it is only
+    /// written when the limit allows one. A surface reading it would report a stale reason for up to
+    /// `STALL_LOG_INTERVAL` heights — precisely while an operator is looking. This is written on
+    /// **every** observation, so it is the current verdict or nothing at all, and an observation that
+    /// advanced clears it.
+    ///
+    /// **It is the per-observation verdict, not an alarm.** On a producing chain most blocks are
+    /// refused by the stake gate, because a block justifies only the messages that existed when it was
+    /// built (#318); what makes a *stall* is that the refusals keep coming, which is
+    /// [`Self::finality_stall_sustained`] and [`Self::stall_episodes`]. The description on the wire says
+    /// so; before #318 it read as "why finality is not advancing", which made a healthy net look broken.
+    /// Every field is an `Arc`, so `Clone` **shares the cells** rather than copying them — the same
+    /// property `ProposeHealth` relies on, and the reason a cloned handle is the same shard's health.
+    current_stall_reason: Arc<std::sync::Mutex<Option<String>>>,
+    /// Refusals seen **consecutively** since the derivation last advanced. Reset by an advance, and by a
+    /// verdict that is not a refusal at all (see [`ShardHealth::note_finality_stall`]).
+    consecutive_refusals: Arc<AtomicU64>,
+    /// Whether the run above has reached the threshold — i.e. whether this shard is stalled **now**, as
+    /// opposed to having been refused on the block it is validating this instant.
+    current_stall_sustained: Arc<AtomicBool>,
+    /// How many times this shard has **entered** a finality stall (a not-stalled → stalled transition),
+    /// monotone, where "stalled" is the sustained state [`stall_threshold`] defines and not a single
+    /// refusal. Counting observations would count every block of a long stall; counting *single*
+    /// refusals counts the ordinary partial layers of a producing round, which is what #318 measured (a
+    /// four-validator net "entered a stall" 136-152 times over ~212 blocks while finality advanced).
+    /// **Persisted** ([`HealthCounters`]), seeded from the store at boot.
+    stall_episodes: Arc<AtomicU64>,
+    /// How many merges have returned a report that was not quiet (#280) — a dropped chain, or a
+    /// violated invariant. The log carries the detail; this makes the event **countable**, which is the
+    /// half the live incident lacked: `reject_whole_blocks` fired with no counter and no line anywhere
+    /// moving. **Persisted**, like the episodes above.
+    non_quiet_merge_reports: Arc<AtomicU64>,
+    /// **How many blocks this shard has given up on** — C249's R3 gap, made countable.
+    ///
+    /// When a `Divergence` record's revalidation budget is spent and it is *still* failed, the node has
+    /// stopped trying: it will refuse that block, and every descendant of it, for the process lifetime
+    /// (`casper/src/multi_parent_casper.rs:restore_is_warranted`). That transition used to be silent —
+    /// the scan simply `continue`d — which is the disposition pass's finding at its far end: the
+    /// failure upstream is loud and the *state* it leaves has no surface, no count and no inverse.
+    ///
+    /// **Nothing acts on this.** It is the denominator a reset would act on, shipped dark so an operator
+    /// can see what a reset *would* have done before one is wired (#287/#294 own the net-wide half).
+    /// **Persisted**, like the two above.
+    unrestorable_records: Arc<AtomicU64>,
+    /// The block this shard last gave up on, as `<hash> (seq <n>)`. The count answers "has this
+    /// happened"; this answers "on what". An operator needs both, and the count alone is not
+    /// actionably specific. **Not persisted**: it is current state, and a restarted shard that has
+    /// given up on nothing has nothing to name — the honest answer rather than a stale one.
+    current_unrestorable: Arc<std::sync::Mutex<Option<String>>>,
+    /// **Whether the three counters above are the shard's or this process's** (W-N10-02) — the honest
+    /// half of "persisted": `true` once a boot read answered or a write succeeded, `false` when the
+    /// store could not be reached, in which case the surface says so rather than letting a restart read
+    /// as a shard that never stalled.
+    counters_durable: Arc<AtomicBool>,
+}
 
-/// Refusals seen **consecutively** since the derivation last advanced. Reset by an advance, and by a
-/// verdict that is not a refusal at all (see [`note_finality_stall`]).
-static CONSECUTIVE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+impl ShardHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-/// Whether the run above has reached the threshold — i.e. whether this node is stalled **now**, as
-/// opposed to having been refused on the block it is validating this instant.
-static CURRENT_STALL_SUSTAINED: AtomicBool = AtomicBool::new(false);
+    /// **Seed the three persisted counters from the shard's own record at boot** (W-N10-02) — the read
+    /// that stops a restart from understating them. The reason and sustained cells are **not** seeded:
+    /// they are current state, and a restarted shard that has observed nothing has no reason, which is
+    /// the honest answer rather than a stale one.
+    ///
+    /// **`read` is the boot read itself, and its three shapes are three different facts** — which is
+    /// why this takes a `Result<Option<_>>` rather than an `Option<_>`:
+    ///
+    /// * `Ok(Some(c))` — the shard's history, and it is durable;
+    /// * `Ok(None)` — **nothing on record, which IS durable**: a fresh shard's history is zero, and
+    ///   saying "cannot vouch" here would be as wrong as saying "never stalled" about a lost record.
+    ///   A live node that has never transitioned hits exactly this arm, which is how the first version
+    ///   of this signature was caught reading `false` on a healthy two-shard node;
+    /// * `Err(_)` — the store could not be read, so the zero is *unknown* and `counters_durable` says so.
+    pub fn seed_counters(&self, read: Result<Option<HealthCounters>, String>) {
+        let (counters, durable) = match read {
+            Ok(record) => (record, true),
+            Err(_) => (None, false),
+        };
+        self.counters_durable.store(durable, Ordering::Relaxed);
+        let c = counters.unwrap_or_default();
+        self.stall_episodes
+            .store(c.stall_episodes, Ordering::Relaxed);
+        self.non_quiet_merge_reports
+            .store(c.non_quiet_merge_reports, Ordering::Relaxed);
+        self.unrestorable_records
+            .store(c.unrestorable_records, Ordering::Relaxed);
+    }
 
-/// How many times this process has **entered** a finality stall (a not-stalled → stalled transition),
-/// monotone, where "stalled" is the sustained state [`stall_threshold`] defines and not a single
-/// refusal. Counting observations would count every block of a long stall; counting *single* refusals
-/// counts the ordinary partial layers of a producing round, which is what #318 measured (a
-/// four-validator net "entered a stall" 136-152 times over ~212 blocks while its finality advanced).
-static STALL_EPISODES: AtomicU64 = AtomicU64::new(0);
+    /// The three persisted counters as one value, for the writer that stores them.
+    pub fn counters(&self) -> HealthCounters {
+        HealthCounters {
+            stall_episodes: self.stall_episodes.load(Ordering::Relaxed),
+            non_quiet_merge_reports: self.non_quiet_merge_reports.load(Ordering::Relaxed),
+            unrestorable_records: self.unrestorable_records.load(Ordering::Relaxed),
+        }
+    }
+
+    /// **Record one observation of the gate's verdict**: the reason when the derivation was refused,
+    /// `None` when it advanced. Called on every block's validation, so the surface follows the chain
+    /// rather than the log.
+    ///
+    /// * **advanced** (`None`) — the run resets, the sustained flag clears;
+    /// * **refused** (`Coverage`/`Support`) — the run grows, and once it reaches [`stall_threshold`]
+    ///   the shard is *stalled*: the flag sets and, on the transition, an episode is counted;
+    /// * **nothing to publish** (`AlreadyPublished`) — neither. The derivation has no fringe to publish
+    ///   because the published one is current, which is the state a chain that is not moving *backwards*
+    ///   lands in; counting it as a refusal would make a quiet net look stalled.
+    ///
+    /// Returns **`true` when an episode began**, so the caller — which holds the store — persists it.
+    /// The write is on the transition, not on the observation, because a block is validated every round
+    /// and most are refused by the stake gate.
+    pub fn note_finality_stall(&self, reason: Option<&NoAdvance<Validator>>) -> bool {
+        let rendered = reason.map(describe_no_advance);
+        let partition = reason.and_then(verdict_partition);
+        let sustained = self.current_stall_sustained.load(Ordering::Relaxed);
+        let mut episode = false;
+        match partition {
+            None => {
+                self.consecutive_refusals.store(0, Ordering::Relaxed);
+                self.current_stall_sustained.store(false, Ordering::Relaxed);
+            }
+            Some(partition) => {
+                let run = self.consecutive_refusals.fetch_add(1, Ordering::Relaxed) + 1;
+                let stalled = run >= stall_threshold(partition);
+                self.current_stall_sustained
+                    .store(stalled, Ordering::Relaxed);
+                if stalled && !sustained {
+                    self.stall_episodes.fetch_add(1, Ordering::Relaxed);
+                    episode = true;
+                }
+            }
+        }
+        *self.current_stall_reason.lock().unpoison() = rendered;
+        episode
+    }
+
+    /// The reason the gate last refused the derivation, as this shard observed it.
+    ///
+    /// `None` means the last observation saw a merge that advanced — **not** "finality is healthy",
+    /// which is a judgement the acceptance spec makes, not this accessor. On a producing chain this is
+    /// usually `Some(..)` while the chain is perfectly healthy; read
+    /// [`Self::finality_stall_sustained`] for the distinction.
+    pub fn finality_stall_reason(&self) -> Option<String> {
+        self.current_stall_reason.lock().unpoison().clone()
+    }
+
+    /// **Whether this shard is stalled right now** — the derivation has been refused
+    /// [`stall_threshold`] times in a row, so the run of refusals has outlasted a round. This is what
+    /// `finalityStallEpisodes` counts, and what an operator should alarm on; the reason string beside it
+    /// is the diagnosis for whichever state the shard is in.
+    pub fn finality_stall_sustained(&self) -> bool {
+        self.current_stall_sustained.load(Ordering::Relaxed)
+    }
+
+    /// How many finality stalls this shard has entered (monotone, persisted).
+    pub fn stall_episodes(&self) -> u64 {
+        self.stall_episodes.load(Ordering::Relaxed)
+    }
+
+    /// How many non-quiet merge reports this shard has logged (monotone, persisted).
+    pub fn non_quiet_merge_reports(&self) -> u64 {
+        self.non_quiet_merge_reports.load(Ordering::Relaxed)
+    }
+
+    /// Record one non-quiet merge report. Rare by construction — a dropped chain or a violated
+    /// invariant — so the caller persists rather than the write being rate-limited.
+    pub fn note_non_quiet_merge_report(&self) {
+        self.non_quiet_merge_reports.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many blocks this shard has given up on (monotone, persisted).
+    pub fn unrestorable_records(&self) -> u64 {
+        self.unrestorable_records.load(Ordering::Relaxed)
+    }
+
+    /// The last block this shard gave up on, or `None` if it never has. **Not** a health verdict: a
+    /// shard that has given up on one block may still be serving, and this says what it is stuck on,
+    /// not how bad that is.
+    pub fn unrestorable_block(&self) -> Option<String> {
+        self.current_unrestorable.lock().unpoison().clone()
+    }
+
+    /// Record that this shard has given up on a block. See the caller in `multi_parent_casper.rs` for
+    /// what that means and what it deliberately does not do.
+    pub fn note_unrestorable(&self, block_hex: &str, seq_num: i64) {
+        self.unrestorable_records.fetch_add(1, Ordering::Relaxed);
+        *self.current_unrestorable.lock().unpoison() = Some(format!("{block_hex} (seq {seq_num})"));
+    }
+
+    /// **Write the three persisted counters to the shard's record.** Called by a writer *after* a
+    /// transition, never on every observation. The error is returned rather than logged here so the
+    /// caller, which holds its own `Log`, can say which shard will under-count in the next process.
+    pub async fn persist_counters(&self, dag: &dyn BlockDagStorage) -> Result<(), String> {
+        dag.write_health_counters(self.counters()).await?;
+        self.counters_durable.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// **Record one finality observation, and persist only when it moved a counter** (W-N10-02) — the
+    /// rule the validation path applies to every block, in one place rather than as an `if` at a call
+    /// site a test cannot reach.
+    ///
+    /// A block is validated every round and most are refused by the stake gate, so persisting on the
+    /// *observation* would be a store write per validated block; what is worth a write is the moment the
+    /// shard **enters** a stall, which is what [`Self::note_finality_stall`] reports. The falsifier is
+    /// the one that used to be green: make this persist unconditionally and
+    /// `casper/tests/reset.rs::the_shard_health_counters_survive_a_restart` finds a record where the
+    /// shard had nothing to record.
+    ///
+    /// The error is the caller's to report, as with [`Self::persist_counters`].
+    pub async fn record_finality_stall(
+        &self,
+        reason: Option<&NoAdvance<Validator>>,
+        dag: &dyn BlockDagStorage,
+    ) -> Result<(), String> {
+        if self.note_finality_stall(reason) {
+            self.persist_counters(dag).await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether [`Self::counters`] is the shard's history (`true`) or this process's running totals
+    /// (`false`) — the surface says which rather than implying durability it does not have.
+    pub fn counters_durable(&self) -> bool {
+        self.counters_durable.load(Ordering::Relaxed)
+    }
+}
 
 /// **How many consecutive refusals make a stall.** Not a tuned constant: the derivation advances at
 /// least once per round on a healthy net — that is what a round *is*, every bonded sender speaks and
@@ -286,109 +504,6 @@ fn verdict_partition(reason: &NoAdvance<Validator>) -> Option<usize> {
         // nothing about one.
         NoAdvance::AlreadyPublished => None,
     }
-}
-
-/// How many merges have returned a report that was not quiet (#280) — a dropped chain, or a violated
-/// invariant. The log carries the detail; this is what makes the event **countable**, which is the half
-/// the live incident lacked: `reject_whole_blocks` fired with no counter and no line anywhere moving.
-static NON_QUIET_MERGE_REPORTS: AtomicU64 = AtomicU64::new(0);
-
-/// Record one observation of the gate's verdict: the reason when the derivation was refused, `None` when
-/// it advanced. Called on every block's validation, so the surface follows the chain rather than the log.
-///
-/// Three outcomes, and the middle one is why this function is not two lines:
-///
-/// * **advanced** (`None`) — the run resets, the sustained flag clears;
-/// * **refused** (`Coverage`/`Support`) — the run grows, and once it reaches [`stall_threshold`] the
-///   node is *stalled*: the flag sets and, on the transition, an episode is counted;
-/// * **nothing to publish** (`AlreadyPublished`) — neither. The derivation has no fringe to publish
-///   because the published one is current, which is the state a chain that is not moving *backwards*
-///   lands in; counting it as a refusal would make a quiet net look stalled.
-fn note_finality_stall(reason: Option<&NoAdvance<Validator>>) {
-    let rendered = reason.map(describe_no_advance);
-    let partition = reason.and_then(verdict_partition);
-    let sustained = CURRENT_STALL_SUSTAINED.load(Ordering::Relaxed);
-    match partition {
-        None => {
-            CONSECUTIVE_REFUSALS.store(0, Ordering::Relaxed);
-            CURRENT_STALL_SUSTAINED.store(false, Ordering::Relaxed);
-        }
-        Some(partition) => {
-            let run = CONSECUTIVE_REFUSALS.fetch_add(1, Ordering::Relaxed) + 1;
-            let stalled = run >= stall_threshold(partition);
-            CURRENT_STALL_SUSTAINED.store(stalled, Ordering::Relaxed);
-            if stalled && !sustained {
-                STALL_EPISODES.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-    *CURRENT_STALL_REASON.lock().unpoison() = rendered;
-}
-
-/// The reason the gate last refused the derivation, as this node observed it.
-///
-/// `None` means the last observation saw a merge that advanced — **not** "finality is healthy", which is
-/// a judgement the acceptance spec makes, not this accessor. On a producing chain this is usually
-/// `Some(..)` while the chain is perfectly healthy; read [`finality_stall_sustained`] for the distinction.
-pub fn finality_stall_reason() -> Option<String> {
-    CURRENT_STALL_REASON.lock().unpoison().clone()
-}
-
-/// **Whether this node is stalled right now** — the derivation has been refused
-/// [`stall_threshold`] times in a row, so the run of refusals has outlasted a round. This is what
-/// `finalityStallEpisodes` counts, and what an operator should alarm on; the reason string beside it is
-/// the diagnosis for whichever state the node is in.
-pub fn finality_stall_sustained() -> bool {
-    CURRENT_STALL_SUSTAINED.load(Ordering::Relaxed)
-}
-
-/// How many finality stalls this process has entered (monotone).
-pub fn finality_stall_episodes() -> u64 {
-    STALL_EPISODES.load(Ordering::Relaxed)
-}
-
-/// How many non-quiet merge reports this process has logged (monotone).
-pub fn non_quiet_merge_reports() -> u64 {
-    NON_QUIET_MERGE_REPORTS.load(Ordering::Relaxed)
-}
-
-fn note_non_quiet_merge_report() {
-    NON_QUIET_MERGE_REPORTS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// **How many blocks this node has given up on** — C249's R3 gap, made countable.
-///
-/// When a `Divergence` record's revalidation budget is spent and it is *still* failed, the node has
-/// stopped trying: it will refuse that block, and every descendant of it, for the process lifetime
-/// (`casper/src/multi_parent_casper.rs:restore_is_warranted`). That transition used to be silent — the
-/// scan simply `continue`d — which is the disposition pass's finding at its far end: the failure
-/// upstream is loud and the *state* it leaves has no surface, no count and no inverse.
-///
-/// **Nothing acts on this.** It is the denominator a reset would act on, shipped dark so an operator
-/// can see what a reset *would* have done before one is wired (#287/#294 own the net-wide half).
-static UNRESTORABLE_RECORDS: AtomicU64 = AtomicU64::new(0);
-
-/// The block this node last gave up on, as `<hash> (seq <n>)`. The count answers "has this happened";
-/// this answers "on what". An operator needs both, and the count alone is not actionably specific.
-static CURRENT_UNRESTORABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-/// How many blocks this node has given up on (monotone).
-pub fn unrestorable_records() -> u64 {
-    UNRESTORABLE_RECORDS.load(Ordering::Relaxed)
-}
-
-/// The last block this node gave up on, or `None` if it never has. **Not** a health verdict: a node
-/// that has given up on one block may still be serving, and this says what it is stuck on, not how
-/// bad that is.
-pub fn unrestorable_block() -> Option<String> {
-    CURRENT_UNRESTORABLE.lock().unpoison().clone()
-}
-
-/// Record that this node has given up on a block. See the caller in `multi_parent_casper.rs` for what
-/// that means and what it deliberately does not do.
-pub fn note_unrestorable(block_hex: &str, seq_num: i64) {
-    UNRESTORABLE_RECORDS.fetch_add(1, Ordering::Relaxed);
-    *CURRENT_UNRESTORABLE.lock().unpoison() = Some(format!("{block_hex} (seq {seq_num})"));
 }
 
 /// **A per-node reset this node has decided it needs** (F-U5-01's acting half, #320).
@@ -736,6 +851,11 @@ pub async fn validate_block_checkpoint<F, Fut>(
     block: &BlockMessage,
     block_index: &F,
     log: &Arc<dyn Log>,
+    // **The shard's health cells** (W-N10-02, W-N10-03). The two observations below used to write
+    // process-global statics, so a refusal in one shard appeared in every shard's finality health and a
+    // restart zeroed counters the shard's own history had moved. Threaded, not registered — see
+    // [`ShardHealth`] for why.
+    health: &ShardHealth,
 ) -> Result<(BlockMetadata, Result<bool, BlockStatus>), String>
 where
     F: Fn(BlockHash) -> Fut,
@@ -776,7 +896,21 @@ where
         // **The surface's copy, written on every observation** (C249's F-U10-01). The line below is
         // rate-limited so a long stall stays readable; a status surface that inherited that limit would
         // report a stale reason for up to `STALL_LOG_INTERVAL` heights. This one is current or nothing.
-        note_finality_stall(pre_state.finality_stall.as_ref());
+        // **The episode counter is persisted only when it moves** (W-N10-02) — the rule is
+        // [`ShardHealth::record_finality_stall`], one call rather than an `if` here, so it can be driven
+        // with a store and no runtime. This path validates a block every round and most are refused.
+        if let Err(e) = health
+            .record_finality_stall(pre_state.finality_stall.as_ref(), dag)
+            .await
+        {
+            log.warn(
+                source,
+                &format!(
+                    "a finality-stall episode was counted but not recorded: {e} — this shard will \
+                     under-report its stall history in the next process"
+                ),
+            );
+        }
         if let Some(reason) = &pre_state.finality_stall {
             let tip = pre_state.max_block_num;
             // **Compare the rendered line, not the variant name.** The first version of this gate keyed on
@@ -809,7 +943,18 @@ where
         // because a merge that rejects nothing is the ordinary case, and the interesting merges — the
         // ones that drop a chain, or that violate an invariant — are exactly the ones worth a line.
         if !pre_state.merge_report.is_quiet() {
-            note_non_quiet_merge_report();
+            health.note_non_quiet_merge_report();
+            // Rare by construction — a dropped chain or a violated invariant — so it is persisted
+            // every time rather than rate-limited (W-N10-02).
+            if let Err(e) = health.persist_counters(dag).await {
+                log.warn(
+                    source,
+                    &format!(
+                        "a non-quiet merge report was counted but not recorded: {e} — this shard will \
+                         under-report its merge history in the next process"
+                    ),
+                );
+            }
             log.warn(source, &pre_state.merge_report.describe());
         }
         pre_state
@@ -1329,12 +1474,12 @@ mod tests {
     /// Falsifier: before this change there was no cell and no accessor — the reason existed only as a
     /// formatted log line, so a test could not ask for it at all. That is what "log-only" meant.
     ///
-    /// The assertions are `>=`/`>` against a captured reading rather than exact deltas, because the
-    /// counters are process-wide and libtest runs this module's tests concurrently.
-    /// **The whole contract in one test, deliberately.** These statics are process-wide and libtest runs
-    /// a module's tests concurrently, so a second test touching them would make both flaky — the
-    /// assertions below are about a *sequence* (refuse, refuse, advance, refuse), and a sequence cannot
-    /// be split across parallel tests.
+    /// The assertions are exact, **because the cell is a local `ShardHealth` now** (W-N10-02/03). They
+    /// used to be `>`/`>=` against a captured reading: the cells were process-wide statics and libtest
+    /// runs a module's tests concurrently. One instance per test makes both the flakiness and the fuzzy
+    /// comparisons go away — and the exactness is the point, because the whole contract is a *sequence*
+    /// (refuse, refuse, advance, refuse) that a second test touching the same cells would have made
+    /// unassertable.
     ///
     /// What it pins, in #318's terms: a single refusal on a producing chain is **pacing**, not a stall —
     /// the derivation advances at least once per round, so a run shorter than twice the partition is
@@ -1351,99 +1496,208 @@ mod tests {
             candidates: 1,
             partition,
         };
+        let health = ShardHealth::new();
 
-        note_finality_stall(None);
+        assert!(
+            !health.note_finality_stall(None),
+            "an advance is not an episode"
+        );
         assert_eq!(
-            finality_stall_reason(),
+            health.finality_stall_reason(),
             None,
             "an advance clears the verdict"
         );
-        assert!(!finality_stall_sustained());
-        let before = finality_stall_episodes();
+        assert!(!health.finality_stall_sustained());
+        assert_eq!(health.stall_episodes(), 0);
 
         // Seven refusals on a four-sender net: below `2 * 4`. Pacing, and the counter must not move —
         // this is the assertion the old definition failed, where each round added an "episode".
         for _ in 0..7 {
-            note_finality_stall(Some(&partial(4, 400)));
+            health.note_finality_stall(Some(&partial(4, 400)));
             assert!(
-                !finality_stall_sustained(),
+                !health.finality_stall_sustained(),
                 "a run shorter than two rounds is not a stall"
             );
             assert_eq!(
-                finality_stall_episodes(),
-                before,
+                health.stall_episodes(),
+                0,
                 "and it is not an episode: this is #318's defect"
             );
         }
         // The verdict is still reported while the run is short — the surface shows the *diagnosis*
         // whether or not the state has become a stall, which is what F-U10-01 asked of it.
-        let reason = finality_stall_reason().expect("the per-observation verdict is reported");
+        let reason = health
+            .finality_stall_reason()
+            .expect("the per-observation verdict is reported");
         assert!(
             reason.contains("100 of 400") && reason.contains("of a 4-sender partition"),
             "the reason carries the layer and the partition it was measured against: {reason}"
         );
 
-        // The eighth consecutive refusal reaches `2 * 4`, and *that* is the stall.
-        note_finality_stall(Some(&partial(4, 400)));
-        assert!(finality_stall_sustained(), "the run has outlasted a round");
-        let first_episode = finality_stall_episodes();
-        assert!(first_episode > before, "entering a stall is one episode");
+        // The eighth consecutive refusal reaches `2 * 4`, and *that* is the stall — and the transition
+        // is what the writer persists (W-N10-02).
+        assert!(
+            health.note_finality_stall(Some(&partial(4, 400))),
+            "entering a stall is the transition the counter moves on"
+        );
+        assert!(
+            health.finality_stall_sustained(),
+            "the run has outlasted a round"
+        );
+        assert_eq!(
+            health.stall_episodes(),
+            1,
+            "entering a stall is one episode"
+        );
 
-        // Further refusals are the same stall, however many.
+        // Further refusals are the same stall, however many — and none of them is another transition,
+        // so none of them is another store write.
         for _ in 0..20 {
-            note_finality_stall(Some(&partial(4, 400)));
+            assert!(
+                !health.note_finality_stall(Some(&partial(4, 400))),
+                "a refusal inside a running stall is not a transition, so it is not persisted"
+            );
         }
         assert_eq!(
-            finality_stall_episodes(),
-            first_episode,
+            health.stall_episodes(),
+            1,
             "one stall is one episode however many observations it takes"
         );
 
         // An advance ends it, and the next run is a second episode.
-        note_finality_stall(None);
-        assert!(!finality_stall_sustained(), "an advance is a recovery");
-        assert_eq!(finality_stall_reason(), None, "and the reason goes with it");
-        for _ in 0..8 {
-            note_finality_stall(Some(&partial(4, 400)));
-        }
+        health.note_finality_stall(None);
         assert!(
-            finality_stall_episodes() > first_episode,
+            !health.finality_stall_sustained(),
+            "an advance is a recovery"
+        );
+        assert_eq!(
+            health.finality_stall_reason(),
+            None,
+            "and the reason goes with it"
+        );
+        for _ in 0..8 {
+            health.note_finality_stall(Some(&partial(4, 400)));
+        }
+        assert_eq!(
+            health.stall_episodes(),
+            2,
             "a stall after a recovery is a new episode"
         );
 
         // **The threshold is the net's, not the rig's.** Eight refusals are a stall on four senders and
         // pacing on thirty, because a round on thirty is longer — the number the rule reads is the
         // gate's own partition, so this needs no constant to be right about both.
-        note_finality_stall(None);
+        health.note_finality_stall(None);
         for _ in 0..8 {
-            note_finality_stall(Some(&partial(30, 3000)));
+            health.note_finality_stall(Some(&partial(30, 3000)));
         }
         assert!(
-            !finality_stall_sustained(),
+            !health.finality_stall_sustained(),
             "eight refusals on a thirty-sender net are still inside a round"
         );
 
         // **`AlreadyPublished` is neither a refusal nor an advance**: the derivation has nothing to
         // publish because what is published is current. Counting it would make a quiet chain look
         // stalled, and it carries no partition because it decided nothing about one.
-        let before_guard = finality_stall_episodes();
-        note_finality_stall(None);
+        health.note_finality_stall(None);
+        let before_guard = health.stall_episodes();
         for _ in 0..50 {
-            note_finality_stall(Some(&NoAdvance::AlreadyPublished));
+            assert!(!health.note_finality_stall(Some(&NoAdvance::AlreadyPublished)));
         }
         assert!(
-            !finality_stall_sustained(),
+            !health.finality_stall_sustained(),
             "nothing to publish is not a stall"
         );
         assert_eq!(
-            finality_stall_episodes(),
+            health.stall_episodes(),
             before_guard,
             "and the progress guard counts no episode"
         );
         assert!(
-            finality_stall_reason().is_some(),
+            health.finality_stall_reason().is_some(),
             "the guard's verdict is still the last verdict observed"
         );
+    }
+
+    /// **A shard's counters are the shard's** (W-N10-03) — two instances observe independently, which is
+    /// the property the process-global statics could not have. This reddens on the tree before the fix:
+    /// with one set of statics, beta's refusal moves alpha's `finalityStallEpisodes`.
+    #[test]
+    fn one_shards_stall_is_not_another_shards() {
+        let alpha = ShardHealth::new();
+        let beta = ShardHealth::new();
+        let partial = NoAdvance::Support {
+            supporting: 100,
+            total: 400,
+            full_partitions: 1,
+            candidates: 1,
+            partition: 4,
+        };
+
+        for _ in 0..8 {
+            beta.note_finality_stall(Some(&partial));
+        }
+        assert!(
+            beta.finality_stall_sustained(),
+            "beta reached its threshold"
+        );
+        assert_eq!(beta.stall_episodes(), 1);
+
+        assert!(
+            !alpha.finality_stall_sustained(),
+            "alpha saw no refusals of its own, so alpha is not stalled"
+        );
+        assert_eq!(
+            alpha.stall_episodes(),
+            0,
+            "and beta's refusal is not alpha's episode"
+        );
+        assert_eq!(alpha.finality_stall_reason(), None);
+    }
+
+    /// **The three persisted counters survive a restart** (W-N10-02) — a restart's shape is `counters()`
+    /// out, `seed_counters()` into a fresh cell, which is what the boot seed does.
+    #[test]
+    fn the_persisted_counters_round_trip_through_a_new_cell() {
+        let before = ShardHealth::new();
+        for _ in 0..8 {
+            before.note_finality_stall(Some(&NoAdvance::Support {
+                supporting: 100,
+                total: 400,
+                full_partitions: 1,
+                candidates: 1,
+                partition: 4,
+            }));
+        }
+        before.note_non_quiet_merge_report();
+        before.note_unrestorable("deadbeef", 42);
+
+        let record = before.counters();
+        assert_eq!(record.stall_episodes, 1);
+        assert_eq!(record.non_quiet_merge_reports, 1);
+        assert_eq!(record.unrestorable_records, 1);
+
+        // The restart: a fresh cell seeded from the record.
+        let after = ShardHealth::new();
+        assert_eq!(after.stall_episodes(), 0, "a fresh cell starts at zero");
+        after.seed_counters(Ok(Some(record)));
+        assert_eq!(
+            after.stall_episodes(),
+            1,
+            "the shard's stall history survives"
+        );
+        assert_eq!(after.non_quiet_merge_reports(), 1, "and its merge history");
+        assert_eq!(
+            after.unrestorable_records(),
+            1,
+            "and the blocks it gave up on"
+        );
+        // **The current-state cells are NOT seeded**, and that is the decision rather than an omission:
+        // a restarted shard that has observed nothing has no *current* verdict, and reporting the
+        // previous process's would be a stale reason presented as a live one.
+        assert_eq!(after.finality_stall_reason(), None);
+        assert!(!after.finality_stall_sustained());
+        assert_eq!(after.unrestorable_block(), None);
     }
 
     /// **A node that has given up on a block says so, and says where** — C249's R3 gap, counted.
@@ -1453,32 +1707,33 @@ mod tests {
     /// whether it had happened at all. That is the shape the disposition pass calls "fails loudly and
     /// then does nothing", and this is the *doing nothing* half made legible.
     ///
-    /// The assertions are `>`/`>=` against a captured reading and the value is matched by suffix, for
-    /// the same reason the stall test explains: the counters are process-wide and libtest runs this
-    /// module's tests concurrently.
+    /// The cell is a local [`ShardHealth`] now (W-N10-02/03), so the assertions are exact rather than
+    /// `>`/`>=` against a captured reading.
     #[test]
     fn the_unrestorable_surface_names_the_block_it_gave_up_on() {
-        let before = unrestorable_records();
+        let health = ShardHealth::new();
+        assert_eq!(health.unrestorable_records(), 0);
 
-        note_unrestorable("deadbeef", 42);
+        health.note_unrestorable("deadbeef", 42);
 
-        assert!(
-            unrestorable_records() > before,
-            "giving up on a block is counted ({before} -> {})",
-            unrestorable_records()
+        assert_eq!(
+            health.unrestorable_records(),
+            1,
+            "giving up on a block is counted"
         );
-        let named = unrestorable_block().expect("the block it gave up on is named");
+        let named = health
+            .unrestorable_block()
+            .expect("the block it gave up on is named");
         assert!(
             named.ends_with("deadbeef (seq 42)"),
             "the name carries the hash and the sequence number an operator needs to act: {named}"
         );
 
-        // Monotone: a later give-up replaces the *name* and adds to the count, so a node that has
+        // Monotone: a later give-up replaces the *name* and adds to the count, so a shard that has
         // given up on two blocks reads 2 and names the second — never 1.
-        let after_first = unrestorable_records();
-        note_unrestorable("cafebabe", 7);
-        assert!(unrestorable_records() > after_first, "and again");
-        let named = unrestorable_block().expect("named");
+        health.note_unrestorable("cafebabe", 7);
+        assert_eq!(health.unrestorable_records(), 2, "and again");
+        let named = health.unrestorable_block().expect("named");
         assert!(
             named.ends_with("cafebabe (seq 7)"),
             "the surface names the most recent, not the first: {named}"

@@ -31,13 +31,14 @@ use rchain_shared::base16;
 
 use crate::api::block_api::{
     get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, DeployerInfo,
-    ProposeHealth, ProposerHealth,
+    FinalityHealth, ProposeHealth, ProposerHealth, ShardHealthEntry,
 };
 use crate::api::graph_generator::{dag_as_cluster, ValidatorBlock};
 use crate::api::machine_verifiable_dag::machine_verifiable_dag;
 use crate::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
 use crate::blocks::proposer::proposer::ProposerResult;
 use crate::event_converter::to_rspace_event;
+use crate::interpreter_util::ShardHealth;
 use crate::runtime_manager::{CapturedReply, RuntimeManager};
 use crate::state::ProposerState;
 use crate::validator_identity::ValidatorIdentity;
@@ -84,6 +85,9 @@ pub struct BlockApiImpl {
     /// #157: the shard's proposer health, read live. Not a `Capabilities` field: that reports what the
     /// node was configured to do, and this reports what it is doing — see `to_api_status`.
     propose_health: ProposeHealth,
+    /// **This shard's finality-and-merge health** (W-N10-02, W-N10-03) — the cell the validation path
+    /// writes, one per shard, beside `propose_health` and for the same reason. See [`ShardHealth`].
+    shard_health: ShardHealth,
 }
 
 /// The messages at or above `lowest_height`, in the shape the DAG view renders.
@@ -279,6 +283,7 @@ impl BlockApiImpl {
         admin_http: bool,
         system_public_keys: BTreeSet<Vec<u8>>,
         propose_health: ProposeHealth,
+        shard_health: ShardHealth,
     ) -> Self {
         BlockApiImpl {
             dag,
@@ -300,6 +305,7 @@ impl BlockApiImpl {
             admin_http,
             system_public_keys,
             propose_health,
+            shard_health,
         }
     }
 
@@ -488,6 +494,33 @@ impl BlockApi for BlockApiImpl {
         self.propose_health.snapshot()
     }
 
+    /// **This shard's own finality-and-merge observation** — read from the cell the validation path
+    /// writes, never from a copy taken at setup (W-N10-02, W-N10-03).
+    async fn finality_health(&self) -> FinalityHealth {
+        let h = &self.shard_health;
+        FinalityHealth {
+            stall_reason: h.finality_stall_reason(),
+            stall_sustained: h.finality_stall_sustained(),
+            stall_episodes: h.stall_episodes(),
+            non_quiet_merge_reports: h.non_quiet_merge_reports(),
+            unrestorable_records: h.unrestorable_records(),
+            unrestorable_block: h.unrestorable_block(),
+            counters_durable: h.counters_durable(),
+        }
+    }
+
+    /// **One entry, keyed by this shard** (W-N10-04). `BlockApiImpl` *is* one shard, so the map is
+    /// total over everything it can answer for; the router merges the members' maps.
+    async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
+        BTreeMap::from([(
+            self.shard_id.clone(),
+            ShardHealthEntry {
+                proposer: self.propose_health.snapshot(),
+                finality: self.finality_health().await,
+            },
+        )])
+    }
+
     async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
         if self.is_node_read_only {
             return Err(
@@ -660,6 +693,17 @@ impl BlockApi for BlockApiImpl {
         listening_name: &Par,
     ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
         self.name_data_response(depth, listening_name, true).await
+    }
+
+    /// **The one way out of a durable halt** — see the trait's doc.
+    ///
+    /// The store is cleared **first**, and its failure is propagated: a timer woken before the record
+    /// is gone would resume, halt again on the next failure, and find the old record still standing —
+    /// so a clear that did not reach the store cannot be allowed to read as a resume.
+    async fn clear_autopropose_halt(&self) -> Result<(), String> {
+        self.dag.clear_halt_record().await?;
+        self.propose_health.clear_halt();
+        Ok(())
     }
 
     /// The same read with no finality floor, for the node's own reply channel — see the trait's doc
