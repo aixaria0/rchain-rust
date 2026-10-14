@@ -641,7 +641,7 @@ async fn the_shard_health_counters_survive_a_restart() {
     let after = ShardHealth::new();
     assert_eq!(after.stall_episodes(), 0, "a fresh cell starts at zero");
     assert!(!after.counters_durable());
-    after.seed_counters(Some(stored));
+    after.seed_counters(Ok(Some(stored)));
     assert_eq!(after.stall_episodes(), 1, "the shard's stall history");
     assert_eq!(after.non_quiet_merge_reports(), 1, "its merge history");
     assert_eq!(after.unrestorable_records(), 1, "and what it gave up on");
@@ -654,6 +654,23 @@ async fn the_shard_health_counters_survive_a_restart() {
         after.counters_durable(),
         "a seeded cell says its counts are the shard's"
     );
+
+    // --- and a shard that has never transitioned is **not** "unknown" -------------------------------
+    // The third shape of the boot read, and the arm a healthy live node hits: nothing on record means
+    // the shard's history is zero, which is a fact the node can vouch for.
+    let fresh = ShardHealth::new();
+    fresh.seed_counters(Ok(None));
+    assert_eq!(fresh.stall_episodes(), 0);
+    assert!(
+        fresh.counters_durable(),
+        "a fresh shard's zero is its own history, not an unknown — the live two-shard arm caught the \
+         first version reading `false` here"
+    );
+
+    // The read that *failed* is the one that is unknown.
+    let unread = ShardHealth::new();
+    unread.seed_counters(Err("the store refused".to_string()));
+    assert!(!unread.counters_durable());
 
     // --- and a store that cannot answer reads as **unknown**, not as zero -------------------------
     let storeless = build_dag_without_marker_store().await;

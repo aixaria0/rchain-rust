@@ -1741,20 +1741,20 @@ async fn setup_shard_runtime(
     // than this process's. A read that fails seeds zeros rather than refusing to boot: these are
     // observations, and refusing to start over one would trade a silence for an outage. The two
     // *current-state* cells are deliberately not seeded — see [`ShardHealth::seed_counters`].
-    match parts.dag.read_health_counters().await {
-        Ok(counters) => shard_health.seed_counters(counters),
-        Err(e) => {
-            shard_health.seed_counters(None);
-            log.warn(
-                LogSource::new("coop.rchain.node.runtime.Setup"),
-                &format!(
-                    "could not read the health counters for shard {}: {e} — this shard's stall and \
-                     merge history is unknown, not empty",
-                    spec.shard_id
-                ),
-            );
-        }
+    let counters = parts.dag.read_health_counters().await;
+    if let Err(e) = &counters {
+        log.warn(
+            LogSource::new("coop.rchain.node.runtime.Setup"),
+            &format!(
+                "could not read the health counters for shard {}: {e} — this shard's stall and \
+                 merge history is unknown, not empty",
+                spec.shard_id
+            ),
+        );
     }
+    // Seeded from the read itself, so "nothing on record" (a fresh shard, which IS durable) and
+    // "could not read" (unknown) are told apart rather than both reading as zero.
+    shard_health.seed_counters(counters);
 
     let importer = create_rspace_importer(&parts.store_manager).await?;
     let exporter = create_rspace_exporter(&parts.store_manager).await?;

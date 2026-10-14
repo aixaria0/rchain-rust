@@ -314,9 +314,22 @@ impl ShardHealth {
     /// that stops a restart from understating them. The reason and sustained cells are **not** seeded:
     /// they are current state, and a restarted shard that has observed nothing has no reason, which is
     /// the honest answer rather than a stale one.
-    pub fn seed_counters(&self, counters: Option<HealthCounters>) {
-        self.counters_durable
-            .store(counters.is_some(), Ordering::Relaxed);
+    ///
+    /// **`read` is the boot read itself, and its three shapes are three different facts** — which is
+    /// why this takes a `Result<Option<_>>` rather than an `Option<_>`:
+    ///
+    /// * `Ok(Some(c))` — the shard's history, and it is durable;
+    /// * `Ok(None)` — **nothing on record, which IS durable**: a fresh shard's history is zero, and
+    ///   saying "cannot vouch" here would be as wrong as saying "never stalled" about a lost record.
+    ///   A live node that has never transitioned hits exactly this arm, which is how the first version
+    ///   of this signature was caught reading `false` on a healthy two-shard node;
+    /// * `Err(_)` — the store could not be read, so the zero is *unknown* and `counters_durable` says so.
+    pub fn seed_counters(&self, read: Result<Option<HealthCounters>, String>) {
+        let (counters, durable) = match read {
+            Ok(record) => (record, true),
+            Err(_) => (None, false),
+        };
+        self.counters_durable.store(durable, Ordering::Relaxed);
         let c = counters.unwrap_or_default();
         self.stall_episodes
             .store(c.stall_episodes, Ordering::Relaxed);
@@ -1642,7 +1655,7 @@ mod tests {
         // The restart: a fresh cell seeded from the record.
         let after = ShardHealth::new();
         assert_eq!(after.stall_episodes(), 0, "a fresh cell starts at zero");
-        after.seed_counters(Some(record));
+        after.seed_counters(Ok(Some(record)));
         assert_eq!(
             after.stall_episodes(),
             1,
