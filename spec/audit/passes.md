@@ -11008,3 +11008,10 @@ Two more rows closed in the same pass, both by writing the assertion their falsi
   pooled deploys × a 16 MiB wire term is ~160 GB, so a count bound is not a byte bound. The environment is
   a 1 GB LMAP map, asserted exactly and asserted to be far below the slot arithmetic; a cap derived from
   the count reddens it.
+
+**W-N5-04** closed the same way and with a correction to its own text: the ceremony's `<pubkey>.sk` is a
+**bare base16 scalar in a 0600 file**, which is this project's key form everywhere else — it is exactly
+what `--validator-private-key-path` reads and what the key loader accepts — so "plaintext" is a misreading
+of the exposure. What *would* be one is a file another user can read, and nothing asserted this one cannot;
+`the_ceremonys_key_file_is_owner_only` does, and a hand-rolled `std::fs::write` (mode from the umask)
+reddens it.

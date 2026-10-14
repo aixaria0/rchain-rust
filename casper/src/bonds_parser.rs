@@ -219,4 +219,62 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// **The ceremony's key file is owner-only, and it is this project's own key form** (W-N5-04).
+    ///
+    /// The row: the genesis ceremony writes a plaintext base16 private scalar to `<pubkey>.sk`, so the
+    /// secret a validator bonds with lands on disk in the clear. What answers that is the **mode** and the
+    /// **convention** — `write_private_key` creates the file owner-only, and a bare base16 scalar in an
+    /// owner-only file is this project's key form everywhere else: it is exactly what
+    /// `--validator-private-key-path` reads and what `key_util::load_validator_private_key` accepts. The
+    /// deviation as written ("plaintext") is therefore not the exposure it reads as; what *would* be one is
+    /// a file another user can read, and nothing asserted that this one cannot be.
+    ///
+    /// Falsified by writing the key with `std::fs::write` instead of `write_private_key`: the mode comes
+    /// from the process umask (typically 0644) and the first assertion fails. The mutation is the plausible
+    /// mistake rather than a contrivance, which is why the assertion is on the mode and not on the content.
+    #[test]
+    fn the_ceremonys_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("rchain-bonds-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bonds = dir.join("bonds.txt");
+
+        let validators =
+            new_validators(2, &bonds).expect("the ceremony writes a fresh validator set");
+        assert_eq!(validators.len(), 2, "two validators, two bonds");
+
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sk") {
+                continue;
+            }
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "the ceremony's key file {} must be owner-only; a world-readable scalar is the exposure \
+                 the row is about",
+                path.display()
+            );
+            let body = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                body.trim().len(),
+                64,
+                "the file holds a bare base16 scalar — the form the node's own key reader accepts: {}",
+                path.display()
+            );
+            assert!(
+                rchain_shared::base16::decode(body.trim()).is_some(),
+                "and it decodes as base16: {}",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "one `.sk` per generated validator");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
