@@ -11295,3 +11295,40 @@ not committed: the runner's script was **edited while it was running**, and a sh
 byte offset — so the edit landed inside a line the interpreter had not reached and phase 2 died on a
 syntax error it could not have read. The corrupted run's directory was deleted rather than committed,
 and the two runs that count were taken with the file left alone.
+
+## 135. Three rows whose honest answer is a decision (C327, C328, C329)
+
+The last three owed cells are the ones no instrument in this tree reaches, and each is recorded with
+the reason and with what would close it. None is closed by a claim that the deviation is absent.
+
+**The heading names the three numbers separately rather than as a range**, and that is not style:
+`tools/check-wargame.sh` resolves a `spec/audit/passes.md::C<n>` citation by looking for that number in
+this file, so an en-dash range leaves the middle one absent and the row's citation dangles.
+
+**W-N4-02 — the actuator has no caller identity to weigh.** The row wants "one identity for one
+authority": a caller refused a spend should also be refused a propose. Neither route reads an identity
+at all — the guard is the origin/bind pair — so there is nothing to compare and no spend-refusal the
+node can express. The row's own precondition is a **multi-shard** boot, and the reading it rests on is
+wrong in the page itself: `node/src/web/http.rs`'s gateway gate refuses with **404**, not the 422 the
+cell quotes. What would close it is an identity on the actuator routes, which is a node-API change and
+its own unit.
+
+**W-N7-06 — one channel for the artefact and its digest.** `.github/workflows/build-rnode.yml` uploads
+`rnode` and `rnode.sha256` as **one** artefact, and `gh run download` is the only way to obtain either,
+so a consumer reading both from that channel cannot notice a substitution that moves both. Closing it is
+not a test but a release-process decision: publish the digest on a second, independent channel. The
+falsifier is literally "obtain the artefact and its digest through the one channel", which is a CI/ops
+instrument.
+
+**W-N9-05 — the clock's behaviour, which this box cannot move.** The predicate is already pinned
+(`the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound` takes synthetic `now` values, and
+the row says so). What is owed is what the *clock* does: step it by ≥15 s while the round gate is held
+and watch whether the escape fires and whether the emitted block reuses a `seq_num`. The devnet's
+containers share the host clock and hold no `CAP_SYS_TIME`, so a container cannot step it, and the node
+exposes no seam — `now_ms()` reads `std::time::SystemTime` directly. What would close it: an injectable
+clock on the proposer, or an image carrying `libfaketime`. Both are named rather than faked: a fake
+clock that does not move the node's own time source would measure the arm rather than the node.
+
+**The residue, stated as a count.** With these three recorded, every one of the 97 Table A rows carries
+a falsifier that was taken, a decision with a reason, or a citation to the work that armed it — which is
+what the page's own rule asks for and what `tools/check-wargame.sh` now checks.
