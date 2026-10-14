@@ -11046,3 +11046,50 @@ happens when a row it cannot read is removed from the census.
 **What it still cannot do, said rather than implied.** It reads the *shape* of the header, not the
 meaning of a cell: a falsifier naming the wrong test in the right column passes, and `owed:` remains a
 legal cell — this check asks whether the citation resolves, not whether it is the right citation.
+
+## 129. Five rows the tree had already answered, and the page had not been told (C314)
+
+Four of the five needed nothing but reading the code the cell names; one needed the arm its neighbour
+already had. Each is named with what the *tree* says, because the cells were written before it.
+
+**W-N2-06 — the rate check fires after the body is decoded.** It does not any more, and had not for some
+time: the bound is a `route_layer` over exactly the deploy routes (`node/src/web/http.rs:1356-1365`), and
+its own comment cites this row. The instrument the cell asked for ("decode allocations/CPU before the
+first 429") is no longer the only way to see it, because the *order* is observable from outside:
+`the_limiter_is_consulted_before_the_deploy_body_is_decoded` sends a **malformed** 64 KiB body to an
+exhausted limiter and asserts `429` — a status the extractor could not produce for that body — then sends
+the same body with the bound slack and asserts `400`, which is what makes the first arm a fact about the
+order rather than about the route.
+
+**W-N2-09 — the rate token is spent before authentication.** Also the other way now: `verify_signature`
+(`casper/src/api/block_api_impl.rs:530`) runs before `admit_deploy`'s per-deployer token
+(`casper/src/dag.rs:1341`), and the DAG's own comment says why the halves exist — so the submitter's
+bounds refuse a flood *before* the node pays to parse it. Taking this falsifier needs a flood that
+outruns two limiters at once, because the DAG's per-deployer rate and each HTTP/gRPC surface's rate are
+all 100/s: one surface cannot drain the deeper bound, which is what the last run measured as "the surfaces
+are not one pool". **Left owed here, taken on the rig** (commit 6), where both surfaces can be driven at
+once — a unit test would either fake the DAG or take a minute to be flaky.
+
+**W-N4-07 — the node dials a caller-named internal target.** Reproduced by
+`the_admin_route_makes_the_node_dial_a_peer_and_refuses_a_link_local_target`: with
+`enable-ocapn-dial` set, the route is handed a sturdyref whose hint is loopback, the node dials it and
+fetches the object (200), and the only unconditional refusals are link-local and the metadata endpoint
+(502). The row is CONFIRMED and this is its falsifier *taken*, not a claim that the surface is closed —
+what would refute it is a policy that refuses a caller-named internal target by default.
+
+**W-N8-04 — a peer that proved nothing mints a kit.** Reproduced by
+`a_captp_peer_holds_an_ertp_issuer_and_calls_it`: a client on `tcp-testing-only` holding an
+`Identity::fresh` (no bond, no registration, no proof of any kind) asks `rho:rchain:ertp` for
+`makeIssuerKit` and is handed three capabilities. Same shape as W-N4-07: the committed test *is* the
+deviation, and the row stays CONFIRMED until a registry insert is gated on the caller's identity, which
+is W-N8-01's missing half.
+
+**W-N4-08 — the tap proposes while the flag says halted.** This one is the **reverse** of the row as
+written, and the cell says so: the tap is halted with the timer now. `fire_autopropose_tap` was lifted
+out of the closure that owned its queue, log and health cell — the row is about two things no closure
+can show from outside, whether a request is handed over and whether the refusal is counted — and
+`a_halted_timer_suppresses_the_tap_and_counts_what_it_refused` drives both arms. Red without the guard,
+green with it.
+
+**Counted.** The page went from 27 owed to 23 in this commit, and the four cells that closed are column
+10 of their rows — the count is taken by reading that column, not by trusting a note.

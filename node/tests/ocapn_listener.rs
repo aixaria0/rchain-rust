@@ -619,6 +619,17 @@ fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
 /// The test walks the path clause 4 names: the contract, a kit, the issuer, a purse, and finally the
 /// balance of that purse — a value that came out of a block, objects deep, from a reference the peer
 /// was handed rather than one it knew the name of.
+///
+/// **This is also the arm for W-N8-04, and the arm is the deviation.**
+///
+/// The row: `[makeIssuerKit "X"]` delivered to `rho:rchain:ertp` over `tcp-testing-only` **does** mint
+/// a kit under the node's key and hand the caller a capability, for a peer that proved nothing —
+/// `tcp-testing-only` is the transport with no key proof at all, and this client is
+/// `Identity::fresh`, an ephemeral key with no bond and no registration. The three descriptors below
+/// are that finding reproduced: a stranger asked the node's own ERTP contract for a kit and got a
+/// brand, a mint and an issuer back. The row stays CONFIRMED — what would refute it is a registry
+/// insert gated on the caller's identity, which is `W-N8-01`'s missing half, and nothing here
+/// pretends otherwise.
 #[test]
 fn a_captp_peer_holds_an_ertp_issuer_and_calls_it() {
     let dir = common::temp_dir("ocapn-ertp");
@@ -958,6 +969,17 @@ async fn fetch(client: &mut Session, swiss: &[u8]) -> Desc {
 /// origin, so Law 62's rule has nothing to judge and the metadata endpoint must be refused by the
 /// address rule alone. The route's own gate (`enable-ocapn-dial`) is asserted in `web::http`'s unit
 /// tests, where the two statuses (404 and 503) can be told apart without a running node.
+/// **The first case is the arm for W-N4-07, and it is the deviation rather than its absence.**
+///
+/// The row: with `enable-ocapn-dial` on, `POST /api/v1/ocapn/dial` with a caller-named **loopback**
+/// target makes the node start a connection to it. That is case 1 below — `127.0.0.1:<ocapn port>`
+/// is the caller's address, the feature is on, and the node dials and fetches. The row's refutation
+/// would be a target policy that refuses a caller-named internal target **by default**; what the
+/// policy refuses unconditionally is link-local and the metadata endpoint (case 2), and loopback and
+/// private ranges are permitted unless `ocapn-deny-local-dial` is set
+/// (`ocapn/src/dial_policy.rs`'s module doc). So the row is CONFIRMED and this is its falsifier
+/// taken, not a claim that the surface is closed.
+///
 #[test]
 fn the_admin_route_makes_the_node_dial_a_peer_and_refuses_a_link_local_target() {
     let dir = common::temp_dir("ocapn-dial");
