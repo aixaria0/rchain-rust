@@ -104,8 +104,10 @@ pub struct ProposerHealth {
     /// Self-validation failures recorded in a row. The proposer clears it on a successful propose —
     /// "consecutive" is the whole quantity, since one success in between is a node that recovered.
     pub consecutive_self_validation_failures: u64,
-    /// The shard's autopropose timer has stopped. Nothing restarts it but the process, and the value
-    /// is therefore sticky: a later success does **not** clear it.
+    /// The shard's autopropose timer has stopped. The value is sticky — a later success does **not**
+    /// clear it — and two things restart it: the process (the halt is durable, re-seeded at boot) and
+    /// the operator's `POST /api/v1/autopropose/resume`. Not the same as production having stopped:
+    /// the tap and the admin `POST /api/propose` keep running.
     pub autopropose_timer_halted: bool,
     /// **The shard's autopropose halt** — when, how many, and whether it is on record.
     ///

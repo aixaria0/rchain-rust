@@ -356,15 +356,12 @@ mod tests {
         }
 
         /// A stub has no finality cell to read, so it reports **nothing observed** — which this
-
         /// trait's docs distinguish from "observed healthy". See [`Self::finality_health`].
-
         async fn finality_health(&self) -> FinalityHealth {
             FinalityHealth::default()
         }
 
         /// A stub is not a node, so it has no member shards to map.
-
         async fn health_by_shard(&self) -> BTreeMap<String, ShardHealthEntry> {
             BTreeMap::new()
         }
