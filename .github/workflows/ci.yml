@@ -216,6 +216,17 @@ jobs:
         # because a number nothing checks is a number that rots.
         run: tools/check-hazop-worksheet.sh --gate
 
+      - name: The wargame section's completeness claim
+        # **Written in #348 and never called by anything until now.** `docs/src/spec/adversary.md`
+        # claims something about *itself* — that every study node dispositions all eleven guide words,
+        # that every Table A row carries a decided verdict, a persona and a falsifier, and that the
+        # referee's calibration is declared — and `tools/check-wargame.sh` is the check that reads the
+        # document and refuses when the page and the claim disagree. It had no caller: not here, not in
+        # `tools/todo.sh`, not in another gate. A check that exists and is obeyed by nothing is the
+        # class this repository's own fuzz work named — a report nothing acts on — and the wargame table
+        # is where the remediation's rows come from, so a table that drifts is a table nobody re-reads.
+        run: tools/check-wargame.sh --gate
+
       - name: Reducer wasm32 check
         # Issue #98: the reducer must stay compilable for `wasm32-unknown-unknown` — the in-browser
         # ZFA endgame, where every room member runs the reducer with RSpace behind a host-provided
