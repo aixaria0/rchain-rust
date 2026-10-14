@@ -10634,48 +10634,89 @@ C196. The copy loop — the part of the tool nothing drove — now has cases in
 `tests/reconcile-regression.py`: a `docker` stub that rewrites the container script onto temporary
 volumes, so the orphan move and the manifest are asserted offline rather than by reading.
 
-## 118. The upgrade guards, named rather than built (C295–C298)
+## 118. The upgrade guards: a cursor that is checked, a store that names its format, an anchor the store can place (C295, C296, C299)
 
-Four rows whose honest answer is "not fixed, and here is why" — recorded because rule 3 gives that
-answer exactly one home. None of them is a defect nobody noticed; each is a decision about *what would
-have to exist first*, and writing it down is what keeps it from being rediscovered as a surprise.
+Three rows whose answer turned out to be code after all — the first draft of this pass recorded two of
+them as residuals, and building them showed the residual was in the *design*, not in the work.
 
-**W-N11-02 — the deployer-index cursor is unauthenticated (C295).** `DEPLOYER_INDEXED_FROM_KEY` at `0`
-— the "index complete" value — makes the backfill return immediately, so a host that sets it suppresses
-the migration for every block below the pre-upgrade tip, and the node's own deployer-lookup answers come
-back empty while the surface reports the index complete. Closing it means a cursor whose *legitimacy* is
-checkable against the index it describes — "complete" is a claim about the store, so the store has to be
-able to refuse it — which is a store-format decision (its own stamp, its own migration) rather than a
-guard bolted onto the reader. Until then the row is `candidate:a-cursor-must-be-checkable-against-its-index`:
-the property is stated and unproved, and the falsifier — seed the cursor at 0 with blocks unindexed and
-assert the node re-indexes or refuses — is owed with it.
+**W-N11-02 — the completion record now describes the store (C295).** `DEPLOYER_INDEXED_FROM_KEY` at `0`
+is the "index complete" value, and the backfill returned on it: a host that wrote that key suppressed
+the whole walk, so the node reported an index it had never built and its deployer lookups answered
+empty. The completion is now written *with the store's own record count*
+(`DEPLOYER_INDEX_COUNT_KEY`), so "complete" is a claim the store can refuse — one `get` and one
+`count`, and a mismatch is walked instead of believed. A completion with no count at all (a store from
+a build before this one) is not believed either, so an upgraded store is walked once and stamped; the
+second call in `a_completion_record_that_does_not_describe_the_index_is_not_believed` asserts that the
+stamp is then trusted, which is what keeps the check from costing a walk per boot. The first draft of
+that test planted the cursor *after* attaching the index, which left the in-memory cursor at the tip
+and stayed green under the mutation — the plant has to come first, in the order a planted data
+directory arrives.
 
-**W-N11-03 — no store names its format (C296).** `rnode_db_mapping`'s own rule is that an upgraded node
-"leaves any existing rows on disk and ignores them", and the only data-directory marker is the shard id,
-so an older binary — or an attacker-supplied image at a base pinned only by tag — running over a newer
-store is accepted, silently, as an advance. A format-version stamp is a store-format change: shipping the
-stamp without the migration would refuse stores this build can read, which is a worse failure than the
-one it prevents. The stamp, what it would carry, and the refusal it would produce are
-`candidate:a-store-names-its-format-before-it-is-read`.
+**W-N11-03 — the store names its format, and a newer one is refused (C296).** The mapping's own rule is
+that an upgraded node "leaves any existing rows on disk and ignores them", and the only guard on a data
+directory was which shard owned it — so an older binary, or an image at a base pinned only by tag, ran
+over a *newer* store and was accepted: a downgrade read as an advance. `check_store_format` runs beside
+the shard-id check and reads `store-format`, which every store this build opens is stamped with. A
+higher version is refused with both numbers, an absent marker is stamped (or every existing deployment
+would refuse to boot on upgrade), and a lower one is accepted — that being the direction an upgrade is.
+The marker that is not a number is refused rather than guessed at. **What it cannot do** is stated in
+`storage.rs`: a store written by a build that predates the marker carries none, so it is stamped and
+read, and bumping `STORE_FORMAT_VERSION` when the layout changes is a promise nothing derives.
 
-**W-N14-03 — a contract cannot weigh the time it is handed (C297).** The proposer's `timestamp` is
-republished verbatim to every Rholang contract through `rho:block:data`. RC7 landed the **lower** bound
-(a block stamped before its parents is refused) and made the attestation tap's age bound two-sided, so
-the value is no longer unbounded in either direction — but the reply is still a bare integer, and
-nothing in it lets a contract distinguish a consensus-backed time from a validator's chosen one. The
-remedy is a provenance a contract can see, and the shape of that is a decision about the block-data
-surface rather than a bound: `candidate:a-reported-value-carries-its-provenance`.
+**W-N11-06 — the anchor the view cannot place is placed from the store (C299).** A node whose
+last-finalised block is missing from its own height map (that map leaves out validation-failed blocks)
+produced `RefuseNoHeight`: the detector logged it and nothing acted, `--self-reset` could not fire, and
+the operator's only recovery was a wipe. The height was never lost — `drop_above` works from the store,
+and the block's `block_num` is part of what its hash commits to — so `place_the_anchor` asks the
+metadata store when the view comes back unplaceable, and the same plan then takes the arm that acts. A
+read that *fails* leaves the plan as the view gave it, which is the refusal: a store fault is not a
+reason to rewind. The store does not overrule a view that could place the anchor, so a rewind the view
+had already located cannot be moved by this.
 
-**W-N14-04 — the bound applies at the tap and not wherever time is consumed (C298).** The same row
-from the other side: blocking one consumer of block time (the attestation tap) bounds a *part* of the
-node, not the node's notion of time. `block_summary` now bounds acceptance too, but the contract-read
-path and the deploy/not-due-retry path still act on a replayed block's clock. The residual is one rule
-applied wherever block time is consumed: `candidate:a-bound-applies-wherever-the-value-is-consumed`,
-with the measurement that would price it — proposals produced per replayed block — owed to a live rig
-rather than to this unit.
+## 119. The clock: what can be bounded, and why the rest must not be (C297, C298)
 
-**What would change these decisions**, so none of the four is re-argued from scratch: a store-format
-change landing for another reason (which makes the stamp near-free and turns C295 and C296 into the
-migration's own work); a contract that must reason about time on-chain (which forces the provenance
-question C297 names); or a live measurement showing a proposal is produced from a block older than any
-bound allows (which moves C298 from residual to defect).
+The two rows W-N14-03 and W-N14-04 ask for a bound "wherever block time is consumed" and for the
+proposer's timestamp to carry a provenance a contract can weigh. Working them through, both come to the
+same wall, and it is not a wall of effort — it is the one `validate.rs` already names for the other
+half of this row: **a wall-clock comparison in a consensus rule decides validity differently on every
+validator, and that forks the chain.**
+
+- **What can be bounded, is.** The attestation tap is gated on the block's own stamp in *both*
+  directions (`attest_is_live`, `ATTEST_MAX_CLOCK_SKEW_MS`), and that is legitimate precisely because
+  the tap is a **local decision to propose**: a node that declines to attest has not rejected anyone's
+  block, so two nodes disagreeing about liveness here costs a round and nothing else. The acceptance
+  path is bounded too, but **relative to the block's parents** (`block_timestamp`,
+  `MAX_BLOCK_TIMESTAMP_DRIFT_MS`), never against this node's clock — that bound is deterministic, which
+  is the only kind that may live in validation.
+- **W-N14-04 — the bound that is still not where the row asked (C298).** The sites that remain ungated
+  are this node's own triggers: a deploy arriving, and the not-due retry. Both are local proposals, not
+  validity rules, and both exist to do the work the network handed this node — which is why the comment
+  at `ATTEST_MAX_BLOCK_AGE_MS` says so out loud rather than leaving it to be rediscovered. Adding a
+  wall-clock bound there would not close a hole; it would trade a liveness path for a rule that cannot
+  be checked by a peer.
+- **W-N14-03 — the provenance a contract cannot be given (C297).** `rho:block:data` answers with a bare
+  integer, and every Rholang contract on the network pattern-matches that reply. Changing its *shape*
+  to carry where the value came from is a change to what every contract receives — consensus-visible,
+  and therefore a fork — so it belongs to a hard-fork unit with an activation gate (issue #51's
+  tracker) and not to a remediation pass. What a client can be told is separate and cheap, and the
+  block API's own description is where that lives.
+
+**What would change these decisions**, so neither is re-argued from scratch: a hard-fork window with an
+activation gate (which makes C297 a normal change), or a measured case of a node proposing from a block
+older than any bound allows *and* that being harmful (which moves C298 from decision to defect). The
+measurement for the second — proposals produced per replayed block — is owed to a live rig.
+
+## 120. The gate that ran nowhere (C300)
+
+`tools/check-wargame.sh` was written in #348 to check `docs/src/spec/adversary.md`'s claim about
+*itself* — every study node dispositions all eleven guide words, every Table A row carries a decided
+verdict, a persona and a falsifier, the calibration is declared — and **nothing called it**: not
+`ci.yml`, not `tools/todo.sh`, not another gate. The sibling check is wired
+(`emit-findings-register.sh --check` runs from `tools/audit-status.sh`), so the class was visible in the
+record and unowned in the workflow. It now runs beside `check-hazop-worksheet.sh` in CI's static gates,
+which is where the other page-integrity gates live.
+
+It is the same class as the fuzz modes that never executed and the two `#144` workflows whose `if:`
+gates can never fire: **a check that exists, passes when run by hand, and is obeyed by nothing.** The
+wargame table is where this remediation's rows come from, so a table that drifts is a table whose rows
+nobody re-reads.
