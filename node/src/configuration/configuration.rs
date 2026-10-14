@@ -287,15 +287,42 @@ pub fn check_inert_config(node_conf: &NodeConf, defaults: &NodeConf) -> Result<(
         set.push("api-server.max-connection-age-grace");
     }
 
+    // **Four the class had not reached** (2026-10-14, the coverage-gap pass). The first two are
+    // documented in `defaults.conf` as *proposer* guards — *"Node is allowed to propose a block only
+    // when …"* — and the Scala oracle enforced both; a workspace-wide grep finds every occurrence of
+    // either in this module's own plumbing, so nothing reads them. The two `fork-choice-*` settings
+    // are read by nothing at all. Same disposition as the group above: a setting that does nothing
+    // must not look as though it did, and a *safety* setting that silently does nothing is worse
+    // than one that is refused.
+    if node_conf.casper.synchrony_constraint_threshold
+        != defaults.casper.synchrony_constraint_threshold
+    {
+        set.push("casper.synchrony-constraint-threshold");
+    }
+    if node_conf.casper.height_constraint_threshold != defaults.casper.height_constraint_threshold {
+        set.push("casper.height-constraint-threshold");
+    }
+    if node_conf.casper.fork_choice_stale_threshold != defaults.casper.fork_choice_stale_threshold {
+        set.push("casper.fork-choice-stale-threshold");
+    }
+    if node_conf.casper.fork_choice_check_if_stale_interval
+        != defaults.casper.fork_choice_check_if_stale_interval
+    {
+        set.push("casper.fork-choice-check-if-stale-interval");
+    }
+
     if !set.is_empty() {
         return Err(format!(
             "unimplemented setting(s) changed: {}. This port parses these and enforces none of them \
              — `max-message-consumers` leaves the inbound dispatch bound at its hardcoded 1024, \
              `use-random-ports`/`dynamic-ip` do not change how a port is chosen, and no HTTP/2 or TCP \
              keepalive is set anywhere, so the keepalive group would retire no half-open peer \
-             connection. Refused rather than accepted and ignored, which is the disposition this \
-             register chose for the metrics reporters and for `disable-state-exporter`: a setting that \
-             does nothing must not look as though it did. Remove the setting(s) to start.",
+             connection — and the four `casper` settings above are read by no code outside this \
+             module: the two thresholds are *documented* as proposer guards and are enforced nowhere, \
+             so an operator who set one had a bound that did not exist. Refused rather than accepted \
+             and ignored, which is the disposition this register chose for the metrics reporters and \
+             for `disable-state-exporter`: a setting that does nothing must not look as though it \
+             did. Remove the setting(s) to start.",
             set.join(", ")
         ));
     }
@@ -1390,5 +1417,56 @@ mod tests {
         assert!(conf.casper.validator_private_key.is_none());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// **The four inert settings the C143 class had not reached** (2026-10-14, the coverage-gap
+    /// pass). Each is parsed, is read by no code outside this module — the two thresholds are
+    /// *documented* in `defaults.conf` as proposer guards, and the Scala oracle enforced both — and
+    /// each was accepted and ignored. Changing one is refused now, so the silence is gone.
+    ///
+    /// The control is the first assertion: the defaults must pass, or the four would be refused for
+    /// the wrong reason and this test would be green over a broken comparison.
+    ///
+    /// Falsifier: red on the pre-pass tree, where all four were accepted and the node started
+    /// holding a bound that did not exist.
+    #[test]
+    fn the_inert_settings_this_pass_found_are_refused() {
+        let defaults = node_conf_from_hocon(&parse_defaults("/var/lib/rnode").expect("defaults"))
+            .expect("defaults parse");
+        check_inert_config(&defaults, &defaults).expect("the defaults are not refused");
+
+        for (name, change) in [
+            (
+                "casper.synchrony-constraint-threshold",
+                Box::new(|c: &mut NodeConf| {
+                    c.casper.synchrony_constraint_threshold += 0.01;
+                }) as Box<dyn Fn(&mut NodeConf)>,
+            ),
+            (
+                "casper.height-constraint-threshold",
+                Box::new(|c: &mut NodeConf| {
+                    c.casper.height_constraint_threshold += 1;
+                }),
+            ),
+            (
+                "casper.fork-choice-stale-threshold",
+                Box::new(|c: &mut NodeConf| {
+                    c.casper.fork_choice_stale_threshold += std::time::Duration::from_secs(1);
+                }),
+            ),
+            (
+                "casper.fork-choice-check-if-stale-interval",
+                Box::new(|c: &mut NodeConf| {
+                    c.casper.fork_choice_check_if_stale_interval +=
+                        std::time::Duration::from_secs(1);
+                }),
+            ),
+        ] {
+            let mut changed = defaults.clone();
+            change(&mut changed);
+            let err = check_inert_config(&changed, &defaults)
+                .expect_err(&format!("{name} must be refused, not accepted and ignored"));
+            assert!(err.contains(name), "{name} is not named in: {err}");
+        }
     }
 }

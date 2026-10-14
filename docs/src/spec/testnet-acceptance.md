@@ -23,6 +23,18 @@
 > §1.7 and the bow-tie sections is read with that substitution; H-U7-01's threat is the one the
 > 2026-10-13 work closes.
 
+> **Update — 2026-10-14 (coverage-gap pass).** This page cites `FAUCET_MAX_DRIPS_PER_ADDRESS` in four
+> places — §1's U7 row H-U7-07, two §2 barrier rows, and §2.5's pair P9 — and that symbol **no longer
+> exists in `node/src`.** The per-address drip *budget* was replaced by a **finalised-balance
+> eligibility rule**: a drip is refused when the recipient's finalised REV balance already holds at
+> least one drip (`node/src/api/web_api_impl.rs::finalized_rev_balance`, refusals at `:1237` and
+> `:1255`), with the reservation persisted before submission. Every claim here that names the old
+> constant is read with that substitution. **The substitution is not a re-derivation, and one row
+> turns on that:** P9's shared cause — "the drip increment precedes the submit" — is a statement about
+> a counter that no longer exists, so the barrier that shares a cause with its threat may not be the
+> same barrier at all. That row is owed a re-derivation, recorded in
+> `spec/audit/evidence/coverage-gap-f9521edd7/findings.md` (E4).
+
 > **What this page is, in one sentence.** A HAZOP worksheet and a bow-tie analysis of the node, and the
 > acceptance checklist that falls out of them, written so that nothing can be marked green without a
 > named configuration and a committed run.
