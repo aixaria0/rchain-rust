@@ -449,6 +449,30 @@ impl ShardHealth {
         Ok(())
     }
 
+    /// **Record one finality observation, and persist only when it moved a counter** (W-N10-02) — the
+    /// rule the validation path applies to every block, in one place rather than as an `if` at a call
+    /// site a test cannot reach.
+    ///
+    /// A block is validated every round and most are refused by the stake gate, so persisting on the
+    /// *observation* would be a store write per validated block; what is worth a write is the moment the
+    /// shard **enters** a stall, which is what [`Self::note_finality_stall`] reports. The falsifier is
+    /// the one that used to be green: make this persist unconditionally and
+    /// `casper/tests/reset.rs::the_shard_health_counters_survive_a_restart` finds a record where the
+    /// shard had nothing to record.
+    ///
+    /// The error is the caller's to report, as with [`Self::persist_counters`].
+    pub async fn record_finality_stall(
+        &self,
+        reason: Option<&NoAdvance<Validator>>,
+        dag: &dyn BlockDagStorage,
+    ) -> Result<(), String> {
+        if self.note_finality_stall(reason) {
+            self.persist_counters(dag).await
+        } else {
+            Ok(())
+        }
+    }
+
     /// Whether [`Self::counters`] is the shard's history (`true`) or this process's running totals
     /// (`false`) — the surface says which rather than implying durability it does not have.
     pub fn counters_durable(&self) -> bool {
@@ -872,19 +896,20 @@ where
         // **The surface's copy, written on every observation** (C249's F-U10-01). The line below is
         // rate-limited so a long stall stays readable; a status surface that inherited that limit would
         // report a stale reason for up to `STALL_LOG_INTERVAL` heights. This one is current or nothing.
-        // **The episode counter is persisted only when it moves** (W-N10-02): a block is validated every
-        // round and most are refused by the stake gate, so persisting on the observation would be a
-        // store write per validated block. `note_finality_stall` returns whether an episode *began*.
-        if health.note_finality_stall(pre_state.finality_stall.as_ref()) {
-            if let Err(e) = health.persist_counters(dag).await {
-                log.warn(
-                    source,
-                    &format!(
-                        "a finality-stall episode was counted but not recorded: {e} — this shard will \
-                         under-report its stall history in the next process"
-                    ),
-                );
-            }
+        // **The episode counter is persisted only when it moves** (W-N10-02) — the rule is
+        // [`ShardHealth::record_finality_stall`], one call rather than an `if` here, so it can be driven
+        // with a store and no runtime. This path validates a block every round and most are refused.
+        if let Err(e) = health
+            .record_finality_stall(pre_state.finality_stall.as_ref(), dag)
+            .await
+        {
+            log.warn(
+                source,
+                &format!(
+                    "a finality-stall episode was counted but not recorded: {e} — this shard will \
+                     under-report its stall history in the next process"
+                ),
+            );
         }
         if let Some(reason) = &pre_state.finality_stall {
             let tip = pre_state.max_block_num;

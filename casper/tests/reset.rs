@@ -583,10 +583,11 @@ async fn the_guard_refuses_a_rewinding_whose_anchor_body_is_absent() {
 /// stored beside the reset marker and the halt record.
 ///
 /// **The falsifiers, stated.** (a) Make `write_health_counters` a no-op: the fresh read is `None`, so
-/// the seeded cell is zero and the assertion after the seed fails. (b) Persist the counter on every
-/// observation instead of on the transition — the *second* assertion below (a non-transition leaves the
-/// store untouched) is what catches it, and it is why this test drives a run of refusals rather than
-/// one. (c) Drop the boot seed (make `seed_counters` a no-op): the fresh cell stays at zero.
+/// the seeded cell is zero and the assertion after the seed fails. (b) Drop the boot seed (make
+/// `seed_counters` a no-op): the fresh cell stays at zero. (c) **Persist on the observation instead of
+/// on the transition** — the first seven refusals below go through the rule the validation path uses
+/// ([`ShardHealth::record_finality_stall`]) and the store must still be empty when they are done, so a
+/// variant that writes every time is caught here rather than staying green.
 #[tokio::test]
 async fn the_shard_health_counters_survive_a_restart() {
     use rchain_block_storage::dag::dag_storage::HealthCounters;
@@ -603,10 +604,15 @@ async fn the_shard_health_counters_survive_a_restart() {
         candidates: 1,
         partition: 4,
     };
-    // Seven refusals are *pacing* on a four-sender net, so nothing is written yet — the transition is
-    // what the caller persists, and the store must still be empty.
+    // Seven refusals are *pacing* on a four-sender net, so nothing is written yet: the transition is
+    // what the rule persists, and the store must still be empty. This drives the rule the validation
+    // path calls rather than the counter and the write separately, so "persist on every observation"
+    // is a mutation this can see.
     for _ in 0..7 {
-        assert!(!before.note_finality_stall(Some(&partial)));
+        before
+            .record_finality_stall(Some(&partial), dag.as_ref())
+            .await
+            .expect("a below-threshold observation records nothing and succeeds");
     }
     assert!(
         dag.read_health_counters()
@@ -616,9 +622,8 @@ async fn the_shard_health_counters_survive_a_restart() {
         "a run that has not reached the threshold is not a transition, so nothing is written yet"
     );
     // The eighth refusal reaches `2 * partition` and *is* the transition.
-    assert!(before.note_finality_stall(Some(&partial)));
     before
-        .persist_counters(dag.as_ref())
+        .record_finality_stall(Some(&partial), dag.as_ref())
         .await
         .expect("the transition persists");
     before.note_non_quiet_merge_report();

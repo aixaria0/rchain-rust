@@ -496,6 +496,83 @@ mod tests {
         );
     }
 
+    /// **The shard's history reaches the wire under the names the row uses** (W-N10-02).
+    ///
+    /// The row states its defect by wire name — `finalityStallEpisodes`, `nonQuietMergeReports` — because
+    /// that is what an operator reads and what the row's evidence quotes. Making the counters durable
+    /// changes nothing anyone can see unless the counting value *arrives*, so this pins the last link in
+    /// a chain the other falsifiers pin in pieces: `casper/tests/reset.rs` pins store → cell, and the
+    /// live arm in `node/tests/gateway.rs` pins cell → surface on a running node. This one reads the
+    /// **serialized** form, because a *key name* is not a property of the struct: a dropped field, a
+    /// rename, or a lost `rename_all` shows up here and nowhere else.
+    ///
+    /// Falsified by moving any of the three keys or the durability flag: the assertions below are the
+    /// operator's reading, and a counter no surface names is not a report.
+    #[test]
+    fn the_shard_history_counts_reach_the_wire_under_the_rows_names() {
+        let core = PublicStatus {
+            version: VersionInfo {
+                api: "1.0".into(),
+                node: "n".into(),
+            },
+            address: "addr".into(),
+            network_id: "testnet".into(),
+            shard_id: "/root".into(),
+            peers: 0,
+            nodes: 0,
+            min_phlo_price: 0,
+            latest_block_number: 0,
+            autopropose: true,
+            propose_on_deploy: false,
+            manual_propose: false,
+            dev_mode: false,
+        };
+        // The shard's history as a restarted node reads it back: non-zero, and the store answered.
+        let finality = FinalityHealth {
+            stall_episodes: 9,
+            non_quiet_merge_reports: 4,
+            unrestorable_records: 1,
+            counters_durable: true,
+            ..FinalityHealth::default()
+        };
+        let api = to_operator_status(
+            core,
+            &Capabilities {
+                autopropose: true,
+                propose_on_deploy: false,
+                manual_propose: false,
+                admin_http: false,
+                dev_mode: false,
+            },
+            &ProposerHealth::default(),
+            &finality,
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            None,
+        );
+        let json = serde_json::to_value(&api).expect("the operator status serializes");
+        for (key, want) in [
+            ("finalityStallEpisodes", 9u64),
+            ("nonQuietMergeReports", 4),
+            ("unrestorableRecords", 1),
+        ] {
+            assert_eq!(
+                json[key].as_u64(),
+                Some(want),
+                "the row's own name for this count, carrying the shard's history: {key} in {json}"
+            );
+        }
+        assert_eq!(
+            json["finalityCountersDurable"].as_bool(),
+            Some(true),
+            "and the flag that says the counts are the shard's travels beside them: {json}"
+        );
+    }
+
     /// **The per-shard map carries a non-primary shard's halt** (W-N10-04).
     ///
     /// The row: `ShardRoutingBlockApi::proposer_health` reads `primary_api()` alone, so a non-primary

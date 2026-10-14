@@ -250,10 +250,12 @@ pub struct OperatorStatus {
     /// round (twice the partition, in consecutive blocks), so the refusals are no longer the ordinary
     /// partial layers of a producing round.
     pub finality_stalled: bool,
-    /// …and how many times this process has entered a stall, so a reader can tell "stalled now" from
+    /// …and how many times this **shard** has entered a stall, so a reader can tell "stalled now" from
     /// "stalled and recovered" without watching. Counts the sustained state above, which is what makes
     /// the two distinguishable — before #318 it counted single refusals and climbed once per round on a
-    /// healthy net.
+    /// healthy net. **Persisted** (W-N10-02): the count is the shard's history and survives the restart
+    /// an operator's alarm would otherwise be cleared by. Read it with `finalityCountersDurable`, which
+    /// is false when the store could not be reached and the count is therefore this process's.
     pub finality_stall_episodes: u64,
     /// **Whether the three shard-history counters are the shard's** (W-N10-02) — `stallEpisodes`,
     /// `nonQuietMergeReports` and `unrestorableRecords` below. `false` means the store could not be read
