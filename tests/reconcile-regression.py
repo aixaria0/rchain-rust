@@ -385,3 +385,134 @@ blocks_at() {   # the five fields the section reads, last one never empty
     run_finality("advanced, differing heights, each in the common DAG",
                  {"A": ("3", "hxA", "3", ["hxA", "hxB"]), "B": ("1", "hxB", "1", ["hxA", "hxB"])},
                  0, "finality advanced past")
+
+    # --- the restore arm: the point is the point (W-N11-07, W-N11-09) ------------------------------
+    # RED before the fix: `--restore-from-master` copied the survivor's whole DAG and only *printed*
+    # that blocks above the point came with it, so a survivor holding a block its peers never accepted
+    # installed that block on every joiner — the operator asserting a winner the rule never picked.
+    # The arm now refuses and names them, and the operator who means it says so again at the moment it
+    # costs something (`RECONCILE_ADOPT_ABOVE=1`). The refusal must come *before* the stop loop, which
+    # is why the fixture can assert it with no node stubs doing anything.
+    a = src.index('echo "== 5. apply (--restore-from-master)')
+    b = src.index("trigger_block || true", a)
+    b = src.index("\n", b) + 1
+    restore_arm = src[a:b]
+
+    def run_restore(name, report_lines, expect_rc, required, adopt=False):
+        with tempfile.TemporaryDirectory(prefix="reconcile-restore-") as d:
+            report = Path(d) / "deploys.jsonl"
+            report.write_text("".join(line + "\n" for line in report_lines))
+            lines = [
+                "set -uo pipefail",
+                "RESTORE=1; APPLY=1",
+                "MEET=41; MEET_HASH=aa11",
+                "MASTER=A",
+                "NAMES=(A B)",
+                "declare -A HOST PORT UNIT",
+                "HOST[A]=a; HOST[B]=b; PORT[A]=1; PORT[B]=1; UNIT[A]=ctrA; UNIT[B]=ctrB",
+                "REPORT=%s" % report,
+                "date() { printf 'TS'; }",
+                "sleep() { :; }",
+                "stop_node() { :; }",
+                "start_node() { :; }",
+                "restore_chain_state_from_master() { :; }",
+                "trigger_block() { :; }",
+            ]
+            env = dict(os.environ)
+            if adopt:
+                env["RECONCILE_ADOPT_ABOVE"] = "1"
+            p = subprocess.run(["bash", "-c", "\n".join(lines) + "\n" + restore_arm],
+                               capture_output=True, text=True, timeout=10, env=env)
+            combined = p.stdout + p.stderr
+            assert p.returncode == expect_rc, f"{name}: exit={p.returncode}, expected={expect_rc}\n{combined}"
+            assert required in combined, f"{name}: missing {required!r}\n{combined}"
+            print(f"PASS {name} (exit {p.returncode})")
+
+    def rec(height, bh, observers):
+        return ('{"height":%d,"blockHash":"%s","sender":"k","deployCount":1,"observers":[%s],'
+                '"rejectedDeploys":[]}' % (height, bh, ",".join('"%s"' % o for o in observers)))
+
+    # The survivor holds a block above the point that the other node does not: the copy would install it.
+    run_restore("the survivor's blocks above the point are refused",
+                [rec(42, "bb22", ["A"]), rec(43, "cc33", ["A", "B"])],
+                9, "holds 2 block(s) above the point")
+    # …and the refusal names the heights, so the operator can read what it is being asked to adopt.
+    run_restore("the refusal names the blocks' heights",
+                [rec(42, "bb22", ["A"])], 9, "heights: 42")
+    # A survivor at the point, with the other node holding what it does not: nothing above the point is
+    # the survivor's, so the copy proceeds and nothing is refused.
+    run_restore("a survivor at the point is not refused",
+                [rec(42, "bb22", ["B"])], 0, "== 6. the fiat")
+    # The acknowledgement is the operator saying it again, and the adoption is printed.
+    run_restore("the acknowledgement adopts and says so",
+                [rec(42, "bb22", ["A"])], 0, "adopting 1 block(s) above the point", adopt=True)
+
+    # --- the copy loop: an absent source is not a licence to keep the joiner's own (W-N11-08) ------
+    # RED before the fix: the survivor lacking an environment (`transaction` on this build — LMDB
+    # creates it on first write) meant the loop `continue`d and the joiner kept its own, which is
+    # exactly the divergence residue the restore exists to remove. The environment is now moved aside
+    # (never deleted), and the manifest names what was adopted — the half of W-N11-04 that is code.
+    a = src.index("restore_chain_state_from_master() {")
+    b = src.index("\nstop_node() {", a)
+    copy_fn = src[a:b]
+
+    DOCKER_STUB = """
+docker() {
+  local src="" dst="" script="" a
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -v) case "$2" in
+            *:/src:ro) src="${2%:/src:ro}" ;;
+            *:/dst)    dst="${2%:/dst}" ;;
+          esac
+          shift 2 ;;
+      -c) script="$2"; shift 2 ;;
+      *)  shift ;;
+    esac
+  done
+  printf '%s' "$script" | sed "s#/src#$src#g; s#/dst#$dst#g" > "$STUB_SCRIPT"
+  sh "$STUB_SCRIPT"
+}
+"""
+
+    with tempfile.TemporaryDirectory(prefix="reconcile-copy-") as d:
+        src_vol = Path(d) / "srcvol"
+        dst_vol = Path(d) / "dstvol"
+        for vol, envs in ((src_vol, ["blockstorage", "dagstorage", "rspace/history"]),
+                          (dst_vol, ["blockstorage", "dagstorage", "rspace/history", "transaction"])):
+            for e in envs:
+                (vol / e).mkdir(parents=True)
+                (vol / e / "data.mdb").write_bytes(b"x" * 16)
+        # The joiner's own leftover, which the survivor does not have.
+        (dst_vol / "transaction" / "data.mdb").write_bytes(b"joiner-only" * 4)
+        (src_vol / "blockstorage" / "data.mdb").write_bytes(b"survivor" * 16)
+
+        script_path = Path(d) / "inner.sh"
+        preamble = [
+            "set -uo pipefail",
+            "CONTROL=docker",
+            "MASTER=A",
+            "NAMES=(A B)",
+            "declare -A HOST PORT UNIT",
+            "UNIT[A]=ctrA; UNIT[B]=ctrB",
+            'CHAIN_ENVS="blockstorage dagstorage rspace/history transaction"',
+            'STUB_SCRIPT=%s' % script_path,
+            'data_volume() { case "$1" in ctrA) printf %%s %s ;; ctrB) printf %%s %s ;; esac; }'
+            % (src_vol, dst_vol),
+            DOCKER_STUB,
+        ]
+        p = subprocess.run(["bash", "-c", "\n".join(preamble) + "\n" + copy_fn + "\n"
+                           'restore_chain_state_from_master "B"\n'],
+                           capture_output=True, text=True, timeout=30)
+        combined = p.stdout + p.stderr
+        assert p.returncode == 0, f"the copy loop failed: {p.returncode}\n{combined}"
+        assert not (dst_vol / "transaction").exists(), \
+            f"the joiner-only env must not survive the restore: {combined}"
+        assert (dst_vol / "transaction.reconcile-orphan").is_dir(), \
+            f"it is moved aside, never deleted: {combined}"
+        assert "moved aside here: transaction" in combined, combined
+        assert "adopted blockstorage:" in combined, combined
+        assert "list-digest" in combined, combined
+        # The environments the survivor has are the survivor's, not the joiner's stale copies.
+        assert (dst_vol / "blockstorage" / "data.mdb").read_bytes() == b"survivor" * 16
+        print("PASS the copy loop moves an absent source aside and prints the manifest")

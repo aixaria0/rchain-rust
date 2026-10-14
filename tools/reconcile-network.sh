@@ -38,7 +38,14 @@
 #      step 5 cannot reach — a net with no finalised fringe has nothing to resync to (C259). This is
 #      **not a sync**: the joiners adopt the master's view wholesale, which is the operator asserting a
 #      winner. It is a labelled stopgap, it never copies node identity, and the tool prints what it is
-#      adopting and what it is dropping before it runs;
+#      adopting and what it is dropping before it runs. **It refuses by default when the master holds a
+#      block above the point** — naming the heights it would be installing, before anything is stopped —
+#      and proceeds only under `RECONCILE_ADOPT_ABOVE=1`, which is the operator repeating the assertion
+#      at the moment it costs something (W-N11-07, W-N11-09). An environment the master does not hold is
+#      moved **aside** on the joiner rather than left standing, because a joiner's own copy of it is the
+#      divergence residue this mode exists to remove (W-N11-08), and every environment adopted is printed
+#      as a manifest — files, size and a digest of the file list — so the operator can compare the two
+#      hosts (W-N11-04; that no *signature* attests the copy is the recorded residual);
 #   6. verifies the outcome on **block hashes per height** — not on heights, where four nodes at zero
 #      are equal — **and** on finality past the point, refusing (exit 9) when either is unmet.
 #
@@ -48,6 +55,8 @@
 #     a refusal — that is how a single stake is read as a supermajority), or print a stake fraction it
 #     has not computed: a meet it cannot prove is refused, never approximated;
 #   * shrink the denominator by silence — only a *proven* equivocation moves it;
+#   * install a block above the point that only the master accepted, without the operator asking a second
+#     time (`RECONCILE_ADOPT_ABOVE=1`) at the moment it is installed;
 #   * touch the master's data directory;
 #   * run without `--apply` — the default prints the plan and exits 0;
 #   * report a height as converged (four nodes at height 0 are equal).
@@ -202,13 +211,24 @@ restore_chain_state_from_master() {
     [ -z "$vol" ] && { echo "    WARNING: no data volume on ${UNIT[$n]} — nothing copied" >&2; return 1; }
     docker run --rm -v "$mvol":/src:ro -v "$vol":/dst alpine sh -c "
       set -e
-      copied=''; skipped=''
+      copied=''; skipped=''; orphaned=''
       for d in $CHAIN_ENVS; do
-        # **A source that is not there is skipped, not fatal.** LMDB creates an environment only when
-        # something writes to it, so a directory the mapping names (`transaction` on this build) can
-        # simply not exist — and under \`set -e\` a failed \`cp\` aborted the whole copy, which is how the
-        # first run reported a failure while the store was fine.
-        if [ ! -e \"/src/\$d\" ]; then skipped=\"\$skipped \$d\"; continue; fi
+        # **A source that is not there is skipped, not fatal — and not a licence to keep the joiner's
+        # own.** LMDB creates an environment only when something writes to it, so a directory the
+        # mapping names (`transaction` on this build) can simply not exist on the survivor; under
+        # \`set -e\` a failed \`cp\` aborted the whole copy, which is how the first run reported a failure
+        # while the store was fine. But a joiner holding that environment when the survivor does not is
+        # the divergence residue this mode exists to remove (W-N11-08), so it is moved aside rather than
+        # left standing — aside, never gone, the rule the rest of this tool keeps.
+        if [ ! -e \"/src/\$d\" ]; then
+          skipped=\"\$skipped \$d\"
+          if [ -e \"/dst/\$d\" ]; then
+            rm -rf \"/dst/\$d.reconcile-orphan\"
+            mv \"/dst/\$d\" \"/dst/\$d.reconcile-orphan\"
+            orphaned=\"\$orphaned \$d\"
+          fi
+          continue
+        fi
         # **Copy beside, then swap.** Removing the destination first and *then* copying means a failed
         # copy leaves the joiner with nothing — the opposite of the 'aside, never gone' rule this tool
         # holds itself to everywhere else. So the new copy lands at a staging name and the old one is
@@ -222,7 +242,18 @@ restore_chain_state_from_master() {
       done
       # A copied LMDB lock file is a stale lock: the joiner would wait on a lock nobody holds.
       find /dst -name 'lock.mdb' -delete
-      echo \"    copied:\$copied\${skipped:+; not present on the survivor:\$skipped}\" >&2
+      echo \"    copied:\$copied\${skipped:+; not present on the survivor:\$skipped}\${orphaned:+; moved aside here:\$orphaned}\" >&2
+      # **What was adopted, as a manifest the operator can compare** (W-N11-04). A file list and its
+      # digest, not the bytes: an LMDB environment is a handful of files (data.mdb is the size), and
+      # walking the bytes of a multi-gigabyte store costs more than the copy did. The same command on
+      # the survivor's volume gives the other half of the comparison; that no *signature* attests the
+      # copy is the residual, and it is recorded rather than papered over.
+      for d in \$copied; do
+        files=\$(find \"/dst/\$d\" -type f | wc -l)
+        kib=\$(du -sk \"/dst/\$d\" | cut -f1)
+        digest=\$(cd /dst && find \"\$d\" -type f | sort | while read -r f; do printf '%s %s\n' \"\$f\" \"\$(stat -c %s \"\$f\")\"; done | sha256sum | cut -c1-16)
+        echo \"    adopted \$d: \$files file(s), \${kib}KiB, list-digest \$digest\" >&2
+      done
       true" \
       && echo "    chain state copied from ${UNIT[$MASTER]}'s volume; identity and genesis untouched" \
       || { echo "    WARNING: the copy failed — $n is unchanged" >&2; return 1; }
@@ -242,13 +273,31 @@ restore_chain_state_from_master() {
       | $SSH "root@${HOST[$n]}" "set -e
           rm -rf '$staging' && mkdir -p '$staging' && tar -C '$staging' -xf -
           for d in $CHAIN_ENVS; do
-            [ -e '$staging'/\$d ] || continue
-            mkdir -p '$dir'/\$(dirname \$d)
-            rm -rf '$dir'/\$d
-            mv '$staging'/\$d '$dir'/\$d
+            if [ -e '$staging'/\$d ]; then
+              mkdir -p '$dir'/\$(dirname \$d)
+              rm -rf '$dir'/\$d
+              mv '$staging'/\$d '$dir'/\$d
+            elif [ -e '$dir'/\$d ]; then
+              # **The survivor does not hold it, so the joiner must not keep its own** (W-N11-08): this is
+              # the divergence residue the restore exists to remove, and the version before moved only
+              # what the survivor had. Aside, never gone.
+              rm -rf '$dir'/\$d.reconcile-orphan
+              mv '$dir'/\$d '$dir'/\$d.reconcile-orphan
+              echo \"    moved aside here: \$d (not present on the survivor)\"
+            fi
           done
           rm -rf '$staging'
-          find '$dir' -name lock.mdb -delete" 2>/dev/null \
+          find '$dir' -name lock.mdb -delete
+          # **What was adopted, as a manifest the operator can compare** (W-N11-04) — a file list and its
+          # digest, not the bytes, for the reason the docker side states. Printed on stdout because this
+          # side's stderr is the pipeline's, and a manifest nobody sees is not a manifest.
+          for d in $CHAIN_ENVS; do
+            [ -e '$dir'/\$d ] || continue
+            files=\$(find '$dir'/\$d -type f | wc -l)
+            kib=\$(du -sk '$dir'/\$d | cut -f1)
+            digest=\$(cd '$dir' && find \$d -type f | sort | while read -r f; do printf '%s %s\n' \"\$f\" \"\$(stat -c %s \"\$f\")\"; done | sha256sum | cut -c1-16)
+            echo \"    adopted \$d: \$files file(s), \${kib}KiB, list-digest \$digest\"
+          done" 2>/dev/null \
       && echo "    chain state copied beside and swapped in from ${MASTER}; identity and genesis untouched" \
       || { echo "    WARNING: the copy failed — $n is unchanged unless the swap had begun (staging: $staging)" >&2; return 1; }
   fi
@@ -633,7 +682,9 @@ if [ -n "$ANCHOR" ]; then
     printf "    %-2s finalised %-6s %s\n" "$n" "${LFB[$n]:-none}" "${LFH[$n]:0:44}"
   done
   echo "  If they disagree, that is the state you are recovering from; the block you named is the point"
-  echo "  this recovery starts at, and every block above it is validated rather than installed."
+  echo "  this recovery starts at, and every block above it is validated rather than installed — in"
+  echo "  --restore-from-master too, which refuses to copy unless you set RECONCILE_ADOPT_ABOVE=1 (it names"
+  echo "  the blocks above the point it would be adopting, one per line, in section 4's record)."
 else
   # --- what each node attests, verified ----------------------------------------------------------
   #
@@ -929,6 +980,29 @@ fi
 
 if [ "$RESTORE" = "1" ]; then
   echo "== 5. apply (--restore-from-master): the whole network is stopped, the survivor included =="
+  # **The point is the point** (W-N11-07, W-N11-09). Section 3 named the anchor — computed, or the
+  # operator's own — and section 4 enumerated what sits above it. This is where that stops being a
+  # report: a copy installs ${MASTER}'s whole DAG, so every block above the point that only ${MASTER}
+  # holds would be adopted by every joiner, which is the operator asserting a winner the rule never
+  # picked. So the default refuses and names them, and the operator who means it says so again —
+  # RECONCILE_ADOPT_ABOVE=1 — at the moment it costs something rather than in a sentence read earlier.
+  # Before the stop loop, because refusing a network into a stopped state is not a refusal.
+  above_blocks="$(grep -F "\"$MASTER\"" "$REPORT" 2>/dev/null || true)"
+  above_n="$(printf '%s' "$above_blocks" | grep -c . || true)"
+  if [ "${above_n:-0}" -gt 0 ]; then
+    above_h="$(printf '%s\n' "$above_blocks" | sed -n 's/.*"height":\([0-9]*\).*/\1/p' | sort -n | uniq | tr '\n' ' ')"
+    if [ "${RECONCILE_ADOPT_ABOVE:-0}" != "1" ]; then
+      echo "REFUSING: ${MASTER} holds ${above_n} block(s) above the point (height ${MEET}) that it accepted" >&2
+      echo "          and its peers did not. Copying would install them on every joiner — the operator" >&2
+      echo "          asserting a winner the rule never picked — so nothing is stopped and nothing is copied." >&2
+      echo "          heights: ${above_h:-?}" >&2
+      echo "          the per-block record is ${REPORT}" >&2
+      echo "          to adopt them deliberately, re-run with RECONCILE_ADOPT_ABOVE=1" >&2
+      exit 9
+    fi
+    echo "  **adopting ${above_n} block(s) above the point** (RECONCILE_ADOPT_ABOVE=1): heights ${above_h:-?}"
+    echo "  these are the blocks ${MASTER} holds and its peers do not; ${REPORT} records what they carry."
+  fi
   # The survivor is stopped too, and that is not an oversight: a filesystem-level copy of a live LMDB is a
   # torn snapshot, and in this mode the copy *is* the truth the network will run on.
   for n in "${NAMES[@]}"; do echo "  $n:"; stop_node "$n" || { echo "REFUSING: node stop failed: $n" >&2; exit 6; }; done
