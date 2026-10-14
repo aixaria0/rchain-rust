@@ -1011,12 +1011,25 @@ async fn note_unrestorable_if_exhausted(
     // an action: a store fault is not a reason to rewind.
     let plan = if plan.anchor.is_some() && plan.anchor_height.is_none() {
         let placed = match plan.anchor {
-            Some(anchor) => dag
-                .lookup(&anchor)
-                .await
-                .ok()
-                .flatten()
-                .map(|m| m.block_num),
+            Some(anchor) => match dag.lookup(&anchor).await {
+                Ok(meta) => meta.map(|m| m.block_num),
+                Err(e) => {
+                    // **A store fault is not a reason to rewind, and it is not silence either.** The
+                    // plan stays exactly as the view gave it, which is the refusal below; what the
+                    // error must not become is a discarded `Result` — "could not read" and "not there"
+                    // are different answers, and only the second is a fact about the block (the audit's
+                    // silent class, and it is right).
+                    log.warn(
+                        source.clone(),
+                        &format!(
+                            "the reset's anchor {} could not be read from the metadata store, so the \
+                             height it would rewind to cannot be named this pass: {e}",
+                            anchor.to_hex()
+                        ),
+                    );
+                    None
+                }
+            },
             None => None,
         };
         place_the_anchor(plan, placed)
