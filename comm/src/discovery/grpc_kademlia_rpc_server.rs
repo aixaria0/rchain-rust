@@ -617,4 +617,101 @@ mod tests {
                 });
         }
     }
+
+    /// **An oversized Lookup is refused at the decode, and the handler never sees it** (W-N1-01).
+    ///
+    /// The row: the Kademlia service is served with **no inbound decode cap**, so a certificate-bearing
+    /// peer can make the node decode a message of its own choosing. That is AUDIT C113's class one
+    /// service over, and it is why `serve` installs `.max_decoding_message_size(..)` — with the note
+    /// that tonic's default is 4 MiB, sixteen times the operator's configured
+    /// `protocol-server.grpc-max-recv-message-size`, so a peer could force a decode four megabytes wide
+    /// while the operator believed 256 KiB was in force.
+    ///
+    /// **The falsifier is the option, not the handler.** The server is booted with the same 256 KiB the
+    /// node configures, and the assertion is that an oversized `Lookup` never reaches the handler —
+    /// "refused at the decode" and "decoded and then refused" are different facts about this surface,
+    /// and only the first is the bound. Deleting the `.max_decoding_message_size(..)` line leaves the
+    /// 4 MiB default, the message decodes, the handler runs, and this goes red.
+    ///
+    /// The client cannot observe *why* it failed — `GrpcKademliaRpc::lookup` answers an empty list for
+    /// any error, by design — which is exactly why the assertion is on the handler.
+    #[tokio::test]
+    async fn an_oversized_lookup_never_reaches_the_handler() {
+        use crate::discovery::grpc_kademlia_rpc::GrpcKademliaRpc;
+        use crate::discovery::KademliaRpc;
+        use crate::transport::generate_certificate_if_absent::generate_certificate;
+        use crate::transport::hostname_trust_manager::{public_address_of_cert, server_config};
+        use rchain_shared::refined::Port;
+        use rustls::pki_types::CertificateDer;
+        use std::time::Duration;
+
+        fn node_id_of(cert_pem: &str) -> String {
+            let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes()).unwrap();
+            rchain_shared::base16::encode(
+                &public_address_of_cert(&CertificateDer::from(pem.contents)).unwrap(),
+            )
+        }
+
+        // The operator's configured cap, and a key well over it: 1 MiB against 256 KiB.
+        const MAX_MESSAGE_SIZE: usize = 262_144;
+        let oversized_key = vec![0u8; 1024 * 1024];
+
+        let (server_cert, server_key) = generate_certificate().expect("a server certificate");
+        let (client_cert, client_key) = generate_certificate().expect("a client certificate");
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let peer_at = |cert: &str, host: &str| {
+            PeerNode::from(
+                crate::peer_node::NodeIdentifier::new(rchain_shared::base16::unsafe_decode(
+                    &node_id_of(cert),
+                )),
+                host.to_string(),
+                Port::new(port),
+                Port::new(port),
+            )
+        };
+        let server_peer = peer_at(&server_cert, "127.0.0.1");
+        let client_peer = peer_at(&client_cert, "203.0.113.7");
+
+        let h = Arc::new(Handlers::default());
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let tls = server_config(&server_cert, &server_key).expect("a server TLS config");
+        let srv = server(h.clone());
+        tokio::spawn(async move {
+            let _ = serve(addr, srv, MAX_MESSAGE_SIZE, tls).await;
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let rpc = GrpcKademliaRpc::new(
+            client_peer,
+            "testnet".to_string(),
+            Duration::from_secs(5),
+            &client_cert,
+            &client_key,
+        )
+        .expect("a client TLS config");
+
+        // A well-formed lookup first, so a refusal cannot be the handshake or the identity check
+        // failing: the same client, the same connection path, a key inside the cap.
+        let _ = rpc.lookup(b"a-legal-key", &server_peer).await;
+        assert_eq!(
+            h.looked_up.lock().unwrap().len(),
+            1,
+            "an honest lookup must reach the handler, or this test cannot tell the cap from a \
+             broken client"
+        );
+
+        let answer = rpc.lookup(&oversized_key, &server_peer).await;
+        assert!(answer.is_empty(), "an oversized lookup cannot be answered");
+        assert_eq!(
+            h.looked_up.lock().unwrap().len(),
+            1,
+            "**the oversized Lookup reached the handler**: the node decoded a message the operator's \
+             `protocol-server.grpc-max-recv-message-size` says it will not (W-N1-01). The handler must \
+             see one lookup — the honest one — and this one must be refused at the decode."
+        );
+    }
 }

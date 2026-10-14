@@ -10830,3 +10830,35 @@ every exit path (an aborted run used to leave the previous run's report under th
 -03/-04/-05/-08 (peer transport and Kademlia) and W-N1-09/-10, W-N12-04/-07 (the stream RPC) — need a
 client that can build a malformed `Protocol` frame and present its own certificate, and a fixture that
 binds the discovery port. That is a Rust unit, not a shell arm, and it is the next one.
+
+## 123. The transport and Kademlia falsifiers were already armed, and the page did not say so (C308)
+
+The ten remaining host-drivable rows were the ones this session first described as needing "a Rust client
+that can build a malformed `Protocol` frame and present its own certificate, and a fixture that binds the
+discovery port". That was wrong, and reading the two modules showed it: **eight of the ten are already
+asserted by tests in `comm`**, several of which name their wargame row in their own doc comment —
+`a_stream_header_is_admitted_only_for_the_identity_its_certificate_proves` says "(W-N1-09/W-N1-10)", and
+`refused_kademlia_requests_do_not_spend_the_allowance` says "(W-N1-08)" and names W-N1-05 in its prose. The
+page's `owed:` cells had simply never been updated to cite them, which is the same "already-armed but
+unmarked" gap the red-hat pre-registration claims exists across the table.
+
+**One row needed a test, and it is written.** W-N1-01 says the Kademlia service is served with no inbound
+decode cap. `serve` installs one (tonic's default is 4 MiB, sixteen times the operator's configured
+`protocol-server.grpc-max-recv-message-size`, so the omission would have let a peer force a decode four
+megabytes wide while the operator believed 256 KiB was in force) — and nothing asserted it. The new test
+boots the real server with the operator's 256 KiB, sends a 1 MiB `Lookup`, and asserts the **handler never
+sees it**: "refused at the decode" and "decoded and then refused" are different facts about this surface,
+and only the first is the bound. Deleting the `.max_decoding_message_size(..)` line lets the message
+through and reddens it, which is what makes it a falsifier.
+
+**One row is a decision, not a test.** W-N1-04 (no *rate* bound on the inbound transport) is §116's
+subject and register C290's: the bound is in-flight **concurrency**, keyed on nothing because it bounds a
+resource rather than a party, and `a_full_dispatch_queue_is_refused` is that bound. The cell cites §116
+rather than pretending a rate bound exists.
+
+**And one correction of this pass's own making.** The first attempt at these citations wrote them into a
+trailing field of the table — the wargame's falsifier is column 10, and the edit appended an eleventh — so
+thirteen cells read as `owed:` *and* carried a citation beside them, and `check-wargame.sh` passed because
+the `owed:` marker was still the field it reads. The citations are now in the column they belong to, and
+the count the page reports went from 92 owed to **70**. A gate that reads one column cannot notice an edit
+that writes another, which is why the cell-by-cell count is printed here and not inferred.
