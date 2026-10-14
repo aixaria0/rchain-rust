@@ -2270,23 +2270,41 @@ mod tests {
     /// order tests above cannot see: `insert(0, …)` and push-then-reverse produce the *same list* —
     /// it is the time that differs, so no assertion on the term can distinguish them.
     ///
-    /// Timed as a **ratio against itself** rather than against a wall-clock budget, because an
-    /// absolute threshold is a statement about the machine. **Both sides were measured**, at 1 000
-    /// and 8 000 data terms (an 8× step) on this host:
+    /// **This test used to compare one size against another, and that was the wrong instrument.** It
+    /// asserted that 8× the data took under 16× the time, calibrated here (linear 8.1, quadratic
+    /// 25.6). It passed locally and **failed in CI at 21.6×** — a debug build on a contended runner,
+    /// where the fixed constant is not what the comparison is about. Measured in release the
+    /// production path is *sub*-linear (16× the data, 9.7× the time), so the code was never the
+    /// problem: a ratio between two sizes absorbs constant factors but not the machine's *relative*
+    /// per-element costs, and a debug runner's differ enough to move an 8× step from 8 to 21.
     ///
-    ///   * push-then-reverse: `small 6.1 ms, large 49.6 ms` → ratio **8.1**, which is what linear
-    ///     looks like for an 8× step;
-    ///   * the per-element `insert(0, …)`: `small 7.8 ms, large 199.6 ms` → ratio **25.6**.
+    /// So the comparison is now **against the shape this replaced, on the same machine in the same
+    /// run** — the one measurement whose meaning does not depend on how fast the box is. The reference
+    /// does the same per-element work the production path does (normalize one datum) and then
+    /// **prepends** it, which is the accumulator and nothing else.
     ///
-    /// 16 sits between them with room on both sides. The smallest of three runs is taken so one
-    /// scheduler hiccup cannot decide it, and the minimum rather than the mean is the right statistic
-    /// for "how fast can this go" on a shared box.
+    /// **Measured on this host, debug, best-of-three** (production / prepend-shaped):
+    ///
+    /// | data terms | production | prepend shape | ratio |
+    /// |---|---|---|---|
+    /// | 8 000 | 51 ms | 178 ms | 3.5× |
+    /// | 16 000 | 105 ms | 660 ms | 6.3× |
+    /// | 32 000 | 213 ms | 3 502 ms | **16.5×** |
+    ///
+    /// Production doubles per doubling (linear, to two digits); the prepend shape quadruples. 32 000
+    /// is used because that is where the gap is wide enough to survive a machine's constants, and the
+    /// threshold is 8 — half the measured gap. A slow box moves both columns together, so the ratio
+    /// holds; reverting the accumulator to `insert(0, …)` makes production *be* the reference and the
+    /// ratio 1.
     #[test]
     fn a_send_with_many_data_normalizes_quadratically_no_longer() {
         use std::time::Instant;
 
-        fn best_of_three(k: usize) -> std::time::Duration {
-            let data: Vec<Proc> = (0..k)
+        const K: usize = 32_000;
+
+        /// The production path: the whole wide send, normalized.
+        fn production() -> std::time::Duration {
+            let data: Vec<Proc> = (0..K)
                 .map(|i| Proc::PGround(Ground::GroundInt(i.to_string())))
                 .collect();
             let term = Proc::PNew(
@@ -2297,23 +2315,35 @@ mod tests {
                     data,
                 )),
             );
-            (0..3)
-                .map(|_| {
-                    let start = Instant::now();
-                    normalize_term(&term, &BTreeMap::new()).expect("a wide send normalizes");
-                    start.elapsed()
-                })
-                .min()
-                .expect("three runs")
+            let start = Instant::now();
+            normalize_term(&term, &BTreeMap::new()).expect("a wide send normalizes");
+            start.elapsed()
         }
 
-        let small = best_of_three(1_000);
-        let large = best_of_three(8_000);
-        let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
+        /// The same per-element work, accumulated the way this replaced.
+        fn prepend_shaped() -> std::time::Duration {
+            let start = Instant::now();
+            let mut out: Vec<Par> = Vec::new();
+            for i in 0..K {
+                let datum = Proc::PGround(Ground::GroundInt(i.to_string()));
+                let normalized = normalize_term(&datum, &BTreeMap::new()).expect("a ground int");
+                out.insert(0, normalized);
+            }
+            debug_assert_eq!(out.len(), K);
+            start.elapsed()
+        }
+
+        // **The minimum, and only on the reference side.** Noise that makes production look slower
+        // cannot fail this assertion, so one run is enough there; noise on the reference side lowers
+        // the bar, which is the direction that matters, so it takes the best of three.
+        let fast = production();
+        let slow = (0..3).map(|_| prepend_shaped()).min().expect("three runs");
+
         assert!(
-            ratio < 16.0,
-            "8× the data took {ratio:.1}× the time (small {small:?}, large {large:?}) — linear is \
-             about 8, and the per-element `insert(0, …)` this replaced measured about 25"
+            fast.as_secs_f64() * 8.0 < slow.as_secs_f64(),
+            "the production accumulator ({fast:?}) must be far cheaper than the per-element \
+             `insert(0, …)` it replaced ({slow:?}) at {K} data terms — measured 16.5× on this host; \
+             comparable figures mean the accumulator is the quadratic one again"
         );
     }
 }
