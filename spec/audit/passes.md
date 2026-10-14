@@ -10911,7 +10911,23 @@ three were **placements** rather than behaviours:
   new test inserts a block at height 51 and asserts the expired deploy is gone; deleting the
   `self.expire_deploys(..)` call from `insert` reddens it, and the direct test still passes — which is the
   difference between the two.
-- **W-N14-01** was not partial at all. Its falsifier describes building a block stamped `i64::MAX` and
+- **W-N14-01** Two more of the fourteen closed the same way — by **citation to a decision or to the committed
+substitute for a measurement**:
+
+- **W-N12-01** wanted a k-vs-2k *time ratio*. That test was written twice and refuted twice (8.1 here,
+  21.6 on the runner; then the reference arm at 16.5× here, 2.3× there), and the committed assertion is
+  the *form* the cost follows from: the three accumulators push and reverse once and never prepend. The
+  cell cites that test and says why the ratio is not committed — a clock test that reads differently on
+  the runner is a flake with a citation.
+- **W-N12-02** wanted an element-count breadth cap. A breadth rule in the parser is **fork-visible** —
+  the oracle accepts a wide term, so refusing one here would reject a block the oracle accepts — and the
+  bound that exists is on the wire form of a deploy at this node's ingress. C289 registered the residual,
+  and the cell cites it rather than inventing a cap the chain would disagree with.
+- **W-N12-03** wanted a timing measurement of the parse-before-admission ordering. The ordering is the
+  property and the refusal *message* already decides it: a deploy the admission refuses answers "rate
+  limit" and never "parsing term".
+
+was not partial at all. Its falsifier describes building a block stamped `i64::MAX` and
   reading it back, and the existing timestamp test **already asserts that direction**: a block stamped a
   day after its parents is accepted (the backlog case, C289's registered deviation) while one past the
   drift behind them is refused. The cell now cites the test rather than describing the drill, and the row

@@ -269,4 +269,54 @@ mod tests {
             vec![a, b]
         );
     }
+
+    /// **A heartbeating peer survives the eviction it would otherwise be first in line for** (W-N1-07).
+    ///
+    /// The row: a peer that heartbeats escapes oldest-first eviction, because the table is bounded and
+    /// the heartbeat refreshes its position. That property belongs to `refresh_conn` and `add_conn`
+    /// **together** — the reorder alone is a curiosity — and the test above pins only the reorder. This
+    /// pins the consequence the row asks for: fill to the cap, let the oldest peer speak, add one more,
+    /// and the peer that spoke is still there while the one that stayed silent is the one evicted.
+    ///
+    /// Falsified by making `refresh_conn` a no-op (the speaker keeps the front position and is evicted
+    /// first) or by evicting from the back instead of the front.
+    #[test]
+    fn a_heartbeating_peer_survives_eviction_at_the_cap() {
+        // The cap is 1024, so the ids need two bytes: `peer(u8)` cannot name that many.
+        let at = |i: usize| {
+            PeerNode::from(
+                NodeIdentifier::new(vec![(i & 0xff) as u8, (i >> 8) as u8]),
+                "peer.example".to_string(),
+                rchain_shared::refined::Port::new(40400),
+                rchain_shared::refined::Port::new(40404),
+            )
+        };
+        let peers: Vec<PeerNode> = (0..MAX_CONNECTIONS).map(at).collect();
+        let speaker = peers[0].clone();
+        let silent = peers[1].clone();
+        assert_eq!(peers.len(), MAX_CONNECTIONS, "the table starts full");
+
+        let refreshed = refresh_conn(&peers, &speaker);
+        assert_eq!(
+            refreshed.last().map(|p| p.key().to_vec()),
+            Some(speaker.key().to_vec()),
+            "the speaker is moved to the end, which is what the test above pins"
+        );
+
+        let newcomer = at(MAX_CONNECTIONS + 1);
+        let after = add_conn(&refreshed, &[newcomer.clone()]);
+        assert_eq!(after.len(), MAX_CONNECTIONS, "the table stays at its bound");
+        assert!(
+            after.iter().any(|p| p.key() == speaker.key()),
+            "**the peer that heartbeated must survive**: eviction is oldest-first, and the heartbeat is              what moved it out of first place (W-N1-07)"
+        );
+        assert!(
+            !after.iter().any(|p| p.key() == silent.key()),
+            "and the front peer that did not speak is the one that pays"
+        );
+        assert!(
+            after.iter().any(|p| p.key() == newcomer.key()),
+            "the newcomer is admitted, or nothing was evicted and the bound is not doing anything"
+        );
+    }
 }
