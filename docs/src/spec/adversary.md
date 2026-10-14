@@ -86,7 +86,9 @@ context holds; the vocabulary separates **`remote · default config`** (an explo
 node) from `misconfig`, `dev-mode`, `build-time`, `same-host`, `opt-in` and `no adversary` (a failure
 mode) — so a conditional row cannot read as an unconditional one. `Disposition` is `—` for an attack
 finding (the verdict is the outcome) and a rung R1–R4 for an operator **fault**. Every row is
-`read`-class evidence: the falsifier is `owed` unless a committed run arms it.
+`read`-class evidence: a falsifier is armed by a committed test, gate or run — or, where no instrument
+in this tree can take it, the row carries a **decision** with its reason (`spec/audit/passes.md::C<n>`).
+As of 2026-10-14 no row reads `owed:`; `tools/check-wargame.sh` is what enforces that, and it runs in CI.
 
 
 ## Table A — deviations by node (with Table B barriers)
@@ -224,7 +226,7 @@ finding (the verdict is the outcome) and a rung R1–R4 for an operator **fault*
 | **W-N7-02** | Root | NO | Nothing verifies the running artefact against anything. The node's only `verify-*` subcommands act on chain data (a block JSON, an attestation) via this node's own hashers — never on the binary — and … | observability-gap | outside | build / release channel | CONFIRMED | — | ``node/build_provenance.rs`/`tools/check-workflow-pins.sh::Dockerfile`` — **decided, not armed**: a node does not verify its own binary, and a startup self-check would be defeated by the access it defends against — a verification key lives on the same host as the artefact. What identifies the artefact is its image digest (digest-pinned bases, checked) plus the commit `/version` reports; an operator compares what they deployed against what they built (§127, C312). |
 | **W-N7-03** | Root | MORE | The build consumes more than the source names: the Dockerfile exposes build args (RUSTFLAGS, CARGO_FEATURES) that the builder can set to inject arbitrary rustc flags or crate features into the compile… | supply-chain-integrity | outside | build / release channel | CONFIRMED | — | `tools/check-build-paths.sh::RUSTFLAGS` — **armed**: the gate the row asks for, and it fires: `docker/rnode/Dockerfile` declares no build argument that reaches `cargo` (adding `ARG RUSTFLAGS` back fails it), so the definition a release is produced from is not the definition a profiling build uses — which is the whole reason the two Dockerfiles exist separately. |
 | **W-N7-04** | Root | LESS | The image build applies less determinism than the property needs: the Dockerfile invokes `cargo build` without `--locked`, whereas the CI release build uses `--locked`. The artefact the operator actua… | supply-chain-integrity | outside | build / release channel | CONFIRMED | — | `tools/check-build-paths.sh::locked` — **armed**: every artefact-producing `cargo build`/`install` in `docker/**` and the workflows passes `--locked` — five invocations, checked mechanically; dropping the flag from the release Dockerfile fails the gate. |
-| **W-N7-05** | Root | AS WELL AS | As well as the pinned workflow actions, the build carries an unpinned supply-chain input the gate never reads: both container bases are referenced by mutable tags, not content digests, and the pin che… | supply-chain-integrity | outside | build / release channel | CONFIRMED | — | Run `tools/check-workflow-pins.sh` — it reports clean and never opens docker/rnode/Dockerfile; a mutable `FROM debian:trixie-slim` passes unremarked. … |
+| **W-N7-05** | Root | AS WELL AS | As well as the pinned workflow actions, the build carries an unpinned supply-chain input the gate never reads: both container bases are referenced by mutable tags, not content digests, and the pin che… | supply-chain-integrity | outside | build / release channel | CONFIRMED | — | `tools/check-workflow-pins.sh::Dockerfile` — **armed 2026-10-14**: the gate the row says never reads the bases now does — it opens every `Dockerfile*` under `docker/` and at the repository root and refuses a `FROM` ref that is not `@sha256:<64 hex>` (`FROM <stage>`, a reference to an earlier stage in the same file, excepted). All four base references across the two Dockerfiles are digest-pinned and the gate reads them, so the row's deviation is gone; what closed it is the instrument, and it is the same gate W-N6-07 cites. |
 | **W-N7-06** | Root | PART OF | Only part of an integrity chain exists: the release artefact's sole token is a sha256 computed and uploaded from the same job and same channel as the binary. Root, able to replace the release artefact… | supply-chain-integrity | outside | build / release channel | CONFIRMED | — | `spec/audit/passes.md::C328` — **decided, not armed 2026-10-14**: the artefact and its digest travel through **one** channel. `.github/workflows/build-rnode.yml` uploads `rnode` and `rnode.sha256` as a single artefact and `gh run download` is the only way to obtain either, so a consumer reading both from that channel cannot notice a substitution that moves both. Closing it is not a test but a release-process decision — publish the digest on a second, independent channel — which is why the falsifier is a CI/ops instrument rather than something in this tree. |
 | **W-N7-07** | Root | REVERSE | The reference is inside the thing referenced: the gate that is meant to hold the node's vendored genesis contracts to the upstream oracle compares each embedded `.rho` to a copy that lives in this rep… | supply-chain-integrity | outside | build / release channel | CONFIRMED | — | ``tools/audit-vendored-sources.sh`` — **decided, not armed**: the vendored contracts are diffed against their own in-repo twin, which catches drift between the two trees and not divergence from upstream — and a foreign tamper that moves both copies passes. Closing it means pinning each file to a digest taken *from upstream* at pin time, which is a CI instrument rather than a test here (§127, C312). |
 
@@ -438,18 +440,22 @@ expected shape for a surface the September audit and the OCapN HAZOP already cro
 | | |
 |---|---|
 | Reviewed revision | `dev` at `1419b127d` |
-| Method | `read` — no live multi-node attack was run; every falsifier is `owed` unless a committed test arms it |
+| Method | `read` — no live multi-node attack was run **by the wargame itself**; a falsifier is armed by a committed test, gate or arm run, or carried as a decision. The live multi-node arms came later, from `tools/wargame-arms.sh` (2026-10-14) |
 | Run | `spec/audit/evidence/wargame/run-1419b127d/` — script, journal, ledger |
 | Pre-registration | `spec/audit/evidence/wargame/preregistration.md` |
 
 **Calibration.** controls caught: 6 of 6 · register-leaks: 0 · vacuity: 47%
 
 **The row citations were re-derived on 2026-10-13**, after the remediation PRs #350–#352 moved code
-this table points into. The *verdicts* are as of `1419b127d` and are not restated — **and neither is the
+this table points into, **and every falsifier cell was worked again on 2026-10-14** — the tail of 27
+rows that still read `owed:` then, closed by `spec/audit/passes.md` §128–§136 (register C313–C330): some
+by a test or a gate that already existed, some by an arm in `tools/wargame-arms.sh` whose run is
+committed under `spec/audit/evidence/wargame/`, and six by a decision recorded with its reason. The
+*verdicts* are as of `1419b127d` and are not restated — **and neither is the
 row text**: a row says what the node did at that revision, which is the finding, so a row that reads
 "the bound is not per identity" is a true statement about the tree the wargame read and not a claim
 about today's. The `file:line` references are as of the current tree, so a reader can still open the
-site a row is about. Where a fix made a row's `owed:` falsifier the wrong question — the per-deployer
+site a row is about. Where a fix made a row's falsifier the wrong question — the per-deployer
 pool share (W-N2-04) means one identity can no longer fill the pool the row asked to fill — the register
 carries the closure, not this table. Two adjudications worth reading before re-proposing anything here:
 the published-status split (W-N3-01) and the peer-admission decision (§116 of `spec/audit/passes.md`,

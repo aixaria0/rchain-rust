@@ -40,6 +40,12 @@ the falsifier turned out to be green on the unfixed tree (§2). That is the rule
 
 Register: **296 findings, 6 todo, 1 in progress** — C249, C250, C254, C255, C256, C260; C259 in progress.
 
+**Correction, 2026-10-14, after the wargame close-out.** The register now reads **365 findings — 0 `todo`,
+364 `done`, 1 `in progress` (C301)**; every row the line above names is `done`. The wargame's Table A has
+no `owed:` cells left either: all 97 rows carry a taken falsifier, a gate citation or a recorded
+decision (pass record §128–§136, register C313–C330), and `tools/check-wargame.sh` — wired into CI —
+refuses a page that says otherwise.
+
 **Correction, 2026-10-09, after this handover was written.** §2's first entry below — "C215's fix is
 unproven, and the proof attempt is the evidence" — was true when written and is not any more. The
 full-path test was made to bite (the shortfall was `incompatible_with_final`'s asymmetry, and the

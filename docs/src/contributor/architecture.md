@@ -87,22 +87,22 @@ Scala's shape), so the Rust tree's own, re-measured LOC is in the table at the e
 
 Total in-scope (non-orphaned): roughly **200–220 person-days**.
 
-### The Rust tree, re-measured (2026-10-10)
+### The Rust tree, re-measured (2026-10-14)
 
-`for c in sdk shared crypto graphz models block-storage comm rspace rholang casper node ocapn; do git ls-files "$c/*.rs" | xargs wc -l | tail -1; done`, plus the whole workspace (`git ls-files '*.rs' | xargs wc -l`):
+`for c in sdk shared crypto graphz models block-storage comm rspace rholang casper node ocapn qucalc rspace-bench; do git ls-files "$c/*.rs" | xargs wc -l | tail -1; done`, plus the whole workspace (`git ls-files '*.rs' | xargs wc -l`):
 
 | Crate | Rust LOC | Crate | Rust LOC |
 |---|---|---|---|
-| `sdk` | 3,001 | `rholang` | 37,638 |
-| `shared` | 4,485 | `casper` | 55,525 |
-| `crypto` | 4,478 | `node` | 30,027 |
-| `graphz` | 837 | `ocapn` | 11,573 |
-| `models` | 11,918 | `rspace-bench` | 495 |
-| `block-storage` | 3,959 | `qucalc` | 1,087 |
-| `comm` | 8,483 | *(workspace-level)* | 281 |
-| `rspace` | 15,938 | **total** | **189,725 over 461 files** |
+| `sdk` | 3,001 | `rholang` | 37,815 |
+| `shared` | 4,642 | `casper` | 61,045 |
+| `crypto` | 4,744 | `node` | 34,654 |
+| `graphz` | 837 | `ocapn` | 11,793 |
+| `models` | 11,964 | `rspace-bench` | 495 |
+| `block-storage` | 4,493 | `qucalc` | 1,087 |
+| `comm` | 9,017 | *(workspace-level)* | 281 |
+| `rspace` | 15,953 | **total** | **201,821 over 471 files** |
 
-`casper` is the largest crate at 55,525 lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
+`casper` is the largest crate at 61,045 lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
 
 ### Rewrite order (bottom-up)
 

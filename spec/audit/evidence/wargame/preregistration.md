@@ -134,9 +134,27 @@ spec/audit/evidence/wargame/
 
 Timestamps are stamped **after** the workflow returns (scripts cannot call `Date.now()`).
 
+**What the directory actually holds** (added 2026-10-14, after the run and after the close-out that
+armed its falsifiers — the block above is the *plan* and is kept as written). Measured against the tree:
+`run-1419b127d/` carries `run.sh`, `journal.jsonl`, `reachability.tsv`, `findings.tsv`, `verdicts.tsv`
+and `results.md` — the last two as the plan describes, plus a `results.json` the plan did not name. There
+is **no `pilot/`** directory (the pilot's calibration is reported on the page instead) and **no
+`provenance`** file: the run's provenance — revision, calibration, vacuity — is stated in `results.md`
+and on `docs/src/spec/adversary.md`'s Table G rather than in a file of its own.
+
+Two things the plan could not know about, and the reader should: the **arm runs** live beside the run,
+`arms-<sha>/`, written by `tools/wargame-arms.sh` (which copies itself in as `run.sh` and writes
+`results.tsv`, `results.md` and its per-arm outputs); and the row *citations* were re-derived twice after
+the run — 2026-10-13, then 2026-10-14 for the close-out of every remaining `owed:` cell (§128–§136).
+
 ## 7. What this cannot claim
 
 A wargame is **`read`-class evidence** and **cannot supply a rate** (`security-audit.md` §1 states this of
 itself). It supplies a **class vocabulary** and a **statement verdict**. Every row is labelled `read`; every
 falsifier `owed` unless a committed run arms it; the rate stays the register's. If a reader concludes
 "every vector is handled because the referee confirmed the statement's rows", the page lies.
+
+**And the condition in that sentence has since fired** (noted 2026-10-14): no row of Table A reads
+`owed:` any more. Every one carries a committed test, a gate, an arm run (`arms-<sha>/`) or a decision
+recorded with its reason — which is what the falsifier column now says, and what
+`tools/check-wargame.sh` refuses a page that contradicts.
