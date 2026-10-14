@@ -56,7 +56,14 @@ bad_vocab="$(printf '%s\n' "$rows" | awk -F'\t' -v vocab="$VOCAB" '
   { if (!($4 in ok)) printf " %s=%s", $1, ($4 == "" ? "(empty)" : $4) }')"
 bad_shape="$(printf '%s\n' "$rows" | awk -F'\t' '
   NF != 7 && NF != 8 { printf " %s(%d fields)", $1, NF }
-  $3 == "" || $4 == "" || $5 == "" { printf " %s(empty)", $1 }')"
+  $3 == "" || $4 == "" || $5 == "" { printf " %s(empty)", $1 }
+  # **The id must start with a letter**, and this is a check the register needed for two months and
+  # did not have. Every other column is validated -- fields, vocabulary, section, evidence, the owed
+  # cell -- and the one identifier a *citation* resolves through was not, so a row written as `290`
+  # instead of `C290` passed every gate and rendered into `spec/AUDIT.md` as `` `290` ``, while two
+  # documents cited `C290`. A citation that resolves to nothing is the class this register exists to
+  # refuse, and nothing was asking.
+  $1 !~ /^[A-Z]/ { printf " %s(not an id)", $1 }')"
 
 # **A `todo` row that does not say what would close it is the defect this column exists for.** The
 # register recorded five findings as "owed" without saying what was owed, which is how a row stays
