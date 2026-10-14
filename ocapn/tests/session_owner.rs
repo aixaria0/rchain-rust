@@ -621,6 +621,223 @@ async fn is_abort_within(session: &mut Session, within: Duration) -> bool {
     )
 }
 
+/// **The object runs before the position is checked** (W-N8-08).
+///
+/// The neighbour above asserts that a reused answer position is *refused*. This asserts the order
+/// that refusal is taken in, which is the row: `handle_deliver` runs the object first
+/// (`target.deliver_in`, `ocapn/src/conn.rs:761`) and calls `check_answer` afterwards (`:817` for a
+/// deferred reply, `:835` otherwise). So the peer's delivery is **performed** and only then aborted,
+/// and the object counts how often it was delivered to rather than what it answered.
+///
+/// **Why that is a warden's finding rather than a curiosity.** On the node's side the object *is* a
+/// chain-backed capability, and running it is the bridge's `block_api.deploy`: the node signs a deploy
+/// with its own validator key, spends its own REV for the phlo, and hands it to the pool — for a call
+/// it is about to refuse. The counter below is that work, reduced to its cheapest observable form.
+///
+/// Falsified by checking the position before running the object: the counter then reads 1, and the
+/// abort below arrives without the refusal having cost anything.
+#[tokio::test]
+async fn the_object_runs_before_a_reused_answer_position_is_refused() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Counted(Arc<AtomicU64>);
+
+    #[async_trait]
+    impl Export for Counted {
+        async fn deliver(&self, _args: &[Value]) -> Result<Act, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Act::value(Value::String("ran".to_string())))
+        }
+    }
+
+    let deliveries = Arc::new(AtomicU64::new(0));
+    let far_end_deliveries = deliveries.clone();
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let far_end = tokio::spawn(async move {
+        let conn = listener.accept_incoming_connection().await.unwrap();
+        let identity = Identity::from_seed([81u8; 32], locator(port)).unwrap();
+        let mut session = Session::accept(conn, &identity, Arc::new(Counted(far_end_deliveries)))
+            .await
+            .unwrap();
+        let _ = session.run().await;
+    });
+
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let conn = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([82u8; 32], locator(0)).unwrap();
+    let mut client = Session::dial(conn, &identity, Arc::new(Bootstrap::default()))
+        .await
+        .expect("handshake");
+
+    // The same position twice: the first delivery claims it, the second reuses it.
+    let with_answer = |text: &str| Deliver {
+        to: Desc::Export(0u64.into()),
+        args: vec![Value::String(text.to_string())],
+        answer_pos: Some(0u64.into()),
+        resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+    };
+
+    client
+        .send_message(&with_answer("first").to_syrup())
+        .await
+        .expect("send");
+    let _ = client.recv_message().await.unwrap().unwrap();
+
+    client
+        .send_message(&with_answer("second").to_syrup())
+        .await
+        .expect("send");
+    let reply = client.recv_message().await.unwrap().unwrap();
+    let Value::Record(fields) = &reply else {
+        panic!("expected an op:abort for the reused position, got {reply:?}");
+    };
+    assert!(
+        matches!(fields.first(), Some(Value::Symbol(label)) if label == "op:abort"),
+        "the reused position is refused: {reply:?}"
+    );
+
+    // **The count is the finding.** Both deliveries reached the object, so the second one was done
+    // before it was refused — on the node's side, a signed deploy and its phlo.
+    assert_eq!(
+        deliveries.load(Ordering::SeqCst),
+        2,
+        "the object ran for the delivery the session then refused (W-N8-08); a reading of 1 means \
+         the position was checked first and the refusal cost the peer nothing, and the row is refuted"
+    );
+
+    drop(client);
+    far_end.abort();
+}
+
+/// **A reconnecting identity is one peer; a fresh key is a new one** (W-N8-05).
+///
+/// The row has two halves and they do not stand or fall together. The first is "each ephemeral
+/// session key is a distinct peer, so a stranger fabricates identities at will" — true by
+/// construction, and unfixable on a transport that proves nothing: on `tcp-testing-only` the peer's
+/// identity is whatever it says. The second is "**no peer has continuity across reconnects**", and
+/// that is the half an arm can refute, because the node's registry keys on the key the transport
+/// produced rather than on the session.
+///
+/// **What the arm came back with, run 2026-10-14: both halves are refuted, and the interesting part
+/// is why.** Three dials — two sharing an identity, and a third with a *different* key but the same
+/// claimed designator — leave the registry holding **one** peer: what binds is the peer's
+/// self-asserted **name**, not its session key. So "each ephemeral session key is a distinct peer" is
+/// false (a fresh key under one name is not a new peer), and "no peer has continuity across
+/// reconnects" is false too (a reconnect under one name is the same peer). What survives is the
+/// inversion: a stranger does not *add* peers by minting keys, it *claims* one — which is C243's row
+/// about the registry keying on a self-asserted name, and a different finding from this one.
+///
+/// The arm asserts all three readings, so it fails if any of them moves: two sessions one identity is
+/// one peer, a fresh key under the *same* name is still that peer, and a *different* name is a
+/// second peer — the last of which is what makes the count a count rather than a constant.
+#[tokio::test]
+async fn an_identity_that_reconnects_is_one_peer_and_a_fresh_key_is_another() {
+    let listener = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let registry = Arc::new(SessionRegistry::default());
+    let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
+    let slot = rchain_ocapn::owner::session_slot();
+    let bootstrap = Arc::new(Bootstrap::with_handoffs(
+        BTreeMap::new(),
+        handoffs,
+        slot.clone(),
+        registry.clone(),
+    ));
+
+    // The node end: every accepted connection is booked against the same registry.
+    let accept_registry = registry.clone();
+    let node = tokio::spawn(async move {
+        while let Ok(conn) = listener.accept_incoming_connection().await {
+            let identity = Identity::from_seed([95u8; 32], locator(port)).unwrap();
+            let registry = accept_registry.clone();
+            let bootstrap = bootstrap.clone();
+            let slot = slot.clone();
+            tokio::spawn(async move {
+                if let Ok((_handle, loop_, context, _peer)) =
+                    accept_and_book(conn, &identity, bootstrap, &registry).await
+                {
+                    *slot.lock().unpoison() = Some(context);
+                    let _ = loop_.run().await;
+                }
+            });
+        }
+    });
+
+    // Two sessions, one identity, both left open: a peer that has *all* its sessions ended is
+    // forgotten (row B3), so a dropped client would be measuring the opposite property.
+    let mut clients = Vec::new();
+    for _ in 0..2 {
+        let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+        let connection = dialer
+            .new_outgoing_connection(&locator(port))
+            .await
+            .unwrap();
+        let identity = Identity::from_seed([96u8; 32], locator(0)).unwrap();
+        let client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("handshake");
+        clients.push(client);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    assert_eq!(
+        registry.tracked_peers(),
+        1,
+        "**one identity across two sessions is one peer** (W-N8-05): a peer that reconnects keeps \
+         its identity, so the row's \"no peer has continuity across reconnects\" does not reproduce"
+    );
+
+    // A third session: a **fresh key**, but the same claimed designator (`locator(0)`). Still one
+    // peer — so what the node holds a peer *by* is the name the peer asserts, not the key it minted.
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let connection = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([97u8; 32], locator(0)).unwrap();
+    clients.push(
+        Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("handshake"),
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        registry.tracked_peers(),
+        1,
+        "a fresh key under the *same* name is not a new peer: the registry binds on the self-asserted \
+         designator, which is why W-N8-05's claim that each ephemeral session key is a distinct peer \
+         does not reproduce"
+    );
+
+    // And a *different* name is a second peer, so the count above is a count rather than a constant.
+    let mut elsewhere = locator(port);
+    elsewhere.designator = "elsewhere".to_string();
+    let dialer = TcpTestingOnly::bind("127.0.0.1:0").await.unwrap();
+    let connection = dialer
+        .new_outgoing_connection(&locator(port))
+        .await
+        .unwrap();
+    let identity = Identity::from_seed([98u8; 32], elsewhere.clone()).unwrap();
+    clients.push(
+        Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("handshake"),
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        registry.tracked_peers(),
+        2,
+        "a second *name* is a second peer — the control that makes the readings above readings"
+    );
+
+    drop(clients);
+    node.abort();
+}
+
 /// **A claim that waits does not stall its session** (Law 61, AUDIT C223).
 ///
 /// The withdraw arm used to poll for a deposit **inside** `handle_deliver`, which is awaited on the

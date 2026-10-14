@@ -11093,3 +11093,55 @@ green with it.
 
 **Counted.** The page went from 27 owed to 23 in this commit, and the four cells that closed are column
 10 of their rows — the count is taken by reading that column, not by trusting a note.
+
+## 130. The capability wire: three deviations reproduced, two rows held against their verdicts (C315)
+
+Five of W-N8's six owed cells close here, and the rig's vocabulary earns its keep: two of the five came
+back **held** against the artifact's `CONFIRMED`, which is a MISMATCH and is recorded as one rather than
+folded into "armed".
+
+**W-N8-01 — armed.** A stranger's delivery to `revVault/getBalance` over `tcp-testing-only` is answered
+by a deploy the *node* signs, out of the node's own wallet: the balance the capability returns is the
+genesis wallet's less the phlo that very delivery spent, so the absent million is the node's key. The
+cell's second half — that the node records which session asked — is what is missing, and the cell says
+so.
+
+**W-N8-03 — armed.** A relay this test owns sits between the peer and the websocket listener, copies both
+directions, and reads the node's records verbatim: the node's own `no such export` refusal is in the
+bytes it forwarded. The peer's direction carries websocket's per-frame mask, which the cell names as
+framing rather than confidentiality, because the masking key travels in the header the relay is already
+copying.
+
+**W-N8-08 — armed.** The object runs before the answer position is checked (`ocapn/src/conn.rs:761`
+before `:817`/`:835`), and the arm proves the order with an object that counts how often it was
+delivered to: two, where a check-first order reads one. Hoisting the check reddens it at exactly that
+assertion. For a chain-backed capability "the object ran" *is* the bridge's submitted deploy.
+
+**W-N8-02 — held, and a MISMATCH.** The row says the looped session exhausts the shared limiter and the
+honest one gets nothing. Measured: a second session sent more than a hundred deliveries at the same
+capability in four seconds and an unrelated session's single delivery was **served**, first try, three
+descriptors back. The budget's subject is the session, not the node.
+
+**W-N8-05 — held, and a MISMATCH.** The row says each ephemeral session key is a distinct peer and no
+peer has continuity across reconnects. Measured: three dials — two sharing an identity, a third with a
+fresh key and the same claimed name — leave the registry holding **one** peer. What binds a peer is the
+designator it asserts, not the key it mints, so the row's two clauses do not reproduce; the shape that
+does is the inversion (a stranger *claims* a name rather than adding peers), and that is C243's row.
+
+**Three instruments failed before these readings were worth anything, and each failure looked like a
+result.** (1) The wallet balance cannot count deploys: a deploy's phlo *limit* is pre-charged and the
+unused part refunded, so a balance read counts net execution cost — hundreds of phlo, not the million a
+delivery's own reading shows while its pre-charge is held. (2) A block cannot witness a submission in
+dev mode: `proposer.rs:1162` injects a dummy deploy when the pool is empty, so a block appears with the
+work or without it. (3) The flood's own reply histogram is not a reading *either*: counting each answer
+inside the loop paces the loop at the socket's round trip, so the flood thins and the budget refills
+between sends — which is how a first draft of W-N8-02 read the opposite of the truth.
+
+**And one arm was built and discarded rather than shipped**, which is worth recording so nobody rebuilds
+it: a node-side W-N8-08 arm reading the deploy *pool* through `/api/deploys`. It cannot work. The bridge
+only returns its `Act` after the deploy it submitted lands in a block, so with propose-on-deploy on the
+pool has drained by the time the refusal arrives, and with it off the bridge's delivery never returns at
+all and no abort comes — the session simply sits there. The order the row is about is real, and the
+ocapn-level arm is where it can be observed.
+
+**Counted.** The page went from 23 owed to 18 in this commit, by reading column 10 of every row.

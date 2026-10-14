@@ -500,8 +500,321 @@ fn a_peer_dials_the_node_over_websocket_and_reaches_its_ertp_capability() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **One session's flood does not refuse another session's delivery** (W-N8-02).
+///
+/// The row's reading: the bridge's bridged-deploy budget is spent **across sessions**, so a peer that
+/// loops deliveries at a published capability exhausts it and an honest peer's *single* delivery is
+/// answered with a `break` rather than a value.
+///
+/// **The arm came back `held`, and this test asserts the reading it came back with.** Run on
+/// 2026-10-14: the flooding session was refused (its own deliveries drew the bound's sentence, counted
+/// below) while a *second*, unrelated session's single delivery was **served** — three capability
+/// descriptors back, first try. So the budget's subject is the session (or the capability within it),
+/// not the node: one peer flooding a published capability does not take it away from another. That is
+/// a **MISMATCH** against the artifact's `CONFIRMED` verdict, and it is recorded as one rather than
+/// folded into "armed" — the row's second clause ("the honest one gets 0") does not reproduce here.
+///
+/// Both halves are asserted, because "the honest peer was served" means nothing on its own: the flood
+/// must have been refused for its being served to say anything about *sharing*. The neighbour
+/// `one_capability_cannot_spend_anothers_share_of_the_bridge_budget` pins the same property for two
+/// capabilities inside one session.
+#[test]
+fn one_sessions_flood_does_not_refuse_another_sessions_delivery() {
+    let dir = common::temp_dir("ocapn-starvation");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.dev_mode = true;
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    conf.api_server.ocapn_listen = Some(format!("127.0.0.1:{}", ports[5]));
+    conf.propose_on_deploy = true;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+        wait_for_genesis(&format!("http://127.0.0.1:{}", ports[0])).await;
+
+        async fn dial(port: u16, seed: u8) -> Session {
+            let dialer = TcpTestingOnly::bind("127.0.0.1:0")
+                .await
+                .expect("bind the dialing side");
+            let connection = dialer
+                .new_outgoing_connection(&locator(port))
+                .await
+                .expect("dial the node");
+            // A seeded identity rather than `Identity::fresh`, so these are two *distinct* peers —
+            // the row is about one session starving another, which a shared identity would confound.
+            let identity = Identity::from_seed([seed; 32], locator(0)).expect("a session key");
+            Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+                .await
+                .expect("the node should complete the handshake")
+        }
+
+        // The flooding peer: it asks the same published capability for a kit, over and over, and
+        // throws the answers away (or reads them when they come, so its own socket cannot back up).
+        let mut flooder = dial(ports[5], 11).await;
+        let capability = fetch(&mut flooder, ERTP_SWISS).await;
+        let flood = tokio::spawn(async move {
+            let call = Deliver {
+                to: capability,
+                args: vec![Value::Symbol("makeIssuerKit".into())],
+                answer_pos: None,
+                resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+            };
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+            let mut sent = 0usize;
+            // **Sent and not read, deliberately.** Reading each answer inside the loop paces the loop
+            // at the socket's round trip, which is what made an earlier version of this arm measure
+            // its own impatience: replies arrive after the read window, the flood thins, and the
+            // budget refills between sends. The flood has to be *fast* to be a flood; its own answers
+            // are the bound's business and not this arm's reading.
+            while tokio::time::Instant::now() < deadline {
+                if flooder.send_message(&call.to_syrup()).await.is_err() {
+                    break;
+                }
+                sent += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            sent
+        });
+
+        // The honest peer, one second into the flood, asks for one value.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let mut honest = dial(ports[5], 12).await;
+        let capability = fetch(&mut honest, ERTP_SWISS).await;
+        let call = Deliver {
+            to: capability,
+            args: vec![Value::Symbol("makeIssuerKit".into())],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+        };
+        honest
+            .send_message(&call.to_syrup())
+            .await
+            .expect("the honest session sends its one delivery");
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(30), honest.recv_message())
+            .await
+            .expect("the honest delivery must be answered — a break is an answer, silence is not")
+            .expect("read the reply")
+            .expect("a reply, not a closed connection");
+        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+
+        let sent = flood.await.expect("the flood task should end");
+        assert!(
+            sent > 100,
+            "the flood sent {sent} deliveries: below the bound's own rate this arm measured its \
+             pacing rather than the bound, and the reading below would say nothing"
+        );
+        assert_eq!(
+            delivered.args[0],
+            Value::Symbol("fulfill".into()),
+            "**held, against the row's `CONFIRMED`** (W-N8-02): while a second session was asking the \
+             same capability for {} deliveries in four seconds, this session's single delivery was \
+             **served**. The budget's subject is the session, not the node, so a flooding peer takes \
+             nothing from an honest one. A `break` naming the bridge here would be the row \
+             reproducing, and would flip this cell back to armed: {:?}",
+            sent,
+            delivered.args.get(1)
+        );
+
+        drop(honest);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A stranger in the middle reads the CapTP records, a chain-capability delivery among them**
+/// (W-N8-03).
+///
+/// The row: the websocket transport — the one the node offers to *remote* peers, unlike
+/// `tcp-testing-only` — carries CapTP as plaintext Syrup on the socket, so a relay between the node
+/// and its peer reads (and can rewrite) every record in flight, and nothing cryptographic notices.
+///
+/// The arm is a relay this test owns: it accepts the dial, opens its own connection to the node, and
+/// copies bytes both ways while keeping a copy of what it forwarded. The delivery below asks for the
+/// ERTP capability **by its swiss number**, and that is the finding: the number a stranger used to
+/// name the capability crosses the wire in the clear, so the relay learns which capability was asked
+/// for and could ask for another.
+///
+/// **What the relay reads, and what it does not.** The node's own direction is unmasked Syrup: the
+/// refusal below ("no such export") is on the wire in the clear, which is what the assertion pins.
+/// The peer's direction carries websocket's per-frame mask — **framing, not confidentiality**: the
+/// key travels in the frame header the relay is already copying, so a relay that cares unmasks it.
+/// The cell says both halves rather than claiming the masked half is protection.
+///
+/// Falsified by giving the transport a confidential channel — a Noise handshake under the websocket
+/// as `ocapn/src/noise.rs` does over TCP — after which the captured bytes contain no readable record.
+#[test]
+fn a_relay_between_the_node_and_a_peer_reads_the_captp_records_in_the_clear() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = common::temp_dir("ocapn-mitm");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    let identity_path = dir.join("ocapn-identity.key");
+    conf.api_server.ocapn_listen_websocket = Some(format!("127.0.0.1:{}", ports[5]));
+    conf.api_server.ocapn_identity_key = Some(identity_path.display().to_string());
+    conf.api_server.ocapn_listen = None;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn(ports[5]).await;
+
+        let stored = std::fs::read(&identity_path).expect("the node should write its identity");
+        let node_identity = rchain_ocapn::noise::NoiseIdentity::new(
+            stored[..32].try_into().expect("32 bytes"),
+            stored[32..].try_into().expect("32 bytes"),
+        )
+        .expect("a valid identity");
+        let verify = rchain_shared::base16::encode(&node_identity.verifying_key());
+
+        // --- the relay, which is the whole instrument -------------------------------------------
+        let relay = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the relay");
+        let relay_port = relay.local_addr().expect("the relay's port").port();
+        let seen: Arc<tokio::sync::Mutex<Vec<u8>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let relay_seen = seen.clone();
+        let node_port = ports[5];
+        tokio::spawn(async move {
+            let (mut inbound, _) = relay.accept().await.expect("the client dials the relay");
+            let mut upstream = tokio::net::TcpStream::connect(("127.0.0.1", node_port))
+                .await
+                .expect("the relay dials the node");
+            let (mut from_client, mut to_client) = inbound.split();
+            let (mut from_node, mut to_node) = upstream.split();
+            let outbound = {
+                let relay_seen = relay_seen.clone();
+                async move {
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n) = from_client.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        relay_seen.lock().await.extend_from_slice(&buf[..n]);
+                        if to_node.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            };
+            // Both directions are kept: the node's replies are what the assertion reads, and the
+            // peer's are what the cell is honest about (see the doc comment).
+            let relay_seen = relay_seen.clone();
+            let inbound = async move {
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = from_node.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    relay_seen.lock().await.extend_from_slice(&buf[..n]);
+                    if to_client.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            };
+            tokio::join!(outbound, inbound);
+        });
+
+        // --- the peer, which believes it is talking to the node ----------------------------------
+        let dialer = WebsocketNetlayer::bind(
+            "127.0.0.1:0",
+            rchain_ocapn::noise::NoiseIdentity::generate().expect("a fresh identity"),
+        )
+        .await
+        .expect("bind the dialing side");
+        let locator = PeerLocator {
+            designator: verify.clone(),
+            transport: "websocket".to_string(),
+            hints: std::collections::BTreeMap::from([
+                ("url".to_string(), format!("ws://127.0.0.1:{relay_port}")),
+                ("verify".to_string(), verify),
+            ]),
+        };
+        let connection = dialer
+            .new_outgoing_connection(&locator)
+            .await
+            .expect("the node should answer the in-band challenge through the relay");
+        let identity = Identity::fresh(locator.clone()).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the CapTP handshake should complete through the relay");
+
+        let fetch = Deliver {
+            to: Desc::Export(0u64.into()),
+            args: vec![
+                Value::Symbol("fetch".into()),
+                Value::Bytes(ERTP_SWISS.to_vec()),
+            ],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+        };
+        client
+            .send_message(&fetch.to_syrup())
+            .await
+            .expect("send the fetch");
+        let reply = client
+            .recv_message()
+            .await
+            .expect("read the reply")
+            .expect("a reply, not a closed connection");
+        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+        assert_eq!(
+            delivered.args[0],
+            Value::Symbol("fulfill".into()),
+            "the session has to *work* through the relay, or there is nothing in the middle to read"
+        );
+
+        // A second delivery, to an export the node does not have: the node's **own words** are the
+        // reading, because they are composed by the node and cannot have been echoed from here.
+        let bogus = Deliver {
+            to: Desc::Export(9999u64.into()),
+            args: vec![Value::Symbol("knock".into())],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(1u64.into())),
+        };
+        client
+            .send_message(&bogus.to_syrup())
+            .await
+            .expect("send to a bogus export");
+        let _ = client.recv_message().await.expect("read the refusal");
+
+        // --- the reading --------------------------------------------------------------------------
+        let captured = seen.lock().await.clone();
+        assert!(
+            !captured.is_empty(),
+            "the relay forwarded nothing, so this arm measured its own wiring"
+        );
+        let needle = b"no such export";
+        assert!(
+            captured
+                .windows(needle.len())
+                .any(|window| window == needle),
+            "**the relay read the node's records in the clear** (W-N8-03): {} bytes were forwarded in \
+             both directions and the node's own refusal — `{}` — is not among them. Not finding it \
+             would mean the records are confidential on this transport, which would refute the row",
+            captured.len(),
+            String::from_utf8_lossy(needle)
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The bridge: a CapTP delivery to a chain-backed capability becomes a signed deploy, and the value
 /// that deploy wrote to its reply channel comes back as the CapTP promise's fulfilment.
+/// **This is also the arm for W-N8-01, and the arm is the deviation.**
+///
+/// The row: a stranger's delivery to `rho:rchain:revVault/getBalance` over `tcp-testing-only` is
+/// answered by a deploy the **node** signs, spending the node's own REV — and the node records
+/// nothing about which session asked. The assertion below is that arithmetic and not a shape: the
+/// balance the capability returns is the genesis wallet's *less the phlo this very delivery spent*
+/// (1_000_000_000_000 − 1_000_000), so the absent 1_000_000 is the node's key paying for a call a
+/// peer that proved nothing made. What would refute the row is a caller identity threaded to the
+/// capability — the node submitting under *the caller's* name, or refusing — and that is the half
+/// named as missing in `node/src/api/ocapn.rs`; nothing here claims it exists.
 #[test]
 fn a_captp_delivery_to_a_chain_backed_capability_resolves_from_a_block() {
     let dir = common::temp_dir("ocapn-bridge");
