@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 1 · DONE 342** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 343** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  137 of 343 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  138 of 344 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 343 are settled: **279 name the evidence that holds them** and **64 do not** — the
+All 344 are settled: **280 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -130,7 +130,7 @@ defects this register had not recorded (C164, C165).
 |---|---|---|---|
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 
-### DONE (342)
+### DONE (343)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -390,6 +390,7 @@ defects this register had not recorded (C164, C165).
 | `C306` | **Block arrival is itself the proposal trigger** (W-N4-04). The chain advanced 175 → 209 with no client asking it to: attest-on-new-blocks is on by default, so a peer's block makes the node sign. Reproduced on a stock devnet with nothing but an observer reading the height (— §121). The per-row table and the run's numbers: `spec/audit/evidence/wargame/arms-f9521edd7/results.md`. | tools/wargame-arms.sh/arm_steady_state | §122 |
 | `C307` | **The admission bound has a subject, and the wargame's global-bucket rows do not reproduce** (W-N2-01, -02, -08, W-N12-06). A 200-deploy burst from one identity drew 88 × 429 while *the same identity* was then admitted over gRPC, and a second identity was too: the surfaces are not one pool and no caller starves another. RC1 (#352, 'give every bound a subject') landing where the rows said it would not (— §121). The per-row table and the run's numbers: `spec/audit/evidence/wargame/arms-f9521edd7/results.md`. | tools/wargame-arms.sh/arm_deploy_admission | §122 |
 | `C308` | **The transport and Kademlia falsifiers were already armed, and the page did not say so** (W-N1-01, -02, -03, -05, -08, -09, -10, W-N12-04, -07). Eight were already asserted by tests in `comm` — several naming their row in their own doc — and one (W-N1-01, the decode cap) needed a test, now written: a 1 MiB `Lookup` against a server booted with the operator's 256 KiB never reaches the handler, and deleting `.max_decoding_message_size(..)` reddens it. W-N1-04 is §116's decision (the bound is concurrency, not rate), cited rather than armed. The page's `owed:` count falls from 92 to 70 once the citations sit in the column the gate reads (§123). | comm/src/discovery/grpc_kademlia_rpc_server.rs/comm/src/discovery/grpc_kademlia_rpc.rs/comm/src/transport/grpc_transport_receiver.rs | §123 |
+| `C309` | **Most of the debt was a page nobody had updated.** Twenty-eight of the seventy rows PR #359 left owing a falsifier were already armed by merged work — twenty-one by this programme's own passes (#355's durable halt and per-shard counters, #357's boot anchor, store format and reconcile harness) and seven by tests already in the tree — and the page had never been told. The cells now cite them and the owed count is 42. The sweep also corrected its own claims: the gate refused a citation to a path that does not exist (`node/src/build_provenance.rs` is `node/build_provenance.rs`), and W-N1-06 was never owed — its cell has named its test since the wargame (§124). | docs/src/spec/adversary.md/casper/tests/reset.rs/node/src/runtime/node_runtime.rs/tests/reconcile-regression.py/tools/check-workflow-pins.sh | §124 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

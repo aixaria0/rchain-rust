@@ -10862,3 +10862,33 @@ thirteen cells read as `owed:` *and* carried a citation beside them, and `check-
 the `owed:` marker was still the field it reads. The citations are now in the column they belong to, and
 the count the page reports went from 92 owed to **70**. A gate that reads one column cannot notice an edit
 that writes another, which is why the cell-by-cell count is printed here and not inferred.
+
+## 124. Most of the debt was a page nobody had updated (C309)
+
+PR #359 left 70 rows carrying `owed:`. The first thing this pass did was the thing the two before it
+skipped: **for each of the 70, read the candidate tests' assertions and ask whether the row's own property
+is already pinned.** Two sweeps, forty and twenty-nine rows, every row answered ARMED / PARTIAL / NOT
+ARMED with the test that makes it. The answer moved the number before a line of code changed:
+
+**Twenty-eight rows were already armed, and the page had never been told.** Twenty-one of them by work
+this programme's own PRs landed — the durable halt and the per-shard counters (#355: W-N10-01/-02,
+W-N10-03/-04), the boot anchor, the store format and the deployer-index completion (#357: W-N11-01/-02/
+-03/-05, and its reconcile harness for W-N11-07/-08/-09) — and seven by tests that were already in the
+tree, several of which name a wargame row in their own doc comment. The cells now cite them; the owed
+count is **42**.
+
+**The sweep corrected two claims of its own.** The gate refused a citation to
+`node/src/build_provenance.rs` — the file is `node/build_provenance.rs`, at the crate root, and a
+generated path is exactly what the check exists to catch. And W-N1-06 turned out not to be owed at all:
+its cell has read "already fires — `comm/src/transport/grpc_transport.rs:386-389` asserts …" since the
+wargame, so the count of 70 was one too many for this row's purposes and the citation pass left it alone.
+
+**Why the number is worth writing down.** The wargame's own pre-registration claims the falsifier column
+overstates arming; that claim had never been checked row by row, and checking it is what turned two thirds
+of the "debt" into citations. A column that says `owed:` for work already done is not a conservative
+error: it hides the rows that are genuinely unarmed among ones that are not, which is how a count stops
+meaning anything.
+
+**What the sweep leaves.** Forty-two rows, of which the unarmed ones cluster — the OCapN rows, the build
+and container posture rows, nine live defects, two live measurements, and the two whose falsifier names a
+missing instrument. The next passes take those clusters, and this one's contribution is the map.

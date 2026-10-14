@@ -22,6 +22,11 @@
 #   1  every node dispositions all eleven guide words exactly once (row / folded / vacuous / owed)
 #   2  every word declared a `row` carries at least one Table A row, and no row carries a word the node
 #      did not declare as a row
+#      **`py` is in the extension list because this repository's falsifiers are not all Rust or shell.**
+#      `tests/reconcile-regression.py` drives the reconcile tool's sections offline, and two of the wargame
+#      rows name a test in it; a list that could not resolve those would push a citation to the *guard* the
+#      test drives instead, which is a weaker claim than the one that exists. The rule the list serves —
+#      the path exists and the symbol after `::` occurs in it — is unchanged.
 #   3  every Table A row names a known persona, an in-model value (inside/outside), a decided verdict
 #      (CONFIRMED / NOT-RE-ESTABLISHED / REFUTED / UNSTATABLE), a disposition that is `—` or R1..R4, and a
 #      falsifier that is either an `owed:` marker or a path **and symbol** that exist in this tree
@@ -138,7 +143,7 @@ sed -e 's/→/->/g' -e 's/·/@SEP@/g' "$page" \
       if (fals ~ /^owed:/) next
       okp = 0; oksym = 0; anycol = 0; lastp = ""; lastsym = ""
       m = fals
-      while (match(m, /[A-Za-z0-9_.\/-]+\.(rs|lean|md|sh|tsv|txt|json|toml|v)/)) {
+      while (match(m, /[A-Za-z0-9_.\/-]+\.(rs|py|lean|md|sh|tsv|txt|json|toml|v)/)) {
         p = substr(m, RSTART, RLENGTH); m = substr(m, RSTART + RLENGTH); sub(/:.*$/, "", p)
         if (system("test -e \"" root "/" p "\"") != 0) continue
         okp = 1; lastp = p
