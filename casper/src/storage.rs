@@ -197,6 +197,36 @@ mod tests {
     }
 
     #[test]
+    /// **The deploy pool is bounded in bytes, not in slots times a wire size** (W-N12-05).
+    ///
+    /// The row's arithmetic: the pool's bound is `MAX_POOLED_DEPLOYS` deploys and a deploy may be 16 MiB
+    /// on the wire, so a count bound is not a byte bound — a caller filling the pool would decide how much
+    /// disk the node spends. What bounds it is the environment's own map size, and the test above checks
+    /// ids and shared environments and would not notice that map growing by three orders of magnitude.
+    ///
+    /// Falsified by deriving the cap from the slots (the row's own number, 160 GB, is the arithmetic of a
+    /// slot-derived bound) or by dropping it to something the pool cannot hold: the assertion is exact.
+    #[test]
+    fn the_deploy_pool_is_bounded_in_bytes_not_in_slots() {
+        let pool = rnode_db_mapping()
+            .iter()
+            .find(|(_, cfg)| cfg.name == "deploypoolstorage")
+            .map(|(_, cfg)| cfg.max_env_size)
+            .expect("the deploy pool has an environment of its own");
+        assert_eq!(
+            pool,
+            1 * GB,
+            "the deploy pool is a 1 GB LMDB map — its bound is bytes"
+        );
+        // The row's slot-derived number: MAX_POOLED_DEPLOYS (10 000) x a 16 MiB wire term, which is
+        // ~160 GB. A cap at or above this would be a bound on entries wearing a byte cap's name.
+        assert!(
+            pool < 10_000 * 16 * 1024 * 1024,
+            "the cap must be far below the slot arithmetic the row names, or the pool is bounded by \
+             its entry count after all: {pool} bytes"
+        );
+    }
+
     fn mapping_has_expected_databases() {
         let mapping = rnode_db_mapping();
         let ids: Vec<&str> = mapping.iter().map(|(db, _)| db.id.as_str()).collect();

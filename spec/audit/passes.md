@@ -10971,3 +10971,40 @@ by finding a test:
 not exist (the artefact's identity is the image digest, which is a decision to cite rather than a test to
 write), and the second needs a release-artefact consumer, which is a CI instrument and not something this
 tree can hold.
+
+## 127. Two residuals about the artefact and its inputs (C312)
+
+Two rows whose honest answer is a decision with a reason, recorded here because rule 3 gives that answer
+exactly one home.
+
+**W-N7-02 — a node does not verify its own binary.** The row: swap one byte in the shipped `rnode` (or
+bind-mount a replacement) and the node boots and serves the same `/version`; nothing checks that the
+artefact running is the artefact built. **Not built, deliberately:** a startup self-check would need the
+binary to carry a signature and a key to verify it against, and the key would live on the same host as the
+binary — so the check would be defeated by exactly the access it defends against. What the project relies
+on instead is the **identity of the artefact**: the image's base refs are digest-pinned
+(`tools/check-workflow-pins.sh`) and the build records the commit it was built from, which `/version`
+reports (`node/build_provenance.rs`). An operator who wants to know what is running compares the image
+digest they deployed against the one they built; a node that took the hash of itself would be answering a
+question it cannot answer about a host that is already compromised.
+
+**W-N7-07 — the vendored contracts are held to their own twin.** `tools/audit-vendored-sources.sh` diffs
+`resources/*.rho` against `vendored-originals/*.rho`, so a change applied to *both* copies passes: the
+check catches drift between the two trees and not divergence from the upstream the contracts came from.
+Closing that properly means pinning each vendored file to a digest taken **from upstream** and checking
+the copies against *that* — a network fetch at pin time, which is a CI instrument and not something a test
+in this tree can hold. The residual is stated rather than papered over, and what would close it is named:
+the upstream digests, recorded once and then checked mechanically.
+
+**What is not owed here.** Both rows are `read`-class findings whose falsifier needs an artefact or an
+upstream that this repository does not hold; the cells now say which.
+
+Two more rows closed in the same pass, both by writing the assertion their falsifier names:
+
+- **W-N1-07** — the heartbeat's *consequence*. The reorder test beside it pins `refresh_conn` and not what
+  the reorder is for; the new test fills the table to its 1024 cap, lets the oldest peer speak, adds one
+  more, and asserts the speaker survives while the silent front peer is the one evicted.
+- **W-N12-05** — the pool's bound is **bytes**, not entries. The row does the arithmetic itself: 10 000
+  pooled deploys × a 16 MiB wire term is ~160 GB, so a count bound is not a byte bound. The environment is
+  a 1 GB LMAP map, asserted exactly and asserted to be far below the slot arithmetic; a cap derived from
+  the count reddens it.
