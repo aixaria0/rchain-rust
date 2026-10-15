@@ -4123,6 +4123,39 @@ def laws : List Law := [
       that was not rebuilt. **Fixed 2026-10-13**: `shutdown::report_fatal` sets a latch the spawn wrapper \
       writes and `main`'s wait selects on, stopping the process without draining. HAZOP row F-U12-03 \
       (docs/src/spec/failure-hazop.md)." },
+  { number := 77, layer := "RSpace",
+    statement := "**A reset is a projection onto its root.** The reset keeps the root it names and drops \
+      the overlay, so an install made *before* a reset to that root is **unobservable** after it — and \
+      the read path's construction, which installs the system processes, resets to the block's root and \
+      installs them again, is therefore the **same function** as the one that resets and installs once",
+    status := .provedModel,
+    declarations := [`Rchain.StoreView, `Rchain.installInto, `Rchain.resetTo, `Rchain.foldingResetTo,
+      `Rchain.installAll, `Rchain.readPathAsWritten, `Rchain.readPathDerived,
+      `Rchain.the_first_pass_is_erased, `Rchain.an_install_before_a_reset_is_unobservable],
+    axioms := [],
+    rust := ["rholang/src/runtime.rs", "rspace/src/rspace.rs", "casper/src/runtime_manager.rs"],
+    rustWitness := ["casper/tests/exploratory_reply.rs:a_read_installs_the_system_processes_twice"],
+    witness := [`Rchain.a_folding_reset_keeps_the_first_pass, `Rchain.the_two_reset_rules_differ],
+    falsifiable := "The shape a *folding* reset would have — and it is not a straw man: folding an \
+      overlay in rather than dropping it is what a **checkpoint** does, and Law 74 is the law that it \
+      must fold what it drains. Under that rule the same pre-reset install **is** observable \
+      (`a_folding_reset_keeps_the_first_pass`), so `the_first_pass_is_erased` is a claim about the \
+      reset's rule rather than a restatement of a container. `the_two_reset_rules_differ` keeps it from \
+      being vacuous: the two rules are distinguishable on a store with one definition installed.",
+    note := "**Why this law exists, and what it is for.** The read path forks a runtime at the last \
+      finalised block's post-state, `build_runtime_core` installs the 31 system-process definitions into \
+      the store it builds (`rholang/src/runtime.rs:175`), and then `RhoRuntime::reset` **replaces** that \
+      store (`ISpace::reset` assigns a fresh `InMemHotStore`, `rspace/src/rspace.rs:666`) and installs \
+      all 31 again (`rholang/src/runtime.rs:447`). One read therefore pays the install pass twice and \
+      one of them lands in a store that is discarded — 62 definitions installed to keep 31. The code \
+      said so in a *comment* (\"the reset replaces the hot store, dropping the in-memory system-process \
+      installs (they are not checkpointed)\"), and a fix chosen from a comment is a fix chosen from \
+      whoever wrote the comment. This row makes the same content a law, so that removing the first pass \
+      is **derived** — the two constructions are one function, so the change cannot alter any answer, and \
+      the derivation is what the measurement is measured against (`casper::runtime_manager::\
+      read_path_census`; issue #364). **What it does not claim**: nothing here is about cost. The law \
+      says the constructions answer alike; it does not say keeping the pass is cheap, and only the \
+      census says what removing it buys." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
