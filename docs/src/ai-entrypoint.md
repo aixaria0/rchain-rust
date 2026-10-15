@@ -47,9 +47,12 @@ and [The laws](formal/laws.md) is the full set, grouped by layer. They divide in
 design question), what a matched deploy is charged (49, the first law about gas rather than state), the two
 depth guards (50), the progress rows (51–54 — the shapes of non-progress, and what finality's
 gate's partition may and may not shrink), the bounded-work and namespace rows (55–56), the delegator's
-stake (57), the finality gate's forward dual (58), the wire and session laws (59–65), and the
+stake (57), the finality gate's forward dual (58), the wire and session laws (59–65), the
 distributed-system set (66–71 — the fringe record's key, the record join, versioned reads, the
-state-page walk's termination, transfer correctness, and the catch-up window).
+state-page walk's termination, transfer correctness, and the catch-up window), and the durable reset,
+the stop and the read construction (72–77 — the reset's completion bracket, its request, a checkpoint
+that folds before it drains, a dependent action ordered on a committed record, a concluded stop, and
+the reset's projection onto its root).
 The calculus rows group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,

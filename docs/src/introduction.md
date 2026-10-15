@@ -34,7 +34,8 @@ decade.
   calculus (1–29), the surface a client writes and a matcher reads (30–43), the Proof-of-Stake epoch
   (44–47), the fee and charging rows (48–49), the two depth guards (50), the progress rows (51–54), the
   bounded-work and namespace rows (55–56), the delegator's stake (57), the finality gate's forward dual
-  (58), the wire and session laws (59–65), and the distributed-system set (66–71). Each law is mapped
+  (58), the wire and session laws (59–65), the distributed-system set (66–71), and the durable reset,
+  the stop and the read construction (72–77). Each law is mapped
   to its machine-checked formalization, and the [folder's index](formal/README.md) says which document
   carries which set.
 - **Part III — The node** describes the software that executes rholang: the tuple space, the Merkle

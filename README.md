@@ -7,8 +7,8 @@ its authority cannot be forged — there is no syntax that writes a private name
 memory-safety bugs are unwritable rather than mitigated. An adversarial audit read this node and
 Solana, Sui and Bitcoin SV from source: no chain split, no fund loss, no remote code execution here.
 
-**A small artifact, deliberately**: recounted 2026-10-14, ~202,000 lines of Rust across 471 files
-compile to a single **43 MB** native binary — nothing to boot but the process, and no collector inside it to
+**A small artifact, deliberately**: recounted 2026-10-15, ~203,000 lines of Rust across 474 files
+compile to a single **43.6 MB** native binary — nothing to boot but the process, and no collector inside it to
 pause — so a validator runs on a commodity laptop with an NVMe.
 
 ## Provenance
@@ -38,7 +38,8 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   client writes and a matcher reads (30–43), the Proof-of-Stake epoch (44–47), the fee and charging
   rows (48–49), the depth guards (50), the progress rows (51–54), the bounded-work and namespace rows
   (55–56), the delegator's stake (57), the finality gate's forward dual (58), the wire and session laws
-  (59–65), and the distributed-system set (66–71) — mapped to their machine-checked proofs.
+  (59–65), the distributed-system set (66–71), and the durable reset, the stop and the read construction
+  (72–77) — mapped to their machine-checked proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
 - **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building
@@ -66,7 +67,7 @@ code, and a stop-the-world collector is safe Rust — we simply do not ship one.
 engineering concern either way, and this node measures its own (see
 [hardware requirements](docs/src/node/validator-requirements.md)).
 
-**Decentralization.** Recounted 2026-10-14, ~202,000 lines of Rust compile to a single 43 MB native binary
+**Decentralization.** Recounted 2026-10-15, ~203,000 lines of Rust compile to a single 43.6 MB native binary
 — no JVM and no collector in the process — so a validator runs on any modern desktop or laptop with an
 NVMe SSD.
 Validator operation sits within consumer-grade hardware, which is what makes the network genuinely

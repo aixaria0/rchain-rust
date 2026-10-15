@@ -20,7 +20,7 @@ its Rust realization. These pages point at those rather than restating them.
 | [Determinism of the block state transition](determinism.md) | 14–16, 19 | what determinism means for a block: the fringe, the DAG, the merge, and the RNG |
 | [Cross-shard transactions](cross-shard-transactions.md) | 26–29 | the two-phase-commit flow across shards, its roles, its state machine, and its recovery caveat |
 | [Progress: the shapes of non-progress](progress.md) | 51–54 | the vocabulary for an obligation that cannot be met — its three shapes, its two predicate causes, the hypotheses each law carries, and the table that turns a symptom into a law |
-| [The laws](laws.md) — the sets after progress | 55–71 | bounded work and the rooted namespace (55–56), the delegator's stake (57), the finality gate's forward dual (58), the wire and session laws (59–65), and the distributed-system set (66–71) |
+| [The laws](laws.md) — the sets after progress | 55–77 | bounded work and the rooted namespace (55–56), the delegator's stake (57), the finality gate's forward dual (58), the wire and session laws (59–65), the distributed-system set (66–71), and the durable reset, the stop and the read construction (72–77) |
 
 ## What the set is, and what it is not
 
