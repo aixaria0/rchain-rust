@@ -4134,7 +4134,7 @@ def laws : List Law := [
       `Rchain.the_first_pass_is_erased, `Rchain.an_install_before_a_reset_is_unobservable],
     axioms := [],
     rust := ["rholang/src/runtime.rs", "rspace/src/rspace.rs", "casper/src/runtime_manager.rs"],
-    rustWitness := ["casper/tests/exploratory_reply.rs:a_read_installs_the_system_processes_twice"],
+    rustWitness := ["casper/tests/exploratory_reply.rs:a_read_makes_no_reset"],
     witness := [`Rchain.a_folding_reset_keeps_the_first_pass, `Rchain.the_two_reset_rules_differ],
     falsifiable := "The shape a *folding* reset would have — and it is not a straw man: folding an \
       overlay in rather than dropping it is what a **checkpoint** does, and Law 74 is the law that it \
