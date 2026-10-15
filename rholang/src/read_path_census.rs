@@ -37,6 +37,43 @@ fn ns(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// A clock, where there is one.
+///
+/// **`std::time::Instant::now()` panics on `wasm32-unknown-unknown`**, and the reducer is built for
+/// that target and installs the system processes on the way up — so a clock read at a call site is a
+/// panicking reducer, not a slow one (measured: the five `wasm_reduce` tests fail at
+/// `install_system_processes`). This type is the one place the target decides, so the call sites read
+/// the same on both: `Clock::start()` then `elapsed()`, which is `Duration::ZERO` where there is no
+/// clock. The counts stay exact there — they are integers, not clock readings.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Clock(Option<std::time::Instant>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Clock {
+    pub fn start() -> Self {
+        Clock(Some(std::time::Instant::now()))
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.0.map(|started| started.elapsed()).unwrap_or_default()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+pub struct Clock;
+
+#[cfg(target_arch = "wasm32")]
+impl Clock {
+    pub fn start() -> Self {
+        Clock
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
 /// One install pass over `defs` definitions.
 pub fn record_install(defs: usize, duration: Duration) {
     let n = ns(duration);

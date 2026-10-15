@@ -105,7 +105,7 @@ async fn install_system_processes(
     space: &RhoTuplespace,
     proc_defs: &[(Par, i32, bool, i64)],
 ) -> Result<(), RholangError> {
-    let started = std::time::Instant::now();
+    let started = crate::read_path_census::Clock::start();
     for (name, arity, remainder, body_ref) in proc_defs {
         let patterns = vec![BindPattern {
             patterns: (0..*arity)
@@ -443,7 +443,7 @@ impl RhoRuntime {
         // are not checkpointed). Re-install so deploys/evaluations that run against this root still
         // reach the fixed-channel system contracts.
         let ts: RhoTuplespace = self.space.clone();
-        let install_started = std::time::Instant::now();
+        let install_started = crate::read_path_census::Clock::start();
         let install = install_system_processes(&ts, &self.proc_defs).await;
         crate::read_path_census::record_reset_install(install_started.elapsed());
         install.map_err(|e| e.to_string())

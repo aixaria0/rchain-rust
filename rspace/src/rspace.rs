@@ -698,7 +698,7 @@ where
     }
 
     async fn reset(&self, root: Blake2b256Hash) -> std::result::Result<(), String> {
-        let started = std::time::Instant::now();
+        let started = crate::read_path_census::Clock::start();
         // **Clean channel locks** — the Scala's `RSpaceOps.reset` does this, and the port dropped it,
         // so the lock map kept an entry per channel the process ever touched (AUDIT C104).
         self.lock_f.clean_up();

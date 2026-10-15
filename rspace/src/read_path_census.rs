@@ -38,6 +38,38 @@ fn ns(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// A clock, where there is one — `std::time::Instant::now()` **panics on `wasm32-unknown-unknown`**,
+/// and this crate is built for that target (the reducer). One cfg here rather than one at each call
+/// site, and the counts beside it stay exact there: they are integers, not clock readings.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Clock(Option<std::time::Instant>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Clock {
+    pub fn start() -> Self {
+        Clock(Some(std::time::Instant::now()))
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.0.map(|started| started.elapsed()).unwrap_or_default()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+pub struct Clock;
+
+#[cfg(target_arch = "wasm32")]
+impl Clock {
+    pub fn start() -> Self {
+        Clock
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
 /// One history read, and whether it was served from the per-store memo.
 pub fn record_history_read(was_cached: bool) {
     HISTORY_READS.fetch_add(1, Ordering::Relaxed);
