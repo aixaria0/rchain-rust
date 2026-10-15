@@ -695,17 +695,14 @@ async fn select_deploys(
     let pooled = dag.pooled_deploys().await?;
     let mut deploys: Vec<DeployId> = Vec::new();
     for (id, d) in pooled {
-        let future = crate::validate::deploy_is_future_at_block(
+        let in_the_dag = dag.lookup_by_deploy_id(&id).await?.is_some();
+        if not_selectable(
             d.data.valid_after_block_number,
             i64::from(next_block_num),
-        );
-        let expired = crate::validate::deploy_expired_at_block(
-            d.data.valid_after_block_number,
-            i64::from(next_block_num),
-            DEPLOY_LIFESPAN,
-        );
-        let replay_attack = dag.lookup_by_deploy_id(&id).await?.is_some();
-        if !(future || expired || replay_attack) {
+            in_the_dag,
+        )
+        .is_none()
+        {
             deploys.push(id);
             if deploys.len() == budget {
                 break;
@@ -713,6 +710,101 @@ async fn select_deploys(
         }
     }
     Ok(deploys)
+}
+
+/// **Why a pooled deploy cannot go into a block at `next_block_num`** — the Scala proposer's filter
+/// (`select_deploys`'s own doc: not future, not expired, not already in the DAG), in **one** place so
+/// that the filter and the report of it cannot disagree.
+///
+/// Extracted for issue #356, where a deploy the node could never include was silent end to end:
+/// accepted by the API, held by the pool, dropped here, and no line anywhere saying so. A report that
+/// counted with its own copy of the arithmetic would be a second implementation of the filter, and this
+/// codebase's own warning is that two implementations of one rule disagree (see the note on `NoAdvance`
+/// in `block-storage/src/dag/finalizer.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotSelectable {
+    /// `valid_after > next_block_num`: not yet — and it will be, as the chain advances.
+    Future,
+    /// `valid_after <= next_block_num - DEPLOY_LIFESPAN`: never again, whatever happens next.
+    Expired,
+    /// Already in the DAG: including it again would be a replay.
+    Replay,
+}
+
+fn not_selectable(
+    valid_after: i64,
+    next_block_num: i64,
+    already_in_the_dag: bool,
+) -> Option<NotSelectable> {
+    if crate::validate::deploy_is_future_at_block(valid_after, next_block_num) {
+        Some(NotSelectable::Future)
+    } else if crate::validate::deploy_expired_at_block(valid_after, next_block_num, DEPLOY_LIFESPAN)
+    {
+        Some(NotSelectable::Expired)
+    } else if already_in_the_dag {
+        Some(NotSelectable::Replay)
+    } else {
+        None
+    }
+}
+
+/// **What a block left out, when it had nothing to include** (issue #356).
+///
+/// Called only on that path — a selection that came back empty — so it costs one pool read and one DAG
+/// lookup per pooled deploy, and only where the alternative is silence. This is the line that would
+/// have told the playground's operator, in words, why an accepted deploy was never proposed; without
+/// it the node answers `Success!`, produces nothing, and says nothing, which is the report.
+///
+/// A pool that is empty is not reported: that is an attestation round, which is the ordinary case and
+/// the one the guard is about (`attestation_suppressed`).
+async fn report_nothing_to_include(
+    dag: &dyn BlockDagStorage,
+    next_block_num: BlockHeight,
+    log: &Arc<dyn Log>,
+) {
+    let Ok(pooled) = dag.pooled_deploys().await else {
+        return;
+    };
+    if pooled.is_empty() {
+        return;
+    }
+    let (mut expired, mut future, mut replay) = (0usize, 0usize, 0usize);
+    let mut lookup_failed = false;
+    for (id, d) in pooled {
+        match dag.lookup_by_deploy_id(&id).await {
+            Ok(seen) => match not_selectable(
+                d.data.valid_after_block_number,
+                i64::from(next_block_num),
+                seen.is_some(),
+            ) {
+                Some(NotSelectable::Expired) => expired += 1,
+                Some(NotSelectable::Future) => future += 1,
+                Some(NotSelectable::Replay) => replay += 1,
+                // Selectable and not selected: only the per-block budget can leave one of these behind,
+                // and that is the ordinary "the next block takes it" case rather than a finding.
+                None => {}
+            },
+            Err(_) => lookup_failed = true,
+        }
+    }
+    let total = expired + future + replay;
+    if total == 0 {
+        return;
+    }
+    log.warn(
+        LogSource::new("casper.blocks.Proposer"),
+        &format!(
+            "nothing to include in block {next_block_num}: the pool holds {total} deploy(s) that cannot \
+             be selected — {expired} expired (anchored at or below {next_block_num} minus the \
+             {DEPLOY_LIFESPAN}-block lifespan, so never again), {future} not valid yet, {replay} already \
+             in the DAG{}",
+            if lookup_failed {
+                " (and a deploy lookup failed, so these counts are a lower bound)"
+            } else {
+                ""
+            }
+        ),
+    );
 }
 
 /// **How long a validator may be blocked by the round gate before it takes the escape.**
@@ -1156,6 +1248,11 @@ where
     // may hold far more than one block can carry, and the leftover stays pooled (AUDIT C123).
     let mut deploys =
         select_deploys(dag, next_block_num, per_block_deploy_budget(to_slash.len())).await?;
+    // **A block with nothing to include says why** (issue #356). Reported here rather than at the
+    // callers because this is where the reasons are known, and only on this path.
+    if deploys.is_empty() {
+        report_nothing_to_include(dag, next_block_num, log).await;
+    }
 
     // Dev-mode dummy deploy: when there is nothing pooled to include, inject a signed `Nil` deploy so
     // `--autopropose` can keep producing blocks (port of Scala `Proposer.dummyDeployOpt`).
@@ -1638,6 +1735,51 @@ mod tests {
                 .unwrap(),
             vec![vec![0u8, 8u8]],
             "the proposer must exclude both an old deploy and the exact first-height expiry boundary"
+        );
+    }
+
+    /// **The reason a deploy was left out, and the arithmetic it is read off** (issue #356).
+    ///
+    /// [`not_selectable`] is the one place the filter's three reasons live, and it is what
+    /// [`report_nothing_to_include`] counts with — so a report that says "3 expired" counts the same
+    /// boundary the selection drops by. The boundaries are asserted on both sides, because an
+    /// off-by-one here would either lose a deploy that was still usable or claim one is expired that
+    /// is not.
+    #[test]
+    fn the_reason_a_deploy_is_left_out_is_the_filters_own_arithmetic() {
+        let next = 51; // the boundary Aria's test pins: at 51, an anchor of 1 is exactly expired
+        assert_eq!(
+            not_selectable(1, next, false),
+            Some(NotSelectable::Expired),
+            "valid_after == next_block - 50 is expired: the filter drops it, so the report says so"
+        );
+        assert_eq!(
+            not_selectable(2, next, false),
+            None,
+            "…and one height later it is still usable"
+        );
+        assert_eq!(
+            not_selectable(52, next, false),
+            Some(NotSelectable::Future),
+            "an anchor above the block being built is not yet valid"
+        );
+        assert_eq!(
+            not_selectable(51, next, false),
+            None,
+            "an anchor at exactly the block being built is fine"
+        );
+        assert_eq!(
+            not_selectable(10, next, true),
+            Some(NotSelectable::Replay),
+            "already in the DAG: a second inclusion is a replay, and it is only reached when the \
+             anchor itself is fine"
+        );
+        // The reason is *a* reason and not the set of them: a deploy can be both expired and already
+        // in the DAG, and the report only needs to name one.
+        assert_eq!(
+            not_selectable(1, next, true),
+            Some(NotSelectable::Expired),
+            "the anchor is checked first, so an expired deploy reads as expired rather than as a replay"
         );
     }
 
