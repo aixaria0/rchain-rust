@@ -25,6 +25,7 @@ pub mod merger;
 pub mod native_store;
 #[cfg(test)]
 mod property_tests;
+pub mod read_path_census;
 pub mod replay_rspace;
 pub mod reporting_rspace;
 pub mod reporting_transformer;

@@ -5,7 +5,7 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->100 entries<!-- counts:end -->**: the calculus laws, the rows covering the
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->101 entries<!-- counts:end -->**: the calculus laws, the rows covering the
 surface a client writes, the Proof-of-Stake epoch, the fee and charging rows, the progress set, and the
 bounded-work, namespace, wire, session and distributed-system rows that follow), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
@@ -40,16 +40,19 @@ bounded-work, namespace, wire, session and distributed-system rows that follow),
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **<!-- counts:laws -->76 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)),
+RChain's behavior is pinned by **<!-- counts:laws -->77 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)),
 and [The laws](formal/laws.md) is the full set, grouped by layer. They divide into: the calculus rows
 (below), the surface a client writes and a matcher reads (30–43), the native Proof-of-Stake epoch
 (44–47), the fee consequence of a denied deploy (48 — a rule neither tree implements, recorded as an open
 design question), what a matched deploy is charged (49, the first law about gas rather than state), the two
 depth guards (50), the progress rows (51–54 — the shapes of non-progress, and what finality's
 gate's partition may and may not shrink), the bounded-work and namespace rows (55–56), the delegator's
-stake (57), the finality gate's forward dual (58), the wire and session laws (59–65), and the
+stake (57), the finality gate's forward dual (58), the wire and session laws (59–65), the
 distributed-system set (66–71 — the fringe record's key, the record join, versioned reads, the
-state-page walk's termination, transfer correctness, and the catch-up window).
+state-page walk's termination, transfer correctness, and the catch-up window), and the durable reset,
+the stop and the read construction (72–77 — the reset's completion bracket, its request, a checkpoint
+that folds before it drains, a dependent action ordered on a committed record, a concluded stop, and
+the reset's projection onto its root).
 The calculus rows group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,
@@ -86,5 +89,5 @@ lived there and **nothing errored**:
 | `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws.md` for what that cost) | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
-| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->76 laws and 100 entries<!-- counts:end -->) with source-of-truth + status | — |
+| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->77 laws and 101 entries<!-- counts:end -->) with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |

@@ -93,16 +93,16 @@ Total in-scope (non-orphaned): roughly **200–220 person-days**.
 
 | Crate | Rust LOC | Crate | Rust LOC |
 |---|---|---|---|
-| `sdk` | 3,001 | `rholang` | 37,815 |
-| `shared` | 4,642 | `casper` | 61,045 |
-| `crypto` | 4,744 | `node` | 34,654 |
+| `sdk` | 3,001 | `rholang` | 37,971 |
+| `shared` | 4,642 | `casper` | 61,674 |
+| `crypto` | 4,744 | `node` | 35,008 |
 | `graphz` | 837 | `ocapn` | 11,793 |
 | `models` | 11,964 | `rspace-bench` | 495 |
 | `block-storage` | 4,493 | `qucalc` | 1,087 |
 | `comm` | 9,017 | *(workspace-level)* | 281 |
-| `rspace` | 15,953 | **total** | **201,821 over 471 files** |
+| `rspace` | 16,166 | **total** | **203,173 over 474 files** |
 
-`casper` is the largest crate at 61,045 lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
+`casper` is the largest crate at 61,674 lines — well past the 9,916 the port was scoped against — because it now carries the node's consensus, merge, gateway and sync-engine code as native Rust.
 
 ### Rewrite order (bottom-up)
 

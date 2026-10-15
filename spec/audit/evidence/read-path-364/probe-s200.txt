@@ -1,0 +1,4 @@
+node                                height  final  read med no-op med    delta  result
+http://localhost:40403                 200    196        27        25        2  values
+                                   read 27 ms (min 24 max 29) · no-op 25 ms · values
+                                   network: dns=0 conn=0 tls=0 ttfb=1  → after tls 1 ms (the node or its proxy; loopback splits them)

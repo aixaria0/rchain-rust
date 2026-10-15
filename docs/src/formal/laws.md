@@ -11,9 +11,9 @@ saying **what it is about**.
 > carry a part of it). It counts *clauses* rather than laws and separates **`proved-tied`** (proved *and*
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
-> disagree, the register is right. Its total is **<!-- counts:proved-laws -->69<!-- counts:end --> of
-> <!-- counts:laws -->76 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->19<!-- counts:end --> tied to the node by a corpus,
-> <!-- counts:proved-model-laws -->52<!-- counts:end --> over the model — with two more laws proved but *vacuous* (their statements restate their
+> disagree, the register is right. Its total is **<!-- counts:proved-laws -->70<!-- counts:end --> of
+> <!-- counts:laws -->77 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->19<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:proved-model-laws -->53<!-- counts:end --> over the model — with two more laws proved but *vacuous* (their statements restate their
 > own definitions, and the register has a word for that).
 
 ## The set, and what each part of it is about
@@ -36,6 +36,7 @@ saying **what it is about**.
 | 58 | **The finality gate's forward dual** | a fully-participating view *is* the whole bonded set, so the gate publishes — the direction Law 52's free support map left open | *(below)* |
 | 59–65 | **The wire and the session** | the CapTP bridge's round trip and refusals, the install rule, the session loop, the dial policy, attribution, interop, and the printer's literal guard | *(below)* |
 | 66–71 | **The distributed-system set** | the fringe record's key, the record join, versioned reads, the state-page walk's termination, transfer correctness, and the catch-up window | *(below)* |
+| 72–77 | **The durable reset, the stop, and the read construction** | the reset's completion bracket, its request, a checkpoint that folds before it drains, a dependent action ordered on a committed record, a concluded stop, and the reset's projection onto its root | *(below)* |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
 defect that started the formalisation programme (AUDIT C9–C22) lived there and **nothing errored**: an
@@ -402,6 +403,31 @@ so its progress does not depend on the network standing still (71).
 | 71 | **A catch-up window bounds what a joining node holds**, so its progress does not depend on the network standing still. The frontier is monotone along any run, stalls included; an answered window advances it one width; and the pending set is a function of the window and the frontier, never of how far the peer's tip has run | `Rchain/Sync/Progress.lean` (`run_monotone`, `answered_run_reaches`, `windowPending_independent_of_tip`, `gapPending_exceeds_the_window`) — `casper/src/engine/catchup.rs`, `casper/src/engine/node_running.rs` |
 
 ---
+
+## The durable reset, the stop, and the read construction (Laws 72–77)
+
+**What they are about.** Six rows about what survives a crash and what a reset means. Laws 72, 73 and 75
+are the ordering of a durable act and its record: the reset's marker is written only once **every** effect
+it brackets has been applied (72 — the DAG rewind, the body purge, the runtime's durable root, with the
+boot repair re-applying the whole set from any half-applied state); a raised request is cleared by, and
+only by, the step that applies the reset's effects (73), so a raised request is always still actionable;
+and a dependent action is taken only on a committed record (75), so the request's premise is always
+durable. Law 74 is the RSpace half of the same concern and it is a *negative*: a checkpoint does not
+drain an overlay it has not folded, so an interrupted checkpoint loses nothing it has not committed — no
+reachable state has an overlay empty while its changes are unfolded. Law 76 concludes it: a fault the
+node cannot serve through, once reported, leaves it not serving and unable to return, because the report
+and the stop are one step.
+
+**Law 77 is the read path's, and it is the one a performance change was derived from.** A reset to a
+root keeps the root it names and drops the overlay, so an install made *before* a reset to that root is
+**unobservable** after it — and the construction that installs the system processes, resets to the
+block's root and installs them again is the *same function* as the one that resets and installs once.
+Its falsifier is the shape a **folding** reset would have, which is not a straw man: folding an overlay
+into the trie rather than dropping it is what a checkpoint does, and Law 74 is the law that it must fold
+what it drains. Under that rule the pre-reset install survives, so the law is about the reset's rule
+rather than a restatement of a container (`spec/Rchain/Reset.lean`). The read path took the first shape;
+the law is what made removing its second pass a derivation rather than a guess, and the measurement
+afterwards is what says what it bought (`spec/audit/evidence/read-path-364/`).
 
 ## Reading the formalization
 

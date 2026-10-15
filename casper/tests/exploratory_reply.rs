@@ -83,3 +83,64 @@ async fn the_reply_source_names_are_stable() {
     assert_eq!(ReplySource::Out.as_str(), "out");
     assert_eq!(ReplySource::None.as_str(), "none");
 }
+
+/// **A read makes no reset** — Law 77's consequence (issue #364).
+///
+/// This test asserted the opposite until the law existed, and it was right to: one read forked a
+/// runtime at a root and then reset to **that same root**, so the store the runtime core had installed
+/// into was replaced and the 31 system-process definitions were installed a second time into the
+/// replacement — 62 installed to keep 31, the second pass landing in the store the reset discarded.
+///
+/// Law 77 (`spec/Rchain/Reset.lean`) says why that second pass could not matter: a reset to the root a
+/// view already names is a **projection**, so an install made before it is unobservable, and the
+/// construction that installs, resets and installs again is the same *function* as the one that
+/// resets and installs once. The fix takes the other half of that equality: the fork now carries its
+/// own native reader (`RSpace::with_native_store`), which is the one thing the reset was doing that
+/// the fork did not, so there is nothing left to reset for.
+///
+/// **Why the counts read are read-scoped.** The `Reset` stage is recorded only by `capture_results`,
+/// so its count is "resets a read performed" and no concurrent test can move it — which matters,
+/// because the *install* counters are process-wide and this suite runs its tests concurrently (the
+/// discipline `casper/src/merging.rs::index_stats_tests` records). So this pins the structural claim
+/// the law makes; what the removal saves is the census's to report, on a node.
+#[tokio::test]
+async fn a_read_makes_no_reset() {
+    let rm = build_runtime_manager().await;
+    let start = start_hash(&rm).await;
+
+    let before = rchain_casper::runtime_manager::read_path_census::snapshot();
+    let before_installs = rchain_rholang::read_path_census::snapshot();
+    rm.play_exploratory_deploy(r#"@"out"!(42)"#, &start)
+        .await
+        .expect("the exploratory deploy runs");
+    let after = rchain_casper::runtime_manager::read_path_census::snapshot();
+    let after_installs = rchain_rholang::read_path_census::snapshot();
+
+    let reset = rchain_casper::runtime_manager::read_path_census::Stage::Reset.index();
+    assert!(after.reads > before.reads, "the read was served");
+    assert_eq!(
+        after.stages[reset].count, before.stages[reset].count,
+        "a read must make no reset: the fork carries its own native reader, so a reset to the root it \
+         already names would be the identity (`spec/Rchain/Reset.lean`, Law 77)"
+    );
+
+    // The install itself still happens — the system processes have to reach the runtime — and every
+    // pass installs the whole definition list, a build constant that holds however many other tests
+    // are running.
+    let per_pass = after_installs.installs.installed_processes / after_installs.installs.calls;
+    let installed =
+        after_installs.installs.installed_processes - before_installs.installs.installed_processes;
+    assert!(
+        per_pass > 0,
+        "the build installs a non-empty definition list"
+    );
+    assert!(
+        installed >= per_pass,
+        "a read still installs the system processes — the fix removes the second pass, not the first"
+    );
+    assert_eq!(
+        installed % per_pass,
+        0,
+        "every pass installs the whole definition list"
+    );
+}
