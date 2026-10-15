@@ -1,0 +1,198 @@
+# TYPE rchain_block_pipeline_shard_0_attestation_consumer_active gauge
+rchain_block_pipeline_shard_0_attestation_consumer_active 1.0
+# TYPE rchain_block_pipeline_shard_0_attestation_depth gauge
+rchain_block_pipeline_shard_0_attestation_depth 0.0
+# TYPE rchain_block_pipeline_shard_0_attestation_observations gauge
+rchain_block_pipeline_shard_0_attestation_observations 8040.0
+# TYPE rchain_block_pipeline_shard_0_attestation_sampled_peak gauge
+rchain_block_pipeline_shard_0_attestation_sampled_peak 0.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_consumer_active gauge
+rchain_block_pipeline_shard_0_autopropose_consumer_active 1.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_depth gauge
+rchain_block_pipeline_shard_0_autopropose_depth 0.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_observations gauge
+rchain_block_pipeline_shard_0_autopropose_observations 8040.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_sampled_peak gauge
+rchain_block_pipeline_shard_0_autopropose_sampled_peak 0.0
+# TYPE rchain_block_pipeline_shard_0_validated_consumer_active gauge
+rchain_block_pipeline_shard_0_validated_consumer_active 1.0
+# TYPE rchain_block_pipeline_shard_0_validated_depth gauge
+rchain_block_pipeline_shard_0_validated_depth 0.0
+# TYPE rchain_block_pipeline_shard_0_validated_observations gauge
+rchain_block_pipeline_shard_0_validated_observations 8040.0
+# TYPE rchain_block_pipeline_shard_0_validated_sampled_peak gauge
+rchain_block_pipeline_shard_0_validated_sampled_peak 0.0
+# TYPE rchain_dag_index_entries gauge
+rchain_dag_index_entries 1215.0
+# TYPE rchain_dag_logical_bytes gauge
+rchain_dag_logical_bytes 2767237.0
+# TYPE rchain_dag_messages gauge
+rchain_dag_messages 405.0
+# TYPE rchain_dag_seen_entries gauge
+rchain_dag_seen_entries 82215.0
+# TYPE rchain_merge_max_asymmetric_pairs gauge
+rchain_merge_max_asymmetric_pairs 0.0
+# TYPE rchain_merge_max_conflict_pairs gauge
+rchain_merge_max_conflict_pairs 0.0
+# TYPE rchain_merge_max_scope_width gauge
+rchain_merge_max_scope_width 0.0
+# TYPE rchain_merge_max_states_expanded gauge
+rchain_merge_max_states_expanded 0.0
+# TYPE rchain_merge_scope_width_total gauge
+rchain_merge_scope_width_total 0.0
+# TYPE rchain_merge_searches gauge
+rchain_merge_searches 804.0
+# TYPE rchain_merge_states_expanded_total gauge
+rchain_merge_states_expanded_total 0.0
+# TYPE rchain_proposer_shard_0_autopropose_timer_halted gauge
+rchain_proposer_shard_0_autopropose_timer_halted 0.0
+# TYPE rchain_proposer_shard_0_consecutive_failures gauge
+rchain_proposer_shard_0_consecutive_failures 0.0
+# TYPE rchain_proposer_shard_0_stale_snapshot_self_equivocations gauge
+rchain_proposer_shard_0_stale_snapshot_self_equivocations 0.0
+# TYPE rchain_runtime_deploy_unit_max_ns gauge
+rchain_runtime_deploy_unit_max_ns 2243105.0
+# TYPE rchain_runtime_deploy_unit_total_ns gauge
+rchain_runtime_deploy_unit_total_ns 530356597.0
+# TYPE rchain_runtime_deploy_units gauge
+rchain_runtime_deploy_units 404.0
+# TYPE rchain_runtime_read_definitions_installed gauge
+rchain_runtime_read_definitions_installed 53661.0
+# TYPE rchain_runtime_read_derived_reply_count gauge
+rchain_runtime_read_derived_reply_count 54.0
+# TYPE rchain_runtime_read_derived_reply_max_ns gauge
+rchain_runtime_read_derived_reply_max_ns 32051.0
+# TYPE rchain_runtime_read_derived_reply_total_ns gauge
+rchain_runtime_read_derived_reply_total_ns 705916.0
+# TYPE rchain_runtime_read_evaluate_count gauge
+rchain_runtime_read_evaluate_count 54.0
+# TYPE rchain_runtime_read_evaluate_max_ns gauge
+rchain_runtime_read_evaluate_max_ns 2271789.0
+# TYPE rchain_runtime_read_evaluate_total_ns gauge
+rchain_runtime_read_evaluate_total_ns 58283368.0
+# TYPE rchain_runtime_read_fork_count gauge
+rchain_runtime_read_fork_count 54.0
+# TYPE rchain_runtime_read_fork_max_ns gauge
+rchain_runtime_read_fork_max_ns 4252442.0
+# TYPE rchain_runtime_read_fork_total_ns gauge
+rchain_runtime_read_fork_total_ns 163323237.0
+# TYPE rchain_runtime_read_history_read_misses gauge
+rchain_runtime_read_history_read_misses 108511.0
+# TYPE rchain_runtime_read_history_reader_count gauge
+rchain_runtime_read_history_reader_count 54.0
+# TYPE rchain_runtime_read_history_reader_max_ns gauge
+rchain_runtime_read_history_reader_max_ns 571649.0
+# TYPE rchain_runtime_read_history_reader_total_ns gauge
+rchain_runtime_read_history_reader_total_ns 12904424.0
+# TYPE rchain_runtime_read_history_reads gauge
+rchain_runtime_read_history_reads 113088.0
+# TYPE rchain_runtime_read_hot_store_count gauge
+rchain_runtime_read_hot_store_count 54.0
+# TYPE rchain_runtime_read_hot_store_max_ns gauge
+rchain_runtime_read_hot_store_max_ns 35458.0
+# TYPE rchain_runtime_read_hot_store_total_ns gauge
+rchain_runtime_read_hot_store_total_ns 404829.0
+# TYPE rchain_runtime_read_install_passes gauge
+rchain_runtime_read_install_passes 1731.0
+# TYPE rchain_runtime_read_install_total_ns gauge
+rchain_runtime_read_install_total_ns 4646535472.0
+# TYPE rchain_runtime_read_max_ns gauge
+rchain_runtime_read_max_ns 14886810.0
+# TYPE rchain_runtime_read_out_reply_count gauge
+rchain_runtime_read_out_reply_count 0.0
+# TYPE rchain_runtime_read_out_reply_max_ns gauge
+rchain_runtime_read_out_reply_max_ns 0.0
+# TYPE rchain_runtime_read_out_reply_total_ns gauge
+rchain_runtime_read_out_reply_total_ns 0.0
+# TYPE rchain_runtime_read_reply_first_private_name gauge
+rchain_runtime_read_reply_first_private_name 54.0
+# TYPE rchain_runtime_read_reply_none gauge
+rchain_runtime_read_reply_none 0.0
+# TYPE rchain_runtime_read_reply_out gauge
+rchain_runtime_read_reply_out 0.0
+# TYPE rchain_runtime_read_requests gauge
+rchain_runtime_read_requests 54.0
+# TYPE rchain_runtime_read_reset_count gauge
+rchain_runtime_read_reset_count 54.0
+# TYPE rchain_runtime_read_reset_install_calls gauge
+rchain_runtime_read_reset_install_calls 863.0
+# TYPE rchain_runtime_read_reset_install_ns gauge
+rchain_runtime_read_reset_install_ns 122414124.0
+# TYPE rchain_runtime_read_reset_install_total_ns gauge
+rchain_runtime_read_reset_install_total_ns 2281225317.0
+# TYPE rchain_runtime_read_reset_max_ns gauge
+rchain_runtime_read_reset_max_ns 9114790.0
+# TYPE rchain_runtime_read_reset_space_ns gauge
+rchain_runtime_read_reset_space_ns 247170692.0
+# TYPE rchain_runtime_read_reset_total_ns gauge
+rchain_runtime_read_reset_total_ns 367669140.0
+# TYPE rchain_runtime_read_runtime_create_count gauge
+rchain_runtime_read_runtime_create_count 54.0
+# TYPE rchain_runtime_read_runtime_create_max_ns gauge
+rchain_runtime_read_runtime_create_max_ns 3822723.0
+# TYPE rchain_runtime_read_runtime_create_total_ns gauge
+rchain_runtime_read_runtime_create_total_ns 144429990.0
+# TYPE rchain_runtime_read_space_and_replay_count gauge
+rchain_runtime_read_space_and_replay_count 54.0
+# TYPE rchain_runtime_read_space_and_replay_max_ns gauge
+rchain_runtime_read_space_and_replay_max_ns 171537.0
+# TYPE rchain_runtime_read_space_and_replay_total_ns gauge
+rchain_runtime_read_space_and_replay_total_ns 5349672.0
+# TYPE rchain_runtime_read_space_reset_calls gauge
+rchain_runtime_read_space_reset_calls 1269.0
+# TYPE rchain_runtime_read_space_reset_total_ns gauge
+rchain_runtime_read_space_reset_total_ns 6313329638.0
+# TYPE rchain_runtime_read_total_ns gauge
+rchain_runtime_read_total_ns 590082447.0
+# TYPE rchain_runtime_read_trie_cache_hits gauge
+rchain_runtime_read_trie_cache_hits 105975.0
+# TYPE rchain_runtime_read_trie_cache_misses gauge
+rchain_runtime_read_trie_cache_misses 32759.0
+# TYPE rchain_runtime_read_trie_store_loads gauge
+rchain_runtime_read_trie_store_loads 32759.0
+# TYPE rchain_runtime_soft_checkpoint_cost_unit_fallback_count gauge
+rchain_runtime_soft_checkpoint_cost_unit_fallback_count 0.0
+# TYPE rchain_runtime_soft_checkpoint_cost_unit_fallback_max_ns gauge
+rchain_runtime_soft_checkpoint_cost_unit_fallback_max_ns 0.0
+# TYPE rchain_runtime_soft_checkpoint_cost_unit_fallback_total_ns gauge
+rchain_runtime_soft_checkpoint_cost_unit_fallback_total_ns 0.0
+# TYPE rchain_runtime_soft_checkpoint_deploy_fallback_count gauge
+rchain_runtime_soft_checkpoint_deploy_fallback_count 420.0
+# TYPE rchain_runtime_soft_checkpoint_deploy_fallback_max_ns gauge
+rchain_runtime_soft_checkpoint_deploy_fallback_max_ns 7503746.0
+# TYPE rchain_runtime_soft_checkpoint_deploy_fallback_total_ns gauge
+rchain_runtime_soft_checkpoint_deploy_fallback_total_ns 143976864.0
+# TYPE rchain_runtime_soft_checkpoint_deploy_log_count gauge
+rchain_runtime_soft_checkpoint_deploy_log_count 420.0
+# TYPE rchain_runtime_soft_checkpoint_deploy_log_max_ns gauge
+rchain_runtime_soft_checkpoint_deploy_log_max_ns 7359551.0
+# TYPE rchain_runtime_soft_checkpoint_deploy_log_total_ns gauge
+rchain_runtime_soft_checkpoint_deploy_log_total_ns 166326116.0
+# TYPE rchain_runtime_soft_checkpoint_pre_charge_log_count gauge
+rchain_runtime_soft_checkpoint_pre_charge_log_count 404.0
+# TYPE rchain_runtime_soft_checkpoint_pre_charge_log_max_ns gauge
+rchain_runtime_soft_checkpoint_pre_charge_log_max_ns 537375.0
+# TYPE rchain_runtime_soft_checkpoint_pre_charge_log_total_ns gauge
+rchain_runtime_soft_checkpoint_pre_charge_log_total_ns 100585037.0
+# TYPE rchain_runtime_soft_checkpoint_system_deploy_log_count gauge
+rchain_runtime_soft_checkpoint_system_deploy_log_count 404.0
+# TYPE rchain_runtime_soft_checkpoint_system_deploy_log_max_ns gauge
+rchain_runtime_soft_checkpoint_system_deploy_log_max_ns 944048.0
+# TYPE rchain_runtime_soft_checkpoint_system_deploy_log_total_ns gauge
+rchain_runtime_soft_checkpoint_system_deploy_log_total_ns 125134536.0
+# TYPE rchain_merge_scope_width histogram
+rchain_merge_scope_width_bucket{le="16.0"} 804.0
+rchain_merge_scope_width_bucket{le="32.0"} 804.0
+rchain_merge_scope_width_bucket{le="64.0"} 804.0
+rchain_merge_scope_width_bucket{le="128.0"} 804.0
+rchain_merge_scope_width_bucket{le="+Inf"} 804.0
+rchain_merge_scope_width_count 804.0
+rchain_merge_scope_width_sum 12864.0
+# TYPE rchain_merge_states_expanded histogram
+rchain_merge_states_expanded_bucket{le="1000.0"} 804.0
+rchain_merge_states_expanded_bucket{le="10000.0"} 804.0
+rchain_merge_states_expanded_bucket{le="100000.0"} 804.0
+rchain_merge_states_expanded_bucket{le="1000000.0"} 804.0
+rchain_merge_states_expanded_bucket{le="+Inf"} 804.0
+rchain_merge_states_expanded_count 804.0
+rchain_merge_states_expanded_sum 804000.0

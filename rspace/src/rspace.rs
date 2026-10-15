@@ -68,6 +68,33 @@ where
         store: Arc<dyn HotStore<C, P, A, K>>,
         matcher: Arc<dyn Match<P, A>>,
     ) -> Self {
+        Self::with_native_store(
+            history_repository,
+            store,
+            matcher,
+            Arc::new(InMemNativeStore::empty()),
+        )
+    }
+
+    /// The same space with the **native store supplied** — the shape a *fork* is built in, and the
+    /// difference matters.
+    ///
+    /// A fork is made *at* a root, and a read against it must reach that root's native state: the
+    /// system contracts read bonds and balances through the native store, and
+    /// `InMemNativeStore::empty()` is a `NoopNativeReader` whose reads answer `None` until a reader is
+    /// set. `ISpace::reset` is what sets one — so a space built empty is only usable *after* a reset,
+    /// which is exactly why the read path reset each fork and paid a second system-process install
+    /// into the store that reset replaced (issue #364).
+    ///
+    /// Building the fork with its reader instead makes that reset the identity by Law 77
+    /// (`spec/Rchain/Reset.lean`: a reset to the root a view already names is a projection, so an
+    /// install made before it is unobservable), which is what lets the read paths drop it.
+    pub fn with_native_store(
+        history_repository: Arc<HistoryRepository<C, P, A, K>>,
+        store: Arc<dyn HotStore<C, P, A, K>>,
+        matcher: Arc<dyn Match<P, A>>,
+        native_store: Arc<InMemNativeStore>,
+    ) -> Self {
         RSpace {
             history_repository: RwLock::new(history_repository),
             store: RwLock::new(store),
@@ -76,7 +103,7 @@ where
             installs: RwLock::new(BTreeMap::new()),
             lock_f: Arc::new(TwoStepLock::new()),
             matcher,
-            native_store: Arc::new(InMemNativeStore::empty()),
+            native_store,
             last_native_changes: RwLock::new(Vec::new()),
             last_native_drain: RwLock::new(NativeDrain::default()),
         }
@@ -89,7 +116,29 @@ where
         store: Arc<dyn HotStore<C, P, A, K>>,
         matcher: Arc<dyn Match<P, A>>,
     ) -> (Arc<RSpace<C, P, A, K>>, ReplayRSpace<C, P, A, K>) {
-        let play = Arc::new(RSpace::new(history_repository, store, matcher));
+        Self::create_with_replay_and_native_store(
+            history_repository,
+            store,
+            matcher,
+            Arc::new(InMemNativeStore::empty()),
+        )
+    }
+
+    /// `create_with_replay` with the native store supplied: the fork's shape, for the reason
+    /// [`Self::with_native_store`] gives. A fork built this way is readable at its root without a
+    /// reset, so the read path does not need the reset that would replace its store.
+    pub fn create_with_replay_and_native_store(
+        history_repository: Arc<HistoryRepository<C, P, A, K>>,
+        store: Arc<dyn HotStore<C, P, A, K>>,
+        matcher: Arc<dyn Match<P, A>>,
+        native_store: Arc<InMemNativeStore>,
+    ) -> (Arc<RSpace<C, P, A, K>>, ReplayRSpace<C, P, A, K>) {
+        let play = Arc::new(RSpace::with_native_store(
+            history_repository,
+            store,
+            matcher,
+            native_store,
+        ));
         let replay = ReplayRSpace::new(play.clone());
         (play, replay)
     }

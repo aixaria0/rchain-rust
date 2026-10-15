@@ -35,7 +35,7 @@ use rchain_rholang::system_processes::BlockData;
 use rchain_rspace::checkpoint::SoftCheckpoint;
 use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
-use rchain_rspace::native_store::{BlockNativeEffects, NativeWriter, PREFIX_POS};
+use rchain_rspace::native_store::{BlockNativeEffects, InMemNativeStore, NativeWriter, PREFIX_POS};
 use rchain_rspace::rspace::RSpace;
 use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::typed_store::KeyValueTypedStore;
@@ -625,6 +625,7 @@ impl RuntimeManager {
     ) -> Result<RhoRuntime, String> {
         let reader_started = Instant::now();
         let reader = self.history_repo.get_history_reader(root).await;
+        let native_reader = self.history_repo.get_native_reader(root).await;
         read_path_census::record(
             read_path_census::Stage::HistoryReader,
             reader_started.elapsed(),
@@ -635,8 +636,19 @@ impl RuntimeManager {
         read_path_census::record(read_path_census::Stage::HotStore, store_started.elapsed());
 
         let space_started = Instant::now();
-        let (play, _replay) =
-            RSpace::create_with_replay(self.history_repo.clone(), hot, Arc::new(RhoMatch));
+        // **The fork carries its own native reader** (Law 77, `spec/Rchain/Reset.lean`). The system
+        // contracts read bonds and balances through the native store, and `InMemNativeStore::empty()`
+        // is a `NoopNativeReader` whose reads answer `None` — so a fork built empty is readable only
+        // *after* a reset, which is why every read path used to reset the fork it had just made at the
+        // same root, and paid a second system-process install into the store that reset replaced.
+        // Built here, the reset becomes the identity and the read paths do not make one.
+        let native_store = Arc::new(InMemNativeStore::new(native_reader));
+        let (play, _replay) = RSpace::create_with_replay_and_native_store(
+            self.history_repo.clone(),
+            hot,
+            Arc::new(RhoMatch),
+            native_store,
+        );
         read_path_census::record(
             read_path_census::Stage::SpaceAndReplay,
             space_started.elapsed(),
@@ -772,8 +784,12 @@ impl RuntimeManager {
     /// Read the `Par`s at a channel in the state identified by `hash` (port of `getData`). Runs on a
     /// forked runtime so the read cannot reset the shared play runtime out from under the proposer.
     pub async fn get_data(&self, hash: &StateHash, channel: &Par) -> Result<Vec<Par>, String> {
+        // **No reset.** The fork is built *at* this root and carries its own native reader
+        // (`RSpace::with_native_store`), so a reset here would be the identity: it would replace a
+        // store already at the root and re-install what the runtime core already installed, the second
+        // pass landing in the store the replacement discarded. Law 77 — a reset is a projection onto
+        // its root, so work done before it is unobservable (`spec/Rchain/Reset.lean`).
         let runtime = self.fork_play_runtime(to_blake(hash)).await?;
-        runtime.reset(to_blake(hash)).await.map_err(|e| e)?;
         runtime
             .get_data_par(&SortedProc::new(channel.clone()))
             .await
@@ -787,8 +803,12 @@ impl RuntimeManager {
         hash: &StateHash,
         channels: &[Par],
     ) -> Result<Vec<(Vec<BindPattern>, Par)>, String> {
+        // **No reset.** The fork is built *at* this root and carries its own native reader
+        // (`RSpace::with_native_store`), so a reset here would be the identity: it would replace a
+        // store already at the root and re-install what the runtime core already installed, the second
+        // pass landing in the store the replacement discarded. Law 77 — a reset is a projection onto
+        // its root, so work done before it is unobservable (`spec/Rchain/Reset.lean`).
         let runtime = self.fork_play_runtime(to_blake(hash)).await?;
-        runtime.reset(to_blake(hash)).await.map_err(|e| e)?;
         let channels: Vec<SortedProc> = channels
             .iter()
             .map(|c| SortedProc::new(c.clone()))
@@ -1814,10 +1834,12 @@ impl RuntimeManager {
             .await?;
         read_path_census::record(read_path_census::Stage::Fork, fork_started.elapsed());
 
-        let reset_started = Instant::now();
-        let reset = runtime.reset(to_blake(start)).await;
-        read_path_census::record(read_path_census::Stage::Reset, reset_started.elapsed());
-        reset.map_err(|e| e)?;
+        // **No reset, and that is the fix Law 77 licenses** (`spec/Rchain/Reset.lean`). This used to
+        // fork at `start` and then reset to `start` — a reset to the root the fork already named,
+        // which replaced a store already at that root and re-installed the system processes the
+        // runtime core had already installed, the second pass landing in the discarded store. The fork
+        // now carries its own native reader, so that reset would be the identity, and the stage is no
+        // longer recorded: its count is now "resets this read performed", which is zero (#364).
         // Bound the exploratory evaluation (documented Scala deviation): a phlo cap + a
         // reduction-step budget (the operative bound; the legible "step budget exceeded" error must
         // fire well inside the wall-clock deadline) + a wall-clock backstop.
