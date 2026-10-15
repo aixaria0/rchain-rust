@@ -120,6 +120,10 @@ FILES=(
   "$SPEC/RHO-CALCULUS.md"
   "$SPEC/RUST-VS-SCALA.md"
   "$SPEC/TEST-COVERAGE.md"
+  # The two methodology drafts (2026-10-15) state the law total with a marker, and they are in the list
+  # by the same rule the rest are: a count stated outside it is one nothing recomputes.
+  "$ROOT/docs/src/methodology/law-first-port.md"
+  "$ROOT/docs/src/methodology/agentic-assurance.md"
 )
 for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
 

@@ -83,6 +83,11 @@
 - [The bounded adversary](spec/adversary.md)
 - [Failure-mode HAZOP and disposition](spec/failure-hazop.md)
 
+# Part VIII — Methodology (draft papers)
+
+- [Paper A — The law-first port (draft)](methodology/law-first-port.md)
+- [Paper B — Auditable development by AI agents (draft)](methodology/agentic-assurance.md)
+
 ---
 
 - [Navigation for AI agents](ai-entrypoint.md)

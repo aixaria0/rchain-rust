@@ -155,6 +155,15 @@ unforgeability is axiomatised at the crypto boundary (law 19) rather than proved
 candidate findings it refuted, including the one it opened expecting to lead with:
 [`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
 
+**How the apparatus was built is written up too, because the method is the part that is unusual here.**
+Two draft papers in the book state it and its own limits:
+[Paper A — the law-first port](docs/src/methodology/law-first-port.md) argues why the reference
+implementation is not the oracle, and what holds an emitted conformance corpus in place;
+[Paper B — auditable development by AI agents](docs/src/methodology/agentic-assurance.md) asks what
+makes agent-written work checkable *after* the session that wrote it is gone. Both name the same missing
+experiment — attributing each finding to the layer that surfaced it, and its cost — and both say plainly
+that they are drafts. Every claim in either one is checkable against this tree.
+
 ## Governance
 
 The rewrite is governed by [`AGENTS.md`](AGENTS.md) — the binding intent + formal specification —
