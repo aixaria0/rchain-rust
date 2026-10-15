@@ -26,11 +26,20 @@ Reproduce with `target/sweep-read-path.sh <label> [blocks]` (the driver is kept 
 
 ## What it establishes
 
-1. **The cost is flat in chain depth.** 10.29 → 10.86 → 10.93 ms across heights 61 → 200 → 403, i.e.
-   0.0019 ms/block. The ≈0.13 ms/block fitted earlier was a mixed cross-section, and the one measurement
-   that showed a slope (a 29.88 ms reset at height 201) was taken immediately after a 400-block bench,
-   so it was measuring contention rather than depth. Law 68 states the same thing a priori: a read is a
-   function of the version it names, and height is not an argument of that function.
+1. **On *this* build the cost is flat in chain depth.** 10.29 → 10.86 → 10.93 ms across heights
+   61 → 200 → 403, i.e. 0.0019 ms/block. In this same build the one sample that showed a slope (a
+   29.88 ms reset at height 201) was taken immediately after a 400-block bench run against the same
+   node, so it was measuring contention rather than depth. Law 68 states why a read should be flat a
+   priori — a read is a function of the version it names, and height is not an argument of that
+   function.
+
+   **And it says nothing about the playground.** That node runs a **~21-day-old binary**: the
+   playground does not rebuild when code is pushed, so its build predates this census, the fix, and any
+   measurement here. A slope measured on *that* build is not refuted by flatness on this one — the
+   register's whole subject is that implementations deviate from the laws they answer to, and whether
+   this one did in that respect is a question about a binary nobody has instrumented. The two
+   candidates there remain **the build** and **the box**, and they are separable only on that box or
+   after it is redeployed.
 
 2. **`reset` was two thirds of a read, and it was doing nothing.** `RhoRuntime::reset` replaced a store
    already at the root the fork named — and replaced it with an equivalent one — then re-installed the
@@ -48,8 +57,10 @@ Reproduce with `target/sweep-read-path.sh <label> [blocks]` (the driver is kept 
    reset, and still installs the whole definition list at least once.
 
 **What it does not establish.** Nothing here explains the ~318 ms the public playground pays; on this
-build a read is ~4 ms node-side at height 61. That gap is a build or a box, not a depth and not this
-path, and issue #364 keeps it open.
+build a read is ~4 ms node-side at height 61. That gap is a property of **that node's own build or
+box** — and that node runs a ~21-day-old binary that this change will not reach until it is rebuilt and
+restarted, which is an operator action rather than a consequence of merging. Issue #364 keeps it open,
+and the outside cross-section stays uninterpretable until that box runs a current build.
 
 ## Files
 
