@@ -562,6 +562,33 @@ impl BlockApi for BlockApiImpl {
                 deploy.data.valid_after_block_number, latest_block
             ));
         }
+        // **And the other end of the same window** (issue #356). A deploy anchored *behind* the tip is
+        // already expired: `select_deploys` drops it as `expired`, the pool slot is held, and the
+        // submitter is answered `Success!` and told nothing — a deploy that can never be included.
+        //
+        // The asymmetry with the arm above is the reason this one exists: a **future** anchor becomes
+        // selectable as the chain advances, so accepting it is accepting work the node will get to;
+        // an **expired** one can only get worse, because the height only grows. Accepting it is
+        // accepting a deploy that will never be a block.
+        //
+        // **This departs from the Scala oracle deliberately** — the Scala deploy API pools such a
+        // deploy and its proposer silently skips it at selection, which is the behaviour the port had
+        // and the one this issue is about. The deviation is registered in `spec/audit/passes.md` §6.
+        if crate::validate::deploy_expired_at_block(
+            deploy.data.valid_after_block_number,
+            latest_block + 1,
+            crate::multi_parent_casper::DEPLOY_LIFESPAN,
+        ) {
+            return Err(format!(
+                "Deploy validAfterBlockNumber {} is already expired at block {} (the deploy lifespan \
+                 is {} blocks): it can never be included. Anchor it at the current height — \
+                 `rnode deploy` does that when `--valid-after-block-number` is omitted — or omit the \
+                 anchor and let the node choose.",
+                deploy.data.valid_after_block_number,
+                latest_block + 1,
+                crate::multi_parent_casper::DEPLOY_LIFESPAN
+            ));
+        }
 
         let r = match crate::multi_parent_casper::deploy(self.dag.as_ref(), deploy).await {
             Ok(id) => Ok(format!("Success!\nDeployId is: {}", base16::encode(&id))),

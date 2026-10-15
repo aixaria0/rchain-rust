@@ -370,6 +370,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **A slash fans the untaken remainder out to each delegator's own vault, and clears the delegation ledgers** — `atRisk` reads the operator's **aggregate** pool entry, so the tier applies to a delegator's principal exactly as to the operator's; `returned` is distributed pro-rata by each party's at-risk contribution — the operator's own part to its vault, each delegator's part to **its own** vault — with the dust to the operator, and the offender is removed from `pos:delegations`, `pos:pending_delegations`, `pos:delegation_claims` and `pos:delegated_rewards` together | `Pos.rhox:470-482` — the contract's slash moves the whole bond to the Coop vault and **deletes the validator's own entries**; the port already deviates by returning the untaken remainder to the offender's own vault (AUDIT C199), and there is no third party in the contract for a remainder to belong to | This is the sharpest correctness risk in the primitive and it is stated as such: the port's post-C199 slash pays `at_risk − taken` to `vault_address(validator)`, and with delegations present that hands a delegator's principal to the party it was delegated to. The fan-out is the same `proRata` the reward split uses (with `base = 0`, since every principal is at risk), so its sum arithmetic is one theorem rather than two. **The model cannot state the per-vault attribution and says so**: `PosState.user` is the total over every user vault, so `spec/Rchain/Pos.lean`'s law 57 proves the *amounts* and the clearing, and which vault is credited is pinned by a Rust witness — the identical simplification the withdrawal path already carries. An escrowed (`pos:delegation_claims`) principal is reached too, mirroring the validator's own escrowed claim, because it stays at risk until its deadline passes. **Hard fork (#51 category A):** the payment destination changes the block's post-state. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 | **`withdraw` refuses while delegations are outstanding, and `delegate` refuses while a withdrawal is pending** — so a validator is never simultaneously withdrawing and delegated-to | — (no counterpart: with no delegation primitive there is no second ledger for a withdrawal to be ambiguous against) | Without both refusals the escrow accounting is two-valued: a staged withdrawal moves the operator's **whole** pool entry — which may contain delegated principal — into `pos:withdrawers`, where the delegator has no claim, and a slash reaching that escrow could not tell whose money it was. Refusing both directions keeps one meaning per ledger, and the cost is a refusal an honest operator can always resolve by waiting a boundary. The two are also what make the slash's `at_risk` well-formed: with the invariant held, an operator's escrowed claim never contains delegated principal. `delegate` refuses three more inputs for the same reason — an operator not in the pool, self-delegation (`operator == delegator`), and an amount below `minimum_bond` — and the last of those is the DoS control on a ledger unbounded in delegator count (`spec/RUST-VS-SCALA.md` §3 item 12, residual **O5**). **Hard fork (#51 category A):** a refusal the oracle does not have changes which deploys succeed. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 | **The merge composes cost accounting per accepted deploy instead of a block carrying it** — `pre_charge`, `refund` and `pay_executor` are three balance movements that sum to zero, so the merge re-applies them from what the chain already holds (`charge`, `refund` and `burned` are functions of the `ProcessedDeploy`; the producer is the host block's own signed `sender`), and a block's native sidecar carries only its **own** writes. Each accepted deploy's moves land in the vaults the three system deploys would have moved; a chain that wrote one of those slots itself keeps its absolute value in the sidecar, and only the moves of blocks that value had *not* seen are added on top | — (no counterpart: the Scala has no native-state merge, so it has no sidecar and no per-deploy cost composition to compare against) | **This replaces a conflict that was universal.** Cost accounting runs for *every* user deploy and all three moves touch `pos:vault`, so while the sidecar carried that slot every user-deploy block overlapped every concurrent sibling on it — and the merge's one recourse against two incomposable absolute snapshots is to reject a whole block, which took the deploy's own native writes (a delegation, a bond, a `trust`) with it. That made `bond`/`withdraw`/`trust`/`delegate` no-ops on any network with more than one proposer, while a *system* deploy escaped: `close_block` writes no `pos:vault` and two sibling boundaries compute identical values from one pre-state, so rejecting one leaves the other's equal write. **Hard fork (#51 category A):** the *conflict relation* changes, so which blocks a merge accepts, and therefore every block hash after the first concurrent user-deploy pair, differs between a fixed and an unfixed node. Lockstep upgrade is the practice. **The residual is filed rather than hidden**: two *concurrent* `delegate` blocks still conflict on `pos:delegations` and one is still rejected whole, and `trust`/`withdraw` are the same shape — a ledger is a set, not a sum (AUDIT C207) |
+| **A deploy already past its lifespan is refused at admission** (issue #356) | `BlockAPI.deploy` screens signature, phlo, shard and *too far in the future*; an expired anchor is pooled, and `Proposer.selectDeploys` drops it silently | the state it creates is not a waiting deploy but a dead one: the height only grows, so an expired anchor can never become selectable — while the submitter is answered `Success!` and the node says nothing anywhere. A future anchor is the opposite (the chain reaches it), which is why that arm stays. Measured end to end in §137 |
 
 ---
 
@@ -11359,3 +11360,67 @@ at once under one designator are a *crossed hello* to the node, which aborts one
 cell that had recorded either of the first two readings alone would have been recording a machine's
 speed. The three instruments, the two flips and the two faults are here so the next reader inherits the
 measurement rather than the luck.
+
+## 137. A deploy that can never be included, and a node that never said so (C331)
+
+Issue #356: the playground's lone dev-mode validator answered `Success!` to a deploy and then never
+produced a block. Reproduced on the current build, and the reproduction is what made the shape plain —
+it is **not** about one validator, and the fix is not a relaxation for n=1 (a fresh single-validator
+chain produces on a deploy with no extra flags; `node/tests/deploy_lifespan.rs` asserts that, and the
+round gate that might have been suspected only fires when the round has advanced *past* our own last
+message, which on a lone validator it has not).
+
+**What happened, in two clauses.**
+
+**A deploy the node can never include was accepted.** On a chain at height `h`, a deploy anchored at or
+below `h - DEPLOY_LIFESPAN` (50) is born expired. Admission refused one anchored too far *ahead* (R28)
+and had no arm for one too far *behind*, so it was pooled, answered `Success!`, and dropped by
+`select_deploys` at every selection for ever — the height only grows. The tree already named the trap in
+its own words (`casper/src/protocol/client.rs::resolve_valid_after_block_number`: "born expired on any
+chain taller than the lifespan … silently never proposed").
+
+**And because it could not be included, a settled lone node produced nothing at all** — not even the
+empty attestation block that would have moved the height. `attestation_inputs` reads the oldest
+unfinalised block that *carries deploys*; with the deploy never included there is none, so
+`nothing_to_finalize = true` and the guard withholds (the #70 rule: a chain advances on content, not on
+wall-clock). Measured, on a chain mined past the lifespan with the fringe settled:
+
+```
+settled at h=55, pool=0
+stale deploy on a settled chain: h 55 -> 55, pool=1, status={"NotProcessed":{"status":"Pooled"}}
+attestation at tip 54: withheld — nothing_to_finalize=true new_state_transition=false
+                                    quorum_reachable=true cadence_due=false paced=false
+propose refused: Failure: Proposal failed: NoNewDeploys (seqNum 55)
+```
+
+**What changed, and it is two things because the two clauses are independent.**
+
+1. **Admission gained the past half of its own anchor check** (`casper/src/api/block_api_impl.rs`). A
+   deploy already expired at `latest + 1` is refused with a sentence naming the anchor, the block and
+   the lifespan, and pointing at the fix (`rnode deploy` anchors at the current height when the flag is
+   omitted). **This is a deliberate departure from the Scala oracle**, which pools it and drops it at
+   selection; the row is in the §6 register beside the others, with the reason: a future anchor is work
+   the node will get to, an expired one can never be.
+2. **A block with nothing to include now says why** (`report_nothing_to_include`,
+   `casper/src/blocks/proposer/proposer.rs`). It counts the pool by the *same* predicate the filter
+   drops by — `not_selectable`, extracted so the report and the filter cannot disagree, which is this
+   codebase's own rule about two implementations of one rule — and warns with the split (expired /
+   future / replay) and the reason expired is permanent. This is the half that covers the case
+   admission cannot: a **future** anchor is still admitted, and on a settled lone validator it still
+   cannot be included until something moves the chain, which is exactly the silence the issue reports.
+   Before this, the deploy path discarded the trigger's result and nothing was logged anywhere.
+
+**Measured, and recorded rather than asserted.** The chain that reaches the settled state has to mine
+fifty heights, and a round-gate step in that ladder occasionally outruns any bound a test can put on
+it; an intermittent test has already cost this repository a CI cycle twice (PR #361). So the trace above
+lives in `node/tests/deploy_lifespan.rs`'s module doc, and what is asserted is the deterministic part:
+the refusal by name, and the two readings that say a lone validator is not the defect — it produces on a
+deploy, and with `--autopropose` it closes the round past it as well.
+
+**What is *not* changed, and why.** Deploys still do not close a round by themselves: a round closes
+when a propose carries the attestation, and with `--propose-on-deploy` and no autopropose nothing asks
+for one after the deploy's block (`--attest-on-new-blocks` is a separate opt-in, and the not-due retry
+arms only on `NotEnoughNewBlocks`). That is the designed shape — a dev chain advances on content — and
+the live chain shows it working: every block carries one deploy, one block per deploy, finality one
+round behind and following. The playground's own API was read for this (height 1839, fringe 1835, pool
+empty, one deploy per block since 1830); nothing was stuck, and nothing needed clearing.

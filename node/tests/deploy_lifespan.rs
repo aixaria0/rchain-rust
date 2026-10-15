@@ -20,11 +20,11 @@
 //!   (`a_lone_validator_with_autopropose_produces_and_finalises`). That is the configuration
 //!   `tools/devnet.sh` ships with, and the one a lone chain wants.
 //!
-//! **A third behaviour was measured and is recorded here rather than asserted**, because the fixture
-//! that reaches it has to mine fifty heights and a round-gate step in that ladder occasionally takes
-//! longer than any bound a test can put on it — and an intermittent test in this repository has cost a
-//! CI cycle twice already. On a chain mined past `DEPLOY_LIFESPAN`, with the fringe settled past every
-//! deploy-bearing block:
+//! **A third behaviour was measured on a chain mined past `DEPLOY_LIFESPAN`** — and the node now
+//! **refuses that deploy at admission** instead (the past half of the future-anchor screen, registered
+//! as a deliberate Scala deviation in `spec/audit/passes.md` §6). The trace is kept because it is what
+//! the refusal is for: on a settled lone node, a deploy the node cannot include did not merely go
+//! unproposed, it produced no block at all and said nothing.
 //!
 //! ```text
 //! settled at h=55, pool=0
@@ -35,10 +35,14 @@
 //! ```
 //!
 //! A deploy anchored at **zero** on a chain that tall is born expired (`valid_after <= height - 50`,
-//! `casper/src/validate.rs::deploy_expired_at_block`). `select_deploys` skips it as `expired` —
+//! `casper/src/validate.rs::deploy_expired_at_block`). `select_deploys` skipped it as `expired` —
 //! silently — and because a *settled* lone node withholds its attestation (`nothing_to_finalize =
 //! true`, the #70 rule that a chain advances on content and not on wall-clock), not even the empty
-//! attestation block is produced. So the height does not move **at all**: not a stall after proposing,
+//! attestation block was produced. The **first** clause is now refused at the door
+//! (`a_deploy_anchored_behind_the_lifespan_is_refused_by_name`), and the **second** — a future anchor,
+//! which is still admitted because the chain will reach it — is reported by the proposer's own warning
+//! line (`report_nothing_to_include`), which is what turns this class of silence into something an
+//! operator can read. So the height does not move **at all**: not a stall after proposing,
 //! and not a refusal any caller can see, since `BlockApiImpl::deploy` discards the trigger's result
 //! and the trigger's refusal is never logged. The tree names this trap in its own words
 //! (`casper/src/protocol/client.rs::resolve_valid_after_block_number`: "born expired on any chain
@@ -59,7 +63,11 @@ use common::{deploy_conf, free_ports, temp_dir, test_runtime, VALIDATOR_PRIV_HEX
 
 async fn wait_for_genesis(base: &str) {
     let client = reqwest::Client::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    // Sixty seconds rather than the thirty the other node tests use: this file boots three nodes in
+    // one binary (the harness serialises them), and on a loaded box a genesis has taken past thirty —
+    // which shows up as a failure in a *wait*, not in an assertion. The wait is a condition, not a
+    // speed claim.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         if let Ok(resp) = client.get(format!("{base}/api/blocks")).send().await {
             if resp.status().is_success() {
@@ -252,6 +260,92 @@ fn a_lone_validator_with_autopropose_produces_and_finalises() {
             "**a lone validator with autopropose closes the round past the deploy's block**: the \
              fringe reached {reached}, the deploy's block is at {}",
             h + 1
+        );
+
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// **A deploy the node can never include is refused, by name** (issue #356).
+///
+/// The field case is an anchor at or below `tip - DEPLOY_LIFESPAN`: born expired on any chain taller
+/// than the lifespan, and permanent — the height only grows, so it can never become includable.
+/// Reaching that on a fifty-block chain would make this test a ladder, and the ladder races the round
+/// gate; the same condition arrives the other way, with an anchor far *behind* a fresh chain. It is the
+/// screen's own arithmetic (`valid_after <= next_block - DEPLOY_LIFESPAN`) and the screen's own
+/// refusal that is asserted, so which end of the window the anchor sits at does not matter.
+///
+/// Falsified by removing the past half of the screen: the deploy is then accepted, held, and — as the
+/// module doc records — never proposed.
+#[test]
+fn a_deploy_anchored_behind_the_lifespan_is_refused_by_name() {
+    test_runtime().block_on(async {
+        let dir = temp_dir("deploy-lifespan-refused");
+        let ports = free_ports(5);
+        let mut conf = deploy_conf(&dir, &ports);
+        conf.dev_mode = true;
+        conf.dev.deployer_private_key = Some(VALIDATOR_PRIV_HEX.to_string());
+
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        let base = format!("http://127.0.0.1:{}", ports[0]);
+        wait_for_genesis(&base).await;
+
+        let key = PrivateKey::new(base16::decode(VALIDATOR_PRIV_HEX).expect("decode the key"));
+        let deploy = GrpcDeployService::connect("127.0.0.1", ports[4] as i32, 16 * 1024 * 1024)
+            .await
+            .expect("deploy gRPC");
+
+        let signed = Signed::new(
+            DeployData {
+                attachments: Vec::new(),
+                term: "@\"never\"!(\"runs\")".to_string(),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 1_000_000,
+                valid_after_block_number: -1_000,
+                shard_id: "/root".to_string(),
+            },
+            &Secp256k1,
+            &key,
+        )
+        .expect("sign");
+
+        let refused = deploy
+            .deploy(&SignedDeployData {
+                data: signed.data,
+                deployer: signed.pk.bytes().to_vec(),
+                sig: signed.sig,
+                sig_algorithm: signed.sig_algorithm.name().to_string(),
+            })
+            .await
+            .expect_err("**a deploy that can never be included is refused** (issue #356)");
+        let text = refused.join(" ");
+        assert!(
+            text.contains("already expired"),
+            "and the sentence says which rule it broke: {text}"
+        );
+        assert!(
+            text.contains("-1000"),
+            "naming the anchor that was refused: {text}"
+        );
+        assert!(
+            text.contains("50"),
+            "and the lifespan it is measured against: {text}"
+        );
+
+        // Nothing was pooled, so nothing can wedge later.
+        let held: serde_json::Value = reqwest::Client::new()
+            .get(format!("{base}/api/deploys"))
+            .send()
+            .await
+            .expect("GET /api/deploys")
+            .json()
+            .await
+            .expect("pool json");
+        assert!(
+            held["deploys"].as_array().is_some_and(|d| d.is_empty()),
+            "a refused deploy is not held: {held}"
         );
 
         node.shutdown();
