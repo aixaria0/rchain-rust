@@ -611,6 +611,7 @@ impl BlockDagKeyValueStorage {
             );
             self.set_merge_shape_gauges();
             self.set_soft_checkpoint_gauges();
+            self.set_read_path_gauges();
         }
         self
     }
@@ -764,6 +765,121 @@ impl BlockDagKeyValueStorage {
                 count(sample.max_ns),
             );
         }
+    }
+
+    /// Publish the read-path census (issue #364): where a read's time goes.
+    ///
+    /// Monotone process counters like the census it publishes — the node computes the same state and
+    /// returns the same reply with or without a metrics sink. A campaign reads **deltas between two
+    /// scrapes**, so earlier activity in the process cannot be mistaken for the measured arm's work.
+    ///
+    /// Three modules publish from this one tick because they are three views of one request: the
+    /// casper census times the stages, `rchain_rholang`'s separates the install leg out of `reset`,
+    /// and `rchain_rspace`'s counts the substrate reads that no stage boundary can see.
+    fn set_read_path_gauges(&self) {
+        use crate::runtime_manager::read_path_census::{self, Stage};
+
+        let source = Source::base().sub("runtime");
+        let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let census = read_path_census::snapshot();
+
+        self.metrics
+            .set_gauge(&source, "read_requests", count(census.reads));
+        self.metrics
+            .set_gauge(&source, "read_total_ns", count(census.total_ns));
+        self.metrics
+            .set_gauge(&source, "read_max_ns", count(census.max_ns));
+        self.metrics.set_gauge(
+            &source,
+            "read_reply_first_private_name",
+            count(census.reply_first_private_name),
+        );
+        self.metrics
+            .set_gauge(&source, "read_reply_out", count(census.reply_out));
+        self.metrics
+            .set_gauge(&source, "read_reply_none", count(census.reply_none));
+        for stage in Stage::ALL {
+            let sample = census.stages[stage.index()];
+            self.metrics.set_gauge(
+                &source,
+                &format!("read_{}_count", stage.metric_stem()),
+                count(sample.count),
+            );
+            self.metrics.set_gauge(
+                &source,
+                &format!("read_{}_total_ns", stage.metric_stem()),
+                count(sample.total_ns),
+            );
+            self.metrics.set_gauge(
+                &source,
+                &format!("read_{}_max_ns", stage.metric_stem()),
+                count(sample.max_ns),
+            );
+        }
+
+        let installs = rchain_rholang::read_path_census::snapshot();
+        self.metrics.set_gauge(
+            &source,
+            "read_install_passes",
+            count(installs.installs.calls),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_install_total_ns",
+            count(installs.installs.total_ns),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_definitions_installed",
+            count(installs.installs.installed_processes),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_reset_install_calls",
+            count(installs.reset_installs.calls),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_reset_install_total_ns",
+            count(installs.reset_installs.total_ns),
+        );
+
+        let substrate = rchain_rspace::read_path_census::snapshot();
+        self.metrics.set_gauge(
+            &source,
+            "read_history_reads",
+            count(substrate.history_reads),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_history_read_misses",
+            count(substrate.history_read_misses),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_trie_cache_hits",
+            count(substrate.trie_cache_hits),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_trie_cache_misses",
+            count(substrate.trie_cache_misses),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_trie_store_loads",
+            count(substrate.trie_store_loads),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_space_reset_calls",
+            count(substrate.space_reset_calls),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "read_space_reset_total_ns",
+            count(substrate.space_reset_total_ns),
+        );
     }
 
     /// Expire deploys the current tip already rejects (`valid_after <= latest - lifespan`).
@@ -1235,6 +1351,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             );
             self.set_merge_shape_gauges();
             self.set_soft_checkpoint_gauges();
+            self.set_read_path_gauges();
         }
 
         BlockIndex::prune_cache(&prune_cache_ids);

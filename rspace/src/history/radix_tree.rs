@@ -165,6 +165,7 @@ impl RadixTreeImpl {
     }
 
     async fn load_node_from_store(&self, node_ptr: Blake2b256Hash) -> Result<Option<Node>, String> {
+        crate::read_path_census::record_trie_store_load();
         // A store error is **kept separate from a missing node**. The comment that stood here —
         // "`BytesCodec` cannot fail to decode, so the store error is unreachable" — is true of the
         // *codec* and false of the store: an LMDB read can fail. `.ok()` flattened that into `None`,
@@ -212,8 +213,10 @@ impl RadixTreeImpl {
         no_assert: bool,
     ) -> Result<Node, String> {
         if let Some(node) = crate::lock::mlock(&self.cache_read).get(&node_ptr).cloned() {
+            crate::read_path_census::record_trie_cache_hit();
             return Ok(node);
         }
+        crate::read_path_census::record_trie_cache_miss();
         match self.load_node_from_store(node_ptr).await {
             Ok(Some(node)) => {
                 crate::lock::mlock(&self.cache_read).insert(node_ptr, node.clone());

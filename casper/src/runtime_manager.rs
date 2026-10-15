@@ -213,6 +213,228 @@ pub mod soft_checkpoint_census {
     }
 }
 
+/// Per-request attribution of the **read path** (issue #364).
+///
+/// A read is `POST /api/explore-deploy` with no hash: the node forks a runtime at the last finalized
+/// block's state and evaluates the term. The read-latency probe's control arm shows the cost is
+/// per-request *setup* rather than the term — a no-op term pays what the read term pays — so this
+/// census times the setup stage by stage, to say which term dominates instead of guessing.
+///
+/// The two stages that matter and are easy to conflate: `Reset` is `RhoRuntime::reset` as a whole,
+/// and it *contains* the system-process install leg that `rholang::read_path_census` times
+/// separately — so `Reset − Install` is the space reset. Splitting them that way needs no change to
+/// `reset`'s signature.
+///
+/// Statics rather than return values, for the same reason as [`soft_checkpoint_census`]: the async
+/// runtime manager has no metrics handle, and the one that publishes them is the DAG's tick.
+/// **Relaxed ordering throughout** — a progress report, not a barrier.
+///
+/// **The numbers are means, not per-request traces.** The counters are process-wide and cumulative,
+/// so the decomposition to read is `mean_total ≈ mean_fork + mean_reset + mean_eval + mean_replies`,
+/// with the fork's internals as their own means. The stage counters are recorded inside
+/// `fork_play_runtime_with_mode`, which serves *every* play fork (explore-deploy, `get_data`,
+/// `get_continuation`), so a stage count above `reads` is forks-per-read being visible rather than a
+/// defect.
+///
+/// **It changes no behaviour.** Every `Instant` here wraps a call that already exists.
+pub mod read_path_census {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::ReplySource;
+
+    /// The stages of one read, in the order the request pays them.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Stage {
+        /// The whole `fork_play_runtime_with_mode` call, beside its four internals below.
+        Fork,
+        /// `get_history_reader(root)` — a fresh trie plus one root-node load.
+        HistoryReader,
+        /// `InMemHotStore::new(reader.base())` — a fresh store with a cold read cache.
+        HotStore,
+        /// `RSpace::create_with_replay` — the play space and the replay half.
+        SpaceAndReplay,
+        /// `RhoRuntime::create_with_effect_mode` — the runtime core, including its own install pass.
+        RuntimeCreate,
+        /// `runtime.reset(root)` — the space reset *and* the re-install.
+        Reset,
+        /// `evaluate(term, rand)`.
+        Evaluate,
+        /// The reply read from the term's first `new`-bound name.
+        DerivedReply,
+        /// The reply read from `@"out"`, which is only read when the derived name was empty.
+        OutReply,
+    }
+
+    impl Stage {
+        pub const ALL: [Stage; 9] = [
+            Stage::Fork,
+            Stage::HistoryReader,
+            Stage::HotStore,
+            Stage::SpaceAndReplay,
+            Stage::RuntimeCreate,
+            Stage::Reset,
+            Stage::Evaluate,
+            Stage::DerivedReply,
+            Stage::OutReply,
+        ];
+
+        pub const fn index(self) -> usize {
+            match self {
+                Stage::Fork => 0,
+                Stage::HistoryReader => 1,
+                Stage::HotStore => 2,
+                Stage::SpaceAndReplay => 3,
+                Stage::RuntimeCreate => 4,
+                Stage::Reset => 5,
+                Stage::Evaluate => 6,
+                Stage::DerivedReply => 7,
+                Stage::OutReply => 8,
+            }
+        }
+
+        pub const fn metric_stem(self) -> &'static str {
+            match self {
+                Stage::Fork => "fork",
+                Stage::HistoryReader => "history_reader",
+                Stage::HotStore => "hot_store",
+                Stage::SpaceAndReplay => "space_and_replay",
+                Stage::RuntimeCreate => "runtime_create",
+                Stage::Reset => "reset",
+                Stage::Evaluate => "evaluate",
+                Stage::DerivedReply => "derived_reply",
+                Stage::OutReply => "out_reply",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct StageSnapshot {
+        pub count: u64,
+        pub total_ns: u64,
+        pub max_ns: u64,
+    }
+
+    impl StageSnapshot {
+        /// The mean, in nanoseconds, or `None` when the stage never ran.
+        pub fn mean_ns(&self) -> Option<u64> {
+            (self.count > 0).then(|| self.total_ns / self.count)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Snapshot {
+        /// Reads served: one per `play_exploratory_deploy`.
+        pub reads: u64,
+        pub total_ns: u64,
+        pub max_ns: u64,
+        pub stages: [StageSnapshot; 9],
+        /// How many replies came from each channel — turns "this node returns `EMPTY expr`" from an
+        /// observation about a build into a number measured on it.
+        pub reply_first_private_name: u64,
+        pub reply_out: u64,
+        pub reply_none: u64,
+    }
+
+    impl Snapshot {
+        /// The mean whole-request time, in nanoseconds.
+        pub fn mean_total_ns(&self) -> Option<u64> {
+            (self.reads > 0).then(|| self.total_ns / self.reads)
+        }
+
+        /// One line per stage, with the mean, for a log or a captured run.
+        pub fn summary(&self) -> String {
+            let mut parts = Vec::new();
+            for stage in Stage::ALL {
+                let s = self.stages[stage.index()];
+                parts.push(format!(
+                    "{}={} calls/{} ns mean (max {} ns)",
+                    stage.metric_stem(),
+                    s.count,
+                    s.mean_ns().unwrap_or(0),
+                    s.max_ns
+                ));
+            }
+            format!(
+                "read path: {} reads, mean {} ns (max {} ns); replies first={} out={} none={}; {}",
+                self.reads,
+                self.mean_total_ns().unwrap_or(0),
+                self.max_ns,
+                self.reply_first_private_name,
+                self.reply_out,
+                self.reply_none,
+                parts.join("; ")
+            )
+        }
+    }
+
+    static STAGE_COUNTS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+    static STAGE_TOTAL_NS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+    static STAGE_MAX_NS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+    static READS: AtomicU64 = AtomicU64::new(0);
+    static REQUEST_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+    static REQUEST_MAX_NS: AtomicU64 = AtomicU64::new(0);
+    static REPLY_FIRST: AtomicU64 = AtomicU64::new(0);
+    static REPLY_OUT: AtomicU64 = AtomicU64::new(0);
+    static REPLY_NONE: AtomicU64 = AtomicU64::new(0);
+
+    fn ns(duration: Duration) -> u64 {
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// Record one stage of one read.
+    pub fn record(stage: Stage, duration: Duration) {
+        let i = stage.index();
+        let n = ns(duration);
+        STAGE_COUNTS[i].fetch_add(1, Ordering::Relaxed);
+        STAGE_TOTAL_NS[i].fetch_add(n, Ordering::Relaxed);
+        STAGE_MAX_NS[i].fetch_max(n, Ordering::Relaxed);
+    }
+
+    /// Record one served read end to end.
+    pub fn record_request(duration: Duration) {
+        let n = ns(duration);
+        READS.fetch_add(1, Ordering::Relaxed);
+        REQUEST_TOTAL_NS.fetch_add(n, Ordering::Relaxed);
+        REQUEST_MAX_NS.fetch_max(n, Ordering::Relaxed);
+    }
+
+    /// Record where a read's reply was found.
+    pub fn record_reply(source: ReplySource) {
+        match source {
+            ReplySource::FirstPrivateName => &REPLY_FIRST,
+            ReplySource::Out => &REPLY_OUT,
+            ReplySource::None => &REPLY_NONE,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot() -> Snapshot {
+        let mut stages = [StageSnapshot::default(); 9];
+        for stage in Stage::ALL {
+            let i = stage.index();
+            stages[i] = StageSnapshot {
+                count: STAGE_COUNTS[i].load(Ordering::Relaxed),
+                total_ns: STAGE_TOTAL_NS[i].load(Ordering::Relaxed),
+                max_ns: STAGE_MAX_NS[i].load(Ordering::Relaxed),
+            };
+        }
+        Snapshot {
+            reads: READS.load(Ordering::Relaxed),
+            total_ns: REQUEST_TOTAL_NS.load(Ordering::Relaxed),
+            max_ns: REQUEST_MAX_NS.load(Ordering::Relaxed),
+            stages,
+            reply_first_private_name: REPLY_FIRST.load(Ordering::Relaxed),
+            reply_out: REPLY_OUT.load(Ordering::Relaxed),
+            reply_none: REPLY_NONE.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn summary() -> String {
+        snapshot().summary()
+    }
+}
+
 async fn measured_soft_checkpoint(
     runtime: &RhoRuntime,
     site: soft_checkpoint_census::Site,
@@ -401,19 +623,39 @@ impl RuntimeManager {
         root: Blake2b256Hash,
         mode: EffectMode,
     ) -> Result<RhoRuntime, String> {
+        let reader_started = Instant::now();
         let reader = self.history_repo.get_history_reader(root).await;
+        read_path_census::record(
+            read_path_census::Stage::HistoryReader,
+            reader_started.elapsed(),
+        );
+
+        let store_started = Instant::now();
         let hot = Arc::new(InMemHotStore::new(reader.base()));
+        read_path_census::record(read_path_census::Stage::HotStore, store_started.elapsed());
+
+        let space_started = Instant::now();
         let (play, _replay) =
             RSpace::create_with_replay(self.history_repo.clone(), hot, Arc::new(RhoMatch));
-        RhoRuntime::create_with_effect_mode(
+        read_path_census::record(
+            read_path_census::Stage::SpaceAndReplay,
+            space_started.elapsed(),
+        );
+
+        let core_started = Instant::now();
+        let created = RhoRuntime::create_with_effect_mode(
             play,
             self.history_repo.clone(),
             SortedProc::default(),
             true,
             mode,
         )
-        .await
-        .map_err(|e| e.to_string())
+        .await;
+        read_path_census::record(
+            read_path_census::Stage::RuntimeCreate,
+            core_started.elapsed(),
+        );
+        created.map_err(|e| e.to_string())
     }
 
     /// Load mergeable channels from the store (port of `loadMergeableChannels`).
@@ -1562,13 +1804,20 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         return_channel: &Par,
     ) -> Result<CapturedReply, String> {
+        let request_started = Instant::now();
         // Fork a fresh, isolated play runtime at `start`: exploration must never mutate the shared
         // runtime the proposer uses to create blocks (a concurrent explore-deploy would otherwise
         // reset/re-evaluate the shared space mid-block and corrupt the block's post-state hash).
+        let fork_started = Instant::now();
         let runtime = self
             .fork_play_runtime_with_mode(to_blake(start), self.effect_mode)
             .await?;
-        runtime.reset(to_blake(start)).await.map_err(|e| e)?;
+        read_path_census::record(read_path_census::Stage::Fork, fork_started.elapsed());
+
+        let reset_started = Instant::now();
+        let reset = runtime.reset(to_blake(start)).await;
+        read_path_census::record(read_path_census::Stage::Reset, reset_started.elapsed());
+        reset.map_err(|e| e)?;
         // Bound the exploratory evaluation (documented Scala deviation): a phlo cap + a
         // reduction-step budget (the operative bound; the legible "step budget exceeded" error must
         // fire well inside the wall-clock deadline) + a wall-clock backstop.
@@ -1576,12 +1825,11 @@ impl RuntimeManager {
             .cost()
             .set(Cost::new(EXPLORATORY_PHLO_LIMIT, "exploratory"));
         runtime.set_max_reduce_steps(EXPLORATORY_MAX_REDUCE_STEPS);
-        let eval = match tokio::time::timeout(
-            EXPLORATORY_EVAL_TIMEOUT,
-            runtime.evaluate(term, rand),
-        )
-        .await
-        {
+        let eval_started = Instant::now();
+        let eval_outcome =
+            tokio::time::timeout(EXPLORATORY_EVAL_TIMEOUT, runtime.evaluate(term, rand)).await;
+        read_path_census::record(read_path_census::Stage::Evaluate, eval_started.elapsed());
+        let eval = match eval_outcome {
             Ok(eval) => eval.map_err(|e| e.to_string())?,
             Err(_elapsed) => {
                 // Dropping the outer evaluation future does NOT stop the spawned continuation tasks
@@ -1603,30 +1851,42 @@ impl RuntimeManager {
         // channel every example, corpus and client writes to. Reading only the first meant a term
         // that replied on `@"out"` returned an empty `expr`, which is indistinguishable from a term
         // that produced nothing: a reply dropped silently, with nothing to catch it. See AUDIT C38.
-        let derived = runtime
-            .get_data_par(&SortedProc::new(return_channel.clone()))
-            .await
-            .map_err(|e| e.to_string())?;
-        if !derived.is_empty() {
-            return Ok(CapturedReply {
-                source: ReplySource::FirstPrivateName,
-                data: derived,
-            });
-        }
-        let out = runtime
-            .get_data_par(&SortedProc::new(Self::out_channel()))
-            .await
-            .map_err(|e| e.to_string())?;
-        if !out.is_empty() {
-            return Ok(CapturedReply {
-                source: ReplySource::Out,
-                data: out,
-            });
-        }
-        Ok(CapturedReply {
-            source: ReplySource::None,
-            data: Vec::new(),
-        })
+        let reply = 'reply: {
+            let derived_started = Instant::now();
+            let derived = runtime
+                .get_data_par(&SortedProc::new(return_channel.clone()))
+                .await
+                .map_err(|e| e.to_string())?;
+            read_path_census::record(
+                read_path_census::Stage::DerivedReply,
+                derived_started.elapsed(),
+            );
+            if !derived.is_empty() {
+                break 'reply CapturedReply {
+                    source: ReplySource::FirstPrivateName,
+                    data: derived,
+                };
+            }
+            let out_started = Instant::now();
+            let out = runtime
+                .get_data_par(&SortedProc::new(Self::out_channel()))
+                .await
+                .map_err(|e| e.to_string())?;
+            read_path_census::record(read_path_census::Stage::OutReply, out_started.elapsed());
+            if !out.is_empty() {
+                break 'reply CapturedReply {
+                    source: ReplySource::Out,
+                    data: out,
+                };
+            }
+            CapturedReply {
+                source: ReplySource::None,
+                data: Vec::new(),
+            }
+        };
+        read_path_census::record_reply(reply.source);
+        read_path_census::record_request(request_started.elapsed());
+        Ok(reply)
     }
 
     /// The `@"out"` channel, as the runtime keys it: the name `@"out"` is the quoted string, which is

@@ -20,6 +20,7 @@ pub mod normalizer;
 pub mod parser;
 pub mod pretty_printer;
 pub mod proc_ast;
+pub mod read_path_census;
 pub mod reduce;
 pub mod registry;
 pub mod reporting_runtime;

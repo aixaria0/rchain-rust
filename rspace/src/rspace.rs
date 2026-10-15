@@ -649,6 +649,7 @@ where
     }
 
     async fn reset(&self, root: Blake2b256Hash) -> std::result::Result<(), String> {
+        let started = std::time::Instant::now();
         // **Clean channel locks** — the Scala's `RSpaceOps.reset` does this, and the port dropped it,
         // so the lock map kept an entry per channel the process ever touched (AUDIT C104).
         self.lock_f.clean_up();
@@ -665,6 +666,7 @@ where
         self.native_store.revert(NativeStoreState::default());
         let native_reader = next_history.get_native_reader(root).await;
         self.native_store.set_reader(native_reader);
+        crate::read_path_census::record_space_reset(started.elapsed());
         Ok(())
     }
 

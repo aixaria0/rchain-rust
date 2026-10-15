@@ -225,9 +225,11 @@ where
         };
         let reader_base = self.reader_base.clone();
         let channels = channels.to_vec();
+        let was_cached = cell.get().is_some();
         let result = cell
             .get_or_try_init(|| async move { reader_base.get_continuations(&channels).await })
             .await?;
+        crate::read_path_census::record_history_read(was_cached);
         Ok(result.clone())
     }
 
@@ -242,9 +244,11 @@ where
         };
         let reader_base = self.reader_base.clone();
         let channel = channel.clone();
+        let was_cached = cell.get().is_some();
         let result = cell
             .get_or_try_init(|| async move { reader_base.get_data(&channel).await })
             .await?;
+        crate::read_path_census::record_history_read(was_cached);
         Ok(result.clone())
     }
 
@@ -259,9 +263,11 @@ where
         };
         let reader_base = self.reader_base.clone();
         let channel = channel.clone();
+        let was_cached = cell.get().is_some();
         let result = cell
             .get_or_try_init(|| async move { reader_base.get_joins(&channel).await })
             .await?;
+        crate::read_path_census::record_history_read(was_cached);
         Ok(result.clone())
     }
 }
