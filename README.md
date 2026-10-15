@@ -82,16 +82,53 @@ The full argument — including the co-op lesson and the Rust → calculus → f
 table — is in [docs/src/contributor/why-rust.md](docs/src/contributor/why-rust.md). The prose
 documentation is also served as a book: `mdbook serve docs`.
 
-## Comparative security audit
+## Security and assurance
 
-**A pre-testnet node, measured against live mainnet chains — and ahead on structure.**
+**A pre-testnet node whose security record is a programme, not a report — and one already larger than
+the node it reviews.** Every layer below lives in the tree, and each is held there by something that
+refuses to let it drift. The reference implementation's contribution runs the other way: its contracts
+are kept as a differential corpus, and the fragile patterns the port caught from it as *type errors and
+review findings* are catalogued in [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) §1 — eight of them,
+from a gas cost that wraps negative to a hash-map iteration order that could have split a chain.
 
-Solana, Sui and Bitcoin SV are live, at a combined market capitalisation north of $75bn (September
-2026), with years of adversarial exposure, audit budgets and production hardening behind them. This
-node is **pre-testnet** and has had none of that. So the September 2026 review read all four from
-source at pinned revisions and probed them with the *same* adversarial tests. It found **no chain
-split, no fund loss and no remote code execution** here. On the structural axes below, the pre-testnet
-node leads.
+**Proved.** The ρ-calculus and its node-level laws are machine-checked in Lean 4, with an α-equivalence
+metatheory in Coq: <!-- counts:laws -->76 laws<!-- counts:end -->. What binds them to *this* code is not
+review but a **conformance corpus** — each corpus is emitted from the Lean definition and run 1:1
+through the node by a Rust consumer, so a definition cannot drift from its corpus without the gate
+noticing ([`spec/INVENTORY.md`](spec/INVENTORY.md), [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)).
+
+**Reviewed, adversarially, repeatedly.** The pass record is
+[`spec/audit/passes.md`](spec/audit/passes.md) — 137 sections of findings, refutations and remediations,
+from type-system conformance and ρ-calculus mirroring through a red-team series that reached pass 9 to a
+full-system HAZOP. The check-off is [`spec/AUDIT.md`](spec/AUDIT.md): a finding has **exactly one home**
+and closes by construction — a row is `done` only when the bad state is no longer representable, with
+the citation that forbids it, or as a recorded decision. It reads **TODO 0**.
+
+**HAZOP, and a tabletop wargame.** A failure-mode HAZOP dispositions all eleven IEC guide words across
+16 study nodes and 39 deviations, with four bow-tie top events
+([`docs/src/spec/failure-hazop.md`](docs/src/spec/failure-hazop.md),
+[`docs/src/spec/testnet-acceptance.md`](docs/src/spec/testnet-acceptance.md)). And a bounded-adversary
+tabletop walks the running system node by node — deploy ingress, validator keys, OCapN transports, the
+clock — asking which of seven personas can act against each: **97 rows**, each with a decided verdict
+and a falsifier, held to shape by a CI gate and driven against one live devnet boot with the runs
+committed ([`docs/src/spec/adversary.md`](docs/src/spec/adversary.md)).
+
+**Tested in-process and live, and gated.** 2,281 test functions (2026-10-15), a 165-file Scala
+differential corpus run 1:1 through the node, a nightly devnet fuzz in four modes, and 37 committed
+evidence suites from live drills. Eleven static gates run in CI on every push beside `cargo fmt --check`,
+clippy with `-D warnings`, `cargo deny check`, the `wasm32` reducer check and a nightly formal gate,
+under an 87 % line-coverage floor
+([`docs/src/contributor/spec.md`](docs/src/contributor/spec.md)).
+
+### Comparison with other chains
+
+The September 2026 pass read this node and three live mainnets — Solana, Sui and Bitcoin SV — from
+their own source at pinned revisions. It found **no chain split, no fund loss and no remote code
+execution** here, and probed all four with the same adversarial question: is there an operation
+reachable by an unauthenticated remote attacker whose cost to the node is superlinear in attacker input
+while the charge is flat? Every one of the four has such an operation — a defect class in VM cost
+models, not one chain's weakness — so the table is what separates them, and on the structural axes the
+pre-testnet node leads.
 
 | | **This node** (pre-testnet) | **Solana** (~$70bn) | **Sui** (~$5bn) | **Bitcoin SV** (~$400m) |
 |---|---|---|---|---|
@@ -108,15 +145,15 @@ class **all four nodes share**, and the close-out is not claimed to be more than
 were found by reading the cost table, so the claim is "these five" rather than "the cost model is now
 sound".
 
-Two limits bound the table. Two of the four trees could not be fully read — unvendored dependencies —
-so those columns are marked as traced rather than cleared; and this node's assurance ends where the
-review says it does: the language and calculus are safe-by-structure and partly proved, the chain
-layer's authority distribution is access control by another name, and unforgeability is axiomatised at
-the crypto boundary (law 19) rather than proved.
+Two limits bind the table, and both are part of the result: two of the four trees could not be read in
+full — unvendored dependencies — so those columns are marked traced rather than cleared; and this node's
+assurance ends where the review says it does — the language and calculus are safe-by-structure and
+partly proved, the chain layer's authority distribution is access control by another name, and
+unforgeability is axiomatised at the crypto boundary (law 19) rather than proved.
 
-**Full report, every citation, the reverted fixes, the open questions — and the ten candidate findings
-the pass refuted, including the one it opened expecting to lead with:**
-[**docs/src/node/security-audit.md**](docs/src/node/security-audit.md).
+**The September review in full — every citation, the reverted fixes, the open questions, and the ten
+candidate findings it refuted, including the one it opened expecting to lead with:
+[`docs/src/node/security-audit.md`](docs/src/node/security-audit.md).**
 
 ## Governance
 
