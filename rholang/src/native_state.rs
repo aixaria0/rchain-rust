@@ -2748,6 +2748,8 @@ mod tests {
         assert_eq!(decode_trusted(&encode_trusted(&trusted)).unwrap(), trusted);
     }
 
+    /// Every field carries a distinct non-zero value, so a transposition in `encode`/`decode_params`
+    /// (the hazard when two branches append fields) fails here: two zeros swapped round-trip silently.
     #[test]
     fn params_round_trip() {
         let params = PosParams {
@@ -2757,11 +2759,12 @@ mod tests {
             quarantine_length: 5,
             number_of_active_validators: 3,
             executor_share: NonNegI64::try_from(2500).unwrap(),
-            absence_slack: NonNegI64::try_from(0).unwrap(),
-            participation_grace: NonNegI64::try_from(0).unwrap(),
-            min_phlo_price: NonNegI64::try_from(1).unwrap(),
+            absence_slack: NonNegI64::try_from(7).unwrap(),
+            participation_grace: NonNegI64::try_from(13).unwrap(),
+            min_phlo_price: NonNegI64::try_from(19).unwrap(),
             max_number_of_parents: 255,
         };
+        assert_eq!(params.encode().len(), PARAMS_LEN);
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
     }
 
