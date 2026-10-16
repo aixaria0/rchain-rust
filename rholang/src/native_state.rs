@@ -2708,6 +2708,13 @@ mod tests {
             .unwrap();
         conserved!("refund");
 
+        native
+            .fund_pot(&v2, NonNegI64::try_from(5).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        conserved!("fund_pot");
+
         // Revoking trust must move **nothing**: it used to confiscate the target's bond (C111).
         native.untrust(&validator(1), &v2).await.unwrap().unwrap();
         conserved!("untrust");
@@ -3895,6 +3902,60 @@ mod tests {
             &native.delegated_rewards().await.unwrap(),
         )
         .unwrap()
+    }
+
+    /// **`fundPot` raises the pot by exactly what it moves, and nothing else.** The funder's vault goes
+    /// down by the amount, the staking vault up by it, and no claim ledger moves — so the whole amount
+    /// is pot, which is what makes it a way to raise validator rewards without a fork. A `bond` of the
+    /// same size is the control: it credits the vault too, but records an equal claim, so the pot does
+    /// not move. Zero and an amount the vault cannot cover are refused and move nothing.
+    #[tokio::test]
+    async fn funding_the_pot_adds_unclaimed_rev_and_bonding_does_not() {
+        let native = native_with(
+            &[validator(1), validator(2)],
+            PosParams::default(),
+            &[(validator(1), 10)],
+        )
+        .await;
+        let donor = validator(2);
+        fund(&native, &donor, 100).await;
+        let pot = pot_of(&native).await;
+        let bonds = native.bonds().await.unwrap();
+
+        native
+            .fund_pot(&donor, NonNegI64::try_from(30).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pot_of(&native).await, pot + 30, "the whole amount is pot");
+        assert_eq!(native.bonds().await.unwrap(), bonds, "no claim is recorded");
+        let left = native
+            .vault_balance(&vault_address_of(&donor))
+            .await
+            .unwrap()
+            .map(i64::from);
+        assert_eq!(left, Some(70), "the funder pays exactly the amount");
+
+        for refused in [0, 71] {
+            let msg = native
+                .fund_pot(&donor, NonNegI64::try_from(refused).unwrap())
+                .await
+                .unwrap()
+                .expect_err("refused");
+            assert!(msg.contains("fund"), "{msg}");
+            assert_eq!(pot_of(&native).await, pot + 30, "a refusal moves nothing");
+        }
+
+        native
+            .bond(&donor, NonNegI64::try_from(40).unwrap(), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pot_of(&native).await,
+            pot + 30,
+            "a bond credits the vault and claims the same amount, so the pot is unchanged"
+        );
     }
 
     /// **The C197 falsifier, restated for the tiers: a slash clears the offender's accrued rewards
@@ -5972,6 +6033,49 @@ impl NativeSystemState {
         // while the pool entry kept it, so the two would disagree for ever.
         ledger.insert(key, balance_plus(held, stake, "delegated principal")?);
         self.set_delegations(&ledger).await?;
+        Ok(Ok(()))
+    }
+
+    /// **Add to the validators' reward pot** (`fundPot`): move `amount` from the funder's own vault into
+    /// the staking vault with **no claim attached**.
+    ///
+    /// The pot a boundary splits is the staking vault minus every claim against it ([`epoch_pot`]), and
+    /// until this existed the only REV that reached the vault unclaimed was the share of burned phlo
+    /// `pay_executor` leaves there. `bond` and `delegate` also credit the vault, but each records a
+    /// claim of equal size, so neither adds to the pot. So the one way to raise validator rewards was to
+    /// change `executor_share` or mint, and both are genesis changes. With this, a later bonus — from a
+    /// donor, the Coop, or a governance reserve — is an ordinary deploy, and the next boundary pays it
+    /// out by stake like any other pot.
+    ///
+    /// Open to any key, like a transfer: the caller can only spend its own vault (the `deployerId`
+    /// capability authorises it, as for `bond`), and the money it moves cannot come back to it except as
+    /// a validator's reward. Refused for a zero amount, which would move nothing, and for an amount the
+    /// vault cannot cover, which is a failure rather than a partial transfer.
+    pub async fn fund_pot(
+        &self,
+        funder: &Validator,
+        amount: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        let stake = i64::from(amount);
+        if stake == 0 {
+            return Ok(Err("fundPot expects a positive amount.".to_string()));
+        }
+        let address = self.vault_address(funder)?;
+        let balance = self
+            .vault_balance(&address)
+            .await?
+            .unwrap_or(NonNegI64::zero());
+        if i64::from(balance) < stake {
+            return Ok(Err(format!(
+                "insufficient funds to fund the pot with {stake} (have {})",
+                i64::from(balance)
+            )));
+        }
+        self.set_vault_balance(
+            &address,
+            balance_plus(balance, -stake, "pot funding debit")?,
+        );
+        self.credit_pos_vault(amount).await?;
         Ok(Ok(()))
     }
 
