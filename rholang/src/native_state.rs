@@ -62,8 +62,13 @@ const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
 const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
-/// `PosParams` serializes as eight little-endian `i64`s.
-const PARAMS_LEN: usize = 8 * 8;
+/// `PosParams` serializes as ten little-endian `i64`s.
+const PARAMS_LEN: usize = 10 * 8;
+/// The length of a record that carries the participation grace (the eighth field). The grace is the one
+/// field whose absence is not zero, so the decoder has to know where it ends, not only where the record
+/// does — a nine- or ten-field record carries it, an eight-field record carries it, a seven-field one
+/// does not.
+const PARAMS_LEN_WITH_GRACE: usize = 8 * 8;
 /// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150),
 /// the absence knee (B4, #150) and the participation grace (B4, #150) were added, in that order. A
 /// record shorter than [`PARAMS_LEN`] but at least this long reads the fields it carries and defaults
@@ -505,6 +510,21 @@ pub struct PosParams {
     /// exactly, and **that is also what a params record written before this field decodes to**, so the
     /// pre-change rule is the default rather than a special case a reader has to reconstruct.
     pub participation_grace: NonNegI64,
+    /// **The fee floor a block's deploys are held to** (`casper.min-phlo-price`), committed at genesis.
+    ///
+    /// Before this the floor was a per-node setting that every node also used as a *validity* rule
+    /// (`Validate::phlo_price`), so two nodes configured differently disagreed about the same block
+    /// with nothing committed to say which was right (C198's three withheld knobs,
+    /// `casper/src/block_status.rs`). Committing it binds the value to the genesis: a node whose
+    /// setting differs builds a different genesis state and cannot join the chain, and a later change
+    /// of the floor is a change of chain state rather than a config push to every operator. `0`, which
+    /// is what a record written before this field decodes to, means "not committed".
+    pub min_phlo_price: NonNegI64,
+    /// **The widest justification set a block may carry** (`casper.max-number-of-parents`, #153),
+    /// committed at genesis for the reason [`Self::min_phlo_price`] is. A non-positive value disables
+    /// the bound, exactly as `Validate::justification_count` reads it, and is also what a record
+    /// written before this field decodes to.
+    pub max_number_of_parents: i64,
 }
 
 impl Default for PosParams {
@@ -521,12 +541,14 @@ impl Default for PosParams {
             executor_share: NonNegI64::zero(),
             absence_slack: NonNegI64::zero(),
             participation_grace: NonNegI64::zero(),
+            min_phlo_price: NonNegI64::zero(),
+            max_number_of_parents: 0,
         }
     }
 }
 
 impl PosParams {
-    /// Encode as eight little-endian `i64`s (inverse: [`decode_params`]).
+    /// Encode as ten little-endian `i64`s (inverse: [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
         out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
@@ -537,6 +559,8 @@ impl PosParams {
         out.extend_from_slice(&i64::from(self.executor_share).to_le_bytes());
         out.extend_from_slice(&i64::from(self.absence_slack).to_le_bytes());
         out.extend_from_slice(&i64::from(self.participation_grace).to_le_bytes());
+        out.extend_from_slice(&i64::from(self.min_phlo_price).to_le_bytes());
+        out.extend_from_slice(&self.max_number_of_parents.to_le_bytes());
         out
     }
 }
@@ -574,7 +598,7 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
     // *binary* rule, which is `grace == knee`; defaulting to zero would silently turn every armed chain
     // into a ramped one on upgrade — a rule change wearing a missing-field's clothes, and the opposite
     // of what "the record does not carry the field" is supposed to mean.
-    let participation_grace = if bytes.len() >= PARAMS_LEN {
+    let participation_grace = if bytes.len() >= PARAMS_LEN_WITH_GRACE {
         read(7)
     } else {
         absence_slack
@@ -601,6 +625,9 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
             .map_err(|e| format!("absence_slack is not a valid number of heights: {e}"))?,
         participation_grace: NonNegI64::try_from(participation_grace)
             .map_err(|e| format!("participation_grace is not a valid number of heights: {e}"))?,
+        min_phlo_price: NonNegI64::try_from(read(8))
+            .map_err(|e| format!("min_phlo_price is not a valid fee floor: {e}"))?,
+        max_number_of_parents: read(9),
     })
 }
 
@@ -2725,6 +2752,8 @@ mod tests {
             executor_share: NonNegI64::try_from(2500).unwrap(),
             absence_slack: NonNegI64::try_from(0).unwrap(),
             participation_grace: NonNegI64::try_from(0).unwrap(),
+            min_phlo_price: NonNegI64::try_from(1).unwrap(),
+            max_number_of_parents: 255,
         };
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
     }
@@ -2750,6 +2779,8 @@ mod tests {
             executor_share: NonNegI64::try_from(2500).unwrap(),
             absence_slack: NonNegI64::try_from(7).unwrap(),
             participation_grace: NonNegI64::try_from(3).unwrap(),
+            min_phlo_price: NonNegI64::try_from(1).unwrap(),
+            max_number_of_parents: 255,
         };
         let original = &current.encode()[..PARAMS_LEN_ORIGINAL];
         assert_eq!(
@@ -2758,6 +2789,8 @@ mod tests {
                 executor_share: NonNegI64::zero(),
                 absence_slack: NonNegI64::zero(),
                 participation_grace: NonNegI64::zero(),
+                min_phlo_price: NonNegI64::zero(),
+                max_number_of_parents: 0,
                 ..current.clone()
             },
             "the five-field record is every pre-change rule at once"
@@ -2770,6 +2803,8 @@ mod tests {
             PosParams {
                 absence_slack: NonNegI64::zero(),
                 participation_grace: NonNegI64::zero(),
+                min_phlo_price: NonNegI64::zero(),
+                max_number_of_parents: 0,
                 ..current.clone()
             },
             "the six-field record carries the share it has and defaults the slack it lacks"
@@ -2782,10 +2817,30 @@ mod tests {
             decode_params(knee_only).unwrap(),
             PosParams {
                 participation_grace: NonNegI64::try_from(7).unwrap(),
+                min_phlo_price: NonNegI64::zero(),
+                max_number_of_parents: 0,
                 ..current.clone()
             },
             "a record without the grace reads the binary rule — the knee — and not a ramp from zero"
         );
+        // **The eight-field record is every chain built before the fee floor and the parent bound were
+        // committed.** It keeps its grace — the grace is the eighth field, so it is carried — and reads
+        // both committed bounds as "not committed", which is the rule that chain was running: neither
+        // bound was part of its state.
+        let pre_commit = &current.encode()[..PARAMS_LEN_WITH_GRACE];
+        assert_eq!(
+            decode_params(pre_commit).unwrap(),
+            PosParams {
+                min_phlo_price: NonNegI64::zero(),
+                max_number_of_parents: 0,
+                ..current.clone()
+            },
+            "an eight-field record keeps its grace and commits neither bound"
+        );
+        let mut negative_floor = current.encode();
+        negative_floor[64..72].copy_from_slice(&(-1i64).to_le_bytes());
+        let err = decode_params(&negative_floor).expect_err("a negative fee floor is not a floor");
+        assert!(err.contains("min_phlo_price"), "{err}");
 
         // A record that is not a whole number of fields, or shorter than the original, is refused: the
         // tolerance is "a field the record does not carry", not "any byte string".
@@ -2823,6 +2878,8 @@ mod tests {
             executor_share: NonNegI64::zero(),
             absence_slack: NonNegI64::zero(),
             participation_grace: NonNegI64::zero(),
+            min_phlo_price: NonNegI64::zero(),
+            max_number_of_parents: 0,
         };
         assert!(
             decode_params(&params.encode()).is_ok(),
