@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
-# Execute issue #364's observable close condition without inventing a threshold.
+# Execute issue #364's observable close condition without inventing its policy thresholds.
 #
 # This is intentionally an operator-side, read-only gate. It compares two loopback nodes on the same
-# exact build, requires the read arm to return values on both, then checks the target median against an
-# explicitly supplied "small factor". A build mismatch, unknown build provenance, missing response, or
-# EMPTY expr is BLOCKED rather than silently treated as evidence for closure.
+# exact build, requires the read arm to return values on both, requires the control to satisfy an
+# explicitly supplied fresh-chain height bound, then checks the target median against an explicitly
+# supplied "small factor". A build mismatch, unknown build provenance, stale control, missing response,
+# or EMPTY expr is BLOCKED rather than silently treated as evidence for closure.
 #
 # Usage:
-#   tools/check-read-path-364-close-condition.sh \
-#     --max-factor 3 --samples 9 \
+#   bash tools/check-read-path-364-close-condition.sh \
+#     --max-factor 3 --max-control-height 1 --samples 9 \
 #     http://127.0.0.1:40403 http://127.0.0.1:43403
 #
 # Arguments are TARGET then CONTROL. Both must be loopback URLs: the point is to remove proxy/network
 # ambiguity before comparing node-side behavior. The caller chooses --max-factor because issue #364
-# says "within a small factor" but does not define that policy numerically; this tool must not invent it.
+# says "within a small factor" without defining that policy numerically. The caller also chooses the
+# maximum height that counts as the fresh-chain control. The tool records those choices; it does not
+# smuggle either one into the measurement.
 set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: check-read-path-364-close-condition.sh --max-factor N [--samples N] [--out DIR] TARGET CONTROL
+usage: bash tools/check-read-path-364-close-condition.sh \
+  --max-factor N --max-control-height N [--samples N] [--out DIR] TARGET CONTROL
 
 TARGET and CONTROL must be loopback HTTP URLs (127.0.0.1 or localhost).
-Exit 0: PASS      same exact build, both reads return values, target <= factor * control
+Exit 0: PASS      same exact build, fresh control, both reads return values, target <= factor * control
 Exit 1: FAIL      evidence is comparable but target exceeds the supplied factor
 Exit 2: USAGE     invalid arguments
 Exit 3: BLOCKED   evidence is not comparable or incomplete
@@ -36,6 +40,7 @@ blocked() {
 
 SAMPLES=9
 MAX_FACTOR=''
+MAX_CONTROL_HEIGHT=''
 OUT_DIR=''
 
 while [ $# -gt 0 ]; do
@@ -48,6 +53,11 @@ while [ $# -gt 0 ]; do
     --max-factor)
       [ $# -ge 2 ] || { usage; exit 2; }
       MAX_FACTOR=$2
+      shift 2
+      ;;
+    --max-control-height)
+      [ $# -ge 2 ] || { usage; exit 2; }
+      MAX_CONTROL_HEIGHT=$2
       shift 2
       ;;
     --out)
@@ -79,6 +89,7 @@ CONTROL=$2
 
 [[ "$SAMPLES" =~ ^[1-9][0-9]*$ ]] || { usage; exit 2; }
 [[ "$MAX_FACTOR" =~ ^[0-9]+([.][0-9]+)?$ ]] || { usage; exit 2; }
+[[ "$MAX_CONTROL_HEIGHT" =~ ^[0-9]+$ ]] || { usage; exit 2; }
 awk -v f="$MAX_FACTOR" 'BEGIN { exit !(f >= 1.0) }' || { usage; exit 2; }
 
 is_loopback() {
@@ -156,11 +167,15 @@ CONTROL_ROW=$(probe_row "$CONTROL" "$OUT_DIR/control.probe.txt")
 read -r _ TARGET_HEIGHT TARGET_FINAL TARGET_READ TARGET_NOOP TARGET_DELTA TARGET_KIND _ <<<"$TARGET_ROW"
 read -r _ CONTROL_HEIGHT CONTROL_FINAL CONTROL_READ CONTROL_NOOP CONTROL_DELTA CONTROL_KIND _ <<<"$CONTROL_ROW"
 
+[[ "$TARGET_HEIGHT" =~ ^[0-9]+$ ]] || blocked "target height is not numeric"
+[[ "$CONTROL_HEIGHT" =~ ^[0-9]+$ ]] || blocked "control height is not numeric"
 [[ "$TARGET_READ" =~ ^[0-9]+$ ]] || blocked "target read median is not numeric"
 [[ "$CONTROL_READ" =~ ^[0-9]+$ ]] || blocked "control read median is not numeric"
 [ "$TARGET_KIND" = "values" ] || blocked "target read did not return values"
 [ "$CONTROL_KIND" = "values" ] || blocked "control read did not return values"
 [ "$CONTROL_READ" -gt 0 ] || blocked "control read median is zero; ratio is undefined"
+[ "$CONTROL_HEIGHT" -le "$MAX_CONTROL_HEIGHT" ] \
+  || blocked "control height $CONTROL_HEIGHT exceeds declared fresh-chain bound $MAX_CONTROL_HEIGHT"
 
 RATIO=$(awk -v t="$TARGET_READ" -v c="$CONTROL_READ" 'BEGIN { printf "%.6f", t / c }')
 
@@ -169,6 +184,7 @@ RATIO=$(awk -v t="$TARGET_READ" -v c="$CONTROL_READ" 'BEGIN { printf "%.6f", t /
   printf 'version=%s\n' "$TARGET_VERSION"
   printf 'samples=%s\n' "$SAMPLES"
   printf 'max_factor=%s\n' "$MAX_FACTOR"
+  printf 'max_control_height=%s\n' "$MAX_CONTROL_HEIGHT"
   printf 'target=%s\n' "$TARGET"
   printf 'target_height=%s\n' "$TARGET_HEIGHT"
   printf 'target_final=%s\n' "$TARGET_FINAL"
