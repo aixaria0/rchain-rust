@@ -62,17 +62,30 @@ const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
 const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
-/// `PosParams` serializes as ten little-endian `i64`s.
-const PARAMS_LEN: usize = 10 * 8;
+/// The format byte at the head of a `PosParams` record, followed by [`PARAMS_FIELDS`] little-endian
+/// `i64`s.
+///
+/// **Why a format byte, and not one more appended field.** The record used to be positional: the
+/// decoder inferred the fields from its length, and an absent trailing field read as zero. That kept old
+/// records readable, but two branches that each append a field in a different order produce records of
+/// the same length that decode to the wrong values with no error. Now each layout has a number: adding a
+/// field means a new format, a record in a format this node does not know is refused rather than read,
+/// and two branches that both claim the next number collide on this line at merge time.
+const PARAMS_FORMAT: u8 = 1;
+/// The number of fields in a format-[`PARAMS_FORMAT`] record.
+const PARAMS_FIELDS: usize = 10;
+/// The length of a current record: the format byte and [`PARAMS_FIELDS`] fields. It is one more than a
+/// multiple of eight, which is what tells it from an unversioned record (always a multiple of eight).
+const PARAMS_LEN: usize = 1 + PARAMS_FIELDS * 8;
 /// The length of a record that carries the participation grace (the eighth field). The grace is the one
 /// field whose absence is not zero, so the decoder has to know where it ends, not only where the record
-/// does — a nine- or ten-field record carries it, an eight-field record carries it, a seven-field one
-/// does not.
+/// does — an eight-field record carries it, a seven-field one does not. Eight fields is also the longest
+/// unversioned record any chain wrote: everything after it is versioned.
 const PARAMS_LEN_WITH_GRACE: usize = 8 * 8;
 /// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150),
 /// the absence knee (B4, #150) and the participation grace (B4, #150) were added, in that order. A
-/// record shorter than [`PARAMS_LEN`] but at least this long reads the fields it carries and defaults
-/// the rest, which is the pre-change rule for each (see [`decode_params`]).
+/// unversioned record at least this long reads the fields it carries and defaults the rest, which is
+/// the pre-change rule for each (see [`decode_params`]).
 const PARAMS_LEN_ORIGINAL: usize = 5 * 8;
 
 // --- Leaf keys ---------------------------------------------------------------
@@ -548,9 +561,11 @@ impl Default for PosParams {
 }
 
 impl PosParams {
-    /// Encode as ten little-endian `i64`s (inverse: [`decode_params`]).
+    /// Encode as the format byte [`PARAMS_FORMAT`] and ten little-endian `i64`s (inverse:
+    /// [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
+        out.push(PARAMS_FORMAT);
         out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
         out.extend_from_slice(&i64::from(self.maximum_bond).to_le_bytes());
         out.extend_from_slice(&self.epoch_length.to_le_bytes());
@@ -567,21 +582,44 @@ impl PosParams {
 
 /// Decode [`PosParams`] (inverse of [`PosParams::encode`]).
 ///
-/// **A record that stops short of the current form reads the fields it carries and defaults the rest
+/// **A versioned record** (one byte longer than a multiple of eight) must carry a format this node knows
+/// and exactly that format's fields; anything else is refused, never read positionally.
+///
+/// **An unversioned record that stops short of the current form reads the fields it carries and defaults the rest
 /// to zero** — the rule [`SlashSeverity::Unspecified`] uses for a slash that predates the tiers, and
 /// for the same reason: each trailing field's zero is exactly the behaviour of a chain that ran before
-/// it existed (no producer's share; no absence rule). A record that is *not* a whole number of fields,
-/// or that is shorter than the original five, is refused.
+/// it existed (no producer's share; no absence rule). An unversioned record that is *not* a whole
+/// number of fields, is shorter than the original five, or is longer than the eight any unversioned
+/// chain wrote, is refused.
 ///
 /// [`SlashSeverity::Unspecified`]: rchain_models::block_metadata::SlashSeverity::Unspecified
-pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
-    if bytes.len() % 8 != 0 || bytes.len() < PARAMS_LEN_ORIGINAL || bytes.len() > PARAMS_LEN {
+pub fn decode_params(record: &[u8]) -> Result<PosParams, String> {
+    let bytes = if record.len() % 8 == 1 {
+        if record[0] != PARAMS_FORMAT {
+            return Err(format!(
+                "params record is format {}, and this node reads format {PARAMS_FORMAT}",
+                record[0]
+            ));
+        }
+        if record.len() != PARAMS_LEN {
+            return Err(format!(
+                "params record of format {PARAMS_FORMAT} has {} bytes, not {PARAMS_LEN}",
+                record.len()
+            ));
+        }
+        &record[1..]
+    } else if record.len() % 8 != 0
+        || record.len() < PARAMS_LEN_ORIGINAL
+        || record.len() > PARAMS_LEN_WITH_GRACE
+    {
         return Err(format!(
-            "params encoding has {} bytes: a params record is a whole number of eight-byte fields, \
-             between {PARAMS_LEN_ORIGINAL} and {PARAMS_LEN}",
-            bytes.len()
+            "params encoding has {} bytes: an unversioned params record is a whole number of \
+             eight-byte fields, between {PARAMS_LEN_ORIGINAL} and {PARAMS_LEN_WITH_GRACE}",
+            record.len()
         ));
-    }
+    } else {
+        record
+    };
     let read = |i: usize| -> i64 {
         // A field the record does not carry is the pre-change rule, not a missing value.
         if (i + 1) * 8 > bytes.len() {
@@ -2792,7 +2830,10 @@ mod tests {
             min_phlo_price: NonNegI64::try_from(1).unwrap(),
             max_number_of_parents: 255,
         };
-        let original = &current.encode()[..PARAMS_LEN_ORIGINAL];
+        // The unversioned forms every earlier chain wrote: the current fields, without the format byte,
+        // cut at each length that ever shipped.
+        let fields = current.encode()[1..].to_vec();
+        let original = &fields[..PARAMS_LEN_ORIGINAL];
         assert_eq!(
             decode_params(original).unwrap(),
             PosParams {
@@ -2807,7 +2848,7 @@ mod tests {
         );
         // And the intermediate form — the producer's share without the absence slack — reads the share
         // it carries and defaults only what it lacks.
-        let share_only = &current.encode()[..PARAMS_LEN_ORIGINAL + 8];
+        let share_only = &fields[..PARAMS_LEN_ORIGINAL + 8];
         assert_eq!(
             decode_params(share_only).unwrap(),
             PosParams {
@@ -2822,7 +2863,7 @@ mod tests {
         // **The grace is the one field whose absence is not zero, and this is the arm that says so.**
         // A record carrying the knee but not the grace describes a chain running the *binary* rule,
         // which is `grace == knee`; defaulting to zero would silently ramp every armed chain on upgrade.
-        let knee_only = &current.encode()[..PARAMS_LEN_ORIGINAL + 16];
+        let knee_only = &fields[..PARAMS_LEN_ORIGINAL + 16];
         assert_eq!(
             decode_params(knee_only).unwrap(),
             PosParams {
@@ -2837,7 +2878,7 @@ mod tests {
         // committed.** It keeps its grace — the grace is the eighth field, so it is carried — and reads
         // both committed bounds as "not committed", which is the rule that chain was running: neither
         // bound was part of its state.
-        let pre_commit = &current.encode()[..PARAMS_LEN_WITH_GRACE];
+        let pre_commit = &fields[..PARAMS_LEN_WITH_GRACE];
         assert_eq!(
             decode_params(pre_commit).unwrap(),
             PosParams {
@@ -2848,13 +2889,13 @@ mod tests {
             "an eight-field record keeps its grace and commits neither bound"
         );
         let mut negative_floor = current.encode();
-        negative_floor[64..72].copy_from_slice(&(-1i64).to_le_bytes());
+        negative_floor[65..73].copy_from_slice(&(-1i64).to_le_bytes());
         let err = decode_params(&negative_floor).expect_err("a negative fee floor is not a floor");
         assert!(err.contains("min_phlo_price"), "{err}");
 
         // A record that is not a whole number of fields, or shorter than the original, is refused: the
         // tolerance is "a field the record does not carry", not "any byte string".
-        for len in [0usize, 8, 39, 41, 47, 57] {
+        for len in [0usize, 8, 39, 41, 47, 57, 72, 80, 89] {
             assert!(
                 decode_params(&vec![0u8; len]).is_err(),
                 "{len} bytes is not a params record this protocol has ever written"
@@ -2862,9 +2903,26 @@ mod tests {
         }
 
         let mut over = current.encode();
-        over[40..48].copy_from_slice(&10_001i64.to_le_bytes());
+        over[41..49].copy_from_slice(&10_001i64.to_le_bytes());
         let err = decode_params(&over).expect_err("a share above the whole is not a share");
         assert!(err.contains("executor_share"), "{err}");
+    }
+
+    /// **A record in a format this node does not know is refused, not read positionally.** This is
+    /// the guard against two branches appending fields in different orders: the record that would have
+    /// decoded to transposed values under the length rule now carries a format number, and a number
+    /// the decoder was not built for fails here, at the right length as at the wrong one.
+    #[test]
+    fn an_unknown_params_format_is_refused() {
+        let mut next_format = PosParams::default().encode();
+        next_format[0] = PARAMS_FORMAT + 1;
+        let err = decode_params(&next_format).expect_err("an unknown format is not read");
+        assert!(err.contains("format"), "{err}");
+
+        let mut longer = PosParams::default().encode();
+        longer.extend_from_slice(&[0u8; 8]);
+        let err = decode_params(&longer).expect_err("format 1 has exactly ten fields");
+        assert!(err.contains("bytes"), "{err}");
     }
 
     /// **Deferred item 1d, and the shape of the hole it closed.** The wire record held the two bond
@@ -2897,7 +2955,7 @@ mod tests {
         );
 
         let mut bytes = params.encode();
-        bytes[0..8].copy_from_slice(&(-1i64).to_le_bytes());
+        bytes[1..9].copy_from_slice(&(-1i64).to_le_bytes());
         let err = decode_params(&bytes).expect_err("a negative minimum must not decode");
         assert!(
             err.contains("minimum_bond"),
@@ -2905,7 +2963,7 @@ mod tests {
         );
 
         let mut bytes = params.encode();
-        bytes[8..16].copy_from_slice(&(-1i64).to_le_bytes());
+        bytes[9..17].copy_from_slice(&(-1i64).to_le_bytes());
         let err = decode_params(&bytes).expect_err("a negative maximum must not decode");
         assert!(
             err.contains("maximum_bond"),
