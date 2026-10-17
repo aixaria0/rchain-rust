@@ -79,7 +79,14 @@ decentralized
 quoted process, expressed here as the sortable `Par` value). The port's type discipline embeds ρ as
 the base sort of a Calculus of Constructions, constructible and provable in Lean 4 and Coq.
 
-Six formal models of computation, scored on the six capabilities a blockchain language needs:
+The full argument — including the co-op lesson and the Rust → calculus → formalization correspondence
+table — is in [docs/src/contributor/why-rust.md](docs/src/contributor/why-rust.md). The prose
+documentation is also served as a book: `mdbook serve docs`.
+
+## Models of computation
+
+Six formal models of computation, scored on the six capabilities a blockchain language needs — and why the
+last row is the one this node is built on:
 
 | Model | Complete | Compositional | Concurrent | Complexity | Reflection | Behavioural types | Score |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -97,19 +104,16 @@ and the calculus says which reorderings preserve behaviour. That is what lets a 
 concurrently and still agree with its peers on the state hash.
 [The concurrency laws](docs/src/formal/concurrency.md) are that argument, not a convention about it.
 
-**Safe by construction** is the same discipline applied to the implementation: `unsafe` is forbidden
-across the crate graph, so use-after-free, double free, out-of-bounds access and data races do not
-compile; refinement newtypes carry invariants that would otherwise be comments; and every consensus rule
-is a law tied to the code by a corpus or a named test. Its limits are stated too — a leak is still safe
-code, and shipping no collector is a property of this binary rather than of the language
+**Safe by construction — the same claim, one level down.** A model's guarantees are worth only what the
+implementation keeps, so the same discipline is applied to the code: `unsafe` is forbidden across the
+crate graph, so use-after-free, double free, out-of-bounds access and data races do not compile;
+refinement newtypes carry invariants that would otherwise be comments; and every consensus rule is a law
+tied to the code by a corpus or a named test. Its limits are stated too — a leak is still safe code, and
+shipping no collector is a property of this binary rather than of the language
 ([why Rust](docs/src/contributor/why-rust.md)).
 
 The comparison — what each capability means, what each model is for, and what "6 / 6" does and does not
 claim — is [Models of computation](docs/src/rholang/models-of-computation.md).
-
-The full argument — including the co-op lesson and the Rust → calculus → formalization correspondence
-table — is in [docs/src/contributor/why-rust.md](docs/src/contributor/why-rust.md). The prose
-documentation is also served as a book: `mdbook serve docs`.
 
 ## Security and assurance
 
