@@ -5,6 +5,7 @@
 # Part I — Rholang & the ρ-calculus
 
 - [Why rholang](rholang/why-rholang.md)
+- [Models of computation](rholang/models-of-computation.md)
 - [Processes and names](rholang/processes-names.md)
 - [Sends and receives](rholang/sends-receives.md)
 - [Names are quoted processes](rholang/names-are-processes.md)

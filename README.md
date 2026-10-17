@@ -79,6 +79,34 @@ decentralized
 quoted process, expressed here as the sortable `Par` value). The port's type discipline embeds ρ as
 the base sort of a Calculus of Constructions, constructible and provable in Lean 4 and Coq.
 
+Six formal models of computation, scored on the six capabilities a blockchain language needs:
+
+| Model | Complete | Compositional | Concurrent | Complexity | Reflection | Behavioural types | Score |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Turing machines | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | 2 / 6 |
+| Lambda calculus | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | 2 / 6 |
+| CCS | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | 3 / 6 |
+| Petri nets | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ | 3 / 6 |
+| π-calculus | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | 5 / 6 |
+| **ρ-calculus** | ✓ | ✓ | ✓ | ✓ | **✓** | ✓ | **6 / 6** |
+
+**Concurrency**, in that column, is not "can run things at once" — every model can be scheduled. It is
+whether the model *defines when two concurrent steps commute*, so that parallelism is sound rather than
+hoped for: rholang processes run concurrently by construction, communicate only by messages on channels,
+and the calculus says which reorderings preserve behaviour. That is what lets a node evaluate a deploy
+concurrently and still agree with its peers on the state hash.
+[The concurrency laws](docs/src/formal/concurrency.md) are that argument, not a convention about it.
+
+**Safe by construction** is the same discipline applied to the implementation: `unsafe` is forbidden
+across the crate graph, so use-after-free, double free, out-of-bounds access and data races do not
+compile; refinement newtypes carry invariants that would otherwise be comments; and every consensus rule
+is a law tied to the code by a corpus or a named test. Its limits are stated too — a leak is still safe
+code, and shipping no collector is a property of this binary rather than of the language
+([why Rust](docs/src/contributor/why-rust.md)).
+
+The comparison — what each capability means, what each model is for, and what "6 / 6" does and does not
+claim — is [Models of computation](docs/src/rholang/models-of-computation.md).
+
 The full argument — including the co-op lesson and the Rust → calculus → formalization correspondence
 table — is in [docs/src/contributor/why-rust.md](docs/src/contributor/why-rust.md). The prose
 documentation is also served as a book: `mdbook serve docs`.
