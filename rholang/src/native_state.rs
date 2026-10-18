@@ -529,9 +529,10 @@ pub struct PosParams {
     /// (`Validate::phlo_price`), so two nodes configured differently disagreed about the same block
     /// with nothing committed to say which was right (C198's three withheld knobs,
     /// `casper/src/block_status.rs`). Committing it binds the value to the genesis: a node whose
-    /// setting differs builds a different genesis state. LFS restore does not compare the leaf with
-    /// config, and validation still reads config. A missing legacy field defaults to `0`; that value
-    /// alone cannot distinguish absence from an explicitly committed zero floor.
+    /// setting differs builds a different genesis state. Validation reads these immutable bounds
+    /// from a validated parent; startup and LFS restore refuse a config mismatch before Running.
+    /// A missing legacy field defaults to `0`; presence is determined by the record layout, so an
+    /// explicitly committed zero floor never falls back to config.
     pub min_phlo_price: NonNegI64,
     /// **The widest justification set a block may carry** (`casper.max-number-of-parents`, #153),
     /// committed at genesis for the reason [`Self::min_phlo_price`] is. A non-positive value disables

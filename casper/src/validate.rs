@@ -760,7 +760,7 @@ pub fn deploy_count(b: &BlockMessage) -> BlockStatus {
 ///
 /// **The bound is a property of the network, so it arrives as an argument.** A non-positive value
 /// disables the check, which is how a chain that has not adopted it keeps the pre-#153 semantics
-/// exactly — the same shape as `min_phlo_price` being handed in rather than compiled in.
+/// exactly. The caller resolves both bounds from committed state (or legacy config).
 ///
 /// Refusing a set above a fixed width **is a consensus change**, because such a block is valid today.
 /// It is registered in `spec/audit/passes.md` §6 and tracked on #51 §A, and the shipped default is the

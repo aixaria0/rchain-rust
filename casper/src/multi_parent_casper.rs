@@ -1486,7 +1486,32 @@ async fn validation_bounds_for_block(
         // Genesis has no committed predecessor; its descriptors are installed during replay.
         return Ok(legacy);
     }
-    Err("cannot resolve validity bounds without a validated parent".to_string())
+    // A block may justify failed records (for example, while dropping their sender from bonds).
+    // The oldest locally accepted state still carries the same immutable params; do not read a
+    // failed parent's unverified post-state or fall back to config on that path.
+    let repr = dag.get_representation().await;
+    if let Some((_, oldest)) = repr.height_map.first_key_value() {
+        for hash in oldest {
+            if let Some(meta) = dag.lookup(hash).await? {
+                if meta.validated && !meta.validation_failed {
+                    let accepted = block_store
+                        .get(&[*hash])
+                        .await?
+                        .into_iter()
+                        .next()
+                        .flatten()
+                        .ok_or_else(|| {
+                            "accepted block is absent from the block store".to_string()
+                        })?;
+                    return Ok(runtime
+                        .committed_validation_bounds(&accepted.post_state_hash)
+                        .await?
+                        .unwrap_or(legacy));
+                }
+            }
+        }
+    }
+    Err("cannot resolve validity bounds without an accepted state".to_string())
 }
 
 /// The checks themselves, with no restoring: block summary, replay checkpoint, bonds cache,

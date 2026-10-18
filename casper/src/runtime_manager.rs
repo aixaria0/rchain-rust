@@ -1952,7 +1952,8 @@ impl RuntimeManager {
         let reader = self.history_repo.get_history_reader(to_blake(hash)).await;
         let bytes = reader
             .get_native(PREFIX_POS, pos_params_key())
-            .await?
+            .await
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| "PoS params leaf not found in committed state".to_string())?;
         let params = decode_params(&bytes)?;
         // decode_params has already checked the exact supported shape. Only the unversioned
