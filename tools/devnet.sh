@@ -129,9 +129,17 @@ DEPLOYER_BALANCE=1000000000000
 # Contract sources are mounted read-only at /contracts; deploy/eval reference them by basename.
 CONTRACTS_DIR="$(pwd)/examples"
 
-GRPC_BASE=40402   # host port mapped to the bootstrap's deploy gRPC (in-container 40401)
-HTTP_BASE=40403   # host port mapped to the bootstrap's public HTTP API (in-container 40403)
-ADMIN_BASE=40405  # host port mapped to the bootstrap's admin HTTP API (in-container 40405)
+# Host bindings only: leave every container's internal listener and protocol unchanged.
+# An isolated CI campaign selects an available offset before starting N=4/N=8;
+# hard-coded 43402 collided with a runner-local listener and prevented the gate from running.
+DEVNET_PORT_OFFSET="${DEVNET_PORT_OFFSET:-0}"
+if [[ ! "$DEVNET_PORT_OFFSET" =~ ^[0-9]{1,5}$ ]] || (( DEVNET_PORT_OFFSET > 18000 )); then
+  echo "DEVNET_PORT_OFFSET must be an integer from 0 through 18000" >&2
+  exit 2
+fi
+GRPC_BASE=$((40402 + DEVNET_PORT_OFFSET))   # inside-container gRPC stays 40401
+HTTP_BASE=$((40403 + DEVNET_PORT_OFFSET))   # inside-container HTTP stays 40403
+ADMIN_BASE=$((40405 + DEVNET_PORT_OFFSET))  # inside-container admin stays 40405
 
 help() {
   cat >&2 <<'EOF'

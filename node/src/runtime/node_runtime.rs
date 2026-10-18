@@ -1970,18 +1970,25 @@ async fn setup_shard_runtime(
                         );
                         return;
                     }
-                    answered.insert(sender, height);
+                    // A full/closed queue did not accept an attestation. Do not burn this
+                    // sender+height until the request is actually queued, or a retry
+                    // of the same validated height can never repair transient backpressure.
+                    let (otx, _orx) = tokio::sync::oneshot::channel();
+                    if let Err(e) =
+                        queue_attestation_once(&mut answered, &me, &sender, height, || {
+                            tap_tx.try_send((ProposeSource::Automatic, otx))
+                        })
+                    {
+                        tap_log.warn(
+                            LogSource::new("coop.rchain.node.runtime.Setup"),
+                            &format!(
+                                "attest request not queued ({e}) — sender/height remains retryable"
+                            ),
+                        );
+                        return;
+                    }
                 }
-                let (otx, _orx) = tokio::sync::oneshot::channel();
-                if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
-                    tap_log.warn(
-                        LogSource::new("coop.rchain.node.runtime.Setup"),
-                        &format!(
-                            "attest request not queued ({e}) — this validator will not attest \
-                             to the new block"
-                        ),
-                    );
-                } else {
+                {
                     tap_log.debug(
                         LogSource::new("coop.rchain.node.runtime.Setup"),
                         &format!(
@@ -2129,6 +2136,19 @@ async fn setup_shard_runtime(
             conf.casper.equivocation_injection,
             shard_health.clone(),
         );
+        // No inbound block is required for this bounded recovery tick. A late
+        // validated block can fail the replay-freshness tap after round escape,
+        // and all survivors may then have an unfinalized fringe but no more
+        // requests. The existing proposer still decides whether a valid empty
+        // attestation is warranted; this is only an Automatic scheduling wakeup.
+        //
+        // Gate by the actual local finalizer's sustained-stall counter, never by
+        // peer count or local stake. A fully idle chain does not poll its proposer
+        // and disabling the attestation tap disables this recovery too.
+        let quiet_retry_tx = proposer_parts.queue_tx.clone();
+        let quiet_retry_health = shard_health.clone();
+        let quiet_retry_enabled = conf.attest_on_new_blocks && !conf.no_attest_on_new_blocks;
+        let quiet_retry_log = log.clone();
         let proposer_stream = proposer_instance::create(
             proposer_parts.queue_rx,
             proposer_parts.queue_tx,
@@ -2141,6 +2161,35 @@ async fn setup_shard_runtime(
             let mut stream = Box::pin(proposer_stream);
             while stream.next().await.is_some() {}
         });
+        if quiet_retry_enabled {
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(proposer_instance::NOT_DUE_RETRY);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await; // skip the immediate first tick
+                loop {
+                    interval.tick().await;
+                    if !quiet_stall_retry_warranted(
+                        quiet_retry_enabled,
+                        quiet_retry_health.finality_stall_sustained(),
+                    ) {
+                        continue;
+                    }
+                    let (tx, _rx) = tokio::sync::oneshot::channel();
+                    match quiet_retry_tx.try_send((ProposeSource::Recovery, tx)) {
+                        Ok(()) => quiet_retry_log.debug(
+                            LogSource::new("coop.rchain.node.runtime.Setup"),
+                            "finality-stall recovery: queued bounded recovery propose",
+                        ),
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => quiet_retry_log
+                            .warn(
+                                LogSource::new("coop.rchain.node.runtime.Setup"),
+                                "finality-stall recovery: proposer queue full; next tick may retry",
+                            ),
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                    }
+                }
+            });
+        }
     }
 
     Ok(ShardRuntime { parts, peer_tx })
@@ -3376,6 +3425,32 @@ fn attest_is_live(block_ms: i64, now_ms: i64) -> bool {
 /// `docs/src/node/running-a-public-testnet.md`, "Attesting on every remote block is a block storm".
 ///
 /// [#70]: https://github.com/rchain-community/rchain-rust/issues/70
+/// Queue at most one tap per sender/height, but *only* mark a sender as answered
+/// when its request has actually been accepted. `try_send` is nonblocking, so
+/// holding the short mutex over it also prevents two racing validated blocks from
+/// each enqueuing the same sender/height.
+/// A recovery tick must not introduce unconditional autopropose traffic.
+/// The finalizer itself marks a sustained refusal; this is only a wakeup,
+/// never an alternative finality/quorum decision.
+fn quiet_stall_retry_warranted(attest_enabled: bool, finality_stalled: bool) -> bool {
+    attest_enabled && finality_stalled
+}
+
+fn queue_attestation_once<E>(
+    answered: &mut BTreeMap<Vec<u8>, i64>,
+    me: &[u8],
+    sender: &[u8],
+    height: i64,
+    enqueue: impl FnOnce() -> Result<(), E>,
+) -> Result<bool, E> {
+    if !attest_warranted(me, sender, height, answered.get(sender).copied()) {
+        return Ok(false);
+    }
+    enqueue()?;
+    answered.insert(sender.to_vec(), height);
+    Ok(true)
+}
+
 fn attest_warranted(
     me: &[u8],
     sender: &[u8],
@@ -3743,8 +3818,64 @@ mod autopropose_tap_tests {
 
 #[cfg(test)]
 mod attest_warranted_tests {
-    use super::{attest_is_live, attest_warranted, ATTEST_MAX_BLOCK_AGE_MS};
+    use super::{
+        attest_is_live, attest_warranted, queue_attestation_once, quiet_stall_retry_warranted,
+        ATTEST_MAX_BLOCK_AGE_MS,
+    };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn quiet_recovery_never_raises_an_unrequested_or_unstalled_proposal() {
+        assert!(!quiet_stall_retry_warranted(false, false));
+        assert!(!quiet_stall_retry_warranted(false, true));
+        assert!(!quiet_stall_retry_warranted(true, false));
+        assert!(quiet_stall_retry_warranted(true, true));
+    }
+
+    #[test]
+    fn a_full_queue_cannot_burn_the_only_attestation_for_a_sender_height() {
+        let mut answered = BTreeMap::new();
+        let me = [1u8];
+        let peer = [2u8];
+        let (tx, _rx) = tokio::sync::mpsc::channel::<()>(1);
+        tx.try_send(()).expect("fill queue");
+
+        // The old path inserted the height *before* try_send and permanently
+        // vetoed a subsequent delivery, even though nothing had been queued.
+        let result = queue_attestation_once(&mut answered, &me, &peer, 7, || tx.try_send(()));
+        assert!(result.is_err());
+        assert!(answered.is_empty(), "backpressure must not burn the height");
+
+        // Free one slot and retry the same sender/height, as after a transient
+        // queue backpressure event in the real runtime.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+        tx.try_send(()).expect("fill");
+        assert_eq!(rx.try_recv(), Ok(()));
+        assert_eq!(
+            queue_attestation_once(&mut answered, &me, &peer, 7, || tx.try_send(())),
+            Ok(true)
+        );
+        assert_eq!(answered.get(peer.as_slice()), Some(&7));
+        // Duplicates cannot enqueue after success.
+        assert_eq!(
+            queue_attestation_once(&mut answered, &me, &peer, 7, || tx.try_send(())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_failed_queue_does_not_advance_a_newer_height_either() {
+        let mut answered = BTreeMap::from([(vec![2u8], 7)]);
+        let me = [1u8];
+        let peer = [2u8];
+        let _ = queue_attestation_once(&mut answered, &me, &peer, 8, || Err::<(), ()>(()));
+        assert_eq!(answered.get(peer.as_slice()), Some(&7));
+        assert_eq!(
+            queue_attestation_once(&mut answered, &me, &peer, 8, || Ok::<(), ()>(())),
+            Ok(true)
+        );
+        assert_eq!(answered.get(peer.as_slice()), Some(&8));
+    }
 
     /// **A replayed block is not answered (#223)**: one older than the round's stall bound is history a
     /// returning validator is catching up on, and answering it put a block at every height it had missed.

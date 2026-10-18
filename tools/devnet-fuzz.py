@@ -39,6 +39,7 @@ import json
 import os
 from pathlib import Path
 import random
+import socket
 import subprocess
 import sys
 import time
@@ -429,6 +430,31 @@ def run_gateway(args, rng):
     print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
 
 
+def available_acceptance_offset():
+    """Find an unused host-port group for *all eight* disposable validators.
+
+    The same 1000-port stride is retained, and ports are reserved together
+    while probing so one candidate cannot accidentally overlap itself.
+    This only selects Docker host bindings, not network/consensus parameters.
+    """
+    for offset in (16000, 12000, 8000, 4000, 0):
+        held = []
+        try:
+            for i in range(8):
+                for base in (40402, 40403, 40405):
+                    port = base + offset + i * 1000
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    held.append(sock)
+                    sock.bind(("0.0.0.0", port))
+            return offset
+        except OSError:
+            continue
+        finally:
+            for sock in held:
+                sock.close()
+    raise RuntimeError("no available host-port group for the isolated N=8 acceptance devnet")
+
+
 def run_acceptance_campaign(trace=False, quiet=False):
     """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -436,8 +462,11 @@ def run_acceptance_campaign(trace=False, quiet=False):
     # The existing workflow started this default devnet in this same disposable
     # job. Stop it to free its ports; no public node or user data is reachable.
     subprocess.run(["tools/devnet.sh", "down"], check=True)
+    host_offset = available_acceptance_offset()
     env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
-           "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
+           "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2",
+           "DEVNET_PORT_OFFSET": str(host_offset)}
+    print(f"==> isolated acceptance Docker host-port offset: {host_offset}", flush=True)
     if trace or quiet:
         # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
         # Full inbound traces distinguish propagation from validation rejection.

@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +19,16 @@ spec.loader.exec_module(quiet)
 
 
 class QuietVerdicts(unittest.TestCase):
+    def test_disposable_http_ports_track_the_selected_host_offset(self):
+        with patch.dict(os.environ, {"DEVNET_PORT_OFFSET": "12000"}):
+            with patch.object(quiet.base.fuzz, "http_json", return_value=(200, {"ok": True})) as req:
+                self.assertEqual(quiet.base.get(3, "/api/v1/status"), {"ok": True})
+                req.assert_called_with("http://127.0.0.1:55403/api/v1/status",
+                                       "GET", None, timeout=10)
+                quiet.base.get(7, "/api/v1/status/operator", admin=True)
+                req.assert_called_with("http://127.0.0.1:59405/api/v1/status/operator",
+                                       "GET", None, timeout=10)
+
     def test_operator_evidence_never_infers_support_from_peers(self):
         state = quiet.operator_evidence({"peers": 7, "finalityStall": "0 of 800",
                                          "undeliveredSends": 9, "tasksPanicked": 0})

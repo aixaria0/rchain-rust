@@ -80,6 +80,11 @@ pub enum ProposeSource {
     /// follow-up a colliding request resolves to. Nobody waits for the result, so nothing is
     /// acknowledged — and this is the traffic C171 paces.
     Automatic,
+    /// Only the sustained-finality-stall recovery timer may select this source.
+    /// Unlike inbound-block taps, it fires at most once per stall retry interval,
+    /// so it may make a bounded attempt even after the deploy-age horizon has
+    /// suppressed normal, potentially storming automatic attestations.
+    Recovery,
 }
 
 impl ProposeSource {
@@ -1207,14 +1212,40 @@ where
     let cadence = cadence_due(&seen_heights, &creators_validator, tip);
     // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting to remote
     // blocks, and a caller's explicit propose is not a reaction.
-    let paced = source == ProposeSource::Automatic;
-    let suppress_attestation = attestation_suppressed(
+    let paced = matches!(source, ProposeSource::Automatic | ProposeSource::Recovery);
+    // A timer tick with a *current sustained* finality stall is distinct
+    // from reacting to an incoming block. It must be able to rebuild the
+    // missing acknowledgement layer even after the height-based work-age
+    // horizon has expired (N=4/N=8 quiet acceptance, #379 follow-up).
+    // This exception does not affect block validation or the quorum's
+    // denominator; the receiver still derives the exact same finalization.
+    // The caller of Recovery is a bounded 16-second tick, never the tap.
+    let recovery_licensed = quiet_finality_recovery_licensed(
+        source,
+        health.finality_stall_sustained(),
         nothing_to_finalize,
-        new_state_transition,
-        quorum_reachable,
-        cadence,
-        paced,
     );
+    let suppress_attestation = if recovery_licensed {
+        false
+    } else {
+        attestation_suppressed(
+            nothing_to_finalize,
+            new_state_transition,
+            quorum_reachable,
+            cadence,
+            paced,
+        )
+    };
+    if recovery_licensed {
+        log.warn(
+            LogSource::new("casper.blocks.Proposer"),
+            &format!(
+                "quiet-finality recovery licensed at tip {}: sustained stall with unfinalized work; \
+                 cadence_due={} quorum_reachable={} (quorum denominator and validation unchanged)",
+                i64::from(tip), cadence, quorum_reachable,
+            ),
+        );
+    }
     // **Why this node did or did not attest, in its own log** (#213's diagnostic). Without it a validator
     // that stays silent looks exactly like one with nothing to do: the R3 arm on #219 showed the genesis
     // signer making no block after genesis, and no run could say which input held it.
@@ -2333,6 +2364,18 @@ fn line_due(
     due
 }
 
+/// The bounded recovery tick may answer genuinely outstanding work even if
+/// local height drift has aged every sender out of the attestation window.
+/// Ordinary Automatic/Explicit calls are not entitled to this exception.
+/// Neither is a recovery tick on an idle or no-longer-stalled chain.
+fn quiet_finality_recovery_licensed(
+    source: ProposeSource,
+    finality_stalled: bool,
+    nothing_to_finalize: bool,
+) -> bool {
+    source == ProposeSource::Recovery && finality_stalled && !nothing_to_finalize
+}
+
 /// Whether this node withholds its attestation for the block it is building.
 ///
 /// A pair of bounds, and the order matters:
@@ -2403,7 +2446,43 @@ fn attestation_reaches_supermajority(
 
 #[cfg(test)]
 mod attestation_guard_tests {
-    use super::attestation_reaches_supermajority;
+    use super::{
+        attestation_reaches_supermajority, quiet_finality_recovery_licensed, ProposeSource,
+    };
+
+    #[test]
+    fn quiet_finality_recovery_requires_explicit_stall_and_outstanding_work() {
+        assert!(quiet_finality_recovery_licensed(
+            ProposeSource::Recovery,
+            true,
+            false
+        ));
+        assert!(!quiet_finality_recovery_licensed(
+            ProposeSource::Recovery,
+            false,
+            false
+        ));
+        assert!(!quiet_finality_recovery_licensed(
+            ProposeSource::Recovery,
+            true,
+            true
+        ));
+        assert!(!quiet_finality_recovery_licensed(
+            ProposeSource::Recovery,
+            false,
+            true
+        ));
+        assert!(!quiet_finality_recovery_licensed(
+            ProposeSource::Automatic,
+            true,
+            false
+        ));
+        assert!(!quiet_finality_recovery_licensed(
+            ProposeSource::Explicit { is_async: false },
+            true,
+            false,
+        ));
+    }
 
     #[test]
     fn a_validator_counts_its_own_weight_toward_the_quorum() {
