@@ -122,10 +122,13 @@ def run(args):
             time.sleep(2)
         if final is None:
             raise RuntimeError("active validators did not finalize the marker within the window")
-        # No helper traffic: require the finalized marker itself to survive
-        # two further epoch boundaries, plus a check of the original snapshot.
-        retention_target = (max(x["height"] for x in final) // 10 + 2) * 10
-        deadline = time.monotonic() + args.window
+        # Preserve the established N=4 quiet regression: an idle chain may stop
+        # after all state work finalizes. The N=8 gate additionally requires two
+        # further finalized epoch boundaries. Neither arm injects helper traffic.
+        retention_target = ((max(x["height"] for x in final) // 10 + 2) * 10
+                            if args.validators == 8 else None)
+        retention_started = time.monotonic()
+        deadline = retention_started + args.window
         while time.monotonic() < deadline:
             identities = []
             for identity in final:
@@ -141,13 +144,16 @@ def run(args):
                     raise RuntimeError(f"validator {i} lost the finalized marker")
                 identities.append({"node": i, "height": height, "hash": current_hash,
                                    "post_state": response["blockInfo"]["postStateHash"]})
-            if (all(x["height"] >= retention_target for x in identities)
-                    and len({(x["hash"], x["post_state"]) for x in identities}) == 1):
+            if ((retention_target is None or all(x["height"] >= retention_target for x in identities))
+                    and len({(x["hash"], x["post_state"]) for x in identities}) == 1
+                    and time.monotonic() - retention_started >= 20):
                 retained = identities
                 break
             time.sleep(2)
         if retained is None:
-            raise RuntimeError("marker retention did not cross two further epoch boundaries without helper traffic")
+            if retention_target is not None:
+                raise RuntimeError("marker retention did not cross two further epoch boundaries without helper traffic")
+            raise RuntimeError("marker retention did not complete the quiet observation interval")
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
     finally:
@@ -185,7 +191,9 @@ def run(args):
     result = "fail" if failure else ("pass" if escapes else "inconclusive")
     summary = {"result": result, "validators": args.validators, "silent_validator": silent,
                "active_finalized": final, "retained_finalized": retained,
-               "retention_target": retention_target, "escape_evidence": evidence, "helper_deploys": 0,
+               "retention_target": retention_target, "retention_min_seconds": 20,
+               "retention_rule": "two_finalized_epoch_boundaries" if args.validators == 8 else "quiet_interval",
+               "escape_evidence": evidence, "helper_deploys": 0,
                "operator_latest": operator_latest, "operator_height_ranges": operator_height_ranges,
                "reason": failure or (None if escapes else "stall/escape path was not exercised"),
                "boundary": "finite quiet/silent-validator witness; no rejoin or universal liveness claim"}

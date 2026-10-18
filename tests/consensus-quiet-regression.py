@@ -53,10 +53,10 @@ class QuietVerdicts(unittest.TestCase):
         self.assertEqual(result["age_ranges_ms"]["skip_freshness"], [16001, 16001])
         self.assertEqual(result["age_ranges_ms"]["queued"], [-10, -10])
 
-    def campaign(self, elapsed, lose_marker=False, retention_height=24):
+    def campaign(self, elapsed, lose_marker=False, retention_height=24, validators=4):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
-            args = SimpleNamespace(validators=4, window=30, out=directory)
+            args = SimpleNamespace(validators=validators, window=30, out=directory)
             drill = SimpleNamespace(out=out, marker="unique-marker", value=42,
                                     record=lambda **event: None)
             submitted = []
@@ -66,7 +66,7 @@ class QuietVerdicts(unittest.TestCase):
             def probe(*args):
                 nonlocal probes
                 probes += 1
-                if probes <= 4 or (lose_marker and probes > 7):
+                if probes <= validators or (lose_marker and probes > 4 * validators - 3):
                     return {"expr": []}
                 return {"expr": [{"ExprInt": {"data": 42}}]}
 
@@ -92,7 +92,7 @@ class QuietVerdicts(unittest.TestCase):
             def finalized(response):
                 nonlocal final_reads
                 final_reads += 1
-                return (2 if final_reads <= 3 else retention_height, "a" * 64)
+                return (2 if final_reads <= validators - 1 else retention_height, "a" * 64)
 
             code = 0
             with patch.object(quiet.base, "Drill", return_value=drill), \
@@ -110,17 +110,19 @@ class QuietVerdicts(unittest.TestCase):
                 except SystemExit as error:
                     code = error.code
             log_reads = [op for op in operations if op[:2] == ["docker", "logs"]]
-            self.assertEqual(len(log_reads), 3)
+            self.assertEqual(len(log_reads), validators - 1)
             self.assertTrue(all("--since" in op for op in log_reads))
             summary = json.loads((out / "result.json").read_text())
-            self.assertEqual(summary["operator_height_ranges"], {"0": [7, 7], "1": [7, 7], "2": [7, 7]})
+            self.assertEqual(summary["operator_height_ranges"], {str(i): [7, 7] for i in range(validators - 1)})
+            self.assertEqual(summary["retention_target"], 20 if validators == 8 else None)
+            self.assertEqual(summary["retention_min_seconds"], 20)
             self.assertEqual(summary["operator_latest"]["0"]["undeliveredSends"], 3)
             self.assertIn("attestation_decisions", summary["escape_evidence"]["0"])
             self.assertIn("tap_decisions", summary["escape_evidence"]["0"])
             self.assertEqual(len(submitted), 1)
             self.assertNotIn("Nil", submitted)
-            self.assertIn(["docker", "unpause", quiet.base.node_name(3)], operations)
-            if retention_height < 20 and not lose_marker:
+            self.assertIn(["docker", "unpause", quiet.base.node_name(validators - 1)], operations)
+            if validators == 8 and retention_height < 20 and not lose_marker:
                 self.assertIn("two further epoch boundaries", summary["reason"])
             return code, summary["result"]
 
@@ -133,10 +135,16 @@ class QuietVerdicts(unittest.TestCase):
     def test_exact_elapsed_boundary_can_pass(self):
         self.assertEqual(self.campaign(15000), (0, "pass"))
 
-    def test_time_only_retention_is_not_a_pass(self):
-        self.assertEqual(self.campaign(16000, retention_height=2), (1, "fail"))
+    def test_n8_time_only_retention_is_not_a_pass(self):
+        self.assertEqual(self.campaign(16000, retention_height=2, validators=8), (1, "fail"))
 
-    def test_lost_marker_fails_even_with_valid_escape(self):
+    def test_n8_retention_crosses_two_finalized_epoch_boundaries(self):
+        self.assertEqual(self.campaign(16000, retention_height=24, validators=8), (0, "pass"))
+
+    def test_n4_preserves_the_established_quiet_retention_baseline(self):
+        self.assertEqual(self.campaign(16000, retention_height=2), (0, "pass"))
+
+    def test_later_marker_loss_fails_before_the_quiet_interval_finishes(self):
         self.assertEqual(self.campaign(16000, lose_marker=True), (1, "fail"))
 
 
