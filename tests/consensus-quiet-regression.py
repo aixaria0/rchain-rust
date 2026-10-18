@@ -18,6 +18,20 @@ spec.loader.exec_module(quiet)
 
 
 class QuietVerdicts(unittest.TestCase):
+    def test_operator_evidence_never_infers_support_from_peers(self):
+        state = quiet.operator_evidence({"peers": 7, "finalityStall": "0 of 800",
+                                         "undeliveredSends": 9, "tasksPanicked": 0})
+        self.assertEqual(state["finalityStall"], "0 of 800")
+        self.assertEqual(state["undeliveredSends"], 9)
+        self.assertIsNone(state["latestBlockNumber"])
+
+    def test_attestation_summary_retains_both_quorum_outcomes(self):
+        lines = ("attestation at tip 3: licensed — quorum_reachable=true paced=true\n"
+                 "attestation at tip 4: withheld — quorum_reachable=false paced=false\n")
+        self.assertEqual(quiet.attestation_decisions(lines),
+                         {"licensed": 1, "withheld": 1,
+                          "quorum_reachable_false": 1, "quorum_reachable_true": 1})
+
     def campaign(self, elapsed, lose_marker=False):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -40,6 +54,9 @@ class QuietVerdicts(unittest.TestCase):
                     return {"autopropose": False, "proposeOnDeploy": True}
                 if route == "/api/blocks/1":
                     return [{"blockNumber": 0, "blockHash": "0" * 64}]
+                if route == "/api/v1/status/operator":
+                    return {"latestBlockNumber": 7, "peers": 2,
+                            "finalityStall": "0 of 400", "undeliveredSends": 3}
                 return {}
 
             log = "" if elapsed is None else f"round gate escaped after 2 attempt(s) and {elapsed} ms blocked"
@@ -66,6 +83,9 @@ class QuietVerdicts(unittest.TestCase):
             self.assertEqual(len(log_reads), 3)
             self.assertTrue(all("--since" in op for op in log_reads))
             summary = json.loads((out / "result.json").read_text())
+            self.assertEqual(summary["operator_height_ranges"], {"0": [7, 7], "1": [7, 7], "2": [7, 7]})
+            self.assertEqual(summary["operator_latest"]["0"]["undeliveredSends"], 3)
+            self.assertIn("attestation_decisions", summary["escape_evidence"]["0"])
             self.assertEqual(len(submitted), 1)
             self.assertNotIn("Nil", submitted)
             self.assertIn(["docker", "unpause", quiet.base.node_name(3)], operations)

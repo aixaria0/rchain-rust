@@ -20,6 +20,25 @@ def escape_timings(text):
     return [int(x) for x in re.findall(r"round gate escaped after \d+ attempt\(s\) and (-?\d+) ms blocked", text)]
 
 
+def attestation_decisions(text):
+    """Count observed proposer decisions; absence of a log is never proof of a decision."""
+    rows = re.findall(r"attestation at tip \d+: (licensed|withheld) \u2014 ([^\n]+)", text)
+    return {
+        "licensed": sum(kind == "licensed" for kind, _ in rows),
+        "withheld": sum(kind == "withheld" for kind, _ in rows),
+        "quorum_reachable_false": sum("quorum_reachable=false" in detail for _, detail in rows),
+        "quorum_reachable_true": sum("quorum_reachable=true" in detail for _, detail in rows),
+    }
+
+
+def operator_evidence(status):
+    """Only report operator-observed values, without interpreting network topology as reachability."""
+    keys = ("latestBlockNumber", "peers", "finalityStall", "finalityStallEpisodes",
+            "undeliveredSends", "consecutiveSelfValidationFailures", "tasksPanicked",
+            "autoproposeTapSuppressed")
+    return {key: status.get(key) for key in keys}
+
+
 def run(args):
     drill = base.Drill(args)
     silent = args.validators - 1
@@ -29,6 +48,8 @@ def run(args):
     failure = None
     final = None
     evidence = {}
+    operator_latest = {}
+    operator_height_ranges = {}
     drill.record(tree=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                  validators=args.validators, silent_validator=silent, active=active,
                  window=args.window, marker=drill.marker, expected=drill.value,
@@ -56,6 +77,12 @@ def run(args):
             identities = []
             for i in active:
                 status = base.get(i, "/api/v1/status/operator", admin=True)
+                operator_latest[str(i)] = operator_evidence(status)
+                height = status.get("latestBlockNumber")
+                if isinstance(height, int) and not isinstance(height, bool):
+                    progress = operator_height_ranges.setdefault(str(i), [height, height])
+                    progress[0] = min(progress[0], height)
+                    progress[1] = max(progress[1], height)
                 try:
                     response = base.get(i, "/api/last-finalized-block")
                     height, block_hash = base.finalized_identity(response)
@@ -98,7 +125,8 @@ def run(args):
                 path = drill.out / f"quiet-node-{i}.log"
                 path.write_text(text)
                 evidence[str(i)] = {"escape_ms": escape_timings(text),
-                                    "not_due_observed": "NotEnoughNewBlocks" in text}
+                                    "not_due_observed": "NotEnoughNewBlocks" in text,
+                                    "attestation_decisions": attestation_decisions(text)}
                 base.causal_trace.emit_capture(path)
             except Exception as error:
                 failure = failure or f"log capture failed on {i}: {error}"
@@ -113,6 +141,7 @@ def run(args):
     result = "fail" if failure else ("pass" if escapes else "inconclusive")
     summary = {"result": result, "validators": args.validators, "silent_validator": silent,
                "active_finalized": final, "escape_evidence": evidence, "helper_deploys": 0,
+               "operator_latest": operator_latest, "operator_height_ranges": operator_height_ranges,
                "reason": failure or (None if escapes else "stall/escape path was not exercised"),
                "boundary": "finite quiet/silent-validator witness; no rejoin or universal liveness claim"}
     (drill.out / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
