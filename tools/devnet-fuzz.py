@@ -467,6 +467,12 @@ def run_acceptance_campaign(trace=False, quiet=False):
            "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2",
            "DEVNET_PORT_OFFSET": str(host_offset)}
     print(f"==> isolated acceptance Docker host-port offset: {host_offset}", flush=True)
+    if quiet:
+        # Isolated Docker peers advertise RFC1918 addresses. The default
+        # production SSRF guard excludes these; opt in only for the disposable
+        # testnet, retaining certificate validation and loopback/link-local bans.
+        # This differentiates bootstrap-only gossip from healthy peer discovery.
+        env["DEVNET_NODE_ENV"] = "RCHAIN_ALLOW_PRIVATE_PEER_DISCOVERY=1"
     if trace or quiet:
         # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
         # Full inbound traces distinguish propagation from validation rejection.
