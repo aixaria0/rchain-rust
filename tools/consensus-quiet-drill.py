@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded silent-validator drill; isolated runner only, no helper deploys."""
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -24,6 +25,7 @@ def run(args):
     silent = args.validators - 1
     active = list(range(silent))
     paused = False
+    log_since = None
     failure = None
     final = None
     evidence = {}
@@ -45,7 +47,8 @@ def run(args):
                 raise RuntimeError("absent-marker control failed")
         subprocess.run(["docker", "pause", base.node_name(silent)], check=True, timeout=10)
         paused = True
-        drill.record(event="validator_paused", node=silent, active_stake=args.validators - 1,
+        log_since = datetime.now(timezone.utc).isoformat()
+        drill.record(event="validator_paused", node=silent, log_since=log_since, active_stake=args.validators - 1,
                      total_stake=args.validators)
         drill.deploy(f'@{json.dumps(drill.marker)}!({drill.value})')
         deadline = time.monotonic() + args.window
@@ -88,7 +91,8 @@ def run(args):
         # recovery traffic cannot be mistaken for the quiet arm's observations.
         for i in active:
             try:
-                r = subprocess.run(["docker", "logs", base.node_name(i)],
+                log_args = ["docker", "logs"] + (["--since", log_since] if log_since else [])
+                r = subprocess.run([*log_args, base.node_name(i)],
                                    capture_output=True, text=True, timeout=15, check=True)
                 text = r.stdout + r.stderr
                 path = drill.out / f"quiet-node-{i}.log"

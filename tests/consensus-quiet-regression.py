@@ -62,6 +62,9 @@ class QuietVerdicts(unittest.TestCase):
                     quiet.run(args)
                 except SystemExit as error:
                     code = error.code
+            log_reads = [op for op in operations if op[:2] == ["docker", "logs"]]
+            self.assertEqual(len(log_reads), 3)
+            self.assertTrue(all("--since" in op for op in log_reads))
             summary = json.loads((out / "result.json").read_text())
             self.assertEqual(len(submitted), 1)
             self.assertNotIn("Nil", submitted)
