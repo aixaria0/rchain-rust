@@ -1459,14 +1459,25 @@ async fn validation_bounds_for_block(
     legacy_min_phlo_price: i64,
     legacy_max_number_of_parents: i32,
 ) -> Result<(i64, i64), String> {
-    let legacy = (legacy_min_phlo_price, i64::from(legacy_max_number_of_parents));
+    let legacy = (
+        legacy_min_phlo_price,
+        i64::from(legacy_max_number_of_parents),
+    );
     for parent_hash in &block.justifications {
         if let Some(parent_meta) = dag.lookup(parent_hash).await? {
             if parent_meta.validated && !parent_meta.validation_failed {
-                let parent = block_store.get(&[*parent_hash]).await?
-                    .into_iter().next().flatten()
-                    .ok_or_else(|| format!("validated parent {parent_hash:?} is absent from the block store"))?;
-                return Ok(runtime.committed_validation_bounds(&parent.post_state_hash).await?
+                let parent = block_store
+                    .get(&[*parent_hash])
+                    .await?
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .ok_or_else(|| {
+                        format!("validated parent {parent_hash:?} is absent from the block store")
+                    })?;
+                return Ok(runtime
+                    .committed_validation_bounds(&parent.post_state_hash)
+                    .await?
                     .unwrap_or(legacy));
             }
         }
@@ -1510,7 +1521,14 @@ where
         block,
         shard_id,
         DEPLOY_LIFESPAN,
-        validation_bounds_for_block(dag, block_store, runtime, block, min_phlo_price, max_number_of_parents),
+        validation_bounds_for_block(
+            dag,
+            block_store,
+            runtime,
+            block,
+            min_phlo_price,
+            max_number_of_parents,
+        ),
     )
     .await
     {

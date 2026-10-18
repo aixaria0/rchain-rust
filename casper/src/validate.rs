@@ -595,9 +595,14 @@ pub async fn block_summary(
     max_number_of_parents: i32,
 ) -> Result<ValidBlockProcessing, String> {
     block_summary_from_state(
-        dag, block_store, block, shard_id, expiration_threshold,
+        dag,
+        block_store,
+        block,
+        shard_id,
+        expiration_threshold,
         std::future::ready(Ok((min_phlo_price, i64::from(max_number_of_parents)))),
-    ).await
+    )
+    .await
 }
 
 /// Resolve bounds only after structural checks, but before timestamp reads, merge and replay.
@@ -761,7 +766,8 @@ pub fn deploy_count(b: &BlockMessage) -> BlockStatus {
 /// It is registered in `spec/audit/passes.md` §6 and tracked on #51 §A, and the shipped default is the
 /// protocol's existing per-block width rather than `i32::MAX`.
 pub fn justification_count(b: &BlockMessage, max_number_of_parents: i64) -> BlockStatus {
-    if max_number_of_parents <= 0 || b.justifications.len() as u128 <= max_number_of_parents as u128 {
+    if max_number_of_parents <= 0 || b.justifications.len() as u128 <= max_number_of_parents as u128
+    {
         BlockStatus::Valid
     } else {
         BlockStatus::TooManyJustifications

@@ -11,7 +11,9 @@ use std::time::Duration;
 use rchain_block_storage::approved_store::ApprovedStore;
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
-use rchain_block_storage::syntax::{get_approved_block, insert_genesis, put_approved_block, put_block};
+use rchain_block_storage::syntax::{
+    get_approved_block, insert_genesis, put_approved_block, put_block,
+};
 use rchain_comm::peer_node::PeerNode;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_comm::transport::transport_layer::TransportLayer;
@@ -434,9 +436,15 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     // The synced root is content-addressed, but its params must also be readable by this binary
     // and agree with this node's admission/proposal configuration before it enters Running.
     // Do this on reconnect and local genesis too, so a restart cannot bypass the restore guard.
-    check_running_validation_bounds(dag.as_ref(), &block_store, &approved_store,
-        runtime_manager.as_ref(), spec.genesis_block_data.min_phlo_price,
-        spec.genesis_block_data.max_number_of_parents).await?;
+    check_running_validation_bounds(
+        dag.as_ref(),
+        &block_store,
+        &approved_store,
+        runtime_manager.as_ref(),
+        spec.genesis_block_data.min_phlo_price,
+        spec.genesis_block_data.max_number_of_parents,
+    )
+    .await?;
 
     // **The catch-up window and the driver that walks it** (C259). A node restored at an anchor below
     // its peers' tip cannot ingest the gap through the hash-keyed pull: the walk runs downward from a
@@ -565,22 +573,32 @@ pub async fn check_running_validation_bounds(
     min_phlo_price: i64,
     max_number_of_parents: i32,
 ) -> Result<(), String> {
-    let approved = get_approved_block(approved_store).await?
+    let approved = get_approved_block(approved_store)
+        .await?
         .ok_or_else(|| "cannot enter Running without an approved state".to_string())?;
     let params_root = if approved.hashes.is_empty() {
         // The genesis fringe names the empty pre-state, not the installed PoS descriptors.
         let repr = dag.get_representation().await;
-        let genesis_hash = repr.height_map.first_key_value()
+        let genesis_hash = repr
+            .height_map
+            .first_key_value()
             .and_then(|(_, hashes)| hashes.first())
             .ok_or_else(|| "cannot locate genesis params after restore".to_string())?;
-        block_store.get(&[*genesis_hash]).await?.into_iter().next().flatten()
-            .ok_or_else(|| "genesis block missing after restore".to_string())?.post_state_hash
+        block_store
+            .get(&[*genesis_hash])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+            .ok_or_else(|| "genesis block missing after restore".to_string())?
+            .post_state_hash
     } else {
         approved.state_hash
     };
-    runtime.check_configured_validation_bounds(&params_root, min_phlo_price, max_number_of_parents).await
+    runtime
+        .check_configured_validation_bounds(&params_root, min_phlo_price, max_number_of_parents)
+        .await
 }
-
 
 /// Start the catch-up walk for a running phase, if that phase has an anchor and a peer to walk against.
 ///

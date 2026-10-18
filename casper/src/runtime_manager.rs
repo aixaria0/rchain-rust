@@ -1957,8 +1957,10 @@ impl RuntimeManager {
         let params = decode_params(&bytes)?;
         // decode_params has already checked the exact supported shape. Only the unversioned
         // layouts lack the bound fields; inspecting their decoded zero values loses that fact.
-        Ok((bytes.len() % 8 == 1)
-            .then_some((i64::from(params.min_phlo_price), params.max_number_of_parents)))
+        Ok((bytes.len() % 8 == 1).then_some((
+            i64::from(params.min_phlo_price),
+            params.max_number_of_parents,
+        )))
     }
 
     /// Guard startup/restore before the node uses its configured proposal and admission settings.
