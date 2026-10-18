@@ -53,18 +53,21 @@ class QuietVerdicts(unittest.TestCase):
         self.assertEqual(result["age_ranges_ms"]["skip_freshness"], [16001, 16001])
         self.assertEqual(result["age_ranges_ms"]["queued"], [-10, -10])
 
-    def campaign(self, elapsed, lose_marker=False, retention_height=24, validators=4):
+    def campaign(self, elapsed, lose_marker=False, retention_height=24, validators=4, retention_mode="legacy", epoch_work_visible=True):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
-            args = SimpleNamespace(validators=validators, window=30, out=directory)
+            args = SimpleNamespace(validators=validators, window=30, out=directory, retention_mode=retention_mode)
             drill = SimpleNamespace(out=out, marker="unique-marker", value=42,
                                     record=lambda **event: None)
             submitted = []
             drill.deploy = submitted.append
             probes = 0
 
-            def probe(*args):
+            def probe(node, name, block_hash):
                 nonlocal probes
+                if ":epoch-work:" in name:
+                    return ({"expr": []} if block_hash == "c" * 64 or not epoch_work_visible
+                            else {"expr": [{"ExprInt": {"data": 1001}}]})
                 probes += 1
                 if probes <= validators or (lose_marker and probes > 4 * validators - 3):
                     return {"expr": []}
@@ -92,7 +95,8 @@ class QuietVerdicts(unittest.TestCase):
             def finalized(response):
                 nonlocal final_reads
                 final_reads += 1
-                return (2 if final_reads <= validators - 1 else retention_height, "a" * 64)
+                return ((2, "c" * 64) if final_reads <= validators - 1
+                        else (retention_height, "a" * 64))
 
             code = 0
             with patch.object(quiet.base, "Drill", return_value=drill), \
@@ -114,15 +118,24 @@ class QuietVerdicts(unittest.TestCase):
             self.assertTrue(all("--since" in op for op in log_reads))
             summary = json.loads((out / "result.json").read_text())
             self.assertEqual(summary["operator_height_ranges"], {str(i): [7, 7] for i in range(validators - 1)})
-            self.assertEqual(summary["retention_target"], 20 if validators == 8 else None)
+            self.assertEqual(summary["retention_target"],
+                             20 if (retention_mode == "epoch-work" or
+                                    (validators == 8 and retention_mode == "legacy")) else None)
+            self.assertEqual(summary["retention_mode"], retention_mode)
+            self.assertEqual(summary["signed_epoch_work_deploys"], len(submitted) - 1)
+            self.assertEqual(summary["helper_deploys"], len(submitted) - 1)
             self.assertEqual(summary["retention_min_seconds"], 20)
             self.assertEqual(summary["operator_latest"]["0"]["undeliveredSends"], 3)
             self.assertIn("attestation_decisions", summary["escape_evidence"]["0"])
             self.assertIn("tap_decisions", summary["escape_evidence"]["0"])
-            self.assertEqual(len(submitted), 1)
+            if retention_mode == "epoch-work":
+                self.assertGreaterEqual(len(submitted), 2)
+                self.assertTrue(summary["first_epoch_work_finalized"] or retention_height < 20 or not epoch_work_visible)
+            else:
+                self.assertEqual(len(submitted), 1)
             self.assertNotIn("Nil", submitted)
             self.assertIn(["docker", "unpause", quiet.base.node_name(validators - 1)], operations)
-            if validators == 8 and retention_height < 20 and not lose_marker:
+            if validators == 8 and retention_height < 20 and not lose_marker and retention_mode == "legacy":
                 self.assertIn("two further epoch boundaries", summary["reason"])
             return code, summary["result"]
 
@@ -140,6 +153,23 @@ class QuietVerdicts(unittest.TestCase):
 
     def test_n8_retention_crosses_two_finalized_epoch_boundaries(self):
         self.assertEqual(self.campaign(16000, retention_height=24, validators=8), (0, "pass"))
+
+    def test_n8_quiet_retention_is_independent_of_epoch_height(self):
+        self.assertEqual(self.campaign(16000, retention_height=2, validators=8,
+                                       retention_mode="quiet"), (0, "pass"))
+
+    def test_n8_signed_state_work_crosses_epoch_boundaries(self):
+        self.assertEqual(self.campaign(16000, retention_height=24, validators=8,
+                                       retention_mode="epoch-work"), (0, "pass"))
+
+    def test_n8_signed_work_must_still_cross_finality_height(self):
+        self.assertEqual(self.campaign(16000, retention_height=2, validators=8,
+                                       retention_mode="epoch-work"), (1, "fail"))
+
+    def test_n8_epoch_work_cannot_pass_when_signed_write_missing(self):
+        self.assertEqual(self.campaign(16000, retention_height=24, validators=8,
+                                       retention_mode="epoch-work", epoch_work_visible=False),
+                         (1, "fail"))
 
     def test_n4_preserves_the_established_quiet_retention_baseline(self):
         self.assertEqual(self.campaign(16000, retention_height=2), (0, "pass"))
