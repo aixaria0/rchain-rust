@@ -325,13 +325,19 @@ pub async fn create_comm_state(
     let kademlia_store = kademlia_table(id);
     // Kademlia runs over the same mutual TLS as the transport (AUDIT C116): the certificate is the
     // node's identity on both, so discovery cannot be a way in that the transport is not.
+    // Private RFC1918/ULA discovery is disabled by default. This explicit
+    // isolated-testnet opt-in never disables TLS identity verification and
+    // still rejects loopback/link-local/metadata endpoints.
+    let allow_private_peers = conf.protocol_client.network_id == "testnet"
+        && std::env::var("RCHAIN_ALLOW_PRIVATE_PEER_DISCOVERY").as_deref() == Ok("1");
     let kademlia_rpc: Arc<dyn KademliaRpc> = Arc::new(
-        GrpcKademliaRpc::new(
+        GrpcKademliaRpc::new_with_private_peers(
             local_peer.clone(),
             conf.protocol_client.network_id.clone(),
             conf.protocol_client.network_timeout,
             &cert,
             &key,
+            allow_private_peers,
         )
         .map_err(|e| format!("kademlia client TLS: {e}"))?,
     );
@@ -350,10 +356,11 @@ pub async fn create_comm_state(
             let store = store_lookup.clone();
             Box::pin(async move { handle_lookup(store.as_ref(), peer, &key) })
         };
-        let server = GrpcKademliaRpcServer::new(
+        let server = GrpcKademliaRpcServer::new_with_private_peers(
             conf.protocol_client.network_id.clone(),
             ping_handler,
             lookup_handler,
+            allow_private_peers,
         );
         let kademlia_tls =
             rchain_comm::transport::hostname_trust_manager::server_config(&cert, &key)
