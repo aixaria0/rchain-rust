@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use prost::Message;
 use tokio::sync::mpsc;
@@ -68,6 +68,7 @@ use rchain_comm::transport::grpc_transport_receiver::BoxFuture;
 use rchain_comm::transport::grpc_transport_server::TransportLayerServer;
 use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_comm::who_am_i;
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
@@ -2147,13 +2148,16 @@ async fn setup_shard_runtime(
         // validated block can fail the replay-freshness tap after round escape,
         // and all survivors may then have an unfinalized fringe but no more
         // requests. The existing proposer still decides whether a valid empty
-        // attestation is warranted; this is only an Automatic scheduling wakeup.
+        // attestation is warranted; this is only a bounded Recovery wakeup.
         //
-        // Gate by the actual local finalizer's sustained-stall counter, never by
-        // peer count or local stake. A fully idle chain does not poll its proposer
-        // and disabling the attestation tap disables this recovery too.
+        // Observe the finalized fringe as well as repeated refusals. A successful
+        // advance clears the refusal counter even if trailing state work remains;
+        // without an elapsed no-progress observation, quiet survivors never wake.
+        // The request carries that fringe's version, which the proposer rechecks
+        // alongside actual outstanding work. Idle chains produce no block.
         let quiet_retry_tx = proposer_parts.queue_tx.clone();
         let quiet_retry_health = shard_health.clone();
+        let quiet_retry_dag = parts.dag.clone();
         let quiet_retry_enabled = conf.attest_on_new_blocks && !conf.no_attest_on_new_blocks;
         let quiet_retry_log = log.clone();
         let proposer_stream = proposer_instance::create(
@@ -2170,19 +2174,31 @@ async fn setup_shard_runtime(
         });
         if quiet_retry_enabled {
             tokio::spawn(async move {
+                let initial = quiet_retry_dag.get_representation().await;
+                let initial_fringe = rchain_models::block_metadata::fringe_hash_of(
+                    &initial.latest_fringe().iter().map(|m| m.id).collect(),
+                );
+                let mut observed_fringe = Some((initial_fringe, Instant::now()));
                 let mut interval = tokio::time::interval(proposer_instance::NOT_DUE_RETRY);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 interval.tick().await; // skip the immediate first tick
                 loop {
                     interval.tick().await;
+                    let dag = quiet_retry_dag.get_representation().await;
+                    let fringe = rchain_models::block_metadata::fringe_hash_of(
+                        &dag.latest_fringe().iter().map(|m| m.id).collect(),
+                    );
                     if !quiet_stall_retry_warranted(
                         quiet_retry_enabled,
                         quiet_retry_health.finality_stall_sustained(),
+                        &mut observed_fringe,
+                        fringe,
+                        Instant::now(),
                     ) {
                         continue;
                     }
                     let (tx, _rx) = tokio::sync::oneshot::channel();
-                    match quiet_retry_tx.try_send((ProposeSource::Recovery, tx)) {
+                    match quiet_retry_tx.try_send((ProposeSource::Recovery { fringe }, tx)) {
                         Ok(()) => quiet_retry_log.debug(
                             LogSource::new("coop.rchain.node.runtime.Setup"),
                             "finality-stall recovery: queued bounded recovery propose",
@@ -3437,10 +3453,30 @@ fn attest_is_live(block_ms: i64, now_ms: i64) -> bool {
 /// holding the short mutex over it also prevents two racing validated blocks from
 /// each enqueuing the same sender/height.
 /// A recovery tick must not introduce unconditional autopropose traffic.
-/// The finalizer itself marks a sustained refusal; this is only a wakeup,
-/// never an alternative finality/quorum decision.
-fn quiet_stall_retry_warranted(attest_enabled: bool, finality_stalled: bool) -> bool {
-    attest_enabled && finality_stalled
+/// Repeated refusals or an unchanged finalized fringe can warrant a wakeup.
+/// The proposer rechecks the fringe version and outstanding work; the timer
+/// makes no finality/quorum decision.
+fn quiet_stall_retry_warranted(
+    attest_enabled: bool,
+    finality_stalled: bool,
+    observed: &mut Option<(Blake2b256Hash, Instant)>,
+    fringe: Blake2b256Hash,
+    now: Instant,
+) -> bool {
+    if !attest_enabled {
+        *observed = None;
+        return false;
+    }
+    match observed {
+        Some((previous, since)) if *previous == fringe => {
+            finality_stalled
+                || now.saturating_duration_since(*since) >= proposer_instance::NOT_DUE_RETRY
+        }
+        _ => {
+            *observed = Some((fringe, now));
+            false
+        }
+    }
 }
 
 fn queue_attestation_once<E>(
@@ -3832,11 +3868,61 @@ mod attest_warranted_tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn quiet_recovery_never_raises_an_unrequested_or_unstalled_proposal() {
-        assert!(!quiet_stall_retry_warranted(false, false));
-        assert!(!quiet_stall_retry_warranted(false, true));
-        assert!(!quiet_stall_retry_warranted(true, false));
-        assert!(quiet_stall_retry_warranted(true, true));
+    fn quiet_recovery_detects_no_progress_after_the_refusal_flag_clears() {
+        use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+        use std::time::{Duration, Instant};
+        let first = Blake2b256Hash::from_bytes([1; 32]);
+        let advanced = Blake2b256Hash::from_bytes([2; 32]);
+        let now = Instant::now();
+        let bound = crate::instances::proposer_instance::NOT_DUE_RETRY;
+        let mut observed = None;
+        assert!(!quiet_stall_retry_warranted(
+            true,
+            false,
+            &mut observed,
+            first,
+            now
+        ));
+        assert!(!quiet_stall_retry_warranted(
+            true,
+            false,
+            &mut observed,
+            first,
+            now + bound - Duration::from_millis(1)
+        ));
+        assert!(
+            quiet_stall_retry_warranted(true, false, &mut observed, first, now + bound),
+            "a quiet stall is real even after a prior successful advance cleared the flag"
+        );
+        assert!(
+            !quiet_stall_retry_warranted(true, true, &mut observed, advanced, now + bound),
+            "progress resets the elapsed observation, including a stale refusal flag"
+        );
+        assert!(!quiet_stall_retry_warranted(
+            true,
+            false,
+            &mut observed,
+            advanced,
+            now + bound + Duration::from_millis(1)
+        ));
+        assert!(quiet_stall_retry_warranted(
+            true,
+            false,
+            &mut observed,
+            advanced,
+            now + bound * 2
+        ));
+        assert!(!quiet_stall_retry_warranted(
+            false,
+            true,
+            &mut observed,
+            advanced,
+            now + bound * 3
+        ));
+        assert!(
+            observed.is_none(),
+            "disabling attestation clears recovery observation"
+        );
     }
 
     #[test]

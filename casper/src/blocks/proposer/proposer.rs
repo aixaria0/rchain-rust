@@ -15,6 +15,7 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_block_storage::dag::liveness;
 use rchain_block_storage::syntax::put_block;
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_crypto::signatures::secp256k1::Secp256k1;
 use rchain_crypto::signatures::signed::Signed;
@@ -80,11 +81,11 @@ pub enum ProposeSource {
     /// follow-up a colliding request resolves to. Nobody waits for the result, so nothing is
     /// acknowledged — and this is the traffic C171 paces.
     Automatic,
-    /// Only the sustained-finality-stall recovery timer may select this source.
+    /// Only the bounded no-finality-progress timer may select this source.
     /// Unlike inbound-block taps, it fires at most once per stall retry interval,
     /// so it may make a bounded attempt even after the deploy-age horizon has
     /// suppressed normal, potentially storming automatic attestations.
-    Recovery,
+    Recovery { fringe: Blake2b256Hash },
 }
 
 impl ProposeSource {
@@ -1212,19 +1213,22 @@ where
     let cadence = cadence_due(&seen_heights, &creators_validator, tip);
     // Only a proposal the node raised on its own is paced (C171): the storm is a node reacting to remote
     // blocks, and a caller's explicit propose is not a reaction.
-    let paced = matches!(source, ProposeSource::Automatic | ProposeSource::Recovery);
-    // A timer tick with a *current sustained* finality stall is distinct
-    // from reacting to an incoming block. It must be able to rebuild the
-    // missing acknowledgement layer even after the height-based work-age
-    // horizon has expired (N=4/N=8 quiet acceptance, #379 follow-up).
-    // This exception does not affect block validation or the quorum's
-    // denominator; the receiver still derives the exact same finalization.
-    // The caller of Recovery is a bounded 16-second tick, never the tap.
-    let recovery_licensed = quiet_finality_recovery_licensed(
+    let paced = matches!(
         source,
-        health.finality_stall_sustained(),
-        nothing_to_finalize,
+        ProposeSource::Automatic | ProposeSource::Recovery { .. }
     );
+    // Only the bounded timer can request Recovery. Its elapsed no-progress
+    // observation is versioned: progress while the request was queued revokes
+    // the request. An idle tick must not force a native epoch transition merely
+    // because the next height happens to be an epoch boundary.
+    let current_fringe = rchain_models::block_metadata::fringe_hash_of(
+        &dag_repr.latest_fringe().iter().map(|m| m.id).collect(),
+    );
+    let recovery_licensed =
+        quiet_finality_recovery_licensed(source, current_fringe, nothing_to_finalize);
+    if matches!(source, ProposeSource::Recovery { .. }) && !recovery_licensed {
+        return Ok(BlockCreatorResult::NoNewDeploys);
+    }
     let suppress_attestation = if recovery_licensed {
         false
     } else {
@@ -1240,7 +1244,7 @@ where
         log.warn(
             LogSource::new("casper.blocks.Proposer"),
             &format!(
-                "quiet-finality recovery licensed at tip {}: sustained stall with unfinalized work; \
+                "quiet-finality recovery licensed at tip {}: unchanged finalized fringe with unfinalized work; \
                  cadence_due={} quorum_reachable={} (quorum denominator and validation unchanged)",
                 i64::from(tip), cadence, quorum_reachable,
             ),
@@ -2367,13 +2371,15 @@ fn line_due(
 /// The bounded recovery tick may answer genuinely outstanding work even if
 /// local height drift has aged every sender out of the attestation window.
 /// Ordinary Automatic/Explicit calls are not entitled to this exception.
-/// Neither is a recovery tick on an idle or no-longer-stalled chain.
+/// The observed fringe must still be current when the queued request runs.
+/// A recovery tick on an idle chain or after finality advances has no licence.
 fn quiet_finality_recovery_licensed(
     source: ProposeSource,
-    finality_stalled: bool,
+    current_fringe: Blake2b256Hash,
     nothing_to_finalize: bool,
 ) -> bool {
-    source == ProposeSource::Recovery && finality_stalled && !nothing_to_finalize
+    matches!(source, ProposeSource::Recovery { fringe } if fringe == current_fringe)
+        && !nothing_to_finalize
 }
 
 /// Whether this node withholds its attestation for the block it is building.
@@ -2451,36 +2457,29 @@ mod attestation_guard_tests {
     };
 
     #[test]
-    fn quiet_finality_recovery_requires_explicit_stall_and_outstanding_work() {
-        assert!(quiet_finality_recovery_licensed(
-            ProposeSource::Recovery,
-            true,
-            false
-        ));
-        assert!(!quiet_finality_recovery_licensed(
-            ProposeSource::Recovery,
-            false,
-            false
-        ));
-        assert!(!quiet_finality_recovery_licensed(
-            ProposeSource::Recovery,
-            true,
-            true
-        ));
-        assert!(!quiet_finality_recovery_licensed(
-            ProposeSource::Recovery,
-            false,
-            true
-        ));
+    fn quiet_recovery_rechecks_fringe_version_and_requires_outstanding_work() {
+        use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+        let observed = Blake2b256Hash::from_bytes([1; 32]);
+        let advanced = Blake2b256Hash::from_bytes([2; 32]);
+        let recovery = ProposeSource::Recovery { fringe: observed };
+        assert!(quiet_finality_recovery_licensed(recovery, observed, false));
+        assert!(
+            !quiet_finality_recovery_licensed(recovery, advanced, false),
+            "a queued request loses its licence when finality advances"
+        );
+        assert!(
+            !quiet_finality_recovery_licensed(recovery, observed, true),
+            "an idle chain creates no recovery block"
+        );
         assert!(!quiet_finality_recovery_licensed(
             ProposeSource::Automatic,
-            true,
+            observed,
             false
         ));
         assert!(!quiet_finality_recovery_licensed(
             ProposeSource::Explicit { is_async: false },
-            true,
-            false,
+            observed,
+            false
         ));
     }
 
