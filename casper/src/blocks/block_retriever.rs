@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinSet;
 
 use rchain_comm::peer_node::PeerNode;
 use rchain_models::block_hash::BlockHash;
@@ -19,6 +20,11 @@ use crate::protocol::comm_util::CommUtil;
 const MAX_REQUESTED_BLOCKS: usize = 10_000;
 /// Maximum waiting-list length per requested hash (H5).
 const MAX_WAITING_LIST_PER_HASH: usize = 32;
+/// At most two distinct sources may receive an eager request for a hash.
+/// A paused validator must not delay the first responsive alternative for 240 seconds.
+const MAX_EAGER_BLOCK_SOURCES: usize = 2;
+/// Independent periodic retries do not wait in a serial chain on an unreachable peer.
+const MAX_PARALLEL_BLOCK_RETRIES: usize = 16;
 
 /// Reason a hash was admitted (port of `AdmitHashReason`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +68,9 @@ impl RequestState {
     fn new(now: i64, source_peer: Option<PeerNode>) -> Self {
         RequestState {
             timestamp: now,
-            peers: Vec::new(),
-            waiting_list: source_peer.into_iter().collect(),
+            // Eager sources are *already contacted*, not pending retry candidates.
+            peers: source_peer.into_iter().collect(),
+            waiting_list: Vec::new(),
         }
     }
 }
@@ -84,25 +91,33 @@ fn add_new_request(
     }
 }
 
-/// Append a peer to an existing request's waiting list (port of `addSourcePeerToRequest`).
+/// Register a previously unseen source. A second eager source protects delivery
+/// against a deliberately paused initial peer; further sources remain queued for
+/// the unchanged 240-second retry policy. Neither list grows without a bound.
 fn add_source_peer_to_request(
     state: &BTreeMap<BlockHash, RequestState>,
     hash: &BlockHash,
     peer: &PeerNode,
-) -> BTreeMap<BlockHash, RequestState> {
-    match state.get(hash) {
-        None => state.clone(),
-        Some(request_state) => {
-            if request_state.waiting_list.len() >= MAX_WAITING_LIST_PER_HASH {
-                return state.clone();
-            }
-            let mut updated = request_state.clone();
-            updated.waiting_list.push(peer.clone());
-            let mut new_state = state.clone();
-            new_state.insert(*hash, updated);
-            new_state
-        }
+) -> (BTreeMap<BlockHash, RequestState>, bool, bool) {
+    let Some(request) = state.get(hash) else {
+        return (state.clone(), false, false);
+    };
+    if request.peers.contains(peer) || request.waiting_list.contains(peer) {
+        return (state.clone(), false, false);
     }
+    let eager = request.peers.len() < MAX_EAGER_BLOCK_SOURCES;
+    if !eager && request.waiting_list.len() >= MAX_WAITING_LIST_PER_HASH {
+        return (state.clone(), false, false);
+    }
+    let mut updated = request.clone();
+    if eager {
+        updated.peers.push(peer.clone());
+    } else {
+        updated.waiting_list.push(peer.clone());
+    }
+    let mut new_state = state.clone();
+    new_state.insert(*hash, updated);
+    (new_state, true, eager)
 }
 
 /// The pure state transition for `admit_hash` (port of the `RequestedBlocks.modify` block).
@@ -134,28 +149,19 @@ pub fn admit_hash_state(
     } else {
         match peer {
             Some(peer) => {
-                let already_known = state[hash].waiting_list.contains(peer);
-                if already_known {
-                    (
-                        state.clone(),
-                        AdmitHashResult {
-                            status: AdmitHashStatus::Ignore,
-                            broadcast_request: false,
-                            request_block: false,
+                let (new_state, added, eager) = add_source_peer_to_request(state, hash, peer);
+                (
+                    new_state,
+                    AdmitHashResult {
+                        status: if added {
+                            AdmitHashStatus::NewSourcePeerAddedToRequest
+                        } else {
+                            AdmitHashStatus::Ignore
                         },
-                    )
-                } else {
-                    let was_empty = state[hash].waiting_list.is_empty();
-                    let new_state = add_source_peer_to_request(state, hash, peer);
-                    let result = AdmitHashResult {
-                        status: AdmitHashStatus::NewSourcePeerAddedToRequest,
                         broadcast_request: false,
-                        // Request from the first peer in the waiting list; otherwise requests are
-                        // triggered by the casper loop.
-                        request_block: was_empty,
-                    };
-                    (new_state, result)
-                }
+                        request_block: eager,
+                    },
+                )
             }
             None => (
                 state.clone(),
@@ -262,88 +268,117 @@ impl BlockRetriever {
         }
     }
 
-    /// Try to re-request all pending hashes whose latest request is older than `age_threshold`
-    /// (port of `requestAll`).
-    pub async fn request_all(&self, age_threshold: Duration) {
-        let state = { self.requested.lock().await.clone() };
-        let keys: Vec<BlockHash> = state.keys().copied().collect();
+    /// Try to re-request all expired hashes. The 240-second retry eligibility
+    /// remains unchanged, but one unreachable peer no longer serially stalls
+    /// the entire retriever maintenance task.
+    pub async fn request_all(self: &Arc<Self>, age_threshold: Duration) {
+        let keys: Vec<BlockHash> = { self.requested.lock().await.keys().copied().collect() };
         if !keys.is_empty() {
             self.log.debug(
                 self.log_source,
                 &format!(
-                    "Running BlockRetriever maintenance ({} items unexpired).",
+                    "Running BlockRetriever maintenance ({} items in scope).",
                     keys.len()
                 ),
             );
         }
+        let mut pending = JoinSet::new();
         for hash in keys {
-            let requested = state[&hash].clone();
-            let expired = current_millis() - requested.timestamp > age_threshold.as_millis() as i64;
-            if expired {
-                self.log.debug(
+            while let Some(result) = pending.try_join_next() {
+                if let Err(error) = result {
+                    self.log.error(
+                        self.log_source,
+                        &format!("Block retriever retry task failed: {error}"),
+                    );
+                }
+            }
+            if pending.len() >= MAX_PARALLEL_BLOCK_RETRIES {
+                if let Some(Err(error)) = pending.join_next().await {
+                    self.log.error(
+                        self.log_source,
+                        &format!("Block retriever retry task failed: {error}"),
+                    );
+                }
+            }
+            let retriever = self.clone();
+            pending.spawn(async move {
+                retriever.try_rerequest(hash, age_threshold).await;
+            });
+        }
+        while let Some(result) = pending.join_next().await {
+            if let Err(error) = result {
+                self.log.error(
                     self.log_source,
-                    &format!(
-                        "Casper loop: checking if should re-request {}.",
-                        hash.to_hex()
-                    ),
+                    &format!("Block retriever retry task failed: {error}"),
                 );
-                self.try_rerequest(hash, requested).await;
             }
         }
     }
 
-    /// Re-request a single expired hash from the next waiting peer, or broadcast for new sources
-    /// (port of `tryRerequest`).
-    async fn try_rerequest(&self, hash: BlockHash, requested: RequestState) {
-        match requested.waiting_list.split_first() {
-            Some((next_peer, waiting_list_tail)) => {
+    /// Choose and record the next source *before* awaiting transport.
+    /// In particular a response arriving during the timeout must not be
+    /// overwritten by a stale snapshot, and ack_received must not be undone.
+    async fn try_rerequest(&self, hash: BlockHash, age_threshold: Duration) {
+        let next = {
+            let mut state = self.requested.lock().await;
+            prepare_expired_retry(&mut state, &hash, current_millis(), age_threshold)
+        };
+        match next {
+            Some(RetryAction::Peer(peer)) => {
                 self.log.debug(
                     self.log_source,
                     &format!(
-                        "Trying {} to query for {} block. Remain waiting: {}.",
-                        next_peer.endpoint.host,
-                        hash.to_hex(),
-                        waiting_list_tail
-                            .iter()
-                            .map(|p| p.endpoint.host.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        "Trying {} to query for {} block.",
+                        peer.endpoint.host,
+                        hash.to_hex()
                     ),
                 );
-                self.comm_util.request_for_block(next_peer, &hash).await;
-                let mut peers = requested.peers.clone();
-                if !peers.contains(next_peer) {
-                    peers.push(next_peer.clone());
-                }
-                let updated = RequestState {
-                    timestamp: current_millis(),
-                    peers,
-                    waiting_list: waiting_list_tail.to_vec(),
-                };
-                let mut state = self.requested.lock().await;
-                state.insert(hash, updated);
+                self.comm_util.request_for_block(&peer, &hash).await;
             }
-            None => {
+            Some(RetryAction::Broadcast) => {
                 self.log.warn(
                     self.log_source,
                     &format!(
-                        "Could not retrieve requested block {} from {}. Asking peers again.",
-                        hash.to_hex(),
-                        requested
-                            .peers
-                            .iter()
-                            .map(|p| p.endpoint.host.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        "Could not retrieve requested block {}. Asking peers again.",
+                        hash.to_hex()
                     ),
                 );
-                {
-                    let mut state = self.requested.lock().await;
-                    state.remove(&hash);
-                }
                 self.comm_util.broadcast_has_block_request(&hash).await;
             }
+            None => {}
         }
+    }
+}
+
+/// A request is either atomically advanced to a fresh source, reannounced, or
+/// skipped if already acknowledged or not yet expired.
+#[derive(Debug, PartialEq, Eq)]
+enum RetryAction {
+    Peer(PeerNode),
+    Broadcast,
+}
+
+fn prepare_expired_retry(
+    state: &mut BTreeMap<BlockHash, RequestState>,
+    hash: &BlockHash,
+    now: i64,
+    age_threshold: Duration,
+) -> Option<RetryAction> {
+    let request = state.get_mut(hash)?;
+    let age_ms = i64::try_from(age_threshold.as_millis()).unwrap_or(i64::MAX);
+    if now.saturating_sub(request.timestamp) <= age_ms {
+        return None;
+    }
+    if !request.waiting_list.is_empty() {
+        let next_peer = request.waiting_list.remove(0);
+        if !request.peers.contains(&next_peer) {
+            request.peers.push(next_peer.clone());
+        }
+        request.timestamp = now;
+        Some(RetryAction::Peer(next_peer))
+    } else {
+        state.remove(hash);
+        Some(RetryAction::Broadcast)
     }
 }
 
@@ -433,15 +468,65 @@ mod tests {
     }
 
     #[test]
-    fn admit_hash_state_adds_peer_without_requesting_when_list_nonempty() {
-        let p = peer("peer", 40400);
-        let p2 = peer("secondPeer", 40400);
-        let mut state = set(&[1]);
-        state.get_mut(&hash(1)).unwrap().waiting_list.push(p);
-        let (new_state, result) = admit_hash_state(&state, &hash(1), 0, Some(&p2));
-        assert_eq!(result.status, AdmitHashStatus::NewSourcePeerAddedToRequest);
-        assert!(!result.request_block);
-        assert_eq!(new_state[&hash(1)].waiting_list.len(), 2);
+    fn second_distinct_source_is_eager_but_third_waits_for_retry() {
+        let a = peer("first", 40400);
+        let b = peer("second", 40401);
+        let c = peer("third", 40402);
+        let (state, first) = admit_hash_state(&set(&[]), &hash(1), 10, Some(&a));
+        assert!(first.request_block);
+        assert_eq!(state[&hash(1)].peers, vec![a.clone()]);
+        let (state, second) = admit_hash_state(&state, &hash(1), 11, Some(&b));
+        assert!(second.request_block);
+        let (state, third) = admit_hash_state(&state, &hash(1), 12, Some(&c));
+        assert!(!third.request_block);
+        assert_eq!(state[&hash(1)].peers, vec![a.clone(), b]);
+        assert_eq!(state[&hash(1)].waiting_list, vec![c]);
+        let (_, duplicate) = admit_hash_state(&state, &hash(1), 13, Some(&a));
+        assert_eq!(duplicate.status, AdmitHashStatus::Ignore);
+        assert!(!duplicate.request_block);
+    }
+
+    #[test]
+    fn expired_retry_commits_transition_once_and_ack_cannot_resurrect_it() {
+        let a = peer("first", 40400);
+        let b = peer("second", 40401);
+        let c = peer("third", 40402);
+        let (state, _) = admit_hash_state(&set(&[]), &hash(1), 10, Some(&a));
+        let (state, _) = admit_hash_state(&state, &hash(1), 11, Some(&b));
+        let (mut state, _) = admit_hash_state(&state, &hash(1), 12, Some(&c));
+        let action = prepare_expired_retry(&mut state, &hash(1), 250, Duration::from_millis(100));
+        assert_eq!(action, Some(RetryAction::Peer(c)));
+        assert_eq!(state[&hash(1)].timestamp, 250);
+        assert!(state[&hash(1)].waiting_list.is_empty());
+        assert_eq!(
+            prepare_expired_retry(&mut state, &hash(1), 260, Duration::from_millis(100)),
+            None
+        );
+        state.remove(&hash(1)); // ack_received while the transport request is still in flight
+        assert_eq!(
+            prepare_expired_retry(&mut state, &hash(1), 500, Duration::from_millis(100)),
+            None
+        );
+        assert!(!state.contains_key(&hash(1)));
+    }
+
+    #[test]
+    fn bounded_waiting_sources_do_not_grow_on_duplicates() {
+        let a = peer("first", 40400);
+        let b = peer("second", 40401);
+        let (state, _) = admit_hash_state(&set(&[]), &hash(2), 0, Some(&a));
+        let (mut state, _) = admit_hash_state(&state, &hash(2), 0, Some(&b));
+        for n in 0..(MAX_WAITING_LIST_PER_HASH + 8) {
+            let p = peer(&format!("extra-{n}"), 40500 + n as u16);
+            (state, _) = admit_hash_state(&state, &hash(2), 0, Some(&p));
+        }
+        assert_eq!(
+            state[&hash(2)].waiting_list.len(),
+            MAX_WAITING_LIST_PER_HASH
+        );
+        assert_eq!(state[&hash(2)].peers.len(), MAX_EAGER_BLOCK_SOURCES);
+        let (_, duplicate) = admit_hash_state(&state, &hash(2), 0, Some(&a));
+        assert_eq!(duplicate.status, AdmitHashStatus::Ignore);
     }
 
     // --- effectful integration (mock transport) -------------------------------------------
