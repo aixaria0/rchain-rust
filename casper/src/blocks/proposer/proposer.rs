@@ -941,6 +941,7 @@ where
         block_index,
         &creators_validator_for_parents,
         escape,
+        source == ProposeSource::Recovery && health.finality_stall_sustained(),
     )
     .await?;
     let pre_state_hash = pre_state.pre_state_hash;
