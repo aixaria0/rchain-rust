@@ -4,6 +4,7 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::codecs::{
     BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
 };
+use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_block_storage::syntax::{insert_genesis, put_approved_block, put_block};
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_status::BlockStatus;
