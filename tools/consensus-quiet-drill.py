@@ -64,6 +64,8 @@ def run(args):
     log_since = None
     failure = None
     final = None
+    retained = None
+    retention_target = None
     evidence = {}
     operator_latest = {}
     operator_height_ranges = {}
@@ -107,30 +109,52 @@ def run(args):
                     drill.record(node=i, status=status, finalized=response,
                                  finalized_marker_at=block_hash, response=answer)
                     if height >= 1 and base.marker_present(answer, drill.value):
-                        identities.append({"node": i, "height": height, "hash": block_hash})
+                        identities.append({"node": i, "height": height, "hash": block_hash,
+                                           "post_state": response["blockInfo"]["postStateHash"]})
                 except (OSError, ValueError) as error:
-                    drill.record(node=i, read_error=repr(error), status=status)
-            if len(identities) == len(active):
+                    drill.record(node=i, read_error=repr(error),
+                                 response_body=error.read().decode() if hasattr(error, "read") else None,
+                                 status=status)
+            if (len(identities) == len(active)
+                    and len({(x["hash"], x["post_state"]) for x in identities}) == 1):
                 final = identities
                 break
             time.sleep(2)
         if final is None:
             raise RuntimeError("active validators did not finalize the marker within the window")
-        # Observe a quiet interval beyond the retry delay, so an immediate marker
-        # pass cannot hide the absence of any exercised stall/escape path.
-        time.sleep(20)
-        for identity in final:
-            i = identity["node"]
-            _, current_hash = base.finalized_identity(base.get(i, "/api/last-finalized-block"))
-            answer = base.probe(i, drill.marker, current_hash)
-            original = base.probe(i, drill.marker, identity["hash"])
-            drill.record(node=i, current_finalized_hash=current_hash, response=answer,
-                         original_finalized_snapshot=identity["hash"], original_response=original)
-            if not base.marker_present(answer, drill.value) or not base.marker_present(original, drill.value):
-                raise RuntimeError(f"validator {i} lost the finalized marker")
+        # No helper traffic: require the finalized marker itself to survive
+        # two further epoch boundaries, plus a check of the original snapshot.
+        retention_target = (max(x["height"] for x in final) // 10 + 2) * 10
+        deadline = time.monotonic() + args.window
+        while time.monotonic() < deadline:
+            identities = []
+            for identity in final:
+                i = identity["node"]
+                response = base.get(i, "/api/last-finalized-block")
+                height, current_hash = base.finalized_identity(response)
+                answer = base.probe(i, drill.marker, current_hash)
+                original = base.probe(i, drill.marker, identity["hash"])
+                drill.record(node=i, retention_height=height, retention_target=retention_target,
+                             current_finalized_hash=current_hash, response=answer,
+                             original_finalized_snapshot=identity["hash"], original_response=original)
+                if not base.marker_present(answer, drill.value) or not base.marker_present(original, drill.value):
+                    raise RuntimeError(f"validator {i} lost the finalized marker")
+                identities.append({"node": i, "height": height, "hash": current_hash,
+                                   "post_state": response["blockInfo"]["postStateHash"]})
+            if (all(x["height"] >= retention_target for x in identities)
+                    and len({(x["hash"], x["post_state"]) for x in identities}) == 1):
+                retained = identities
+                break
+            time.sleep(2)
+        if retained is None:
+            raise RuntimeError("marker retention did not cross two further epoch boundaries without helper traffic")
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
     finally:
+        try:
+            base.causal_trace.capture(drill, base.get, base.node_name, nodes=active)
+        except Exception as error:
+            failure = failure or f"active DAG capture failed: {error}"
         # Collect active-node logs while the silent validator is still paused:
         # recovery traffic cannot be mistaken for the quiet arm's observations.
         for i in active:
@@ -141,6 +165,8 @@ def run(args):
                 text = r.stdout + r.stderr
                 path = drill.out / f"quiet-node-{i}.log"
                 path.write_text(text)
+                if re.search(r"Self-created block .*failed validation|equivocation detected|task panicked", text, re.I):
+                    failure = failure or f"consensus validation/equivocation/task failure on {i}"
                 evidence[str(i)] = {"escape_ms": escape_timings(text),
                                     "not_due_observed": "NotEnoughNewBlocks" in text,
                                     "attestation_decisions": attestation_decisions(text),
@@ -158,7 +184,8 @@ def run(args):
         failure = failure or "escape occurred before the 15000ms bound"
     result = "fail" if failure else ("pass" if escapes else "inconclusive")
     summary = {"result": result, "validators": args.validators, "silent_validator": silent,
-               "active_finalized": final, "escape_evidence": evidence, "helper_deploys": 0,
+               "active_finalized": final, "retained_finalized": retained,
+               "retention_target": retention_target, "escape_evidence": evidence, "helper_deploys": 0,
                "operator_latest": operator_latest, "operator_height_ranges": operator_height_ranges,
                "reason": failure or (None if escapes else "stall/escape path was not exercised"),
                "boundary": "finite quiet/silent-validator witness; no rejoin or universal liveness claim"}

@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -52,7 +53,7 @@ class QuietVerdicts(unittest.TestCase):
         self.assertEqual(result["age_ranges_ms"]["skip_freshness"], [16001, 16001])
         self.assertEqual(result["age_ranges_ms"]["queued"], [-10, -10])
 
-    def campaign(self, elapsed, lose_marker=False):
+    def campaign(self, elapsed, lose_marker=False, retention_height=24):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             args = SimpleNamespace(validators=4, window=30, out=directory)
@@ -77,7 +78,7 @@ class QuietVerdicts(unittest.TestCase):
                 if route == "/api/v1/status/operator":
                     return {"latestBlockNumber": 7, "peers": 2,
                             "finalityStall": "0 of 400", "undeliveredSends": 3}
-                return {}
+                return {"blockInfo": {"postStateHash": "b" * 64}}
 
             log = "" if elapsed is None else f"round gate escaped after 2 attempt(s) and {elapsed} ms blocked"
             operations = []
@@ -86,15 +87,24 @@ class QuietVerdicts(unittest.TestCase):
                 operations.append(argv)
                 return subprocess.CompletedProcess(argv, 0, stdout=log, stderr="")
 
+            final_reads = 0
+
+            def finalized(response):
+                nonlocal final_reads
+                final_reads += 1
+                return (2 if final_reads <= 3 else retention_height, "a" * 64)
+
             code = 0
             with patch.object(quiet.base, "Drill", return_value=drill), \
                  patch.object(quiet.base, "get", side_effect=get), \
                  patch.object(quiet.base, "probe", side_effect=probe), \
-                 patch.object(quiet.base, "finalized_identity", return_value=(2, "a" * 64)), \
+                 patch.object(quiet.base, "finalized_identity", side_effect=finalized), \
                  patch.object(quiet.base.causal_trace, "emit_capture"), \
+                 patch.object(quiet.base.causal_trace, "capture"), \
                  patch.object(quiet.subprocess, "run", side_effect=command), \
                  patch.object(quiet.subprocess, "check_output", return_value="test-sha"), \
-                 patch.object(quiet.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+                 patch.object(quiet.time, "sleep"), \
+                 patch.object(quiet.time, "monotonic", side_effect=itertools.count()), contextlib.redirect_stdout(io.StringIO()):
                 try:
                     quiet.run(args)
                 except SystemExit as error:
@@ -110,6 +120,8 @@ class QuietVerdicts(unittest.TestCase):
             self.assertEqual(len(submitted), 1)
             self.assertNotIn("Nil", submitted)
             self.assertIn(["docker", "unpause", quiet.base.node_name(3)], operations)
+            if retention_height < 20 and not lose_marker:
+                self.assertIn("two further epoch boundaries", summary["reason"])
             return code, summary["result"]
 
     def test_unexercised_escape_is_not_a_pass(self):
@@ -120,6 +132,9 @@ class QuietVerdicts(unittest.TestCase):
 
     def test_exact_elapsed_boundary_can_pass(self):
         self.assertEqual(self.campaign(15000), (0, "pass"))
+
+    def test_time_only_retention_is_not_a_pass(self):
+        self.assertEqual(self.campaign(16000, retention_height=2), (1, "fail"))
 
     def test_lost_marker_fails_even_with_valid_escape(self):
         self.assertEqual(self.campaign(16000, lose_marker=True), (1, "fail"))

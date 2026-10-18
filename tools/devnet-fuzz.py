@@ -478,7 +478,7 @@ def run_acceptance_campaign(trace=False, quiet=False):
         # Full inbound traces distinguish propagation from validation rejection.
         env["DEVNET_LOG_LEVEL"] = "debug"
     outcomes = []
-    for validators in ((5, 8) if trace else (4, 8)):
+    for validators in ((5, 8) if trace else ((8, 4) if quiet else (4, 8))):
         out = Path("target/consensus-acceptance") / f"n{validators}"
         out.mkdir(parents=True, exist_ok=True)
         code = 1
