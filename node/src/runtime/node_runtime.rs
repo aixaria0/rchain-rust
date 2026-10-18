@@ -2175,10 +2175,10 @@ async fn setup_shard_runtime(
                         continue;
                     }
                     let (tx, _rx) = tokio::sync::oneshot::channel();
-                    match quiet_retry_tx.try_send((ProposeSource::Automatic, tx)) {
+                    match quiet_retry_tx.try_send((ProposeSource::Recovery, tx)) {
                         Ok(()) => quiet_retry_log.debug(
                             LogSource::new("coop.rchain.node.runtime.Setup"),
-                            "finality-stall recovery: queued a paced, automatic propose",
+                            "finality-stall recovery: queued bounded recovery propose",
                         ),
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => quiet_retry_log
                             .warn(
