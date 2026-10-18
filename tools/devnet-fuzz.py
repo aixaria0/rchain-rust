@@ -429,7 +429,7 @@ def run_gateway(args, rng):
     print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
 
 
-def run_acceptance_campaign(trace=False):
+def run_acceptance_campaign(trace=False, quiet=False):
     """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("acceptance mode requires an isolated GitHub Actions runner")
@@ -438,7 +438,7 @@ def run_acceptance_campaign(trace=False):
     subprocess.run(["tools/devnet.sh", "down"], check=True)
     env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
            "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
-    if trace:
+    if trace or quiet:
         # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
         # Full inbound traces distinguish propagation from validation rejection.
         env["DEVNET_LOG_LEVEL"] = "debug"
@@ -451,7 +451,7 @@ def run_acceptance_campaign(trace=False):
             subprocess.run(["tools/devnet.sh", "up", "--validators", str(validators),
                             "--fresh", "--no-autopropose", "--epoch-length", "10"],
                            env=env, check=True)
-            code = subprocess.run([sys.executable, "tools/consensus-acceptance-drill.py",
+            code = subprocess.run([sys.executable, "tools/consensus-quiet-drill.py" if quiet else "tools/consensus-acceptance-drill.py",
                                    "--validators", str(validators), "--out", str(out)], env=env).returncode
         except (OSError, subprocess.CalledProcessError) as error:
             (out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
@@ -486,7 +486,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance", "acceptance-trace"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance", "acceptance-trace", "acceptance-quiet"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -501,14 +501,17 @@ def main():
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
 
-    if any(mode in modes for mode in ("acceptance", "acceptance-trace")):
+    if any(mode in modes for mode in ("acceptance", "acceptance-trace", "acceptance-quiet")):
         if len(modes) != 1:
             ap.error("acceptance is a standalone campaign; do not combine it with fuzz modes")
         if args.dry_run:
+            if modes == ["acceptance-quiet"]:
+                print("isolated CI: N=4/N=8, one silent validator, no helper deploys, 15s escape bound")
+                return
             print("isolated CI: " + ("N=5 control, N=8, debug traces" if modes == ["acceptance-trace"] else
                                     "N=4 control, N=8") + "; real finalized marker, two further epoch boundaries")
             return
-        run_acceptance_campaign(trace=modes == ["acceptance-trace"])
+        run_acceptance_campaign(trace=modes == ["acceptance-trace"], quiet=modes == ["acceptance-quiet"])
         return
 
     if args.dry_run:
