@@ -30,7 +30,10 @@ def node_name(i):
 
 
 def get(i, path, body=None, admin=False):
-    port = (40405 if admin else 40403) + i * 1000
+    # Follow the disposable Docker devnet's host bindings; never change the
+    # inside-container ports or protocol endpoints.
+    offset = int(os.environ.get("DEVNET_PORT_OFFSET", "0"))
+    port = (40405 if admin else 40403) + offset + i * 1000
     return fuzz.http_json(f"http://127.0.0.1:{port}{path}",
                           "POST" if body is not None else "GET", body, timeout=10)[1]
 
