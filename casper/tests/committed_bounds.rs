@@ -4,7 +4,6 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::codecs::{
     BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
 };
-use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_block_storage::syntax::{insert_genesis, put_approved_block, put_block};
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_status::BlockStatus;
@@ -224,8 +223,65 @@ async fn committed_bounds_control_the_block_path_with_opposing_local_configs() {
             }
         }
     }
+    // A peer cannot lower the bounds by naming some other locally available pre-state root.
+    let decoy = params_root(&runtime, Some(params(0, 0))).await;
+    let mut forged = block(9, 1, decoy);
+    forged.justifications = vec![parents[0]];
+    forged.state.deploys = vec![priced_deploy(1)];
+    assert!(matches!(
+        validate(
+            dag.as_ref(),
+            &store,
+            &runtime,
+            &forged,
+            "root",
+            0,
+            0,
+            &index,
+            &log,
+            &health
+        )
+        .await,
+        Err(ValidateError::ValidationFailed(
+            _,
+            BlockStatus::ContainsLowCostDeploy
+        ))
+    ));
+
+    // Synced records may not have the locally-validated flag; failed parents must not supply
+    // their claimed post-state either. Both paths retain the oldest accepted immutable params.
+    for (byte, validated, failed) in [(4, false, false), (5, true, true)] {
+        let mut parent = block(byte, 1, decoy);
+        parent.justifications = vec![parents[0]];
+        let mut metadata = rchain_models::block_metadata::BlockMetadata::from_block(&parent);
+        metadata.validated = validated;
+        metadata.validation_failed = failed;
+        put_block(&store, parent.clone()).await.unwrap();
+        dag.insert(metadata, parent.clone()).await.unwrap();
+        let mut child = block(9, 2, root);
+        child.justifications = vec![parent.block_hash];
+        child.state.deploys = vec![priced_deploy(1)];
+        assert!(matches!(
+            validate(
+                dag.as_ref(),
+                &store,
+                &runtime,
+                &child,
+                "root",
+                0,
+                0,
+                &index,
+                &log,
+                &health
+            )
+            .await,
+            Err(ValidateError::ValidationFailed(
+                _,
+                BlockStatus::ContainsLowCostDeploy
+            ))
+        ));
+    }
     // The selected reader is pinned to persisted state, even when the live runtime has another leaf.
-    params_root(&runtime, Some(params(0, 0))).await;
     assert_eq!(
         runtime.committed_validation_bounds(&root).await.unwrap(),
         Some((2, 2))
