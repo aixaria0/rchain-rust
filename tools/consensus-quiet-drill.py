@@ -31,6 +31,23 @@ def attestation_decisions(text):
     }
 
 
+def tap_decisions(text):
+    """Count only explicit logged tap decisions, preserving observed age ranges."""
+    rows = re.findall(
+        r"attest-tap decision=(skip_freshness|skip_sender_gate|queued) hash=[0-9a-f]+[^\n]*? age_ms=(-?\d+)",
+        text,
+    )
+    counts = {key: 0 for key in ("skip_freshness", "skip_sender_gate", "queued")}
+    ages = {key: [] for key in counts}
+    for decision, age in rows:
+        counts[decision] += 1
+        ages[decision].append(int(age))
+    return {"counts": counts, "age_ranges_ms": {
+        key: [min(values), max(values)] if values else None
+        for key, values in ages.items()
+    }}
+
+
 def operator_evidence(status):
     """Only report operator-observed values, without interpreting network topology as reachability."""
     keys = ("latestBlockNumber", "peers", "finalityStall", "finalityStallEpisodes",
@@ -126,7 +143,8 @@ def run(args):
                 path.write_text(text)
                 evidence[str(i)] = {"escape_ms": escape_timings(text),
                                     "not_due_observed": "NotEnoughNewBlocks" in text,
-                                    "attestation_decisions": attestation_decisions(text)}
+                                    "attestation_decisions": attestation_decisions(text),
+                                    "tap_decisions": tap_decisions(text)}
                 base.causal_trace.emit_capture(path)
             except Exception as error:
                 failure = failure or f"log capture failed on {i}: {error}"

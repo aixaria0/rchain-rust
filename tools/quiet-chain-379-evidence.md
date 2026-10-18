@@ -38,6 +38,12 @@ from the peer count without stronger causal evidence.
 
 ## Next discriminating gate
 
+The diagnostic branch now emits DEBUG-only `attest-tap decision` records with block hash,
+height and block-age milliseconds for three outcomes: `skip_freshness`,
+`skip_sender_gate` and `queued`. These are passive observations; they do not change
+whether the node enqueues an attestation. The quiet runner starts its isolated nodes
+at debug log level and summarizes only decisions it actually observed.
+
 Capture the same remote block hash at each stage: sender timestamp, hash broadcast,
 receiver arrival, retriever/admission outcome, `attest_is_live` age, per-sender
 `attest_warranted` decision, enqueue success/failure, proposer decision and

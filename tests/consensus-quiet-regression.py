@@ -32,6 +32,15 @@ class QuietVerdicts(unittest.TestCase):
                          {"licensed": 1, "withheld": 1,
                           "quorum_reachable_false": 1, "quorum_reachable_true": 1})
 
+    def test_tap_evidence_counts_only_logged_decisions(self):
+        lines = ("attest-tap decision=skip_freshness hash=abc123 height=3 block_ms=1 now_ms=2 age_ms=16001\n"
+                 "attest-tap decision=skip_sender_gate hash=aabb height=3 last=Some(3) own_sender=false block_ms=3 now_ms=4 age_ms=100\n"
+                 "attest-tap decision=queued hash=bbcc height=4 block_ms=5 now_ms=6 age_ms=-10\n")
+        result = quiet.tap_decisions(lines)
+        self.assertEqual(result["counts"], {"skip_freshness": 1, "skip_sender_gate": 1, "queued": 1})
+        self.assertEqual(result["age_ranges_ms"]["skip_freshness"], [16001, 16001])
+        self.assertEqual(result["age_ranges_ms"]["queued"], [-10, -10])
+
     def campaign(self, elapsed, lose_marker=False):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -86,6 +95,7 @@ class QuietVerdicts(unittest.TestCase):
             self.assertEqual(summary["operator_height_ranges"], {"0": [7, 7], "1": [7, 7], "2": [7, 7]})
             self.assertEqual(summary["operator_latest"]["0"]["undeliveredSends"], 3)
             self.assertIn("attestation_decisions", summary["escape_evidence"]["0"])
+            self.assertIn("tap_decisions", summary["escape_evidence"]["0"])
             self.assertEqual(len(submitted), 1)
             self.assertNotIn("Nil", submitted)
             self.assertIn(["docker", "unpause", quiet.base.node_name(3)], operations)

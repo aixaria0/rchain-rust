@@ -1940,13 +1940,34 @@ async fn setup_shard_runtime(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
+                // Diagnostic-only trace: identify the same validated block across receipt,
+                // freshness, sender-gate and proposer logs. Never alter the guard's outcome.
+                // i128 prevents timestamp arithmetic overflow on adversarial wire inputs.
+                let age_ms = i128::from(now) - i128::from(block.timestamp);
                 if !attest_is_live(block.timestamp, now) {
+                    tap_log.debug(
+                        LogSource::new("coop.rchain.node.runtime.Setup"),
+                        &format!(
+                            "attest-tap decision=skip_freshness hash={} height={height} block_ms={} now_ms={now} age_ms={age_ms}",
+                            block.block_hash.to_hex(),
+                            block.timestamp,
+                        ),
+                    );
                     return;
                 }
                 {
                     let mut answered = answered.lock().unpoison();
                     let last_for_sender = answered.get(&sender).copied();
                     if !attest_warranted(&me, &sender, height, last_for_sender) {
+                        tap_log.debug(
+                            LogSource::new("coop.rchain.node.runtime.Setup"),
+                            &format!(
+                                "attest-tap decision=skip_sender_gate hash={} height={height} last={last_for_sender:?} own_sender={} block_ms={} now_ms={now} age_ms={age_ms}",
+                                block.block_hash.to_hex(),
+                                sender == me,
+                                block.timestamp,
+                            ),
+                        );
                         return;
                     }
                     answered.insert(sender, height);
@@ -1958,6 +1979,15 @@ async fn setup_shard_runtime(
                         &format!(
                             "attest request not queued ({e}) — this validator will not attest \
                              to the new block"
+                        ),
+                    );
+                } else {
+                    tap_log.debug(
+                        LogSource::new("coop.rchain.node.runtime.Setup"),
+                        &format!(
+                            "attest-tap decision=queued hash={} height={height} block_ms={} now_ms={now} age_ms={age_ms}",
+                            block.block_hash.to_hex(),
+                            block.timestamp,
                         ),
                     );
                 }
