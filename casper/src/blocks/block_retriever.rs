@@ -574,6 +574,84 @@ mod tests {
         BlockRetriever::new(comm_util, Arc::new(NopLog))
     }
 
+    /// A paused first source must not monopolize a hash that a second peer
+    /// advertises. The transport intentionally never completes until released.
+    #[derive(Default)]
+    struct PausedFirstTransport {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        attempts: std::sync::Mutex<Vec<PeerNode>>,
+    }
+
+    #[async_trait]
+    impl TransportLayer for PausedFirstTransport {
+        async fn send(&self, peer: &PeerNode, _msg: Protocol) -> CommErr<()> {
+            self.attempts.lock().unwrap().push(peer.clone());
+            if u16::from(peer.endpoint.tcp_port) == 40401 {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(())
+        }
+        async fn broadcast(&self, peers: &[PeerNode], _msg: Protocol) -> Vec<CommErr<()>> {
+            peers.iter().map(|_| Ok(())).collect()
+        }
+        async fn stream(&self, _peers: &[PeerNode], _blob: rchain_comm::transport::chunker::Blob) {}
+    }
+
+    #[tokio::test]
+    async fn second_source_request_completes_while_first_transport_is_paused() {
+        let transport = Arc::new(PausedFirstTransport::default());
+        let local = peer("local", 40400);
+        let initial = peer("unresponsive", 40401);
+        let backup = peer("responsive", 40402);
+        let connections: ConnectionsCell = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let comm = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf(&local),
+            connections,
+            Arc::new(NopLog),
+        ));
+        let retriever = Arc::new(BlockRetriever::new(comm, Arc::new(NopLog)));
+        let first_retriever = retriever.clone();
+        let first_peer = initial.clone();
+        let first = tokio::spawn(async move {
+            first_retriever
+                .admit_hash(
+                    &hash(7),
+                    Some(&first_peer),
+                    AdmitHashReason::HasBlockMessageReceived,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), transport.started.notified())
+            .await
+            .expect("first transport must be paused");
+        let second = tokio::time::timeout(
+            Duration::from_secs(1),
+            retriever.admit_hash(
+                &hash(7),
+                Some(&backup),
+                AdmitHashReason::HasBlockMessageReceived,
+            ),
+        )
+        .await
+        .expect("second peer must not wait on the first peer's transport");
+        assert_eq!(second.status, AdmitHashStatus::NewSourcePeerAddedToRequest);
+        assert!(second.request_block, "backup must be queried eagerly");
+        assert_eq!(
+            transport.attempts.lock().unwrap().as_slice(),
+            &[initial, backup]
+        );
+        retriever.ack_received(&hash(7)).await;
+        transport.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), first)
+            .await
+            .expect("first request must complete after release")
+            .unwrap();
+        assert!(!retriever.requested.lock().await.contains_key(&hash(7)));
+    }
+
     #[tokio::test]
     async fn admit_hash_with_peer_sends_block_request() {
         let transport = Arc::new(MockTransport::default());
