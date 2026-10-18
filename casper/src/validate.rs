@@ -583,10 +583,8 @@ pub async fn block_timestamp(
 
 /// Compose the effectful + pure checks (port of `blockSummary`).
 ///
-/// `max_number_of_parents` is threaded here from `casper.max-number-of-parents` exactly as
-/// `min_phlo_price` is, and for the same reason: it is a consensus bound that is a property of the
-/// *network's* configuration rather than of the block, so it cannot be read off the block and must be
-/// handed in by the node (#153).
+/// Explicit-bound entry point for callers with already resolved parameters and legacy fixtures.
+/// The production validator uses [`block_summary_from_state`] to resolve the committed bounds.
 pub async fn block_summary(
     dag: &dyn BlockDagStorage,
     block_store: &BlockStore,
@@ -595,6 +593,22 @@ pub async fn block_summary(
     expiration_threshold: i64,
     min_phlo_price: i64,
     max_number_of_parents: i32,
+) -> Result<ValidBlockProcessing, String> {
+    block_summary_from_state(
+        dag, block_store, block, shard_id, expiration_threshold,
+        std::future::ready(Ok((min_phlo_price, i64::from(max_number_of_parents)))),
+    ).await
+}
+
+/// Resolve bounds only after structural checks, but before timestamp reads, merge and replay.
+/// The future reads a locally validated parent's state, never the incoming block's claimed root.
+pub async fn block_summary_from_state(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    block: &BlockMessage,
+    shard_id: &str,
+    expiration_threshold: i64,
+    bounds: impl std::future::Future<Output = Result<(i64, i64), String>>,
 ) -> Result<ValidBlockProcessing, String> {
     if let Err(status) = justification_regressions(dag, block).await? {
         return Ok(Err(status));
@@ -605,6 +619,7 @@ pub async fn block_summary(
     if let Err(status) = block_number(dag, block).await? {
         return Ok(Err(status));
     }
+    let (min_phlo_price, max_number_of_parents) = bounds.await?;
     // Pure deploy checks — including `phlo_price`, which must be rejected *before* the expensive
     // replay so an economically-free deploy cannot force every validator to replay it (R27).
     let pure = [
@@ -745,8 +760,8 @@ pub fn deploy_count(b: &BlockMessage) -> BlockStatus {
 /// Refusing a set above a fixed width **is a consensus change**, because such a block is valid today.
 /// It is registered in `spec/audit/passes.md` §6 and tracked on #51 §A, and the shipped default is the
 /// protocol's existing per-block width rather than `i32::MAX`.
-pub fn justification_count(b: &BlockMessage, max_number_of_parents: i32) -> BlockStatus {
-    if max_number_of_parents <= 0 || b.justifications.len() <= max_number_of_parents as usize {
+pub fn justification_count(b: &BlockMessage, max_number_of_parents: i64) -> BlockStatus {
+    if max_number_of_parents <= 0 || b.justifications.len() as u128 <= max_number_of_parents as u128 {
         BlockStatus::Valid
     } else {
         BlockStatus::TooManyJustifications
@@ -1035,7 +1050,7 @@ mod tests {
 
         for off in [0, -1, i32::MIN] {
             assert_eq!(
-                justification_count(&wide, off),
+                justification_count(&wide, i64::from(off)),
                 BlockStatus::Valid,
                 "a bound of {off} means the check is off, not that every block is refused"
             );

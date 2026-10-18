@@ -27,7 +27,9 @@ use rchain_rholang::merging::{
     calculate_num_channel_diff, encode_mergeable_key, get_number_with_rnd, DeployMergeableData,
     NumberChannel,
 };
-use rchain_rholang::native_state::{decode_bonds, pos_active_key, NativeSystemState, PosGenesis};
+use rchain_rholang::native_state::{
+    decode_bonds, decode_params, pos_active_key, pos_params_key, NativeSystemState, PosGenesis,
+};
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
@@ -1938,6 +1940,47 @@ impl RuntimeManager {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "active-bonds leaf not found in state".to_string())?;
         decode_bonds(&bytes)
+    }
+
+    /// Read the immutable validity bounds from a particular committed state. Legacy records have
+    /// no bound fields; an explicitly committed zero is a value, never a legacy sentinel. Missing,
+    /// malformed and unsupported records are errors rather than permission to fall back to config.
+    pub async fn committed_validation_bounds(
+        &self,
+        hash: &StateHash,
+    ) -> Result<Option<(i64, i64)>, String> {
+        let reader = self.history_repo.get_history_reader(to_blake(hash)).await;
+        let bytes = reader
+            .get_native(PREFIX_POS, pos_params_key())
+            .await?
+            .ok_or_else(|| "PoS params leaf not found in committed state".to_string())?;
+        let params = decode_params(&bytes)?;
+        // decode_params has already checked the exact supported shape. Only the unversioned
+        // layouts lack the bound fields; inspecting their decoded zero values loses that fact.
+        Ok((bytes.len() % 8 == 1)
+            .then_some((i64::from(params.min_phlo_price), params.max_number_of_parents)))
+    }
+
+    /// Guard startup/restore before the node uses its configured proposal and admission settings.
+    /// Validation reads the committed leaf independently. The bounds are immutable in this release;
+    /// refusing a mismatch also keeps this node from producing blocks under different local rules.
+    pub async fn check_configured_validation_bounds(
+        &self,
+        hash: &StateHash,
+        min_phlo_price: i64,
+        max_number_of_parents: i32,
+    ) -> Result<(), String> {
+        if let Some(committed) = self.committed_validation_bounds(hash).await? {
+            let configured = (min_phlo_price, i64::from(max_number_of_parents));
+            if configured != committed {
+                return Err(format!(
+                    "configured validity bounds {configured:?} differ from committed PoS bounds \
+                     {committed:?} at state {}; refusing to enter Running",
+                    to_blake(hash).to_hex()
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
