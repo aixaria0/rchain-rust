@@ -169,6 +169,19 @@ where
         parents.values().cloned().collect()
     }
 
+    /// EXPERIMENTAL: sustained-stall recovery should acknowledge newly observed
+    /// peer messages as well as this sender's own latest block. The ordinary
+    /// round and escape rules above remain unchanged; only an explicitly
+    /// stalled recovery request may choose this parent set.
+    ///
+    /// Unlike merely refreshing our own parent in the old escape, refreshing
+    /// all observed senders gives recovery blocks a chance to accumulate
+    /// a *shared* layer of acknowledgements. One entry per sender is preserved
+    /// by the map itself, and the sender's latest sequence number is retained.
+    pub fn parents_for_stalled_recovery(&self) -> BTreeSet<Message<M, S>> {
+        self.latest_msgs.values().cloned().collect()
+    }
+
     /// **Whether `sender` has already produced a block since the last round boundary** — and so must not
     /// propose again until the round closes, on pain of equivocating with itself.
     ///
@@ -410,6 +423,28 @@ mod tests {
 
         // The message map still holds every message.
         assert_eq!(s3.msg_map.len(), 3);
+    }
+
+    #[test]
+    fn stalled_recovery_uses_latest_unique_sender_parents_without_changing_round_snapshot() {
+        let bonds = [(0, 100), (1, 100), (2, 100), (3, 100)];
+        let genesis = at(0, 0, 0, 0, &bonds);
+        let state = DagMessageState::<i32, i32>::empty().insert_msg(&genesis);
+        // A stalled snapshot still points at genesis as peer 1 and peer 2
+        // independently advance. The ordinary escape may only refresh self.
+        let st = state
+            .insert_msg(&at(1, 1, 0, 1, &bonds))
+            .insert_msg(&at(2, 2, 0, 1, &bonds))
+            .insert_msg(&at(3, 0, 1, 2, &bonds));
+        assert_eq!(st.round_height, BlockHeight::zero());
+        let old = st.parents_for_new_block_escaping(&0);
+        assert_eq!(old.len(), 1, "old escape only refreshed sender 0");
+        let recovered = st.parents_for_stalled_recovery();
+        let ids: BTreeSet<_> = recovered.iter().map(|m| m.id).collect();
+        assert_eq!(ids, BTreeSet::from([1, 2, 3]));
+        let senders: BTreeSet<_> = recovered.iter().map(|m| m.sender).collect();
+        assert_eq!(senders, BTreeSet::from([0, 1, 2]));
+        assert_eq!(st.round_parents.len(), 1, "probe cannot mutate the round");
     }
 
     #[test]
