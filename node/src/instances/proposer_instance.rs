@@ -141,12 +141,18 @@ fn create_with_retry(
             let proposer = proposer.clone();
             let log = log.clone();
             async move {
-                let permit = match lock.clone().try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        chan::oneshot_send(propose_id_def, ProposerResult::Empty);
-                        coalesce_follow_up(&mut *follow_up.lock().await, source);
-                        return None;
+                // Coordinate the busy decision with completion's handoff. Otherwise
+                // completion can take an empty follow-up just before a colliding request
+                // stores its source, leaving that source with no proposal to wake it.
+                let permit = {
+                    let mut pending = follow_up.lock().await;
+                    match lock.clone().try_acquire_owned() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            coalesce_follow_up(&mut pending, source);
+                            chan::oneshot_send(propose_id_def, ProposerResult::Empty);
+                            return None;
+                        }
                     }
                 };
 
@@ -173,11 +179,14 @@ fn create_with_retry(
                     s.latest_propose_result = Some(r.clone());
                     s.curr_propose_result = None;
                 }
-                drop(permit);
-
-                // One follow-up, retaining a collided recovery request. The proposer
-                // still rechecks its fringe version and outstanding work before licensing it.
-                let next_source = follow_up.lock().await.take();
+                // One follow-up, retaining a collided recovery request. Release the
+                // permit and take the pending source under the same lock as the busy
+                // decision above. The proposer still rechecks fringe version and work.
+                let next_source = {
+                    let mut pending = follow_up.lock().await;
+                    drop(permit);
+                    pending.take()
+                };
                 if let Some(next_source) = next_source {
                     let (d_tx, d_rx) = oneshot::channel();
                     chan::send(&tx, (next_source, d_tx)).await;
