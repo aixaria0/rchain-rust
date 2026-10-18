@@ -1,8 +1,8 @@
 //! Proposer instance (port of `node/instances/ProposerInstance.scala`).
 //!
 //! Drains propose requests, serializing actual proposal through a semaphore; concurrent attempts
-//! resolve to `ProposerResult::Empty` and set the `trigger` flag, so a propose that arrives while
-//! one is running is re-enqueued once the running one finishes (the Scala's trigger re-enqueue).
+//! resolve to `ProposerResult::Empty` and coalesce one follow-up request. A bounded recovery request
+//! keeps its fringe version when it collides with another proposal; ordinary callers retry automatically.
 //!
 //! **A "not due" outcome is retried by the node itself** ([`NOT_DUE_RETRY`]). The round gate's wall-clock
 //! escape is only evaluated when something asks this node to propose, and with `--no-autopropose` nothing
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 
 use rchain_casper::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
@@ -86,6 +86,19 @@ fn not_due(result: &(ProposeResult, Option<BlockMessage>)) -> bool {
     result.1.is_none() && result.0.propose_status == ProposeStatus::NotEnoughNewBlocks
 }
 
+/// Retain one follow-up source while a proposal runs. Explicit callers already receive
+/// `Empty`, so their follow-up is automatic. Recovery keeps the timer's versioned
+/// licence: downgrading it to Automatic lets the attestation horizon suppress it.
+/// A later timer request replaces an older version; ordinary taps cannot erase it.
+fn coalesce_follow_up(pending: &mut Option<ProposeSource>, source: ProposeSource) {
+    match source {
+        ProposeSource::Recovery { .. } => *pending = Some(source),
+        _ => {
+            pending.get_or_insert(ProposeSource::Automatic);
+        }
+    }
+}
+
 /// Create the proposer stream (port of `ProposerInstance.create`).
 pub fn create(
     propose_requests_rx: mpsc::Receiver<(ProposeSource, oneshot::Sender<ProposerResult>)>,
@@ -114,14 +127,14 @@ fn create_with_retry(
 ) -> impl tokio_stream::Stream<Item = (ProposeResult, Option<BlockMessage>)> + Send + 'static {
     let input = ReceiverStream::new(propose_requests_rx);
     let lock = Arc::new(Semaphore::new(1));
-    let trigger = Arc::new(AtomicBool::new(false));
+    let follow_up = Arc::new(Mutex::new(None));
     let retry_pending = Arc::new(AtomicBool::new(false));
     let proposer = Arc::new(proposer);
 
     input
         .map(move |(source, propose_id_def)| {
             let lock = lock.clone();
-            let trigger = trigger.clone();
+            let follow_up = follow_up.clone();
             let retry_pending = retry_pending.clone();
             let state = state.clone();
             let tx = propose_requests_tx.clone();
@@ -132,7 +145,7 @@ fn create_with_retry(
                     Ok(p) => p,
                     Err(_) => {
                         chan::oneshot_send(propose_id_def, ProposerResult::Empty);
-                        trigger.store(true, Ordering::SeqCst);
+                        coalesce_follow_up(&mut *follow_up.lock().await, source);
                         return None;
                     }
                 };
@@ -162,13 +175,12 @@ fn create_with_retry(
                 }
                 drop(permit);
 
-                // Re-enqueue a follow-up propose if a request arrived while this one was running.
-                // `Automatic`: the colliding caller already got `Empty` (a 400, "another propose is
-                // in progress"), so this follow-up serves no caller — it is the node retrying on its
-                // own, and it is paced like the taps it usually came from.
-                if trigger.swap(false, Ordering::SeqCst) {
+                // One follow-up, retaining a collided recovery request. The proposer
+                // still rechecks its fringe version and outstanding work before licensing it.
+                let next_source = follow_up.lock().await.take();
+                if let Some(next_source) = next_source {
                     let (d_tx, d_rx) = oneshot::channel();
-                    chan::send(&tx, (ProposeSource::Automatic, d_tx)).await;
+                    chan::send(&tx, (next_source, d_tx)).await;
                     // Keep the receiver alive until the re-queued propose completes it.
                     std::mem::forget(d_rx);
                 }
@@ -222,11 +234,6 @@ mod tests {
 
     /// A proposer whose block creator always answers `outcome`, counting how often it is asked.
     fn proposer(outcome: BlockCreatorResult, calls: Arc<AtomicUsize>) -> Proposer {
-        let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
-            Arc::new(|_v| Box::pin(async { 0i64 }));
-        let check_active: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
-        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
         let create_block: Arc<
             dyn Fn(
                     &ValidatorIdentity,
@@ -239,6 +246,21 @@ mod tests {
             let outcome = outcome.clone();
             Box::pin(async move { Ok(outcome) })
         });
+        proposer_with_creator(create_block)
+    }
+
+    type Creator = Arc<
+        dyn Fn(&ValidatorIdentity, ProposeSource) -> BoxFuture<Result<BlockCreatorResult, String>>
+            + Send
+            + Sync,
+    >;
+
+    fn proposer_with_creator(create_block: Creator) -> Proposer {
+        let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
+            Arc::new(|_v| Box::pin(async { 0i64 }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
         let validate: Arc<
             dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
         > = Arc::new(|_b| Box::pin(async { Ok(()) }));
@@ -316,6 +338,79 @@ mod tests {
         )
         .await;
         assert_eq!(asks, 1);
+    }
+
+    /// Busy ordinary proposals must not consume the bounded recovery licence. Drive
+    /// the real stream while the first creator is held open, and await every collision
+    /// reply before releasing it. Repeated taps and timer ticks coalesce to one attempt.
+    #[tokio::test]
+    async fn a_collided_recovery_keeps_its_latest_fringe_version() {
+        use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+
+        let gate = Arc::new(Semaphore::new(0));
+        let release = gate.clone();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+        let creator: Creator = Arc::new(move |_validator, source| {
+            let first = source == ProposeSource::Automatic;
+            seen_tx.send(source).unwrap();
+            let gate = gate.clone();
+            Box::pin(async move {
+                if first {
+                    gate.acquire().await.unwrap().forget();
+                }
+                Ok(BlockCreatorResult::NoNewDeploys)
+            })
+        });
+        let (tx, rx) = mpsc::channel(16);
+        let stream = create_with_retry(
+            rx,
+            tx.clone(),
+            proposer_with_creator(creator),
+            Arc::new(tokio::sync::Mutex::new(ProposerState::default())),
+            Arc::new(rchain_shared::log::NopLog),
+            Duration::from_millis(40),
+        );
+        let driver = tokio::spawn(async move {
+            let mut stream = Box::pin(stream);
+            while stream.next().await.is_some() {}
+        });
+        let (reply, first_result) = oneshot::channel();
+        tx.send((ProposeSource::Automatic, reply)).await.unwrap();
+        assert_eq!(seen_rx.recv().await, Some(ProposeSource::Automatic));
+        let latest = ProposeSource::Recovery {
+            fringe: Blake2b256Hash::from_bytes([2; 32]),
+        };
+        for source in [
+            ProposeSource::Recovery {
+                fringe: Blake2b256Hash::from_bytes([1; 32]),
+            },
+            ProposeSource::Automatic,
+            latest,
+            ProposeSource::Explicit { is_async: false },
+            ProposeSource::Automatic,
+        ] {
+            let (reply, result) = oneshot::channel();
+            tx.send((source, reply)).await.unwrap();
+            assert!(matches!(result.await.unwrap(), ProposerResult::Empty));
+        }
+        release.add_permits(1);
+        let _ = first_result.await.unwrap();
+        assert_eq!(seen_rx.recv().await, Some(latest));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), seen_rx.recv())
+                .await
+                .is_err(),
+            "collisions produced more than one follow-up"
+        );
+        driver.abort();
+    }
+
+    #[test]
+    fn an_explicit_collision_only_licenses_an_ordinary_follow_up() {
+        let mut pending = None;
+        coalesce_follow_up(&mut pending, ProposeSource::Explicit { is_async: false });
+        coalesce_follow_up(&mut pending, ProposeSource::Automatic);
+        assert_eq!(pending, Some(ProposeSource::Automatic));
     }
 
     /// The retry is set just past the gate's stall bound, so the first retry takes the escape.
