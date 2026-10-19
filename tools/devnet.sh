@@ -434,7 +434,13 @@ seed_validator_key() {
 
 docker_opts() {
   local name="$1" grpc_host="$2" http_host="$3" admin_host="$4"
-  local ports="-p ${grpc_host}:40401 -p ${http_host}:40403"
+  # Hosted CI may reserve a validator's host gRPC port. LFS nodes talk over
+  # the internal Docker network; only the bootstrap's host gRPC is used for
+  # deploy/propose. Test-only switch: leave the joiners' host gRPC unpublished.
+  local ports="-p ${http_host}:40403"
+  if [[ "${DEVNET_SKIP_JOINER_GRPC_PUBLISH:-0}" != "1" || "$name" == "$BOOTSTRAP" ]]; then
+    ports="-p ${grpc_host}:40401 $ports"
+  fi
   if $ADMIN; then ports="$ports -p ${admin_host}:40405"; fi
   local data; data="$(data_volume "$name")"
   # See `DEVNET_NODE_MEMORY` at the top of this file: the ceiling and the no-swap pair are what keep

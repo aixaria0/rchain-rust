@@ -49,6 +49,9 @@ jobs:
       # Inputs are empty on a scheduled run, so fall back to the defaults.
       EFFECT_SCHEDULER: ${{ github.event.inputs.effect_scheduler || 'dfs' }}
       FUZZ_MODE: ${{ github.event.inputs.mode || 'all' }}
+      # Hosted runner: the LFS operator-anchor arm needs HTTP on validators,
+      # not published gRPC. Avoid conflicts with host services on 42402.
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: ${{ github.event.inputs.mode == 'lfs-history-anchored' && '1' || '0' }}
       ITERATIONS: ${{ github.event.inputs.iterations || '100' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
