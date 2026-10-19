@@ -436,7 +436,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history", "lfs-history-controlled"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history", "lfs-history-controlled", "lfs-history-anchored"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -450,6 +450,15 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-history-anchored" in modes:
+        if modes != ["lfs-history-anchored"]:
+            ap.error("explicit LFS anchor is a standalone isolated acceptance arm")
+        if args.dry_run:
+            print("isolated: explicit finality anchor, full justification closure, state hashes, restart persistence")
+            return
+        subprocess.run([sys.executable, "tests/lfs-anchored-checkpoint.py"], check=True)
+        return
 
     if "lfs-history-controlled" in modes:
         if modes != ["lfs-history-controlled"]:

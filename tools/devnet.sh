@@ -860,6 +860,10 @@ cmd_reset() {
   local admin_port=$((ADMIN_BASE + idx * 1000))
   # Test-only alternate locator, without changing the trusted node key.
   local reset_bootstrap_host="${DEVNET_RESET_BOOTSTRAP_HOST:-$BOOTSTRAP}"
+  local -a reset_anchor=()
+  if [[ -n "${DEVNET_RESET_SYNC_ANCHOR:-}" ]]; then
+    reset_anchor=(--sync-anchor "$DEVNET_RESET_SYNC_ANCHOR")
+  fi
   echo "==> reset $name: empty store, syncing the chain from $reset_bootstrap_host"
   seed_validator_key "$name" "$idx"
   # shellcheck disable=SC2046
@@ -867,6 +871,7 @@ cmd_reset() {
     -v "${genesis_dir}:/genesis:ro" \
     "$(node_image "$name")" $(rnode_run_common "$name") \
       --bootstrap "rnode://${id}@${reset_bootstrap_host}?protocol=40400&discovery=40404" \
+      "${reset_anchor[@]}" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
       --validator-private-key-path /var/lib/rnode/validator.hex
   if [[ "${DEVNET_RESET_NETWORK_PAUSE:-0}" == "1" ]]; then
