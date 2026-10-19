@@ -449,9 +449,9 @@ derive different amounts compute different hashes, and the replay refuses the bl
 function of one file* is therefore the property that matters — and of the file's **installed** total,
 since a repeated address is installed once — and it is the property the row states: the amount is never a
 setting, only the address is, and an address that is set must parse, refused at startup rather than at
-genesis. A node that restores the chain over LFS does not replay genesis and is not checked against its
-local configuration; that boundary belongs to the restore path and is stated in
-[the economics page](../node/validator-economics.md). The deviation from the oracle is recorded with it
+genesis. A node that restores the chain over LFS does not replay genesis; the restore-completion guard
+enforces its local claim when it has one and trusts the bootstrap when it has none. That boundary
+belongs to the restore path and is stated in [the economics page](../node/validator-economics.md). The deviation from the oracle is recorded with it
 (`spec/audit/passes.md` §138). The falsifier is that the two crossover directions would contradict each
 other if the rule were mis-stated, and the non-vacuity witness is that the rate strictly exceeds the floor
 above the crossover — without which both directions would hold of any constant.

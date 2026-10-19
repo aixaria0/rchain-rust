@@ -11500,16 +11500,20 @@ installed as native state outside the genesis block's deploys and content-addres
 hash. A number fixed in the operator's file is therefore a number a node can disagree about. But
 *deriving* it is only worth anything if the total is the one the chain will hold: `set_vault_balance`
 keys on the base58 address and overwrites, so a wallets file that repeats an address installs only its
-last row, and a row-wise sum would allocate on REV that never exists. `dev_tax::installed_total`
-canonicalises exactly as the installer does — last row wins, same key — so the balances summed are the
-balances installed. One further function, `genesis::vaults_with_dev_tax`, is called by both ends — the
-ceremony (`casper/src/engine/node_launch.rs::create_genesis_block`) and the descriptor reader
+last row, and a row-wise sum would allocate on REV that never exists. `dev_tax::dev_allocation`
+**refuses a repeated address outright** rather than canonicalising it, so the total is computed only
+over balances the installer will hold. `genesis::dev_allocation` is the wrapper called by both ends —
+the ceremony (`casper/src/engine/node_launch.rs::create_genesis_block`) and the descriptor reader
 (`casper/src/genesis/mod.rs::genesis_descriptors_from_config`) — so a creator and a node **replaying**
-the genesis cannot drift (AUDIT C46). **Not a node restoring over LFS**: `insert_genesis` marks the
-genesis validated as it stands, without replaying it, so that path does not check local configuration
-against what it is restoring — the restore path's own trust model, and the reason the earlier draft's
-"a disagreeing joiner refuses the genesis block" was too broad. The review that caught both of these is
-recorded below.
+the genesis cannot drift (AUDIT C46). **A node restoring over LFS** does not replay genesis:
+`check_running_dev_vesting` enforces a local claim when the joiner has one (bonds + wallets + a
+non-empty address) and trusts the bootstrap when it has none, while always checking the imported leaf's
+own schedule before Running. The review that caught the earlier over-claim is recorded below.
+
+The wire is `PosParams` **format 2**, with the vesting term appended at payload index 10 (eleven
+payload fields, 89 bytes including the format byte). That append is what resolves the collision with
+#376's committed validity bounds at payload indices 8 and 9; format 1 is refused rather than read
+positionally, because no released chain ever wrote one.
 
 **The amount is not a setting; the address is.** `casper.genesis-block-data.dev-tax-address` names the
 recipient and nothing else. An address that is set must parse as a REV address, refused at startup with
@@ -11576,11 +11580,18 @@ reproductions, and both held:
 2. **The joiner claim was too strong.** It read "a node that derives a different amount refuses the
    genesis block", which is true of the **replay** path (C46) and false of the **LFS restore**, where
    `insert_genesis` marks the genesis validated without replaying it. The claim is narrowed here and in
-   every document that carried it, and the boundary is stated rather than implied away.
+   every document that carried it, and the boundary is enforced rather than implied away: the
+   restore-completion guard enforces a *local* claim when the joiner has one, trusts the bootstrap when
+   it has none, and checks the imported leaf's own schedule. The two-node matrix in
+   `node/tests/lfs_restore_dev_tax.rs` covers matching, a different recipient, changed balances and
+   missing descriptors, for a genesis-only bootstrap and a later finalized snapshot, plus a restored
+   bonded joiner that proposes a block the bootstrap validates. The earlier `PoS params leaf not found`
+   refusal was the guard reading a fringe state instead of a block post-state; it now reads the newest
+   validated block's post-state.
 
 Two accounting corrections came with it: the total is a *wallets-plus-allocation* subtotal and excludes
-the bond-funded staking vault, and the allocation **increases the total by 2.2003%** while **diluting
-existing holders by 2.1529%** — the first draft gave one figure for both. The review also asked for
+the bond-funded staking vault, and the allocation **increases the total by 2.2003102759%** while
+**diluting existing holders by 2.1529389392%** — the first draft gave one figure for both. The review also asked for
 startup coverage: the gate's condition and its sentence moved to
 `dev_tax::refuse_a_production_genesis_without_an_address`, which a unit test drives for production
 missing/present and dev-mode omission, leaving the *restart* case to the `dag_set.is_empty()` guard that

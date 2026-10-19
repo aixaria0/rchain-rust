@@ -248,8 +248,9 @@ pub struct GenesisBlockData {
     /// **What that does not buy, stated because the prose around this key once claimed it.** The
     /// guarantee is that the *creator* decides, and that a node **replaying** the genesis derives the
     /// same vaults and so the same post-state hash (AUDIT C46). A node that instead **restores** the
-    /// chain over LFS does not replay genesis — `insert_genesis` marks it validated as it stands — so
-    /// its local configuration is not checked against what it is restoring.
+    /// chain over LFS does not replay genesis — `insert_genesis` marks it validated as it stands — but
+    /// the restore-completion guard enforces its local claim when it has one (bonds + wallets files
+    /// present) and trusts the bootstrap when it has none.
     pub dev_tax_address: String,
     /// **How long the developer allocation vests over**, in blocks from genesis (Law 79). `0` is no
     /// schedule at all: the whole allocation is released at the first epoch boundary.

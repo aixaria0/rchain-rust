@@ -76,16 +76,19 @@ differently as a different mechanism:
 **The boundary of the "creator and joiner agree" claim.** Two nodes that both **replay** the genesis
 derive the same vaults and so the same post-state hash — that is the property the derivation buys. A node
 that instead **restores** the chain over LFS does *not* replay genesis (`insert_genesis` marks it
-validated as it stands), so its local configuration is not checked against what it is restoring: on that
-path the bootstrap's genesis is taken as given. That is the restore path's trust model, it predates this
-allocation, and it is stated here because the claim is narrower than "a disagreeing joiner is refused"
-would suggest.
+validated as it stands). The restore-completion guard (`check_running_dev_vesting`) enforces a **local
+claim** when the joiner has one — bonds and wallets files present, and a non-empty `dev-tax-address` —
+and trusts the bootstrap's allocation when it has none; an absent claim is *no claim*, not a claim of no
+allocation, which is the normal public-testnet bootstrap. The guard also checks the imported leaf's own
+schedule before Running: nothing has vested at the genesis post-state, and the unreleased amount can
+never exceed the allocation.
 
 The rule, its two crossover directions and its non-vacuity witness are Law 78
 ([`spec/Rchain/Genesis.lean`](../../../spec/Rchain/Genesis.lean)); the deviation from the Scala oracle is
 recorded in [`spec/audit/passes.md`](../../../spec/audit/passes.md) §138. It **increases the allocated
-total by 20 000 000 REV (2.2003%)**, which dilutes the existing holders' proportional share by 2.1529% —
-the 13 946 addresses the spreadsheet lists keep their balances, and the total they are a share *of* grows.
+total by 20 000 000 REV (2.2003102759%)**, which dilutes the existing holders' proportional share by
+2.1529389392% — the 13 946 addresses the spreadsheet lists keep their balances, and the total they are a
+share *of* grows.
 The 928 962 714 REV above is the **wallets-plus-allocation** subtotal: the genesis also funds the staking
 vault with the bond sum (`install_genesis`), so it is not all of the REV the genesis writes.
 

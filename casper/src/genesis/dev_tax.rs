@@ -19,10 +19,12 @@
 //! reads is the total the genesis will *install*, and `dev_allocation` refuses the wallets files for
 //! which that is not the same as the sum of the rows. And the agreement it buys is between a node that
 //! **replays** the genesis and one that created it: a node that instead **restores** the chain over LFS
-//! takes the bootstrap's genesis as given
-//! (`insert_genesis` marks it validated without replaying it), so local configuration is not enforced
-//! on that path. That boundary is stated here rather than implied away, because an earlier draft of
-//! this module's prose claimed more than the restore path delivers.
+//! takes the bootstrap's genesis as given (`insert_genesis` marks it validated without replaying it).
+//! The restore-completion guard (`engine::node_launch::check_running_dev_vesting`) enforces a local
+//! claim when the joiner has one — bonds + wallets + a non-empty `dev-tax-address` — and trusts the
+//! bootstrap when it has none; an absent claim is not a claim of no allocation. That boundary is stated
+//! here rather than implied away, because an earlier draft of this module's prose claimed more than the
+//! restore path delivers.
 //!
 //! The rule is `max(20 000 000 REV, 2% of the allocated total)`. The arms cross at exactly one billion
 //! REV (`DEV_TAX_CROSSOVER`), so below that allocation the floor governs and above it the percentage
