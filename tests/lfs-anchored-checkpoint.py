@@ -5,6 +5,7 @@ Only for a disposable hosted Actions devnet. Does not assert an archive of all
 finalized sibling branches: the sync contract follows the named anchor's ancestry.
 """
 import importlib.util
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -109,6 +110,31 @@ def finality_reached(result):
     )
 
 
+def wait_for_local_finality(result, port=41403, deadline=75):
+    """Allow the local finalizer to process the imported ancestry after LFS.
+
+    Merely seeing all block bodies from /api/block is earlier than observing
+    a local LFB. Keep the bounded gate strict but do not sample it too early.
+    """
+    end = time.monotonic() + deadline
+    last = dict(result)
+    while time.monotonic() < end:
+        finalized = history.last_finalized(port)
+        try:
+            yes = history.is_finalized(port, result["anchor_hash"])
+        except (OSError, ValueError, urllib.error.URLError, AssertionError):
+            yes = None
+        last.update({
+            "lfb": finalized["blockNumber"] if finalized else None,
+            "lfb_hash": finalized["blockHash"] if finalized else None,
+            "anchor_locally_finalized": yes,
+        })
+        if finality_reached(last):
+            return last
+        time.sleep(2)
+    return last
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         raise SystemExit("disposable hosted CI only")
@@ -156,23 +182,40 @@ def main():
         raise AssertionError("explicit anchor flag was not installed on joiner")
     if not adversarial.joined(genesis):
         adversarial.wait_joined(genesis, seconds=140)
-    result = inspect_anchor(baseline["ancestry"], baseline["anchor"])
+    first_snapshot = inspect_anchor(baseline["ancestry"], baseline["anchor"])
+    result = wait_for_local_finality(first_snapshot)
     logs_before = adversarial.logs()
     count_before = logs_before.count("LFS state is successfully restored.")
     if count_before < 1:
         raise AssertionError("missing successful LFS checkpoint log")
-    save("first_restore.json", {"result": result, "restore_log_count": count_before})
+    save("first_restore.json", {
+        "first_import_observation": first_snapshot,
+        "after_bounded_finality_wait": result,
+        "restore_log_count": count_before,
+    })
     print("LFS_EXPLICIT_ANCHOR_RESTORED " + json.dumps(result), flush=True)
 
+    restart_since = datetime.now(timezone.utc).isoformat()
     adversarial.run("docker", "stop", positive.JOINER, timeout=50)
     adversarial.run("docker", "start", positive.JOINER, timeout=50)
-    result2 = inspect_anchor(baseline["ancestry"], baseline["anchor"])
-    logs_after = adversarial.logs()
-    count_after = logs_after.count("LFS state is successfully restored.")
-    checkpoint = {"result": result2, "before_restart": count_before,
-                  "after_restart": count_after, "new_lfs": count_after > count_before}
+    second_snapshot = inspect_anchor(baseline["ancestry"], baseline["anchor"])
+    result2 = wait_for_local_finality(second_snapshot)
+    fresh = subprocess.run(
+        ["docker", "logs", "--since", restart_since, positive.JOINER],
+        text=True, capture_output=True, timeout=20, check=True,
+    )
+    fresh_logs = fresh.stdout + fresh.stderr
+    new_lfs = ("Starting from bootstrap node, syncing LFS" in fresh_logs
+               or "LFS state is successfully restored." in fresh_logs)
+    checkpoint = {
+        "result": result2,
+        "first_after_restart_observation": second_snapshot,
+        "before_restart": count_before,
+        "new_lfs": new_lfs,
+        "restart_log_scope": "docker logs --since restart timestamp",
+    }
     save("restart_checkpoint.json", checkpoint)
-    if count_after > count_before:
+    if new_lfs:
         raise AssertionError("restarted node reentered LFS despite retained store")
     print("LFS_EXPLICIT_ANCHOR_PERSISTENT " + json.dumps(checkpoint), flush=True)
 
