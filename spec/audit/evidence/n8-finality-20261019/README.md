@@ -81,11 +81,47 @@ These claims have distinct scopes:
 
 This comparison does not allege fund loss, a chain split, remote execution, or deliberate misconduct. None is established by these runs. It establishes that the existing assurance apparatus did not prevent these operational defects, and that Aria's diagnosis, corrections and live verification are part of the engineering record.
 
+## Assurance statements versus the repair timeline
+
+The comparison is with [the README at upstream base 7b63cc29](https://github.com/rchain-community/rchain-rust/blob/7b63cc29ce1a5d293fd875a93b46ddb7a307aefd/README.md), not with an inferred personal position.
+
+| README location / wording | Concrete boundary exposed by this incident | When the documented correction was established |
+| --- | --- | --- |
+| Opening assurance: “Whole classes of defect are absent by construction” | The explanation concerns memory unsafety. It does not exclude a safe-Rust startup stall or a premature round escape. Those operational defects remained possible. | Aria's elapsed-only predicate is in #379; bootstrap-first requests and trigger protection are in 1daa9474144e. |
+| Security and assurance / “Proved.” | A proved definition or conformance corpus does not establish that delayed live delivery and proposal scheduling will meet the N=8 acceptance deadline. | The previously failing ordinary N=8 campaign was cleared by the finite run linked in #379; later silent-validator durability required additional work and separate runs. |
+| Security and assurance / “Reviewed, adversarially, repeatedly.” and “TODO 0” | A completed audit list did not prevent the later reproduced early-escape and bootstrap-recovery failures. Audit closure cannot substitute for these operational witnesses. | The latest signed-work N=8 results were established on 19 October by runs 39183133040 and 39184369430. |
+| Security and assurance / “Tested in-process and live, and gated.” | Passing tests can encode the wrong acceptance property; a live run can also measure an earlier binary rather than the final predicate. These are specific evidence gaps, not a denial that tests existed. | The old escape assertion was replaced in #379; latest-source live evidence and the failed no-helper control are retained in this report. |
+| Provenance section | The original fork and archived snapshot establish early repository lineage. They do not account for later discovery, repair and validation work. | Aria's commits, diagnostic branches and exact acceptance runs must remain part of the destination contribution record. |
+
+The operational repairs described here were established after the earlier assurance material. Their results must not be retrospectively presented as properties already demonstrated by that material. Conversely, the still-red no-helper gate must not be described as fixed merely because the signed-work arm passed.
+
+## Exact introduction, test expectation and merge evidence
+
+The attempt-based escape can be traced more precisely than the squash commit alone:
+
+- [2bbcb8de0222](https://github.com/rchain-community/rchain-rust/commit/2bbcb8de0222eb9b51896095782bf66b84d3f9cb), Patrick Mockridge, 30 September 2026: adds the proposer's blocked-attempt counter and takes the escape after the attempt bound. It also mirrors that count-based rule in `the_round_closes_when_a_validator_goes_quiet_inside_the_window`. This is the specific implementation ancestor incorporated through #138 / 6c37a23f5ed0.
+- [59ee5b23bf42](https://github.com/rchain-community/rchain-rust/commit/59ee5b23bf42201435f896b4d537b025e24eec33), **Jim Whitescarver**, 3 October 2026, [#215](https://github.com/rchain-community/rchain-rust/pull/215): adds the 15-second timer while retaining the count-based alternative. The resulting predicate accepts either condition independently.
+- In that same timer commit, `the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound` explicitly asserts that `round_escape_owed(window + 1, 0)` is true. A test that approves escape with zero elapsed stall cannot protect a minimum-elapsed-time requirement. #379 reverses this witness and adds the recorded early-escape values and exact timer boundary.
+
+That is the concrete test-design defect: the suite approved the behavior later rejected by the N=8 requirement. It is stronger and more precise evidence than a general claim that testing was absent.
+
+Merge-time facts also need to remain exact:
+
+| PR | Merge time (UTC) | Verified checks on its final head before merge | Supported criticism |
+| --- | --- | --- | --- |
+| [#138](https://github.com/rchain-community/rchain-rust/pull/138) | 30 September, 23:23:18 | Final head 15ac2de7: tests/static gates finished 23:19:32; formatting/lints and dependency audit also passed. | The [final source commit](https://github.com/rchain-community/rchain-rust/commit/15ac2de76c14e241dd9fd18a233de5913683561d) changes the round predicate from height to sender sequence. Its own record states that the cited live campaign exercised the earlier height predicate, while the final correction had fixture coverage. The live binary therefore did not verify that final predicate. |
+| [#215](https://github.com/rchain-community/rchain-rust/pull/215) | 3 October, 13:14:11 | Final head 59ee5b23: tests/static gates finished 13:13:43; formatting/lints, dependency audit and release build also passed. | The green test suite included the zero-time escape assertion above. The PR itself describes a partial repair and explicitly leaves survivor finality unresolved. |
+
+The retrieved checks do **not** support describing either merge as one made with failing CI. The verified concern is incomplete behavioral coverage, a test that enshrined the wrong escape criterion, and a recorded mismatch between the final predicate and its cited live binary. Intermediate failures inside a development branch must not be relabelled as failures knowingly shipped in that intermediate form.
+
+No direct, verified statement by Patrick asserting immediate mainnet readiness or absence of all remaining bugs is cited here. The README itself describes a pre-testnet node, and #215 explicitly preserves an unresolved boundary. A stronger personal attribution requires the actual message or review link.
+
+
 ## Contribution and review record
 
 Aria Fani performed the investigation, produced and maintained the N=4/N=8 diagnostic and acceptance branches, implemented #379 and the subsequent recovery corrections, and carried the work through the two signed-work acceptance passes above. The original PRs and commits remain the authoritative attribution trail.
 
-Aria reports approximately **16 hours** spent on this investigation and repair effort. This is contributor-reported effort, not an independently audited timesheet. Its technical value includes reproducing failures, distinguishing causes, retaining negative controls, implementing fixes, and validating the exact tested source.
+Aria reports approximately **16 hours** spent on this investigation and repair effort. He additionally reports roughly ten hours of repeated testing within that broader effort; this is not counted as a separate ten-hour addition. These are contributor-reported effort figures, not an independently audited timesheet. Its technical value includes reproducing failures, distinguishing causes, retaining negative controls, implementing fixes, and validating the exact tested source.
 
 Review should preserve that contribution in the destination change and any release or incident summary. Discovery, implementation and verification credit should travel with the work when it is incorporated elsewhere.
 
