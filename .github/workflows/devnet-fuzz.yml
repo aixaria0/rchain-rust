@@ -64,7 +64,12 @@ jobs:
         run: tools/devnet.sh build
 
       - name: Start the devnet
-        run: tools/devnet.sh up --validators 3 --effect-scheduler "$EFFECT_SCHEDULER"
+        run: |
+          if [[ "$FUZZ_MODE" == "lfs-history" ]]; then
+            tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --effect-scheduler "$EFFECT_SCHEDULER"
+          else
+            tools/devnet.sh up --validators 3 --effect-scheduler "$EFFECT_SCHEDULER"
+          fi
 
       - name: Fuzz
         run: |
@@ -72,6 +77,15 @@ jobs:
             --validators 3 \
             --iterations "$ITERATIONS" \
             --mode "$FUZZ_MODE"
+
+      - name: Retain state-history and checkpoint evidence
+        if: always() && env.FUZZ_MODE == 'lfs-history'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lfs-history-${{ github.run_id }}
+          path: target/lfs-history-evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Dump the devnet state on failure
         if: failure()

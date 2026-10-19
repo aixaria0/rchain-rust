@@ -435,7 +435,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -449,6 +449,15 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-history" in modes:
+        if modes != ["lfs-history"]:
+            ap.error("finalized-state restoration is a standalone acceptance arm")
+        if args.dry_run:
+            print("isolated: weighted-stake finalized prefix, real state transition, LFS, restart checkpoint")
+            return
+        subprocess.run([sys.executable, "tests/lfs-finalized-history.py"], check=True)
+        return
 
     if "lfs-resilience" in modes:
         if modes != ["lfs-resilience"]:
