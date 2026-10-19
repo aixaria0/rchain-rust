@@ -261,6 +261,33 @@ chain completely:
 Old data dirs are small (a few MB) but not load-bearing: the genesis files and the validator keys are the
 source of truth.
 
+### Decimal and the #373 genesis: pre-restart release check
+
+The exact decimal (`d` literal, wire tag 35) is a pre-launch feature on `dev`. It is not
+height-gated on the old genesis. A validator built before #389 rejects a decimal source term,
+while a validator built after #389 executes it; mixed binaries can therefore disagree on the
+post-state hash even if no stored `Expr` carries field 35. The #373 genesis changes the committed
+PoS parameter record, so the decimal release belongs to that new chain, with all validators on
+binaries that understand tag 35. Do not treat a routine rolling restart on the old genesis as
+that migration.
+
+Before the restart/rebuild, record these checks in the release evidence:
+
+1. Pin the release commit and verify that it includes #373's new genesis format and #389/#390's
+   decimal implementation. Record the binary commit on **each** validator; the new genesis must
+   start with a uniform set that understands tag 35.
+2. For any old chain whose state will be replayed or reused, inspect the persisted block/deploy
+   history for decimal source terms and the persisted state for field-35 `Expr` values. Record the
+   data directories, inspected height range, scan method and result. A text search for `d` alone
+   is not a decimal-literal parser, and a field-35 scan alone misses deploy source terms. If
+   coverage is incomplete, do not claim historical replay compatibility.
+3. Stop all validators before replacing binaries or creating the new genesis. Retain a snapshot
+   of the old data and keys, then follow the rebuild procedure above; record the new genesis hash
+   and check that every validator joins that same chain before accepting deploys.
+
+The standalone Lean value-algebra proof remains a separately recorded follow-up; the comparator
+proof and Rust refinement/tests establish the current #380 boundary.
+
 ## Ports
 
 | Service | Default port | Reachable |
