@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use num_bigint::BigInt;
 
+use rchain_models::decimal::{Decimal, MAX_SCALE};
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_shared::serialize::Serialize;
@@ -196,6 +197,64 @@ impl Costs {
     /// The number of bytes needed to store a bigint (port of `bigIntSize`).
     pub fn big_int_size(bi: &BigInt) -> i64 {
         (bi.magnitude().bits() / 8 + 1) as i64
+    }
+
+    /// The byte size of a decimal's coefficient, plus one for the scale.
+    pub fn decimal_size(d: &Decimal) -> i64 {
+        Self::big_int_size(d.coefficient()) + 1
+    }
+
+    pub fn decimal_negation(d: &Decimal) -> Cost {
+        Cost::new(Self::big_int_size(d.coefficient()), "decimal negation")
+    }
+
+    /// A comparison aligns the two scales, so it costs the smaller coefficient plus the scale gap.
+    pub fn decimal_comparison(left: &Decimal, right: &Decimal) -> Cost {
+        let scale_gap = i64::from(left.scale()).abs_diff(i64::from(right.scale()));
+        Cost::new(
+            Self::big_int_size(left.coefficient()).min(Self::big_int_size(right.coefficient()))
+                + 1
+                + scale_gap as i64,
+            "decimal comparison",
+        )
+    }
+
+    pub fn decimal_sum(left: &Decimal, right: &Decimal) -> Cost {
+        Cost::new(
+            Self::big_int_size(left.coefficient()).max(Self::big_int_size(right.coefficient()))
+                + 1
+                + i64::from(left.scale()).abs_diff(i64::from(right.scale())) as i64,
+            "decimal sum",
+        )
+    }
+
+    pub fn decimal_subtraction(left: &Decimal, right: &Decimal) -> Cost {
+        Cost::new(
+            Self::big_int_size(left.coefficient()).max(Self::big_int_size(right.coefficient()))
+                + 1
+                + i64::from(left.scale()).abs_diff(i64::from(right.scale())) as i64,
+            "decimal subtraction",
+        )
+    }
+
+    /// Multiplication is charged on the product of the coefficient sizes, as `BigInt` is.
+    pub fn decimal_multiplication(left: &Decimal, right: &Decimal) -> Cost {
+        Cost::new(
+            Self::big_int_size(left.coefficient())
+                .saturating_mul(Self::big_int_size(right.coefficient())),
+            "decimal multiplication",
+        )
+    }
+
+    /// Division is charged for the worst case: the `big_int_division` cost of the aligned
+    /// operands, repeated for every digit the exact long division may need (`MAX_SCALE`).
+    pub fn decimal_division(left: &Decimal, right: &Decimal) -> Cost {
+        Cost::new(
+            Self::big_int_size(left.coefficient())
+                .saturating_mul(Self::big_int_size(right.coefficient()))
+                .saturating_mul(i64::from(MAX_SCALE) + 1),
+            "decimal division",
+        )
     }
     pub fn size_method_cost(size: i64) -> Cost {
         Cost::new(size, "size")

@@ -7,6 +7,8 @@ use crate::proc_ast::*;
 #[derive(Clone, Debug, PartialEq)]
 enum Tok {
     Long(i64),
+    /// A decimal literal, carrying its raw source text including the `d` suffix.
+    Decimal(String),
     Str(String),
     Uri(String),
     Ident(String),
@@ -152,11 +154,33 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
             toks.push(Tok::Uri(chars[start..i].iter().collect()));
             continue;
         }
-        // number
+        // number, or a decimal literal (`digits ['.' digits] 'd'`)
         if c.is_ascii_digit() {
             let start = i;
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;
+            }
+            // A fraction is consumed only when the `d` suffix follows it: a bare `1.5` must stay
+            // `Long Dot Long`, or `1.foo()` stops being a method call.
+            let mut end = None;
+            if chars.get(i) == Some(&'d') {
+                end = Some(i + 1);
+            } else if chars.get(i) == Some(&'.')
+                && chars.get(i + 1).is_some_and(|c| c.is_ascii_digit())
+            {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'d') {
+                    end = Some(j + 1);
+                }
+            }
+            if let Some(end) = end {
+                let raw: String = chars[start..end].iter().collect();
+                i = end;
+                toks.push(Tok::Decimal(raw));
+                continue;
             }
             let n: i64 = chars[start..i]
                 .iter()
@@ -1364,7 +1388,7 @@ impl Parser {
             return true;
         }
         match self.peek() {
-            Tok::Long(_) | Tok::Str(_) | Tok::Uri(_) => true,
+            Tok::Long(_) | Tok::Decimal(_) | Tok::Str(_) | Tok::Uri(_) => true,
             Tok::Ident(s) => s == "true" || s == "false",
             _ => false,
         }
@@ -1387,6 +1411,7 @@ impl Parser {
         }
         match self.next() {
             Tok::Long(n) => Ok(Ground::GroundInt(n.to_string())),
+            Tok::Decimal(raw) => Ok(Ground::GroundDecimal(raw)),
             Tok::Str(s) => Ok(Ground::GroundString(s)),
             Tok::Uri(u) => Ok(Ground::GroundUri(u)),
             Tok::Ident(s) if s == "true" => Ok(Ground::GroundBool(BoolLiteral::BoolTrue)),
@@ -2222,6 +2247,48 @@ mod tests {
     fn parses_int() {
         let p = parse("42").unwrap();
         assert_eq!(p, Proc::PGround(Ground::GroundInt("42".to_string())));
+    }
+
+    /// A decimal literal is `digits ['.' digits] 'd'`; the raw text is kept for the normalizer,
+    /// which owns canonicalization.
+    #[test]
+    fn parses_decimal_literals() {
+        let ground = |raw: &str| Proc::PGround(Ground::GroundDecimal(raw.to_string()));
+        assert_eq!(parse("2d").unwrap(), ground("2d"));
+        assert_eq!(parse("1.5d").unwrap(), ground("1.5d"));
+        assert_eq!(parse("0.5d").unwrap(), ground("0.5d"));
+        assert_eq!(parse("007.50d").unwrap(), ground("007.50d"));
+        // A negative decimal is `PNeg` over the ground, exactly as a negative integer is.
+        assert_eq!(
+            parse("-1.5d").unwrap(),
+            Proc::PNeg(Box::new(ground("1.5d")))
+        );
+        // A decimal literal is a method receiver.
+        assert!(parse("1.5d.toString()").is_ok());
+    }
+
+    /// The lookahead that makes `1.5` a method call and not a decimal, and the forms that are not
+    /// literals at all.
+    #[test]
+    fn malformed_decimal_literals_are_refused() {
+        for src in [
+            ".5d",
+            "1.d",
+            "1.5",
+            "1.5D",
+            "1.5e3d",
+            "1.5dx",
+            "1..5d",
+            "1.5dd",
+            "BigInt(1.5d)",
+        ] {
+            assert!(
+                parse(src).is_err(),
+                "{src:?} must not parse as a term or a decimal literal"
+            );
+        }
+        // The method-call form is preserved: the dot is not consumed as a fraction without `d`.
+        assert!(parse("1.toString()").is_ok());
     }
 
     #[test]
