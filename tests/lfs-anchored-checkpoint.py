@@ -61,27 +61,52 @@ def closure(port, anchor):
 
 
 def inspect_anchor(expected, anchor, port=41403, deadline=140):
+    """Verify an exact anchor-ancestry and state transfer independently of LFB progress.
+
+    A restored block body is not automatically a *locally finalized* block.
+    We preserve that distinction in an explicit, still-strict finality gate below.
+    """
     end = time.monotonic() + deadline
     last = {}
     while time.monotonic() < end:
         matched = {}
+        mismatched = {}
         for key, fp in expected.items():
             try:
                 observed = history.fingerprint(read_block(port, key))
                 if observed == fp:
                     matched[key] = observed
+                else:
+                    mismatched[key] = {"expected": fp, "actual": observed}
             except (OSError, ValueError, KeyError, AssertionError, urllib.error.URLError):
                 pass
-        missing = sorted(set(expected) - set(matched))
+        missing = sorted(set(expected) - set(matched) - set(mismatched))
         finalized = history.last_finalized(port)
-        last = {"matched": len(matched), "total": len(expected), "missing": missing,
-                "lfb": finalized["blockNumber"] if finalized else None}
-        if not missing and finalized and finalized["blockNumber"] >= anchor["blockNumber"]:
-            if history.is_finalized(port, anchor["blockHash"]):
-                return last
+        try:
+            anchor_finalized = history.is_finalized(port, anchor["blockHash"])
+        except (OSError, ValueError, urllib.error.URLError, AssertionError):
+            anchor_finalized = None
+        last = {
+            "matched": len(matched), "total": len(expected), "missing": missing,
+            "mismatched": mismatched, "lfb": finalized["blockNumber"] if finalized else None,
+            "lfb_hash": finalized["blockHash"] if finalized else None,
+            "anchor_height": anchor["blockNumber"], "anchor_hash": anchor["blockHash"],
+            "anchor_locally_finalized": anchor_finalized,
+            "state_hashes_identical": not missing and not mismatched,
+        }
+        if not missing and not mismatched:
+            return last
         time.sleep(3)
     save("anchor_failure.json", last)
-    raise AssertionError("explicit anchor/state restore incomplete: " + repr(last))
+    raise AssertionError("anchor ancestry/pre-post state did not restore: " + repr(last))
+
+
+def finality_reached(result):
+    return (
+        result["lfb"] is not None
+        and result["lfb"] >= result["anchor_height"]
+        and result["anchor_locally_finalized"] is True
+    )
 
 
 def main():
@@ -150,6 +175,38 @@ def main():
     if count_after > count_before:
         raise AssertionError("restarted node reentered LFS despite retained store")
     print("LFS_EXPLICIT_ANCHOR_PERSISTENT " + json.dumps(checkpoint), flush=True)
+
+    summary = {
+        "source_anchor_height": baseline["anchor"]["blockNumber"],
+        "source_anchor_hash": baseline["anchor"]["blockHash"],
+        "ancestry_blocks": len(baseline["ancestry"]),
+        "state_changing_ancestors": baseline["changed_ancestors"],
+        "before_restart": result,
+        "after_restart": result2,
+        "durable_without_second_lfs": not checkpoint["new_lfs"],
+        "finality_gate_before": finality_reached(result),
+        "finality_gate_after": finality_reached(result2),
+    }
+    save("anchored_checkpoint_summary.json", summary)
+    print("LFS_ANCHOR_STATE_PERSISTENCE_PASS " + json.dumps({
+        "ancestry_blocks": len(baseline["ancestry"]), "matching_pre_post_state": True,
+        "durable_without_second_lfs": not checkpoint["new_lfs"],
+    }), flush=True)
+    if not summary["finality_gate_before"] or not summary["finality_gate_after"]:
+        print("LFS_ANCHOR_FINALITY_GATE_FAIL " + json.dumps({
+            "anchor_height": summary["source_anchor_height"],
+            "before_lfb": result["lfb"], "after_lfb": result2["lfb"],
+            "before_anchor_finalized": result["anchor_locally_finalized"],
+            "after_anchor_finalized": result2["anchor_locally_finalized"],
+        }), flush=True)
+        raise AssertionError(
+            "anchor bodies and state persisted, but local finality has not advanced "
+            "to the operator-named anchor; release finality gate remains red"
+        )
+    print("LFS_ANCHOR_FINALITY_GATE_PASS " + json.dumps({
+        "anchor_height": summary["source_anchor_height"],
+        "after_lfb": result2["lfb"],
+    }), flush=True)
 
 
 if __name__ == "__main__":
