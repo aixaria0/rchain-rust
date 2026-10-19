@@ -8,6 +8,20 @@ The ordinary patched-engine N=4/N=8 acceptance campaign passed. Two later N=8 ca
 
 The no-helper N=8 legacy gate remains red on that same source. It finalizes the marker but does not cross its future-height requirement. This record preserves that failure. It does not claim universal liveness, a completed public-network recovery, or merge approval.
 
+## Latest-source result count
+
+At `1daa9474144ea6240fb84103fcddd6e45c0865ca`, there are **three successful workflow runs**, comprising **two live N=8 acceptance runs and one ordinary CI run**:
+
+| Successful run | Workflow title | Actual test / scope |
+| --- | --- | --- |
+| [39183133040](https://github.com/aixaria0/rchain-rust/actions/runs/39183133040) | devnet fuzz (nightly) | `FUZZ_MODE=acceptance-epoch-work`; N=8, one silent validator; finalized 10 → 34. |
+| [39184369430](https://github.com/aixaria0/rchain-rust/actions/runs/39184369430) | devnet fuzz (nightly) | `FUZZ_MODE=acceptance-epoch-work`; independent repeat; finalized 11 → 32. |
+| [39184592817](https://github.com/aixaria0/rchain-rust/actions/runs/39184592817) | CI | All three jobs passed: Tests and the node's static gates; Dependency audit; Formatting and lints (including Clippy and benchmark-target compilation). |
+
+The workflow title alone does not identify its executed mode: the two successful runs named “devnet fuzz” above executed the epoch-work acceptance mode, not an inferred random-input fuzz campaign. The three jobs within CI are components of one successful workflow run, not three additional workflow runs.
+
+A **fourth** same-source workflow run, [39184423834](https://github.com/aixaria0/rchain-rust/actions/runs/39184423834), used `FUZZ_MODE=acceptance-quiet` and failed the N=8 no-helper future-epoch requirement while its N=4 arm passed. It is retained separately below.
+
 ## Source lineage and responsibility
 
 Commit authorship identifies the origin of code; it does not by itself establish that one commit caused every observed failure.
