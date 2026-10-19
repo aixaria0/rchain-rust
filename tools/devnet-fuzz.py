@@ -34,6 +34,7 @@ Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 
 import argparse
 import json
+import os
 import random
 import subprocess
 import sys
