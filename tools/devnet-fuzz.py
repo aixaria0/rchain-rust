@@ -437,7 +437,7 @@ def run_acceptance_campaign(trace=False):
     # job. Stop it to free its ports; no public node or user data is reachable.
     subprocess.run(["tools/devnet.sh", "down"], check=True)
     env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
-           "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
+           "DEVNET_NODE_MEMORY": "1536m", "DEVNET_THREAD_POOL_SIZE": "1"}
     if trace:
         # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
         # Full inbound traces distinguish propagation from validation rejection.
@@ -463,6 +463,19 @@ def run_acceptance_campaign(trace=False):
                 subprocess.run(["docker", "inspect", "--format", "{{json .State}}", node], check=False)
                 print(f"=== n={validators} node={i} log tail ===", flush=True)
                 subprocess.run(["docker", "logs", "--tail", "80", node], check=False)
+            # Independent runner-pressure control: report CPU/memory observations
+            # without modifying the actual consensus drill verdict.
+            nodes = ["acceptance-bootstrap"] + [
+                f"acceptance-validator-{i}" for i in range(1, validators)
+            ]
+            print(f"=== n={validators} docker resource snapshot ===", flush=True)
+            try:
+                subprocess.run(
+                    ["docker", "stats", "--no-stream", "--format", "{{json .}}", *nodes],
+                    check=False, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(f"RESOURCE_SNAPSHOT_WARNING {error}", flush=True)
             # The existing workflow has no upload step. Put machine-readable
             # observations in its retained log; refuse to silently truncate.
             for path in (out / "result.json", out / "observations.jsonl"):
