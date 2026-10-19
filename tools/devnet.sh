@@ -854,7 +854,7 @@ cmd_reset() {
 
   local genesis_dir; genesis_dir="$(mktemp -d)"
   genesis_files "$genesis_dir" "$N"
-  local id; id="$(bootstrap_id)"
+  local id; id="${DEVNET_RESET_BOOTSTRAP_ID:-$(bootstrap_id)}"
   local host_port=$((GRPC_BASE + idx * 1000))
   local http_port=$((HTTP_BASE + idx * 1000))
   local admin_port=$((ADMIN_BASE + idx * 1000))
@@ -869,7 +869,11 @@ cmd_reset() {
       --bootstrap "rnode://${id}@${reset_bootstrap_host}?protocol=40400&discovery=40404" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
       --validator-private-key-path /var/lib/rnode/validator.hex
-  echo "reset $name: back up with an empty store; it will LFS-sync the chain from $BOOTSTRAP"
+  if [[ "${DEVNET_RESET_NETWORK_PAUSE:-0}" == "1" ]]; then
+    docker network disconnect "$NETWORK" "$name"
+    echo "reset $name: isolated from $NETWORK until the test reconnects it"
+  fi
+  echo "reset $name: back up with an empty store; it will LFS-sync the chain from $reset_bootstrap_host"
 }
 
 cmd_logs() {

@@ -435,7 +435,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -449,6 +449,15 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-adversarial" in modes:
+        if modes != ["lfs-adversarial"]:
+            ap.error("LFS adversarial test requires a standalone isolated network")
+        if args.dry_run:
+            print("isolated CI: reject wrong bootstrap certificate identity, recover, and reconnect")
+            return
+        subprocess.run([sys.executable, "tests/lfs-adversarial-bootstrap.py"], check=True)
+        return
 
     if "lfs-identity" in modes:
         if modes != ["lfs-identity"]:
