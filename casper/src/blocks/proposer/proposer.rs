@@ -3412,7 +3412,9 @@ mod quiet_chain_tests {
                     waited[v] += 1;
                     // The stall bound: a step is a later moment in wall-clock time than the one before.
                     let since = *blocked_since[v].get_or_insert(step);
-                    if !(waited[v] > liveness::LIVENESS_WINDOW || since < step) {
+                    // Mirror the production elapsed-stall licence (#379), not the old
+                    // attempt-count shortcut. A later step represents elapsed time here.
+                    if !(since < step) {
                         continue;
                     }
                     escapes += 1;

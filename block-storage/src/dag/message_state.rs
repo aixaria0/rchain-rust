@@ -139,7 +139,7 @@ where
 
     /// **[`Self::parents_for_new_block`] with the sender's own entry replaced by its newest message** — the
     /// escape, for a proposer that has already spoken this round and has been waiting past
-    /// [`super::liveness::LIVENESS_WINDOW`] attempts for the round to close.
+    /// the elapsed `ROUND_STALL_ESCAPE` interval for the round to close.
     ///
     /// It exists because refusing has no way out. The round closes only when every bonded sender has
     /// advanced past the boundary, a quiet sender stops holding it back only once `LIVENESS_WINDOW` heights
@@ -151,7 +151,7 @@ where
     /// ordinary one again.
     ///
     /// **It may not advance the fringe, and that is the accepted cost.** It is taken only after the
-    /// `LIVENESS_WINDOW`-attempt wait, so in a healthy round it is never taken at all; the rate matters more
+    /// elapsed-stall wait, so in a healthy round it is never taken at all; the rate matters more
     /// than this block's own finality, because a chain that cannot move cannot finalise anything.
     ///
     /// Replaced, not added: a parent set with two messages from one sender makes the block creator's
