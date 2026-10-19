@@ -135,6 +135,15 @@ value through the whole domain.
   result may leave the invariant (e.g. a height *difference*), the operator's output is the raw
   **signed** type, so the signedness is again visible in the type.
 
+`models::decimal::Decimal` (issue #380) is the AST's refinement-carrying scalar. Its coefficient and
+scale are private; the only ways in are `new` (canonicalize, then bound), `from_literal_parts` (the
+source path), `from_wire` (minimal coefficient bytes, canonical pair, scale ≤ 38) and a `Deserialize`
+routed through `from_parts`. A noncanonical decimal is therefore **not representable** in the AST:
+the wire decoder answers `ModelsError::InvalidDecimal`, and there is no `Deref`. Arithmetic methods
+return `Result` because a canonical result can leave the scale bound (`1d / 3d` is an error, not a
+rounded value); the comparator's `Ord` and derived `Eq` agree on every canonical value, which is what
+`par_set`/`par_map` deduplication relies on.
+
 Concrete newtypes live in [`../shared/src/refined.rs`](../shared/src/refined.rs) (`Port`, `Hash32`,
 `BlockHeight`, `SeqNum`, `WireLen`, `NonNegI64`; `ByteLen`/`ShortLen` reserved for 1c); domain-specific
 serialized refinements (`SerializedNode`, `SerializedRandom`) live with their deserializers. The Lean
