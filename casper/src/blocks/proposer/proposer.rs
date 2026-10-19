@@ -942,6 +942,7 @@ where
         block_index,
         &creators_validator_for_parents,
         escape,
+        matches!(source, ProposeSource::Recovery { .. }),
     )
     .await?;
     let pre_state_hash = pre_state.pre_state_hash;

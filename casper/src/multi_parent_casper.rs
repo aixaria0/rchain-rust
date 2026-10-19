@@ -617,6 +617,7 @@ pub async fn get_pre_state_for_new_block<F, Fut>(
     block_index: &F,
     sender: &Validator,
     escape: bool,
+    recovery: bool,
 ) -> Result<ParentsMergedState, String>
 where
     F: Fn(BlockHash) -> Fut,
@@ -626,7 +627,11 @@ where
     // **The round snapshot, not `latest_msgs`.** The fringe gate cannot finalise a parent set made of
     // every sender's newest message — see `DagMessageState::round_parents` — so the proposer justifies
     // the messages as of the last round boundary instead.
-    let parents = if escape {
+    let parents = if escape && recovery {
+        dag_repr
+            .dag_message_state
+            .parents_for_new_block_recovery(sender)
+    } else if escape {
         dag_repr
             .dag_message_state
             .parents_for_new_block_escaping(sender)
