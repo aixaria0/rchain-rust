@@ -284,6 +284,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | Deviation | Oracle location | Reason |
 |---|---|---|
+| An instance-less or unknown-only `Expr` is **refused** with `Malformed("expr_instance")` rather than decoded as `false` | The prior Scala comparison is recorded in section 17; this change does not establish the Scala runtime refusal behavior | Issue #380 requires an unsupported expression to fail rather than become a different value. **Acceptance change from earlier Rust releases:** malformed bytes accepted before are refused now; coordinate validator upgrades and review any historical malformed terms before replay. Recognized variants, explicit false and Nil keep their encodings. Unknown fields accompanying a recognized variant are outside this fix. AUDIT **C333**, section 138 |
 | `New.injections` sorted by key (determinism) | `models/.../rholang/*` | `HashMap` order is non-deterministic in Rust |
 | `locally_free` excluded from `Eq`/`Hash` (`AlwaysEqual`) | `models/.../Par.scala` | the cache field is not part of structural identity |
 | Negative deploy cost **rejected** (not wrapped to `uint64`) | `accounting/Costs.scala` `toProto` = `PCost(c.value)` | Scala wraps a negative `Long` into `uint64` (latent bug); reject is safer |
@@ -1962,7 +1963,7 @@ oracle is, and the test that pins the fix.
   instead of deriving it. The static half (a walk of the vendored text) is recorded in C22 item 1 as
   drafted-and-retired, with the three shapes it cannot tell apart.
 
-### Open question (behaviour pinned, oracle not established)
+### Historical keep-default decision (superseded by C333)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The
   final arm is `None => a::Expr::GBool(false)`: a protobuf `Expr` that carries no `expr_instance` —
@@ -1988,6 +1989,13 @@ oracle is, and the test that pins the fix.
   decodes to *something* rather than erroring, which is the more conservative of the two choices for
   a wire path whose other option is a hard failure — and it is pinned by the test named here, so the
   decision is a pinned behaviour rather than an absence.
+
+  **Superseded (2026-10-19, C333, section 138).** Issue #380 makes the consequence concrete:
+  a future unknown-only expression takes this same default path and becomes `false`. The public
+  raw-byte regressions reproduce it, including inside a collection. The bridge now refuses the
+  missing recognized instance, and the former characterization is replaced by
+  `an_instance_less_expr_is_malformed`. This deliberately changes malformed-input acceptance;
+  section 6 records the upgrade/replay consequence and the remaining unknown-field limitation.
 
 ## 18. The parser's soundness sweep (pass 7): C30–C37
 
@@ -11424,3 +11432,39 @@ arms only on `NotEnoughNewBlocks`). That is the designed shape — a dev chain a
 the live chain shows it working: every block carries one deploy, one block per deploy, finality one
 round behind and following. The playground's own API was read for this (height 1839, fringe 1835, pool
 empty, one deploy per block since 1830); nothing was stuck, and nothing needed clearing.
+
+## 138. An unsupported expression is not a false value (C333)
+
+Issue #380 asks for a refusal path before a future numeric variant can be activated. On
+`dev` at `9bd5a58829933e6de04fb3fd55df34195556b8cc`, the public
+`Serialize<Par>::decode` path accepted an empty `Expr` and an expression containing only
+unknown tag 35 as `GBool(false)`. The same substitution happened inside a list. Prost
+skips the unknown field, leaving `expr_instance = None`; the bridge supplied the constant.
+
+**Measured before the change.** With only `models/tests/expr_refusal.rs` added, the
+three malformed-input tests failed because decode returned `Ok(...GBool(false)...)`.
+The positive control passed: an explicit boolean false and an empty Par (Nil) retained their
+existing wire values. The raw fixtures include the complete nested protobuf envelope;
+the tests exercise the public byte decoder rather than a hand-built domain value.
+
+**Changed at the boundary.** `expr_from_proto` now returns
+`ModelsError::Malformed("expr_instance")` when no recognized instance remains. The existing
+recursive bridge propagates that error. The former keep-default characterization is replaced
+by `an_instance_less_expr_is_malformed`; the raw-wire regressions additionally cover the
+unknown-only payload and collection nesting. The §17 decision is superseded for this input
+class, and the stricter acceptance rule is recorded in §6.
+
+**Verification after the change.** `cargo test -p rchain-models --locked` passed all
+176 unit/property tests and the four byte-level regressions. The local run used Termux's
+Rust 1.99.1; the repository's pinned toolchain and workspace gates remain CI's check.
+
+**Compatibility and scope.** An explicit false is still `2a 02 08 00` as a Par, and Nil is
+still the empty byte string. The encoder and recognized variants are unchanged. Earlier Rust
+releases accepted the malformed inputs above, so this is a wire-acceptance change: a mixed
+validator set or replay of historical malformed terms requires coordinated upgrade/replay
+review. No network exploit or complete Scala decoder equivalence is claimed.
+
+This does not reject an unknown field accompanying a recognized instance, because prost
+discards that field before this function sees it. It does not implement a new numeric type,
+reserve tag 35, or provide version-aware activation. Those remain #380's separate design and
+implementation work; the fixture uses an unused tag only to demonstrate refusal.
