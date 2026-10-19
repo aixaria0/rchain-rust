@@ -858,13 +858,15 @@ cmd_reset() {
   local host_port=$((GRPC_BASE + idx * 1000))
   local http_port=$((HTTP_BASE + idx * 1000))
   local admin_port=$((ADMIN_BASE + idx * 1000))
-  echo "==> reset $name: empty store, syncing the chain from $BOOTSTRAP"
+  # Test-only alternate locator, without changing the trusted node key.
+  local reset_bootstrap_host="${DEVNET_RESET_BOOTSTRAP_HOST:-$BOOTSTRAP}"
+  echo "==> reset $name: empty store, syncing the chain from $reset_bootstrap_host"
   seed_validator_key "$name" "$idx"
   # shellcheck disable=SC2046
   docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
     -v "${genesis_dir}:/genesis:ro" \
     "$(node_image "$name")" $(rnode_run_common "$name") \
-      --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
+      --bootstrap "rnode://${id}@${reset_bootstrap_host}?protocol=40400&discovery=40404" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
       --validator-private-key-path /var/lib/rnode/validator.hex
   echo "reset $name: back up with an empty store; it will LFS-sync the chain from $BOOTSTRAP"

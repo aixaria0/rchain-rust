@@ -435,7 +435,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -449,6 +449,15 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-identity" in modes:
+        if modes != ["lfs-identity"]:
+            ap.error("LFS identity is a standalone disposable-network arm")
+        if args.dry_run:
+            print("LFS bootstrap hostname-to-IP rejoin test on isolated CI devnet")
+            return
+        subprocess.run([sys.executable, "tests/lfs-ip-bootstrap.py"], check=True)
+        return
 
     if args.dry_run:
         # The generator half of `malformed` is checkable without a node: print what a run would send
