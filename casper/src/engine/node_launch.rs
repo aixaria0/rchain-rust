@@ -484,6 +484,17 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         spec.genesis_block_data.max_number_of_parents,
     )
     .await?;
+    // The restored allocation gets the same treatment: the imported leaf must be internally
+    // consistent, and a joiner that made a local allocation claim must match it. A joiner with no
+    // claim (the normal public bootstrap) trusts the chain.
+    check_running_dev_vesting(
+        dag.as_ref(),
+        &block_store,
+        &approved_store,
+        runtime_manager.as_ref(),
+        runtime_manager.genesis_pos().dev_vesting.clone(),
+    )
+    .await?;
 
     // **The catch-up window and the driver that walks it** (C259). A node restored at an anchor below
     // its peers' tip cannot ingest the gap through the hash-keyed pull: the walk runs downward from a
@@ -683,6 +694,88 @@ async fn genesis_post_state_hash(
         .flatten()
         .ok_or_else(|| "genesis block missing after restore".to_string())
         .map(|block| Some(block.post_state_hash))
+}
+
+/// Check the restored developer allocation before admission and proposal enter the running phase.
+///
+/// **Enforce when present, trust when absent.** A joiner that made a local allocation claim — bonds
+/// and wallets files present, and a non-empty `dev-tax-address` — must match the imported genesis.
+/// A joiner with no claim carries `None`, which means *no claim*, not *a claim of no allocation*: the
+/// normal public-testnet bootstrap restores a chain whose genesis predates the joiner's config, and
+/// must not be refused for it.
+///
+/// **The imported leaf's own schedule is always checked.** At the genesis post-state nothing has
+/// vested (`unreleased == allocation`); at any later state the unreleased amount cannot exceed the
+/// allocation. A larger one would make `release_dev_tax` compute a negative already-released amount
+/// and over-credit the recipient — a silent mint at the next boundary.
+pub async fn check_running_dev_vesting(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    approved_store: &ApprovedStore,
+    runtime: &RuntimeManager,
+    local: Option<(String, NonNegI64)>,
+) -> Result<(), String> {
+    let approved = get_approved_block(approved_store)
+        .await?
+        .ok_or_else(|| "cannot enter Running without an approved state".to_string())?;
+    let genesis_root = genesis_post_state_hash(dag, block_store).await?;
+    // A genesis-only joiner carries `hashes: [genesis_hash]`; the hash comparison, not the fringe
+    // shape, is what identifies the genesis state.
+    let restored_root = restored_native_state_root(dag, block_store, &approved).await?;
+    let at_genesis = genesis_root == Some(restored_root);
+    let imported = runtime.committed_dev_vesting(&restored_root).await?;
+
+    if let Some((local_address, local_allocation)) = local {
+        match &imported {
+            Some(leaf) if leaf.address == local_address && leaf.allocation == local_allocation => {}
+            Some(leaf) => {
+                return Err(format!(
+                    "local developer allocation ({local_address}, {local_allocation:?}) does not \
+                     match the restored genesis ({}, {:?}) at state {}; refusing to enter Running",
+                    leaf.address,
+                    leaf.allocation,
+                    hex(restored_root)
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "local developer allocation ({local_address}, {local_allocation:?}) but the \
+                     restored genesis at state {} has none; refusing to enter Running",
+                    hex(restored_root)
+                ));
+            }
+        }
+    }
+
+    if let Some(leaf) = &imported {
+        if at_genesis {
+            if leaf.unreleased != leaf.allocation {
+                return Err(format!(
+                    "restored genesis allocation at state {} has unreleased {:?} of {:?}; refusing \
+                     to enter Running",
+                    hex(restored_root),
+                    leaf.unreleased,
+                    leaf.allocation
+                ));
+            }
+        } else if leaf.unreleased > leaf.allocation {
+            return Err(format!(
+                "restored allocation at state {} has unreleased {:?} of {:?}; refusing to enter \
+                 Running",
+                hex(restored_root),
+                leaf.unreleased,
+                leaf.allocation
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn hex(hash: StateHash) -> String {
+    hash.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Start the catch-up walk for a running phase, if that phase has an anchor and a peer to walk against.
