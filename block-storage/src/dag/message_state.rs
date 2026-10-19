@@ -188,22 +188,28 @@ where
             let Some(round_parent) = parents.get(peer) else {
                 continue;
             };
-            if latest.sender_seq <= round_parent.sender_seq
-                || !round_parent.seen.is_subset(&latest.seen)
-            {
-                continue;
-            }
-            // A block's own earlier message must not have acknowledged
-            // anything this new peer candidate omits.
+            // Validation compares this block's peer justification to the
+            // peer in our own previous block. A stale round snapshot can be
+            // *older* than that peer. Keeping it when the latest candidate
+            // is unsuitable is itself a justification regression.
             let previous = own
                 .parents
                 .iter()
                 .filter_map(|h| self.msg_map.get(h))
                 .find(|m| &m.sender == peer);
-            if previous.is_some_and(|m| !m.seen.is_subset(&latest.seen)) {
-                continue;
-            }
-            parents.insert(peer.clone(), latest.clone());
+            let baseline = match previous {
+                Some(prior) if !prior.seen.is_subset(&round_parent.seen) => prior,
+                _ => round_parent,
+            };
+            let selected = if latest.sender_seq > baseline.sender_seq
+                && baseline.seen.is_subset(&latest.seen)
+                && previous.is_none_or(|m| m.seen.is_subset(&latest.seen))
+            {
+                latest
+            } else {
+                baseline
+            };
+            parents.insert(peer.clone(), selected.clone());
         }
         parents.into_values().collect()
     }
@@ -542,6 +548,42 @@ mod tests {
         assert_ne!(normal.get(&1), Some(&4));
         assert_eq!(recovered.get(&1), Some(&4));
         assert_eq!(recovered.get(&0), Some(&3));
+    }
+
+    /// An older round snapshot is not a valid fallback if the proposer had
+    /// already justified a later message from that peer in its own block.
+    #[test]
+    fn recovery_fallback_must_not_regress_from_own_previous_justification() {
+        let bonds = [(0, 100), (1, 100), (2, 100)];
+        let mut state = DagMessageState::<i32, i32>::empty();
+        state.insert_msg_mut(&at(0, 0, 0, 0, &bonds));
+        let old_peer = at(1, 1, 0, 1, &bonds);
+        state.insert_msg_mut(&old_peer);
+        state.insert_msg_mut(&at(2, 2, 0, 1, &bonds));
+        let mut newer_peer = at(4, 1, 1, 2, &bonds);
+        newer_peer.seen = Arc::new([0, 1, 2, 4].into_iter().collect());
+        state.insert_msg_mut(&newer_peer);
+        let mut own = at(3, 0, 1, 3, &bonds);
+        own.parents = [0, 2, 4].into_iter().collect();
+        own.seen = Arc::new([0, 1, 2, 3, 4].into_iter().collect());
+        state.insert_msg_mut(&own);
+        // The stored round was taken before this node's previous message:
+        // an ordinary escape would incorrectly keep peer 1's older entry.
+        state.round_parents.insert(1, old_peer);
+        let mut divergent_latest = at(5, 1, 2, 4, &bonds);
+        divergent_latest.seen = Arc::new([0, 5].into_iter().collect());
+        state.insert_msg_mut(&divergent_latest);
+        let parents: BTreeMap<_, _> = state
+            .parents_for_new_block_recovery(&0)
+            .into_iter()
+            .map(|m| (m.sender, m.id))
+            .collect();
+        assert_eq!(parents.get(&0), Some(&3));
+        assert_eq!(
+            parents.get(&1),
+            Some(&4),
+            "the own-prev causal peer is the only valid fallback"
+        );
     }
 
     /// **The round is what makes the per-deploy cost linear in the validator count** (#149).
