@@ -438,7 +438,8 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
 
                     match &outcome {
                         Ok(()) => {
-                            report_restored_checkpoint(&approved_store, &target, log.as_ref()).await;
+                            report_restored_checkpoint(&approved_store, &target, log.as_ref())
+                                .await;
                             notify_when_restored(&outcome, &finished);
                             // The state is restored, so this task is returning and the node is no
                             // longer syncing: the reading is cleared rather than left naming the loop
@@ -1090,8 +1091,14 @@ mod tests {
             .await
             .expect("unexpected peer must be ignored without error");
 
-        assert!(engine.start_requester, "an outsider consumed the sync trigger");
-        assert!(engine.importer.is_some(), "an outsider started the sync worker");
+        assert!(
+            engine.start_requester,
+            "an outsider consumed the sync trigger"
+        );
+        assert!(
+            engine.importer.is_some(),
+            "an outsider started the sync worker"
+        );
         assert!(
             engine.latest_fringe.lock().await.is_none(),
             "an outsider replaced the trusted retry target"
@@ -1145,7 +1152,10 @@ mod tests {
         assert!(failure_log.contains("approved-fringe checkpoint was not persisted"));
         assert!(failure_log.contains("checkpoint store unavailable"));
         assert!(!failure_log.contains("LFS state is successfully restored."));
-        assert_eq!(working.get(&[FINALIZED_FRINGE_KEY]).await.unwrap(), vec![None]);
+        assert_eq!(
+            working.get(&[FINALIZED_FRINGE_KEY]).await.unwrap(),
+            vec![None]
+        );
 
         let success_log = RecordingLog::default();
         report_restored_checkpoint(&working, &fringe, &success_log).await;
