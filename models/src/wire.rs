@@ -494,7 +494,8 @@ pub fn expr_from_proto(p: &p::Expr) -> Result<a::Expr, ModelsError> {
         Some(E::ESetBody(m)) => a::Expr::ESet(eset_from_proto(m)?),
         Some(E::EMapBody(m)) => a::Expr::EMap(emap_from_proto(m)?),
         Some(E::EMethodBody(m)) => a::Expr::EMethod(emethod_from_proto(m)?),
-        None => a::Expr::GBool(false),
+        // Missing and unknown-only oneof values are not the boolean false.
+        None => return Err(ModelsError::Malformed("expr_instance")),
     })
 }
 
@@ -1726,31 +1727,25 @@ mod differential {
             );
         }
 
-        /// An `Expr` message with **no instance** decodes to `GBool(false)` — a silent default
-        /// rather than an error.
-        ///
-        /// Pinned as behaviour, with the caveat stated: the legacy tree does not contain the
-        /// Scala's `Expr.fromProto`, so what the JVM node does with an instance-less `Expr` could
-        /// not be established. Changing this arm to `Malformed("expr_instance")` would be the
-        /// stricter reading, but it is also a wire-path change that could *disagree* with the Scala
-        /// on a peer-supplied block, so it is left as it is and recorded here rather than guessed
-        /// at. The decode of an empty buffer reaching this arm is the honest trigger.
+        /// An Expr must identify a known value, even when it arrives inside a Par.
+        /// Refusal here supersedes the former default-to-false characterization.
         #[test]
-        fn an_instance_less_expr_decodes_to_the_default() {
+        fn an_instance_less_expr_is_malformed() {
             let empty = p::Expr::default();
             assert!(empty.expr_instance.is_none());
             assert_eq!(
-                expr_from_proto(&empty).expect("the arm never errors"),
-                a::Expr::GBool(false)
+                expr_from_proto(&empty),
+                Err(ModelsError::Malformed("expr_instance"))
             );
 
-            // …and through a par, which is how a peer-supplied message would reach it.
             let par = p::Par {
                 exprs: vec![p::Expr::default()],
                 ..p::Par::default()
             };
-            let decoded = par_from_proto::<a::ProcSort>(&par).expect("a par decodes");
-            assert_eq!(decoded.exprs, vec![a::Expr::GBool(false)]);
+            assert_eq!(
+                par_from_proto::<a::ProcSort>(&par),
+                Err(ModelsError::Malformed("expr_instance"))
+            );
         }
     }
 }
