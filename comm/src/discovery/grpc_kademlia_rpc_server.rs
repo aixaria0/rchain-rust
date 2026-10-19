@@ -17,7 +17,7 @@ use tonic::{Request, Response, Status};
 
 use crate::discovery::{to_node, to_peer_node};
 use crate::peer_node::PeerNode;
-use crate::rp::handle_messages::is_local_address_resolved;
+use crate::rp::handle_messages::discovery_host_allowed;
 use crate::transport::grpc_transport_receiver::PeerId;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -54,6 +54,7 @@ const MAX_TRACKED_KADEMLIA_PEERS: usize = 4_096;
 /// The Kademlia RPC service (port of `GrpcKademliaRPCServer`).
 pub struct GrpcKademliaRpcServer {
     network_id: String,
+    allow_private_peers: bool,
     ping_handler: Arc<dyn Fn(PeerNode) -> BoxFuture<()> + Send + Sync>,
     lookup_handler: Arc<dyn Fn(PeerNode, Vec<u8>) -> BoxFuture<Vec<PeerNode>> + Send + Sync>,
     rate_limiter: KeyedRateLimiter,
@@ -65,8 +66,23 @@ impl GrpcKademliaRpcServer {
         F: Fn(PeerNode) -> BoxFuture<()> + Send + Sync + 'static,
         G: Fn(PeerNode, Vec<u8>) -> BoxFuture<Vec<PeerNode>> + Send + Sync + 'static,
     {
+        Self::new_with_private_peers(network_id, ping_handler, lookup_handler, false)
+    }
+
+    /// Explicit devnet-only opt-in; public discovery continues to refuse private peers.
+    pub fn new_with_private_peers<F, G>(
+        network_id: String,
+        ping_handler: F,
+        lookup_handler: G,
+        allow_private_peers: bool,
+    ) -> Self
+    where
+        F: Fn(PeerNode) -> BoxFuture<()> + Send + Sync + 'static,
+        G: Fn(PeerNode, Vec<u8>) -> BoxFuture<Vec<PeerNode>> + Send + Sync + 'static,
+    {
         GrpcKademliaRpcServer {
             network_id,
+            allow_private_peers,
             ping_handler: Arc::new(ping_handler),
             lookup_handler: Arc::new(lookup_handler),
             rate_limiter: KeyedRateLimiter::new(
@@ -112,7 +128,7 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
                     // Reject attacker-chosen private/loopback/link-local/unspecified hosts before
                     // they reach the routing table (SSRF guard; see FIX 5). Resolved first: a
                     // hostname is a way of aiming the node at its own network too (AUDIT C117).
-                    if !is_local_address_resolved(&peer.endpoint.host).await {
+                    if discovery_host_allowed(&peer.endpoint.host, self.allow_private_peers).await {
                         (self.ping_handler)(peer).await;
                     }
                 }
@@ -149,7 +165,9 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
                     // Reject attacker-chosen private/loopback/link-local/unspecified hosts before
                     // they reach the routing table (SSRF guard; see FIX 5); resolved, for the same
                     // reason (AUDIT C117).
-                    if is_local_address_resolved(&sender.endpoint.host).await {
+                    if !discovery_host_allowed(&sender.endpoint.host, self.allow_private_peers)
+                        .await
+                    {
                         Vec::new()
                     } else {
                         let peers = (self.lookup_handler)(sender, lookup.id).await;

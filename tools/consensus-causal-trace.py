@@ -137,16 +137,17 @@ def emit_capture(path):
     print(f"=== END ZLIB {path} ===", flush=True)
 
 
-def capture(run, get, node_name):
+def capture(run, get, node_name, nodes=None):
     out = run.out / "causal"
     out.mkdir(exist_ok=True)
     views, errors = {}, {}
+    nodes = list(range(run.args.validators)) if nodes is None else list(nodes)
     manifest = {"utc": time.time(), "source_sha": subprocess.check_output(
         ["git", "rev-parse", "HEAD"], text=True).strip(),
         "validators": run.args.validators, "nodes": {},
         "unavailable": ["internal round ID", "signature verification of captured raw bytes",
                         "candidate fringe internals; use gate verdict in operator status"]}
-    for i in range(run.args.validators):
+    for i in nodes:
         node = node_name(i)
         try:
             capture_start = time.time()
@@ -187,7 +188,7 @@ def capture(run, get, node_name):
             errors[str(i)] = f"{type(error).__name__}: {error}"
     comparison = compare(views)
     comparison.update({"errors": errors,
-                       "complete_capture": not errors and len(views) == run.args.validators})
+                       "complete_capture": not errors and len(views) == len(nodes)})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (out / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
     print("CAUSAL_CAPTURE " + json.dumps(comparison), flush=True)

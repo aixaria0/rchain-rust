@@ -455,8 +455,10 @@ def available_acceptance_offset():
     raise RuntimeError("no available host-port group for the isolated N=8 acceptance devnet")
 
 
-def run_acceptance_campaign(trace=False, quiet=False):
+def run_acceptance_campaign(trace=False, quiet=False, retention_mode="legacy"):
     """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
+    if retention_mode not in ("legacy", "quiet", "epoch-work") or (retention_mode != "legacy" and not quiet):
+        raise ValueError("retention mode requires isolated quiet acceptance")
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("acceptance mode requires an isolated GitHub Actions runner")
     # The existing workflow started this default devnet in this same disposable
@@ -467,21 +469,37 @@ def run_acceptance_campaign(trace=False, quiet=False):
            "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2",
            "DEVNET_PORT_OFFSET": str(host_offset)}
     print(f"==> isolated acceptance Docker host-port offset: {host_offset}", flush=True)
+    if quiet:
+        # Isolated Docker peers advertise RFC1918 addresses. The default
+        # production SSRF guard excludes these; opt in only for the disposable
+        # testnet, retaining certificate validation and loopback/link-local bans.
+        # This differentiates bootstrap-only gossip from healthy peer discovery.
+        env["DEVNET_NODE_ENV"] = "RCHAIN_ALLOW_PRIVATE_PEER_DISCOVERY=1"
     if trace or quiet:
         # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
         # Full inbound traces distinguish propagation from validation rejection.
         env["DEVNET_LOG_LEVEL"] = "debug"
     outcomes = []
-    for validators in ((5, 8) if trace else (4, 8)):
-        out = Path("target/consensus-acceptance") / f"n{validators}"
+    # Work-driven epoch durability is a separate N=8 witness.
+    # The historical N=4 quiet control is kept in the quiet-only campaign.
+    validator_counts = ((5, 8) if trace else
+                        (8,) if quiet and retention_mode == "epoch-work" else
+                        (8, 4) if quiet else (4, 8))
+    for validators in validator_counts:
+        suffix = f"-{retention_mode}" if quiet and retention_mode != "legacy" else ""
+        out = Path("target/consensus-acceptance") / f"n{validators}{suffix}"
         out.mkdir(parents=True, exist_ok=True)
         code = 1
         try:
             subprocess.run(["tools/devnet.sh", "up", "--validators", str(validators),
                             "--fresh", "--no-autopropose", "--epoch-length", "10"],
                            env=env, check=True)
-            code = subprocess.run([sys.executable, "tools/consensus-quiet-drill.py" if quiet else "tools/consensus-acceptance-drill.py",
-                                   "--validators", str(validators), "--out", str(out)], env=env).returncode
+            command = [sys.executable, "tools/consensus-quiet-drill.py" if quiet else
+                       "tools/consensus-acceptance-drill.py",
+                       "--validators", str(validators), "--out", str(out)]
+            if quiet:
+                command += ["--retention-mode", retention_mode]
+            code = subprocess.run(command, env=env).returncode
         except (OSError, subprocess.CalledProcessError) as error:
             (out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
         finally:
@@ -515,7 +533,9 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance", "acceptance-trace", "acceptance-quiet"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance",
+                 "acceptance-trace", "acceptance-quiet", "acceptance-quiet-retention",
+                 "acceptance-epoch-work"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -530,17 +550,27 @@ def main():
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
 
-    if any(mode in modes for mode in ("acceptance", "acceptance-trace", "acceptance-quiet")):
+    acceptance_modes = ("acceptance", "acceptance-trace", "acceptance-quiet",
+                        "acceptance-quiet-retention", "acceptance-epoch-work")
+    if any(mode in modes for mode in acceptance_modes):
         if len(modes) != 1:
             ap.error("acceptance is a standalone campaign; do not combine it with fuzz modes")
         if args.dry_run:
-            if modes == ["acceptance-quiet"]:
-                print("isolated CI: N=4/N=8, one silent validator, no helper deploys, 15s escape bound")
+            if modes in (["acceptance-quiet"], ["acceptance-quiet-retention"]):
+                print("isolated CI: N=4/N=8, one silent validator, no helper deploys, 15s escape bound; quiet gate" +
+                      (" (legacy strict N8 epochs)" if modes == ["acceptance-quiet"] else " (20s independent retention)"))
+                return
+            if modes == ["acceptance-epoch-work"]:
+                print("isolated CI: N=8, one silent validator, signed state-bearing work, two finalized epochs, 15s escape bound")
                 return
             print("isolated CI: " + ("N=5 control, N=8, debug traces" if modes == ["acceptance-trace"] else
                                     "N=4 control, N=8") + "; real finalized marker, two further epoch boundaries")
             return
-        run_acceptance_campaign(trace=modes == ["acceptance-trace"], quiet=modes == ["acceptance-quiet"])
+        run_acceptance_campaign(
+            trace=modes == ["acceptance-trace"],
+            quiet=modes in (["acceptance-quiet"], ["acceptance-quiet-retention"], ["acceptance-epoch-work"]),
+            retention_mode=("quiet" if modes == ["acceptance-quiet-retention"] else
+                            "epoch-work" if modes == ["acceptance-epoch-work"] else "legacy"))
         return
 
     if args.dry_run:

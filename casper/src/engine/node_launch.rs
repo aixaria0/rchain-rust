@@ -364,8 +364,46 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
                 }
             }
         };
+        // A successful initial send does not prove that the bootstrap's response
+        // reached us. Under N=8 startup load a healthy, connected validator can
+        // remain at height zero until the harness times out. Retry the *request*,
+        // not the acceptance timeout, while no valid fringe has been received.
+        // This runs concurrently with packet handling: awaiting a slow send on the
+        // inbound dispatcher would prevent the response from being processed.
+        // After a nonempty fringe arrives, NodeSyncing owns the separate bounded
+        // state-transfer retries. Leaving this loop behind on transition (or on a
+        // terminal exit) cancels any outstanding request without a detached task.
+        let retry_missing_fringe = async {
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await; // the first request has already been sent above
+            loop {
+                tick.tick().await;
+                if engine.lock().await.awaiting_first_fringe() {
+                    log.warn(
+                        source,
+                        "No bootstrap finalized fringe received yet; re-requesting the initial LFS target",
+                    );
+                    if let Err(e) = comm_util
+                        .request_finalized_fringe(trim_state, true, anchor)
+                        .await
+                    {
+                        log.warn(
+                            source,
+                            &format!("Retrying finalized fringe request failed: {e}"),
+                        );
+                    }
+                }
+            }
+        };
+        let syncing_packets = async {
+            tokio::select! {
+                _ = handle_loop => {},
+                _ = retry_missing_fringe => {},
+            }
+        };
         tokio::select! {
-            _ = handle_loop => {}
+            _ = syncing_packets => {}
             _ = finished.notified() => {}
             _ = terminal.notified() => {
                 // **The reason travels with the sentence** (C271/C268). "The retries are spent" is

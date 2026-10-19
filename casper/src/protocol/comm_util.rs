@@ -182,6 +182,26 @@ impl CommUtil {
         }
     }
 
+    /// Fetch LFS blocks from the authority that supplied the finalized fringe,
+    /// rather than choosing one random peer. During N=8 genesis startup, peers
+    /// often know one another before they have any blocks; random scope=1 can
+    /// repeatedly choose a height-zero peer even while bootstrap has the block.
+    /// If an outstanding hash is still missing on a later idle round, widen the
+    /// retry to all connected peers so a temporarily unavailable bootstrap cannot
+    /// strand the sync. No block is accepted on trust: LFS still validates the
+    /// returned hash and follows the finalized fringe's ancestry.
+    pub async fn request_lfs_block(&self, hash: &BlockHash, resend: bool) {
+        if let Some(bootstrap) = self.conf.bootstrap.as_ref() {
+            self.request_for_block(bootstrap, hash).await;
+            if resend {
+                self.broadcast_request_for_block(hash, None).await;
+            }
+        } else {
+            // Non-bootstrap configurations retain the old random-peer fallback.
+            self.broadcast_request_for_block(hash, Some(1)).await;
+        }
+    }
+
     /// Ask a peer for the blocks at heights `[from, to]` (C259's catch-up — see
     /// [`BlockRangeRequest`]).
     ///
@@ -620,6 +640,54 @@ mod tests {
             ],
             "each wrapper names itself on the wire"
         );
+    }
+
+    /// N=8 genesis regression: a joiner with seven connected peers must ask
+    /// the known bootstrap first. Random scope=1 repeatedly selected other
+    /// un-synced validators, none of which could serve the genesis block.
+    #[tokio::test]
+    async fn lfs_request_prefers_bootstrap_and_fans_out_only_on_idle_retry() {
+        let local = peer("local", 40400);
+        let bootstrap = peer("bootstrap", 40401);
+        let others: Vec<PeerNode> = (2..8)
+            .map(|n| peer(&format!("unsynced-{n}"), 40400 + n as u16))
+            .collect();
+        let connections = std::iter::once(bootstrap.clone())
+            .chain(others)
+            .collect::<Vec<_>>();
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, Some(bootstrap.clone()), 10),
+            connections.clone(),
+        );
+
+        comm.request_lfs_block(&hash(7), false).await;
+        {
+            let sends = transport.sends.lock().unwrap();
+            assert_eq!(sends.len(), 1);
+            assert_eq!(
+                sends[0].0, bootstrap,
+                "the bootstrap has genesis while peers may be unsynced"
+            );
+            assert_eq!(unpack(&sends[0].1).type_id, "BlockRequest");
+            assert!(
+                transport.broadcasts.lock().unwrap().is_empty(),
+                "normal LFS must not flood peers"
+            );
+        }
+
+        // If even bootstrap fails to serve the hash, the *idle retry* also
+        // explores connected peers; the recovery path is not bootstrap-only.
+        comm.request_lfs_block(&hash(7), true).await;
+        assert_eq!(transport.sends.lock().unwrap().len(), 2);
+        let broadcasts = transport.broadcasts.lock().unwrap();
+        assert_eq!(broadcasts.len(), 1);
+        assert_eq!(broadcasts[0].0.len(), connections.len());
+        for p in &connections {
+            assert!(broadcasts[0].0.contains(p));
+        }
+        assert_eq!(unpack(&broadcasts[0].1).type_id, "BlockRequest");
     }
 
     #[tokio::test]

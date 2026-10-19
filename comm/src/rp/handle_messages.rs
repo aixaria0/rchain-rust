@@ -104,6 +104,48 @@ pub async fn is_local_address_resolved(host: &str) -> bool {
     }
 }
 
+/// Explicitly opted-in, isolated private-network discovery. The default remains
+/// fail-closed for RFC1918/ULA peers. Never admit loopback, link-local, multicast
+/// or unspecified addresses, even on a private test network. Resolve DNS before
+/// deciding; an unresolved name or any unsafe address in the answer is refused.
+pub async fn discovery_host_allowed(host: &str, private_opt_in: bool) -> bool {
+    if !private_opt_in {
+        return !is_local_address_resolved(host).await;
+    }
+    let acceptable = |ip: IpAddr| match ip {
+        IpAddr::V4(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && !ip.is_link_local()
+                && ip.octets()[0] != 0
+                && ip.octets()[0] != 255
+        }
+        IpAddr::V6(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && !ip.is_unicast_link_local()
+        }
+    };
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return acceptable(ip);
+    }
+    match tokio::net::lookup_host((host, 0)).await {
+        Ok(addrs) => {
+            let mut any = false;
+            for addr in addrs {
+                any = true;
+                if !acceptable(addr.ip()) {
+                    return false;
+                }
+            }
+            any
+        }
+        Err(_) => false,
+    }
+}
+
 /// Whether `peer` is on the same subnetwork class (public vs local) as the local node (port of
 /// `checkPeerOnSameNetwork`).
 pub fn check_peer_on_same_network(conf: &RPConf, peer: &PeerNode) -> bool {
@@ -266,6 +308,21 @@ pub async fn handle_protocol_handshake<T: TransportLayer + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn private_discovery_requires_opt_in_and_never_allows_loopback_or_metadata() {
+        use super::discovery_host_allowed as allowed;
+        assert!(!allowed("172.18.0.5", false).await);
+        assert!(allowed("172.18.0.5", true).await);
+        assert!(allowed("10.1.2.3", true).await);
+        assert!(allowed("192.168.2.10", true).await);
+        assert!(!allowed("127.0.0.1", true).await);
+        assert!(!allowed("169.254.169.254", true).await);
+        assert!(!allowed("0.0.0.0", true).await);
+        assert!(!allowed("::1", true).await);
+        assert!(!allowed("fe80::1", true).await);
+        assert!(!allowed("localhost", true).await);
+    }
+
     use super::*;
     use rchain_shared::log::NopLog;
 

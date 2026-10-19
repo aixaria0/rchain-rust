@@ -9,6 +9,7 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::ShardHealth;
@@ -23,6 +24,35 @@ fn max_parallel_block_validation() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+/// Bound outstanding hash announcements independently of replay/admission. A
+/// paused peer may consume the transport timeout, but must not add that timeout
+/// to every accepted block before the next block can enter the DAG.
+const MAX_PENDING_GOSSIP: usize = 16;
+
+async fn schedule_gossip<F>(tasks: &mut JoinSet<()>, send: F, log: &dyn Log)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    while let Some(result) = tasks.try_join_next() {
+        report_gossip_result(result, log);
+    }
+    if tasks.len() >= MAX_PENDING_GOSSIP {
+        if let Some(result) = tasks.join_next().await {
+            report_gossip_result(result, log);
+        }
+    }
+    tasks.spawn(send);
+}
+
+fn report_gossip_result(result: Result<(), tokio::task::JoinError>, log: &dyn Log) {
+    if let Err(error) = result {
+        log.error(
+            LogSource::new("casper.blocks.BlockProcessor"),
+            &format!("block hash announcement task failed: {error}"),
+        );
+    }
 }
 
 /// Validate a block and insert it into the DAG (port of `validateAndAddToDag`).
@@ -110,6 +140,7 @@ pub async fn apply<F, Fut>(
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>> + Send + 'static,
 {
     let source = LogSource::new("casper.blocks.BlockProcessor");
+    let mut gossip = JoinSet::new();
     while let Some(first) = input_blocks.recv().await {
         // Drain a batch of dependency-free blocks, bounded by the concurrency cap.
         let mut batch = vec![first];
@@ -198,9 +229,19 @@ pub async fn apply<F, Fut>(
                     // bounded on the other half of this pipeline. `let _ =` stays: a send fails only when
                     // every receiver is gone, which is shutdown, and the block is already in the DAG.
                     chan::send(&validated_tx, block.clone()).await;
-                    comm_util
-                        .send_block_hash(&block.block_hash, block.sender.as_bytes())
-                        .await;
+                    let comm = comm_util.clone();
+                    // The block is already validated, inserted and released to
+                    // dependency processing. Retain bounded gossip backpressure
+                    // without serializing admission on the slowest peer.
+                    schedule_gossip(
+                        &mut gossip,
+                        async move {
+                            comm.send_block_hash(&block.block_hash, block.sender.as_bytes())
+                                .await;
+                        },
+                        log.as_ref(),
+                    )
+                    .await;
                 }
                 // **The `Display` sentence, not the `Debug` variant name** (#139). `{status:?}` printed
                 // `InvalidStateHash` and nothing else, so an operator could not tell a pre-state
@@ -219,11 +260,94 @@ pub async fn apply<F, Fut>(
             }
         }
     }
+    // Finish the bounded outstanding sends on a normal input shutdown.
+    while let Some(result) = gossip.join_next().await {
+        report_gossip_result(result, log.as_ref());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn slow_gossip_does_not_serialize_later_announcements() {
+        let mut tasks = JoinSet::new();
+        let log = rchain_shared::log::NopLog;
+        let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+        schedule_gossip(
+            &mut tasks,
+            async move {
+                let _ = blocked.await;
+            },
+            &log,
+        )
+        .await;
+        let (sent, observed) = tokio::sync::oneshot::channel();
+        schedule_gossip(
+            &mut tasks,
+            async move {
+                let _ = sent.send(());
+            },
+            &log,
+        )
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), observed)
+            .await
+            .expect("a blocked announcement must not hold the next one")
+            .unwrap();
+        release.send(()).unwrap();
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn gossip_capacity_backpressures_and_recovers_without_dropping() {
+        let mut tasks = JoinSet::new();
+        let log = rchain_shared::log::NopLog;
+        let mut releases = Vec::new();
+        for _ in 0..MAX_PENDING_GOSSIP {
+            let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+            releases.push(release);
+            schedule_gossip(
+                &mut tasks,
+                async move {
+                    let _ = blocked.await;
+                },
+                &log,
+            )
+            .await;
+        }
+        assert_eq!(tasks.len(), MAX_PENDING_GOSSIP);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                schedule_gossip(&mut tasks, async {}, &log),
+            )
+            .await
+            .is_err(),
+            "a full set must backpressure, not spawn unbounded tasks"
+        );
+        releases.pop().unwrap().send(()).unwrap();
+        let (sent, observed) = tokio::sync::oneshot::channel();
+        schedule_gossip(
+            &mut tasks,
+            async move {
+                let _ = sent.send(());
+            },
+            &log,
+        )
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), observed)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(releases);
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    }
 
     /// The concurrency cap is never zero: a zero would mean no block is ever validated concurrently —
     /// or, if it were used as a batch size, that a batch of blocks is never processed at all. The

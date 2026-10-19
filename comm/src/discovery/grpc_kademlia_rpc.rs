@@ -18,13 +18,14 @@ use tower::service_fn;
 
 use crate::discovery::{to_node, to_peer_node, KademliaRpc};
 use crate::peer_node::PeerNode;
-use crate::rp::handle_messages::is_local_address_resolved;
+use crate::rp::handle_messages::discovery_host_allowed;
 
 /// The gRPC Kademlia client (port of `GrpcKademliaRPC`).
 pub struct GrpcKademliaRpc {
     local: PeerNode,
     network_id: String,
     timeout: Duration,
+    allow_private_peers: bool,
     /// The mutual-TLS configuration, built from the node's own certificate (AUDIT C116). The same one
     /// the transport client dials with, so discovery and transport agree on what a peer is.
     tls: Arc<rustls::ClientConfig>,
@@ -38,10 +39,23 @@ impl GrpcKademliaRpc {
         cert_pem: &str,
         key_pem: &str,
     ) -> Result<Self, String> {
+        Self::new_with_private_peers(local, network_id, timeout, cert_pem, key_pem, false)
+    }
+
+    /// Private peer discovery is opt-in, and TLS identity checks remain mandatory.
+    pub fn new_with_private_peers(
+        local: PeerNode,
+        network_id: String,
+        timeout: Duration,
+        cert_pem: &str,
+        key_pem: &str,
+        allow_private_peers: bool,
+    ) -> Result<Self, String> {
         Ok(GrpcKademliaRpc {
             local,
             network_id,
             timeout,
+            allow_private_peers,
             tls: crate::transport::hostname_trust_manager::client_config(cert_pem, key_pem)?,
         })
     }
@@ -119,7 +133,7 @@ impl KademliaRpc for GrpcKademliaRpc {
         };
         match tokio::time::timeout(self.timeout, result).await {
             Ok(Ok(response)) if response.network_id == self.network_id => {
-                peers_from_response(&response.nodes).await
+                peers_from_response(&response.nodes, self.allow_private_peers).await
             }
             _ => Vec::new(),
         }
@@ -136,11 +150,14 @@ impl KademliaRpc for GrpcKademliaRpc {
 /// SSRF with the guard on the wrong side of the exchange (W-N1-03). Resolved rather than matched as a
 /// literal, for the same reason the inbound guard resolves (AUDIT C117) — a hostname is a way of
 /// aiming the node at its own network too.
-async fn peers_from_response(nodes: &[rchain_models::comm::discovery::Node]) -> Vec<PeerNode> {
+async fn peers_from_response(
+    nodes: &[rchain_models::comm::discovery::Node],
+    allow_private_peers: bool,
+) -> Vec<PeerNode> {
     let mut peers = Vec::new();
     for n in nodes {
         let Ok(peer) = to_peer_node(n) else { continue };
-        if is_local_address_resolved(&peer.endpoint.host).await {
+        if !discovery_host_allowed(&peer.endpoint.host, allow_private_peers).await {
             continue;
         }
         peers.push(peer);
@@ -277,7 +294,7 @@ mod tests {
             node(b"unspecified", "0.0.0.0"),
             node(b"public", "203.0.113.7"),
         ];
-        let peers = super::peers_from_response(&nodes).await;
+        let peers = super::peers_from_response(&nodes, false).await;
         assert_eq!(
             peers.len(),
             1,

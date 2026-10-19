@@ -60,17 +60,25 @@ def run(args):
     drill = base.Drill(args)
     silent = args.validators - 1
     active = list(range(silent))
+    mode = getattr(args, "retention_mode", "legacy")
+    if mode not in ("legacy", "quiet", "epoch-work"):
+        raise ValueError(f"unsupported retention mode: {mode}")
     paused = False
     log_since = None
     failure = None
     final = None
+    retained = None
+    retention_target = None
+    first_epoch_work = None
+    epoch_work_deploys = 0
+    first_epoch_work_finalized = False
     evidence = {}
     operator_latest = {}
     operator_height_ranges = {}
     drill.record(tree=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                  validators=args.validators, silent_validator=silent, active=active,
                  window=args.window, marker=drill.marker, expected=drill.value,
-                 helper_deploys=0, autopropose=False)
+                 helper_deploys=0, autopropose=False, retention_mode=mode)
     try:
         # Refuse to measure a network with an unexpected proposer configuration.
         for i in range(args.validators):
@@ -107,30 +115,95 @@ def run(args):
                     drill.record(node=i, status=status, finalized=response,
                                  finalized_marker_at=block_hash, response=answer)
                     if height >= 1 and base.marker_present(answer, drill.value):
-                        identities.append({"node": i, "height": height, "hash": block_hash})
+                        identities.append({"node": i, "height": height, "hash": block_hash,
+                                           "post_state": response["blockInfo"]["postStateHash"]})
                 except (OSError, ValueError) as error:
-                    drill.record(node=i, read_error=repr(error), status=status)
-            if len(identities) == len(active):
+                    drill.record(node=i, read_error=repr(error),
+                                 response_body=error.read().decode() if hasattr(error, "read") else None,
+                                 status=status)
+            if (len(identities) == len(active)
+                    and len({(x["hash"], x["post_state"]) for x in identities}) == 1):
                 final = identities
                 break
             time.sleep(2)
         if final is None:
             raise RuntimeError("active validators did not finalize the marker within the window")
-        # Observe a quiet interval beyond the retry delay, so an immediate marker
-        # pass cannot hide the absence of any exercised stall/escape path.
-        time.sleep(20)
-        for identity in final:
-            i = identity["node"]
-            _, current_hash = base.finalized_identity(base.get(i, "/api/last-finalized-block"))
-            answer = base.probe(i, drill.marker, current_hash)
-            original = base.probe(i, drill.marker, identity["hash"])
-            drill.record(node=i, current_finalized_hash=current_hash, response=answer,
-                         original_finalized_snapshot=identity["hash"], original_response=original)
-            if not base.marker_present(answer, drill.value) or not base.marker_present(original, drill.value):
-                raise RuntimeError(f"validator {i} lost the finalized marker")
+        # Keep the existing strict N=8 gate as the default and visibly red if
+        # a genuinely idle chain cannot cross two more finalized epochs.
+        # The independent quiet witness checks retention, without changing
+        # quorum, proposing rules, or manufacturing blocks. Epoch-work is
+        # explicitly separate and submits fresh signed state-bearing writes.
+        retention_target = ((max(x["height"] for x in final) // 10 + 2) * 10
+                            if (mode == "epoch-work" or
+                                (mode == "legacy" and args.validators == 8)) else None)
+        retention_started = time.monotonic()
+        deadline = retention_started + args.window
+        next_epoch_work = retention_started
+        while time.monotonic() < deadline:
+            if mode == "epoch-work" and time.monotonic() >= next_epoch_work:
+                if epoch_work_deploys >= 48:
+                    raise RuntimeError("bounded signed epoch-work budget exhausted")
+                epoch_work_deploys += 1
+                channel = f"{drill.marker}:epoch-work:{epoch_work_deploys}"
+                value = 1000 + epoch_work_deploys
+                if first_epoch_work is None:
+                    # Negative control: no finalized marker snapshot can
+                    # already contain the fresh, never-before-submitted write.
+                    for identity in final:
+                        before = base.probe(identity["node"], channel, identity["hash"])
+                        drill.record(node=identity["node"], epoch_work_absent_at=identity["hash"],
+                                     channel=channel, response=before)
+                        if not isinstance(before, dict) or before.get("expr") != []:
+                            raise RuntimeError("signed epoch-work negative control failed")
+                    first_epoch_work = (channel, value)
+                drill.deploy(f'@{json.dumps(channel)}!({value})')
+                drill.record(event="signed_epoch_work_submitted", channel=channel,
+                             value=value, index=epoch_work_deploys)
+                next_epoch_work = time.monotonic() + 5
+            identities = []
+            for identity in final:
+                i = identity["node"]
+                response = base.get(i, "/api/last-finalized-block")
+                height, current_hash = base.finalized_identity(response)
+                answer = base.probe(i, drill.marker, current_hash)
+                original = base.probe(i, drill.marker, identity["hash"])
+                drill.record(node=i, retention_height=height, retention_target=retention_target,
+                             current_finalized_hash=current_hash, response=answer,
+                             original_finalized_snapshot=identity["hash"], original_response=original)
+                if not base.marker_present(answer, drill.value) or not base.marker_present(original, drill.value):
+                    raise RuntimeError(f"validator {i} lost the finalized marker")
+                identities.append({"node": i, "height": height, "hash": current_hash,
+                                   "post_state": response["blockInfo"]["postStateHash"]})
+            agreed = len({(x["hash"], x["post_state"]) for x in identities}) == 1
+            reached = retention_target is None or all(
+                x["height"] >= retention_target for x in identities)
+            if mode == "epoch-work" and agreed and reached and first_epoch_work is not None:
+                channel, value = first_epoch_work
+                witnessed = []
+                for identity in identities:
+                    answer = base.probe(identity["node"], channel, identity["hash"])
+                    drill.record(node=identity["node"], epoch_work_finalized_at=identity["hash"],
+                                 epoch_work_channel=channel, response=answer)
+                    witnessed.append(base.marker_present(answer, value))
+                first_epoch_work_finalized = all(witnessed)
+            if (reached and agreed and time.monotonic() - retention_started >= 20
+                    and (mode != "epoch-work" or first_epoch_work_finalized)):
+                retained = identities
+                break
+            time.sleep(2)
+        if retained is None:
+            if mode == "epoch-work":
+                raise RuntimeError("signed-work durability did not cross two further finalized epoch boundaries with identical marker and work state")
+            if retention_target is not None:
+                raise RuntimeError("marker retention did not cross two further epoch boundaries without helper traffic")
+            raise RuntimeError("marker retention did not complete the quiet observation interval")
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
     finally:
+        try:
+            base.causal_trace.capture(drill, base.get, base.node_name, nodes=active)
+        except Exception as error:
+            failure = failure or f"active DAG capture failed: {error}"
         # Collect active-node logs while the silent validator is still paused:
         # recovery traffic cannot be mistaken for the quiet arm's observations.
         for i in active:
@@ -141,6 +214,8 @@ def run(args):
                 text = r.stdout + r.stderr
                 path = drill.out / f"quiet-node-{i}.log"
                 path.write_text(text)
+                if re.search(r"Self-created block .*failed validation|equivocation detected|task panicked", text, re.I):
+                    failure = failure or f"consensus validation/equivocation/task failure on {i}"
                 evidence[str(i)] = {"escape_ms": escape_timings(text),
                                     "not_due_observed": "NotEnoughNewBlocks" in text,
                                     "attestation_decisions": attestation_decisions(text),
@@ -158,7 +233,14 @@ def run(args):
         failure = failure or "escape occurred before the 15000ms bound"
     result = "fail" if failure else ("pass" if escapes else "inconclusive")
     summary = {"result": result, "validators": args.validators, "silent_validator": silent,
-               "active_finalized": final, "escape_evidence": evidence, "helper_deploys": 0,
+               "active_finalized": final, "retained_finalized": retained,
+               "retention_target": retention_target, "retention_min_seconds": 20,
+               "retention_mode": mode, "signed_epoch_work_deploys": epoch_work_deploys,
+               "first_epoch_work_finalized": first_epoch_work_finalized,
+               "retention_rule": ("two_finalized_epochs_with_signed_state_work" if mode == "epoch-work"
+                                  else "two_finalized_epoch_boundaries" if retention_target is not None
+                                  else "quiet_interval"),
+               "escape_evidence": evidence, "helper_deploys": epoch_work_deploys,
                "operator_latest": operator_latest, "operator_height_ranges": operator_height_ranges,
                "reason": failure or (None if escapes else "stall/escape path was not exercised"),
                "boundary": "finite quiet/silent-validator witness; no rejoin or universal liveness claim"}
@@ -173,6 +255,8 @@ if __name__ == "__main__":
     parser.add_argument("--validators", type=int, choices=[4, 8], required=True)
     parser.add_argument("--window", type=int, default=240)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--retention-mode", choices=("legacy", "quiet", "epoch-work"),
+                        default="legacy", help="legacy strict N8 gate, independent quiet retention, or signed-work epoch durability")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("DEVNET_PREFIX") != "acceptance":
         parser.error("requires the isolated acceptance runner and disposable acceptance network")

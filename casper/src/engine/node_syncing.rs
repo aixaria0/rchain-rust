@@ -211,6 +211,15 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
         self.terminal.clone()
     }
 
+    /// True until a nonempty, bootstrap-authored sync target starts the LFS transfer.
+    /// A successful transport `send` of the initial fringe request is not proof that
+    /// a response arrived: a joiner may remain at height zero even with healthy peers.
+    /// The launch retry loop polls this only while waiting for its first target;
+    /// once LFS starts, the existing bounded LFS retry owns recovery.
+    pub(crate) fn awaiting_first_fringe(&self) -> bool {
+        self.start_requester
+    }
+
     /// Handle an incoming casper message (port of `handle`).
     pub async fn handle(&mut self, peer: &PeerNode, msg: &CasperMessage) -> Result<(), String> {
         match msg {
@@ -252,13 +261,18 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             .conf
             .bootstrap
             .as_ref()
-            .map(|b| b == sender)
+            // Bootstrap authority is its node identity, not its advertised endpoint:
+            // a relayed or updated host/port must not strand a valid joiner.
+            .map(|b| b.id == sender.id)
             .unwrap_or(false);
         if !sender_is_bootstrap {
+            // A forged or stale answer from another peer must not seize the
+            // one-shot LFS trigger, nor replace an in-flight target.
             self.log.info(
                 self.log_source,
                 "Fringe message ignored, not received from bootstrap node.",
             );
+            return Ok(());
         }
 
         // **A fringe with no hashes names no state to sync to, and it must not consume the one-shot
@@ -1410,6 +1424,47 @@ mod tests {
     /// positive control — a store that cannot be read makes a *started* sync fail at once and say so, so
     /// the failure line can only appear if the trigger was still available. (Without Unit 1 the sync
     /// starts on the empty fringe in phase 1, and phase 2 produces nothing.)
+    /// A non-bootstrap packet cannot decide the LFS target. Without this guard,
+    /// the first peer to send a nonempty fringe consumed the one-shot trigger,
+    /// leaving the actual bootstrap reply unable to start a legitimate sync.
+    #[tokio::test]
+    async fn foreign_fringe_cannot_consume_bootstrap_sync_trigger() {
+        let _guard = SYNC_STATE_TESTS.lock().await;
+        let log = Arc::new(RecordingLog::default());
+        let (mut engine, bootstrap, _approved) = failing_engine(&log).await;
+        let candidate = FinalizedFringe {
+            hashes: vec![hash(4)],
+            state_hash: StateHash::new([4u8; 32]),
+            ancestry: Vec::new(),
+        };
+        engine
+            .handle(
+                &peer("not-bootstrap"),
+                &CasperMessage::FinalizedFringe(candidate.clone()),
+            )
+            .await
+            .expect("untrusted packet may be ignored without error");
+        assert!(
+            engine.awaiting_first_fringe(),
+            "foreign fringe consumed the initial sync trigger"
+        );
+        assert!(
+            engine.latest_fringe.lock().await.is_none(),
+            "foreign fringe replaced the sync target"
+        );
+        assert!(log.contains("Fringe message ignored, not received from bootstrap"));
+
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(candidate))
+            .await
+            .expect("the real bootstrap fringe is still admissible");
+        assert!(
+            !engine.awaiting_first_fringe(),
+            "legitimate bootstrap fringe did not start sync"
+        );
+        assert!(engine.latest_fringe.lock().await.is_some());
+    }
+
     #[tokio::test]
     async fn an_empty_fringe_does_not_consume_the_sync_trigger() {
         // This test's sync task also writes the process-global `SYNC_STATE` (see the note on the
@@ -1475,6 +1530,10 @@ mod tests {
             .await
             .expect("the empty fringe is handled");
 
+        assert!(
+            engine.awaiting_first_fringe(),
+            "empty announcement consumed retry eligibility"
+        );
         assert!(
             log.contains("Ignoring an empty fringe"),
             "an empty fringe must be refused as a sync target — it is the genesis master's \

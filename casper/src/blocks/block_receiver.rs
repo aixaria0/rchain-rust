@@ -14,6 +14,7 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::blocks::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::engine::node_running::MAX_PENDING_BLOCKS;
@@ -353,15 +354,58 @@ async fn check_if_known(block: &BlockMessage, dag: &dyn BlockDagStorage) -> bool
         > i64::from(block.block_number)
 }
 
-/// Request the missing dependencies of a block (port of `requestMissingDependencies`).
+/// Bound independent missing-parent announcements. A paused peer can consume the
+/// transport timeout of a HasBlock broadcast; awaiting that broadcast inside the
+/// single block-receiver loop delays unrelated blocks and their finality taps.
+const MAX_PENDING_DEPENDENCY_REQUESTS: usize = 16;
+
+fn report_dependency_request_result(result: Result<(), tokio::task::JoinError>, log: &dyn Log) {
+    if let Err(error) = result {
+        log.error(
+            LogSource::new("casper.blocks.BlockReceiver"),
+            &format!("missing dependency request task failed: {error}"),
+        );
+    }
+}
+
+/// Schedule a request without serializing admission behind an unreachable peer.
+/// Capacity is backpressure, never a dropped request; completed tasks are reaped.
+async fn schedule_dependency_request<F>(tasks: &mut JoinSet<()>, request: F, log: &dyn Log)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    while let Some(result) = tasks.try_join_next() {
+        report_dependency_request_result(result, log);
+    }
+    if tasks.len() >= MAX_PENDING_DEPENDENCY_REQUESTS {
+        if let Some(result) = tasks.join_next().await {
+            report_dependency_request_result(result, log);
+        }
+    }
+    tasks.spawn(request);
+}
+
+/// Ask for missing ancestors concurrently, while preserving the retriever's
+/// existing per-hash deduplication and retry state machine.
 async fn request_missing_dependencies(
     deps: &BTreeSet<BlockHash>,
-    block_retriever: &BlockRetriever,
+    block_retriever: &Arc<BlockRetriever>,
+    tasks: &mut JoinSet<()>,
+    log: &dyn Log,
 ) {
     for hash in deps {
-        block_retriever
-            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
-            .await;
+        let hash = *hash;
+        let retriever = block_retriever.clone();
+        schedule_dependency_request(
+            tasks,
+            async move {
+                retriever
+                    .admit_hash(&hash, None, AdmitHashReason::MissingDependencyRequested)
+                    .await;
+            },
+            log,
+        )
+        .await;
     }
 }
 
@@ -411,6 +455,7 @@ async fn incoming_blocks(
     log: Arc<dyn Log>,
 ) {
     let source = LogSource::new("casper.blocks.BlockReceiver");
+    let mut dependency_requests = JoinSet::new();
     while let Some(block) = incoming_blocks_rx.recv().await {
         // Filter out blocks that are not of interest.
         if !check_if_of_interest(&block, &conf_shard_name, log.as_ref(), source).await {
@@ -543,7 +588,13 @@ async fn incoming_blocks(
             chan::unbounded_send(&out_tx, block.block_hash);
         } else {
             if !pending_requests.is_empty() {
-                request_missing_dependencies(&pending_requests, block_retriever.as_ref()).await;
+                request_missing_dependencies(
+                    &pending_requests,
+                    &block_retriever,
+                    &mut dependency_requests,
+                    log.as_ref(),
+                )
+                .await;
             }
             if !parents_to_validate.is_empty() {
                 if let Err(e) = send_to_validate(
@@ -563,6 +614,10 @@ async fn incoming_blocks(
                 }
             }
         }
+    }
+    // Normal close does not abandon in-flight ancestor requests.
+    while let Some(result) = dependency_requests.join_next().await {
+        report_dependency_request_result(result, log.as_ref());
     }
 }
 
@@ -760,6 +815,89 @@ pub fn apply_with_queue_observer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn paused_peer_request_does_not_delay_an_independent_ancestor() {
+        use std::time::Duration;
+        let log = rchain_shared::log::NopLog;
+        let mut requests = JoinSet::new();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let (fast_tx, fast_rx) = tokio::sync::oneshot::channel::<()>();
+        schedule_dependency_request(
+            &mut requests,
+            async move {
+                let _ = release_rx.await;
+            },
+            &log,
+        )
+        .await;
+        schedule_dependency_request(
+            &mut requests,
+            async move {
+                let _ = fast_tx.send(());
+            },
+            &log,
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(1), fast_rx)
+            .await
+            .expect("independent ancestor must run before the paused peer recovers")
+            .unwrap();
+        release_tx.send(()).unwrap();
+        while let Some(result) = requests.join_next().await {
+            report_dependency_request_result(result, &log);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_ancestor_capacity_backpressures_without_losing_requests() {
+        use std::time::Duration;
+        let log = rchain_shared::log::NopLog;
+        let mut requests = JoinSet::new();
+        let permits = Arc::new(tokio::sync::Semaphore::new(0));
+        for _ in 0..MAX_PENDING_DEPENDENCY_REQUESTS {
+            let permits = permits.clone();
+            schedule_dependency_request(
+                &mut requests,
+                async move {
+                    let permit = permits.acquire().await.unwrap();
+                    permit.forget();
+                },
+                &log,
+            )
+            .await;
+        }
+        assert_eq!(requests.len(), MAX_PENDING_DEPENDENCY_REQUESTS);
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel::<()>();
+        {
+            let extra = schedule_dependency_request(
+                &mut requests,
+                async move {
+                    let _ = sent_tx.send(());
+                },
+                &log,
+            );
+            tokio::pin!(extra);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut extra)
+                    .await
+                    .is_err(),
+                "saturated dependency requests must not be discarded or dispatched unboundedly"
+            );
+            permits.add_permits(1);
+            tokio::time::timeout(Duration::from_secs(1), &mut extra)
+                .await
+                .expect("a freed slot must unblock scheduling");
+        }
+        tokio::time::timeout(Duration::from_secs(1), sent_rx)
+            .await
+            .expect("the request beyond capacity must execute")
+            .unwrap();
+        permits.add_permits(MAX_PENDING_DEPENDENCY_REQUESTS);
+        while let Some(result) = requests.join_next().await {
+            report_dependency_request_result(result, &log);
+        }
+    }
 
     #[tokio::test]
     async fn queue_observer_sees_backlog_while_processing_waits_and_keeps_order() {
