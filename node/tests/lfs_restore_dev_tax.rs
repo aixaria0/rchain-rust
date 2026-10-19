@@ -169,6 +169,33 @@ async fn deploy_for_snapshot(dir: &Path, ports: &[u16], client: &reqwest::Client
     wait_for_finalized(client, base, 1).await;
 }
 
+/// Wait for the launch phase's own Running line. `wait_for_sync_cleared` can return before the
+/// restore-completion guard has run, so a one-shot log read here races the guard.
+async fn wait_for_running(node: &common::TestNode) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let messages = node.log.messages();
+        if messages
+            .iter()
+            .any(|line| line.contains("Making a transition to Running state."))
+        {
+            return;
+        }
+        if let Some(error) = messages
+            .iter()
+            .find(|line| line.contains("NodeLaunch exited with error"))
+        {
+            panic!("the joiner did not enter Running: {error}");
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the joiner never entered Running; log tail: {:?}",
+            messages.into_iter().rev().take(12).collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn latest_height(client: &reqwest::Client, base: &str) -> i64 {
     let status: serde_json::Value = client
         .get(format!("{base}/api/status"))
@@ -273,21 +300,7 @@ async fn run_case(phase: Phase, spec: JoinerSpec, expected: Expected) {
             wait_for_sync_cleared(&join_admin, Duration::from_secs(120)).await;
             // The API serves before the launch phase finishes; "restored" and "the guard passed"
             // are not the same claim. The Running line is the latter.
-            assert!(
-                join_node
-                    .log
-                    .messages()
-                    .iter()
-                    .any(|line| line.contains("Making a transition to Running state.")),
-                "the joiner restored but never entered Running; log tail: {:?}",
-                join_node
-                    .log
-                    .messages()
-                    .into_iter()
-                    .rev()
-                    .take(12)
-                    .collect::<Vec<_>>()
-            );
+            wait_for_running(&join_node).await;
 
             let join_root = latest_post_state_hash(&client, &join_base).await;
             let boot_root = latest_post_state_hash(&client, &boot_base).await;
@@ -523,14 +536,7 @@ fn a_restored_bonded_joiner_validates_and_proposes() {
         let join_admin = format!("http://127.0.0.1:{}", join_ports[1]);
         wait_for_blocks(&client, &join_base).await;
         wait_for_sync_cleared(&join_admin, Duration::from_secs(120)).await;
-        assert!(
-            join_node
-                .log
-                .messages()
-                .iter()
-                .any(|line| line.contains("Making a transition to Running state.")),
-            "the bonded joiner restored but never entered Running"
-        );
+        wait_for_running(&join_node).await;
 
         let before = latest_height(&client, &join_base).await;
         let response = client
