@@ -435,7 +435,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history", "lfs-history-controlled"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -449,6 +449,16 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-history-controlled" in modes:
+        if modes != ["lfs-history-controlled"]:
+            ap.error("controlled finalized state restoration must be standalone")
+        if args.dry_run:
+            print("isolated controlled source: manual proposals, weighted stake, frozen prefix, LFS persistence")
+            return
+        os.environ["LFS_HISTORY_MANUAL_PROPOSE"] = "1"
+        subprocess.run([sys.executable, "tests/lfs-finalized-history.py"], check=True)
+        return
 
     if "lfs-history" in modes:
         if modes != ["lfs-history"]:

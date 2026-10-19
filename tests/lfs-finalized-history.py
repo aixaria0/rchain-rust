@@ -134,7 +134,15 @@ def main():
     anchor = None
     expected = None
     deadline = time.monotonic() + 160
+    proposed = 0
     while time.monotonic() < deadline:
+        if os.environ.get("LFS_HISTORY_MANUAL_PROPOSE") == "1" and proposed < 24:
+            trial = subprocess.run(["tools/devnet.sh", "propose"], text=True,
+                                   capture_output=True, timeout=35)
+            proposed += 1
+            print("LFS_CONTROL_PROPOSE " + json.dumps({
+                "attempt": proposed, "code": trial.returncode,
+                "tail": (trial.stdout + trial.stderr)[-260:]}), flush=True)
         lfb = last_finalized(40403)
         if lfb and lfb["blockNumber"] >= 2:
             cut = min(lfb["blockNumber"], 48)
