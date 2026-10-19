@@ -194,7 +194,7 @@ async fn request_next(
     }
     if !is_end && !missing.is_empty() {
         for h in &missing {
-            comm_util.broadcast_request_for_block(h, Some(1)).await;
+            comm_util.request_lfs_block(h, resend).await;
         }
     }
     Ok(())
