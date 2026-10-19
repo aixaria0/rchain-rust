@@ -353,7 +353,9 @@ async fn restore_guard_checks_committed_zero_legacy_and_bad_records_before_runni
         cases.push((Some(current[1..1 + fields * 8].to_vec()), 99, 1, true));
     }
     let mut unknown = current.clone();
-    unknown[0] = 2;
+    // Format 2 is current; the next unknown format is 3. The truncated record below is 81 bytes —
+    // format 1's length — and is refused because this node reads format 2 only.
+    unknown[0] = 3;
     cases.push((Some(unknown), 2, 2, false));
     cases.push((Some(current[..current.len() - 8].to_vec()), 2, 2, false));
     for (bytes, floor, cap, allowed) in cases {
