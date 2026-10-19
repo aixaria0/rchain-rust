@@ -35,6 +35,22 @@
 > same barrier at all. That row is owed a re-derivation, recorded in
 > `spec/audit/evidence/coverage-gap-f9521edd7.md` (E4).
 
+> **Update — 2026-10-19 (post-#358; #383 merged).** The H-U5-05 sender-spoofing
+> observation below is **historical, not a live unguarded path on current `dev`**.
+> [PR #383](https://github.com/rchain-community/rchain-rust/pull/383) added an early return for
+> non-bootstrap `FinalizedFringe` messages *before* the latest-fringe retry slot or the one-shot
+> sync trigger can change. Its targeted regression
+> `a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync` exercises that decision.
+> This is a **source-level gate and unit regression**, not an N-validator or hostile-transport
+> acceptance measurement. The original H-U5-05 threat and shared-cause entries remain below as
+> dated pre-fix findings; they must not be counted as open defects without re-testing the merged
+> implementation. The same PR now distinguishes successful DAG restoration from a failed
+> approved-fringe checkpoint write in the log, but **does not repair** H-U5-04's
+> crash-mid-`populate_dag` start-up boundary. The separate contract-layer C301 / A1 finding
+> from [#358](https://github.com/rchain-community/rchain-rust/pull/358) is **still in progress**;
+> runtime verification and a fork disposition are tracked in
+> [#384](https://github.com/rchain-community/rchain-rust/issues/384).
+
 > **What this page is, in one sentence.** A HAZOP worksheet and a bow-tie analysis of the node, and the
 > acceptance checklist that falls out of them, written so that nothing can be marked green without a
 > named configuration and a committed run.
@@ -451,7 +467,7 @@ reader per §1 of the plan).
 | ⚠ **H-U5-02** | **contested / `unmeasured` for the deviation's own (partial-arrival) arm**: the request asks for the metadata and the responder attaches it (`casper/src/protocol/comm_util.rs:request_finalized_fringe`, `casper/src/engine/node_running.rs:collect_fringe_ancestry`); `casper/src/engine/node_syncing.rs:populate_dag` applies it and **names** the fallback per block rather than silently — the only measured protection is on the **complete-metadata** arm, which the deviation is not | `unmeasured` — the n139 run (`spec/audit/evidence/n139-mature-join-results.md`, post-fix 4/5 green) is homogeneous and same-version, so it exercises the **complete**-metadata path only, not the partial-arrival path the deviation's Cause names; the committed raw run is the pre-fix reproduction (`spec/audit/evidence/n139-mature-join/048c2532f-20261001T101407Z/`) | downgraded (was `—`, independent) — the only measured protection is on the arm that is not under threat | <!-- CH-U5-05 upheld -->
 | H-U5-03 | the block leg's pace bound `casper/src/engine/lfs_block_requester.rs:MAX_IDLE_ROUNDS` (3 idle rounds) and the `terminal` bound — neither covers the tuple-space leg, which is what the `join!` also waits on | symbol read (the asymmetry is in `request_tuple_space_roots`); the tuple-leg hang itself is `unmeasured` | [shared-cause] with H-U5-01 |
 | H-U5-04 | C68's sequencing keeps a **failed** attempt out of Running and the approved fringe is not recorded on failure (`casper/src/engine/node_syncing.rs:notify_when_restored`) — but a *crash* mid-`populate_dag` is not covered, because the mode decision never reads the approved store | symbol read (`casper/src/engine/node_launch.rs:apply`; `block-storage/src/syntax.rs:get_approved_block` has no production caller); the crash path is `unmeasured` | — |
-| ⚠ **H-U5-05** | **none**: the sender check is a log line, not a gate (`casper/src/engine/node_syncing.rs:on_finalized_fringe_message`) | symbol read | — | <!-- contested -->
+| ⚠ **H-U5-05** | **Historical pre-#383 absence; now guarded:** `on_finalized_fringe_message` returns immediately for non-bootstrap peers, before the latest-fringe slot or start trigger changes ([#383](https://github.com/rchain-community/rchain-rust/pull/383)) | merged code and `a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync` regression; hostile-transport acceptance **unmeasured** | the sender gate is a separate decision from the retry/terminal mechanism; historical shared-cause claim no longer describes the merged code | <!-- post-2026-10-19 correction to contested pre-fix row -->
 | ⚠ **H-U5-06** | ~~the responder's page caps `casper/src/engine/node_running.rs:MAX_STORE_ITEMS_TAKE`/`MAX_STORE_ITEMS_BYTES` bound **one page**, not the number of roots the requester asks for~~ — **struck**: never a barrier against this surface (the deviation is by design, not a hazard) | `unmeasured` — the joiner's per-join cost on a mature chain is not a committed run | — | <!-- CH-U5-08 upheld -->
 | ⚠ **H-U5-07** | **contested** — the `terminal` bound (C181) is the intent, but it **does not** stop a node serving a chain it never synced: `apply` returns `Err` to a spawn that only logs it (`casper/src/engine/node_launch.rs:apply`), leaving the listeners up; the newer-fringe trigger shortens a retry (`casper/src/engine/node_syncing.rs:MAX_SYNC_ATTEMPTS`/`fringe_arrived`) | symbol read; no run measures joiner survival across a transient bootstrap outage → `unmeasured` | [self-referential] — the message asserts the stop it does not perform | <!-- CH-U5-01 upheld -->
 
