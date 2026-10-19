@@ -2,6 +2,8 @@
 
 Report date: 19 October 2026. Prepared by Aria Fani (@aixaria0).
 
+[Consolidated contribution, authorship, assignment and allocation-review ledger](CONTRIBUTIONS.md) · [Dated metadata snapshot](contributions.json)
+
 ## Result and exact scope
 
 The ordinary patched-engine N=4/N=8 acceptance campaign passed. Two later N=8 campaigns at `1daa9474144ea6240fb84103fcddd6e45c0865ca` also passed with one validator paused and signed state-bearing work carrying the chain across two further finalized epoch boundaries.
