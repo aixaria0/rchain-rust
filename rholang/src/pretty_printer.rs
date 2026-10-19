@@ -572,6 +572,7 @@ impl PrettyPrinter {
             Expr::GBool(b) => b.to_string(),
             Expr::GInt(i) => i.to_string(),
             Expr::GBigInt(bi) => format!("BigInt({bi})"),
+            Expr::GDecimal(d) => d.to_literal_string(),
             Expr::GString(s) => format!("\"{s}\""),
             Expr::GUri(u) => format!("`{u}`"),
             // A byte array has a source literal — `"<hex>".hexToBytes()` — and a bare hex token is

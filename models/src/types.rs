@@ -154,6 +154,7 @@ fn collect_free_vars_expr(e: &Expr, out: &mut impl FnMut(i32)) {
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => {}
@@ -304,6 +305,7 @@ fn closed_expr(e: &Expr, pattern: bool) -> bool {
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => true,
@@ -462,6 +464,7 @@ fn well_scoped_expr(depth: usize, e: &Expr) -> bool {
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => true,
@@ -744,6 +747,7 @@ fn push_value_expr<'a>(e: &'a Expr, d: usize, out: &mut Vec<(ValueNode<'a>, usiz
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_)

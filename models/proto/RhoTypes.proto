@@ -172,6 +172,7 @@ message Expr {
         bool g_bool = 1;
         sint64 g_int = 2;
         bytes g_big_int = 34;
+        GDecimal g_decimal = 35;
         string g_string = 3;
         string g_uri = 4;
         bytes g_byte_array = 25;
@@ -209,6 +210,19 @@ message Expr {
         EShortAnd e_short_and_body = 32;
         EShortOr  e_short_or_body = 33;
     }
+}
+
+/**
+ * An exact decimal: `coefficient × 10^-scale`.
+ *
+ * The coefficient is a minimal signed two's-complement big-endian encoding; zero is `0x00`.
+ * Canonical form strips factors of ten while `scale > 0`, and zero is `(0x00, 0)`. A decoder must
+ * refuse a non-minimal coefficient, a zero with a nonzero scale, or a trailing zero at a positive
+ * scale rather than accepting an alternative encoding of the same value.
+ */
+message GDecimal {
+    bytes coefficient = 1;
+    uint32 scale = 2;
 }
 
 message EList {

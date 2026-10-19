@@ -323,6 +323,7 @@ fn substitute_expr_delegate(
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => expr.clone(),

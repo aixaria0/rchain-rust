@@ -583,6 +583,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => Ok(expr.clone()),
