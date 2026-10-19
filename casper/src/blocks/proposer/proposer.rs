@@ -3414,7 +3414,7 @@ mod quiet_chain_tests {
                     let since = *blocked_since[v].get_or_insert(step);
                     // Mirror the production elapsed-stall licence (#379), not the old
                     // attempt-count shortcut. A later step represents elapsed time here.
-                    if !(since < step) {
+                    if since >= step {
                         continue;
                     }
                     escapes += 1;
