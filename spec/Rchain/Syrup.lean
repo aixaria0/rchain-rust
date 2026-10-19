@@ -37,10 +37,12 @@ compiler cannot see (`taggedRecord` below is the same shape spelled as a record)
 what every *other* labelled record is — a peer's — and it has no Rholang counterpart, so it is
 refused rather than read as a tuple.
 
-**Two things the law puts outside the domain, named rather than implied.**
+**Three things the law puts outside the domain, named rather than implied.**
 
 - a `Float64` — Syrup has one, Rholang has no float, so the bridge refuses it inbound and nothing
   claims a round trip for it;
+- a `GDecimal` — Rholang has an exact decimal and Syrup has no counterpart, so the bridge refuses it
+  outbound (`ocapn/src/par_value.rs`) and nothing claims a round trip for it;
 - a **small** `GBigInt` (one that fits in an `i64`) — Syrup's integer is one type where Rholang has
   two, so `GBigInt 5` and `GInt 5` share a wire form. The domain keeps `GInt`, whose image is exact,
   and excludes the ambiguous `GBigInt`; a `GBigInt` outside the machine word is unambiguous and is
@@ -121,6 +123,9 @@ mutual
     | .ground (.bool b) => some (.bool b)
     | .ground (.int n) => some (.int n)
     | .ebigint n => some (.int n)
+    -- Syrup has no exact decimal: named rather than left to the catch-all, so the refusal is part
+    -- of the domain statement (Law 59c).
+    | .edecimal _ => none
     | .ground (.str l) => some (.str l)
     | .ground (.uri l) => some (.sym l)
     | .ground (.bytes l) => some (.bytes l)
@@ -202,6 +207,7 @@ than an unfolding of a large `mutual` block, which does not survive the heartbea
 @[simp] theorem exprToSy_bool (b : Bool) : exprToSy (.ground (.bool b)) = some (.bool b) := rfl
 @[simp] theorem exprToSy_int (n : Int) : exprToSy (.ground (.int n)) = some (.int n) := rfl
 @[simp] theorem exprToSy_bigint (n : Int) : exprToSy (.ebigint n) = some (.int n) := rfl
+@[simp] theorem exprToSy_edecimal (n : Int) : exprToSy (.edecimal n) = none := rfl
 @[simp] theorem exprToSy_str (l : List Nat) : exprToSy (.ground (.str l)) = some (.str l) := rfl
 @[simp] theorem exprToSy_uri (l : List Nat) : exprToSy (.ground (.uri l)) = some (.sym l) := rfl
 @[simp] theorem exprToSy_bytes (l : List Nat) : exprToSy (.ground (.bytes l)) = some (.bytes l) := rfl
@@ -500,6 +506,9 @@ mutual
         simp only [exprToSy_int] at h; rw [← Option.some.inj h]; rfl
     | .ebigint n, s, h => by
         simp only [exprToSy_bigint] at h; rw [← Option.some.inj h]; rfl
+    | .edecimal n, s, h => by
+        simp only [exprToSy_edecimal] at h
+        exact Option.noConfusion h
     | .ground (.str l), s, h => by
         simp only [exprToSy_str] at h; rw [← Option.some.inj h]; rfl
     | .ground (.uri l), s, h => by

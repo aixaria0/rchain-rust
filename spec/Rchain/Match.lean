@@ -520,8 +520,11 @@ mutual
     | .eset ps _ => modelledPars ps
     | .etuple ps => modelledPars ps
     | .emap kvs _ => modelledPairs kvs
-    -- The `_` below is a **decision**: the five constructors added 2026-09-25 are not modelled by the
-    -- spatial matcher — no clause of `matchPar` reads a method call, `%%`, `++`, `--` or a bigint.
+    -- The `_` below is a **decision**: the constructors added after 2026-09-25 are not modelled by the
+    -- spatial matcher — no clause of `matchPar` reads a method call, `%%`, `++`, `--`, a bigint or a
+    -- decimal. Named rather than left to the catch-all so the decision is visible.
+    | .ebigint _ | .edecimal _ | .emethod _ _ _ | .epercentPercent _ _ | .eplusPlus _ _
+    | .eminusMinus _ _ => false
     | _ => false
   def modelledPars : List Par → Bool
     | [] => true
@@ -729,10 +732,12 @@ mutual
     | .eset ps none => pathPars ps
     | .etuple ps => pathPars ps
     | .emap kvs none => pathPairs kvs
-    -- The five added 2026-09-25 are **not** path nodes, named rather than left to the `_` below: a
-    -- method call, `%%`/`++`/`--` and a bigint literal have no clause in the matcher's path grammar,
-    -- so their presence in a pattern makes it `modelledExpr`-false rather than a path.
-    | .ebigint _ | .emethod _ _ _ | .epercentPercent _ _ | .eplusPlus _ _ | .eminusMinus _ _ => false
+    -- The five added 2026-09-25 are **not** path nodes, and neither is the decimal, named rather than
+    -- left to the `_` below: a method call, `%%`/`++`/`--`, a bigint literal and a decimal literal
+    -- have no clause in the matcher's path grammar, so their presence in a pattern makes it
+    -- `modelledExpr`-false rather than a path.
+    | .ebigint _ | .edecimal _ | .emethod _ _ _ | .epercentPercent _ _ | .eplusPlus _ _
+    | .eminusMinus _ _ => false
     | _ => false
   /-- A collection's elements. -/
   def pathPars : List Par → Bool
@@ -1211,6 +1216,7 @@ mutual
         | none => exact freeLevels_pathPairs kvs (pathExpr_emap' h)
         | some v => rw [pathExpr_emap_some] at h; exact absurd h (by decide)
       | ebigint n => rfl
+      | edecimal n => rfl
       | emethod name tgt args => rfl
       | epercentPercent a b => rfl
       | eplusPlus a b => rfl
@@ -1399,6 +1405,7 @@ private theorem pathExpr_eand (a b : Par) : pathExpr (.eand a b) = false := rfl
 private theorem pathExpr_eor (a b : Par) : pathExpr (.eor a b) = false := rfl
 private theorem pathExpr_ematches (a b : Par) : pathExpr (.ematches a b) = false := rfl
 private theorem pathExpr_ebigint (n : Int) : pathExpr (.ebigint n) = false := rfl
+private theorem pathExpr_edecimal (n : Int) : pathExpr (.edecimal n) = false := rfl
 private theorem pathExpr_emethod (name : List Nat) (tgt : Par) (args : List Par) :
     pathExpr (.emethod name tgt args) = false := rfl
 private theorem pathExpr_epercentPercent (a b : Par) : pathExpr (.epercentPercent a b) = false := rfl
@@ -1468,6 +1475,7 @@ private theorem pathExpr_cases {e : Expr} (h : pathExpr e = true) :
   | eshortand a b => rw [pathExpr_eshortand] at h; exact absurd h (by decide)
   | eshortor a b => rw [pathExpr_eshortor] at h; exact absurd h (by decide)
   | ebigint n => rw [pathExpr_ebigint] at h; exact absurd h (by decide)
+  | edecimal n => rw [pathExpr_edecimal] at h; exact absurd h (by decide)
   | emethod name tgt args => rw [pathExpr_emethod] at h; exact absurd h (by decide)
   | epercentPercent a b => rw [pathExpr_epercentPercent] at h; exact absurd h (by decide)
   | eplusPlus a b => rw [pathExpr_eplusPlus] at h; exact absurd h (by decide)

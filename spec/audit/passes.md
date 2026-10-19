@@ -284,10 +284,12 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | Deviation | Oracle location | Reason |
 |---|---|---|
+| An instance-less or unknown-only `Expr` is **refused** with `Malformed("expr_instance")` rather than decoded as `false` | The prior Scala comparison is recorded in section 17; this change does not establish the Scala runtime refusal behavior | Issue #380 requires an unsupported expression to fail rather than become a different value. **Acceptance change from earlier Rust releases:** malformed bytes accepted before are refused now; coordinate validator upgrades and review any historical malformed terms before replay. Recognized variants, explicit false and Nil keep their encodings. Unknown fields accompanying a recognized variant are outside this fix. AUDIT **C333**, section 138 |
 | `New.injections` sorted by key (determinism) | `models/.../rholang/*` | `HashMap` order is non-deterministic in Rust |
 | `locally_free` excluded from `Eq`/`Hash` (`AlwaysEqual`) | `models/.../Par.scala` | the cache field is not part of structural identity |
 | Negative deploy cost **rejected** (not wrapped to `uint64`) | `accounting/Costs.scala` `toProto` = `PCost(c.value)` | Scala wraps a negative `Long` into `uint64` (latent bug); reject is safer |
 | Integer arithmetic **promotes to `BigInt`** on `i64` overflow and never wraps; mixed `Int`/`BigInt` operands promote | `Reduce.scala` `wrappingAdd`/`wrappingSub`/`wrappingMul`/`wrappingNeg` and `i64::MIN / -1` errors | RCHIP #51: silent overflow/underflow is the bug class behind the PoS incidents ("one may blow up the world"); exact arithmetic removes it. A **hard fork** — previously-wrapped results change, so prior state is invalid |
+| A **new exact decimal value type** (`GDecimal`, wire tag 35, sort rank 14, scale ≤ 38, canonical coefficient) | None: the archived Scala `RhoTypes.proto` at `1b7583649` has `g_int`/`g_big_int` and no decimal or float variant | Issue #380 option B, accepted 2026-10-19. There is no oracle to deviate *from*; the row records that the absence is a decision rather than an oversight. Exact arithmetic with no rounding, `%`/bitwise refused by name, division exact-or-error; `1d == 1` at scalar level while structural keys and patterns keep type identity (the `Int`/`BigInt` precedent). The Lean model now carries the class (`edecimal`, tag 14) and sort-corpus rows 43–50 pin it. This change lands the type ungated on `dev`: **no release tag or public network may include it until #373 stages block versions by height.** `docs/src/node/consensus.md:43` and `docs/src/qucalc/architecture.md:115` (exact integer arithmetic, never floating point) are unchanged and remain true — a deploy value type is not a rule engine. **What the tie does not cover:** the model's `edecimal` is the canonical scaled integer; the bridge from the Rust `(coefficient, scale)` pair (`scaled_value`'s injectivity and order-preservation on canonical values), canonicalization, exact arithmetic, division's error condition, the wire's minimal bytes, reducer dispatch and the cost model are **not modelled** — they are carried by the Rust refinement and its unit/corpus tests. Law 1a's note and `spec/INVENTORY.md`'s Law 1 row state the same boundary; a standalone `Rchain/Decimal.lean` + `decimal` corpus is the follow-up that would close it. |
 | Number-channel merge diffs are **checked** (`i64` overflow is an error) — the subtraction, the merge, **and the accumulation** (`EventLogIndex::combine`, `casper/src/merging.rs`'s mergeable-diff sum) | `calculateNumChannelDiff` (`Long` subtraction wraps) and `EventLogIndex.combine` (`+` wraps) | a wrapped diff silently corrupts the merged state (Laws 9 & 17); same class as RCHIP #51 — recorded as issue #52, and the accumulation was the last site in that class (AUDIT C41, fixed: the error now propagates to the merge, which refuses the block). **Hard fork:** on a block whose channel diffs sum past `i64`, the old node computed a *wrapped* diff and a wrong state hash, the new one refuses the merge — so a chain that accepted such a block diverges on it. The wrapped value was already wrong, which is why this is a fix rather than a divergence in behaviour that was ever correct |
 | `Add<NonNegI64>` for heights (no negative delta) | — | invariant preserved structurally |
 | gRPC `max_decoding_message_size` wired (was 4 MB tonic default) | `defaults.conf` `grpc-max-recv-message-size = 16M` | honors the existing config |
@@ -1965,7 +1967,7 @@ oracle is, and the test that pins the fix.
   instead of deriving it. The static half (a walk of the vendored text) is recorded in C22 item 1 as
   drafted-and-retired, with the three shapes it cannot tell apart.
 
-### Open question (behaviour pinned, oracle not established)
+### Historical keep-default decision (superseded by C333)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The
   final arm is `None => a::Expr::GBool(false)`: a protobuf `Expr` that carries no `expr_instance` —
@@ -1991,6 +1993,13 @@ oracle is, and the test that pins the fix.
   decodes to *something* rather than erroring, which is the more conservative of the two choices for
   a wire path whose other option is a hard failure — and it is pinned by the test named here, so the
   decision is a pinned behaviour rather than an absence.
+
+  **Superseded (2026-10-19, C333, section 138).** Issue #380 makes the consequence concrete:
+  a future unknown-only expression takes this same default path and becomes `false`. The public
+  raw-byte regressions reproduce it, including inside a collection. The bridge now refuses the
+  missing recognized instance, and the former characterization is replaced by
+  `an_instance_less_expr_is_malformed`. This deliberately changes malformed-input acceptance;
+  section 6 records the upgrade/replay consequence and the remaining unknown-field limitation.
 
 ## 18. The parser's soundness sweep (pass 7): C30–C37
 
@@ -11427,3 +11436,39 @@ arms only on `NotEnoughNewBlocks`). That is the designed shape — a dev chain a
 the live chain shows it working: every block carries one deploy, one block per deploy, finality one
 round behind and following. The playground's own API was read for this (height 1839, fringe 1835, pool
 empty, one deploy per block since 1830); nothing was stuck, and nothing needed clearing.
+
+## 138. An unsupported expression is not a false value (C333)
+
+Issue #380 asks for a refusal path before a future numeric variant can be activated. On
+`dev` at `9bd5a58829933e6de04fb3fd55df34195556b8cc`, the public
+`Serialize<Par>::decode` path accepted an empty `Expr` and an expression containing only
+unknown tag 35 as `GBool(false)`. The same substitution happened inside a list. Prost
+skips the unknown field, leaving `expr_instance = None`; the bridge supplied the constant.
+
+**Measured before the change.** With only `models/tests/expr_refusal.rs` added, the
+three malformed-input tests failed because decode returned `Ok(...GBool(false)...)`.
+The positive control passed: an explicit boolean false and an empty Par (Nil) retained their
+existing wire values. The raw fixtures include the complete nested protobuf envelope;
+the tests exercise the public byte decoder rather than a hand-built domain value.
+
+**Changed at the boundary.** `expr_from_proto` now returns
+`ModelsError::Malformed("expr_instance")` when no recognized instance remains. The existing
+recursive bridge propagates that error. The former keep-default characterization is replaced
+by `an_instance_less_expr_is_malformed`; the raw-wire regressions additionally cover the
+unknown-only payload and collection nesting. The §17 decision is superseded for this input
+class, and the stricter acceptance rule is recorded in §6.
+
+**Verification after the change.** `cargo test -p rchain-models --locked` passed all
+176 unit/property tests and the four byte-level regressions. The local run used Termux's
+Rust 1.99.1; the repository's pinned toolchain and workspace gates remain CI's check.
+
+**Compatibility and scope.** An explicit false is still `2a 02 08 00` as a Par, and Nil is
+still the empty byte string. The encoder and recognized variants are unchanged. Earlier Rust
+releases accepted the malformed inputs above, so this is a wire-acceptance change: a mixed
+validator set or replay of historical malformed terms requires coordinated upgrade/replay
+review. No network exploit or complete Scala decoder equivalence is claimed.
+
+This does not reject an unknown field accompanying a recognized instance, because prost
+discards that field before this function sees it. It does not implement a new numeric type,
+reserve tag 35, or provide version-aware activation. Those remain #380's separate design and
+implementation work; the fixture uses an unused tag only to demonstrate refusal.

@@ -183,6 +183,7 @@ mutual
     -- argument substituted in place, as `models/src/substitute.rs` does), so its list is
     -- `substListPar` and not the `sortList`-wrapped form the collection arms use.
     | .ebigint n => singleExpr (.ebigint n)
+    | .edecimal n => singleExpr (.edecimal n)
     | .emethod name t args => singleExpr (.emethod name (substPar σ d t) (substListPar σ d args))
     | .epercentPercent a b => singleExpr (.epercentPercent (substPar σ d a) (substPar σ d b))
     | .eplusPlus a b => singleExpr (.eplusPlus (substPar σ d a) (substPar σ d b))
@@ -506,6 +507,7 @@ mutual
           (sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair kvs))))
       exact h1.trans (h2.trans h3.symm)
     | .ebigint _ => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+    | .edecimal _ => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
     | .emethod name t args => by
       simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
       rw [sortPar_subst σ d t, sortListPar_subst_unsorted σ d args]
@@ -1274,6 +1276,8 @@ mutual
       rw [sortListParPair_eq_map, closedListParPair_map_sortParPair]
       exact substListParPair_closed σ hσ d kvs h.1
     | .ebigint n, _ => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]; simp [closedExpr]
+    | .edecimal n, _ => by
       simp only [substExprToPar]; rw [closed_singleExpr_iff]; simp [closedExpr]
     | .emethod name t args, h => by
       simp only [substExprToPar]; rw [closed_singleExpr_iff]

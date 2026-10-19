@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use crate::decimal::DecimalError;
+
 /// An error decoding a model from its protobuf or packet representation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelsError {
@@ -17,6 +19,9 @@ pub enum ModelsError {
     PacketTypeMismatch { got: String, expected: String },
     /// A fixed-width value had the wrong byte length (validate-on-ingress).
     Length { got: usize, expected: usize },
+    /// A decimal's wire form was not canonical (empty or non-minimal coefficient bytes, an
+    /// out-of-range scale, or a pair whose canonical form differs).
+    InvalidDecimal(DecimalError),
 }
 
 impl fmt::Display for ModelsError {
@@ -30,6 +35,7 @@ impl fmt::Display for ModelsError {
             ModelsError::Length { got, expected } => {
                 write!(f, "expected {expected} bytes, got {got}")
             }
+            ModelsError::InvalidDecimal(e) => write!(f, "invalid decimal: {e}"),
         }
     }
 }
@@ -125,6 +131,10 @@ mod tests {
             }
             .to_string(),
             "expected 32 bytes, got 5"
+        );
+        assert_eq!(
+            ModelsError::InvalidDecimal(crate::decimal::DecimalError::CoefficientEmpty).to_string(),
+            "invalid decimal: decimal coefficient bytes are empty"
         );
     }
 

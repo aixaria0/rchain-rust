@@ -257,8 +257,8 @@ impl Proposer {
                 None,
             )),
             // Not a failure and not counted as one: the validator is not due yet, and the round closes as
-            // soon as the other bonded senders have advanced — or, after `LIVENESS_WINDOW` attempts, the
-            // escape is taken rather than waiting for ever.
+            // soon as the other bonded senders have advanced — or the 15-second stall timer expires.
+            // Attempts are telemetry, not an early escape licence (issue #339).
             BlockCreatorResult::AlreadyProposedThisRound => Ok((
                 ProposeResult {
                     propose_status: ProposeStatus::NotEnoughNewBlocks,
@@ -524,9 +524,8 @@ impl Proposer {
             let shard_id = shard_id.clone();
             let log = log.clone();
             let dummy_deploy_opt = dummy_deploy_opt.clone();
-            // **How many proposals this validator has declined waiting for the round to close.** Local to
-            // the proposer on purpose: the round's own clock is DAG-derived and measured from a tip that a
-            // refusal freezes, so it cannot say when the wait has gone on too long. This can.
+            // **How many proposals this validator has declined waiting for the round to close.** This
+            // counter is telemetry only; the stall clock below is the sole escape licence (#339).
             let health = health.clone();
             let blocked_since_advance: Arc<std::sync::atomic::AtomicI64> =
                 Arc::new(std::sync::atomic::AtomicI64::new(0));
@@ -809,18 +808,14 @@ async fn report_nothing_to_include(
 
 /// **How long a validator may be blocked by the round gate before it takes the escape.**
 ///
-/// The attempt bound below (`LIVENESS_WINDOW`) is only reachable if something keeps *asking* this node to
-/// propose. `--autopropose` does; `--propose-on-deploy` with `--no-autopropose` does not, and that is the
-/// configuration the public testnet runs. Measured 2026-10-03 (#213): with three validators at 100/100/50 and
-/// one killed, the survivors minted one block each and then waited for ever — every later deploy was accepted,
-/// none was included, and the state survived restarting both a survivor and the absent validator. Adding
-/// `--autopropose` to one node broke it within 20 s (h 7 → 228, finality two behind), which is what proved the
-/// escape itself is sound: six attempts, delivered by the timer in twelve seconds.
+/// A round may remain blocked when a bonded sender is silent (#213). The round's DAG-derived clock
+/// is frozen in that state, so it cannot release the gate. The proposer records the first blocked
+/// wall-clock sighting and the existing one-shot automatic retry supplies an attempt after this
+/// bound, including with `--no-autopropose` (C210).
 ///
-/// So the wait needs a clock that does not depend on the supply of attempts — for the same reason the round's
-/// own clock cannot serve: both are frozen by the state they are meant to bound. A healthy round closes in a
-/// few seconds on the live net (three validators, one deploy, two blocks each, then quiet), so 15 s is well
-/// above the healthy case and far below "for ever".
+/// In the N=8 acceptance trace (#339), six attempts arrived in 316–3,388 ms and escaped the
+/// round early, bypassing the shared parent snapshot before the intended 15-second stall. Only
+/// elapsed blocked time may authorise escape; the attempt count remains diagnostic telemetry.
 pub const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Wall-clock milliseconds, or 0 if the system clock is before the epoch.
@@ -847,12 +842,10 @@ fn stall_ms_since(first_sighting: &std::sync::atomic::AtomicI64, now: i64) -> i6
     }
 }
 
-/// Whether the round gate may be escaped: the attempt bound, or the stall bound.
-///
-/// Two triggers on purpose. The attempt bound is the cheap one and stays primary; the stall bound is the one
-/// that still fires when nothing is asking this node to propose — see [`ROUND_STALL_ESCAPE`].
-fn round_escape_owed(waited: i64, stalled_ms: i64) -> bool {
-    waited > liveness::LIVENESS_WINDOW || stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
+/// Whether the round gate may be escaped: only an elapsed stall reaches the bound.
+/// The number of attempts is retained for logging, never as an independent escape licence (#339).
+fn round_escape_owed(_waited: i64, stalled_ms: i64) -> bool {
+    stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -907,10 +900,9 @@ where
     // imply: `validate.rs:236` requires `max(justifications) + 1 == block_number` and `:259` requires
     // `creator_latest_seq + 1 == seq_num`, so a second proposal against the same snapshot is an
     // equivocation. Refusing for ever deadlocks a round whose quiet sender cannot age out — the round's
-    // clock is measured from a tip the refusal freezes — so the wait is bounded here, on **two** triggers:
-    // `LIVENESS_WINDOW` attempts, and the wall-clock stall bound in [`ROUND_STALL_ESCAPE`]. The second exists
-    // because attempts are only supplied by something that asks this node to propose, and the configuration
-    // the testnet runs supplies them only when a deploy arrives (#213).
+    // clock is measured from a tip the refusal freezes — so the wait is bounded by
+    // [`ROUND_STALL_ESCAPE`] only. A retry scheduled past that bound supplies the next attempt
+    // even without autopropose; frequent attempts must not escape the round early (#339).
     let escape = {
         let dag_repr = dag.get_representation().await;
         if dag_repr
@@ -1343,32 +1335,47 @@ mod tests {
         );
     }
 
-    /// **Both triggers, and neither on its own is a licence to escape early.**
+    /// **A burst of attempts is not a licence to escape before the stall bound.**
     ///
-    /// This is the falsifier for the pair: a rule that kept only the attempt bound would wedge whenever
-    /// nothing supplies attempts (`--no-autopropose`, #213); a rule that kept only the stall bound would let
-    /// a slow-but-live round be escaped after one attempt. Both halves are asserted, so removing either one
-    /// fails here.
+    /// The N=8 trace observed attempts six and beyond in under four seconds. The timed retry
+    /// already supplies another proposal after 15 seconds on a quiet network (C210).
     #[test]
-    fn the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound() {
+    fn the_round_escape_requires_elapsed_stall_even_after_many_attempts() {
         let window = liveness::LIVENESS_WINDOW;
         let stall_ms = ROUND_STALL_ESCAPE.as_millis() as i64;
 
+        assert!(!round_escape_owed(1, 0), "first refusal starts the clock");
         assert!(
-            !round_escape_owed(1, 0),
-            "one attempt and no stall is a normal wait"
+            !round_escape_owed(window + 1, 0),
+            "six attempts in zero time"
         );
         assert!(
-            !round_escape_owed(window, stall_ms - 1),
-            "just inside both bounds is still a normal wait"
+            !round_escape_owed(window + 1, 967),
+            "N=8 premature escape witness"
         );
         assert!(
-            round_escape_owed(window + 1, 0),
-            "the attempt bound alone is enough"
+            !round_escape_owed(window + 1, 3_388),
+            "N=8 maximum recorded escape"
+        );
+        assert!(
+            !round_escape_owed(i64::MAX, stall_ms - 1),
+            "even very many attempts cannot escape early"
+        );
+        assert!(
+            !round_escape_owed(0, -1),
+            "negative elapsed time cannot escape"
         );
         assert!(
             round_escape_owed(1, stall_ms),
-            "the stall bound alone is enough — this is the half that --no-autopropose needs"
+            "the precise stall boundary licenses escape"
+        );
+        assert!(
+            round_escape_owed(0, stall_ms),
+            "no attempt-count threshold is necessary"
+        );
+        assert!(
+            round_escape_owed(window + 1, stall_ms + 1),
+            "the gate remains open after the bound"
         );
     }
 

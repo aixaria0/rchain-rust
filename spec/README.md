@@ -107,3 +107,7 @@ The laws are validated against — not replacing — the Scala tests that alread
 - `models/src/test/scala/coop/rchain/models/rholang/SortTest.scala`
 - `node/src/test/scala/coop/rchain/node/mergeablity/MergeabilityRules.scala`
 - `casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperReportingSpec.scala`
+
+## Operational incident evidence
+
+- [N=8 finality and bootstrap recovery, 19 October 2026](audit/evidence/n8-finality-20261019/README.md): source lineage, contribution attribution, passing campaigns and the remaining no-helper gate. Historical evidence; no change to the law register or finding status.
