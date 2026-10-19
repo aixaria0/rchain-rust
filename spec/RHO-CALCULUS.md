@@ -19,7 +19,7 @@ The calculus is **reflective**: a name is a quoted process (`@`), and a process 
 ```
 Name  ::=  @Proc                        (quote a process into a name)
         |  Nil                          (the empty name / stopped process)
-        |  Ground                       (GBool | GInt | GBigInt | GString | GUri | GByteArray)
+        |  Ground                       (GBool | GInt | GBigInt | GDecimal | GString | GUri | GByteArray)
         |  Expr                         (EVar | EList | ETuple | ESet | EMap | arithmetic | EMethod)
         |  Bundle                       (read/write capability)
         |  Unforgeable                  (GPrivate | GDeployId | GDeployerId | GSysAuthToken)
