@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rchain_casper::conf::{ShardMemberships, ShardSpec};
+use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_casper::validator_identity::ValidatorIdentity;
 use rchain_comm::peer_node::NodeIdentifier;
 use rchain_node::configuration::configuration::parse_defaults;
@@ -19,6 +20,7 @@ use rchain_node::configuration::hocon::node_conf_from_hocon;
 use rchain_node::configuration::model::NodeConf;
 use rchain_node::runtime::node_environment;
 use rchain_node::runtime::node_runtime::{setup_node_program, NodeProgram};
+use rchain_rholang::native_state::{DevVesting, NativeSystemState, PosParams};
 use rchain_shared::base16;
 use rchain_shared::log::StderrLog;
 
@@ -155,6 +157,10 @@ pub struct TestNode {
     /// transaction routes). Read from the config rather than passed in, so a test that needs it does
     /// not have to thread another argument through `start`.
     pub admin_port: u16,
+    /// The primary shard's runtime manager, from the running program. A test reads the native
+    /// state the node actually installed through it, rather than opening the node's LMDB directory
+    /// behind a live process.
+    pub runtime: Arc<RuntimeManager>,
     /// The node's stop path (AUDIT C144), held for the node's lifetime. It is a field rather than a
     /// local in `start` because a **dropped sender resolves every listener's `stop_requested` at
     /// once** — letting it fall out of scope would stop the node the instant it started, and the
@@ -196,6 +202,24 @@ fn heavy_node_lock() -> Arc<tokio::sync::Mutex<()>> {
 }
 
 impl TestNode {
+    /// The node's live native state, through the primary shard's runtime manager.
+    pub fn native_state(&self) -> NativeSystemState {
+        NativeSystemState::new(self.runtime.runtime().native_store())
+    }
+
+    /// The `pos:dev-vesting` leaf the node installed, if any.
+    pub async fn dev_vesting(&self) -> Option<DevVesting> {
+        self.native_state()
+            .dev_vesting()
+            .await
+            .expect("read the dev vesting leaf")
+    }
+
+    /// The node's live `PosParams` record.
+    pub async fn pos_params(&self) -> PosParams {
+        self.native_state().params().await.expect("read PosParams")
+    }
+
     /// Abort the server task outright — the blunt stop, for tests that want the process killed the
     /// way a `SIGKILL` does.
     pub fn shutdown(self) {
@@ -249,6 +273,7 @@ async fn build(
     let program: NodeProgram = setup_node_program(conf, &id, Arc::new(StderrLog::default()))
         .await
         .expect("setup node program");
+    let runtime = program.primary_runtime.clone();
     let (stop, stop_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(program.serve(stop_rx));
     TestNode {
@@ -257,6 +282,7 @@ async fn build(
         grpc_port,
         http_port,
         admin_port: conf.api_server.port_admin_http as u16,
+        runtime,
         stop,
         _heavy: heavy,
     }
