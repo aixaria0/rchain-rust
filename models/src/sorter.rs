@@ -29,6 +29,7 @@ const DEPLOYER_AUTH: i64 = 10;
 const DEPLOY_ID: i64 = 11;
 const SYS_AUTH_TOKEN: i64 = 12;
 const BIG_INT: i64 = 13;
+const DECIMAL: i64 = 14;
 const BOUND_VAR: i64 = 50;
 const FREE_VAR: i64 = 51;
 const WILDCARD: i64 = 52;
@@ -541,6 +542,13 @@ fn sort_expr(e: &Expr) -> ScoredTerm<Expr> {
             term: e.clone(),
             score: node_score(BIG_INT, vec![leaf_bigint(v.clone())]),
         },
+        // The score is the value in units of `10^-MAX_SCALE`, not a lexicographic
+        // `(coefficient, scale)`: a lex would order `1.5` after `2`. The Lean model's
+        // `edecimal` payload is the same integer.
+        Expr::GDecimal(v) => ScoredTerm {
+            term: e.clone(),
+            score: node_score(DECIMAL, vec![leaf_bigint(v.scaled_value())]),
+        },
         Expr::GString(v) => ScoredTerm {
             term: e.clone(),
             score: node_score(STRING, vec![leaf_str(v.clone())]),
@@ -902,6 +910,12 @@ mod tests {
         }
     }
 
+    fn dec(coefficient: i64, scale: u32) -> Expr {
+        Expr::GDecimal(
+            crate::decimal::Decimal::new(BigInt::from(coefficient), scale).expect("canonical"),
+        )
+    }
+
     fn expr(e: Expr) -> Par {
         Par {
             exprs: vec![e],
@@ -985,6 +999,68 @@ mod tests {
     }
 
     #[test]
+    fn smaller_decimal_values_come_first_across_scales() {
+        let par_ground: Par = Par {
+            exprs: vec![dec(2, 0), dec(15, 1), dec(1, 2), dec(-15, 1), dec(0, 0)],
+            ..Default::default()
+        };
+        let expected: Par = Par {
+            exprs: vec![dec(-15, 1), dec(0, 0), dec(1, 2), dec(15, 1), dec(2, 0)],
+            ..Default::default()
+        };
+        assert_eq!(sort_par_term(&par_ground), expected);
+    }
+
+    #[test]
+    fn a_decimal_is_its_own_ground_class_regardless_of_value() {
+        // The class tag dominates: every decimal sorts after every Int and BigInt, and before
+        // every byte array, no matter how small or large the values are.
+        let par_ground: Par = Par {
+            exprs: vec![
+                dec(0, 0),
+                dec(-1000, 0),
+                Expr::GInt(999),
+                Expr::GBigInt(BigInt::from(0)),
+            ],
+            ..Default::default()
+        };
+        let expected: Par = Par {
+            exprs: vec![
+                Expr::GInt(999),
+                Expr::GBigInt(BigInt::from(0)),
+                dec(-1000, 0),
+                dec(0, 0),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(sort_par_term(&par_ground), expected);
+    }
+
+    #[test]
+    fn decimal_keys_normalise_within_the_class_but_not_against_an_int() {
+        // `1.50d` and `1.5d` are one key (last write wins); `1d` and `1` remain two.
+        let par_ground = par_map(vec![
+            (expr(dec(15, 1)), g_int(1)),
+            (expr(dec(150, 2)), g_int(2)),
+            (g_int(1), g_int(3)),
+        ]);
+        let expected = par_map(vec![(g_int(1), g_int(3)), (expr(dec(15, 1)), g_int(2))]);
+        assert_eq!(sort_par_term(&par_ground.into_expr()), expected.into_expr());
+    }
+
+    #[test]
+    fn a_decimal_deduplicates_within_its_class_but_not_against_an_int() {
+        let par_ground = par_set(vec![
+            expr(dec(15, 1)),
+            expr(dec(150, 2)),
+            g_int(1),
+            expr(dec(1, 0)),
+        ]);
+        let expected = par_set(vec![g_int(1), expr(dec(1, 0)), expr(dec(15, 1))]);
+        assert_eq!(sort_par_term(&par_ground.into_expr()), expected.into_expr());
+    }
+
+    #[test]
     fn sort_order_of_ground_types() {
         let byte_array = Expr::GByteArray(vec![0x80]);
         let par_ground: Par = Par {
@@ -995,6 +1071,7 @@ mod tests {
                 Expr::GInt(47),
                 Expr::GString("Hello".to_string()),
                 Expr::GBool(true),
+                dec(15, 1),
             ],
             ..Default::default()
         };
@@ -1005,6 +1082,7 @@ mod tests {
                 Expr::GString("Hello".to_string()),
                 Expr::GUri("https://www.rchain.coop/".to_string()),
                 Expr::GBigInt(BigInt::from(0)),
+                dec(15, 1),
                 byte_array,
             ],
             ..Default::default()

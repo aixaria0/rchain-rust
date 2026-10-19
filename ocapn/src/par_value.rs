@@ -25,6 +25,7 @@
 //! | `ParMap` (string keys) | `Struct` | a non-string key is refused |
 //! | `GUnforgeable`, `Bundle` | — | **refused: a capability is not data** |
 //! | `ParSet` | — | refused: Syrup has no set, and a list would lose order-insensitivity silently |
+//! | `GDecimal` | — | refused: Syrup has no exact decimal type |
 //! | operators, `EMethod`, sends/receives/news/matches | — | refused: a process is not a value |
 //! | any other `Record` **inbound** | — | refused: a labelled record that is not the tagged tuple |
 //! | `Float64` **inbound** | — | refused: Rholang has no float |
@@ -137,6 +138,9 @@ fn expr_to_value(expr: &Expr) -> Result<Value, BridgeError> {
         Expr::GString(s) => Ok(Value::String(s.clone())),
         Expr::GUri(u) => Ok(Value::Symbol(u.clone())),
         Expr::GByteArray(b) => Ok(Value::Bytes(b.clone())),
+        Expr::GDecimal(_) => Err(BridgeError::NoCounterpart(
+            "a decimal — Syrup has no exact decimal type",
+        )),
         Expr::EList(list) => {
             if list.remainder.is_some() {
                 return Err(BridgeError::NoCounterpart(
@@ -396,6 +400,21 @@ mod tests {
         assert_eq!(
             value_to_par(&Value::Symbol("rho:rchain:ertp".into())),
             Ok(ground(Expr::GUri("rho:rchain:ertp".into())))
+        );
+    }
+
+    #[test]
+    fn a_decimal_outbound_is_refused_with_its_own_reason() {
+        // Syrup has no exact decimal; approximating one as a Float64 would be the lossy map the
+        // law forbids, so the refusal names the shape rather than the catch-all.
+        let decimal = ground(Expr::GDecimal(
+            rchain_models::Decimal::new(15.into(), 1).expect("canonical"),
+        ));
+        assert_eq!(
+            par_to_value(&decimal),
+            Err(BridgeError::NoCounterpart(
+                "a decimal — Syrup has no exact decimal type"
+            ))
         );
     }
 

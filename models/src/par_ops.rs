@@ -42,6 +42,7 @@ pub fn locally_free_of_expr(e: &Expr, depth: i32) -> BitSet {
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => Vec::new(),
@@ -81,6 +82,7 @@ pub fn connective_used_of_expr(e: &Expr) -> bool {
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => false,
@@ -331,6 +333,7 @@ pub fn typ(expr: &Expr) -> &'static str {
         Expr::GBool(_) => "Bool",
         Expr::GInt(_) => "Int",
         Expr::GBigInt(_) => "BigInt",
+        Expr::GDecimal(_) => "Decimal",
         Expr::GString(_) => "String",
         Expr::GUri(_) => "Uri",
         Expr::GByteArray(_) => "ByteArray",

@@ -20,7 +20,7 @@ Proc ::=  Name ! ( Name,* )                -- send
 
 Name ::=  @ Proc                            -- quote a process
        |  * Name                            -- evaluate a name
-       |  Ground                            -- Int | BigInt | String | Bool | Uri | ByteArray
+       |  Ground                            -- Int | BigInt | Decimal | String | Bool | Uri | ByteArray
        |  Unforgeable                       -- new name | deployerId | deployId | sysAuthToken
        |  Bundle                            -- bundle{+|-|0|} Proc
        |  [ Name,* ] | ( Name,* ) | Set( Name,* ) | { Name : Name ,* }   -- collections
@@ -57,6 +57,7 @@ Parenthesize when in doubt — `( … )` always wins.
 |---|---|---|
 | Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=`; **exact** — overflow promotes to BigInt (never wraps); `bitAnd`, `bitOr`, `bitXor`, `bitNot`, `shiftLeft`, `shiftRight`, `shiftRightUnsigned` |
 | Big integer | arbitrary precision | same |
+| Decimal | `1.5d`, `2d`, `-0.05d` | `+ - * /`, `< <= > >= == !=`; **exact** — `1d / 3d` is an error, never rounded; `%` and the bitwise/shift methods are not defined on a decimal; `toInt`/`toBigInt` succeed only for integral values; `toString` gives the plain spelling (`1.5`) |
 | Boolean | `true` `false` | `and`, `or`, `not` |
 | String | `"…"` | `++`, `${…}` interpolation, `length`, `slice`, `substring`, `indexOf`, `contains`, `startsWith`, `endsWith`, `toLowerCase`, `toUpperCase`, `capitalize`, `reverse`, `trim`, `isEmpty`, `nonEmpty`, `replace`, `split`, `format`, `toString`, `toUtf8Bytes`, `hexToBytes` |
 | URI | `` `rho:…` `` | — |
@@ -68,6 +69,14 @@ promotes to `BigInt`, mixed `Int`/`BigInt` operands interoperate, and `2 == 2n` 
 (Unicode scalar values), and `toString` on an `Int`/`BigInt`/`Bool`/`Uri` gives its string form
 (so `42.toString() ++ " units"` works). The bit operations (RCHIP #12) are methods too, since `|` and
 `~` already belong to the grammar — see [Data structures](data-structures.md#bit-operations).
+
+A **decimal** is a separate value type, not a spelling of an integer: `1.5d` is `15 × 10⁻¹`, the value
+has one canonical form (trailing zeros are stripped, so `1.50d` and `1.5d` are the same term, and zero
+is `0d`), and there is no NaN, infinity or negative zero. Arithmetic is exact; division either
+terminates within 38 fractional digits or fails with an arithmetic error. Scalar equality and order
+span integers and decimals (`1d == 1`), while structural identity does not: a decimal and an integer
+are distinct map keys and a decimal pattern does not match an integer, exactly as `Int` and `BigInt`
+already behave. Negative decimals are written `-1.5d`; the minus is the ordinary negation operator.
 
 ## Collections
 

@@ -11,9 +11,9 @@ fn an_empty_expression_is_not_a_false_value() {
 
 #[test]
 fn an_unknown_only_expression_is_refused_after_real_wire_decode() {
-    // Length-delimited Expr tag 35 with an empty payload, inside Par.exprs.
-    // This fixture does not reserve that tag for any future value type.
-    let raw = [0x2a, 0x03, 0x9a, 0x02, 0x00];
+    // Length-delimited Expr tag 36 with an empty payload, inside Par.exprs. Tag 36 is still
+    // unknown; tag 35 was this fixture's original choice and became `g_decimal` (issue #380).
+    let raw = [0x2a, 0x03, 0xa2, 0x02, 0x00];
     let error = <Par as Serialize<Par>>::decode(&raw)
         .expect_err("an unsupported expression must not become false");
     assert!(error.contains("expr_instance"), "{error}");
@@ -21,9 +21,9 @@ fn an_unknown_only_expression_is_refused_after_real_wire_decode() {
 
 #[test]
 fn an_unknown_expression_nested_in_a_collection_is_refused() {
-    // Par -> Expr.EList -> EList.ps -> Par -> unknown-only Expr.
+    // Par -> Expr.EList -> EList.ps -> Par -> unknown-only Expr (tag 36).
     let raw = [
-        0x2a, 0x0a, 0xa2, 0x01, 0x07, 0x0a, 0x05, 0x2a, 0x03, 0x9a, 0x02, 0x00,
+        0x2a, 0x0a, 0xa2, 0x01, 0x07, 0x0a, 0x05, 0x2a, 0x03, 0xa2, 0x02, 0x00,
     ];
     let error = <Par as Serialize<Par>>::decode(&raw)
         .expect_err("the recursive bridge must propagate the malformed expression");

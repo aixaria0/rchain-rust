@@ -9,6 +9,7 @@
 #[cfg(target_arch = "wasm32")]
 use rchain_shared::chan;
 use rchain_shared::lock::Unpoison;
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -22,6 +23,7 @@ use rchain_models::ast::{
     AlwaysEqual, Bundle, EList, ETuple, Expr, GPrivate, GUnforgeable, Match, Name, New, Par,
     ParMap, ParSet, Receive, ReceiveBind, Send, Sort, SortJoin, Var,
 };
+use rchain_models::decimal::Decimal;
 use rchain_models::par_ops::{from_expr, par_concat, single_bundle, single_expr, typ};
 use rchain_models::runtime::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
@@ -163,11 +165,95 @@ fn is_zero(e: &Expr) -> bool {
     }
 }
 
-/// Numeric equality spanning `Int`/`BigInt` (so `2 == 2n`); `None` when not both are integers.
+/// The numeric value of an `Int`, `BigInt` or `Decimal`, exact. `None` for any other expression.
+fn as_decimal(e: &Expr) -> Option<Decimal> {
+    match e {
+        Expr::GInt(v) => Decimal::new(BigInt::from(*v), 0).ok(),
+        Expr::GBigInt(v) => Decimal::new(v.clone(), 0).ok(),
+        Expr::GDecimal(d) => Some(d.clone()),
+        _ => None,
+    }
+}
+
+fn has_decimal(a: &Expr, b: &Expr) -> bool {
+    matches!(a, Expr::GDecimal(_)) || matches!(b, Expr::GDecimal(_))
+}
+
+/// Numeric equality spanning `Int`/`BigInt`/`Decimal` (so `2 == 2n == 2d`); `None` when not both
+/// are numeric, which falls back to structural equality in `EEq`/`ENeq`.
 fn numeric_eq(a: &Par, b: &Par) -> Option<bool> {
-    let x = as_integer(single_expr(a)?)?;
-    let y = as_integer(single_expr(b)?)?;
-    Some(x == y)
+    let x = as_decimal(single_expr(a)?)?;
+    let y = as_decimal(single_expr(b)?)?;
+    Some(x.cmp_numeric(&y) == CmpOrdering::Equal)
+}
+
+/// The operations `decimal_binop` implements. An enum rather than a string, so the dispatch is
+/// exhaustive: the type-system gate forbids a partial arm (`unreachable!`) in production code.
+#[derive(Clone, Copy)]
+enum DecimalOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl DecimalOp {
+    fn symbol(self) -> &'static str {
+        match self {
+            DecimalOp::Add => "+",
+            DecimalOp::Sub => "-",
+            DecimalOp::Mul => "*",
+            DecimalOp::Div => "/",
+        }
+    }
+}
+
+/// The decimal path for `+ - * /`: mixed `Int`/`BigInt`/`Decimal` operands promote to a decimal
+/// result, and an integral result stays a decimal (`1.5d - 0.5d` is `1d`, not `Int(1)`).
+fn decimal_binop(
+    op: DecimalOp,
+    v1: &Expr,
+    v2: &Expr,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
+    let (Some(l), Some(r)) = (as_decimal(v1), as_decimal(v2)) else {
+        return Err(if as_decimal(v1).is_some() {
+            RholangError::OperatorExpectedError {
+                op: op.symbol().to_string(),
+                expected: "Decimal".to_string(),
+                other_type: typ(v2).to_string(),
+            }
+        } else {
+            RholangError::OperatorNotDefined {
+                op: op.symbol().to_string(),
+                other_type: typ(v1).to_string(),
+            }
+        });
+    };
+    let result = match op {
+        DecimalOp::Add => {
+            cost.charge(Costs::decimal_sum(&l, &r))?;
+            l.add(&r)
+        }
+        DecimalOp::Sub => {
+            cost.charge(Costs::decimal_subtraction(&l, &r))?;
+            l.sub(&r)
+        }
+        DecimalOp::Mul => {
+            cost.charge(Costs::decimal_multiplication(&l, &r))?;
+            l.mul(&r)
+        }
+        DecimalOp::Div => {
+            if r.is_zero() {
+                return Err(RholangError::ReduceError("/ by zero".to_string()));
+            }
+            cost.charge(Costs::decimal_division(&l, &r))?;
+            l.div(&r)
+        }
+    };
+    result
+        .map(Expr::GDecimal)
+        .map_err(|e| RholangError::ReduceError(e.to_string()))
 }
 
 /// A binary integer operation: an `i64` fast path (`checked`) that **never wraps** — on overflow it
@@ -268,6 +354,7 @@ fn relop(
     relopi: fn(i64, i64) -> bool,
     relopbi: fn(&BigInt, &BigInt) -> bool,
     relops: fn(&str, &str) -> bool,
+    relopd: fn(CmpOrdering) -> bool,
     env: &Env<Par>,
     cost: &CostAccounting,
 ) -> Result<Expr, RholangError> {
@@ -301,6 +388,16 @@ fn relop(
             cost.charge(Costs::comparison_cost())?;
             Expr::GBool(relops(s1, s2))
         }
+        // A decimal compares numerically against any numeric operand, exactly (issue #380).
+        (Expr::GDecimal(_), _) | (_, Expr::GDecimal(_)) => {
+            let (Some(l), Some(r)) = (as_decimal(&v1), as_decimal(&v2)) else {
+                return Err(RholangError::ReduceError(format!(
+                    "Unexpected compare: {v1:?} vs. {v2:?}"
+                )));
+            };
+            cost.charge(Costs::decimal_comparison(&l, &r))?;
+            Expr::GBool(relopd(l.cmp_numeric(&r)))
+        }
         _ => {
             return Err(RholangError::ReduceError(format!(
                 "Unexpected compare: {v1:?} vs. {v2:?}"
@@ -314,6 +411,7 @@ fn eval_to_string_pair(key: &Expr, value: &Expr) -> Result<(String, String), Rho
         (Expr::GString(k), Expr::GString(v)) => Ok((k.clone(), v.clone())),
         (Expr::GString(k), Expr::GInt(v)) => Ok((k.clone(), v.to_string())),
         (Expr::GString(k), Expr::GBigInt(v)) => Ok((k.clone(), v.to_string())),
+        (Expr::GString(k), Expr::GDecimal(v)) => Ok((k.clone(), v.to_plain_string())),
         (Expr::GString(k), Expr::GBool(v)) => Ok((k.clone(), v.to_string())),
         (Expr::GString(k), Expr::GUri(v)) => Ok((k.clone(), v.clone())),
         (Expr::GString(_), value) => Err(RholangError::ReduceError(format!(
@@ -583,6 +681,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
         Expr::GBool(_)
         | Expr::GInt(_)
         | Expr::GBigInt(_)
+        | Expr::GDecimal(_)
         | Expr::GString(_)
         | Expr::GUri(_)
         | Expr::GByteArray(_) => Ok(expr.clone()),
@@ -604,6 +703,10 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
                     cost.charge(Costs::big_int_negation(&r))?;
                     Ok(Expr::GBigInt(r))
                 }
+                Expr::GDecimal(d) => {
+                    cost.charge(Costs::decimal_negation(&d))?;
+                    Ok(Expr::GDecimal(d.neg()))
+                }
                 other => Err(RholangError::OperatorNotDefined {
                     op: "Negation".to_string(),
                     other_type: typ(&other).to_string(),
@@ -613,6 +716,9 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
         Expr::EMult(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
+            if has_decimal(&v1, &v2) {
+                return decimal_binop(DecimalOp::Mul, &v1, &v2, cost);
+            }
             int_binop(
                 "*",
                 &v1,
@@ -627,6 +733,9 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
         Expr::EDiv(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
+            if has_decimal(&v1, &v2) {
+                return decimal_binop(DecimalOp::Div, &v1, &v2, cost);
+            }
             if is_zero(&v2) {
                 return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
@@ -644,6 +753,22 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
         Expr::EMod(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
+            // `%` is not defined on decimals, so the refusal comes before the zero-divisor guard:
+            // `1 % 0.0d` is a type error, not `/ by zero`.
+            if has_decimal(&v1, &v2) {
+                return Err(if matches!(v1, Expr::GDecimal(_)) {
+                    RholangError::OperatorNotDefined {
+                        op: "%".to_string(),
+                        other_type: typ(&v1).to_string(),
+                    }
+                } else {
+                    RholangError::OperatorExpectedError {
+                        op: "%".to_string(),
+                        expected: "Int".to_string(),
+                        other_type: typ(&v2).to_string(),
+                    }
+                });
+            }
             if is_zero(&v2) {
                 return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
@@ -669,6 +794,9 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
                 cost.charge(Costs::op_call_cost())?;
                 return set_add(b, from_expr(v2), cost);
             }
+            if has_decimal(&v1, &v2) {
+                return decimal_binop(DecimalOp::Add, &v1, &v2, cost);
+            }
             int_binop(
                 "+",
                 &v1,
@@ -688,6 +816,9 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
                 cost.charge(Costs::op_call_cost())?;
                 return collection_delete(&v1, &from_expr(v2), cost);
             }
+            if has_decimal(&v1, &v2) {
+                return decimal_binop(DecimalOp::Sub, &v1, &v2, cost);
+            }
             int_binop(
                 "-",
                 &v1,
@@ -706,6 +837,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             |a, b| a < b,
             |a, b| a < b,
             |a, b| a < b,
+            |o| o == CmpOrdering::Less,
             env,
             cost,
         ),
@@ -716,6 +848,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             |a, b| a <= b,
             |a, b| a <= b,
             |a, b| a <= b,
+            |o| o != CmpOrdering::Greater,
             env,
             cost,
         ),
@@ -726,6 +859,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             |a, b| a > b,
             |a, b| a > b,
             |a, b| a > b,
+            |o| o == CmpOrdering::Greater,
             env,
             cost,
         ),
@@ -736,6 +870,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             |a, b| a >= b,
             |a, b| a >= b,
             |a, b| a >= b,
+            |o| o != CmpOrdering::Less,
             env,
             cost,
         ),
@@ -1087,6 +1222,7 @@ fn expr_to_string(method: &str, e: &Expr) -> Result<String, RholangError> {
         Expr::GString(s) => Ok(s.clone()),
         Expr::GInt(v) => Ok(v.to_string()),
         Expr::GBigInt(v) => Ok(v.to_string()),
+        Expr::GDecimal(d) => Ok(d.to_plain_string()),
         Expr::GBool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
         Expr::GUri(u) => Ok(u.clone()),
         other => Err(method_not_defined(method, other)),
@@ -1269,6 +1405,18 @@ fn eval_method(
                     })?;
                     Ok(from_expr(Expr::GInt(v)))
                 }
+                Expr::GDecimal(d) => {
+                    cost.charge(Costs::to_int_cost_bigint(d.coefficient()))?;
+                    match d.to_i64() {
+                        Some(v) => Ok(from_expr(Expr::GInt(v))),
+                        None if d.scale() == 0 => Err(RholangError::ReduceError(format!(
+                            "Method toInt(): input Decimal value {d} out of range"
+                        ))),
+                        None => Err(RholangError::ReduceError(format!(
+                            "Method toInt(): Decimal value {d} is not an integer"
+                        ))),
+                    }
+                }
                 other => Err(method_not_defined("toInt", &other)),
             }
         }
@@ -1289,6 +1437,15 @@ fn eval_method(
                         ))
                     })?;
                     Ok(from_expr(Expr::GBigInt(v)))
+                }
+                Expr::GDecimal(d) => {
+                    cost.charge(Costs::to_int_cost_bigint(d.coefficient()))?;
+                    match d.to_bigint_exact() {
+                        Some(v) => Ok(from_expr(Expr::GBigInt(v))),
+                        None => Err(RholangError::ReduceError(format!(
+                            "Method toBigInt(): Decimal value {d} is not an integer"
+                        ))),
+                    }
                 }
                 other => Err(method_not_defined("toBigInt", &other)),
             }
@@ -3305,6 +3462,124 @@ mod tests {
             Box::new(from_expr(Expr::GInt(3))),
         ));
         assert_eq!(eval_single_expr(&p, &e, &cost).unwrap(), Expr::GInt(5));
+    }
+
+    // --- The exact decimal (issue #380, option B) --------------------------------------------
+
+    fn decimal_eval(src: &str) -> Result<Expr, RholangError> {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let env = Env::new();
+        let p: Par = crate::normalizer::source_to_adt(src).expect("parse").into();
+        eval_single_expr(&p, &env, &cost)
+    }
+
+    fn d(coefficient: i64, scale: u32) -> Expr {
+        Expr::GDecimal(Decimal::new(coefficient.into(), scale).expect("canonical"))
+    }
+
+    #[test]
+    fn decimal_arithmetic_is_exact_and_stays_decimal() {
+        assert_eq!(decimal_eval("1.1d + 2.2d").unwrap(), d(33, 1));
+        assert_eq!(decimal_eval("1.5d - 0.5d").unwrap(), d(1, 0));
+        assert_eq!(decimal_eval("1.5d * 2d").unwrap(), d(3, 0));
+        assert_eq!(decimal_eval("0.1d * 0.2d").unwrap(), d(2, 2));
+        assert_eq!(decimal_eval("2 + 1.5d").unwrap(), d(35, 1));
+        assert_eq!(decimal_eval("BigInt(2) + 1.5d").unwrap(), d(35, 1));
+        assert_eq!(decimal_eval("-1.5d").unwrap(), d(-15, 1));
+        assert_eq!(
+            decimal_eval("1.5d.toString()").unwrap(),
+            Expr::GString("1.5".to_string())
+        );
+        assert_eq!(
+            decimal_eval("2d.toString()").unwrap(),
+            Expr::GString("2".to_string())
+        );
+    }
+
+    #[test]
+    fn decimal_division_is_exact_or_an_explicit_error() {
+        assert_eq!(decimal_eval("1d / 4d").unwrap(), d(25, 2));
+        assert_eq!(decimal_eval("10d / 4d").unwrap(), d(25, 1));
+        let err = decimal_eval("1d / 3d").expect_err("1/3 is not representable");
+        assert!(err.to_string().contains("not exact within scale"), "{err}");
+        let err = decimal_eval("1d / 0d").expect_err("division by zero");
+        assert!(err.to_string().contains("/ by zero"), "{err}");
+        let err = decimal_eval("0d / 0d").expect_err("division by zero");
+        assert!(err.to_string().contains("/ by zero"), "{err}");
+    }
+
+    #[test]
+    fn decimal_modulo_and_bitwise_are_refused_by_name() {
+        for src in ["5d % 2d", "1 % 2d"] {
+            let err = decimal_eval(src).expect_err("modulo is not defined on decimals");
+            assert!(err.to_string().contains("Decimal"), "{src}: {err}");
+        }
+        for src in [
+            "1.5d.bitAnd(1)",
+            "1.5d.bitOr(1)",
+            "1.5d.bitXor(1)",
+            "1.5d.bitNot()",
+            "1.5d.shiftLeft(1)",
+            "1.5d.shiftRight(1)",
+            "1.5d.shiftRightUnsigned(1)",
+        ] {
+            let err = decimal_eval(src).expect_err("bitwise/shift is not defined on decimals");
+            assert!(err.to_string().contains("Decimal"), "{src}: {err}");
+        }
+    }
+
+    #[test]
+    fn scalar_comparisons_span_integers_and_decimals() {
+        assert_eq!(decimal_eval("2 == 2d").unwrap(), Expr::GBool(true));
+        assert_eq!(decimal_eval("BigInt(2) == 2d").unwrap(), Expr::GBool(true));
+        assert_eq!(decimal_eval("1.5d < 2").unwrap(), Expr::GBool(true));
+        assert_eq!(decimal_eval("1 < 1.5d").unwrap(), Expr::GBool(true));
+        assert_eq!(decimal_eval("-2d < -1").unwrap(), Expr::GBool(true));
+        assert_eq!(decimal_eval("1.5d != 1.6d").unwrap(), Expr::GBool(true));
+        assert_eq!(decimal_eval("1d == 1").unwrap(), Expr::GBool(true));
+        // Structural equality keeps type identity: a decimal is not an integer in a collection.
+        assert_eq!(decimal_eval("[1d] == [1]").unwrap(), Expr::GBool(false));
+    }
+
+    #[test]
+    fn decimal_conversions_name_what_they_cannot_convert() {
+        assert_eq!(decimal_eval("2d.toInt()").unwrap(), Expr::GInt(2));
+        assert_eq!(decimal_eval("2.0d.toInt()").unwrap(), Expr::GInt(2));
+        let err = decimal_eval("1.5d.toInt()").expect_err("1.5 is not an integer");
+        assert!(err.to_string().contains("not an integer"), "{err}");
+        assert_eq!(
+            decimal_eval("2d.toBigInt()").unwrap(),
+            Expr::GBigInt(BigInt::from(2))
+        );
+        let err = decimal_eval("1.5d.toBigInt()").expect_err("1.5 is not an integer");
+        assert!(err.to_string().contains("not an integer"), "{err}");
+    }
+
+    #[test]
+    fn decimal_costs_are_charged_and_grow_with_the_coefficient() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let env = Env::new();
+        let p: Par = crate::normalizer::source_to_adt("1.5d * 2.5d")
+            .expect("parse")
+            .into();
+        eval_single_expr(&p, &env, &cost).unwrap();
+        assert!(cost.total_charged() > 0);
+
+        let small = Decimal::new(1.into(), 1).expect("canonical");
+        let big = Decimal::new(
+            BigInt::parse_bytes("9".repeat(100).as_bytes(), 10).expect("digits"),
+            1,
+        )
+        .expect("canonical");
+        assert!(
+            Costs::decimal_multiplication(&big, &big).value
+                > Costs::decimal_multiplication(&small, &small).value
+        );
+        assert!(
+            Costs::decimal_division(&small, &small).value
+                > Costs::decimal_multiplication(&small, &small).value
+        );
+        assert!(Costs::decimal_comparison(&small, &big).value > 0);
     }
 
     /// **The evaluation helpers' failure arms, which nothing reached** (TEST-COVERAGE item 11: this

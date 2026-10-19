@@ -11,6 +11,7 @@ use std::hash::{Hash, Hasher};
 use proptest::prelude::*;
 
 use crate::ast::{Expr, Par, ProcSort, Send, Var};
+use crate::decimal::{Decimal, MAX_SCALE};
 use crate::par_ops::{from_expr, par_concat};
 use crate::sorted::Sorted;
 use crate::sorter::{sort_par_term, sort_pars};
@@ -20,6 +21,9 @@ use crate::types::{is_closed, Closed};
 fn arb_ground() -> impl Strategy<Value = Expr> {
     prop_oneof![
         any::<i64>().prop_map(Expr::GInt),
+        (any::<i64>(), 0u32..=MAX_SCALE).prop_map(|(coefficient, scale)| {
+            Expr::GDecimal(Decimal::new(coefficient.into(), scale).expect("in-range scale"))
+        }),
         prop::collection::vec(any::<char>(), 0..4)
             .prop_map(|cs| Expr::GString(cs.into_iter().collect())),
         any::<bool>().prop_map(Expr::GBool),

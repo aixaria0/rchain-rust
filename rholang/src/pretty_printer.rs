@@ -110,12 +110,30 @@ fn check_expr(expr: &Expr) -> Result<(), String> {
 /// Wrap a rendered sub-expression in parentheses unless it is already parenthesised or a bare
 /// integer (port of `StringOps.wrapWithBraces`).
 fn wrap_with_braces(expr: &str) -> String {
-    if expr.parse::<i64>().is_ok() {
+    if expr.parse::<i64>().is_ok() || is_decimal_literal(expr) {
         expr.to_string()
     } else if expr.starts_with('(') && expr.ends_with(')') {
         expr.to_string()
     } else {
         format!("({expr})")
+    }
+}
+
+/// Is this string exactly a decimal literal — `[-]?digits ['.' digits] 'd'`? The full shape is
+/// checked, not the suffix: a variable named `...d` must still be parenthesised.
+fn is_decimal_literal(expr: &str) -> bool {
+    let body = expr.strip_prefix('-').unwrap_or(expr);
+    let Some(body) = body.strip_suffix('d') else {
+        return false;
+    };
+    match body.split_once('.') {
+        Some((integer, fraction)) => {
+            !integer.is_empty()
+                && !fraction.is_empty()
+                && integer.bytes().all(|b| b.is_ascii_digit())
+                && fraction.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()),
     }
 }
 
@@ -572,6 +590,7 @@ impl PrettyPrinter {
             Expr::GBool(b) => b.to_string(),
             Expr::GInt(i) => i.to_string(),
             Expr::GBigInt(bi) => format!("BigInt({bi})"),
+            Expr::GDecimal(d) => d.to_literal_string(),
             Expr::GString(s) => format!("\"{s}\""),
             Expr::GUri(u) => format!("`{u}`"),
             // A byte array has a source literal — `"<hex>".hexToBytes()` — and a bare hex token is
@@ -757,6 +776,13 @@ mod tests {
             p.build_expr(&Expr::GUri("rho:io:stdout".to_string())),
             "`rho:io:stdout`"
         );
+        // A decimal prints as its canonical literal: the suffix survives, trailing zeros do not.
+        let decimal = |c: i64, s: u32| {
+            Expr::GDecimal(rchain_models::decimal::Decimal::new(c.into(), s).expect("canonical"))
+        };
+        assert_eq!(p.build_expr(&decimal(15, 1)), "1.5d");
+        assert_eq!(p.build_expr(&decimal(0, 0)), "0d");
+        assert_eq!(p.build_expr(&decimal(-5, 2)), "-0.05d");
     }
 
     #[test]
@@ -804,9 +830,16 @@ mod printer_tests {
         assert_eq!(wrap_with_braces("(1 + 2)"), "(1 + 2)");
         assert_eq!(wrap_with_braces("1 + 2"), "(1 + 2)");
         assert_eq!(wrap_with_braces("a"), "(a)");
-        // Only a *bare* integer is exempt: a number with a suffix or a decimal point is not.
+        // Only a *bare* integer or a decimal literal is exempt: a number with any other suffix,
+        // or a bare decimal point, is not.
         assert_eq!(wrap_with_braces("1n"), "(1n)");
         assert_eq!(wrap_with_braces("1.0"), "(1.0)");
+        assert_eq!(wrap_with_braces("1.5d"), "1.5d");
+        assert_eq!(wrap_with_braces("-0.05d"), "-0.05d");
+        assert_eq!(wrap_with_braces("2d"), "2d");
+        // A name that merely ends in `d` is not a literal.
+        assert_eq!(wrap_with_braces("x1d"), "(x1d)");
+        assert_eq!(wrap_with_braces("1.5dx"), "(1.5dx)");
     }
 
     /// The empty process prints as `Nil`; a ground value prints as itself.
@@ -866,6 +899,14 @@ mod printer_tests {
             "[1] ++ [2]",
             "1 % 2",
             "1 / 2",
+            // Decimals: the suffix survives the round trip, and `1.10d` normalizes to `1.1d`.
+            "1.5d",
+            "2d",
+            "1.10d",
+            "-1.5d",
+            "1.5d + 2d",
+            "[1.5d, 2d]",
+            "{\"k\": 1.5d}",
             // Parallel composition and references.
             "@\"a\"!(1) | @\"b\"!(2)",
             "bundle0 { Nil }",

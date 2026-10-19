@@ -19,6 +19,7 @@ pub mod block_metadata;
 pub mod block_version;
 pub mod casper;
 pub mod comm;
+pub mod decimal;
 pub mod errors;
 pub mod murmur_hash3;
 pub mod normalizer_env;
@@ -33,6 +34,8 @@ pub mod string_syntax;
 pub mod types;
 pub mod validator;
 pub mod wire;
+
+pub use decimal::{Decimal, DecimalError, MAX_SCALE};
 
 #[cfg(test)]
 mod property_tests;
