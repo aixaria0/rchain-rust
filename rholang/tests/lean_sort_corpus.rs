@@ -33,7 +33,7 @@ use rchain_models::ast::{Par, Proc};
 use rchain_rholang::normalizer::source_to_adt;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `sortCaseCount`).
-const SORT_CASES: usize = 42;
+const SORT_CASES: usize = 50;
 
 /// Parse and normalize a closed term, as the node does on the deploy path.
 fn normalized(source: &str) -> Proc {
@@ -157,8 +157,9 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
 /// **The boundary, kept visible rather than implied.** The model's comparator family was an order on a
 /// *coarser* algebra than the node's score tree — the note here read "21 `Expr` constructors against
 /// the node's 33, so a term containing `EMethod`/`EMatches`/`EShortAnd`/`GBigInt`/… cannot be built
-/// here at all" — and **the five that were missing are in the model since 2026-09-25**, so its 29
-/// classes now cover all 33 of the node's variants (five protobuf grounds share one `ground` class)
+/// here at all" — and **the five that were missing are in the model since 2026-09-25**, and the
+/// decimal class since 2026-10-19, so its 30 classes now cover all 34 of the node's variants (five
+/// protobuf grounds share one `ground` class)
 /// and every pair that used to be listed for them is a corpus row. What remains unreachable is
 /// `Ground.bytes`: the node scores it as `EBYTEARR`(116), *after* every var and operator, rather than
 /// with the grounds where this model puts it — and no corpus row can carry it either, because the

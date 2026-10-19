@@ -168,6 +168,7 @@ so this is the identity on all four. -/
 def groundSpelling : SGround → String
   | .bool b => if b then "true" else "false"
   | .bigint d => "BigInt(" ++ d ++ ")"
+  | .decimal raw => raw
   | .int d => d
   | .str raw => raw
   | .uri raw => raw
