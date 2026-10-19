@@ -306,7 +306,16 @@ def laws : List Law := [
       the model's algebra rather than a claim about the wrong order (it was never a fork between nodes: \
       every node sorts by the score tree). The alignment is safe for the proofs: \
       `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
-      `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change" },
+      `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change. \
+      **What the tie does not claim (2026-10-19).** The model's `edecimal` payload is the canonical \
+      scaled integer (`coefficient × 10^(38−scale)`), so the comparator laws are stated over that \
+      representation and over `Int` order. The bridge from the Rust `(coefficient, scale)` pair to \
+      that integer — `scaled_value`'s injectivity and order-preservation on canonical values — is \
+      **not** a theorem here, and neither are canonicalization, exact `+ - * /`, division's \
+      exact-or-error condition, the wire's minimal-byte form, the reducer's dispatch, or the cost \
+      model. Those are carried today by the Rust refinement (`Decimal::new`/`from_wire`, private \
+      fields) and its unit and corpus tests; a standalone `Rchain/Decimal.lean` plus a `decimal` \
+      corpus is the follow-up that would prove them" },
   { number := 1, clause := "b", layer := "Rholang",
     rustWitness := ["models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike"],
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \

@@ -144,6 +144,16 @@ return `Result` because a canonical result can leave the scale bound (`1d / 3d` 
 rounded value); the comparator's `Ord` and derived `Eq` agree on every canonical value, which is what
 `par_set`/`par_map` deduplication relies on.
 
+**What this refinement does not establish.** It guarantees *representability* — a noncanonical
+decimal cannot enter the AST — not the value algebra. The Lean tie (`Rchain/Sort.lean`'s `edecimal`)
+models the value as the canonical scaled integer and proves the comparator laws over it; the bridge
+from the Rust `(coefficient, scale)` pair to that integer (`scaled_value`'s injectivity and
+order-preservation on canonical values), exact arithmetic, division's exact-or-error condition, the
+wire's minimal-byte form, reducer dispatch and the cost model are **outside the Lean model**. They
+rest today on this refinement and the unit/corpus tests in `models/src/decimal.rs`,
+`models/src/wire.rs` and `rholang/src/reduce.rs`; a standalone `Rchain/Decimal.lean` plus a `decimal`
+conformance corpus is the follow-up that would prove them.
+
 Concrete newtypes live in [`../shared/src/refined.rs`](../shared/src/refined.rs) (`Port`, `Hash32`,
 `BlockHeight`, `SeqNum`, `WireLen`, `NonNegI64`; `ByteLen`/`ShortLen` reserved for 1c); domain-specific
 serialized refinements (`SerializedNode`, `SerializedRandom`) live with their deserializers. The Lean
