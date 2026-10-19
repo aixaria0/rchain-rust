@@ -1,0 +1,362 @@
+//! Committed validity bounds and the startup/restore boundary, on real persisted state.
+mod common;
+use rchain_block_storage::block_store::BlockStore;
+use rchain_block_storage::dag::codecs::{
+    BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
+};
+use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::syntax::{insert_genesis, put_approved_block, put_block};
+use rchain_casper::block_metadata_store::BlockMetadataStore;
+use rchain_casper::block_status::BlockStatus;
+use rchain_casper::engine::node_launch::check_running_validation_bounds;
+use rchain_casper::interpreter_util::{empty_state_hash_fixed, ShardHealth};
+use rchain_casper::multi_parent_casper::{validate, ValidateError};
+use rchain_casper::runtime_manager::RuntimeManager;
+use rchain_crypto::signatures::secp256k1::Secp256k1;
+use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+use rchain_crypto::signatures::signed::Signed;
+use rchain_models::block::state_hash::StateHash;
+use rchain_models::block_hash::BlockHash;
+use rchain_models::casper::protocol::casper_message::{
+    BlockMessage, DeployData, FinalizedFringe, PCost, ProcessedDeploy, RholangState,
+    SignedDeployData,
+};
+use rchain_models::validator::Validator;
+use rchain_rholang::native_state::{pos_params_key, PosParams};
+use rchain_rspace::native_store::PREFIX_POS;
+use rchain_shared::log::{Log, NopLog};
+use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
+use rchain_shared::store_manager::InMemoryStoreManager;
+use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+async fn build_dag() -> Arc<rchain_casper::dag::BlockDagKeyValueStorage> {
+    fn in_memory() -> Arc<tokio::sync::Mutex<Box<dyn KeyValueStore + Send + Sync>>> {
+        Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )))
+    }
+    let metadata_store = Arc::new(
+        BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMetadataCodec),
+        )))
+        .await
+        .expect("metadata store"),
+    );
+    let deploy_index: Arc<
+        dyn rchain_shared::typed_store::KeyValueTypedStore<
+            rchain_block_storage::dag::dag_storage::DeployId,
+            BlockHash,
+        >,
+    > = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(BytesCodec),
+        Arc::new(BlockHashCodec),
+    ));
+    let deploy_store: Arc<
+        dyn rchain_shared::typed_store::KeyValueTypedStore<
+            rchain_block_storage::dag::dag_storage::DeployId,
+            SignedDeployData,
+        >,
+    > = Arc::new(KeyValueTypedStoreCodec::new(
+        in_memory(),
+        Arc::new(BytesCodec),
+        Arc::new(SignedDeployDataCodec),
+    ));
+    Arc::new(
+        rchain_casper::dag::BlockDagKeyValueStorage::create(
+            metadata_store,
+            deploy_index,
+            deploy_store,
+        )
+        .await
+        .expect("dag storage"),
+    )
+}
+
+fn block(byte: u8, height: i64, root: StateHash) -> BlockMessage {
+    BlockMessage {
+        version: 1,
+        shard_id: "root".to_string(),
+        block_hash: BlockHash::new([byte; 32]),
+        block_number: BlockHeight::try_from(height).unwrap(),
+        sender: Validator::new([byte; 65]),
+        seq_num: SeqNum::zero(),
+        pre_state_hash: root,
+        post_state_hash: root,
+        justifications: vec![],
+        bonds: BTreeMap::new(),
+        rejected_deploys: BTreeSet::new(),
+        rejected_blocks: BTreeSet::new(),
+        rejected_senders: BTreeSet::new(),
+        state: RholangState::default(),
+        sig_algorithm: "secp256k1".to_string(),
+        sig: vec![],
+        timestamp: height,
+    }
+}
+fn priced_deploy(price: i64) -> ProcessedDeploy {
+    let (secret, _) = Secp256k1.new_key_pair();
+    let data = DeployData {
+        attachments: vec![],
+        term: "Nil".to_string(),
+        timestamp: 0,
+        phlo_price: price,
+        phlo_limit: 100,
+        valid_after_block_number: 0,
+        shard_id: "root".to_string(),
+    };
+    let signed = Signed::new(data, &Secp256k1, &secret).unwrap();
+    ProcessedDeploy {
+        deploy: SignedDeployData {
+            data: signed.data,
+            deployer: signed.pk.bytes().to_vec(),
+            sig: signed.sig,
+            sig_algorithm: signed.sig_algorithm.name().to_string(),
+        },
+        cost: PCost { cost: 0 },
+        deploy_log: vec![],
+        is_failed: false,
+        system_deploy_error: None,
+    }
+}
+async fn params_root(runtime: &RuntimeManager, bytes: Option<Vec<u8>>) -> StateHash {
+    runtime
+        .runtime()
+        .reset(empty_state_hash_fixed())
+        .await
+        .unwrap();
+    if let Some(bytes) = bytes {
+        runtime
+            .runtime()
+            .native_store()
+            .put(PREFIX_POS, pos_params_key(), bytes);
+    }
+    runtime
+        .runtime()
+        .create_checkpoint()
+        .await
+        .unwrap()
+        .root
+        .into()
+}
+fn params(floor: i64, parents: i64) -> Vec<u8> {
+    PosParams {
+        min_phlo_price: NonNegI64::try_from(floor).unwrap(),
+        max_number_of_parents: parents,
+        ..PosParams::default()
+    }
+    .encode()
+}
+fn blocks() -> BlockStore {
+    Arc::new(KeyValueTypedStoreCodec::new(
+        Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        ))),
+        Arc::new(BlockHashCodec),
+        Arc::new(BlockMessageCodec),
+    ))
+}
+
+#[tokio::test]
+async fn committed_bounds_control_the_block_path_with_opposing_local_configs() {
+    let runtime = common::build_runtime_manager().await;
+    let root = params_root(&runtime, Some(params(2, 2))).await;
+    let dag = build_dag().await;
+    let store = blocks();
+    let mut parents = vec![];
+    for byte in 1..=3 {
+        let parent = block(byte, 0, root);
+        parents.push(parent.block_hash);
+        put_block(&store, parent.clone()).await.unwrap();
+        insert_genesis(dag.as_ref(), parent).await.unwrap();
+    }
+    let log: Arc<dyn Log> = Arc::new(NopLog);
+    let health = ShardHealth::default();
+    let index =
+        |_| async { Err("a bound refusal must happen before indexing/merge/replay".to_string()) };
+    for (floor, cap) in [(0, 0), (99, 1)] {
+        for (price, count, expected) in [
+            (1, 1, Some(BlockStatus::ContainsLowCostDeploy)),
+            (2, 3, Some(BlockStatus::TooManyJustifications)),
+            (2, 2, None),
+        ] {
+            let mut child = block(9, 1, root);
+            child.justifications = parents[..count].to_vec();
+            child.state.deploys = vec![priced_deploy(price)];
+            if let Some(expected) = expected {
+                match validate(
+                    dag.as_ref(),
+                    &store,
+                    &runtime,
+                    &child,
+                    "root",
+                    floor,
+                    cap,
+                    &index,
+                    &log,
+                    &health,
+                )
+                .await
+                {
+                    Err(ValidateError::ValidationFailed(_, actual)) => assert_eq!(actual, expected),
+                    other => panic!("expected {expected:?} before replay, got {other:?}"),
+                }
+            } else {
+                let bounds =
+                    async { Ok(runtime.committed_validation_bounds(&root).await?.unwrap()) };
+                assert_eq!(
+                    rchain_casper::validate::block_summary_from_state(
+                        dag.as_ref(),
+                        &store,
+                        &child,
+                        "root",
+                        100,
+                        bounds
+                    )
+                    .await
+                    .unwrap(),
+                    Ok(())
+                );
+            }
+        }
+    }
+    // A peer cannot lower the bounds by naming some other locally available pre-state root.
+    let decoy = params_root(&runtime, Some(params(0, 0))).await;
+    let mut forged = block(9, 1, decoy);
+    forged.justifications = vec![parents[0]];
+    forged.state.deploys = vec![priced_deploy(1)];
+    assert!(matches!(
+        validate(
+            dag.as_ref(),
+            &store,
+            &runtime,
+            &forged,
+            "root",
+            0,
+            0,
+            &index,
+            &log,
+            &health
+        )
+        .await,
+        Err(ValidateError::ValidationFailed(
+            _,
+            BlockStatus::ContainsLowCostDeploy
+        ))
+    ));
+
+    // Synced records may not have the locally-validated flag; failed parents must not supply
+    // their claimed post-state either. Both paths retain the oldest accepted immutable params.
+    for (byte, validated, failed) in [(4, false, false), (5, true, true)] {
+        let mut parent = block(byte, 1, decoy);
+        parent.justifications = vec![parents[0]];
+        let mut metadata = rchain_models::block_metadata::BlockMetadata::from_block(&parent);
+        metadata.validated = validated;
+        metadata.validation_failed = failed;
+        put_block(&store, parent.clone()).await.unwrap();
+        dag.insert(metadata, parent.clone()).await.unwrap();
+        let mut child = block(9, 2, root);
+        child.justifications = vec![parent.block_hash];
+        child.state.deploys = vec![priced_deploy(1)];
+        assert!(matches!(
+            validate(
+                dag.as_ref(),
+                &store,
+                &runtime,
+                &child,
+                "root",
+                0,
+                0,
+                &index,
+                &log,
+                &health
+            )
+            .await,
+            Err(ValidateError::ValidationFailed(
+                _,
+                BlockStatus::ContainsLowCostDeploy
+            ))
+        ));
+    }
+    // The selected reader is pinned to persisted state, even when the live runtime has another leaf.
+    assert_eq!(
+        runtime.committed_validation_bounds(&root).await.unwrap(),
+        Some((2, 2))
+    );
+}
+
+#[tokio::test]
+async fn restore_guard_checks_committed_zero_legacy_and_bad_records_before_running() {
+    let runtime = common::build_runtime_manager().await;
+    let dag = build_dag().await;
+    let store = blocks();
+    let approved = rchain_block_storage::approved_store::create(&InMemoryStoreManager::default())
+        .await
+        .unwrap();
+    let mut cases = vec![
+        (Some(params(2, 2)), 2, 2, true),
+        (Some(params(2, 2)), 1, 2, false),
+        (Some(params(2, 2)), 2, 3, false),
+        (Some(params(0, 0)), 0, 0, true),
+        (Some(params(0, 0)), 1, 0, false),
+        (None, 0, 0, false),
+    ];
+    let current = params(2, 2);
+    for fields in 5..=8 {
+        cases.push((Some(current[1..1 + fields * 8].to_vec()), 99, 1, true));
+    }
+    let mut unknown = current.clone();
+    unknown[0] = 2;
+    cases.push((Some(unknown), 2, 2, false));
+    cases.push((Some(current[..current.len() - 8].to_vec()), 2, 2, false));
+    for (bytes, floor, cap, allowed) in cases {
+        let root = params_root(&runtime, bytes).await;
+        put_approved_block(
+            &approved,
+            FinalizedFringe {
+                hashes: vec![BlockHash::new([1; 32])],
+                state_hash: root,
+                ancestry: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let result =
+            check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, floor, cap)
+                .await;
+        assert_eq!(
+            result.is_ok(),
+            allowed,
+            "floor {floor}, cap {cap}, result {result:?}"
+        );
+    }
+    // A genesis fringe names the empty pre-state: the guard must inspect genesis post-state.
+    let root = params_root(&runtime, Some(params(0, 0))).await;
+    let genesis = block(1, 0, root);
+    put_block(&store, genesis.clone()).await.unwrap();
+    insert_genesis(dag.as_ref(), genesis).await.unwrap();
+    put_approved_block(
+        &approved,
+        FinalizedFringe {
+            hashes: vec![],
+            state_hash: empty_state_hash_fixed().into(),
+            ancestry: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 0, 0)
+            .await
+            .is_ok()
+    );
+    assert!(
+        check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 1, 0)
+            .await
+            .is_err()
+    );
+}
