@@ -248,18 +248,30 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
         sender: &PeerNode,
         fringe: &FinalizedFringe,
     ) -> Result<(), String> {
+        // The transport binds this id to the client's certificate (C115). Host and ports are
+        // mutable routing metadata, not authority: a hostname/IP or advertised-port change must
+        // not lock out the same bootstrap key (C334, #386). Reject other keys before touching the
+        // retry target or one-shot latch; only a trusted sender's empty fringe is an announcement.
         let sender_is_bootstrap = self
             .conf
             .bootstrap
             .as_ref()
-            .map(|b| b == sender)
+            .map(|b| b.id == sender.id)
             .unwrap_or(false);
         if !sender_is_bootstrap {
-            self.log.info(
+            let expected = self
+                .conf
+                .bootstrap
+                .as_ref()
+                .map(|b| b.id.to_string())
+                .unwrap_or_else(|| "<not configured>".to_string());
+            self.log.warn(
                 self.log_source,
-                "Fringe message ignored, not received from bootstrap node.",
+                &format!(
+                    "Fringe message ignored: sender {sender} does not match bootstrap node id \
+                     {expected}."
+                ),
             );
-            // An untrusted peer must not set the retry target or consume the one-shot start.
             return Ok(());
         }
 
@@ -272,19 +284,12 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
         // request, so the node consumed the trigger on it, "restored" nothing, and discarded the
         // correct answer in silence (a later fringe from the bootstrap logs nothing at all).
         if fringe.hashes.is_empty() {
-            // The wording distinguishes the two senders on purpose: only the genesis master's empty
-            // fringe is an announcement, and a log that called a stranger's one that would be
-            // inventing an authority for it.
-            let what = if sender_is_bootstrap {
-                "the genesis master's announcement, not an answer to our request"
-            } else {
-                "an empty fringe, which names no block"
-            };
             self.log.info(
                 self.log_source,
                 &format!(
-                    "Ignoring an empty fringe from {sender}: it is {what}. Still waiting for a fringe \
-                     that names a block to sync to."
+                    "Ignoring an empty fringe from {sender}: it is the genesis master's announcement, \
+                     not an answer to our request. Still waiting for a fringe that names a block \
+                     to sync to."
                 ),
             );
             return Ok(());
@@ -906,7 +911,10 @@ mod tests {
             self.lines.lock().expect("log lock").push(msg.to_string());
         }
         fn warn(&self, _source: LogSource, msg: &str) {
-            self.lines.lock().expect("log lock").push(msg.to_string());
+            self.lines
+                .lock()
+                .expect("log lock")
+                .push(format!("[warn] {msg}"));
         }
         fn error(&self, _source: LogSource, msg: &str) {
             self.lines.lock().expect("log lock").push(msg.to_string());
@@ -1079,7 +1087,10 @@ mod tests {
     #[tokio::test]
     async fn a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync() {
         let log = Arc::new(RecordingLog::default());
-        let (mut engine, _bootstrap, _approved) = failing_engine(&log).await;
+        let (mut engine, bootstrap, _approved) = failing_engine(&log).await;
+        let outsider = peer("outsider");
+        assert_eq!(outsider.endpoint, bootstrap.endpoint);
+        assert_ne!(outsider.id, bootstrap.id);
         let fringe = FinalizedFringe {
             hashes: vec![hash(7)],
             state_hash: StateHash::new([7u8; 32]),
@@ -1087,7 +1098,7 @@ mod tests {
         };
 
         engine
-            .handle(&peer("outsider"), &CasperMessage::FinalizedFringe(fringe))
+            .handle(&outsider, &CasperMessage::FinalizedFringe(fringe.clone()))
             .await
             .expect("unexpected peer must be ignored without error");
 
@@ -1096,14 +1107,123 @@ mod tests {
             "an outsider consumed the sync trigger"
         );
         assert!(
-            engine.importer.is_some(),
-            "an outsider started the sync worker"
-        );
-        assert!(
             engine.latest_fringe.lock().await.is_none(),
             "an outsider replaced the trusted retry target"
         );
-        assert!(log.contains("Fringe message ignored"));
+        assert!(!log.contains("Received finalized fringe from bootstrap node"));
+        assert!(log.contains("[warn] Fringe message ignored"));
+
+        // Once a trusted target exists, a matching endpoint with a different key still cannot
+        // replace it. Keep the worker out of this rejection test by staging its consumed latch.
+        engine.start_requester = false;
+        *engine.latest_fringe.lock().await = Some(fringe.clone());
+        let mut forged = fringe.clone();
+        forged.state_hash = StateHash::new([8u8; 32]);
+        engine
+            .handle(&outsider, &CasperMessage::FinalizedFringe(forged))
+            .await
+            .expect("an outsider's update must be ignored");
+        assert_eq!(*engine.latest_fringe.lock().await, Some(fringe));
+        assert!(!log.contains("Received finalized fringe from bootstrap node"));
+    }
+
+    /// A hostname/IP or advertised-port change does not change the TLS-authenticated node key.
+    #[tokio::test]
+    async fn a_bootstrap_endpoint_change_does_not_block_lfs_sync() {
+        let _guard = SYNC_STATE_TESTS.lock().await;
+        for (host, tcp, udp) in [
+            ("127.0.0.1", 40400, 40404),
+            ("bootstrap.example", 50400, 40404),
+            ("bootstrap.example", 40400, 50404),
+            ("127.0.0.1", 50400, 50404),
+        ] {
+            let log = Arc::new(RecordingLog::default());
+            let (mut engine, mut bootstrap, _approved) = failing_engine(&log).await;
+            bootstrap.endpoint.host = "bootstrap.example".to_string();
+            engine.conf.bootstrap = Some(bootstrap.clone());
+            let sender = PeerNode::from(
+                bootstrap.id.clone(),
+                host.to_string(),
+                rchain_shared::refined::Port::new(tcp),
+                rchain_shared::refined::Port::new(udp),
+            );
+            assert_ne!(sender.endpoint, bootstrap.endpoint);
+            let fringe = FinalizedFringe {
+                hashes: vec![hash(7)],
+                state_hash: StateHash::new([7u8; 32]),
+                ancestry: Vec::new(),
+            };
+            assert!(engine.importer.is_some());
+            engine
+                .handle(&sender, &CasperMessage::FinalizedFringe(fringe.clone()))
+                .await
+                .expect("the bootstrap identity remains trusted after an endpoint change");
+            assert!(
+                !engine.start_requester,
+                "the trusted fringe did not start sync"
+            );
+            assert!(engine.importer.is_none(), "the sync worker was not started");
+            assert_eq!(*engine.latest_fringe.lock().await, Some(fringe));
+
+            // Observe the spawned worker, then stop this deliberately failing fixture before the
+            // next case or another test reads the process-wide sync state.
+            wait_for_sync_log(&log, "LFS state sync failed").await;
+            *engine.latest_fringe.lock().await = None;
+            engine.fringe_arrived.notify_one();
+            wait_for_sync_log(&log, "LFS sync task started with no fringe").await;
+        }
+    }
+
+    async fn wait_for_sync_log(log: &RecordingLog, needle: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !log.contains(needle) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the sync fixture did not reach its observable worker state");
+    }
+
+    #[tokio::test]
+    async fn a_fringe_without_a_configured_bootstrap_is_refused() {
+        let log = Arc::new(RecordingLog::default());
+        let (mut engine, sender, _approved) = failing_engine(&log).await;
+        engine.conf.bootstrap = None;
+        engine
+            .handle(
+                &sender,
+                &CasperMessage::FinalizedFringe(FinalizedFringe {
+                    hashes: vec![hash(7)],
+                    state_hash: StateHash::new([7u8; 32]),
+                    ancestry: Vec::new(),
+                }),
+            )
+            .await
+            .expect("a missing trust anchor must not authorize a peer");
+        assert!(engine.start_requester);
+        assert!(engine.latest_fringe.lock().await.is_none());
+        assert!(log.contains("[warn] Fringe message ignored"));
+    }
+
+    #[tokio::test]
+    async fn a_non_bootstrap_empty_fringe_is_not_a_genesis_announcement() {
+        let log = Arc::new(RecordingLog::default());
+        let (mut engine, _bootstrap, _approved) = failing_engine(&log).await;
+        engine
+            .handle(
+                &peer("outsider"),
+                &CasperMessage::FinalizedFringe(FinalizedFringe {
+                    hashes: Vec::new(),
+                    state_hash: StateHash::new([7u8; 32]),
+                    ancestry: Vec::new(),
+                }),
+            )
+            .await
+            .expect("an outsider's empty fringe must be ignored");
+        assert!(engine.start_requester);
+        assert!(engine.latest_fringe.lock().await.is_none());
+        assert!(log.contains("[warn] Fringe message ignored"));
+        assert!(!log.contains("the genesis master's announcement"));
     }
 
     /// The DAG can be restored even if the restart checkpoint fails. Do not report
