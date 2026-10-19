@@ -187,10 +187,31 @@ fn numeric_eq(a: &Par, b: &Par) -> Option<bool> {
     Some(x.cmp_numeric(&y) == CmpOrdering::Equal)
 }
 
+/// The operations `decimal_binop` implements. An enum rather than a string, so the dispatch is
+/// exhaustive: the type-system gate forbids a partial arm (`unreachable!`) in production code.
+#[derive(Clone, Copy)]
+enum DecimalOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl DecimalOp {
+    fn symbol(self) -> &'static str {
+        match self {
+            DecimalOp::Add => "+",
+            DecimalOp::Sub => "-",
+            DecimalOp::Mul => "*",
+            DecimalOp::Div => "/",
+        }
+    }
+}
+
 /// The decimal path for `+ - * /`: mixed `Int`/`BigInt`/`Decimal` operands promote to a decimal
 /// result, and an integral result stays a decimal (`1.5d - 0.5d` is `1d`, not `Int(1)`).
 fn decimal_binop(
-    op: &str,
+    op: DecimalOp,
     v1: &Expr,
     v2: &Expr,
     cost: &CostAccounting,
@@ -198,38 +219,37 @@ fn decimal_binop(
     let (Some(l), Some(r)) = (as_decimal(v1), as_decimal(v2)) else {
         return Err(if as_decimal(v1).is_some() {
             RholangError::OperatorExpectedError {
-                op: op.to_string(),
+                op: op.symbol().to_string(),
                 expected: "Decimal".to_string(),
                 other_type: typ(v2).to_string(),
             }
         } else {
             RholangError::OperatorNotDefined {
-                op: op.to_string(),
+                op: op.symbol().to_string(),
                 other_type: typ(v1).to_string(),
             }
         });
     };
     let result = match op {
-        "+" => {
+        DecimalOp::Add => {
             cost.charge(Costs::decimal_sum(&l, &r))?;
             l.add(&r)
         }
-        "-" => {
+        DecimalOp::Sub => {
             cost.charge(Costs::decimal_subtraction(&l, &r))?;
             l.sub(&r)
         }
-        "*" => {
+        DecimalOp::Mul => {
             cost.charge(Costs::decimal_multiplication(&l, &r))?;
             l.mul(&r)
         }
-        "/" => {
+        DecimalOp::Div => {
             if r.is_zero() {
                 return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
             cost.charge(Costs::decimal_division(&l, &r))?;
             l.div(&r)
         }
-        _ => unreachable!("decimal_binop is called only for + - * /"),
     };
     result
         .map(Expr::GDecimal)
@@ -697,7 +717,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
             if has_decimal(&v1, &v2) {
-                return decimal_binop("*", &v1, &v2, cost);
+                return decimal_binop(DecimalOp::Mul, &v1, &v2, cost);
             }
             int_binop(
                 "*",
@@ -714,7 +734,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
             if has_decimal(&v1, &v2) {
-                return decimal_binop("/", &v1, &v2, cost);
+                return decimal_binop(DecimalOp::Div, &v1, &v2, cost);
             }
             if is_zero(&v2) {
                 return Err(RholangError::ReduceError("/ by zero".to_string()));
@@ -775,7 +795,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
                 return set_add(b, from_expr(v2), cost);
             }
             if has_decimal(&v1, &v2) {
-                return decimal_binop("+", &v1, &v2, cost);
+                return decimal_binop(DecimalOp::Add, &v1, &v2, cost);
             }
             int_binop(
                 "+",
@@ -797,7 +817,7 @@ fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, 
                 return collection_delete(&v1, &from_expr(v2), cost);
             }
             if has_decimal(&v1, &v2) {
-                return decimal_binop("-", &v1, &v2, cost);
+                return decimal_binop(DecimalOp::Sub, &v1, &v2, cost);
             }
             int_binop(
                 "-",
