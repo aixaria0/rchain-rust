@@ -969,13 +969,13 @@ send's field order, the par's own field order, the expression-class order and `G
 polarity. `Rchain/Sort.lean`'s comparators were reordered to the tags and these rows are the
 falsifiers: restore the declaration order and the rows stop `decide`ing. The verdicts are the node's
 own answers, read off `sort_pars` by the Rust consumer's diagnostic *before* the model was changed, so
-the model was aligned to the node rather than to a guess. What could **not** be aligned is recorded in
-`Sort.lean`'s note (the model's algebra is coarser: 24 `Expr` constructors against the node's 33 — rows
-20–22 closed three of the gap's eight, and rows 23–25 pin those three constructors' *placement*, which
-no earlier row could see). -/
+the model was aligned to the node rather than to a guess. The algebra gaps this layer closed are
+recorded in `Sort.lean`'s note: rows 20–22 closed three of the eight missing constructors, rows 23–25
+pin three constructors' *placement*, and rows 43–50 pin the decimal class (`DECIMAL` 14), which makes
+the model 30 classes covering all 34 of the node's variants. -/
 
 /-- The number of cases the `sort` layer carries. -/
-def sortCaseCount : Nat := 42
+def sortCaseCount : Nat := 50
 
 /-- A law-1 case: two terms (as rholang spells them, so the Rust consumer reads the same text) and the
     verdict the model's `cmpPar` must give the pair. -/
@@ -1014,6 +1014,10 @@ def boolExpr (b : Bool) : Par := one (.ground (.bool b))
     protobuf's `g_big_int` is an `Expr` variant and the port's normalizer converts the parse-level
     ground into it (`normalizer.rs:74-77`). -/
 def bigintExpr (n : Int) : Par := one (.ebigint n)
+
+/-- A decimal literal, as a `Par`: `decimalExpr 15 1` is `1.5d`. The payload is the value in
+    units of `10^-38` (`MAX_SCALE`), exactly the node's `Decimal::scaled_value`. -/
+def decimalExpr (c : Int) (s : Nat) : Par := one (.edecimal (c * (10 : Int) ^ (38 - s)))
 
 /-- A method call, as a `Par`. The name is a **code-point list**, the model's convention for strings
     (`charsOf`, as `Ground.str` does) — the node carries a `String` and compares it byte-wise, and
@@ -1225,7 +1229,34 @@ def sortCases : List SortCase :=
       rightPar := methodExpr "bar" (intExpr 1) [intExpr 2], verdict := "gt" },
     { left := "1.foo(2)", right := "1.foo(3)",
       leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
-      rightPar := methodExpr "foo" (intExpr 1) [intExpr 3], verdict := "lt" } ]
+      rightPar := methodExpr "foo" (intExpr 1) [intExpr 3], verdict := "lt" },
+    -- 43-50. The decimal class (`DECIMAL` 14): numeric order across scales, canonical equality,
+    -- and its class position against Int (2), BigInt (13), the collections (6) and the arithmetic
+    -- operators (104). Each verdict was read off the node before the row was written.
+    { left := "@\"c\"!(1.5d)", right := "@\"c\"!(2d)",
+      leftPar := sendPar "c" (decimalExpr 15 1), rightPar := sendPar "c" (decimalExpr 2 0),
+      verdict := "lt" },
+    { left := "@\"c\"!(2d)", right := "@\"c\"!(1.5d)",
+      leftPar := sendPar "c" (decimalExpr 2 0), rightPar := sendPar "c" (decimalExpr 15 1),
+      verdict := "gt" },
+    { left := "@\"c\"!(1.10d)", right := "@\"c\"!(1.1d)",
+      leftPar := sendPar "c" (decimalExpr 11 1), rightPar := sendPar "c" (decimalExpr 11 1),
+      verdict := "eq" },
+    { left := "@\"c\"!(1d)", right := "@\"c\"!(1.5d)",
+      leftPar := sendPar "c" (decimalExpr 1 0), rightPar := sendPar "c" (decimalExpr 15 1),
+      verdict := "lt" },
+    { left := "@\"c\"!(1.5d)", right := "@\"c\"!(100)",
+      leftPar := sendPar "c" (decimalExpr 15 1), rightPar := sendPar "c" (intExpr 100),
+      verdict := "gt" },
+    { left := "@\"c\"!(1.5d)", right := "@\"c\"!(BigInt(100))",
+      leftPar := sendPar "c" (decimalExpr 15 1), rightPar := sendPar "c" (bigintExpr 100),
+      verdict := "gt" },
+    { left := "@\"c\"!(1.5d)", right := "@\"c\"!([1])",
+      leftPar := sendPar "c" (decimalExpr 15 1),
+      rightPar := sendPar "c" (listExpr [intExpr 1]), verdict := "gt" },
+    { left := "@\"c\"!(1.5d)", right := "@\"c\"!(1 + 2)",
+      leftPar := sendPar "c" (decimalExpr 15 1),
+      rightPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 2)), verdict := "lt" } ]
 
 /-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
     reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel
