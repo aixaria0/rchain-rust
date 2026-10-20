@@ -452,10 +452,17 @@
         "#373"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Validator key-ID migration, algorithm table, deploy IDs, PQ address/version and fee transitions not landed."
+        "typed_seed_length_fix": "886869780974ba6824706f99d35b5fb12d1595e6",
+        "current_ci": "https://github.com/rchain-community/rchain-rust/actions/runs/39388911701",
+        "tests": [
+          "oversized_sender_is_a_typed_error_not_a_panic",
+          "oversized_shard_id_is_a_typed_error_not_a_panic",
+          "valid_v1_encoding_bytes_are_unchanged",
+          "the_registry_resolves_the_two_enabled_algorithms_and_refuses_ed25519"
+        ]
       },
-      "missing_proof": "Validator key-ID migration, algorithm table, deploy IDs, PQ address/version and fee transitions not landed.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "missing_proof": "The seed-length panic is already corrected. Current consensus still uses fixed 65-byte validators and the two legacy secp algorithms. Canonical algorithm/key-registry format, governance activation authority, signature pricing and sunset policy need a frozen specification before the full agility implementation and cross-version migration acceptance.",
+      "smallest_corrective_action": "Jim must approve the canonical registry/wire and governance activation policy; implement and test those frozen interfaces without enabling unapproved schemes. Do not duplicate the already-landed seed fix.",
       "required_acceptance_test": "Decide first-release must-land scope; then legacy/PQ signature, address and hash compatibility vectors",
       "decision_owner": "Jim / security",
       "approved_named_release_deferral": false
@@ -497,17 +504,20 @@
     },
     {
       "id": "Batch:faucet-genesis",
-      "classification": "REQUIRES MAINTAINER DECISION",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "exact_file_function_or_invariant": "#247 genesis-wallet/faucet allocation identity and supply",
       "related_issue_pr": [
         "#247",
         "#51"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Choose remint/new genesis or document funded key reuse."
+        "issue": "https://github.com/rchain-community/rchain-rust/issues/247",
+        "source": "docs/src/node/testnet.md funded dave key through /etc/rnode/faucet.env; unfunded deployer is explicitly not the signing key",
+        "outcome_fix": "977056b8c7",
+        "code": "node/src/api/faucet.rs"
       },
-      "missing_proof": "Choose remint/new genesis or document funded key reuse.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "missing_proof": "Current public-network funded-key ownership, finalized balance delta and release-operator attestation still need live verification; the recorded resolution selected an already-funded key, not an additional genesis allocation.",
+      "smallest_corrective_action": "Attach the existing #247 resolution and a finalized drip acceptance witness; have the release owner classify the funded-key configuration route without inventing a new genesis decision.",
       "required_acceptance_test": "Approve exact genesis wallet ownership/allocation; deterministic genesis and conservation test",
       "decision_owner": "Jim / operators",
       "approved_named_release_deferral": false
@@ -565,17 +575,22 @@
     },
     {
       "id": "Audit:law53-estrangement",
-      "classification": "REQUIRES MAINTAINER DECISION",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "exact_file_function_or_invariant": "casper/src/validate.rs failed-justification height maximum; C173",
       "related_issue_pr": [
         "#125",
         "#51"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; C173 remains conditional and cannot be auto-closed."
+        "current_inventory": "spec/INVENTORY.md Law 53 records both C173 inverses as shipped 2026-10-01",
+        "code": [
+          "casper/src/validate.rs::block_number",
+          "casper/src/multi_parent_casper.rs::restore_divergent_justifications"
+        ],
+        "formal_boundary": "Rchain/Casper/Stranding.lean models restoration; does not establish a distributed schedule"
       },
-      "missing_proof": "C173 remains conditional and cannot be auto-closed.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "missing_proof": "The old conditional wording on #51 is stale; attach exact merged ancestry and distributed rejoin/historical validity acceptance before final release disposition.",
+      "smallest_corrective_action": "Reconcile #51 against the current Law 53 inventory and attach existing tests/merge provenance; no duplicate implementation.",
       "required_acceptance_test": "Reconcile current §6 implementation against #51 conditional wording; approve exact disposition",
       "decision_owner": "Jim / consensus",
       "approved_named_release_deferral": false

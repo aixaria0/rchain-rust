@@ -39,11 +39,11 @@ No named-release deferral is approved here. Economic/governance choices remain o
 | Batch:crypto-agility | REQUIRES MAINTAINER DECISION | #274 §14 key IDs, algorithm table, deploy IDs, address version and pricing | Decide first-release must-land scope; then legacy/PQ signature, address and hash compatibility vectors |
 | Batch:governance-schedule | REQUIRES MAINTAINER DECISION | Plan H2 authenticated governance activation and parameter state transition | Approve authority/quorum/activation rules; test unauthorized update and activation/replay boundary |
 | Batch:state-preservation | RELEASE BLOCKER | Plan §14.3 S1/S2 complete native/RSpace state and deploy-history preservation | Operators export authenticated finalized state/history; independently reconcile all entries and replay |
-| Batch:faucet-genesis | REQUIRES MAINTAINER DECISION | #247 genesis-wallet/faucet allocation identity and supply | Approve exact genesis wallet ownership/allocation; deterministic genesis and conservation test |
+| Batch:faucet-genesis | IMPLEMENTED / EVIDENCE INCOMPLETE | #247 genesis-wallet/faucet allocation identity and supply | Approve exact genesis wallet ownership/allocation; deterministic genesis and conservation test |
 | Batch:attestation-format | IMPLEMENTED / EVIDENCE INCOMPLETE | Equivocation evidence and slash signature/header compatibility | Existing signature/slash fixtures and versioned historical evidence replay |
 | Audit:section6-categoryA | IMPLEMENTED / EVIDENCE INCOMPLETE | spec/audit/section6-gap-inventory.json exact reverse coverage | check-section6-inventory.py plus independent reviewer sign-off on every A candidate |
 | Audit:law52-partition | IMPLEMENTED / EVIDENCE INCOMPLETE | block-storage/src/dag/finalizer.rs live partition vs quorum; C174/C208 | Existing containment/minimum-message falsifiers plus distributed partition/heal finality witness |
-| Audit:law53-estrangement | REQUIRES MAINTAINER DECISION | casper/src/validate.rs failed-justification height maximum; C173 | Reconcile current §6 implementation against #51 conditional wording; approve exact disposition |
+| Audit:law53-estrangement | IMPLEMENTED / EVIDENCE INCOMPLETE | casper/src/validate.rs failed-justification height maximum; C173 | Reconcile current §6 implementation against #51 conditional wording; approve exact disposition |
 | Audit:active-set-draw | IMPLEMENTED / EVIDENCE INCOMPLETE | PoS select_active stake-weighted draw without replacement, epoch-ahead seed | Existing active-set determinism vectors, epoch transition replay and validator rotation acceptance |
 | Audit:parent-limit | IMPLEMENTED / EVIDENCE INCOMPLETE | casper/src/validate.rs justification_count; C191; #373 committed bound | Committed bound with opposing local config and over-limit refusal fixture |
 | Audit:sidecar-merge | IMPLEMENTED / EVIDENCE INCOMPLETE | casper/src/merging.rs per-accepted-deploy accounting/native conflict relation; C207 | Existing sibling native-write/cost composition regressions and historical merge replay |
@@ -61,3 +61,9 @@ The final command must still return exit 3. Independent §6 classification, arch
 ## Highest-value implementation follow-up
 
 #402 addresses missing initial LFS reply delivery without changing CBC finality. #399 carries the combined code for separate Rust, formal and real-node acceptance. The results of those campaigns must be attached before any completed-acceptance claim.
+
+## Source rechecks
+
+#274 still lists a seed-length panic, but source commit 886869780974ba6824706f99d35b5fb12d1595e6 already returns a typed error. Existing oversize/V1-byte and legacy-signature regressions pass in CI 39388911701; this is partial crypto-agility evidence, not PQ support. Current Law 53 records both C173 inverses as shipped. #247 documents an already-funded faucet key and outcome reporting; it is not an unselected new allocation. These corrections avoid reopening completed code.
+
+The reverse census is pinned to upstream dev, before unmerged #402 C335 adds its node-local startup row. A future merged register must be re-inventoried, not silently treated as this snapshot.
