@@ -16,6 +16,14 @@ name: Build rnode artifact
 
 on:
   workflow_dispatch:
+    inputs:
+      output:
+        description: "Deliver either the static musl binary or a tested Docker image archive"
+        type: choice
+        options:
+          - musl
+          - docker
+        default: musl
 
 permissions:
   contents: read
@@ -27,6 +35,7 @@ env:
 
 jobs:
   build:
+    if: ${{ github.event.inputs.output != 'docker' }}
     name: Build release rnode (musl static)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -74,3 +83,93 @@ jobs:
             target/x86_64-unknown-linux-musl/release/rnode
             target/x86_64-unknown-linux-musl/release/rnode.sha256
           if-no-files-found: error
+
+  docker-image:
+    if: ${{ github.event.inputs.output == 'docker' }}
+    name: Build, smoke-test and export Docker rnode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the release Docker image
+        run: |
+          set -euo pipefail
+          test -z "${RNODE_BUILD_FEATURES:-}${RNODE_BUILD_RUSTFLAGS:-}${RNODE_BUILD_MALLOC_CONF:-}"
+          tools/devnet.sh build
+          docker image inspect rnode:local --format 'Built {{.Id}} ({{.Os}}/{{.Architecture}})'
+
+      - name: Verify binary, runtime user, architecture and CLI
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect rnode:local --format '{{.Os}}/{{.Architecture}}')" = 'linux/amd64'
+          docker run --rm --network none --entrypoint /bin/sh rnode:local -ec 'test "$(id -u)" -ne 0 && test -x /usr/local/bin/rnode'
+          docker run --rm --network none rnode:local --version | tee rnode-version.txt
+          test -s rnode-version.txt
+
+      - name: Smoke-test a real single-validator devnet
+        run: |
+          set -euo pipefail
+          trap 'tools/devnet.sh down -v || true' EXIT
+          tools/devnet.sh up --validators 1 --fresh --no-autopropose --epoch-length 10
+          curl -fsS --retry 5 --retry-delay 2 http://127.0.0.1:40403/api/v1/status > rnode-status.json
+          python3 - <<'PY'
+          import json
+          with open("rnode-status.json", encoding="utf-8") as f:
+              status = json.load(f)
+          assert int(status.get("latestBlockNumber", 0)) >= 1, status
+          print("RNODE_DOCKER_RUNTIME_SMOKE_PASS", status["latestBlockNumber"])
+          PY
+
+      - name: Export image, verify checksum and reload
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          short_sha="${GITHUB_SHA:0:12}"
+          image_tag="rnode:sha-${short_sha}"
+          original_id="$(docker image inspect rnode:local --format '{{.Id}}')"
+          docker tag rnode:local "$image_tag"
+          docker save "$image_tag" | gzip -1 > dist/rnode-linux-amd64.tar.gz
+          ( cd dist && sha256sum rnode-linux-amd64.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS )
+          docker image rm "$image_tag"
+          gzip -dc dist/rnode-linux-amd64.tar.gz | docker load
+          test "$(docker image inspect "$image_tag" --format '{{.Id}}')" = "$original_id"
+          docker run --rm --network none "$image_tag" --version
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          d = json.loads(subprocess.check_output(["docker", "image", "inspect", "rnode:local"]))[0]
+          sha = os.environ["GITHUB_SHA"]
+          manifest = {
+              "source_sha": sha,
+              "tag": "rnode:sha-" + sha[:12],
+              "image_id": d["Id"],
+              "os": d["Os"],
+              "architecture": d["Architecture"],
+              "runtime_user": d["Config"]["User"],
+              "entrypoint": d["Config"]["Entrypoint"],
+              "healthcheck": d["Config"].get("Healthcheck"),
+              "validated": [
+                  "release Docker build with locked dependencies",
+                  "non-root CLI version",
+                  "single-validator devnet HTTP readiness",
+                  "SHA-256 archive verification",
+                  "Docker archive reload and image ID equality"
+              ],
+              "run": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
+          }
+          Path("dist/image-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print("RNODE_DOCKER_IMAGE_ARCHIVE_PASS", manifest["tag"], manifest["image_id"])
+          PY
+          cp rnode-version.txt rnode-status.json dist/
+          ls -lh dist/
+
+      - name: Preserve portable Docker image and verification manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rnode-docker-linux-amd64-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
