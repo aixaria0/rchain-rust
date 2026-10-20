@@ -144,6 +144,18 @@ jobs:
         # is also a check: it refuses a check-off that disagrees with the authored TSV.
         run: tools/audit-status.sh --quiet
 
+      - name: Decimal release evidence gate (synthetic refusal controls)
+        # A successful input-consistency check still returns exit 3:
+        # provenance and archive completeness require human review.
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_decimal_release_preflight.py -v
+          set +e
+          python3 tools/decimal_release_preflight.py /tmp/pr391-no-release-evidence-present.json
+          rc=$?
+          set -e
+          test "$rc" -eq 2
+
       - name: Type-system gate
         # The four **hard** classes only -- production `unwrap()`/`panic!`/`unsafe`, a silent fallible
         # conversion, a refinement surrendering its invariant. This is the one gate here that catches a
