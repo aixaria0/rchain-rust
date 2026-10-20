@@ -339,10 +339,9 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             );
         }
         // With no anchor this *is* the ordinary request; with one, the same request names the root.
-        comm_util
-            .request_finalized_fringe(trim_state, true, anchor)
-            .await
-            .map_err(|e| e.to_string())?;
+        let received = { engine.lock().await.initial_fringe_received_handle() };
+        let request = comm_util.request_initial_fringe(trim_state, anchor, received);
+        tokio::pin!(request);
 
         // Handle packets concurrently with the syncing-finished signal, and with the **terminal**
         // one (AUDIT C181, #125). `finished` is the successful exit — the state was restored, go on
@@ -364,10 +363,17 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
                 }
             }
         };
-        tokio::select! {
-            _ = handle_loop => {}
-            _ = finished.notified() => {}
-            _ = terminal.notified() => {
+        tokio::pin!(handle_loop);
+        let mut awaiting_initial_fringe = true;
+        loop {
+            tokio::select! {
+                _ = &mut handle_loop => break,
+                _ = finished.notified() => break,
+                result = &mut request, if awaiting_initial_fringe => {
+                    result?;
+                    awaiting_initial_fringe = false;
+                }
+                _ = terminal.notified() => {
                 // **The reason travels with the sentence** (C271/C268). "The retries are spent" is
                 // only half the fact, and without *why* the operator's one error line said the node
                 // was giving up and nothing about what it could not restore. The failure is read from
@@ -387,7 +393,8 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
                              chain it never synced"
                         .to_string(),
                 };
-                return Err(message);
+                    return Err(message);
+                }
             }
         }
     } else {
