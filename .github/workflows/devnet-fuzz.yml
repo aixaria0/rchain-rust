@@ -37,12 +37,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: devnet-fuzz
+  group: devnet-fuzz-${{ github.ref }}-${{ github.event.inputs.mode }}
   cancel-in-progress: false
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -269,3 +269,133 @@ jobs:
       - name: Teardown isolated devnet
         if: always()
         run: tools/devnet.sh down -v || true
+
+  final-gap-regressions:
+    if: ${{ github.event.inputs.mode == 'final-gap' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - name: Existing release and closeout controls
+        run: |
+          python3 -m unittest discover -s tests -p test_decimal_release_preflight.py -v
+          python3 -m unittest discover -s tests -p test_pr373_release_gate.py -v
+          python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
+          python3 tests/consensus-drill-regression.py
+      - name: Integrated Rust proof obligations
+        run: |
+          rustup component add --toolchain 1.95.0 rustfmt
+          cargo fmt --all --check
+          cargo test --locked -p rchain-models block_version
+          cargo test --locked -p rchain-models --test decimal_bridge
+          cargo test --locked -p rchain-casper --lib initial_fringe
+          cargo test --locked -p rchain-casper --lib engine::node_syncing::tests
+          cargo test --locked -p rchain-casper --lib round_escape
+          cargo test --locked -p rchain-casper --lib monotonic
+          cargo test --locked -p rchain-casper --test committed_bounds
+          cargo test --locked -p rchain-rholang --lib params_
+          cargo test --locked -p rchain-rholang --lib an_unknown_params_format_is_refused
+          cargo test --locked -p rchain-rholang --lib funding_the_pot
+          cargo test --locked -p rchain-rholang --lib pot_funding_overflow
+      - name: Reintroduced send-only fault must fail the reply regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/final-gap
+          cp casper/src/protocol/comm_util.rs /tmp/fringe-comm-original.rs
+          trap 'cp /tmp/fringe-comm-original.rs casper/src/protocol/comm_util.rs' EXIT
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("casper/src/protocol/comm_util.rs")
+          s=p.read_text()
+          old="        for attempt in 1..=attempts {"
+          assert s.count(old)==1
+          s=s.replace(old,old+"\n            if self.transport.send(bootstrap, msg.clone()).await.is_ok() { return Ok(()); }")
+          p.write_text(s)
+          PY
+          if cargo test --locked -p rchain-casper --lib initial_fringe_missing_reply_is_terminal_even_when_all_sends_succeed > target/final-gap/send-only-negative-control.log 2>&1; then
+            echo "Regression failed to detect the reintroduced send-only fault"
+            exit 1
+          fi
+          grep -q 'no reply is not success' target/final-gap/send-only-negative-control.log
+          echo "REINTRODUCED_SEND_ONLY_FAULT_DETECTED"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: final-gap-regressions-${{ github.run_id }}
+          path: target/final-gap/
+          if-no-files-found: warn
+
+  final-gap-real-nodes:
+    if: ${{ github.event.inputs.mode == 'final-gap' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      LFS_INITIAL_REPLY_LOSS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build exact integrated rnode once
+        run: tools/devnet.sh build
+      - name: Independent bounded real-node campaigns
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p target/final-gap
+          failed=0
+          tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose > target/final-gap/lfs-start.log 2>&1
+          start_code=$?
+          if [ "$start_code" -eq 0 ]; then
+            python3 tests/lfs-anchored-checkpoint.py > target/final-gap/lfs-campaign.log 2>&1
+            code=$?
+          else
+            code=$start_code
+          fi
+          echo "lfs=$code" | tee -a target/final-gap/exit-codes.txt
+          test "$code" -eq 0 || failed=1
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs "$node" > "target/final-gap/lfs-$node.log" 2>&1 || true
+          done
+          tools/devnet.sh down -v || true
+          for n in 4 8; do
+            export DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance
+            tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/final-gap/n$n-start.log" 2>&1
+            start_code=$?
+            if [ "$start_code" -eq 0 ]; then
+              python3 tools/consensus-acceptance-drill.py --validators "$n" --window 180 --out "target/final-gap/n$n" > "target/final-gap/n$n-campaign.log" 2>&1
+              code=$?
+            else
+              code=$start_code
+            fi
+            echo "n$n=$code" | tee -a target/final-gap/exit-codes.txt
+            test "$code" -eq 0 || failed=1
+            for ((i=0;i<n;i++)); do
+              node="acceptance-validator-$i"; [ "$i" -ne 0 ] || node=acceptance-bootstrap
+              docker logs "$node" > "target/final-gap/n$n-$node.log" 2>&1 || true
+              docker inspect "$node" > "target/final-gap/n$n-$node-inspect.json" 2>/dev/null || true
+            done
+            tools/devnet.sh down -v || true
+          done
+          exit "$failed"
+      - name: Preserve all independent outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: final-gap-real-nodes-${{ github.run_id }}
+          path: |
+            target/final-gap/
+            target/lfs-anchor-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Teardown only disposable campaign networks
+        if: always()
+        run: |
+          tools/devnet.sh down -v || true
+          DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true

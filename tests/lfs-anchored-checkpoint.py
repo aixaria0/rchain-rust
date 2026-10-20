@@ -154,11 +154,64 @@ def wait_for_local_finality(result, port=41403, deadline=75):
     return last
 
 
+
+def reset_with_reply_loss(bootstrap_ip, node_id, genesis):
+    """Drop bootstrap replies while the joiner request is acknowledged."""
+    if os.environ.get("LFS_INITIAL_REPLY_LOSS") != "1":
+        adversarial.reset(bootstrap_ip, key=node_id)
+        return
+    rule = ["-s", bootstrap_ip, "-p", "tcp", "--dport", "40400",
+            "-m", "comment", "--comment", "lfs-initial-reply-control", "-j", "DROP"]
+    def firewall(*args):
+        return subprocess.run(["sudo", "iptables", *args], check=True, text=True,
+                              capture_output=True, timeout=15).stdout
+    firewall("-I", "DOCKER-USER", "1", *rule)
+    started = time.monotonic()
+    try:
+        adversarial.reset(bootstrap_ip, key=node_id)
+        limit = time.monotonic() + 45
+        while time.monotonic() < limit:
+            observed = adversarial.run("docker", "logs", positive.JOINER, timeout=15)
+            requests = [line for line in observed.splitlines()
+                        if "LFS fringe request " in line and "sent; awaiting admitted reply" in line]
+            if "LFS state is successfully restored." in observed:
+                raise AssertionError("reply-loss control failed: restored through blocked path")
+            if len(requests) >= 2:
+                break
+            time.sleep(1)
+        else:
+            raise AssertionError("no second acknowledged solicitation while reply path blocked")
+        counters = firewall("-L", "DOCKER-USER", "-n", "-v", "-x")
+        save("initial_reply_loss_control.json", {
+            "source_sha": subprocess.check_output(["git","rev-parse","HEAD"], text=True).strip(),
+            "bootstrap_ip": bootstrap_ip, "acknowledged_request_logs": requests,
+            "blocked_seconds": time.monotonic() - started, "iptables_counters": counters,
+            "restored_while_blocked": False,
+        })
+        print("LFS_INITIAL_REPLY_LOSS_CONTROL " + json.dumps({"acknowledged_requests":len(requests),
+              "blocked_seconds":round(time.monotonic()-started,2)}), flush=True)
+    finally:
+        firewall("-D", "DOCKER-USER", *rule)
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         raise SystemExit("disposable hosted CI only")
     if os.environ.get("DEVNET_PREFIX", "devnet") != "devnet":
         raise SystemExit("unexpected devnet prefix")
+    genesis_observations = []
+    for i in range(3):
+        node = positive.BOOTSTRAP if i == 0 else f"devnet-validator-{i}"
+        genesis_observations.append({
+            "node": node, "genesis": positive.genesis_hash(40403+i*1000),
+            "status": positive.status(40403+i*1000),
+            "binary_sha256": positive.cmd("docker","exec",node,"sha256sum","/usr/local/bin/rnode").split()[0],
+        })
+    assert len({x["genesis"] for x in genesis_observations}) == 1
+    assert len({x["binary_sha256"] for x in genesis_observations}) == 1
+    assert all(os.environ["GITHUB_SHA"] in x["status"].get("version",{}).get("node","")
+               for x in genesis_observations), "node source provenance differs"
+    save("integrated_genesis_and_binary.json", genesis_observations)
     genesis = positive.genesis_hash(40403)
     if not genesis:
         raise AssertionError("missing genesis before controlled proposal")
@@ -195,7 +248,7 @@ def main():
     node_id = adversarial.cert_id(positive.BOOTSTRAP)
     os.environ["DEVNET_RESET_SYNC_ANCHOR"] = baseline["anchor"]["blockHash"]
     os.environ["DEVNET_RESET_PASSIVE"] = "1"
-    adversarial.reset(bootstrap_ip, key=node_id)
+    reset_with_reply_loss(bootstrap_ip, node_id, genesis)
     args = json.loads(positive.cmd(
         "docker", "inspect", "-f", "{{json .Config.Cmd}}", positive.JOINER))
     if "--sync-anchor" not in args or args[args.index("--sync-anchor") + 1] != baseline["anchor"]["blockHash"]:
