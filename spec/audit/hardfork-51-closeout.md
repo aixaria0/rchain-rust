@@ -53,3 +53,7 @@ The tests include deliberate attempts to drop an unresolved item, invent a defer
 ## Requested decision
 
 @jimscarver — please identify which of the remaining class-2 shape changes **must land in the first release**, and assign named target releases and decision owners to items deliberately deferred. Then request an independently reviewed §6 reverse inventory and release provenance packet. Only after those conditions are met should a closeout reviewer change the ledger's status and close #51.
+
+## Complete source-row inventory added
+
+The companion final-gap-matrix.json enumerates every 39 tracker obligation with its missing proof, concrete next action and required acceptance. section6-gap-inventory.json covers all 85 §6 rows and conservatively flags 41 category-A candidates. Eight mutation controls detect omitted/changed rows, source drift, fabricated execution and self-awarded sign-off. This closes the enumeration gap only; independent classification and historical acceptance remain open. No release deferral is approved.

@@ -152,6 +152,8 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
           python3 tools/check-hardfork-51-closeout.py
+          python3 -m unittest discover -s tests -p test_section6_inventory.py -v
+          python3 tools/check-section6-inventory.py
           set +e
           python3 tools/check-hardfork-51-closeout.py --assert-closeable
           rc=$?

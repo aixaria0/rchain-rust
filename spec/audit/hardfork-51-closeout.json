@@ -4,7 +4,7 @@
   "source_dev_sha": "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b",
   "observed_date": "2026-10-20",
   "closure_requested": false,
-  "policy": "Every §A/§B and every §6 consensus-changing row must be merged on dev or deferred to an explicitly named release with an attributable maintainer decision. A green test run alone is not closure.",
+  "policy": "Every \u00a7A/\u00a7B and every \u00a76 consensus-changing row must be merged on dev or deferred to an explicitly named release with an attributable maintainer decision. A green test run alone is not closure.",
   "items": [
     {
       "id": "A:block-timestamp",
@@ -160,7 +160,7 @@
     },
     {
       "id": "A:phlo-exchange",
-      "title": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits",
+      "title": "RCHIP #7/#8 phlogiston\u2194REV exchange and per-block limits",
       "status": "open",
       "decision_owner": "Jim / governance",
       "references": [
@@ -342,14 +342,14 @@
     },
     {
       "id": "Audit:section6-categoryA",
-      "title": "Exhaustive §6 category-A reverse inventory",
+      "title": "Exhaustive \u00a76 category-A reverse inventory",
       "status": "open",
       "decision_owner": "Jim / auditors",
       "references": [
         "spec/audit/passes.md",
         "#51"
       ],
-      "blocker": "Register rows and late audit deviations have not all been independently linked to a merged commit or signed named-release deferral."
+      "blocker": "All 85 current \u00a76 rows are now enumerated with exact source hashes and 41 conservative category-A candidates. Independent category/release sign-off and construct-specific replay evidence remain absent."
     },
     {
       "id": "Audit:law52-partition",
@@ -404,7 +404,7 @@
         "#51",
         "spec/audit/passes.md"
       ],
-      "blocker": "Reported landed code; still needs complete §6 release classification and historical acceptance."
+      "blocker": "Reported landed code; still needs complete \u00a76 release classification and historical acceptance."
     },
     {
       "id": "Release:attachment-upgrade",
