@@ -426,6 +426,62 @@ def run_gateway(args, rng):
     print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
 
 
+def run_acceptance_campaign(trace=False):
+    """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise SystemExit("acceptance mode requires an isolated GitHub Actions runner")
+    # The existing workflow started this default devnet in this same disposable
+    # job. Stop it to free its ports; no public node or user data is reachable.
+    subprocess.run(["tools/devnet.sh", "down"], check=True)
+    env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
+           "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
+    if trace:
+        # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
+        # Full inbound traces distinguish propagation from validation rejection.
+        env["DEVNET_LOG_LEVEL"] = "debug"
+    outcomes = []
+    for validators in ((5, 8) if trace else (4, 8)):
+        out = Path("target/consensus-acceptance") / f"n{validators}"
+        out.mkdir(parents=True, exist_ok=True)
+        code = 1
+        try:
+            subprocess.run(["tools/devnet.sh", "up", "--validators", str(validators),
+                            "--fresh", "--no-autopropose", "--epoch-length", "10",
+                            "--effect-scheduler", env.get("EFFECT_SCHEDULER", "dfs")],
+                           env=env, check=True)
+            code = subprocess.run([sys.executable, "tools/consensus-acceptance-drill.py",
+                                   "--validators", str(validators), "--out", str(out)], env=env).returncode
+        except (OSError, subprocess.CalledProcessError) as error:
+            (out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
+        finally:
+            for i in range(validators):
+                node = "acceptance-bootstrap" if i == 0 else f"acceptance-validator-{i}"
+                print(f"=== n={validators} node={i} resource status ===", flush=True)
+                subprocess.run(["docker", "inspect", "--format", "{{json .State}}", node], check=False)
+                print(f"=== n={validators} node={i} log tail ===", flush=True)
+                subprocess.run(["docker", "logs", "--tail", "80", node], check=False)
+            # The existing workflow has no upload step. Put machine-readable
+            # observations in its retained log; refuse to silently truncate.
+            for path in (out / "result.json", out / "observations.jsonl"):
+                if path.exists():
+                    print(f"=== BEGIN {path} ===", flush=True)
+                    if env.get("ACCEPTANCE_ARTIFACTS") == "1" and path.name == "observations.jsonl":
+                        data = path.read_bytes()
+                        print("EVIDENCE_ARTIFACT " + json.dumps({
+                            "path": str(path), "bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest()}), flush=True)
+                    else:
+                        print(path.read_text(), flush=True)
+                    print(f"=== END {path} ===", flush=True)
+            teardown = subprocess.run(["tools/devnet.sh", "down", "-v"], env=env, check=False)
+            if teardown.returncode:
+                print(f"TEARDOWN_WARNING n={validators} exit={teardown.returncode}", flush=True)
+        outcomes.append({"validators": validators, "exit_code": code})
+    print("ACCEPTANCE_OUTCOMES " + json.dumps(outcomes), flush=True)
+    if any(x["exit_code"] for x in outcomes):
+        raise SystemExit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators", type=int, default=3, help="bonded validators (default 3)")
