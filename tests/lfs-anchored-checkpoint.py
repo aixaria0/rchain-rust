@@ -143,7 +143,8 @@ def wait_for_local_finality(result, port=41403, deadline=75):
                                    capture_output=True, timeout=35)
             proposals.append({
                 "attempt": len(proposals) + 1, "code": trial.returncode,
-                "tail": (trial.stdout + trial.stderr)[-300:],
+                "reply": trial.stdout.strip()[-600:],
+                "stderr_head": trial.stderr.strip()[:300] if trial.returncode else "",
                 "source_lfb_before": last["source_lfb"],
                 "joiner_lfb_before": last["lfb"],
             })
