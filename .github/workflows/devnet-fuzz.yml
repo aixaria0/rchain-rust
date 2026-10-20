@@ -290,6 +290,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_pr373_release_gate.py -v
           python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
           python3 tests/consensus-drill-regression.py
+          python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
       - name: Integrated Rust proof obligations
         run: |
           rustup component add --toolchain 1.95.0 rustfmt
@@ -300,6 +301,9 @@ jobs:
           cargo test --locked -p rchain-casper --lib engine::node_syncing::tests
           cargo test --locked -p rchain-casper --lib round_escape
           cargo test --locked -p rchain-casper --lib monotonic
+          cargo test --locked -p rchain-casper --lib recent_user_work_tests
+          cargo test --locked -p rchain-casper --lib quiet_chain_tests
+          cargo test --locked -p rchain-casper --lib attestation_suppression_tests
           cargo test --locked -p rchain-casper --test committed_bounds
           cargo test --locked -p rchain-rholang --lib params_
           cargo test --locked -p rchain-rholang --lib an_unknown_params_format_is_refused
@@ -327,6 +331,26 @@ jobs:
           fi
           grep -q 'no reply is not success' target/final-gap/send-only-negative-control.log
           echo "REINTRODUCED_SEND_ONLY_FAULT_DETECTED"
+      - name: Old work-only licence must fail the fresh-user-work regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/final-gap
+          cp casper/src/blocks/proposer/proposer.rs /tmp/recent-work-proposer-original.rs
+          trap 'cp /tmp/recent-work-proposer-original.rs casper/src/blocks/proposer/proposer.rs' EXIT
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("casper/src/blocks/proposer/proposer.rs");s=p.read_text()
+          old="(nothing, !nothing && (prompt || recent_user_work))"
+          assert s.count(old)==1
+          p.write_text(s.replace(old,"(nothing, prompt)"))
+          PY
+          if cargo test --locked -p rchain-casper --lib recent_user_work_tests::recent_user_work_is_not_silenced_by_an_old_unfinalized_block > target/final-gap/old-work-licence-negative-control.log 2>&1; then
+            echo "Regression failed to detect the old work-only licence"
+            exit 1
+          fi
+          grep -q 'test result: FAILED' target/final-gap/old-work-licence-negative-control.log
+          echo "OLD_WORK_ONLY_LICENCE_DETECTED"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -343,6 +367,7 @@ jobs:
       DEVNET_NODE_MEMORY: "2g"
       DEVNET_THREAD_POOL_SIZE: "2"
       LFS_INITIAL_REPLY_LOSS: "1"
+      ACCEPTANCE_ARTIFACTS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Build exact integrated rnode once
