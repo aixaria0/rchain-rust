@@ -1174,8 +1174,28 @@ where
         .iter()
         .filter_map(|h| dag_repr.dag_message_state.msg_map.get(h).map(|m| m.height))
         .max();
+    let work_floor = work_age_floor(oldest_unfinalized, fringe_top);
+    let (nothing_to_finalize, old_work_is_prompt) = attestation_inputs(work_floor, tip);
+    // Fresh user work must not inherit an unrelated old work item's expired licence.
+    // Scan only the recent height window, and only when the old licence has expired.
+    // System deploys do not renew this licence: periodic CloseBlock work must not
+    // turn a stalled minority's attestations into an unbounded self-triggering loop.
+    let mut newest_user_work = None;
+    if !nothing_to_finalize && !old_work_is_prompt {
+        for (height, hash) in conflict_set.iter().rev() {
+            if liveness::heights_behind(tip, *height) > ATTESTATION_HORIZON {
+                break;
+            }
+            if let Some(block) = get_block(block_store, hash).await? {
+                if !block.state.deploys.is_empty() {
+                    newest_user_work = Some(*height);
+                    break;
+                }
+            }
+        }
+    }
     let (nothing_to_finalize, new_state_transition) =
-        attestation_inputs(work_age_floor(oldest_unfinalized, fringe_top), tip);
+        attestation_inputs_with_recent_user_work(work_floor, newest_user_work, tip);
     // The live weight set: the one liveness rule, shared with the finalizer through `liveness` (#70
     // increment 2). It decides who counts as *moving*; the quorum itself stays measured against the
     // whole bonded map below, so a minority cannot attest its way to a supermajority.
@@ -2226,6 +2246,21 @@ fn attestation_inputs(oldest_unfinalized: Option<BlockHeight>, tip: BlockHeight)
             liveness::heights_behind(tip, h) <= ATTESTATION_HORIZON,
         ),
     }
+}
+
+/// Recent user work gets the same finite attestation horizon as the original work.
+/// The oldest unfinished block still determines whether work remains. A newer
+/// system deploy is not an input; without new user work or fringe progress both
+/// licences expire. This is a local proposal policy, not a finality/quorum rule.
+fn attestation_inputs_with_recent_user_work(
+    oldest_work: Option<BlockHeight>,
+    newest_user_work: Option<BlockHeight>,
+    tip: BlockHeight,
+) -> (bool, bool) {
+    let (nothing, prompt) = attestation_inputs(oldest_work, tip);
+    let recent_user_work =
+        newest_user_work.is_some_and(|h| liveness::heights_behind(tip, h) <= ATTESTATION_HORIZON);
+    (nothing, !nothing && (prompt || recent_user_work))
 }
 
 /// **The height the unfinalised work's age is counted from**: the work's own height, or the fringe's when
@@ -3365,6 +3400,7 @@ mod quiet_chain_tests {
         let mut next_id = 1u64;
         // Genesis carries the genesis deploys, so it is deploy-bearing to the guard, as on a node.
         let mut with_deploy: BTreeSet<u64> = BTreeSet::from([0]);
+        let mut with_user_deploy: BTreeSet<u64> = BTreeSet::new();
         let mut deploy_blocks: Vec<u64> = Vec::new();
         let mut answered: BTreeMap<(usize, u8), i64> = BTreeMap::new();
         let mut pool = vec![0usize; n_max];
@@ -3455,7 +3491,15 @@ mod quiet_chain_tests {
                         nothing_to_finalize,
                         parents.iter().any(|p| with_deploy.contains(&p.id)),
                     ),
-                    View::SeenWork | View::Seen => attestation_inputs(oldest_pending, work_tip),
+                    View::SeenWork | View::Seen => attestation_inputs_with_recent_user_work(
+                        oldest_pending,
+                        conflict
+                            .iter()
+                            .filter(|h| with_user_deploy.contains(h))
+                            .map(|h| st.msg_map[h].height)
+                            .max(),
+                        work_tip,
+                    ),
                 };
                 let live = liveness::live_weight_set(
                     &bonds,
@@ -3505,6 +3549,7 @@ mod quiet_chain_tests {
                     with_deploy.insert(id);
                 }
                 if has_deploy {
+                    with_user_deploy.insert(id);
                     deploy_blocks.extend(std::iter::repeat_n(id, pool[v]));
                     pool[v] = 0;
                 }
@@ -3817,6 +3862,69 @@ mod quiet_chain_tests {
                 for view in [View::Round, View::SeenWork, View::Seen] {
                     let o = run(&cfg(&stakes, genesis_sender, view), &script);
                     eprintln!("{name:<36} genesis by {genesis_sender:<3} {view:?}: {o:?}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod recent_user_work_tests {
+    use super::*;
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).unwrap()
+    }
+
+    #[test]
+    fn recent_user_work_is_not_silenced_by_an_old_unfinalized_block() {
+        assert_eq!(attestation_inputs(Some(h(27)), h(76)), (false, false));
+        let (nothing, prompt) =
+            attestation_inputs_with_recent_user_work(Some(h(27)), Some(h(75)), h(76));
+        assert_eq!((nothing, prompt), (false, true));
+        assert!(!attestation_suppressed(nothing, prompt, false, true, true));
+        assert!(
+            attestation_suppressed(nothing, prompt, false, false, true),
+            "minority pacing still applies"
+        );
+    }
+
+    #[test]
+    fn recent_user_licence_expires_at_the_existing_horizon() {
+        for age in [0, ATTESTATION_HORIZON, ATTESTATION_HORIZON + 1] {
+            let (nothing, prompt) =
+                attestation_inputs_with_recent_user_work(Some(h(1)), Some(h(100)), h(100 + age));
+            assert!(!nothing);
+            assert_eq!(prompt, age <= ATTESTATION_HORIZON);
+        }
+    }
+
+    #[test]
+    fn system_work_or_no_user_work_cannot_renew_an_expired_licence() {
+        assert_eq!(
+            attestation_inputs_with_recent_user_work(Some(h(1)), None, h(100)),
+            (false, false)
+        );
+        assert!(attestation_suppressed(false, false, false, true, true));
+        assert_eq!(
+            attestation_inputs_with_recent_user_work(None, Some(h(100)), h(100)),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn without_new_work_both_licences_end_on_a_fixed_height_bound() {
+        for oldest in [1, 20, 50] {
+            for newest in [oldest, oldest + 1, oldest + 20] {
+                let end = newest + ATTESTATION_HORIZON + 1;
+                for tip in [end, end + 1, end + 100] {
+                    assert_eq!(
+                        attestation_inputs_with_recent_user_work(
+                            Some(h(oldest)),
+                            Some(h(newest)),
+                            h(tip)
+                        ),
+                        (false, false)
+                    );
                 }
             }
         }
