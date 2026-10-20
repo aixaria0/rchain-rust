@@ -7219,8 +7219,10 @@ own block never finalised — so the witness the issue names was first establish
 
 ## 64. A deploy the round gate refused on a quiet net waited for someone else to speak (C210, #213)
 
-**Mechanism.** The round gate's escape has two triggers — `LIVENESS_WINDOW` attempts and the wall-clock
-`ROUND_STALL_ESCAPE` — and both are evaluated only when something asks the node to propose. With
+**Mechanism at the time of C210.** The round gate's escape then had two triggers —
+`LIVENESS_WINDOW` attempts and the wall-clock `ROUND_STALL_ESCAPE` — both evaluated only when
+something asked the node to propose. #379 later removed the attempt-count escape; the current
+production predicate requires elapsed stall time. With
 `--no-autopropose` the askers are a deploy and a remote block. A deploy that arrives while this validator
 has already spoken this round is refused (`NotEnoughNewBlocks`), sits in the pool, and stays there until
 the next deploy or remote block: on a quiet net, indefinitely. The §48 stale-snapshot collision returns the
@@ -11332,7 +11334,7 @@ falsifier is literally "obtain the artefact and its digest through the one chann
 instrument.
 
 **W-N9-05 — the clock's behaviour, which this box cannot move.** The predicate is already pinned
-(`the_round_escape_is_owed_past_the_attempt_bound_or_the_stall_bound` takes synthetic `now` values, and
+(`the_round_escape_requires_elapsed_stall_even_after_many_attempts` takes synthetic `now` values, and
 the row says so). What is owed is what the *clock* does: step it by ≥15 s while the round gate is held
 and watch whether the escape fires and whether the emitted block reuses a `seq_num`. The devnet's
 containers share the host clock and hold no `CAP_SYS_TIME`, so a container cannot step it, and the node
