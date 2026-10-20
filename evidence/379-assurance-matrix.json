@@ -1,0 +1,434 @@
+{
+  "schema_version": "2026-10-20-v1",
+  "purpose": "Bounded #379 correctness/finality/retention evidence matrix; distinct from #392 LFS",
+  "integrated_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+  "artifact": {
+    "run_url": "https://github.com/aixaria0/rchain-rust/actions/runs/39346473567",
+    "run_id": 39346473567,
+    "artifact_id": 12231153596,
+    "name": "consensus-acceptance-39346473567-1"
+  },
+  "interpretation": "PASS_BOUNDED covers observed marker finality and retention only. Unknown or untested sub-obligations remain UNRESOLVED. A CI green badge is not a proof of general CBC safety.",
+  "rows": [
+    {
+      "scenario": "healthy_n4",
+      "validators": 4,
+      "source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "acceptance",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": true,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": 2,
+        "initial_hash": "de1c78f7e36b055fe1a2e696e0077396b5bda5915e0ca0e04eeb5f2b9a8b32ae",
+        "initial_nodes_verified": 4,
+        "retained_height": 24,
+        "retained_hash": "d151589633d6fd16732034bb6698baa118c71ab8ff0d75d0ca9b01b5b8804ae2",
+        "retained_nodes_verified": 4,
+        "post_state_match": true,
+        "source": "raw result.json when present",
+        "results_sha256": "c01745333d836eab91cc4e535af75eb2ea5c993b55541838a6c029c5e907c0b7"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "PASS_BOUNDED_FINALITY_RETENTION",
+      "unmet_evidence": [
+        "Exact escape timestamps unavailable in summarized result; examine raw observations and clocks",
+        "Validator stake amounts and invalid/rejected block counters not independently reconciled"
+      ],
+      "evidence": [
+        "https://github.com/aixaria0/rchain-rust/actions/runs/39346473567",
+        "consensus-acceptance-39346473567-1/n4/result.json"
+      ]
+    },
+    {
+      "scenario": "healthy_n8",
+      "validators": 8,
+      "source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "acceptance",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": true,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": 2,
+        "initial_hash": "fec58fd433299d4eeec6348c72dfa1789765064be74acbb568097c72465a6b81",
+        "initial_nodes_verified": 8,
+        "retained_height": 24,
+        "retained_hash": "f332a561b1d726b7eb0d964fd9d8bf31bac26c4386bb7beb85a8b5463c6734fe",
+        "retained_nodes_verified": 8,
+        "post_state_match": true,
+        "source": "raw result.json when present",
+        "results_sha256": "425910583e5325c2d723484173b24165c0e27b12712d0865e29d8b7d96b803f4"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "PASS_BOUNDED_FINALITY_RETENTION",
+      "unmet_evidence": [
+        "Exact escape timestamps unavailable in summarized result; examine raw observations and clocks",
+        "Validator stake amounts and invalid/rejected block counters not independently reconciled"
+      ],
+      "evidence": [
+        "https://github.com/aixaria0/rchain-rust/actions/runs/39346473567",
+        "consensus-acceptance-39346473567-1/n8/result.json"
+      ]
+    },
+    {
+      "scenario": "quiet_no_autopropose_n4",
+      "validators": 4,
+      "source_sha": null,
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "UNEXECUTED_ON_INTEGRATED_SOURCE",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED",
+      "unmet_evidence": [
+        "No campaign on combined source with scenario-specific adversarial controls"
+      ],
+      "evidence": []
+    },
+    {
+      "scenario": "quiet_no_autopropose_n8",
+      "validators": 8,
+      "source_sha": null,
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "UNEXECUTED_ON_INTEGRATED_SOURCE",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED",
+      "unmet_evidence": [
+        "No campaign on combined source with scenario-specific adversarial controls"
+      ],
+      "evidence": []
+    },
+    {
+      "scenario": "validator_unavailable_rejoin_n4",
+      "validators": 4,
+      "source_sha": null,
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "UNEXECUTED_ON_INTEGRATED_SOURCE",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED",
+      "unmet_evidence": [
+        "No campaign on combined source with scenario-specific adversarial controls"
+      ],
+      "evidence": []
+    },
+    {
+      "scenario": "validator_unavailable_rejoin_n8",
+      "validators": 8,
+      "source_sha": null,
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "UNEXECUTED_ON_INTEGRATED_SOURCE",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED",
+      "unmet_evidence": [
+        "No campaign on combined source with scenario-specific adversarial controls"
+      ],
+      "evidence": []
+    },
+    {
+      "scenario": "delay_jitter_loss_n8",
+      "validators": 8,
+      "source_sha": null,
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "UNEXECUTED_ON_INTEGRATED_SOURCE",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED",
+      "unmet_evidence": [
+        "No campaign on combined source with scenario-specific adversarial controls"
+      ],
+      "evidence": []
+    },
+    {
+      "scenario": "network_partition_healing_n8",
+      "validators": 8,
+      "source_sha": null,
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "UNEXECUTED_ON_INTEGRATED_SOURCE",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "UNRESOLVED unless independently timed",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED",
+      "unmet_evidence": [
+        "No campaign on combined source with scenario-specific adversarial controls"
+      ],
+      "evidence": []
+    },
+    {
+      "scenario": "host_clock_discontinuity_targeted",
+      "validators": null,
+      "source_sha": "7f9260399be2efea1e897144a3e584342cfd10ef",
+      "proposed_source_sha": "7076b67a8e20d2374c7d625226008fa061c8de61",
+      "execution": {
+        "mode": "TARGETED_MONOTONIC_UNIT_REGRESSIONS_REPORTED",
+        "autopropose": "UNVERIFIED_FROM_ARTIFACT",
+        "effect_scheduler": "dfs (reported CI dispatch; verify job inputs)",
+        "stake_distribution": "UNVERIFIED exact weights: acceptance harness and genesis evidence required",
+        "timing": {
+          "stall_observed_ms": null,
+          "escape_observed_ms": null,
+          "wallclock_adjustment_ms": null
+        },
+        "network_measured": null
+      },
+      "accepted_rejected": {
+        "accepted_marker_observed": null,
+        "accepted_blocks": null,
+        "rejected_blocks": null,
+        "invalid_block_acceptance": null
+      },
+      "finality": {
+        "initial_height": null,
+        "initial_hash": null,
+        "initial_nodes_verified": null,
+        "retained_height": null,
+        "retained_hash": null,
+        "retained_nodes_verified": null,
+        "post_state_match": null,
+        "source": "raw result.json when present"
+      },
+      "safety": {
+        "premature_escape_prevented": "REPORTED_TARGETED_PASS; independent integrated test unresolved",
+        "conflicting_finalized_blocks": "UNRESOLVED under adversarial conditions",
+        "rollback": "UNRESOLVED",
+        "equivocation": "UNRESOLVED"
+      },
+      "verdict": "UNRESOLVED_INTEGRATED_CLOCK_STEP",
+      "unmet_evidence": [
+        "Targeted 14,999/15,000 ms, reset and artificial clock-jump assertions reported on PR #395",
+        "Run 39345602559 not available via current fork workflow-jobs lookup; verify its repository, CI summary and exact SHA",
+        "No multi-node monotonic clock-step campaign on integrated SHA"
+      ],
+      "evidence": [
+        "https://github.com/rchain-community/rchain-rust/pull/395",
+        "https://github.com/aixaria0/rchain-rust/actions/runs/39345602559"
+      ]
+    }
+  ]
+}
