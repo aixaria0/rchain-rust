@@ -872,6 +872,12 @@ cmd_reset() {
   fi
   echo "==> reset $name: empty store, syncing the chain from $reset_bootstrap_host"
   seed_validator_key "$name" "$idx"
+  # Recovery can stage a bonded validator as a passive replicator until its
+  # validated catch-up is complete. The key stays in its volume for activation.
+  local -a reset_validator_key=()
+  if [[ "${DEVNET_RESET_PASSIVE:-0}" != "1" ]]; then
+    reset_validator_key=(--validator-private-key-path /var/lib/rnode/validator.hex)
+  fi
   # shellcheck disable=SC2046
   docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
     -v "${genesis_dir}:/genesis:ro" \
@@ -879,7 +885,7 @@ cmd_reset() {
       --bootstrap "rnode://${id}@${reset_bootstrap_host}?protocol=40400&discovery=40404" \
       "${reset_anchor[@]}" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
-      --validator-private-key-path /var/lib/rnode/validator.hex
+      "${reset_validator_key[@]}"
   if [[ "${DEVNET_RESET_NETWORK_PAUSE:-0}" == "1" ]]; then
     docker network disconnect "$NETWORK" "$name"
     echo "reset $name: isolated from $NETWORK until the test reconnects it"

@@ -193,11 +193,14 @@ def main():
         '{{with index .NetworkSettings.Networks "devnet"}}{{.IPAddress}}{{end}}', positive.BOOTSTRAP)
     node_id = adversarial.cert_id(positive.BOOTSTRAP)
     os.environ["DEVNET_RESET_SYNC_ANCHOR"] = baseline["anchor"]["blockHash"]
+    os.environ["DEVNET_RESET_PASSIVE"] = "1"
     adversarial.reset(bootstrap_ip, key=node_id)
     args = json.loads(positive.cmd(
         "docker", "inspect", "-f", "{{json .Config.Cmd}}", positive.JOINER))
     if "--sync-anchor" not in args or args[args.index("--sync-anchor") + 1] != baseline["anchor"]["blockHash"]:
         raise AssertionError("explicit anchor flag was not installed on joiner")
+    if "--validator-private-key-path" in args:
+        raise AssertionError("passive recovery unexpectedly enabled the validator key")
     if not adversarial.joined(genesis):
         adversarial.wait_joined(genesis, seconds=140)
     first_snapshot = inspect_anchor(baseline["ancestry"], baseline["anchor"])
@@ -238,6 +241,7 @@ def main():
     print("LFS_EXPLICIT_ANCHOR_PERSISTENT " + json.dumps(checkpoint), flush=True)
 
     summary = {
+        "recovery_mode": "passive_until_validated_catchup",
         "source_anchor_height": baseline["anchor"]["blockNumber"],
         "source_anchor_hash": baseline["anchor"]["blockHash"],
         "ancestry_blocks": len(baseline["ancestry"]),
