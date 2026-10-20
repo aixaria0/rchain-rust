@@ -155,6 +155,19 @@ jobs:
           rc=$?
           set -e
           test "$rc" -eq 2
+      - name: Hard-fork tracker #51 closure guard (negative controls)
+        # An open tracker stays open despite passing implementation CI.
+        # This step checks the authored manifest and deliberately verifies
+        # that the close command refuses the still-unresolved source.
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
+          python3 tools/check-hardfork-51-closeout.py
+          set +e
+          python3 tools/check-hardfork-51-closeout.py --assert-closeable
+          rc=$?
+          set -e
+          test "$rc" -eq 3
 
       - name: Type-system gate
         # The four **hard** classes only -- production `unwrap()`/`panic!`/`unsafe`, a silent fallible
