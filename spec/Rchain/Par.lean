@@ -83,6 +83,15 @@ mutual
     -- A `Ground.bigint` would instead force `exprTag (.ground _)` to inspect its payload, and that stuck
     -- `match` is the failure `Rchain/Sort.lean`'s boundary note and AUDIT C58 record as measured.
     | ebigint : Int → Expr
+    -- `DECIMAL` 14, next to `BIG_INT` 13. The payload is the value in units of `10^-38`
+    -- (`MAX_SCALE`), not the wire `(coefficient, scale)` pair. One argument is deliberate: the
+    -- node stores the canonical pair, so every value has exactly one representation and `eq_iff`
+    -- is plain `Int` equality. A two-field constructor would let `(10,1)` and `(1,0)` denote one
+    -- value in two ways, and the comparator's equality law would then be false. The Rust
+    -- `Decimal::scaled_value` produces the same integer (`models/src/decimal.rs`); changing
+    -- `MAX_SCALE` is a hard fork that must move this comment, `Sort.lean`'s tag, the Rust value
+    -- and the sorter together.
+    | edecimal : Int → Expr
     -- `EMETHOD`'s name is a **code-point list**, the model's convention for strings (`Ground.str`,
     -- `Ground.uri`), rather than a `String`: the node compares `leaf_str` byte-wise and Lean's `Ord
     -- String` would drag its `DecidableRel` instance argument into the comparator's *statements*, which
@@ -170,6 +179,7 @@ def Expr.remainder : Expr → Option Var
   -- is a property of the three collection forms alone (`rholang_mercury.cf:189-193`), so a new
   -- constructor reaching here is a decision, not an accident of the catch-all.
   | .ebigint _ => none
+  | .edecimal _ => none
   | .emethod _ _ _ => none
   | .epercentPercent _ _ | .eplusPlus _ _ | .eminusMinus _ _ => none
   | _ => none
@@ -250,6 +260,7 @@ mutual
   def connectiveUsedExpr : Expr → Bool
     | .ground _ => false
     | .ebigint _ => false
+    | .edecimal _ => false
     | .evar v => v.isConnective
     | .eneg p | .enot p => connectiveUsed p
     | .eplus p q | .eminus p q | .emult p q | .ediv p q | .emod p q

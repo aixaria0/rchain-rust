@@ -135,6 +135,25 @@ value through the whole domain.
   result may leave the invariant (e.g. a height *difference*), the operator's output is the raw
   **signed** type, so the signedness is again visible in the type.
 
+`models::decimal::Decimal` (issue #380) is the AST's refinement-carrying scalar. Its coefficient and
+scale are private; the only ways in are `new` (canonicalize, then bound), `from_literal_parts` (the
+source path), `from_wire` (minimal coefficient bytes, canonical pair, scale ≤ 38) and a `Deserialize`
+routed through `from_parts`. A noncanonical decimal is therefore **not representable** in the AST:
+the wire decoder answers `ModelsError::InvalidDecimal`, and there is no `Deref`. Arithmetic methods
+return `Result` because a canonical result can leave the scale bound (`1d / 3d` is an error, not a
+rounded value); the comparator's `Ord` and derived `Eq` agree on every canonical value, which is what
+`par_set`/`par_map` deduplication relies on.
+
+**What this refinement does not establish.** It guarantees *representability* — a noncanonical
+decimal cannot enter the AST — not the value algebra. The Lean tie (`Rchain/Sort.lean`'s `edecimal`)
+models the value as the canonical scaled integer and proves the comparator laws over it; the bridge
+from the Rust `(coefficient, scale)` pair to that integer (`scaled_value`'s injectivity and
+order-preservation on canonical values), exact arithmetic, division's exact-or-error condition, the
+wire's minimal-byte form, reducer dispatch and the cost model are **outside the Lean model**. They
+rest today on this refinement and the unit/corpus tests in `models/src/decimal.rs`,
+`models/src/wire.rs` and `rholang/src/reduce.rs`; a standalone `Rchain/Decimal.lean` plus a `decimal`
+conformance corpus is the follow-up that would prove them.
+
 Concrete newtypes live in [`../shared/src/refined.rs`](../shared/src/refined.rs) (`Port`, `Hash32`,
 `BlockHeight`, `SeqNum`, `WireLen`, `NonNegI64`; `ByteLen`/`ShortLen` reserved for 1c); domain-specific
 serialized refinements (`SerializedNode`, `SerializedRandom`) live with their deserializers. The Lean

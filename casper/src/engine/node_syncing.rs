@@ -259,6 +259,8 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                 self.log_source,
                 "Fringe message ignored, not received from bootstrap node.",
             );
+            // An untrusted peer must not set the retry target or consume the one-shot start.
+            return Ok(());
         }
 
         // **A fringe with no hashes names no state to sync to, and it must not consume the one-shot
@@ -436,13 +438,8 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
 
                     match &outcome {
                         Ok(()) => {
-                            if let Err(e) = approved_store
-                                .put(&[(FINALIZED_FRINGE_KEY, target.clone())])
-                                .await
-                            {
-                                log.error(source, &format!("Failed to store approved block: {e}"));
-                            }
-                            log.info(source, "LFS state is successfully restored.");
+                            report_restored_checkpoint(&approved_store, &target, log.as_ref())
+                                .await;
                             notify_when_restored(&outcome, &finished);
                             // The state is restored, so this task is returning and the node is no
                             // longer syncing: the reading is cleared rather than left naming the loop
@@ -490,6 +487,30 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             });
         }
         Ok(())
+    }
+}
+
+/// Record the checkpoint result without confusing an in-memory DAG restore with a durable
+/// restart checkpoint. A failed checkpoint must not claim persistence, but the DAG has already
+/// been restored, so the caller still signals completion (the node will re-sync on restart).
+async fn report_restored_checkpoint(
+    approved_store: &ApprovedStore,
+    fringe: &FinalizedFringe,
+    log: &dyn Log,
+) {
+    let source = LogSource::new("casper.engine.NodeSyncing");
+    match approved_store
+        .put(&[(FINALIZED_FRINGE_KEY, fringe.clone())])
+        .await
+    {
+        Ok(()) => log.info(source, "LFS state is successfully restored."),
+        Err(e) => log.error(
+            source,
+            &format!(
+                "LFS state restored to the DAG, but approved-fringe checkpoint was not persisted: {e}. \
+                 The next restart will require another LFS sync."
+            ),
+        ),
     }
 }
 
@@ -1054,6 +1075,97 @@ mod tests {
         // The whole chain is in the DAG, so the latest block number equals the chain length.
         assert_eq!(dag.get_representation().await.latest_block_number(), n);
     }
+    /// A non-bootstrap peer cannot consume the one-shot latch or poison the next retry target.
+    #[tokio::test]
+    async fn a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync() {
+        let log = Arc::new(RecordingLog::default());
+        let (mut engine, _bootstrap, _approved) = failing_engine(&log).await;
+        let fringe = FinalizedFringe {
+            hashes: vec![hash(7)],
+            state_hash: StateHash::new([7u8; 32]),
+            ancestry: Vec::new(),
+        };
+
+        engine
+            .handle(&peer("outsider"), &CasperMessage::FinalizedFringe(fringe))
+            .await
+            .expect("unexpected peer must be ignored without error");
+
+        assert!(
+            engine.start_requester,
+            "an outsider consumed the sync trigger"
+        );
+        assert!(
+            engine.importer.is_some(),
+            "an outsider started the sync worker"
+        );
+        assert!(
+            engine.latest_fringe.lock().await.is_none(),
+            "an outsider replaced the trusted retry target"
+        );
+        assert!(log.contains("Fringe message ignored"));
+    }
+
+    /// The DAG can be restored even if the restart checkpoint fails. Do not report
+    /// unconditional success or silently swallow the missing durable checkpoint.
+    #[tokio::test]
+    async fn checkpoint_write_failure_is_visible_without_claiming_persistence() {
+        struct RejectCheckpointWrite {
+            inner: ApprovedStore,
+        }
+
+        #[async_trait]
+        impl KeyValueTypedStore<u8, FinalizedFringe> for RejectCheckpointWrite {
+            async fn get(&self, keys: &[u8]) -> Result<Vec<Option<FinalizedFringe>>, String> {
+                self.inner.get(keys).await
+            }
+            async fn put(&self, _pairs: &[(u8, FinalizedFringe)]) -> Result<(), String> {
+                Err("checkpoint store unavailable".to_string())
+            }
+            async fn delete(&self, keys: &[u8]) -> Result<usize, String> {
+                self.inner.delete(keys).await
+            }
+            async fn contains(&self, keys: &[u8]) -> Result<Vec<bool>, String> {
+                self.inner.contains(keys).await
+            }
+            async fn to_map(&self) -> Result<BTreeMap<u8, FinalizedFringe>, String> {
+                self.inner.to_map().await
+            }
+        }
+
+        let working: ApprovedStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(ByteCodec),
+            Arc::new(FringeCodec),
+        ));
+        let failing: ApprovedStore = Arc::new(RejectCheckpointWrite {
+            inner: working.clone(),
+        });
+        let fringe = FinalizedFringe {
+            hashes: vec![hash(7)],
+            state_hash: StateHash::new([7u8; 32]),
+            ancestry: Vec::new(),
+        };
+
+        let failure_log = RecordingLog::default();
+        report_restored_checkpoint(&failing, &fringe, &failure_log).await;
+        assert!(failure_log.contains("approved-fringe checkpoint was not persisted"));
+        assert!(failure_log.contains("checkpoint store unavailable"));
+        assert!(!failure_log.contains("LFS state is successfully restored."));
+        assert_eq!(
+            working.get(&[FINALIZED_FRINGE_KEY]).await.unwrap(),
+            vec![None]
+        );
+
+        let success_log = RecordingLog::default();
+        report_restored_checkpoint(&working, &fringe, &success_log).await;
+        assert!(success_log.contains("LFS state is successfully restored."));
+        assert_eq!(
+            working.get(&[FINALIZED_FRINGE_KEY]).await.unwrap(),
+            vec![Some(fringe)]
+        );
+    }
+
     /// **AUDIT C68**: a failed LFS sync must not signal the node out of `NodeSyncing`.
     ///
     /// Both directions in one test, because the fix is a decision and the decision has two outcomes:

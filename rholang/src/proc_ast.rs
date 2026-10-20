@@ -9,6 +9,9 @@ pub type SourceVar = String;
 /// A long-integer literal (kept as text, matching the BNFC `LongLiteral` token).
 pub type LongLiteral = String;
 
+/// A decimal literal, kept as its source text including the `d` suffix (`1.10d`).
+pub type DecimalLiteral = String;
+
 // -------------------------------------------------------------------------------------------------
 // Proc (the process)
 // -------------------------------------------------------------------------------------------------
@@ -76,6 +79,7 @@ pub enum BoolLiteral {
 pub enum Ground {
     GroundBool(BoolLiteral),
     GroundBigInt(LongLiteral),
+    GroundDecimal(DecimalLiteral),
     GroundInt(LongLiteral),
     GroundString(String),
     GroundUri(String),

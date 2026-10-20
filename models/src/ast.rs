@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
+use crate::decimal::Decimal;
 use crate::types::FreeCount;
 
 /// serde helpers encoding byte vectors as lowercase hex (the Scala `encodeByteString`/
@@ -313,6 +314,9 @@ pub enum Expr {
     GBool(bool),
     GInt(i64),
     GBigInt(BigInt),
+    /// An exact decimal (issue #380, option B). Always canonical: `coefficient × 10^-scale`,
+    /// with factors of ten stripped while the scale is positive and zero stored as `(0, 0)`.
+    GDecimal(Decimal),
     GString(String),
     GUri(String),
     GByteArray(#[serde(with = "hex_serde")] Vec<u8>),

@@ -59,6 +59,7 @@ deriving BEq, DecidableEq, Repr
 inductive SGround where
   | bool (b : Bool)
   | bigint (digits : String)
+  | decimal (raw : String)
   | int (digits : String)
   | str (raw : String)
   | uri (raw : String)
@@ -209,7 +210,8 @@ def grammarProductions : List String :=
     "SimpleSource", "ReceiveSendSource", "SendReceiveSource", "RepeatedSimple", "RepeatedBindImpl",
     "PeekSimple", "PeekBindImpl", "SendSingle", "SendMultiple", "BranchImpl", "CaseImpl",
     "NameDeclSimpl", "NameDeclUrn", "BoolTrue", "BoolFalse", "GroundBool", "GroundBigInt",
-    "GroundInt", "GroundString", "GroundUri", "CollectList", "CollectTuple", "CollectSet",
+    "GroundDecimal", "GroundInt", "GroundString", "GroundUri", "CollectList", "CollectTuple",
+    "CollectSet",
     "CollectMap", "KeyValuePairImpl", "TupleSingle", "TupleMultiple", "ProcRemainderVar",
     "ProcRemainderEmpty", "NameRemainderVar", "NameRemainderEmpty", "VarRefKindProc",
     "VarRefKindName", "SimpleTypeBool", "SimpleTypeInt", "SimpleTypeBigInt", "SimpleTypeString",
@@ -230,6 +232,7 @@ def productionWitnesses : List ProductionWitness :=
   , ⟨["PGround", "GroundBool", "BoolTrue"], .ground (.bool true)⟩
   , ⟨["PGround", "GroundBool", "BoolFalse"], .ground (.bool false)⟩
   , ⟨["PGround", "GroundBigInt"], .ground (.bigint "1234")⟩
+  , ⟨["PGround", "GroundDecimal"], .ground (.decimal "1.10d")⟩
   , ⟨["PGround", "GroundString"], .ground (.str "\"s\"")⟩
   , ⟨["PGround", "GroundUri"], .ground (.uri "`rho:id:x`")⟩
   , ⟨["PCollect", "CollectList"], .collect (.list [.ground (.int "1")] none)⟩
@@ -335,7 +338,7 @@ theorem witnesses_cover :
   decide
 
 /-- How many witnesses the table carries. -/
-def productionWitnessCount : Nat := 81
+def productionWitnessCount : Nat := 82
 
 /-- The table carries exactly `productionWitnessCount` rows. -/
 theorem productionWitnesses_length :
@@ -387,6 +390,36 @@ def intOfDigits (d : String) : Option Int :=
   match d.toList with
   | [] => none
   | _ => some (d.toList.foldl (fun acc c => acc * 10 + (c.toNat - '0'.toNat)) 0)
+
+/-- Strip factors of ten from a non-negative coefficient while the scale is positive, exactly as
+    `models/src/decimal.rs`'s `Decimal::new` does. -/
+private def stripTen : Nat → Int → Int × Nat
+  | 0, c => (c, 0)
+  | s + 1, c => if c % 10 = 0 then stripTen s (c / 10) else (c, s + 1)
+
+/-- The canonical value of a decimal literal, in units of `10^-38` (`MAX_SCALE`), matching the
+    node's `Par.edecimal` payload. `none` for a malformed literal or one whose canonical scale
+    exceeds 38. The literal is unsigned: a negative one arrives as `PNeg` over a positive one,
+    exactly as integers do. -/
+def decimalOfLiteral (raw : String) : Option Int :=
+  if !raw.endsWith "d" then none
+  else
+    let body := raw.dropRight 1
+    let digitsOk (s : String) : Bool :=
+      !s.isEmpty && s.toList.all (fun c => decide (c.toNat ≥ 48 ∧ c.toNat ≤ 57))
+    match body.splitOn "." with
+    | [integer] =>
+      if !digitsOk integer then none
+      else (intOfDigits integer).map (fun c => c * (10 : Int) ^ 38)
+    | [integer, fraction] =>
+      if !digitsOk integer || !digitsOk fraction then none
+      else
+        match intOfDigits (integer ++ fraction) with
+        | none => none
+        | some c =>
+          let (c', s') := stripTen fraction.length c
+          if s' > 38 then none else some (c' * (10 : Int) ^ (38 - s'))
+    | _ => none
 
 /-- A source name under a binder stack: `Γ` is the stack of bound names, head innermost, so a name
 found at distance `i` from the head is `Var.bound i` — the model's level convention. A name not in
@@ -585,6 +618,7 @@ def groundPar : SGround → Option Par
   | .str raw => some (parOf (.ground (.str (charsOf (unquote raw)))))
   | .uri raw => some (parOf (.ground (.uri (charsOf (unquote raw)))))
   | .bigint d => (intOfDigits d).map (fun n => parOf (.ebigint n))
+  | .decimal raw => (decimalOfLiteral raw).map (fun n => parOf (.edecimal n))
 
 /-- A list of processes, in order. -/
 def procsPar : List Surf → List SVar → Option (List Par)
@@ -1015,6 +1049,12 @@ theorem closed_groundPar (g : SGround) : ∀ p, groundPar g = some p → closed 
   | str raw => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
   | uri raw => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
   | bigint d =>
+    simp only [groundPar] at hp
+    rw [Option.map_eq_some'] at hp
+    obtain ⟨n, -, hp'⟩ := hp
+    rw [← hp']
+    simp [closed, parOf, closedListExpr, closedExpr]
+  | decimal raw =>
     simp only [groundPar] at hp
     rw [Option.map_eq_some'] at hp
     obtain ⟨n, -, hp'⟩ := hp

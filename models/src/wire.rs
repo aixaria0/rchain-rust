@@ -13,6 +13,7 @@ use rchain_crypto::hash::blake2b512_random::{Blake2b512Random, SerializedRandom}
 use rchain_shared::serialize::Serialize;
 
 use crate::ast as a;
+use crate::decimal::Decimal;
 use crate::errors::ModelsError;
 use crate::proto::rholang as p;
 use crate::runtime::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
@@ -218,6 +219,10 @@ pub fn expr_to_proto(e: &a::Expr) -> p::Expr {
         a::Expr::GBool(b) => E::GBool(*b),
         a::Expr::GInt(i) => E::GInt(*i),
         a::Expr::GBigInt(bi) => E::GBigInt(bi.to_signed_bytes_be()),
+        a::Expr::GDecimal(d) => E::GDecimal(p::GDecimal {
+            coefficient: d.coefficient().to_signed_bytes_be(),
+            scale: d.scale(),
+        }),
         a::Expr::GString(s) => E::GString(s.clone()),
         a::Expr::GUri(u) => E::GUri(u.clone()),
         a::Expr::GByteArray(b) => E::GByteArray(b.clone()),
@@ -323,6 +328,9 @@ pub fn expr_from_proto(p: &p::Expr) -> Result<a::Expr, ModelsError> {
         Some(E::GBool(b)) => a::Expr::GBool(*b),
         Some(E::GInt(i)) => a::Expr::GInt(*i),
         Some(E::GBigInt(b)) => a::Expr::GBigInt(BigInt::from_signed_bytes_be(b)),
+        Some(E::GDecimal(m)) => a::Expr::GDecimal(
+            Decimal::from_wire(&m.coefficient, m.scale).map_err(ModelsError::InvalidDecimal)?,
+        ),
         Some(E::GString(s)) => a::Expr::GString(s.clone()),
         Some(E::GUri(u)) => a::Expr::GUri(u.clone()),
         Some(E::GByteArray(b)) => a::Expr::GByteArray(b.clone()),
@@ -494,7 +502,8 @@ pub fn expr_from_proto(p: &p::Expr) -> Result<a::Expr, ModelsError> {
         Some(E::ESetBody(m)) => a::Expr::ESet(eset_from_proto(m)?),
         Some(E::EMapBody(m)) => a::Expr::EMap(emap_from_proto(m)?),
         Some(E::EMethodBody(m)) => a::Expr::EMethod(emethod_from_proto(m)?),
-        None => a::Expr::GBool(false),
+        // Missing and unknown-only oneof values are not the boolean false.
+        None => return Err(ModelsError::Malformed("expr_instance")),
     })
 }
 
@@ -1241,6 +1250,31 @@ mod differential {
         assert_eq!(hex(&bytes), expected);
     }
 
+    #[test]
+    fn par_with_g_decimal_serializes_to_proto() {
+        // `Par { exprs: [GDecimal(15, 1)] }` ->
+        // `2a 08 (9a 02 05 (0a 01 0f 10 01))` — field 5 exprs; field 35 g_decimal, length 5;
+        // field 1 coefficient [0x0f]; field 2 scale 1.
+        let par = a::Par {
+            exprs: vec![a::Expr::GDecimal(
+                Decimal::new(num_bigint::BigInt::from(15), 1).expect("canonical"),
+            )],
+            ..Default::default()
+        };
+        let bytes = <a::Par as Serialize<a::Par>>::encode(&par);
+        assert_eq!(hex(&bytes), "2a089a02050a010f1001");
+
+        // Canonical zero is the single byte `0x00` at scale 0, and proto3 omits the default scale.
+        let zero = a::Par {
+            exprs: vec![a::Expr::GDecimal(
+                Decimal::new(num_bigint::BigInt::from(0), 0).expect("canonical"),
+            )],
+            ..Default::default()
+        };
+        let bytes = <a::Par as Serialize<a::Par>>::encode(&zero);
+        assert_eq!(hex(&bytes), "2a069a02030a0100");
+    }
+
     /// The **round-trip** half of the codec, which the golden vectors cannot reach: every `Expr`
     /// variant, every connective and every unforgeable is converted out and back. A variant that
     /// `expr_to_proto` writes into the wrong proto arm, or `expr_from_proto` reads back out of the
@@ -1287,6 +1321,12 @@ mod differential {
                 (
                     "GBigInt",
                     a::Expr::GBigInt(num_bigint::BigInt::from(1_000_000_000_000i64)),
+                ),
+                (
+                    "GDecimal",
+                    a::Expr::GDecimal(
+                        Decimal::new(num_bigint::BigInt::from(15), 1).expect("canonical"),
+                    ),
                 ),
                 ("GString", a::Expr::GString("text".to_string())),
                 ("GUri", a::Expr::GUri("rho:io".to_string())),
@@ -1372,8 +1412,8 @@ mod differential {
             let variants = every_expr();
             assert_eq!(
                 variants.len(),
-                33,
-                "the table covers every variant the enum has (33 as of this test)"
+                34,
+                "the table covers every variant the enum has (34 as of this test)"
             );
             for (name, expr) in &variants {
                 let proto = expr_to_proto(expr);
@@ -1415,6 +1455,17 @@ mod differential {
             match expr_to_proto(&huge).expr_instance {
                 Some(E::GBigInt(bytes)) => assert_eq!(bytes, vec![1, 2]),
                 other => panic!("expected GBigInt, got {other:?}"),
+            }
+            // A decimal carries its minimal coefficient bytes and its scale.
+            let decimal = a::Expr::GDecimal(
+                Decimal::new(num_bigint::BigInt::from(15), 1).expect("canonical"),
+            );
+            match expr_to_proto(&decimal).expr_instance {
+                Some(E::GDecimal(m)) => {
+                    assert_eq!(m.coefficient, vec![0x0f]);
+                    assert_eq!(m.scale, 1);
+                }
+                other => panic!("expected GDecimal, got {other:?}"),
             }
         }
 
@@ -1726,31 +1777,76 @@ mod differential {
             );
         }
 
-        /// An `Expr` message with **no instance** decodes to `GBool(false)` — a silent default
-        /// rather than an error.
-        ///
-        /// Pinned as behaviour, with the caveat stated: the legacy tree does not contain the
-        /// Scala's `Expr.fromProto`, so what the JVM node does with an instance-less `Expr` could
-        /// not be established. Changing this arm to `Malformed("expr_instance")` would be the
-        /// stricter reading, but it is also a wire-path change that could *disagree* with the Scala
-        /// on a peer-supplied block, so it is left as it is and recorded here rather than guessed
-        /// at. The decode of an empty buffer reaching this arm is the honest trigger.
+        /// An Expr must identify a known value, even when it arrives inside a Par.
+        /// Refusal here supersedes the former default-to-false characterization.
         #[test]
-        fn an_instance_less_expr_decodes_to_the_default() {
+        fn an_instance_less_expr_is_malformed() {
             let empty = p::Expr::default();
             assert!(empty.expr_instance.is_none());
             assert_eq!(
-                expr_from_proto(&empty).expect("the arm never errors"),
-                a::Expr::GBool(false)
+                expr_from_proto(&empty),
+                Err(ModelsError::Malformed("expr_instance"))
             );
 
-            // …and through a par, which is how a peer-supplied message would reach it.
             let par = p::Par {
                 exprs: vec![p::Expr::default()],
                 ..p::Par::default()
             };
-            let decoded = par_from_proto::<a::ProcSort>(&par).expect("a par decodes");
-            assert_eq!(decoded.exprs, vec![a::Expr::GBool(false)]);
+            assert_eq!(
+                par_from_proto::<a::ProcSort>(&par),
+                Err(ModelsError::Malformed("expr_instance"))
+            );
+        }
+
+        /// A decimal may cross the wire in exactly one form per value. Every alternative encoding
+        /// of a value the node can represent is refused at the boundary rather than admitted as a
+        /// second leaf with the same meaning (the validate-on-ingress rule, `spec/TYPE-SYSTEM.md`
+        /// §1.6).
+        #[test]
+        fn the_g_decimal_decoder_accepts_only_the_canonical_form() {
+            use crate::decimal::{DecimalError, MAX_SCALE};
+            use p::expr::ExprInstance as E;
+
+            let decode = |coefficient: Vec<u8>, scale: u32| {
+                expr_from_proto(&p::Expr {
+                    expr_instance: Some(E::GDecimal(p::GDecimal { coefficient, scale })),
+                })
+            };
+            let decimal = |c: i64, s: u32| {
+                a::Expr::GDecimal(Decimal::new(num_bigint::BigInt::from(c), s).expect("canonical"))
+            };
+
+            assert_eq!(decode(vec![0x00], 0), Ok(decimal(0, 0)));
+            assert_eq!(decode(vec![0x0f], 1), Ok(decimal(15, 1)));
+            assert_eq!(decode(vec![0xf1], 1), Ok(decimal(-15, 1)));
+            assert_eq!(
+                decode(Vec::new(), 0),
+                Err(ModelsError::InvalidDecimal(DecimalError::CoefficientEmpty))
+            );
+            assert_eq!(
+                decode(vec![0x00, 0x0f], 1),
+                Err(ModelsError::InvalidDecimal(
+                    DecimalError::CoefficientNotMinimal
+                ))
+            );
+            assert_eq!(
+                decode(vec![0x00, 0x96], 2),
+                Err(ModelsError::InvalidDecimal(DecimalError::TrailingZero {
+                    scale: 2
+                }))
+            );
+            assert_eq!(
+                decode(vec![0x00], 3),
+                Err(ModelsError::InvalidDecimal(DecimalError::ZeroWithScale {
+                    scale: 3
+                }))
+            );
+            assert_eq!(
+                decode(vec![0x01], MAX_SCALE + 1),
+                Err(ModelsError::InvalidDecimal(DecimalError::ScaleOutOfRange {
+                    scale: MAX_SCALE + 1
+                }))
+            );
         }
     }
 }

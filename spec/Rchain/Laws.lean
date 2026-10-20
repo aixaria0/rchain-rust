@@ -243,7 +243,7 @@ def laws : List Law := [
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
       clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: \
-      `conformance/sort.tsv`'s 42 verdicts, each `decide`d against the model's `cmpPar`, read back from \
+      `conformance/sort.tsv`'s 50 verdicts, each `decide`d against the model's `cmpPar`, read back from \
       the node by which element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
       element-law half is clause b, and it is axioms. **The `sort` corpus found a divergence on its \
@@ -270,7 +270,9 @@ def laws : List Law := [
       the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
       `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
       `ESHORTOR`(124). **All eight are in the model as of 2026-09-25** — three were conflations \
-      (below) and the other five were constructors (further below) — so the count is closed. **Three of those eight were *conflations* rather than missing arms, and all \
+      (below) and the other five were constructors (further below) — so the count is closed. **The
+      decimal class (`edecimal`, tag 14) joined on 2026-10-19**, so the model's 30 classes cover all
+      34 of the node's variants, and rows 43–50 pin it. **Three of those eight were *conflations* rather than missing arms, and all \
       three are closed** (re-measured 2026-09-25, and this sentence is the correction): `EMATCHES`, \
       `ESHORTAND` and `ESHORTOR` have constructors (`ematches`, `eshortand`, `eshortor`, \
       `Par.lean:67-69`), `Surface.lean`'s arms now **emit** them (`.eshortand`, `.eshortor`, \
@@ -289,7 +291,9 @@ def laws : List Law := [
       after every operator — so each of the five is a class of its own, and `exprTag` gives it the \
       node's literal. The two consequences the earlier note predicted are the two that landed: \
       `cmpExpr`'s arm-lemma family grew from 24 classes to 29 (5 pair lemmas, 5 extraction lemmas, \
-      10 cross lemmas, and five arms in each of the three laws), and `emethod`'s score needed \
+      10 cross lemmas, and five arms in each of the three laws); the decimal took it to 30 (one more \
+      pair lemma, one extraction lemma, two cross lemmas, and one arm in each law, rows 43–50), and \
+      `emethod`'s score needed \
       `Rchain.Comparator.lex_lt_trans_at3` because its children are three deep. C58 carries the measurement of \
       the *gap*; the rows carry the closure. `Ground` is untouched and `ebigint` is an `Expr` leaf \
       because that is what the node has — the protobuf's `g_big_int` is an `Expr` variant and the \
@@ -302,7 +306,16 @@ def laws : List Law := [
       the model's algebra rather than a claim about the wrong order (it was never a fork between nodes: \
       every node sorts by the score tree). The alignment is safe for the proofs: \
       `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
-      `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change" },
+      `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change. \
+      **What the tie does not claim (2026-10-19).** The model's `edecimal` payload is the canonical \
+      scaled integer (`coefficient × 10^(38−scale)`), so the comparator laws are stated over that \
+      representation and over `Int` order. The bridge from the Rust `(coefficient, scale)` pair to \
+      that integer — `scaled_value`'s injectivity and order-preservation on canonical values — is \
+      **not** a theorem here, and neither are canonicalization, exact `+ - * /`, division's \
+      exact-or-error condition, the wire's minimal-byte form, the reducer's dispatch, or the cost \
+      model. Those are carried today by the Rust refinement (`Decimal::new`/`from_wire`, private \
+      fields) and its unit and corpus tests; a standalone `Rchain/Decimal.lean` plus a `decimal` \
+      corpus is the follow-up that would prove them" },
   { number := 1, clause := "b", layer := "Rholang",
     rustWitness := ["models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike"],
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
@@ -329,7 +342,9 @@ def laws : List Law := [
       counterexample would have to be a counterexample to those proofs too. **And the residual is \
       gone**: `cmpExpr`'s three are *theorems* now (2026-09-24), which is what the second half of this \
       cell used to be blocked on — the size of \
-      its equation lemmas, and the route is the 29 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time)",
+      its equation lemmas; the route is the tag-first definition (compare `exprTag`, then the \
+      same-shape comparator) and its 30 `@[simp]` pair lemmas, each \
+      `simp only [cmpExpr.eq_def, exprTag, Nat.reduceLT, ite_false, ite_true]`",
     note := "**no axioms, from twelve — the residual is empty** (2026-09-24). The list comparators' laws \
       were discharged by induction on the list; the eight element laws above are theorems, in dependency \
       order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
@@ -341,8 +356,9 @@ def laws : List Law := [
       2026-09-24**: `cmpPar_lt_trans` is a theorem — an eight-component `lex` chain, a member of \
       `Rchain.Sort`'s `mutual` block because the family is one strongly connected component, which is \
       what that file's note is about — and `cmpExpr`'s three are theorems by the route that note \
-      predicted (the 29 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time) over `exprTag`, since `cmpExpr` is compiled as \
-      `WellFounded.fix` and nothing unfolds it). This row's falsifier is therefore the **`sort` corpus**, \
+      predicted (the tag-first definition and its 30 `@[simp]` pair lemmas, since `cmpExpr` is compiled \
+      as `WellFounded.fix` and the arm lemmas are what avoid unfolding it). This row's falsifier is \
+      therefore the **`sort` corpus**, \
       as it is law 1a's: its pairwise verdicts are read back from the node by which element `sort_par` \
       puts first, so a comparator whose order drifted from the node's score tree fails a row rather than \
       a proof — which is exactly how the alignment was found in the first place (law 1a's note). The \
@@ -3478,9 +3494,10 @@ def laws : List Law := [
       tuple therefore crosses as OCapN's **tagged** value, `<desc:tagged 'rho:tuple' [fields…]>` — the \
       union's own extension point, whose `value` may be any passable. `Sy.tuple` is that shape named, \
       so the round trip descends structurally instead of through a label test the equation compiler \
-      cannot see (`taggedRecord` is the same shape spelled as a record). **Two shapes are outside the \
-      domain, named:** a `Float64` (Rholang has no float) and a **small** `GBigInt` — Syrup's integer \
-      is one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form. **What the tie \
+      cannot see (`taggedRecord` is the same shape spelled as a record). **Three shapes are outside the \
+      domain, named:** a `Float64` (Rholang has no float), a **small** `GBigInt` — Syrup's integer is \
+      one type where Rholang has two, so `GBigInt 5` and `GInt 5` share a wire form — and a \
+      `GDecimal` (Rholang has an exact decimal; Syrup has no counterpart). **What the tie \
       does not reach:** the refusals' *reason strings* are the node's (`BridgeError`), tied by the \
       corpus's sources rather than by a theorem." },
   { number := 59, clause := "b", layer := "Wire",
@@ -3516,7 +3533,7 @@ def laws : List Law := [
     falsifiable := some "**the URI was the violation, and it is why this clause exists.** `GUri → \
       `Symbol` outbound with `Symbol` refused inbound is a *lossy* map: the encoder emits a shape from \
       which the value does not come back, which is exactly what this clause forbids. The domain's \
-      `float` and small-`GBigInt` exclusions are the other side of it — shapes the encoder must not \
+      `float`, small-`GBigInt` and `GDecimal` exclusions are the other side of it — shapes the encoder must not \
       produce and the decoder must not accept. `node/tests/lean_syrup_corpus.rs`'s round trip is the \
       falsifier on the node: an encoder that emitted a lossy shape fails on the case that carries it.",
     note := "**This is the clause that turns a documented decision into a checked one.** The bridge's \

@@ -75,9 +75,40 @@ pub fn normalize_ground(g: &Ground) -> Result<Expr, RholangError> {
             .parse::<BigInt>()
             .map(Expr::GBigInt)
             .map_err(|e| RholangError::NormalizerError(e.to_string())),
+        Ground::GroundDecimal(s) => parse_decimal_literal(s),
         Ground::GroundString(s) => Ok(Expr::GString(strip_string(s))),
         Ground::GroundUri(s) => Ok(Expr::GUri(strip_uri(s))),
     }
+}
+
+/// Parse a source decimal literal (`1.10d`, `2d`) into the canonical `Expr::GDecimal`.
+///
+/// The literal's scale is its fraction-digit count, and the value canonicalizes first: a literal
+/// whose canonical scale fits is accepted even when it was written with more trailing zeros (the
+/// same policy arithmetic results follow). The wire, which carries both fields, refuses a
+/// noncanonical pair instead.
+fn parse_decimal_literal(raw: &str) -> Result<Expr, RholangError> {
+    let malformed = || RholangError::NormalizerError(format!("malformed decimal literal `{raw}`"));
+    let body = raw.strip_suffix('d').ok_or_else(malformed)?;
+    let (integer, fraction, had_dot) = match body.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction, true),
+        None => (body, "", false),
+    };
+    if integer.is_empty()
+        || (had_dot && fraction.is_empty())
+        || !integer.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(malformed());
+    }
+    let scale = u32::try_from(fraction.len()).map_err(|_| {
+        RholangError::NormalizerError(format!("decimal literal `{raw}` is too long"))
+    })?;
+    let digits = format!("{integer}{fraction}");
+    let coefficient = BigInt::parse_bytes(digits.as_bytes(), 10).ok_or_else(malformed)?;
+    rchain_models::decimal::Decimal::from_literal_parts(coefficient, scale)
+        .map(Expr::GDecimal)
+        .map_err(|e| RholangError::NormalizerError(e.to_string()))
 }
 
 fn strip_string(raw: &str) -> String {
@@ -1813,6 +1844,36 @@ mod tests {
             normalize_ground(&Ground::GroundBigInt("123".to_string())).unwrap(),
             Expr::GBigInt(BigInt::from(123))
         );
+    }
+
+    fn decimal(raw: &str) -> Expr {
+        normalize_ground(&Ground::GroundDecimal(raw.to_string())).expect("a decimal literal")
+    }
+
+    #[test]
+    fn decimal_ground_canonicalizes() {
+        let d = |c: i64, s: u32| {
+            Expr::GDecimal(rchain_models::decimal::Decimal::new(c.into(), s).expect("canonical"))
+        };
+        assert_eq!(decimal("2d"), d(2, 0));
+        assert_eq!(decimal("1.10d"), d(11, 1));
+        assert_eq!(decimal("1.10d"), decimal("1.1d"));
+        assert_eq!(decimal("007.50d"), d(75, 1));
+        assert_eq!(decimal("0.0d"), d(0, 0));
+        assert_eq!(decimal("0.000d"), d(0, 0));
+    }
+
+    /// Source canonicalizes first, then bounds: a long trailing-zero literal whose canonical value
+    /// fits is accepted, while a literal whose canonical scale exceeds 38 is refused.
+    #[test]
+    fn a_decimal_literal_is_bounded_after_canonicalization() {
+        let trailing = format!("1.{}d", "0".repeat(39));
+        assert!(normalize_ground(&Ground::GroundDecimal(trailing)).is_ok());
+
+        let too_precise = format!("0.{}d", "1".repeat(39));
+        let err = normalize_ground(&Ground::GroundDecimal(too_precise))
+            .expect_err("scale 39 has no canonical representation");
+        assert!(err.to_string().contains("out of range"), "{err}");
     }
 
     #[test]
