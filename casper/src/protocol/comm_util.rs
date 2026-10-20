@@ -248,6 +248,76 @@ impl CommUtil {
             .info(self.log_source, "Requested fork tip from peers");
     }
 
+    /// Retry until an authenticated nonempty LFS reply is admitted, not just sent.
+    /// Startup must keep routing packets concurrently with this bounded future.
+    pub async fn request_initial_fringe(
+        &self,
+        trim_state: bool,
+        anchor: Option<BlockHash>,
+        received: Arc<tokio::sync::Notify>,
+    ) -> Result<(), String> {
+        self.request_initial_fringe_with_policy(
+            trim_state,
+            anchor,
+            received,
+            Duration::from_secs(10),
+            MAX_BOOTSTRAP_RETRIES,
+        )
+        .await
+    }
+
+    async fn request_initial_fringe_with_policy(
+        &self,
+        trim_state: bool,
+        anchor: Option<BlockHash>,
+        received: Arc<tokio::sync::Notify>,
+        interval: Duration,
+        attempts: u32,
+    ) -> Result<(), String> {
+        let bootstrap = self
+            .conf
+            .bootstrap
+            .as_ref()
+            .ok_or_else(|| StandaloneNodeSendToBootstrapError.to_string())?;
+        let packet = FinalizedFringeRequestSerde.mk_packet(&FinalizedFringeRequest {
+            identifier: String::new(),
+            trim_state,
+            include_fringe_metadata: true,
+            anchor,
+        });
+        let msg = protocol_helper::packet(&self.conf.local, &self.conf.network_id, packet);
+        // A stored notify_one permit also covers admission before this future is polled.
+        let response = received.notified();
+        tokio::pin!(response);
+        for attempt in 1..=attempts {
+            tokio::select! {
+                biased;
+                _ = &mut response => return Ok(()),
+                outcome = tokio::time::timeout(interval, self.transport.send(bootstrap, msg.clone())) => {
+                    match outcome {
+                        Ok(Ok(())) => self.log.info(self.log_source, &format!(
+                            "LFS fringe request {attempt}/{attempts} sent; awaiting admitted reply from {bootstrap}"
+                        )),
+                        Ok(Err(error)) => self.log.warn(self.log_source, &format!(
+                            "LFS fringe request {attempt}/{attempts} failed: {error:?}"
+                        )),
+                        Err(_) => self.log.warn(self.log_source, &format!(
+                            "LFS fringe request {attempt}/{attempts} send timed out"
+                        )),
+                    }
+                }
+            }
+            tokio::select! {
+                biased;
+                _ = &mut response => return Ok(()),
+                _ = tokio::time::sleep(interval) => {}
+            }
+        }
+        Err(format!(
+            "LFS bootstrap supplied no authenticated nonempty fringe after {attempts} requests; refusing to enter Running"
+        ))
+    }
+
     /// Request the finalized fringe from the bootstrap node (port of `requestFinalizedFringe`).
     ///
     /// `include_fringe_metadata` asks the responder to attach the per-block fringe state of the
@@ -310,6 +380,9 @@ mod tests {
         broadcasts: std::sync::Mutex<Vec<(Vec<PeerNode>, Protocol)>>,
         streams: std::sync::Mutex<Vec<(Vec<PeerNode>, Blob)>>,
         fail_sends: std::sync::atomic::AtomicUsize,
+        reply_on_send: usize,
+        reply: Option<Arc<tokio::sync::Notify>>,
+        hang_send: bool,
     }
 
     impl MockTransport {
@@ -329,6 +402,14 @@ mod tests {
         async fn send(&self, peer: &PeerNode, msg: Protocol) -> CommErr<()> {
             self.sends.lock().unwrap().push((peer.clone(), msg));
             // `usize::MAX` is the "always fails" setting, and the only one that reaches the bound.
+            if self.hang_send {
+                std::future::pending::<()>().await;
+            }
+            if self.send_count() == self.reply_on_send {
+                if let Some(reply) = &self.reply {
+                    reply.notify_one();
+                }
+            }
             let remaining = self.fail_sends.load(std::sync::atomic::Ordering::SeqCst);
             if remaining > 0 {
                 self.fail_sends
@@ -401,6 +482,135 @@ mod tests {
 
     fn hash(byte: u8) -> BlockHash {
         BlockHash::new([byte; 32])
+    }
+
+    #[tokio::test]
+    async fn initial_fringe_retries_an_acknowledged_request_whose_reply_was_lost() {
+        let local = peer("local", 40400);
+        let bootstrap = peer("bootstrap", 40401);
+        let received = Arc::new(tokio::sync::Notify::new());
+        let transport = Arc::new(MockTransport {
+            reply_on_send: 2,
+            reply: Some(received.clone()),
+            ..MockTransport::default()
+        });
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, Some(bootstrap.clone()), 10),
+            vec![],
+        );
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            comm.request_initial_fringe_with_policy(
+                true,
+                Some(hash(7)),
+                received,
+                Duration::from_millis(1),
+                3,
+            ),
+        )
+        .await
+        .expect("bounded retry")
+        .expect("second reply admitted");
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 2, "send success alone must not stop retry");
+        for (peer, proto) in sends.iter() {
+            assert_eq!(peer, &bootstrap);
+            let req = FinalizedFringeRequestSerde
+                .from_packet(&unpack(proto))
+                .expect("fringe request");
+            assert!(req.trim_state);
+            assert!(req.include_fringe_metadata);
+            assert_eq!(
+                req.anchor,
+                Some(hash(7)),
+                "retry must preserve the operator anchor"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_fringe_missing_reply_is_terminal_even_when_all_sends_succeed() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, Some(peer("bootstrap", 40401)), 10),
+            vec![],
+        );
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            comm.request_initial_fringe_with_policy(
+                false,
+                None,
+                Arc::new(tokio::sync::Notify::new()),
+                Duration::from_millis(1),
+                3,
+            ),
+        )
+        .await
+        .expect("no indefinite startup");
+        assert!(outcome
+            .expect_err("no reply is not success")
+            .contains("after 3 requests"));
+        assert_eq!(transport.send_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn initial_fringe_admission_before_polling_is_not_lost_and_sends_nothing() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, Some(peer("bootstrap", 40401)), 10),
+            vec![],
+        );
+        let received = Arc::new(tokio::sync::Notify::new());
+        received.notify_one();
+        comm.request_initial_fringe_with_policy(false, None, received, Duration::from_millis(1), 3)
+            .await
+            .expect("stored admission permit");
+        assert_eq!(transport.send_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn initial_fringe_hung_sends_exhaust_the_same_bound() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport {
+            hang_send: true,
+            ..MockTransport::default()
+        });
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, Some(peer("bootstrap", 40401)), 10),
+            vec![],
+        );
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            comm.request_initial_fringe_with_policy(
+                false,
+                None,
+                Arc::new(tokio::sync::Notify::new()),
+                Duration::from_millis(1),
+                3,
+            ),
+        )
+        .await
+        .expect("hung send must be bounded");
+        assert!(outcome.is_err());
+        assert_eq!(transport.send_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn initial_fringe_without_bootstrap_refuses_before_sending() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), vec![]);
+        assert!(comm
+            .request_initial_fringe(false, None, Arc::new(tokio::sync::Notify::new()))
+            .await
+            .is_err());
+        assert_eq!(transport.send_count(), 0);
     }
 
     #[tokio::test]

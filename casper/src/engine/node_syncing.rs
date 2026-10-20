@@ -53,6 +53,7 @@ pub struct NodeSyncing<I: RSpaceImporter> {
     tuple_space_tx: tokio::sync::mpsc::Sender<StoreItemsMessage>,
     tuple_space_rx: Option<tokio::sync::mpsc::Receiver<StoreItemsMessage>>,
     start_requester: bool,
+    initial_fringe_received: Arc<tokio::sync::Notify>,
     finished: Arc<tokio::sync::Notify>,
     /// **The shared latest-fringe slot** (AUDIT C181, #125). The retry a failed attempt needs is a
     /// *newer* fringe to sync to, and this is where it comes from: `on_finalized_fringe_message`
@@ -181,6 +182,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             tuple_space_tx,
             tuple_space_rx: Some(tuple_space_rx),
             start_requester: true,
+            initial_fringe_received: Arc::new(tokio::sync::Notify::new()),
             finished: Arc::new(tokio::sync::Notify::new()),
             latest_fringe: Arc::new(tokio::sync::Mutex::new(None)),
             fringe_arrived: Arc::new(tokio::sync::Notify::new()),
@@ -191,6 +193,11 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
     /// A future that completes when syncing finishes (port of `finished.get`).
     pub async fn wait(&self) {
         self.finished.notified().await;
+    }
+
+    /// Signalled once, only after bootstrap identity and nonempty-target admission.
+    pub fn initial_fringe_received_handle(&self) -> Arc<tokio::sync::Notify> {
+        self.initial_fringe_received.clone()
     }
 
     /// A cloneable handle to the syncing-finished notification, for waiting concurrently with the
@@ -314,6 +321,9 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
         // receivers are moved into it and nothing downstream can hand them back (AUDIT C181).
         let start = self.start_requester;
         self.start_requester = false;
+        if start {
+            self.initial_fringe_received.notify_one();
+        }
 
         // **Every bootstrap fringe is logged, not only the one that starts an attempt.** This line
         // used to live inside the `if start` branch, so the second and later answers produced no log
@@ -1084,6 +1094,47 @@ mod tests {
         assert_eq!(dag.get_representation().await.latest_block_number(), n);
     }
     /// A non-bootstrap peer cannot consume the one-shot latch or poison the next retry target.
+    #[tokio::test]
+    async fn initial_fringe_signal_requires_an_authorized_nonempty_target() {
+        let log = Arc::new(RecordingLog::default());
+        let (mut engine, bootstrap, _approved) = failing_engine(&log).await;
+        let signal = engine.initial_fringe_received_handle();
+        let mut fringe = FinalizedFringe {
+            hashes: vec![],
+            state_hash: StateHash::new([7u8; 32]),
+            ancestry: vec![],
+        };
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe.clone()))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), signal.notified())
+                .await
+                .is_err()
+        );
+        fringe.hashes = vec![hash(7)];
+        engine
+            .handle(
+                &peer("outsider"),
+                &CasperMessage::FinalizedFringe(fringe.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), signal.notified())
+                .await
+                .is_err()
+        );
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), signal.notified())
+            .await
+            .expect("admitted target stops solicitation");
+    }
+
     #[tokio::test]
     async fn a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync() {
         let log = Arc::new(RecordingLog::default());
