@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -332,7 +332,7 @@ jobs:
           if-no-files-found: warn
 
   final-gap-real-nodes:
-    if: ${{ github.event.inputs.mode == 'final-gap' }}
+    if: ${{ github.event.inputs.mode == 'final-gap' || github.event.inputs.mode == 'final-gap-nodes' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -344,9 +344,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Build exact integrated rnode once
         run: tools/devnet.sh build
+      - name: Preserve source-pinned compiled image
+        run: |
+          mkdir -p target/final-gap-image
+          docker image inspect rnode:local > target/final-gap-image/docker-image.json
+          git rev-parse HEAD > target/final-gap-image/source.txt
+          docker save rnode:local | gzip -1 > target/final-gap-image/rnode-image.tar.gz
+          sha256sum target/final-gap-image/rnode-image.tar.gz > target/final-gap-image/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: final-gap-node-image-${{ github.run_id }}
+          path: target/final-gap-image/
+          retention-days: 3
       - name: Independent bounded real-node campaigns
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           mkdir -p target/final-gap
           failed=0
@@ -376,6 +389,12 @@ jobs:
             fi
             echo "n$n=$code" | tee -a target/final-gap/exit-codes.txt
             test "$code" -eq 0 || failed=1
+            if [ "$start_code" -eq 0 ]; then
+              python3 tests/consensus-partition-rejoin.py --validators "$n" --out "target/final-gap/n$n-partition" > "target/final-gap/n$n-partition-campaign.log" 2>&1
+              partition_code=$?
+              echo "n$n-partition=$partition_code" | tee -a target/final-gap/exit-codes.txt
+              test "$partition_code" -eq 0 || failed=1
+            fi
             for ((i=0;i<n;i++)); do
               node="acceptance-validator-$i"; [ "$i" -ne 0 ] || node=acceptance-bootstrap
               docker logs "$node" > "target/final-gap/n$n-$node.log" 2>&1 || true

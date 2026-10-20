@@ -163,9 +163,12 @@ def reset_with_reply_loss(bootstrap_ip, node_id, genesis):
     rule = ["-s", bootstrap_ip, "-p", "tcp", "--dport", "40400",
             "-m", "comment", "--comment", "lfs-initial-reply-control", "-j", "DROP"]
     def firewall(*args):
-        return subprocess.run(["sudo", "iptables", *args], check=True, text=True,
+        pid = positive.cmd("docker", "inspect", "-f", "{{.State.Pid}}", positive.BOOTSTRAP)
+        if not pid.isdecimal() or int(pid) <= 1:
+            raise AssertionError("invalid disposable bootstrap PID")
+        return subprocess.run(["sudo", "nsenter", "-t", pid, "-n", "iptables", *args], check=True, text=True,
                               capture_output=True, timeout=15).stdout
-    firewall("-I", "DOCKER-USER", "1", *rule)
+    firewall("-I", "OUTPUT", "1", *rule)
     started = time.monotonic()
     try:
         adversarial.reset(bootstrap_ip, key=node_id)
@@ -181,7 +184,10 @@ def reset_with_reply_loss(bootstrap_ip, node_id, genesis):
             time.sleep(1)
         else:
             raise AssertionError("no second acknowledged solicitation while reply path blocked")
-        counters = firewall("-L", "DOCKER-USER", "-n", "-v", "-x")
+        counters = firewall("-L", "OUTPUT", "-n", "-v", "-x")
+        matching = [line.split() for line in counters.splitlines() if "lfs-initial-reply-control" in line]
+        if len(matching) != 1 or not matching[0][0].isdecimal() or int(matching[0][0]) <= 0:
+            raise AssertionError("reply-loss rule did not actually drop any packet")
         save("initial_reply_loss_control.json", {
             "source_sha": subprocess.check_output(["git","rev-parse","HEAD"], text=True).strip(),
             "bootstrap_ip": bootstrap_ip, "acknowledged_request_logs": requests,
@@ -191,7 +197,7 @@ def reset_with_reply_loss(bootstrap_ip, node_id, genesis):
         print("LFS_INITIAL_REPLY_LOSS_CONTROL " + json.dumps({"acknowledged_requests":len(requests),
               "blocked_seconds":round(time.monotonic()-started,2)}), flush=True)
     finally:
-        firewall("-D", "DOCKER-USER", *rule)
+        firewall("-D", "OUTPUT", *rule)
 
 
 def main():
