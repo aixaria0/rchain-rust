@@ -29,6 +29,9 @@ on:
       mode:
         description: "fuzz modes (valid, malformed, scheduler, gateway, all) or pr373-proof"
         default: "all"
+      recovery_case:
+        description: "Recovery campaign subset: all, lfs, n4, n8 (retains independent verdicts)"
+        default: "all"
       iterations:
         description: "explore-deploy iterations for the valid mode"
         default: "100"
@@ -431,6 +434,8 @@ jobs:
       DEVNET_NODE_MEMORY: "2g"
       DEVNET_THREAD_POOL_SIZE: "2"
       LFS_INITIAL_REPLY_LOSS: "1"
+      ACCEPTANCE_ARTIFACTS: "1"
+      RECOVERY_CASE: ${{ github.event.inputs.recovery_case || 'all' }}
       RNODE_EVIDENCE_SOURCE_SHA: "d3ccb4c03ecbf09f786c420e8dff9243f1809413"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -456,6 +461,8 @@ jobs:
           set -uo pipefail
           mkdir -p target/final-gap
           failed=0
+          case "$RECOVERY_CASE" in all|lfs|n4|n8) ;; *) echo "invalid recovery subset"; exit 2;; esac
+          if [ "$RECOVERY_CASE" = all ] || [ "$RECOVERY_CASE" = lfs ]; then
           tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose > target/final-gap/lfs-start.log 2>&1
           start_code=$?
           if [ "$start_code" -eq 0 ]; then
@@ -470,7 +477,9 @@ jobs:
             docker logs "$node" > "target/final-gap/lfs-$node.log" 2>&1 || true
           done
           tools/devnet.sh down -v || true
+          fi
           for n in 4 8; do
+            if [ "$RECOVERY_CASE" != all ] && [ "$RECOVERY_CASE" != "n$n" ]; then continue; fi
             export DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance
             tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/final-gap/n$n-start.log" 2>&1
             start_code=$?

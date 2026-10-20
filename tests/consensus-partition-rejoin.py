@@ -42,6 +42,15 @@ def main():
     victim=a.node_name(args.validators-1)
     volume_before=durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])
     rounds=[]
+    def capture_phase(label):
+        # Raw accepted blocks, operator gate verdicts and binary identity; read-only.
+        previous=d.out
+        try:
+            d.out=previous/label;d.out.mkdir(exist_ok=True)
+            a.causal_trace.capture(d,a.get,a.node_name)
+        finally:
+            d.out=previous
+    capture_phase("before-partition")
     try:
         for cycle in range(2):
             before=a.finalized_identity(a.get(0,"/api/last-finalized-block"))
@@ -66,11 +75,13 @@ def main():
                 if all(x["height"]>=before[0]+3 for x in identities):
                     advanced=True;break
                 time.sleep(2)
+            capture_phase(f"partition-{cycle+1}-before-healing")
             cmd("docker","network","connect","acceptance",victim)
             target=max(x["height"] for x in identities)
             recovered=d.wait("all validators retain marker after partition healing",
                              lambda:d.finalized_marker(target,required=True))
             d.fixed_snapshots(original["initial_finalized"])
+            capture_phase(f"partition-{cycle+1}-healed")
             if durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])!=volume_before:
                 raise AssertionError("rejoin replaced the durable mounts")
             rounds.append({"cycle":cycle+1,"isolated_validator":victim,
