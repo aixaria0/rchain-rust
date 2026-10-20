@@ -21,4 +21,26 @@ class RecoveryHarnessTests(unittest.TestCase):
     def test_missing_or_ambiguous_state_volume_is_refused(self):
         for mounts in [[],self.fixture()["Mounts"]*2]:
             with self.assertRaises(AssertionError):m.durable_state_volume({"Mounts":mounts})
+
+
+class ActiveRecoveryWitnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location("active_recovery",ROOT/"tests/lfs-passive-reactivation.py")
+        cls.witness=importlib.util.module_from_spec(spec);spec.loader.exec_module(cls.witness)
+
+    def test_successful_post_restore_sequence_is_recorded(self):
+        log="\n".join(f"INFO proposed and added block #{q+1} (seq {q})" for q in range(5,12))
+        self.assertEqual([r["seq"] for r in self.witness.active_proposal_witness(log)],list(range(5,12)))
+
+    def test_key_enabled_and_passive_finality_cannot_substitute_for_proposal(self):
+        with self.assertRaises(AssertionError):
+            self.witness.active_proposal_witness("validator key enabled; LFB advanced; no errors")
+
+    def test_sequence_reuse_or_regression_refuses_acceptance(self):
+        for q in [4,5]:
+            with self.assertRaises(AssertionError):
+                self.witness.active_proposal_witness(f"proposed and added block #6 (seq 5)\nproposed and added block #7 (seq {q})")
+
 if __name__=="__main__":unittest.main()

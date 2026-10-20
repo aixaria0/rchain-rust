@@ -6,6 +6,7 @@ Does not delete the state volume, bypass local finality, or alter production cod
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import time
@@ -47,6 +48,16 @@ def port_bindings(ins):
             address = binding.get("HostIp") or ""
             result.extend(["-p", f"{address}:{hostport}:{target}" if address else f"{hostport}:{target}"])
     return result
+
+
+def active_proposal_witness(log):
+    rows=[{"height":int(h),"seq":int(q)} for h,q in re.findall(
+        r"proposed and added block #(\d+) \(seq (\d+)\)",log)]
+    if not rows:
+        raise AssertionError("Key enabled without an observed successful local proposal")
+    if any(b["seq"]<=a["seq"] for a,b in zip(rows,rows[1:])):
+        raise AssertionError("Reactivated validator reused or regressed its own sequence")
+    return rows
 
 
 def main():
@@ -179,6 +190,7 @@ def main():
 
     fresh = call("docker", "logs", "--since", str(int(activation_ts)-1), NAME, timeout=25)
     logs = fresh.stdout + fresh.stderr
+    active_blocks = active_proposal_witness(logs)
     reported_equivocation = "equivocation detected" in logs
     reported_bad_state = "declared pre-state hash is not the state" in logs
     had_new_lfs = "LFS state is successfully restored." in logs
@@ -186,6 +198,7 @@ def main():
         "source_sha": call("git", "rev-parse", "HEAD").stdout.strip(),
         "anchor_hash": expected_hash, "anchor_height": expected_height,
         "accepted_work_marker": driver.marker,
+        "successful_local_proposals": active_blocks,
         "same_volume": True, "validator_key_reenabled": True,
         "observations": observations, "proposals": proposals,
         "after": last, "new_lfs_after_reactivation": had_new_lfs,
