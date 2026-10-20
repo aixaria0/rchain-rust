@@ -1,7 +1,7 @@
 //! Block validation predicates (port of `Validate.scala`) — the pure, effect-free checks.
 
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_version::SUPPORTED;
+use rchain_models::block_version::{VersionSchedule, COMPILED, SUPPORTED};
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::refined::ShardId;
 
@@ -583,10 +583,8 @@ pub async fn block_timestamp(
 
 /// Compose the effectful + pure checks (port of `blockSummary`).
 ///
-/// `max_number_of_parents` is threaded here from `casper.max-number-of-parents` exactly as
-/// `min_phlo_price` is, and for the same reason: it is a consensus bound that is a property of the
-/// *network's* configuration rather than of the block, so it cannot be read off the block and must be
-/// handed in by the node (#153).
+/// Explicit-bound entry point for callers with already resolved parameters and legacy fixtures.
+/// The production validator uses [`block_summary_from_state`] to resolve the committed bounds.
 pub async fn block_summary(
     dag: &dyn BlockDagStorage,
     block_store: &BlockStore,
@@ -595,6 +593,27 @@ pub async fn block_summary(
     expiration_threshold: i64,
     min_phlo_price: i64,
     max_number_of_parents: i32,
+) -> Result<ValidBlockProcessing, String> {
+    block_summary_from_state(
+        dag,
+        block_store,
+        block,
+        shard_id,
+        expiration_threshold,
+        std::future::ready(Ok((min_phlo_price, i64::from(max_number_of_parents)))),
+    )
+    .await
+}
+
+/// Resolve bounds only after structural checks, but before timestamp reads, merge and replay.
+/// The future reads a locally validated parent's state, never the incoming block's claimed root.
+pub async fn block_summary_from_state(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    block: &BlockMessage,
+    shard_id: &str,
+    expiration_threshold: i64,
+    bounds: impl std::future::Future<Output = Result<(i64, i64), String>>,
 ) -> Result<ValidBlockProcessing, String> {
     if let Err(status) = justification_regressions(dag, block).await? {
         return Ok(Err(status));
@@ -605,6 +624,7 @@ pub async fn block_summary(
     if let Err(status) = block_number(dag, block).await? {
         return Ok(Err(status));
     }
+    let (min_phlo_price, max_number_of_parents) = bounds.await?;
     // Pure deploy checks — including `phlo_price`, which must be rejected *before* the expensive
     // replay so an economically-free deploy cannot force every validator to replay it (R27).
     let pure = [
@@ -740,13 +760,14 @@ pub fn deploy_count(b: &BlockMessage) -> BlockStatus {
 ///
 /// **The bound is a property of the network, so it arrives as an argument.** A non-positive value
 /// disables the check, which is how a chain that has not adopted it keeps the pre-#153 semantics
-/// exactly — the same shape as `min_phlo_price` being handed in rather than compiled in.
+/// exactly. The caller resolves both bounds from committed state (or legacy config).
 ///
 /// Refusing a set above a fixed width **is a consensus change**, because such a block is valid today.
 /// It is registered in `spec/audit/passes.md` §6 and tracked on #51 §A, and the shipped default is the
 /// protocol's existing per-block width rather than `i32::MAX`.
-pub fn justification_count(b: &BlockMessage, max_number_of_parents: i32) -> BlockStatus {
-    if max_number_of_parents <= 0 || b.justifications.len() <= max_number_of_parents as usize {
+pub fn justification_count(b: &BlockMessage, max_number_of_parents: i64) -> BlockStatus {
+    if max_number_of_parents <= 0 || b.justifications.len() as u128 <= max_number_of_parents as u128
+    {
         BlockStatus::Valid
     } else {
         BlockStatus::TooManyJustifications
@@ -803,8 +824,19 @@ pub fn block_phlo(b: &BlockMessage) -> BlockStatus {
 ///
 /// Declared here rather than beside the other predicates for the reason [`deploy_signatures`]
 /// records: inserting above `block_summary` shifts line numbers the law register cites.
+///
+/// **And the version has to be the one scheduled for the block's height**, not merely one this binary
+/// knows (`rchain_models::block_version::SCHEDULE`). That is what makes a rule change a scheduled one
+/// rather than a new genesis: below an activation height a block must still carry the old version, so
+/// the old rules keep applying to the history a node replays, and at or above it every block must carry
+/// the new one, so no proposer can opt out of the new rules or into them early. With the single shipped
+/// row (version 1 from height 0) the two conditions are the same and no block changes.
 pub fn block_version(b: &BlockMessage) -> BlockStatus {
-    if version(b) {
+    block_version_for_schedule(b, COMPILED)
+}
+
+fn block_version_for_schedule(b: &BlockMessage, schedule: VersionSchedule) -> BlockStatus {
+    if b.version == schedule.version_at(i64::from(b.block_number)) {
         BlockStatus::Valid
     } else {
         BlockStatus::InvalidVersion
@@ -860,6 +892,50 @@ mod tests {
 
         b.version = 999;
         assert_eq!(block_version(&b), BlockStatus::InvalidVersion);
+    }
+
+    #[test]
+    fn scheduled_block_versions_are_required_at_and_after_activation_and_history_replays() {
+        use rchain_models::block_version::Activation;
+        use rchain_shared::refined::BlockHeight;
+
+        const STAGED: VersionSchedule = VersionSchedule::new(&[
+            Activation {
+                version: 1,
+                from_height: 0,
+            },
+            Activation {
+                version: 2,
+                from_height: 10,
+            },
+        ]);
+        for height in [0, 1, 9, 10, 11, 100] {
+            let mut b = block();
+            b.block_number = BlockHeight::try_from(height).unwrap();
+            for version in [1, 2, 999] {
+                b.version = version;
+                let expected = if version == if height < 10 { 1 } else { 2 } {
+                    BlockStatus::Valid
+                } else {
+                    BlockStatus::InvalidVersion
+                };
+                assert_eq!(
+                    block_version_for_schedule(&b, STAGED),
+                    expected,
+                    "height {height}, version {version}"
+                );
+            }
+        }
+        for height in 0..10 {
+            let mut historic = block();
+            historic.block_number = BlockHeight::try_from(height).unwrap();
+            historic.version = 1;
+            assert_eq!(block_version(&historic), BlockStatus::Valid);
+            assert_eq!(
+                block_version_for_schedule(&historic, STAGED),
+                BlockStatus::Valid
+            );
+        }
     }
 
     /// A block carrying more deploys than the seed index can address is refused, and the limit itself
@@ -980,7 +1056,7 @@ mod tests {
 
         for off in [0, -1, i32::MIN] {
             assert_eq!(
-                justification_count(&wide, off),
+                justification_count(&wide, i64::from(off)),
                 BlockStatus::Valid,
                 "a bound of {off} means the check is off, not that every block is refused"
             );
