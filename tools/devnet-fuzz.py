@@ -436,7 +436,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history", "lfs-history-controlled", "lfs-history-anchored"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history", "lfs-history-controlled", "lfs-history-anchored", "lfs-history-reactivate"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -450,6 +450,16 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-history-reactivate" in modes:
+        if modes != ["lfs-history-reactivate"]:
+            ap.error("LFS validator reactivation is a standalone arm")
+        if args.dry_run:
+            print("LFS passive restore, checkpoint restart, validator key reactivation")
+            return
+        subprocess.run([sys.executable, "tests/lfs-anchored-checkpoint.py"], check=True)
+        subprocess.run([sys.executable, "tests/lfs-passive-reactivation.py"], check=True)
+        return
 
     if "lfs-history-anchored" in modes:
         if modes != ["lfs-history-anchored"]:

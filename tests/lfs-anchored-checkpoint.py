@@ -275,6 +275,10 @@ def main():
         "after_lfb": result2["lfb"],
     }), flush=True)
 
+    # Passive recovery passed. Test validator reactivation with the exact
+    # retained state volume before making a production recommendation.
+    subprocess.run(["python3", "tests/lfs-passive-reactivation.py"], check=True)
+
 
 if __name__ == "__main__":
     main()

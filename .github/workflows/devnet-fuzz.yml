@@ -51,7 +51,7 @@ jobs:
       FUZZ_MODE: ${{ github.event.inputs.mode || 'all' }}
       # Hosted runner: the LFS operator-anchor arm needs HTTP on validators,
       # not published gRPC. Avoid conflicts with host services on 42402.
-      DEVNET_SKIP_JOINER_GRPC_PUBLISH: ${{ github.event.inputs.mode == 'lfs-history-anchored' && '1' || '0' }}
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: ${{ (github.event.inputs.mode == 'lfs-history-anchored' || github.event.inputs.mode == 'lfs-history-reactivate') && '1' || '0' }}
       ITERATIONS: ${{ github.event.inputs.iterations || '100' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -70,7 +70,7 @@ jobs:
         run: |
           if [[ "$FUZZ_MODE" == "lfs-history" ]]; then
             tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --effect-scheduler "$EFFECT_SCHEDULER"
-          elif [[ "$FUZZ_MODE" == "lfs-history-anchored" ]]; then
+          elif [[ "$FUZZ_MODE" == "lfs-history-anchored" || "$FUZZ_MODE" == "lfs-history-reactivate" ]]; then
             tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose --effect-scheduler "$EFFECT_SCHEDULER"
           elif [[ "$FUZZ_MODE" == "lfs-history-controlled" ]]; then
             tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose --effect-scheduler "$EFFECT_SCHEDULER"
@@ -86,7 +86,7 @@ jobs:
             --mode "$FUZZ_MODE"
 
       - name: Retain state-history and checkpoint evidence
-        if: always() && (env.FUZZ_MODE == 'lfs-history' || env.FUZZ_MODE == 'lfs-history-controlled' || env.FUZZ_MODE == 'lfs-history-anchored')
+        if: always() && (env.FUZZ_MODE == 'lfs-history' || env.FUZZ_MODE == 'lfs-history-controlled' || env.FUZZ_MODE == 'lfs-history-anchored' || env.FUZZ_MODE == 'lfs-history-reactivate')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: lfs-history-${{ github.run_id }}
