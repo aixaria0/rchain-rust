@@ -517,7 +517,7 @@ mod tests {
         for (peer, proto) in sends.iter() {
             assert_eq!(peer, &bootstrap);
             let req = FinalizedFringeRequestSerde
-                .from_packet(&unpack(proto))
+                .parse_from(&unpack(proto))
                 .expect("fringe request");
             assert!(req.trim_state);
             assert!(req.include_fringe_metadata);
