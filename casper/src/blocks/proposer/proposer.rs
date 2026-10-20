@@ -837,8 +837,8 @@ fn stall_ms_since(first_sighting: &Mutex<Option<Instant>>, now: Instant) -> i64 
 }
 
 /// Whether the round gate may be escaped: only an elapsed stall reaches the bound.
-/// The number of attempts is retained for logging, never as an independent escape licence (#339).
-fn round_escape_owed(_waited: i64, stalled_ms: i64) -> bool {
+/// Attempt counts are diagnostic telemetry, intentionally absent from this decision (#339).
+fn round_escape_owed(stalled_ms: i64) -> bool {
     stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
 }
 
@@ -906,7 +906,7 @@ where
             let waited =
                 blocked_since_advance.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let stalled_ms = stall_ms_since(blocked_since, Instant::now());
-            if !round_escape_owed(waited, stalled_ms) {
+            if !round_escape_owed(stalled_ms) {
                 return Ok(BlockCreatorResult::AlreadyProposedThisRound);
             }
             log.warn(
@@ -1307,18 +1307,18 @@ mod tests {
             stall_ms_since(&since, first + Duration::from_millis(14_999)),
             14_999
         );
-        assert!(!round_escape_owed(
-            i64::MAX,
-            stall_ms_since(&since, first + Duration::from_millis(14_999))
-        ));
+        assert!(!round_escape_owed(stall_ms_since(
+            &since,
+            first + Duration::from_millis(14_999)
+        )));
         assert_eq!(
             stall_ms_since(&since, first + Duration::from_millis(15_000)),
             15_000
         );
-        assert!(round_escape_owed(
-            1,
-            stall_ms_since(&since, first + Duration::from_millis(15_000))
-        ));
+        assert!(round_escape_owed(stall_ms_since(
+            &since,
+            first + Duration::from_millis(15_000)
+        )));
         *since.lock().unpoison() = None;
         assert_eq!(stall_ms_since(&since, first + Duration::from_secs(60)), 0);
     }
@@ -1332,16 +1332,16 @@ mod tests {
         let _ = stall_ms_since(&since, first);
         // The former SystemTime subtraction would license escape after a forward
         // step, and would delay it after a backward step. Neither offset is read.
-        assert!(round_escape_owed(20, 60_000));
-        assert!(!round_escape_owed(
-            20,
-            stall_ms_since(&since, first + Duration::from_secs(1))
-        ));
-        assert!(!round_escape_owed(20, -60_000));
-        assert!(round_escape_owed(
-            20,
-            stall_ms_since(&since, first + ROUND_STALL_ESCAPE)
-        ));
+        assert!(round_escape_owed(60_000));
+        assert!(!round_escape_owed(stall_ms_since(
+            &since,
+            first + Duration::from_secs(1)
+        )));
+        assert!(!round_escape_owed(-60_000));
+        assert!(round_escape_owed(stall_ms_since(
+            &since,
+            first + ROUND_STALL_ESCAPE
+        )));
         assert_eq!(stall_ms_since(&since, first - Duration::from_secs(1)), 0);
     }
 
@@ -1351,40 +1351,26 @@ mod tests {
     /// already supplies another proposal after 15 seconds on a quiet network (C210).
     #[test]
     fn the_round_escape_requires_elapsed_stall_even_after_many_attempts() {
-        let window = liveness::LIVENESS_WINDOW;
+        // The predicate accepts elapsed time only; attempt bursts cannot influence it.
         let stall_ms = ROUND_STALL_ESCAPE.as_millis() as i64;
 
-        assert!(!round_escape_owed(1, 0), "first refusal starts the clock");
+        assert!(!round_escape_owed(0), "first refusal starts the clock");
+        assert!(!round_escape_owed(967), "N=8 premature escape witness");
+        assert!(!round_escape_owed(3_388), "N=8 maximum recorded escape");
         assert!(
-            !round_escape_owed(window + 1, 0),
-            "six attempts in zero time"
+            !round_escape_owed(stall_ms - 1),
+            "the interval is strictly below the 15-second bound"
         );
         assert!(
-            !round_escape_owed(window + 1, 967),
-            "N=8 premature escape witness"
-        );
-        assert!(
-            !round_escape_owed(window + 1, 3_388),
-            "N=8 maximum recorded escape"
-        );
-        assert!(
-            !round_escape_owed(i64::MAX, stall_ms - 1),
-            "even very many attempts cannot escape early"
-        );
-        assert!(
-            !round_escape_owed(0, -1),
+            !round_escape_owed(-1),
             "negative elapsed time cannot escape"
         );
         assert!(
-            round_escape_owed(1, stall_ms),
+            round_escape_owed(stall_ms),
             "the precise stall boundary licenses escape"
         );
         assert!(
-            round_escape_owed(0, stall_ms),
-            "no attempt-count threshold is necessary"
-        );
-        assert!(
-            round_escape_owed(window + 1, stall_ms + 1),
+            round_escape_owed(stall_ms + 1),
             "the gate remains open after the bound"
         );
     }
@@ -3422,7 +3408,9 @@ mod quiet_chain_tests {
                     waited[v] += 1;
                     // The stall bound: a step is a later moment in wall-clock time than the one before.
                     let since = *blocked_since[v].get_or_insert(step);
-                    if !(waited[v] > liveness::LIVENESS_WINDOW || since < step) {
+                    // Mirror the production elapsed-stall licence (#379), not the old
+                    // attempt-count shortcut. A later step represents elapsed time here.
+                    if since >= step {
                         continue;
                     }
                     escapes += 1;
