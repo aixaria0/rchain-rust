@@ -1,0 +1,433 @@
+{
+  "schema": 1,
+  "tracker": "https://github.com/rchain-community/rchain-rust/issues/51",
+  "source_dev_sha": "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b",
+  "observed_date": "2026-10-20",
+  "closure_requested": false,
+  "policy": "Every §A/§B and every §6 consensus-changing row must be merged on dev or deferred to an explicitly named release with an attributable maintainer decision. A green test run alone is not closure.",
+  "items": [
+    {
+      "id": "A:block-timestamp",
+      "title": "Informational block timestamp",
+      "status": "merged",
+      "evidence": {
+        "pr": 44,
+        "merge_commit": "228b66742fb740b2e44828a580122f4dac91489c"
+      },
+      "notes": "Merge verified; release-coordination semantics are tracked separately."
+    },
+    {
+      "id": "A:binary-attachments",
+      "title": "RCHIP #39 binary attachments on DeployData",
+      "status": "merged",
+      "evidence": {
+        "pr": 53,
+        "merge_commit": "9a04285a6bb80221256fc97290a4a31d2cafc6ad"
+      },
+      "notes": "Merged implementation; validators must still coordinate before attachment-bearing deploys."
+    },
+    {
+      "id": "B:binary-attachments",
+      "title": "RCHIP #39 client/deploy attachment path",
+      "status": "merged",
+      "evidence": {
+        "pr": 53,
+        "merge_commit": "9a04285a6bb80221256fc97290a4a31d2cafc6ad"
+      },
+      "notes": "Protocol feature landed; client/validator rollout requires independent acceptance."
+    },
+    {
+      "id": "B:string-functions",
+      "title": "RCHIP #37 string functions",
+      "status": "merged",
+      "evidence": {
+        "pr": 47,
+        "merge_commit": "f07a2628a7242d4d16e1daeed94a3d9d7d183a09"
+      },
+      "notes": "Merged; S.length bytes-to-characters behavior is a compatibility change."
+    },
+    {
+      "id": "A:bigint-decimal",
+      "title": "RCHIP #51: BigInt and exact Decimal",
+      "status": "open",
+      "decision_owner": "maintainers",
+      "references": [
+        "#49",
+        "#389",
+        "#390",
+        "#380",
+        "#373",
+        "#391"
+      ],
+      "blocker": "BigInt/Decimal Rust and Lean landed; release requires merged #373 new-genesis and uniform validator acceptance; #380 is open."
+    },
+    {
+      "id": "A:double-mint",
+      "title": "RCHIP #44 bonded REV double-mint correction",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "Decide correction/migration scope and release."
+    },
+    {
+      "id": "A:hardfork1-migration",
+      "title": "RCHIP #42 Hard Fork 1 supply migration",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "Need state/supply migration decision and reproducible export."
+    },
+    {
+      "id": "A:vault-export",
+      "title": "RCHIP #41 REV vault state export",
+      "status": "open",
+      "decision_owner": "Jim / operators",
+      "references": [
+        "#51",
+        "#274"
+      ],
+      "blocker": "Full state preservation/export and independently verified inventory absent."
+    },
+    {
+      "id": "A:genesis-contract-upgrade",
+      "title": "RCHIP #43 governed replacement of genesis contracts",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51",
+        "#373"
+      ],
+      "blocker": "Master dictionary alias/versioned upgrade path not implemented."
+    },
+    {
+      "id": "A:shard-config",
+      "title": "RCHIP #24 committed shard/PoS config",
+      "status": "open",
+      "decision_owner": "Jim / maintainers",
+      "references": [
+        "#373",
+        "#376"
+      ],
+      "blocker": "Partial committed bounds implementation in unmerged #373; wider on-chain shard config not shown completed."
+    },
+    {
+      "id": "A:block-merge",
+      "title": "RCHIP #23 block merging / event-log semantics",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#51",
+        "#373"
+      ],
+      "blocker": "Parent bound is not the full proposed merge semantics; needs separate decision."
+    },
+    {
+      "id": "A:rev-economics",
+      "title": "RCHIP #47 REV stabilization/mint and vesting",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#371",
+        "#372",
+        "#388"
+      ],
+      "blocker": "Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation."
+    },
+    {
+      "id": "A:validator-rewards",
+      "title": "RCHIP #46 rotation/longevity/open enrollment",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#373",
+        "#51"
+      ],
+      "blocker": "fundPot is a rewards rail only; policy and validator-state changes are unlanded."
+    },
+    {
+      "id": "A:unbond-throttle",
+      "title": "RCHIP #4 unbonding rate throttle",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "No verified implementation or named release deferral."
+    },
+    {
+      "id": "A:phlo-exchange",
+      "title": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#373",
+        "#51"
+      ],
+      "blocker": "Committed minimum phlo price is partial; exchange and change-limit decisions remain."
+    },
+    {
+      "id": "A:storage-rent",
+      "title": "RCHIP #40 data retention/rent",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "Per-entry records, eviction semantics and release decision absent."
+    },
+    {
+      "id": "A:prepaid-rholang",
+      "title": "RCHIP #38 prepaid execution",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "No verified implementation or named release deferral."
+    },
+    {
+      "id": "A:asset-store",
+      "title": "RCHIP #30 blessed assetStore if chosen",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "Conditional decision whether to bless; cannot infer exclusion."
+    },
+    {
+      "id": "A:decentralized-rspace",
+      "title": "RCHIP #53 RSpace decentralization, if consensus-affecting",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#51"
+      ],
+      "blocker": "Classify performance vs consensus effects and decide rollout."
+    },
+    {
+      "id": "B:staking-pools",
+      "title": "RCHIP #32 staking pools and REV addresses",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51",
+        "#373"
+      ],
+      "blocker": "fundPot does not replace bonding/pool interface."
+    },
+    {
+      "id": "B:rev-receipt",
+      "title": "RCHIP #31 execute-on-REV-receipt",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "No verified implementation or deferral."
+    },
+    {
+      "id": "B:genesis-contract-upgrade",
+      "title": "RCHIP #43 client-visible blessed-contract upgrade",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51",
+        "#373"
+      ],
+      "blocker": "Shared blocker with A:genesis-contract-upgrade."
+    },
+    {
+      "id": "B:babel",
+      "title": "RCHIP #48 Rholang compatibility translator",
+      "status": "open",
+      "decision_owner": "Jim / language",
+      "references": [
+        "#51"
+      ],
+      "blocker": "No verified implementation or named release deferral."
+    },
+    {
+      "id": "B:breaking-release",
+      "title": "RCHIP #10 coordinated breaking-release runbook",
+      "status": "open",
+      "decision_owner": "Jim / operators",
+      "references": [
+        "#51",
+        "#391"
+      ],
+      "blocker": "A guarded manifest is not a fully accepted history-preserving release runbook."
+    },
+    {
+      "id": "B:staking-pools-interface",
+      "title": "RCHIP #32 beneficiary/reward channel compatibility",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#51"
+      ],
+      "blocker": "Requires explicit interface decision independent of fundPot."
+    },
+    {
+      "id": "Batch:activation-schedule",
+      "title": "Height/version schedule, committed bounds, fundPot and startup guards",
+      "status": "open",
+      "decision_owner": "Jim / maintainers",
+      "references": [
+        "#373",
+        "#376",
+        "#391"
+      ],
+      "blocker": "#373 is Draft/unmerged; #376 implementation was integrated into its branch."
+    },
+    {
+      "id": "Batch:crypto-agility",
+      "title": "RCHIP #274 signature/key/deploy ID agility fork",
+      "status": "open",
+      "decision_owner": "Jim / security",
+      "references": [
+        "#274",
+        "#373"
+      ],
+      "blocker": "Validator key-ID migration, algorithm table, deploy IDs, PQ address/version and fee transitions not landed."
+    },
+    {
+      "id": "Batch:governance-schedule",
+      "title": "Governance-settable version schedule and PoS parameters",
+      "status": "open",
+      "decision_owner": "Jim / governance",
+      "references": [
+        "#373",
+        "#51"
+      ],
+      "blocker": "Governance controls remain unspecified/unlanded."
+    },
+    {
+      "id": "Batch:state-preservation",
+      "title": "Old-state export and new-genesis replay/snapshot ceremony",
+      "status": "open",
+      "decision_owner": "Jim / operators",
+      "references": [
+        "#274",
+        "#373",
+        "#391"
+      ],
+      "blocker": "Need authenticated archive/export, release commit, every validator binary and new genesis hashes; no public restart."
+    },
+    {
+      "id": "Batch:faucet-genesis",
+      "title": "Faucet-funded genesis wallet or funded key reuse",
+      "status": "open",
+      "decision_owner": "Jim / operators",
+      "references": [
+        "#247",
+        "#51"
+      ],
+      "blocker": "Choose remint/new genesis or document funded key reuse."
+    },
+    {
+      "id": "Batch:attestation-format",
+      "title": "Potential lightweight attestation or non-merge-parent change",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#149",
+        "#51"
+      ],
+      "blocker": "Still a candidate pending measurement/decision, not a named release deferral."
+    },
+    {
+      "id": "Audit:section6-categoryA",
+      "title": "Exhaustive §6 category-A reverse inventory",
+      "status": "open",
+      "decision_owner": "Jim / auditors",
+      "references": [
+        "spec/audit/passes.md",
+        "#51"
+      ],
+      "blocker": "Register rows and late audit deviations have not all been independently linked to a merged commit or signed named-release deferral."
+    },
+    {
+      "id": "Audit:law52-partition",
+      "title": "Law 52 C174 finalizer partition",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#51",
+        "spec/audit/passes.md"
+      ],
+      "blocker": "Consensus-visible finality rule requires explicit release acceptance/provenance."
+    },
+    {
+      "id": "Audit:law53-estrangement",
+      "title": "Law 53 C173 estrangement decision",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#125",
+        "#51"
+      ],
+      "blocker": "C173 remains conditional and cannot be auto-closed."
+    },
+    {
+      "id": "Audit:active-set-draw",
+      "title": "Epoch active validator set uniform draw",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#51",
+        "spec/audit/passes.md"
+      ],
+      "blocker": "Consensus-set change requires explicit release attribution."
+    },
+    {
+      "id": "Audit:parent-limit",
+      "title": "C191 #153 parent set bound",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#160",
+        "#373"
+      ],
+      "blocker": "Production code landed in #160, but committed parameter rollout through #373 remains open."
+    },
+    {
+      "id": "Audit:sidecar-merge",
+      "title": "C207 native sidecar cost merge composition",
+      "status": "open",
+      "decision_owner": "Jim / consensus",
+      "references": [
+        "#51",
+        "spec/audit/passes.md"
+      ],
+      "blocker": "Reported landed code; still needs complete §6 release classification and historical acceptance."
+    },
+    {
+      "id": "Release:attachment-upgrade",
+      "title": "Coordinated rollout for RCHIP #39 attachment-bearing deploys",
+      "status": "open",
+      "decision_owner": "Jim / operators",
+      "references": [
+        "#53",
+        "#51"
+      ],
+      "blocker": "Merged code does not prove every validator and client uniformly supports attachments."
+    },
+    {
+      "id": "Release:decimal-genesis",
+      "title": "Uniform Decimal/PoS genesis with evidence-bound history scan",
+      "status": "open",
+      "decision_owner": "Jim / operators",
+      "references": [
+        "#373",
+        "#380",
+        "#391"
+      ],
+      "blocker": "Must audit real persisted state/deploy history and validator hashes; #391's fail-closed gate cannot self-authorize."
+    }
+  ]
+}
