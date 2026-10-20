@@ -27,7 +27,7 @@ on:
         description: "effect-scheduler mode for the devnet (dfs, gate, relaxed-validated, relaxed)"
         default: "dfs"
       mode:
-        description: "fuzz modes to run (valid, malformed, scheduler, gateway, all)"
+        description: "fuzz modes (valid, malformed, scheduler, gateway, all) or pr373-proof"
         default: "all"
       iterations:
         description: "explore-deploy iterations for the valid mode"
@@ -42,6 +42,7 @@ concurrency:
 
 jobs:
   fuzz:
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -106,5 +107,165 @@ jobs:
           done
 
       - name: Tear the devnet down
+        if: always()
+        run: tools/devnet.sh down -v || true
+
+  source-and-regressions:
+    if: ${{ github.event.inputs.mode == 'pr373-proof' || github.event.inputs.mode == 'pr373-proof-rust' }}
+    name: Code and release-preflight regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout integrated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt
+      - name: Install formatter for repository-pinned Rust 1.95
+        run: rustup component add --toolchain 1.95.0 rustfmt
+      - name: Reuse Rust build cache
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+      - name: Install protobuf compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - name: Verify release gate negative controls
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_pr373_release_gate.py' -v
+          ! python3 tools/pr373_release_gate.py /tmp/pr373-release-evidence-not-present.json
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Test block-version and activation schedule invariants
+        run: cargo test --locked -p rchain-models block_version -- --nocapture
+      - name: Test positional record format, legacy and unknown-format refusal
+        run: |
+          set -euo pipefail
+          for name in \
+            params_wire_slots_are_append_only \
+            params_round_trip \
+            an_unknown_params_format_is_refused \
+            a_short_params_record_reads_the_pre_change_rule_and_an_over_share_is_refused; do
+            cargo test --locked -p rchain-rholang --lib "$name" -- --nocapture
+          done
+      - name: Test committed bounds and restore rejection
+        run: cargo test --locked -p rchain-casper --test committed_bounds -- --nocapture
+      - name: Test fundPot invariants and dispatcher
+        run: |
+          set -euo pipefail
+          for name in \
+            funding_the_pot_adds_unclaimed_rev_and_bonding_does_not \
+            pot_funding_overflow_moves_neither_balance \
+            pos_fund_pot_moves_the_callers_rev_into_the_staking_vault; do
+            cargo test --locked -p rchain-rholang --lib "$name" -- --nocapture
+          done
+
+  integrated-new-genesis:
+    if: ${{ github.event.inputs.mode == 'pr373-proof' }}
+    name: Fresh-genesis uniform node admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout integrated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the real rnode image
+        run: tools/devnet.sh build
+      - name: Start isolated 3-validator fresh genesis
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose
+      - name: Verify genesis agreement and source provenance
+        run: |
+          set -euo pipefail
+          mkdir -p target/pr373-assurance
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          def get(port, path):
+              with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=6) as r:
+                  return json.load(r)
+
+          observed = []
+          for port in (40403, 41403, 42403):
+              last = None
+              for attempt in range(65):
+                  try:
+                      status = get(port, "/api/v1/status")
+                      blocks = get(port, "/api/blocks/0/0")
+                      if isinstance(blocks, list) and blocks:
+                          break
+                      raise ValueError("genesis block absent")
+                  except (OSError, ValueError) as err:
+                      last = str(err)
+                      time.sleep(2)
+              else:
+                  raise AssertionError(f"validator port {port} failed to expose genesis: {last}")
+              block = blocks[0]
+              assert isinstance(block, dict) and block.get("blockHash"), block
+              assert int(status["latestBlockNumber"]) >= 1, status
+              observed.append({
+                  "port": port,
+                  "node_id": status.get("address"),
+                  "genesis_hash": block["blockHash"],
+                  "genesis_block": block,
+                  "status": status,
+              })
+          genesis_hashes = {x["genesis_hash"] for x in observed}
+          post_state_hashes = {x["genesis_block"].get("postStateHash") for x in observed}
+          block_versions = {x["genesis_block"].get("version") for x in observed}
+          versions = {x["status"].get("version", {}).get("node") for x in observed}
+          assert len(genesis_hashes) == 1, "conflicting genesis block hashes"
+          assert len(post_state_hashes) == 1 and None not in post_state_hashes, "conflicting or missing genesis post-state"
+          assert block_versions == {1}, "unexpected genesis block-version schedule"
+          assert len(versions) == 1, "different node binary versions"
+          assert all(os.environ["GITHUB_SHA"] in version for version in versions), "wrong source provenance"
+          assert len({x["node_id"] for x in observed}) == 3, "validator node identity collision"
+          evidence = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "validator_count": len(observed),
+              "genesis_hash": next(iter(genesis_hashes)),
+              "genesis_post_state_hash": next(iter(post_state_hashes)),
+              "block_version": next(iter(block_versions)),
+              "node_version": next(iter(versions)),
+              "genesis_agreement": True,
+              "assertions": [
+                  "all three validators returned the same genesis block hash",
+                  "all three validators returned the same genesis post-state hash",
+                  "all genesis blocks were version 1 under the shipped schedule",
+                  "all three validators reported the same source-pinned node version",
+                  "all three validators exposed an active status",
+                  "node identities were distinct",
+              ],
+              "limitations": [
+                  "No on-chain raw PosParams leaf extraction in this smoke test",
+                  "No public-network historical native-state scan",
+                  "No proof of old-genesis mixed-version safety or rollback",
+              ],
+              "observations": observed,
+          }
+          out = Path("target/pr373-assurance/genesis-acceptance.json")
+          out.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print("PR373_INTEGRATED_GENESIS_PASS", evidence["genesis_hash"], evidence["source_sha"])
+          PY
+      - name: Capture node diagnostics on failure
+        if: failure()
+        run: |
+          tools/devnet.sh status || true
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs --tail 120 "$node" 2>&1 || true
+          done
+      - name: Preserve integration evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr373-integrated-genesis-${{ github.run_id }}
+          path: target/pr373-assurance
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Teardown isolated devnet
         if: always()
         run: tools/devnet.sh down -v || true
