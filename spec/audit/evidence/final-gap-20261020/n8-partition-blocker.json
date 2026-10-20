@@ -1,0 +1,138 @@
+{
+  "cycle": 1,
+  "before_height": 24,
+  "remaining_seconds": 1.9226770809999607,
+  "observations_count": 144,
+  "online_first": [
+    {
+      "node": 0,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    },
+    {
+      "node": 1,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    },
+    {
+      "node": 2,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    },
+    {
+      "node": 3,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    },
+    {
+      "node": 4,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    },
+    {
+      "node": 5,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    },
+    {
+      "node": 6,
+      "height": 24,
+      "hash": "e756324dd8bb7a6a51ec78e0dff7f5566420f2003a0b5951aeeb4ccae6cc7fb8"
+    }
+  ],
+  "online_last": [
+    {
+      "node": 0,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    },
+    {
+      "node": 1,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    },
+    {
+      "node": 2,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    },
+    {
+      "node": 3,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    },
+    {
+      "node": 4,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    },
+    {
+      "node": 5,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    },
+    {
+      "node": 6,
+      "height": 25,
+      "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+    }
+  ],
+  "partition_progress_result": "FAIL_300_SECOND_ACCEPTANCE_BOUND",
+  "required_all_online_height": 27,
+  "healing_observations": [
+    {
+      "cycle": 1,
+      "isolated_validator": "acceptance-validator-7",
+      "before_height": 24,
+      "rejoined": [
+        {
+          "node": 0,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 1,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 2,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 3,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 4,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 5,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 6,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        },
+        {
+          "node": 7,
+          "height": 25,
+          "hash": "e48d7195bff43d4a7a3a0e9389be467a70a2c559d932237611ee248be7d1c2b0"
+        }
+      ],
+      "same_volume": true,
+      "original_finalized_snapshots_retained": true,
+      "partition_progress_observed": false
+    }
+  ],
+  "quiet_liveness": "NOT_ESTABLISHED",
+  "source_sha": "6e883ceb8d48f45c470a9a2cac74529f80f79b5d",
+  "binary_source_sha": "d3ccb4c03ecbf09f786c420e8dff9243f1809413",
+  "run": "https://github.com/aixaria0/rchain-rust/actions/runs/39393626848"
+}

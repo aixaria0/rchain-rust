@@ -1,0 +1,148 @@
+{
+  "n4": {
+    "result": "pass",
+    "validators": 4,
+    "initial_finalized": [
+      {
+        "node": 0,
+        "height": 2,
+        "hash": "9177ce099ed2797e428758289302f87e6e50c6862abe2d029a6a0d19a0062319"
+      },
+      {
+        "node": 1,
+        "height": 2,
+        "hash": "9177ce099ed2797e428758289302f87e6e50c6862abe2d029a6a0d19a0062319"
+      },
+      {
+        "node": 2,
+        "height": 2,
+        "hash": "9177ce099ed2797e428758289302f87e6e50c6862abe2d029a6a0d19a0062319"
+      },
+      {
+        "node": 3,
+        "height": 2,
+        "hash": "9177ce099ed2797e428758289302f87e6e50c6862abe2d029a6a0d19a0062319"
+      }
+    ],
+    "final_finalized": [
+      {
+        "node": 0,
+        "height": 24,
+        "hash": "57980eb4e38bcf251e8ef45c4165e334caace78c9f21ac2fcb4d58544135227c"
+      },
+      {
+        "node": 1,
+        "height": 24,
+        "hash": "57980eb4e38bcf251e8ef45c4165e334caace78c9f21ac2fcb4d58544135227c"
+      },
+      {
+        "node": 2,
+        "height": 24,
+        "hash": "57980eb4e38bcf251e8ef45c4165e334caace78c9f21ac2fcb4d58544135227c"
+      },
+      {
+        "node": 3,
+        "height": 24,
+        "hash": "57980eb4e38bcf251e8ef45c4165e334caace78c9f21ac2fcb4d58544135227c"
+      }
+    ],
+    "target_height": 24,
+    "boundary": "finite devnet witness; no universal safety theorem"
+  },
+  "n8": {
+    "result": "pass",
+    "validators": 8,
+    "initial_finalized": [
+      {
+        "node": 0,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 1,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 2,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 3,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 4,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 5,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 6,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      },
+      {
+        "node": 7,
+        "height": 2,
+        "hash": "e242d2445fac038175b32ba9d3a499f991f720e2ba0ad442e7ab6287b1782353"
+      }
+    ],
+    "final_finalized": [
+      {
+        "node": 0,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 1,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 2,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 3,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 4,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 5,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 6,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      },
+      {
+        "node": 7,
+        "height": 24,
+        "hash": "fd56e0d6e3afb87eaba8f6bf47e3e2612b01355fc1fc902cb76c7489a0734710"
+      }
+    ],
+    "target_height": 24,
+    "boundary": "finite devnet witness; no universal safety theorem"
+  },
+  "elapsed_escape_observations": {
+    "count": 68,
+    "minimum_ms": 16000,
+    "maximum_ms": 38234,
+    "below_15000_ms": []
+  }
+}

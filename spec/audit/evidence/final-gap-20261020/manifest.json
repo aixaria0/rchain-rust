@@ -1,0 +1,17 @@
+{
+  "boundary": "Observed executions only; no release authorization",
+  "upstream_dev": "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b",
+  "archive_digests": {
+    "real_nodes_39390752453": "f1d3223750f48e907a4c8d40584e7f518b8e0961d79a824aeece35d05da9e9c3",
+    "recovery_39393626848": "827e5e78c8569ff8941f04571ac57960d968137099b31188b0c51d12a3eab94a",
+    "image_12248994560": "7369aa45c8a3a41350cc0179a2947c2a2f322a164787e29af64ed438ee5ecf20"
+  },
+  "raw_evidence_retention_days": 14,
+  "image_retention_days": 3,
+  "files": {
+    "anchored-active-recovery.json": "930757c4bdf818cea2dea9cc269d8cfce313577cb39535fb8b525637d48ba88d",
+    "healthy-n4-n8.json": "9989871143d3f35ebfc3da5a240c771c53a3e01c72909d9a7ac4f89fa386d26d",
+    "n4-partition-rejoin.json": "3658a832223bcb18d33180140c0e9d513cacb6d8ceb85cc091cd2eed3c0b7b9c",
+    "n8-partition-blocker.json": "6e7c9b12e53fc94f8442987f776d709c62074b6ca042e3441479de767ebed25b"
+  }
+}
