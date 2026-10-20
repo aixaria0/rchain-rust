@@ -9,7 +9,16 @@
 # `hocon` depends on `java-properties`, which currently depends on the abandoned
 # `encoding` crate. There is no safe upgrade available upstream; keep this exception
 # visible and scoped to the specific RustSec advisory while the dependency is replaced.
-ignore = ["RUSTSEC-2021-0153"]
+ignore = [
+    "RUSTSEC-2021-0153",
+    # RUSTSEC-2026-0381 (the distrusted emSign root) is fixed in `webpki-roots` 1.0.10, which the lockfile
+    # holds. The advisory still matches `webpki-roots` 0.26.11 by version range, but 0.26.11 is a
+    # semver-trick shim that re-exports 1.x (its own `lib.rs` says so), so it carries the patched roots.
+    # A crate-scoped ignore does not silence a vulnerability in this cargo-deny, so the ID is ignored
+    # here and the patched floor is kept by the `[bans]` entry on `webpki-roots` below 1.0.10. Drop both
+    # when `tokio-tungstenite` depends on `webpki-roots` 1.x directly.
+    "RUSTSEC-2026-0381",
+]
 
 [licenses]
 # Permissive, per dependency — deliberately **not** including any copyleft license. Add an entry only
@@ -47,3 +56,11 @@ allow = [
 # *depend on*: keeping `private.ignore` on means our license never has to be added to it.
 [licenses.private]
 ignore = true
+
+[bans]
+# The floor that lets `[advisories]` ignore RUSTSEC-2026-0381 by ID: the 1.x copy of `webpki-roots`
+# below 1.0.10 still ships the distrusted emSign root, so it is refused here rather than by the
+# advisory (see the ignore entry for why the advisory cannot be left on).
+deny = [
+    { name = "webpki-roots", version = ">=1.0.0, <1.0.10", reason = "RUSTSEC-2026-0381: 1.0.10 removes the distrusted emSign root" },
+]
