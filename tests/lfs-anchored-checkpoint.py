@@ -111,14 +111,18 @@ def finality_reached(result):
 
 
 def wait_for_local_finality(result, port=41403, deadline=75):
-    """Allow the local finalizer to process the imported ancestry after LFS.
+    """Observe local finality while explicitly driving a quiet source chain.
 
-    Merely seeing all block bodies from /api/block is earlier than observing
-    a local LFB. Keep the bounded gate strict but do not sample it too early.
+    The imported anchor is a recovery root, not a finality certificate. With
+    --no-autopropose, time alone need not supply any new CBC evidence. Record
+    each source proposal and both nodes' finality instead of assuming it will.
     """
     end = time.monotonic() + deadline
     last = dict(result)
+    proposals = []
+    next_proposal = time.monotonic() + 4
     while time.monotonic() < end:
+        source_lfb = history.last_finalized(40403)
         finalized = history.last_finalized(port)
         try:
             yes = history.is_finalized(port, result["anchor_hash"])
@@ -127,10 +131,24 @@ def wait_for_local_finality(result, port=41403, deadline=75):
         last.update({
             "lfb": finalized["blockNumber"] if finalized else None,
             "lfb_hash": finalized["blockHash"] if finalized else None,
+            "source_lfb": source_lfb["blockNumber"] if source_lfb else None,
+            "source_lfb_hash": source_lfb["blockHash"] if source_lfb else None,
             "anchor_locally_finalized": yes,
+            "post_restore_proposals": proposals,
         })
         if finality_reached(last):
             return last
+        if time.monotonic() >= next_proposal and len(proposals) < 12:
+            trial = subprocess.run(["tools/devnet.sh", "propose"], text=True,
+                                   capture_output=True, timeout=35)
+            proposals.append({
+                "attempt": len(proposals) + 1, "code": trial.returncode,
+                "tail": (trial.stdout + trial.stderr)[-300:],
+                "source_lfb_before": last["source_lfb"],
+                "joiner_lfb_before": last["lfb"],
+            })
+            print("LFS_POST_RESTORE_PROPOSE " + json.dumps(proposals[-1]), flush=True)
+            next_proposal = time.monotonic() + 3
         time.sleep(2)
     return last
 
@@ -230,6 +248,7 @@ def main():
         "finality_gate_before": finality_reached(result),
         "finality_gate_after": finality_reached(result2),
     }
+    summary["source_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     save("anchored_checkpoint_summary.json", summary)
     print("LFS_ANCHOR_STATE_PERSISTENCE_PASS " + json.dumps({
         "ancestry_blocks": len(baseline["ancestry"]), "matching_pre_post_state": True,
