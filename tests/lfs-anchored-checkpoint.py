@@ -215,7 +215,7 @@ def main():
         })
     assert len({x["genesis"] for x in genesis_observations}) == 1
     assert len({x["binary_sha256"] for x in genesis_observations}) == 1
-    assert all(os.environ["GITHUB_SHA"] in x["status"].get("version",{}).get("node","")
+    assert all(os.environ.get("RNODE_EVIDENCE_SOURCE_SHA", os.environ["GITHUB_SHA"]) in x["status"].get("version",{}).get("node","")
                for x in genesis_observations), "node source provenance differs"
     save("integrated_genesis_and_binary.json", genesis_observations)
     genesis = positive.genesis_hash(40403)

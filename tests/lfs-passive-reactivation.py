@@ -120,6 +120,22 @@ def main():
         "container_id": started[:18],
     }), flush=True)
 
+    # A quiet chain is allowed to reject an empty propose as NoNewDeploys.
+    # Supply one accepted, state-changing deploy before demanding new finality.
+    probe_spec = importlib.util.spec_from_file_location(
+        "reactivation_work", ROOT.parent / "tools/consensus-acceptance-drill.py")
+    work = importlib.util.module_from_spec(probe_spec)
+    probe_spec.loader.exec_module(work)
+    work.PREFIX = "devnet"
+    from types import SimpleNamespace
+    driver = work.Drill(SimpleNamespace(validators=3, window=110,
+        out=str(OUT / "reactivation-workload")))
+    driver.deploy(f'@{json.dumps(driver.marker)}!({driver.value})')
+    print("LFS_REACTIVATION_DEPLOY_ACCEPTED " + json.dumps({
+        "marker": driver.marker, "value": driver.value,
+        "source_sha": call("git", "rev-parse", "HEAD").stdout.strip(),
+    }), flush=True)
+
     deadline = time.monotonic() + 110
     observations = []
     proposals = []
@@ -138,13 +154,17 @@ def main():
                 "original_anchor_finalized": still_final,
                 "ancestry_matched": consistent["matched"],
                 "state_hashes_identical": consistent["state_hashes_identical"],
+                "new_marker_finalized": (
+                    now is not None and work.marker_present(
+                        work.probe(1, driver.marker, now["blockHash"]), driver.value)
+                ),
             }
             observations.append({"elapsed_s": round(time.time()-activation_ts, 2), **last})
             if (last["source_lfb"] is not None
                     and last["source_lfb"] > expected_height
                     and last["joiner_lfb"] is not None
                     and last["joiner_lfb"] >= last["source_lfb"]
-                    and still_final and consistent["state_hashes_identical"]):
+                    and still_final and consistent["state_hashes_identical"] and last["new_marker_finalized"]):
                 break
         except (OSError, AssertionError, ValueError, KeyError, urllib.error.URLError) as exc:
             observations.append({"elapsed_s": round(time.time()-activation_ts, 2), "read_error": str(exc)[:200]})
@@ -165,6 +185,7 @@ def main():
     result = {
         "source_sha": call("git", "rev-parse", "HEAD").stdout.strip(),
         "anchor_hash": expected_hash, "anchor_height": expected_height,
+        "accepted_work_marker": driver.marker,
         "same_volume": True, "validator_key_reenabled": True,
         "observations": observations, "proposals": proposals,
         "after": last, "new_lfs_after_reactivation": had_new_lfs,
@@ -180,7 +201,7 @@ def main():
 
     if had_new_lfs or reported_equivocation or reported_bad_state:
         raise AssertionError("Activation introduced a fresh sync, equivocation, or prestate error")
-    if not last.get("original_anchor_finalized") or not last.get("state_hashes_identical"):
+    if not last.get("original_anchor_finalized") or not last.get("state_hashes_identical") or not last.get("new_marker_finalized"):
         raise AssertionError("Recovery invariant degraded after reactivating validator")
     if not (last.get("source_lfb") is not None and last["source_lfb"] > expected_height
             and last.get("joiner_lfb") is not None and last["joiner_lfb"] >= last["source_lfb"]):

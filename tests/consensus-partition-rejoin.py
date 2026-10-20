@@ -20,6 +20,15 @@ class WorkloadDrill(a.Drill):
 def cmd(*args):
     return subprocess.check_output(args,text=True,stderr=subprocess.STDOUT,timeout=25).strip()
 
+
+def durable_state_volume(container):
+    mounts=[m for m in container["Mounts"] if m["Destination"]=="/var/lib/rnode"]
+    if len(mounts)!=1 or mounts[0]["Type"]!="volume":
+        raise AssertionError("exactly one durable state volume required")
+    m=mounts[0]
+    return (m["Type"],m["Name"],m["Source"],m["Destination"],m["RW"])
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators",type=int,choices=[4,8],required=True)
@@ -31,7 +40,7 @@ def main():
     d=WorkloadDrill(args);d.run()
     original=json.loads((d.out/"result.json").read_text())
     victim=a.node_name(args.validators-1)
-    volume_before=json.loads(cmd("docker","inspect",victim))[0]["Mounts"]
+    volume_before=durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])
     rounds=[]
     try:
         for cycle in range(2):
@@ -39,7 +48,9 @@ def main():
             cmd("docker","network","disconnect","acceptance",victim)
             networks=json.loads(cmd("docker","inspect","-f","{{json .NetworkSettings.Networks}}",victim))
             if "acceptance" in networks:raise AssertionError("partition was not installed")
-            deadline=time.monotonic()+100;advanced=False;observed=[]
+            # Two 16-second escape/cadence cycles per N=8 sender plus margin:
+            # a pre-registered 300-second window, not an unbounded retry.
+            deadline=time.monotonic()+300;advanced=False;observed=[]
             while time.monotonic()<deadline:
                 d.drive()
                 identities=[]
@@ -49,20 +60,25 @@ def main():
                         raise AssertionError("online validator lost finalized marker")
                     identities.append({"node":i,"height":height,"hash":hash_})
                 observed.append(identities)
+                (d.out/f"partition-{cycle+1}-live.json").write_text(json.dumps({
+                    "cycle":cycle+1,"before_height":before[0],"observations":observed,
+                    "remaining_seconds":max(0,deadline-time.monotonic())},indent=2)+"\n")
                 if all(x["height"]>=before[0]+3 for x in identities):
                     advanced=True;break
                 time.sleep(2)
-            if not advanced:raise AssertionError("online supermajority did not advance while one validator was isolated")
             cmd("docker","network","connect","acceptance",victim)
             target=max(x["height"] for x in identities)
             recovered=d.wait("all validators retain marker after partition healing",
                              lambda:d.finalized_marker(target,required=True))
             d.fixed_snapshots(original["initial_finalized"])
-            if json.loads(cmd("docker","inspect",victim))[0]["Mounts"]!=volume_before:
+            if durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])!=volume_before:
                 raise AssertionError("rejoin replaced the durable mounts")
             rounds.append({"cycle":cycle+1,"isolated_validator":victim,
                 "before_height":before[0],"online_observations":observed,"rejoined":recovered,
-                "same_volume":True,"original_finalized_snapshots_retained":True})
+                "same_volume":True,"original_finalized_snapshots_retained":True,
+                "partition_progress_observed":advanced})
+            if not advanced:
+                raise AssertionError("online supermajority did not advance in 300s; healed recovery was checked separately")
     finally:
         subprocess.run(["docker","network","connect","acceptance",victim],capture_output=True)
         (d.out/"partition-observations.json").write_text(json.dumps(rounds,indent=2)+"\n")

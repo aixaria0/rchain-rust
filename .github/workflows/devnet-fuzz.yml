@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -384,6 +384,99 @@ jobs:
             if [ "$start_code" -eq 0 ]; then
               python3 tools/consensus-acceptance-drill.py --validators "$n" --window 180 --out "target/final-gap/n$n" > "target/final-gap/n$n-campaign.log" 2>&1
               code=$?
+            else
+              code=$start_code
+            fi
+            echo "n$n=$code" | tee -a target/final-gap/exit-codes.txt
+            test "$code" -eq 0 || failed=1
+            if [ "$start_code" -eq 0 ]; then
+              python3 tests/consensus-partition-rejoin.py --validators "$n" --out "target/final-gap/n$n-partition" > "target/final-gap/n$n-partition-campaign.log" 2>&1
+              partition_code=$?
+              echo "n$n-partition=$partition_code" | tee -a target/final-gap/exit-codes.txt
+              test "$partition_code" -eq 0 || failed=1
+            fi
+            for ((i=0;i<n;i++)); do
+              node="acceptance-validator-$i"; [ "$i" -ne 0 ] || node=acceptance-bootstrap
+              docker logs "$node" > "target/final-gap/n$n-$node.log" 2>&1 || true
+              docker inspect "$node" > "target/final-gap/n$n-$node-inspect.json" 2>/dev/null || true
+            done
+            tools/devnet.sh down -v || true
+          done
+          exit "$failed"
+      - name: Preserve all independent outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: final-gap-real-nodes-${{ github.run_id }}
+          path: |
+            target/final-gap/
+            target/lfs-anchor-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Teardown only disposable campaign networks
+        if: always()
+        run: |
+          tools/devnet.sh down -v || true
+          DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
+
+  final-gap-recovery:
+    if: ${{ github.event.inputs.mode == 'final-gap-recovery' }}
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      LFS_INITIAL_REPLY_LOSS: "1"
+      RNODE_EVIDENCE_SOURCE_SHA: "d3ccb4c03ecbf09f786c420e8dff9243f1809413"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Load the already-tested source-pinned node image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/final-gap-image
+          gh api repos/aixaria0/rchain-rust/actions/artifacts/12248994560/zip > /tmp/final-gap-image.zip
+          echo '7369aa45c8a3a41350cc0179a2947c2a2f322a164787e29af64ed438ee5ecf20  /tmp/final-gap-image.zip' | sha256sum --check
+          unzip -q /tmp/final-gap-image.zip -d target/final-gap-image
+          test "$(cat target/final-gap-image/source.txt)" = "$RNODE_EVIDENCE_SOURCE_SHA"
+          sha256sum --check target/final-gap-image/SHA256SUMS
+          git fetch origin "$RNODE_EVIDENCE_SOURCE_SHA" --depth=1
+          git diff --exit-code "$RNODE_EVIDENCE_SOURCE_SHA" HEAD -- casper comm crypto models node shared rholang rspace sdk qucalc Cargo.lock Cargo.toml rust-toolchain.toml docker/rnode/Dockerfile
+          docker load --input target/final-gap-image/rnode-image.tar.gz
+          python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
+      - name: Independent bounded real-node campaigns
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/final-gap
+          failed=0
+          tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose > target/final-gap/lfs-start.log 2>&1
+          start_code=$?
+          if [ "$start_code" -eq 0 ]; then
+            python3 tests/lfs-anchored-checkpoint.py > target/final-gap/lfs-campaign.log 2>&1
+            code=$?
+          else
+            code=$start_code
+          fi
+          echo "lfs=$code" | tee -a target/final-gap/exit-codes.txt
+          test "$code" -eq 0 || failed=1
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs "$node" > "target/final-gap/lfs-$node.log" 2>&1 || true
+          done
+          tools/devnet.sh down -v || true
+          for n in 4 8; do
+            export DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance
+            tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/final-gap/n$n-start.log" 2>&1
+            start_code=$?
+            if [ "$start_code" -eq 0 ]; then
+              code=0
+              echo "Healthy N=$n acceptance already passed on the identical image in 39390752453"
             else
               code=$start_code
             fi
