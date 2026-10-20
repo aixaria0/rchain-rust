@@ -113,3 +113,4 @@ The laws are validated against — not replacing — the Scala tests that alread
 - [N=8 finality and bootstrap recovery, 19 October 2026](audit/evidence/n8-finality-20261019/README.md): source lineage, contribution attribution, passing campaigns and the remaining no-helper gate. Historical evidence; no change to the law register or finding status.
 
 - [Final release and consensus assurance, 20 October 2026](audit/evidence/final-gap-20261020/README.md): exact source/CI provenance, independent node outcomes and remaining release blockers.
+- [Recent user work and stalled attestation](audit/evidence/recent-user-work-attestation.md): C336 failure evidence, bounded proposal policy and pending acceptance.
