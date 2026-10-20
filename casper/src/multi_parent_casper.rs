@@ -1448,6 +1448,72 @@ where
     .await
 }
 
+/// The two bounds are immutable PoS parameters in this release. A validated parent's post-state
+/// therefore supplies the same values as the merged pre-state, without performing an unbounded
+/// merge before applying the parent-count guard. Legacy records alone retain the old config rule.
+async fn validation_bounds_for_block(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    runtime: &RuntimeManager,
+    block: &BlockMessage,
+    legacy_min_phlo_price: i64,
+    legacy_max_number_of_parents: i32,
+) -> Result<(i64, i64), String> {
+    let legacy = (
+        legacy_min_phlo_price,
+        i64::from(legacy_max_number_of_parents),
+    );
+    for parent_hash in &block.justifications {
+        if let Some(parent_meta) = dag.lookup(parent_hash).await? {
+            if parent_meta.validated && !parent_meta.validation_failed {
+                let parent = block_store
+                    .get(&[*parent_hash])
+                    .await?
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .ok_or_else(|| {
+                        format!("validated parent {parent_hash:?} is absent from the block store")
+                    })?;
+                return Ok(runtime
+                    .committed_validation_bounds(&parent.post_state_hash)
+                    .await?
+                    .unwrap_or(legacy));
+            }
+        }
+    }
+    if block.justifications.is_empty() && i64::from(block.block_number) == 0 {
+        // Genesis has no committed predecessor; its descriptors are installed during replay.
+        return Ok(legacy);
+    }
+    // A block may justify failed records (for example, while dropping their sender from bonds).
+    // The oldest locally accepted state still carries the same immutable params; do not read a
+    // failed parent's unverified post-state or fall back to config on that path.
+    let repr = dag.get_representation().await;
+    if let Some((_, oldest)) = repr.height_map.first_key_value() {
+        for hash in oldest {
+            if let Some(meta) = dag.lookup(hash).await? {
+                if meta.validated && !meta.validation_failed {
+                    let accepted = block_store
+                        .get(&[*hash])
+                        .await?
+                        .into_iter()
+                        .next()
+                        .flatten()
+                        .ok_or_else(|| {
+                            "accepted block is absent from the block store".to_string()
+                        })?;
+                    return Ok(runtime
+                        .committed_validation_bounds(&accepted.post_state_hash)
+                        .await?
+                        .unwrap_or(legacy));
+                }
+            }
+        }
+    }
+    Err("cannot resolve validity bounds without an accepted state".to_string())
+}
+
 /// The checks themselves, with no restoring: block summary, replay checkpoint, bonds cache,
 /// neglected-invalid-block, and phlo price (port of the body of `MultiParentCasper.validate`).
 ///
@@ -1474,14 +1540,20 @@ where
     let init_block_meta = BlockMetadata::from_block(block);
 
     // Block summary (justification regression, sequence/block number, deploy checks, phlo price).
-    match crate::validate::block_summary(
+    match crate::validate::block_summary_from_state(
         dag,
         block_store,
         block,
         shard_id,
         DEPLOY_LIFESPAN,
-        min_phlo_price,
-        max_number_of_parents,
+        validation_bounds_for_block(
+            dag,
+            block_store,
+            runtime,
+            block,
+            min_phlo_price,
+            max_number_of_parents,
+        ),
     )
     .await
     {
