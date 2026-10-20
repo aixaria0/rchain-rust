@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   fuzz:
-    if: ${{ github.event.inputs.mode != 'pr373-proof' }}
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -88,7 +88,7 @@ jobs:
         run: tools/devnet.sh down -v || true
 
   source-and-regressions:
-    if: ${{ github.event.inputs.mode == 'pr373-proof' }}
+    if: ${{ github.event.inputs.mode == 'pr373-proof' || github.event.inputs.mode == 'pr373-proof-rust' }}
     name: Code and release-preflight regressions
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -99,6 +99,8 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           components: rustfmt
+      - name: Install formatter for repository-pinned Rust 1.95
+        run: rustup component add --toolchain 1.95.0 rustfmt
       - name: Reuse Rust build cache
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
       - name: Install protobuf compiler
