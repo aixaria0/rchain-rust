@@ -97,7 +97,7 @@
     {
       "id": "A:double-mint",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #44 bonded REV double-mint correction — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #44 bonded REV double-mint correction \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -113,7 +113,7 @@
     {
       "id": "A:hardfork1-migration",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #42 Hard Fork 1 supply migration — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #42 Hard Fork 1 supply migration \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -146,7 +146,7 @@
     {
       "id": "A:genesis-contract-upgrade",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #43 governed replacement of genesis contracts — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #43 governed replacement of genesis contracts \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#373"
@@ -197,7 +197,7 @@
     {
       "id": "A:rev-economics",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #47 REV stabilization/mint and vesting — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #47 REV stabilization/mint and vesting \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#371",
         "#372",
@@ -215,7 +215,7 @@
     {
       "id": "A:validator-rewards",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #46 rotation/longevity/open enrollment — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #46 rotation/longevity/open enrollment \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#373",
         "#51"
@@ -232,7 +232,7 @@
     {
       "id": "A:unbond-throttle",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #4 unbonding rate throttle — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #4 unbonding rate throttle \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -248,7 +248,7 @@
     {
       "id": "A:phlo-exchange",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #7/#8 phlogiston\u2194REV exchange and per-block limits \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#373",
         "#51"
@@ -265,7 +265,7 @@
     {
       "id": "A:storage-rent",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #40 data retention/rent — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #40 data retention/rent \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -281,7 +281,7 @@
     {
       "id": "A:prepaid-rholang",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #38 prepaid execution — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #38 prepaid execution \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -297,7 +297,7 @@
     {
       "id": "A:asset-store",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #30 blessed assetStore if chosen — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #30 blessed assetStore if chosen \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -313,7 +313,7 @@
     {
       "id": "A:decentralized-rspace",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #53 RSpace decentralization, if consensus-affecting — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #53 RSpace decentralization, if consensus-affecting \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -329,7 +329,7 @@
     {
       "id": "B:staking-pools",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #32 staking pools and REV addresses — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #32 staking pools and REV addresses \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#373"
@@ -346,7 +346,7 @@
     {
       "id": "B:rev-receipt",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #31 execute-on-REV-receipt — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #31 execute-on-REV-receipt \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -362,7 +362,7 @@
     {
       "id": "B:genesis-contract-upgrade",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #43 client-visible blessed-contract upgrade — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #43 client-visible blessed-contract upgrade \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#373"
@@ -379,7 +379,7 @@
     {
       "id": "B:babel",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #48 Rholang compatibility translator — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #48 Rholang compatibility translator \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -395,7 +395,7 @@
     {
       "id": "B:breaking-release",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #10 coordinated breaking-release runbook — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #10 coordinated breaking-release runbook \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#391"
@@ -412,7 +412,7 @@
     {
       "id": "B:staking-pools-interface",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #32 beneficiary/reward channel compatibility — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #32 beneficiary/reward channel compatibility \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -446,7 +446,7 @@
     {
       "id": "Batch:crypto-agility",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "#274 §14 key IDs, algorithm table, deploy IDs, address version and pricing",
+      "exact_file_function_or_invariant": "#274 \u00a714 key IDs, algorithm table, deploy IDs, address version and pricing",
       "related_issue_pr": [
         "#274",
         "#373"
@@ -463,7 +463,7 @@
       },
       "missing_proof": "The seed-length panic is already corrected. Current consensus still uses fixed 65-byte validators and the two legacy secp algorithms. Canonical algorithm/key-registry format, governance activation authority, signature pricing and sunset policy need a frozen specification before the full agility implementation and cross-version migration acceptance.",
       "smallest_corrective_action": "Jim must approve the canonical registry/wire and governance activation policy; implement and test those frozen interfaces without enabling unapproved schemes. Do not duplicate the already-landed seed fix.",
-      "required_acceptance_test": "Decide first-release must-land scope; then legacy/PQ signature, address and hash compatibility vectors",
+      "required_acceptance_test": "After Jim/security freezes canonical registry/wire, activation, pricing and sunset rules, run legacy/new signature, address, deploy-hash and migration/replay vectors; preserve current V1 bytes and typed length errors.",
       "decision_owner": "Jim / security",
       "approved_named_release_deferral": false
     },
@@ -487,7 +487,7 @@
     {
       "id": "Batch:state-preservation",
       "classification": "RELEASE BLOCKER",
-      "exact_file_function_or_invariant": "Plan §14.3 S1/S2 complete native/RSpace state and deploy-history preservation",
+      "exact_file_function_or_invariant": "Plan \u00a714.3 S1/S2 complete native/RSpace state and deploy-history preservation",
       "related_issue_pr": [
         "#274",
         "#373",
@@ -518,7 +518,7 @@
       },
       "missing_proof": "Current public-network funded-key ownership, finalized balance delta and release-operator attestation still need live verification; the recorded resolution selected an already-funded key, not an additional genesis allocation.",
       "smallest_corrective_action": "Attach the existing #247 resolution and a finalized drip acceptance witness; have the release owner classify the funded-key configuration route without inventing a new genesis decision.",
-      "required_acceptance_test": "Approve exact genesis wallet ownership/allocation; deterministic genesis and conservation test",
+      "required_acceptance_test": "Using the already-funded signing key, attest operator/key identity and observe a finalized faucet drip with exact balance/supply delta and truthful failure reporting; no new allocation is implied.",
       "decision_owner": "Jim / operators",
       "approved_named_release_deferral": false
     },
@@ -591,7 +591,7 @@
       },
       "missing_proof": "The old conditional wording on #51 is stale; attach exact merged ancestry and distributed rejoin/historical validity acceptance before final release disposition.",
       "smallest_corrective_action": "Reconcile #51 against the current Law 53 inventory and attach existing tests/merge provenance; no duplicate implementation.",
-      "required_acceptance_test": "Reconcile current §6 implementation against #51 conditional wording; approve exact disposition",
+      "required_acceptance_test": "Pin the merged C173 implementation ancestry, run current restoration/failed-height falsifiers, then attach distributed rejoin and historical validity replay witnesses before release disposition.",
       "decision_owner": "Jim / consensus",
       "approved_named_release_deferral": false
     },
@@ -638,9 +638,9 @@
         "spec/audit/passes.md"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Reported landed code; still needs complete §6 release classification and historical acceptance."
+        "source": "Existing pinned #51 ledger; Reported landed code; still needs complete \u00a76 release classification and historical acceptance."
       },
-      "missing_proof": "Reported landed code; still needs complete §6 release classification and historical acceptance.",
+      "missing_proof": "Reported landed code; still needs complete \u00a76 release classification and historical acceptance.",
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing sibling native-write/cost composition regressions and historical merge replay",
       "decision_owner": "Jim / consensus",
