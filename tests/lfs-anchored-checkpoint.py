@@ -274,6 +274,9 @@ def main():
         "anchor_height": summary["source_anchor_height"],
         "after_lfb": result2["lfb"],
     }), flush=True)
+    # Only after strict anchored-finality acceptance: test original-key
+    # reactivation against the exact same durable state volume.
+    subprocess.run(["python3", "tests/lfs-passive-reactivation.py"], check=True)
 
 
 if __name__ == "__main__":
