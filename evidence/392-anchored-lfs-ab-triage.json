@@ -1,0 +1,98 @@
+{
+  "schema_version": "2026-10-20-v1",
+  "source_project": "rchain-community/rchain-rust",
+  "track": "B — explicitly anchored LFS local finality",
+  "contracts": {
+    "identity": "Do not accept bootstrap peer with wrong transport-certificate node id",
+    "state_restore": "The named anchor ancestry and pre/post-state must match byte-for-byte",
+    "checkpoint": "The restart must retain the recovered state without silently re-entering LFS",
+    "local_finality": "Do not infer local finality merely because operator named an anchor",
+    "archival_history": "Sibling branches / full finalized prefix are not guaranteed by ordinary LFS"
+  },
+  "experiments": [
+    {
+      "run_id": 39342573841,
+      "source_sha": "14dfe788d15be0c0f9ecfe57b1f36bf5f73c2827",
+      "mode": "active_validator_after_lfs",
+      "outcome": "FAIL_LOCAL_FINALITY",
+      "ancestry": "5/5",
+      "anchor_height": 2,
+      "local_lfb_height": 1,
+      "anchor_finalized": false,
+      "checkpoint_persistent": true,
+      "evidence": "https://github.com/aixaria0/rchain-rust/actions/runs/39342573841"
+    },
+    {
+      "run_id": 39345027268,
+      "source_sha": "6a918e24",
+      "mode": "active_validator_12_extra_proposals",
+      "outcome": "FAIL_LOCAL_FINALITY",
+      "source_lfb_height": 12,
+      "joiner_lfb_height": 1,
+      "confounding_observation": "equivocation logged after restart; causality not established",
+      "evidence": "https://github.com/aixaria0/rchain-rust/actions/runs/39345027268"
+    },
+    {
+      "run_id": 39345859644,
+      "source_sha": "68f6ede",
+      "mode": "active_validator_with_monotonic_clock_fix",
+      "outcome": "FAIL_LOCAL_FINALITY",
+      "evidence": "https://github.com/aixaria0/rchain-rust/actions/runs/39345859644",
+      "note": "Monotonic time correction did not resolve anchored LFS finality in this scenario"
+    },
+    {
+      "run_id": 39346797282,
+      "source_sha": "9847064c6bc07b193e68aea3da7427bb018c38de",
+      "mode": "passive_key_disabled_after_lfs",
+      "outcome": "PASS_BOUNDED_LOCAL_FINALITY",
+      "ancestry": "5/5",
+      "anchor_height": 2,
+      "joiner_lfb_height": 2,
+      "anchor_finalized": true,
+      "checkpoint_persistent": true,
+      "restarted_without_second_lfs": true,
+      "anchor_hash": "3a419dac0db95785382e93956cbd741d4001ddefc37106b0cabf1100dfb597b3",
+      "evidence": "https://github.com/aixaria0/rchain-rust/actions/runs/39346797282"
+    },
+    {
+      "run_id": 39349348631,
+      "source_sha": "c43252415374da6b5a9b6e3cb595123cc555fbcc",
+      "mode": "passive_recovery_then_same_volume_validator_key_reactivation",
+      "outcome": "BLOCKED_PRE_REACTIVATION",
+      "initial_anchor_height": 2,
+      "initial_anchor_hash": "f519bdde3337252b73318f72cdf7f28bf7a94e0953f624027de43dffb09ee594",
+      "failure": "Initial explicitly anchored fringe reply was never observed at joiner within 140 seconds; no reactivation executed.",
+      "observations": [
+        "Joiner sent FinalizedFringeRequest to authenticated bootstrap id at 172.18.0.2",
+        "Bootstrap logged including 5 block fringes and handling/sending its response",
+        "Bootstrap additionally logged connection-refused handshake warnings for joiner",
+        "Joiner log has no received finalized-fringe response; LFS timed out"
+      ],
+      "caution": "'FinalizedFringe sent' is a sender-side log; it does not independently prove the receiving node received or authenticated the reply.",
+      "evidence": "https://github.com/aixaria0/rchain-rust/actions/runs/39349348631",
+      "artifact_id": 12232208772
+    }
+  ],
+  "conclusions": [
+    "Passive recovery passed once with exact state, anchor local finality, and durable checkpoint.",
+    "Absence of validator signing during recovery may remove a contributing race, but does not establish a causal fix.",
+    "The first attempted key-reactivation campaign failed during initial LFS before key activation; it cannot be treated as a reactivation verdict.",
+    "Current logs are consistent with lost/unavailable reply delivery or handshake/retry timing; exact cause remains UNRESOLVED."
+  ],
+  "next_falsifiable_test": {
+    "condition": "Repeat a disposable isolated initial passive anchor recovery with explicit per-request and per-response transport acknowledgement, receive confirmation, and time-stamped retry tracking.",
+    "hypotheses": [
+      "Fringe reply transport fails or is dropped during reset connection establishment",
+      "The reply is accepted by transport but ignored/misrouted before NodeSyncing",
+      "The responder does not actually deliver a peer-acknowledged response despite 'sent' log"
+    ],
+    "required_invariants": [
+      "No force-setting LFB",
+      "Do not weaken bootstrap identity binding",
+      "Do not mark a sync PASS before finality and checkpoint agree",
+      "Preserve the same data volume for post-passive key activation"
+    ],
+    "verdict": "UNRESOLVED"
+  },
+  "release_blocker": "Anchored-LFS local-finality and key-reactivation assurance incomplete; do not promote to release-ready."
+}
