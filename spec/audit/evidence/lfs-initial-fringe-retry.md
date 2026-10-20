@@ -9,3 +9,5 @@ The startup driver now routes packets concurrently with at most ten solicitation
 Tests cover successful sends with missing replies, recovery on a second response, a response admitted before polling, hung sends, missing bootstrap, and wrong-peer/empty-target admission. The existing finalizer, stake denominator, trust identity and restore checkpoints are unchanged.
 
 The earlier run 39349348631 is a motivating transport symptom, not proof this is its only cause. Targeted tests and disposable anchored recovery must establish the correction separately. Active validator reactivation and general CBC safety remain independent acceptance obligations.
+
+Registration: C335, node-local initial-target recovery. Upstream CI 39388911701 passes all six regressions; integrated run 39389941677 passes the same tests and detects a reintroduced send-only completion fault. This does not add a formal theorem for asynchronous reply delivery.
