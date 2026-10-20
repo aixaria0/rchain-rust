@@ -190,19 +190,28 @@ jobs:
                   "status": status,
               })
           genesis_hashes = {x["genesis_hash"] for x in observed}
+          post_state_hashes = {x["genesis_block"].get("postStateHash") for x in observed}
+          block_versions = {x["genesis_block"].get("version") for x in observed}
           versions = {x["status"].get("version", {}).get("node") for x in observed}
           assert len(genesis_hashes) == 1, "conflicting genesis block hashes"
+          assert len(post_state_hashes) == 1 and None not in post_state_hashes, "conflicting or missing genesis post-state"
+          assert block_versions == {1}, "unexpected genesis block-version schedule"
           assert len(versions) == 1, "different node binary versions"
+          assert all(os.environ["GITHUB_SHA"] in version for version in versions), "wrong source provenance"
           assert len({x["node_id"] for x in observed}) == 3, "validator node identity collision"
           evidence = {
               "source_sha": os.environ["GITHUB_SHA"],
               "validator_count": len(observed),
               "genesis_hash": next(iter(genesis_hashes)),
+              "genesis_post_state_hash": next(iter(post_state_hashes)),
+              "block_version": next(iter(block_versions)),
               "node_version": next(iter(versions)),
               "genesis_agreement": True,
               "assertions": [
                   "all three validators returned the same genesis block hash",
-                  "all three validators reported the same node version",
+                  "all three validators returned the same genesis post-state hash",
+                  "all genesis blocks were version 1 under the shipped schedule",
+                  "all three validators reported the same source-pinned node version",
                   "all three validators exposed an active status",
                   "node identities were distinct",
               ],
