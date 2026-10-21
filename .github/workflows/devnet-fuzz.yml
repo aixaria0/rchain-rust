@@ -304,7 +304,10 @@ jobs:
           rustup component add --toolchain 1.95.0 rustfmt
           cargo fmt --all --check
           required_test -p rchain-models block_version
-          required_test -p rchain-models --test decimal_bridge
+          # The historical decimal_bridge target is not present on dev; verify the
+          # merged Decimal implementation and model properties on this exact source.
+          required_test -p rchain-models --lib decimal::tests
+          required_test -p rchain-models --lib property_tests
           required_test -p rchain-casper --lib initial_fringe
           required_test -p rchain-casper --lib engine::node_syncing::tests
           required_test -p rchain-casper --lib round_escape
