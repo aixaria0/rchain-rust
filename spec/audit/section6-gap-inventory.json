@@ -11,8 +11,7 @@
       "fork_class": "NON_A_RECORDED",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "related_issue_pr_or_audit": [
-        "#386",
-        "C115",
+        "#392",
         "C334"
       ],
       "code_or_invariant": [
@@ -23,9 +22,9 @@
         "url": "https://github.com/rchain-community/rchain-rust/blob/93dbdf364f14d728a27455b4e05282eace2e3c47/spec/audit/passes.md",
         "source_row": "| LFS bootstrap admission compares the authenticated **node id**, not the mutable endpoint | Archived `legacy/casper/src/main/scala/coop/rchain/casper/engine/NodeSyncing.scala:onFinalizedFringeMessage` at `1b7583649` uses whole-`PeerNode` equality | Issue #386: a configured hostname and the same key announced with an IP or changed port must not prevent sync from starting. The transport already binds the claimed sender id to its client certificate (C115); a different key, or no configured bootstrap, is still refused before the retry target or one-shot latch changes. Refusal is a warning naming both identities. This is bootstrap admission, not a change to block/deploy encodings or replay rules. AUDIT **C334** |"
       },
-      "missing_proof": "Independent disposition and construct-specific historical replay/compatibility evidence",
-      "smallest_action": "Attach the merged source and existing falsifier for this exact invariant; independently review category and release disposition",
-      "acceptance_test": "Replay a minimal fixture exercising: LFS bootstrap admission compares the authenticated **node id**, not the mutable endpoint",
+      "missing_proof": "Source states the admission rule is node-local. Independent admission/retry and real-node restart verification remain required.",
+      "smallest_action": "Review the exact merged implementation and attached falsifier; independently approve fork/release classification",
+      "acceptance_test": "Independently reproduce the relevant boundary/refusal or compatibility regression for: C334",
       "decision_owner": "Jim / independent audit reviewer",
       "id": "S6:9d71bbda8483a34d",
       "row_sha256": "9d71bbda8483a34dc48c051910902e78b98d15e74097d3c58cb778f6f0d1c0f5",
@@ -155,8 +154,11 @@
       "fork_class": "A_CANDIDATE",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "related_issue_pr_or_audit": [
+        "#380",
+        "#389",
+        "#390",
         "#373",
-        "#380"
+        "#391"
       ],
       "code_or_invariant": [
         "A **new exact decimal value type** (`GDecimal`, wire tag 35, sort rank 14, scale ≤ 38, canonical coefficient)"
@@ -166,9 +168,9 @@
         "url": "https://github.com/rchain-community/rchain-rust/blob/93dbdf364f14d728a27455b4e05282eace2e3c47/spec/audit/passes.md",
         "source_row": "| A **new exact decimal value type** (`GDecimal`, wire tag 35, sort rank 14, scale ≤ 38, canonical coefficient) | None: the archived Scala `RhoTypes.proto` at `1b7583649` has `g_int`/`g_big_int` and no decimal or float variant | Issue #380 option B, accepted 2026-10-19. There is no oracle to deviate *from*; the row records that the absence is a decision rather than an oversight. Exact arithmetic with no rounding, `%`/bitwise refused by name, division exact-or-error; `1d == 1` at scalar level while structural keys and patterns keep type identity (the `Int`/`BigInt` precedent). The Lean model now carries the class (`edecimal`, tag 14) and sort-corpus rows 43–50 pin it. This change lands the type ungated on `dev`: **a release that includes Decimal must also include #373 and start a new chain from its genesis, with every validator running a binary that understands tag 35. A mixed-version validator set on the old genesis can diverge on a decimal source literal. Before replacing a running chain, record validator binary versions and scan persisted history/state for decimal use; a schedule row does not gate this pre-launch addition.** `docs/src/node/consensus.md:43` and `docs/src/qucalc/architecture.md:115` (exact integer arithmetic, never floating point) are unchanged and remain true — a deploy value type is not a rule engine. **What the tie does not cover:** the model's `edecimal` is the canonical scaled integer; the bridge from the Rust `(coefficient, scale)` pair (`scaled_value`'s injectivity and order-preservation on canonical values), canonicalization, exact arithmetic, division's error condition, the wire's minimal bytes, reducer dispatch and the cost model are **not modelled** — they are carried by the Rust refinement and its unit/corpus tests. Law 1a's note and `spec/INVENTORY.md`'s Law 1 row state the same boundary; a standalone `Rchain/Decimal.lean` + `decimal` corpus is the follow-up that would close it. |"
       },
-      "missing_proof": "Independent disposition and construct-specific historical replay/compatibility evidence",
-      "smallest_action": "Attach the merged source and existing falsifier for this exact invariant; independently approve category/release disposition",
-      "acceptance_test": "Replay a minimal fixture exercising: A **new exact decimal value type** (`GDecimal`, wire tag 35, sort rank 14, scale ≤ 38, canonical coefficient)",
+      "missing_proof": "A new wire value type needs new-genesis and uniform-validator history acceptance, not just source-level tests.",
+      "smallest_action": "Review the exact merged implementation and attached falsifier; independently approve fork/release classification",
+      "acceptance_test": "Independently reproduce the relevant boundary/refusal or compatibility regression for: Decimal",
       "decision_owner": "Jim / independent audit reviewer"
     },
     {
@@ -2041,7 +2043,9 @@
       "invariant": "**A block's `version` must be the one scheduled for its height**, not merely one the binary knows (`casper/src/validate.rs::block_version` against `rchain_models::block_version::version_at`; the proposer and the genesis stamp `version_at` of their own height)",
       "fork_class": "NON_A_RECORDED",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
-      "related_issue_pr_or_audit": [],
+      "related_issue_pr_or_audit": [
+        "#373"
+      ],
       "code_or_invariant": [
         "**A block's `version` must be the one scheduled for its height**, not merely one the binary knows (`casper/src/validate.rs::block_version` against `rchain_models::block_version::version_at`; the proposer and the genesis stamp `version_at` of their own height)"
       ],
@@ -2050,9 +2054,9 @@
         "url": "https://github.com/rchain-community/rchain-rust/blob/93dbdf364f14d728a27455b4e05282eace2e3c47/spec/audit/passes.md",
         "source_row": "| **A block's `version` must be the one scheduled for its height**, not merely one the binary knows (`casper/src/validate.rs::block_version` against `rchain_models::block_version::version_at`; the proposer and the genesis stamp `version_at` of their own height) | `legacy/models/src/main/scala/coop/rchain/models/BlockVersion.scala` — a constant and a supported list, with no notion of *when* a version applies; and the Scala's `Validate.version` has no production caller | **This is the activation gate the acceptance specification lists as absent** (`docs/src/spec/testnet-acceptance.md` §5, \"hard-fork / activation gate\"). A node replays its chain from genesis, so a rule a binary simply starts applying is applied to old blocks too; a schedule row `(version, from_height)` lets a release change the rules *at a height* instead, below which the old version and the old rules still hold. **Not a fork:** the shipped schedule is the single row `(1, 0)`, so every block every chain has produced is valid under it and no block changes. Every later row is a scheduled fork that needs a new binary on every validator before its height, but not a new genesis. Plan H1, `docs/src/contributor/post-quantum-plan.md` §14 |"
       },
-      "missing_proof": "Independent disposition and construct-specific historical replay/compatibility evidence",
-      "smallest_action": "Attach the merged source and existing falsifier for this exact invariant; independently review category and release disposition",
-      "acceptance_test": "Replay a minimal fixture exercising: **A block's `version` must be the one scheduled for its height**, not merely one the binary knows (`casper/src/validate.rs::block_version` against `rchain_models::block_version::version_at`; the proposer and the genesis stamp `version_at` of their own height)",
+      "missing_proof": "Shipped singleton schedule is inert; later height activation requires separate validator/acceptance evidence.",
+      "smallest_action": "Review the exact merged implementation and attached falsifier; independently approve fork/release classification",
+      "acceptance_test": "Independently reproduce the relevant boundary/refusal or compatibility regression for: Version schedule",
       "decision_owner": "Jim / independent audit reviewer",
       "id": "S6:9222f2f2bdb9a0f1",
       "row_sha256": "9222f2f2bdb9a0f11dc74c392667755b10a243e27831dd288e4f1a344aa920f0",
@@ -2063,9 +2067,9 @@
       "fork_class": "A_CANDIDATE",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "related_issue_pr_or_audit": [
-        "#371",
-        "#51",
-        "C198"
+        "#373",
+        "#376",
+        "#51"
       ],
       "code_or_invariant": [
         "**The fee floor and the parent bound are committed in the genesis state** — `casper.min-phlo-price` and `casper.max-number-of-parents` are copied into every membership's genesis data when the config is read and from there into `PosParams::min_phlo_price` / `max_number_of_parents`, a native-state leaf the genesis post-state hash covers"
@@ -2075,9 +2079,9 @@
         "url": "https://github.com/rchain-community/rchain-rust/blob/93dbdf364f14d728a27455b4e05282eace2e3c47/spec/audit/passes.md",
         "source_row": "| **The fee floor and the parent bound are committed in the genesis state** — `casper.min-phlo-price` and `casper.max-number-of-parents` are copied into every membership's genesis data when the config is read and from there into `PosParams::min_phlo_price` / `max_number_of_parents`, a native-state leaf the genesis post-state hash covers | `legacy/casper/.../Validate.scala` `phloPrice` reads `minPhloPrice` from the node's `CasperConf`, with nothing committed; the parent bound has no Scala rule at all (the row above) | before this, both were **validity rules read from each node's own config** — C198's \"withheld\" knobs (`casper/src/block_status.rs`), where two correctly configured operators can disagree about the same block with no committed value to settle it. Committed, a node configured unlike its peers builds a different genesis and cannot replay theirs, and moving either bound later becomes a change of chain state rather than a config push to every operator. **Hard fork (#51 category A):** the params leaf grows from eight fields to ten and gains a format byte at its head (`PARAMS_FORMAT`), so every genesis built from this commit has a different post-state hash. The format byte replaces the length rule for every later field: a record in a format the node does not know is refused rather than read positionally, which is what keeps two branches that append fields in different orders from decoding each other's records to transposed values with no error (`an_unknown_params_format_is_refused`). An unversioned record of up to eight fields still decodes, as \"neither bound committed\", which is what the chain that wrote it ran (`decode_params`). **Enforced on the block and restore paths:** `multi_parent_casper::validation_bounds_for_block` reads the params at a locally validated parent's post-state before merge/replay; these bounds are immutable in this release. Only unversioned records retain the legacy config rule. `node_launch::check_running_validation_bounds` decodes the approved state and refuses an incompatible config before Running, on fresh sync, genesis and reconnect; an empty genesis fringe is checked at genesis post-state. Missing, malformed and unknown-format leaves are errors, and a committed zero never means absence. `casper/tests/committed_bounds.rs` exercises opposing configs through the real block validator and the startup/restore gate. The independent wire fixture pins payload slots 8/9; #371 must use format 2 with vesting at payload index 10 (89 bytes) and retain the one 64-byte payload grace boundary. The tag identifies a declared layout; the byte fixture catches matching encoder/decoder swaps. A decoded zero alone does not prove field absence. |"
       },
-      "missing_proof": "Independent disposition and construct-specific historical replay/compatibility evidence",
-      "smallest_action": "Attach the merged source and existing falsifier for this exact invariant; independently review category and release disposition",
-      "acceptance_test": "Replay a minimal fixture exercising: **The fee floor and the parent bound are committed in the genesis state** — `casper.min-phlo-price` and `casper.max-number-of-parents` are copied into every membership's genesis data when the config is read and from there into `PosParams::min_phlo_price` / `max_number_of_parents`, a native-state leaf the genesis post-state hash covers",
+      "missing_proof": "Genesis leaf layout changes; independent genesis hash, config mismatch and restore/replay acceptance are required.",
+      "smallest_action": "Review the exact merged implementation and attached falsifier; independently approve fork/release classification",
+      "acceptance_test": "Independently reproduce the relevant boundary/refusal or compatibility regression for: PosParams",
       "decision_owner": "Jim / independent audit reviewer",
       "id": "S6:7b9fe37e74b318db",
       "row_sha256": "7b9fe37e74b318db3fcf49d59c7e02d1e411eea8134acf5f675ee2ed63442658",
@@ -2088,7 +2092,7 @@
       "fork_class": "A_CANDIDATE",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "related_issue_pr_or_audit": [
-        "#279",
+        "#373",
         "#51"
       ],
       "code_or_invariant": [
@@ -2099,9 +2103,9 @@
         "url": "https://github.com/rchain-community/rchain-rust/blob/93dbdf364f14d728a27455b4e05282eace2e3c47/spec/audit/passes.md",
         "source_row": "| **`fundPot` adds REV to the validators' reward pot with no claim** — `rho:rchain:pos!(\"fundPot\", deployerId, amount, ret)` debits the caller's own vault and credits the staking vault (`NativeSystemState::fund_pot`), recording nothing in `pos:bonds`, `pos:withdrawers`, `pos:committed` or `pos:delegated_rewards`, so the whole amount is pot at the next boundary | — (no counterpart: `Pos.rhox`'s pot is the vault less its claims, and the only REV that reaches it unclaimed is burned phlo) | **so validator rewards can be raised without a fork.** Before this the only levers were `executor_share`, a genesis parameter, and a mint, which is consensus code; both are new geneses. The caller can spend only its own vault (the `deployerId` capability, as for `bond`), and zero or an amount the vault cannot cover is refused and moves nothing (`funding_the_pot_adds_unclaimed_rev_and_bonding_does_not`, and the conservation sweep). **Hard fork (#51 category A), the #279 shape:** a deploy that called `fundPot` failed on an older node (`pos: unknown method`) and succeeds on this one, so a chain carrying such a deploy replays differently; it ships in the batched fork rather than behind the activation schedule. Like `bond`, its write to `pos:vault` is a native write, so two concurrent blocks that both fund the pot conflict and the merge rejects one Both balances are checked before either write: `pot_funding_overflow_moves_neither_balance` fails before this ordering fix (the donor loses one drop) and passes after it. |"
       },
-      "missing_proof": "Independent disposition and construct-specific historical replay/compatibility evidence",
-      "smallest_action": "Attach the merged source and existing falsifier for this exact invariant; independently review category and release disposition",
-      "acceptance_test": "Replay a minimal fixture exercising: **`fundPot` adds REV to the validators' reward pot with no claim** — `rho:rchain:pos!(\"fundPot\", deployerId, amount, ret)` debits the caller's own vault and credits the staking vault (`NativeSystemState::fund_pot`), recording nothing in `pos:bonds`, `pos:withdrawers`, `pos:committed` or `pos:delegated_rewards`, so the whole amount is pot at the next boundary",
+      "missing_proof": "Native balance transition differs when used; independent conservation, refusal and replay acceptance are required.",
+      "smallest_action": "Review the exact merged implementation and attached falsifier; independently approve fork/release classification",
+      "acceptance_test": "Independently reproduce the relevant boundary/refusal or compatibility regression for: fundPot",
       "decision_owner": "Jim / independent audit reviewer",
       "id": "S6:957351356597c77d",
       "row_sha256": "957351356597c77d7fab3fa6ce132d0188bb7a75ad7f41d27f931616e92f2910",
@@ -2112,6 +2116,7 @@
       "fork_class": "NON_A_RECORDED",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
       "related_issue_pr_or_audit": [
+        "#402",
         "C335"
       ],
       "code_or_invariant": [
@@ -2122,9 +2127,9 @@
         "url": "https://github.com/rchain-community/rchain-rust/blob/93dbdf364f14d728a27455b4e05282eace2e3c47/spec/audit/passes.md",
         "source_row": "| **Initial LFS solicitation waits for admitted reply, with bounded retries** (C335; comm_util.rs::request_initial_fringe and node_launch.rs) | The prior request loop stopped at transport send success and the first-target wait had no exit for a missing streamed response | Node-local startup/recovery change. Acknowledging the request does not deliver its reply. Only trusted nonempty admission stops re-solicitation; exhausting ten bounded send/response intervals returns an error, never restore success. Six Rust regressions and a reintroduced send-only fault detect the failure. No validity, quorum or finalized-state rule changes; real-node reactivation is an independent acceptance gate. |"
       },
-      "missing_proof": "Independent disposition and construct-specific historical replay/compatibility evidence",
-      "smallest_action": "Attach the merged source and existing falsifier for this exact invariant; independently review category and release disposition",
-      "acceptance_test": "Replay a minimal fixture exercising: **Initial LFS solicitation waits for admitted reply, with bounded retries** (C335; comm_util.rs::request_initial_fringe and node_launch.rs)",
+      "missing_proof": "Source states reply delivery is node-local; independent real-node reactivation and failure-path evidence remain required.",
+      "smallest_action": "Review the exact merged implementation and attached falsifier; independently approve fork/release classification",
+      "acceptance_test": "Independently reproduce the relevant boundary/refusal or compatibility regression for: C335",
       "decision_owner": "Jim / independent audit reviewer",
       "id": "S6:507f3e24c48232b3",
       "row_sha256": "507f3e24c48232b3e8948aa8e5004cd31b6d4318cf24f539f4ce9b00add7f452",

@@ -165,6 +165,15 @@ class CloseoutTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.LedgerError, "inventory cannot be deferred"):
             self.inspect()
 
+    def test_verified_cannot_bypass_land_or_defer(self):
+        item = next(x for x in self.payload["items"] if x["status"] == "open")
+        item.update(status="verified",
+                    evidence_url="https://github.com/rchain-community/rchain-rust/issues/51",
+                    approval_url="https://github.com/rchain-community/rchain-rust/issues/51",
+                    approved_by="Maintainer", evidence_sha256="a" * 64)
+        with self.assertRaisesRegex(gate.LedgerError, "cannot replace"):
+            self.inspect()
+
     def test_audit_review_requires_digested_evidence(self):
         item = next(x for x in self.payload["items"] if x["id"] == gate.AUDIT_SIGNOFF_ID)
         item.update(status="verified",

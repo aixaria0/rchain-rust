@@ -133,6 +133,8 @@ def validate(raw: dict, *, verify_git: bool = False, repo: Path | None = None) -
                 url(item["approval_url"], ident + ".approval_url")
             deferred.append(ident)
         elif state == "verified":
+            require(ident == AUDIT_SIGNOFF_ID,
+                    f"{ident}: verified status cannot replace landed-or-deferred disposition")
             url(item.get("evidence_url"), ident + ".evidence_url")
             url(item.get("approval_url"), ident + ".approval_url")
             good_text(item.get("approved_by"), ident + ".approved_by")
