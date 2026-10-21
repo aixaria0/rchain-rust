@@ -3,9 +3,9 @@
 name: N8 canonical partition experiment
 
 on:
-  push:
+  pull_request:
     branches:
-      - exp/n8-block-hash-handoff-20261021
+      - fix/n8-quorum-clock-20261021
   workflow_dispatch:
 
 permissions:
@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   canonical-n8:
+    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'exp/n8-block-hash-handoff-20261021' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -28,6 +29,8 @@ jobs:
     steps:
       - name: Checkout exact source under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Build and pin rnode image
         run: |
           set -euo pipefail
@@ -69,6 +72,59 @@ jobs:
             docker inspect "$node" > "target/final-gap/n8-$node-inspect.json" 2>/dev/null || true
           done
           exit "$failed"
+      - name: Verify per-cycle finality, hash, marker and same-volume evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = Path("target/final-gap/n8-partition/partition-result.json")
+          issues = []
+          rounds = []
+          if not evidence.is_file():
+              issues.append("missing canonical partition result")
+          else:
+              result = json.loads(evidence.read_text())
+              rounds = result.get("rounds", [])
+              if result.get("result") != "PASS_BOUNDED_WORKLOAD_PARTITION_REJOIN":
+                  issues.append("canonical partition result not PASS")
+              if len(rounds) != 2:
+                  issues.append(f"expected exactly two cycles, found {len(rounds)}")
+              for cycle_num, cycle in enumerate(rounds, 1):
+                  if cycle.get("result") != "PASS" or cycle.get("cycle") != cycle_num:
+                      issues.append(f"cycle {cycle_num}: not marked PASS")
+                  before = cycle.get("before_height")
+                  observations = cycle.get("online_observations", [])
+                  if not isinstance(before, int) or not any(
+                      len(obs) == 7
+                      and all(isinstance(x.get("height"), int) and x["height"] >= before + 3 for x in obs)
+                      for obs in observations
+                  ):
+                      issues.append(f"cycle {cycle_num}: no observed +3 finality across seven online nodes")
+                  if cycle.get("same_volume") is not True:
+                      issues.append(f"cycle {cycle_num}: original state volume not proven")
+                  if cycle.get("original_finalized_snapshots_retained") is not True:
+                      issues.append(f"cycle {cycle_num}: original finalized marker/snapshots not proven")
+                  rejoined = cycle.get("rejoined")
+                  if not isinstance(rejoined, list) or len(rejoined) != 8:
+                      issues.append(f"cycle {cycle_num}: eight-node rejoin evidence missing")
+                      continue
+                  by_node = {x.get("node") for x in rejoined}
+                  identities = {(x.get("height"), x.get("hash")) for x in rejoined}
+                  if by_node != set(range(8)) or len(identities) != 1 or any(
+                      not isinstance(h, int) or not isinstance(ha, str) or not ha
+                      for h, ha in identities
+                  ):
+                      issues.append(f"cycle {cycle_num}: rejoined finalized height/hash not unanimous")
+          verdict = {"source": "canonical N=8 read-only strict checker",
+                     "passed": not issues, "errors": issues, "rounds_checked": len(rounds)}
+          out = Path("target/final-gap/n8-strict-finality-verdict.json")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(verdict, indent=2) + "\\n")
+          print(json.dumps(verdict))
+          if issues:
+              raise SystemExit(1)
+          PY
       - name: Preserve failure and success evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
