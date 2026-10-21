@@ -3316,7 +3316,10 @@ mod active_validator_tests {
 /// What it does not model: delivery delay and reordering, and the store reads `create_block` makes.
 #[cfg(test)]
 mod quiet_chain_tests {
-    use super::{attestation_inputs, attestation_suppressed, work_age_floor, ATTESTATION_HORIZON};
+    use super::{
+        attestation_inputs, attestation_inputs_with_recent_user_work, attestation_suppressed,
+        work_age_floor, ATTESTATION_HORIZON,
+    };
     use rchain_block_storage::dag::finalizer::Message;
     use rchain_block_storage::dag::liveness;
     use rchain_block_storage::dag::message_map;
