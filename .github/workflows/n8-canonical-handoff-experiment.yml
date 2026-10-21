@@ -1,0 +1,85 @@
+# Source-pinned N=8 release-acceptance experiment.
+# Only this disposable fork branch is targeted; no production nodes or bond sets.
+name: N8 canonical partition experiment
+
+on:
+  push:
+    branches:
+      - exp/n8-block-hash-handoff-20261021
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: n8-canonical-handoff-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  canonical-n8:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      LFS_INITIAL_REPLY_LOSS: "1"
+      ACCEPTANCE_ARTIFACTS: "1"
+    steps:
+      - name: Checkout exact source under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build and pin rnode image
+        run: |
+          set -euo pipefail
+          mkdir -p target/final-gap-image
+          git rev-parse HEAD | tee target/final-gap-image/source.txt
+          tools/devnet.sh build
+          docker image inspect rnode:local > target/final-gap-image/docker-image.json
+          python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
+      - name: Unmodified canonical N=8 baseline and partition/rejoin
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          export DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance
+          mkdir -p target/final-gap
+          failed=0
+          tools/devnet.sh up --validators 8 --fresh --no-autopropose --epoch-length 10 > target/final-gap/n8-start.log 2>&1
+          start_code=$?
+          if [ "$start_code" -eq 0 ]; then
+            python3 tools/consensus-acceptance-drill.py --validators 8 --window 180 --out target/final-gap/n8 > target/final-gap/n8-campaign.log 2>&1
+            code=$?
+          else
+            code=$start_code
+          fi
+          echo "n8=$code" | tee -a target/final-gap/exit-codes.txt
+          test "$code" -eq 0 || failed=1
+          if [ "$start_code" -eq 0 ]; then
+            python3 tests/consensus-partition-rejoin.py --validators 8 --out target/final-gap/n8-partition > target/final-gap/n8-partition-campaign.log 2>&1
+            partition_code=$?
+            echo "n8-partition=$partition_code" | tee -a target/final-gap/exit-codes.txt
+            test "$partition_code" -eq 0 || failed=1
+          else
+            echo "n8-partition=NOT_RUN_START_FAILURE" | tee -a target/final-gap/exit-codes.txt
+          fi
+          for ((i=0;i<8;i++)); do
+            node="acceptance-validator-$i"
+            [ "$i" -ne 0 ] || node=acceptance-bootstrap
+            docker logs "$node" > "target/final-gap/n8-$node.log" 2>&1 || true
+            docker inspect "$node" > "target/final-gap/n8-$node-inspect.json" 2>/dev/null || true
+          done
+          exit "$failed"
+      - name: Preserve failure and success evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: n8-canonical-handoff-${{ github.run_id }}
+          path: |
+            target/final-gap/
+            target/final-gap-image/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Tear down disposable devnet and volumes
+        if: always()
+        run: |
+          DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
