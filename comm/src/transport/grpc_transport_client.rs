@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::stream::FuturesUnordered;
+use futures::stream::FuturesOrdered;
 use futures::StreamExt;
 use http::Uri;
 use hyper_util::rt::TokioIo;
@@ -125,7 +125,9 @@ impl TransportLayer for GrpcTransportClient {
     }
 
     async fn broadcast(&self, peers: &[PeerNode], msg: Protocol) -> Vec<CommErr<()>> {
-        let sends: FuturesUnordered<_> = peers
+        // CommUtil associates each outcome with the peer at the same index.
+        // Poll concurrently, but return input order rather than completion order.
+        let sends: FuturesOrdered<_> = peers
             .iter()
             .map(|peer| self.send(peer, msg.clone()))
             .collect();
@@ -197,6 +199,22 @@ mod tests {
 
     fn short_id() -> NodeIdentifier {
         NodeIdentifier::new(vec![0x11; 20])
+    }
+
+    /// A later peer can fail immediately while the first peer waits for TLS.
+    /// The caller must still associate each failure with the correct recipient.
+    #[tokio::test]
+    async fn broadcast_outcomes_follow_peer_order_when_a_later_peer_fails_first() {
+        let c = client();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slow = peer(short_id(), "127.0.0.1", listener.local_addr().unwrap().port());
+        let invalid = peer(NodeIdentifier::new(vec![0xAB; 200]), "127.0.0.1", 1);
+
+        let outcomes = c.broadcast(&[slow, invalid], Protocol::default()).await;
+
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(&outcomes[0], Err(CommError::TimeOut)));
+        assert!(matches!(&outcomes[1], Err(CommError::ParseError(_))));
     }
 
     /// A client with unusable PEM material fails to build rather than panicking later: the TLS

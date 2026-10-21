@@ -538,10 +538,13 @@ mod tests {
         for sender in 0..8 {
             state.insert_msg_mut(&at(200 + sender, sender, 1, 61, &bonds));
         }
+        // Sender 0 opened this boundary before the other senders reached 61.
+        // It must speak again to complete a snapshot of their new messages.
+        state.insert_msg_mut(&at(300, 0, 2, 62, &bonds));
         assert_eq!(state.round_parents.len(), 8);
         assert_eq!(state.round_height, BlockHeight::try_from(61).unwrap());
 
-        for height in 62..=106 {
+        for height in 63..=106 {
             // Explicit repeated deploys may let a single creator keep climbing.
             // Other senders have still produced their height-60 message.
             let msg = at(1000 + height as i32, 0, height - 60, height, &bonds);
