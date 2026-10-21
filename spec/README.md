@@ -111,3 +111,8 @@ The laws are validated against — not replacing — the Scala tests that alread
 ## Operational incident evidence
 
 - [N=8 finality and bootstrap recovery, 19 October 2026](audit/evidence/n8-finality-20261019/README.md): source lineage, contribution attribution, passing campaigns and the remaining no-helper gate. Historical evidence; no change to the law register or finding status.
+
+## Release assurance records
+
+- [Hard-fork tracker closeout](audit/hardfork-51-closeout.md): executable accountability and closure refusal.
+- [Current release gap matrix](audit/final-gap-matrix.md): exact tracker obligations and the pinned section-six reverse inventory; independent acceptance and sign-off remain separate.

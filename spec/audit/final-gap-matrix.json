@@ -1,0 +1,801 @@
+{
+  "schema": 1,
+  "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+  "observed_date": "2026-10-21",
+  "tracker": "#51",
+  "boundary": "42 overlapping tracker obligations, not 42 defects. Maintainer deferrals are recorded with source links; this matrix grants no release authorization.",
+  "items": [
+    {
+      "id": "A:block-timestamp",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "models block-header timestamp / hash_block",
+      "related_issue_pr": [
+        "PR #44"
+      ],
+      "existing_evidence": {
+        "pr": 44,
+        "merge_commit": "228b66742fb740b2e44828a580122f4dac91489c"
+      },
+      "missing_proof": "Merged implementation alone does not establish historical replay, deployment compatibility or live rollout",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Attachment-free and timestamped block wire/hash fixtures; cross-version replay",
+      "decision_owner": "Jim / release operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:binary-attachments",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "DeployData attachments and deploy-content hash (#53)",
+      "related_issue_pr": [
+        "PR #53"
+      ],
+      "existing_evidence": {
+        "pr": 53,
+        "merge_commit": "9a04285a6bb80221256fc97290a4a31d2cafc6ad"
+      },
+      "missing_proof": "Merged implementation alone does not establish historical replay, deployment compatibility or live rollout",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Signed attachment deploy round-trip and old/new client refusal; uniform validator/client rollout",
+      "decision_owner": "Jim / release operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "B:binary-attachments",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "DeployData attachment-bearing client signing/hash contract (#53)",
+      "related_issue_pr": [
+        "PR #53"
+      ],
+      "existing_evidence": {
+        "pr": 53,
+        "merge_commit": "9a04285a6bb80221256fc97290a4a31d2cafc6ad"
+      },
+      "missing_proof": "Merged implementation alone does not establish historical replay, deployment compatibility or live rollout",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Old/new deploy clients produce the declared hash and explicit refusal behavior",
+      "decision_owner": "Jim / release operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "B:string-functions",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "rholang string length Unicode scalar semantics (#47)",
+      "related_issue_pr": [
+        "PR #47"
+      ],
+      "existing_evidence": {
+        "pr": 47,
+        "merge_commit": "f07a2628a7242d4d16e1daeed94a3d9d7d183a09"
+      },
+      "missing_proof": "Merged implementation alone does not establish historical replay, deployment compatibility or live rollout",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Non-ASCII S.length corpus and historical replay of affected deploys",
+      "decision_owner": "Jim / release operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:bigint-decimal",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "models Decimal::scaled_value, wire tag 35; rholang exact arithmetic",
+      "related_issue_pr": [
+        "#49",
+        "#389",
+        "#390",
+        "#380",
+        "#373",
+        "#391"
+      ],
+      "existing_evidence": {
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "pr": 389,
+        "merge_commit": "666ddb75e2d2787f099e05f983e31fb9728e7ed6",
+        "scope": "BigInt #49 and Decimal #389/#390 are on the pinned dev, together with #373 and #391. This is landed code, not proof of a scanned archive or uniform live validator rollout; Release:decimal-genesis remains open."
+      },
+      "missing_proof": "Implementation is merged. The separately tracked release still needs source-pinned distributed acceptance and operator archive/genesis/validator evidence.",
+      "smallest_corrective_action": "Reuse the merged implementation; attach exact integrated acceptance evidence and complete the separate release obligations.",
+      "required_acceptance_test": "Existing decimal_bridge, lean_sort_corpus, lean_parse_corpus; #391 source/history/validator preflight",
+      "decision_owner": "maintainers",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:double-mint",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #44 bonded REV double-mint correction — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Decide correction/migration scope and release."
+      },
+      "missing_proof": "Decide correction/migration scope and release.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / governance",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:hardfork1-migration",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #42 Hard Fork 1 supply migration — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Need state/supply migration decision and reproducible export."
+      },
+      "missing_proof": "Need state/supply migration decision and reproducible export.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / governance",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:vault-export",
+      "classification": "RELEASE BLOCKER",
+      "exact_file_function_or_invariant": "RCHIP #41 complete REV-vault supply/export invariant",
+      "related_issue_pr": [
+        "#51",
+        "#274"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Full state preservation/export and independently verified inventory absent."
+      },
+      "missing_proof": "Full state preservation/export and independently verified inventory absent.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Independently reconcile exported vaults, staking, rewards and supply at finalized checkpoint",
+      "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:genesis-contract-upgrade",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #43 governed replacement of genesis contracts — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51",
+        "#373"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Master dictionary alias/versioned upgrade path not implemented."
+      },
+      "missing_proof": "Master dictionary alias/versioned upgrade path not implemented.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / governance",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:shard-config",
+      "classification": "INTEGRATION GAP",
+      "exact_file_function_or_invariant": "casper/src/validate.rs committed parent-poststate bounds; node_launch restore guard",
+      "related_issue_pr": [
+        "#373",
+        "#376"
+      ],
+      "existing_evidence": {
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "source": "#373/#376 committed bounds and restore guards are merged. Wider RCHIP #24 governance-settable shard configuration remains a separate scope decision.",
+        "release_preflight_merge": "f24e0b7e86618938eb5e5558531f469d9c985c55"
+      },
+      "missing_proof": "#373/#376 committed bounds and restore guards are merged. Wider RCHIP #24 governance-settable shard configuration remains a separate scope decision.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "casper/tests/committed_bounds.rs plus three-node new-genesis/restart/LFS on integrated source",
+      "decision_owner": "Jim / maintainers",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:block-merge",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #23 merge/event-log validity semantics; committed parent cap is partial",
+      "related_issue_pr": [
+        "#51",
+        "#373"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Parent bound is not the full proposed merge semantics; needs separate decision."
+      },
+      "missing_proof": "Parent bound is not the full proposed merge semantics; needs separate decision.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve exact semantics or named-release deferral before adding a merge fixture",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:rev-economics",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #47 REV stabilization/mint and vesting — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#371",
+        "#372",
+        "#388"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Economics decision; ties to #371/#388 and the #372 RFC."
+    },
+    {
+      "id": "A:validator-rewards",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #46 rotation/longevity/open enrollment — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#373",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; fundPot is a rewards rail only; policy and validator-state changes are unlanded.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Economics decision; fundPot (#373) is the rail already in place."
+    },
+    {
+      "id": "A:unbond-throttle",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #4 unbonding rate throttle — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Change to the PoS state machine."
+    },
+    {
+      "id": "A:phlo-exchange",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#373",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Committed minimum phlo price is partial; exchange and change-limit decisions remain.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Economics decision; min-phlo-price is already committed at genesis."
+    },
+    {
+      "id": "A:storage-rent",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #40 data retention/rent — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Per-entry records, eviction semantics and release decision absent."
+      },
+      "missing_proof": "Per-entry records, eviction semantics and release decision absent.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / governance",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "A:prepaid-rholang",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #38 prepaid execution — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Economics decision."
+    },
+    {
+      "id": "A:asset-store",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #30 blessed assetStore if chosen — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Conditional decision whether to bless; cannot infer exclusion.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Economics decision."
+    },
+    {
+      "id": "A:decentralized-rspace",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #53 RSpace decentralization, if consensus-affecting — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Classify performance vs consensus effects and decide rollout."
+      },
+      "missing_proof": "Classify performance vs consensus effects and decide rollout.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "B:staking-pools",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #32 staking pools and REV addresses — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51",
+        "#373"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; fundPot does not replace bonding/pool interface.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Changes how bonding and vaults behave."
+    },
+    {
+      "id": "B:rev-receipt",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #31 execute-on-REV-receipt — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; No verified implementation or deferral.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Changes RevVault semantics."
+    },
+    {
+      "id": "B:genesis-contract-upgrade",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #43 client-visible blessed-contract upgrade — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51",
+        "#373"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Shared blocker with A:genesis-contract-upgrade."
+      },
+      "missing_proof": "Shared blocker with A:genesis-contract-upgrade.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / governance",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "B:babel",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #48 Rholang compatibility translator — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral."
+      },
+      "missing_proof": "No verified implementation or recorded owner-and-reason deferral.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / language",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "B:breaking-release",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "RCHIP #10 coordinated breaking-release runbook — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51",
+        "#391"
+      ],
+      "existing_evidence": {
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "source": "#391's release preflight is merged; real archive, validator and new-genesis attestations remain absent.",
+        "release_preflight_merge": "f24e0b7e86618938eb5e5558531f469d9c985c55"
+      },
+      "missing_proof": "#391's release preflight is merged; real archive, validator and new-genesis attestations remain absent.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "B:staking-pools-interface",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #32 beneficiary/reward channel compatibility — no accepted completed implementation is established by the tracker",
+      "related_issue_pr": [
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Requires explicit interface decision independent of fundPot.",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Changes how bonding and vaults behave."
+    },
+    {
+      "id": "Batch:activation-schedule",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "models/src/block_version.rs version_at; casper/src/validate.rs block_version",
+      "related_issue_pr": [
+        "#373",
+        "#376",
+        "#391"
+      ],
+      "existing_evidence": {
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "pr": 373,
+        "merge_commit": "c42440716ddb3d467fe0e16b3607ed40ff20f5b1",
+        "scope": "#373 merged with #376's committed-bound, format and restore guards. #391, #392, #402 and #404 are also on the pinned dev. Integrated acceptance and operator provenance remain separate."
+      },
+      "missing_proof": "Implementation is merged. The separately tracked release still needs source-pinned distributed acceptance and operator archive/genesis/validator evidence.",
+      "smallest_corrective_action": "Reuse the merged implementation; attach exact integrated acceptance evidence and complete the separate release obligations.",
+      "required_acceptance_test": "Height boundary and mismatch rejection; startup/restart/replay on #373 integrated source",
+      "decision_owner": "Jim / maintainers",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Batch:crypto-agility",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "#274 §14 key IDs, algorithm table, deploy IDs, address version and pricing",
+      "related_issue_pr": [
+        "#274",
+        "#373"
+      ],
+      "existing_evidence": {
+        "typed_seed_length_fix": "886869780974ba6824706f99d35b5fb12d1595e6",
+        "current_ci": "https://github.com/rchain-community/rchain-rust/actions/runs/39388911701",
+        "tests": [
+          "oversized_sender_is_a_typed_error_not_a_panic",
+          "oversized_shard_id_is_a_typed_error_not_a_panic",
+          "valid_v1_encoding_bytes_are_unchanged",
+          "the_registry_resolves_the_two_enabled_algorithms_and_refuses_ed25519"
+        ]
+      },
+      "missing_proof": "The seed-length panic is already corrected. Current consensus still uses fixed 65-byte validators and the two legacy secp algorithms. Canonical algorithm/key-registry format, governance activation authority, signature pricing and sunset policy need a frozen specification before the full agility implementation and cross-version migration acceptance.",
+      "smallest_corrective_action": "Jim must approve the canonical registry/wire and governance activation policy; implement and test those frozen interfaces without enabling unapproved schemes. Do not duplicate the already-landed seed fix.",
+      "required_acceptance_test": "After Jim/security freezes canonical registry/wire, activation, pricing and sunset rules, run legacy/new signature, address, deploy-hash and migration/replay vectors; preserve current V1 bytes and typed length errors.",
+      "decision_owner": "@jimscarver",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Batch:governance-schedule",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "Plan H2 authenticated governance activation and parameter state transition",
+      "related_issue_pr": [
+        "#373",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Governance controls remain unspecified/unlanded."
+      },
+      "missing_proof": "Governance controls remain unspecified/unlanded.",
+      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
+      "required_acceptance_test": "Approve authority/quorum/activation rules; test unauthorized update and activation/replay boundary",
+      "decision_owner": "Jim / governance",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Batch:state-preservation",
+      "classification": "RELEASE BLOCKER",
+      "exact_file_function_or_invariant": "Plan §14.3 S1/S2 complete native/RSpace state and deploy-history preservation",
+      "related_issue_pr": [
+        "#274",
+        "#373",
+        "#391"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Need authenticated archive/export, release commit, every validator binary and new genesis hashes; no public restart."
+      },
+      "missing_proof": "Need authenticated archive/export, release commit, every validator binary and new genesis hashes; no public restart.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Operators export authenticated finalized state/history; independently reconcile all entries and replay",
+      "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Batch:faucet-genesis",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "#247 genesis-wallet/faucet allocation identity and supply",
+      "related_issue_pr": [
+        "#247",
+        "#51"
+      ],
+      "existing_evidence": {
+        "issue": "https://github.com/rchain-community/rchain-rust/issues/247",
+        "source": "docs/src/node/testnet.md funded dave key through /etc/rnode/faucet.env; unfunded deployer is explicitly not the signing key",
+        "outcome_fix": "977056b8c7",
+        "code": "node/src/api/faucet.rs"
+      },
+      "missing_proof": "#247 records use of an already-funded faucet key. A finalized drip/key attestation remains a live acceptance obligation; no new genesis allocation is implied.",
+      "smallest_corrective_action": "Attach the existing #247 resolution and a finalized drip acceptance witness; have the release owner classify the funded-key configuration route without inventing a new genesis decision.",
+      "required_acceptance_test": "Using the already-funded signing key, attest operator/key identity and observe a finalized faucet drip with exact balance/supply delta and truthful failure reporting; no new allocation is implied.",
+      "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Batch:attestation-format",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "Equivocation evidence and slash signature/header compatibility",
+      "related_issue_pr": [
+        "#149",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Still a candidate pending measurement/decision, not a owner-and-reason deferral."
+      },
+      "missing_proof": "Lightweight/non-parent attestations remain a scope decision. #403 is a separate unmerged liveness experiment; it is not a wire-format disposition.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Existing signature/slash fixtures and versioned historical evidence replay",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:section6-categoryA",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "spec/audit/section6-gap-inventory.json exact reverse coverage",
+      "related_issue_pr": [
+        "spec/audit/passes.md",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Register rows and late audit deviations have not all been independently linked to a merged commit or signed named-release deferral."
+      },
+      "missing_proof": "All 90 current §6 rows are enumerated with exact row hashes, including the changed Decimal decision and five additional rows. Independent classification and construct-specific historical replay remain open.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "check-section6-inventory.py plus independent reviewer sign-off on every A candidate",
+      "decision_owner": "Jim / auditors",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:law52-partition",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "block-storage/src/dag/finalizer.rs live partition vs quorum; C174/C208",
+      "related_issue_pr": [
+        "#51",
+        "spec/audit/passes.md"
+      ],
+      "existing_evidence": {
+        "pr": 108,
+        "merge_commit": "a4dd4ede66546d1a6d798f5508090f6aa654a7c7",
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "scope": "The live partition/full bonded-stake quorum separation is landed in #108. Later derivation/containment deviations remain explicitly enumerated in §6; deployment and independent historical acceptance are separate release obligations."
+      },
+      "missing_proof": "Implementation and ancestry are established; source-row classification, historical compatibility and live rollout evidence remain in the separate release obligations.",
+      "smallest_corrective_action": "Reuse the merged implementation and reconcile its exact §6 invariant with the independent release inventory.",
+      "required_acceptance_test": "Existing containment/minimum-message falsifiers plus distributed partition/heal finality witness",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:law53-estrangement",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "casper/src/validate.rs failed-justification height maximum; C173",
+      "related_issue_pr": [
+        "#125",
+        "#51"
+      ],
+      "existing_evidence": {
+        "current_inventory": "spec/INVENTORY.md Law 53 records both C173 inverses as shipped 2026-10-01",
+        "code": [
+          "casper/src/validate.rs::block_number",
+          "casper/src/multi_parent_casper.rs::restore_divergent_justifications"
+        ],
+        "formal_boundary": "Rchain/Casper/Stranding.lean models restoration; does not establish a distributed schedule",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "Pin the merged C173 implementation ancestry, run current restoration/failed-height falsifiers, then attach distributed rejoin and historical validity replay witnesses before release disposition.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Author of the C173 and Law 53 audit work."
+    },
+    {
+      "id": "Audit:active-set-draw",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "rholang/src/native_state.rs select_active / draw_weighted_without_replacement; epoch-ahead finalized-fringe seed",
+      "related_issue_pr": [
+        "#51",
+        "spec/audit/passes.md"
+      ],
+      "existing_evidence": {
+        "pr": 186,
+        "merge_commit": "37ed6f50688fba7b07f4849a8864500c2c66d6fa",
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "scope": "The original uniform draw was replaced by stake-weighted sampling without replacement in #186. The epoch-ahead seed and exact integer draw are in the pinned source; residual incentives and release acceptance are not certified by this implementation reference."
+      },
+      "missing_proof": "Implementation and ancestry are established; source-row classification, historical compatibility and live rollout evidence remain in the separate release obligations.",
+      "smallest_corrective_action": "Reuse the merged implementation and reconcile its exact §6 invariant with the independent release inventory.",
+      "required_acceptance_test": "Existing active-set determinism vectors, epoch transition replay and validator rotation acceptance",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:parent-limit",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "casper/src/validate.rs justification_count; C191; #373 committed bound",
+      "related_issue_pr": [
+        "#160",
+        "#373"
+      ],
+      "existing_evidence": {
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "pr": 373,
+        "merge_commit": "c42440716ddb3d467fe0e16b3607ed40ff20f5b1",
+        "scope": "The #160 parent-width rule and #373's committed-bound validation/restore paths are landed. This records implementation ancestry; distributed release acceptance is not inferred."
+      },
+      "missing_proof": "Implementation is merged. The separately tracked release still needs source-pinned distributed acceptance and operator archive/genesis/validator evidence.",
+      "smallest_corrective_action": "Reuse the merged implementation; attach exact integrated acceptance evidence and complete the separate release obligations.",
+      "required_acceptance_test": "Committed bound with opposing local config and over-limit refusal fixture",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:sidecar-merge",
+      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "exact_file_function_or_invariant": "casper/src/merging.rs per-accepted-deploy accounting/native conflict relation; C207",
+      "related_issue_pr": [
+        "#51",
+        "spec/audit/passes.md"
+      ],
+      "existing_evidence": {
+        "pr": 209,
+        "merge_commit": "5f0763eb4d352825e779cc5bc43b2d566873e316",
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "scope": "C207 cost-accounting composition is landed in #209. This does not resolve every concurrent native-ledger conflict or prove partition liveness."
+      },
+      "missing_proof": "Implementation and ancestry are established; source-row classification, historical compatibility and live rollout evidence remain in the separate release obligations.",
+      "smallest_corrective_action": "Reuse the merged implementation and reconcile its exact §6 invariant with the independent release inventory.",
+      "required_acceptance_test": "Existing sibling native-write/cost composition regressions and historical merge replay",
+      "decision_owner": "Jim / consensus",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Release:attachment-upgrade",
+      "classification": "RELEASE BLOCKER",
+      "exact_file_function_or_invariant": "Uniform attachment-aware validator and client release sequencing (#53)",
+      "related_issue_pr": [
+        "#53",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Existing pinned #51 ledger; Merged code does not prove every validator and client uniformly supports attachments."
+      },
+      "missing_proof": "Merged code does not prove every validator and client uniformly supports attachments.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Inventory actual validator/client binary digests; attachment-bearing deploy acceptance and old-peer refusal",
+      "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Release:decimal-genesis",
+      "classification": "RELEASE BLOCKER",
+      "exact_file_function_or_invariant": "tools/decimal_release_preflight.py; #373 genesis and validator digest inventory",
+      "related_issue_pr": [
+        "#373",
+        "#380",
+        "#391"
+      ],
+      "existing_evidence": {
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "source": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required.",
+        "release_preflight_merge": "f24e0b7e86618938eb5e5558531f469d9c985c55"
+      },
+      "missing_proof": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required.",
+      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "required_acceptance_test": "Reuse 27 preflight controls; real archive/native tag-35/source scan and complete live binary inventory",
+      "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:merge-resolution-stage4",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "#127 stage 4 block carries merge resolution",
+      "related_issue_pr": [
+        "#127",
+        "#51"
+      ],
+      "existing_evidence": {
+        "decision_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "A landed protocol change must exercise both allowed/refused transitions and historical replay; a deferral must record its owner and reason.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Author of #127 and its staged plan; this is a block-format change."
+    },
+    {
+      "id": "Audit:inactivity-leak",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "finality stake weights and full bonded-stake denominator",
+      "related_issue_pr": [
+        "#70",
+        "#339",
+        "#341",
+        "#51"
+      ],
+      "existing_evidence": {
+        "decision_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+        "decision_by": "@jimscarver"
+      },
+      "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
+      "smallest_corrective_action": "The named decision owner revisits whether and when this item lands.",
+      "required_acceptance_test": "A landed protocol change must exercise both allowed/refused transitions and historical replay; a deferral must record its owner and reason.",
+      "decision_owner": "@aixaria0",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Next to the finality and liveness drills (#339/#341)."
+    },
+    {
+      "id": "Decision:developer-allocation",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "#371/#388 genesis allocation shape; independent #372 RFC",
+      "related_issue_pr": [
+        "#371",
+        "#388",
+        "#372",
+        "#51"
+      ],
+      "existing_evidence": {
+        "decision_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399"
+      },
+      "missing_proof": "Jim's deferral of RCHIP #47 does not settle his separately open choice of one developer-allocation PR or the #372 RFC.",
+      "smallest_corrective_action": "Record one selected implementation track and the disposition of the separate RFC; do not infer recipients or mint policy from a deferral.",
+      "required_acceptance_test": "A landed protocol change must exercise both allowed/refused transitions and historical replay; a deferral must record its owner and reason.",
+      "decision_owner": "@jimscarver",
+      "recorded_owner_reason_deferral": false
+    }
+  ],
+  "section6_inventory": "section6-gap-inventory.json"
+}

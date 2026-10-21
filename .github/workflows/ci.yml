@@ -144,6 +144,22 @@ jobs:
         # is also a check: it refuses a check-off that disagrees with the authored TSV.
         run: tools/audit-status.sh --quiet
 
+      - name: Hard-fork tracker #51 closure guard (negative controls)
+        # An open tracker stays open despite passing implementation CI.
+        # This step checks the authored manifest and deliberately verifies
+        # that the close command refuses the still-unresolved source.
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
+          python3 tools/check-hardfork-51-closeout.py
+          python3 -m unittest discover -s tests -p test_section6_inventory.py -v
+          python3 tools/check-section6-inventory.py
+          set +e
+          python3 tools/check-hardfork-51-closeout.py --assert-closeable
+          rc=$?
+          set -e
+          test "$rc" -eq 3
+
       - name: Decimal release evidence gate (synthetic refusal controls)
         # A successful input-consistency check still returns exit 3:
         # provenance and archive completeness require human review.
