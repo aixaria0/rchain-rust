@@ -108,6 +108,25 @@ impl GrpcTransportClient {
         channels.insert(peer.clone(), channel.clone());
         Ok(channel)
     }
+
+    /// One bounded stream RPC; the caller retains the blob for a single retry.
+    async fn stream_once(&self, peer: &PeerNode, blob: &Blob) -> CommErr<()> {
+        let channel = self.get_channel(peer).await?;
+        let mut client =
+            TransportLayerClient::new(channel).max_decoding_message_size(self.max_message_size);
+        tokio::time::timeout(
+            DEFAULT_SEND_TIMEOUT,
+            grpc_transport::stream(
+                &mut client,
+                peer,
+                &self.network_id,
+                blob,
+                self.packet_chunk_size,
+            ),
+        )
+        .await
+        .map_err(|_| CommError::TimeOut)?
+    }
 }
 
 #[async_trait]
@@ -142,26 +161,22 @@ impl TransportLayer for GrpcTransportClient {
                 let peer = peer.clone();
                 let blob = blob.clone();
                 tokio::spawn(async move {
-                    let channel = match this.get_channel(&peer).await {
-                        Ok(c) => c,
-                        Err(_) => return,
+                    let first = this.stream_once(&peer, &blob).await;
+                    // A failed response otherwise waits for the retriever's
+                    // 240-second maintenance timeout. Keep the same payload and
+                    // retry once; both attempts retain the five-second RPC bound.
+                    let result = if first.is_err() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        this.stream_once(&peer, &blob).await
+                    } else {
+                        first
                     };
-                    let mut client = TransportLayerClient::new(channel)
-                        .max_decoding_message_size(this.max_message_size);
-                    // Mirror `send`: bound the stream RPC with the same timeout so a stalled peer
-                    // cannot hold a stream task open indefinitely.
-                    let _ = tokio::time::timeout(
-                        DEFAULT_SEND_TIMEOUT,
-                        grpc_transport::stream(
-                            &mut client,
-                            &peer,
-                            &this.network_id,
-                            &blob,
-                            this.packet_chunk_size,
-                        ),
-                    )
-                    .await
-                    .map_err(|_| CommError::TimeOut);
+                    if let Err(error) = result {
+                        eprintln!(
+                            "gRPC stream {} to {peer} failed after bounded retry: {error:?}",
+                            blob.packet.type_id
+                        );
+                    }
                 })
             })
             .collect();
@@ -227,6 +242,140 @@ mod tests {
             matches!(&outcomes[1], Err(CommError::ParseError(_))),
             "the later invalid identity must retain its recipient index: {outcomes:?}"
         );
+    }
+
+
+    struct RefuseStreams {
+        receiver: crate::transport::grpc_transport_receiver::GrpcTransportReceiver,
+        attempts: Arc<std::sync::atomic::AtomicUsize>,
+        failures: usize,
+    }
+
+    #[async_trait]
+    impl rchain_models::comm::protocol::transport_layer_server::TransportLayer for RefuseStreams {
+        async fn send(
+            &self,
+            request: tonic::Request<rchain_models::comm::protocol::TlRequest>,
+        ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status> {
+            use rchain_models::comm::protocol::transport_layer_server::TransportLayer;
+            self.receiver.send(request).await
+        }
+
+        async fn stream(
+            &self,
+            request: tonic::Request<tonic::Streaming<rchain_models::comm::protocol::Chunk>>,
+        ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status> {
+            use rchain_models::comm::protocol::transport_layer_server::TransportLayer;
+            let attempt = self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt < self.failures {
+                return Err(tonic::Status::unavailable("injected stream response failure"));
+            }
+            self.receiver.stream(request).await
+        }
+    }
+
+    async fn stream_retry_case(failures: usize) {
+        use crate::transport::communication_response::CommunicationResponse;
+        use crate::transport::grpc_transport_receiver::{
+            accept_tls, ConcurrencyLimits, GrpcTransportReceiver,
+        };
+        use crate::transport::hostname_trust_manager::{public_address_of_cert, server_config};
+        use rchain_models::comm::protocol::transport_layer_server::TransportLayerServer;
+        use rchain_models::comm::protocol::Packet;
+        use rustls::pki_types::CertificateDer;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        fn cert_id(pem: &str) -> NodeIdentifier {
+            let (_, pem) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).unwrap();
+            let der = CertificateDer::from(pem.contents);
+            NodeIdentifier::new(public_address_of_cert(&der).unwrap())
+        }
+
+        let (server_cert, server_key) = generate_certificate().unwrap();
+        let (client_cert, client_key) = generate_certificate().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let remote = peer(cert_id(&server_cert), "127.0.0.1", port);
+        let local = peer(cert_id(&client_cert), "127.0.0.1", port);
+        let (delivered, mut received) = tokio::sync::mpsc::channel(2);
+        let receiver = GrpcTransportReceiver::for_test(
+            remote.clone(),
+            "testnet",
+            16 * 1024 * 1024,
+            Arc::new(|_protocol| {
+                Box::pin(async { CommunicationResponse::handled_without_message() })
+            }),
+            Arc::new(move |blob| {
+                let delivered = delivered.clone();
+                Box::pin(async move {
+                    delivered.send(blob).await.unwrap();
+                })
+            }),
+            ConcurrencyLimits::default(),
+        );
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let service = RefuseStreams {
+            receiver,
+            attempts: attempts.clone(),
+            failures,
+        };
+        let tls = server_config(&server_cert, &server_key).unwrap();
+        let incoming = accept_tls(listener, tokio_rustls::TlsAcceptor::from(tls), 8);
+        let serving = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(TransportLayerServer::new(service))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        let client = GrpcTransportClient::new(
+            "testnet".to_string(),
+            &client_cert,
+            &client_key,
+            16 * 1024 * 1024,
+            16 * 1024,
+            16,
+        )
+        .unwrap();
+        let blob = Blob {
+            sender: local,
+            packet: Packet {
+                type_id: "BlockMessage".to_string(),
+                content: vec![3; 32 * 1024],
+            },
+        };
+
+        // One caller invocation, through actual mutually authenticated RPCs.
+        client.stream(&[remote], blob.clone()).await;
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            if failures == 0 { 1 } else { 2 }
+        );
+        if failures < 2 {
+            let actual = tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+                .await
+                .expect("the bounded retry must deliver")
+                .expect("the receiver must remain alive");
+            assert_eq!(actual.sender, blob.sender);
+            assert_eq!(actual.packet, blob.packet);
+        }
+        assert!(received.try_recv().is_err(), "no extra delivery");
+        serving.abort();
+    }
+
+    #[tokio::test]
+    async fn stream_retries_a_failed_rpc_and_delivers_the_same_blob() {
+        stream_retry_case(1).await;
+    }
+
+    #[tokio::test]
+    async fn stream_stops_after_two_failed_rpcs() {
+        stream_retry_case(usize::MAX).await;
+    }
+
+    #[tokio::test]
+    async fn a_successful_stream_is_not_retried() {
+        stream_retry_case(0).await;
     }
 
     /// A client with unusable PEM material fails to build rather than panicking later: the TLS
