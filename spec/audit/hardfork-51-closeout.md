@@ -1,59 +1,47 @@
 # Issue #51 — Hard-fork closeout ledger
 
-This is the reviewable closeout packet for [Issue #51](https://github.com/rchain-community/rchain-rust/issues/51), **not** a declaration that the issue can close. It is tied to upstream `dev@bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b` as observed on 20 October 2026. This source commit is pinned so later merges cannot be silently interpreted as having been reviewed here.
+This packet follows the [close-clause decision of 21 October 2026](https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The pinned source is upstream `dev@93dbdf364f14d728a27455b4e05282eace2e3c47`.
 
-## Outcome
+## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** The authored machine-readable record at [hardfork-51-closeout.json](hardfork-51-closeout.json) contains 39 audit entries: 4 entries with verified merged-PR references, 35 unresolved entries, and **zero recorded owner-and-reason deferrals**. These entries represent evidence obligations and include deliberate cross-references; **35 does not mean 35 distinct defects.**
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 39 overlapping tracker, audit and release obligations: **7 landed implementation references, 32 open obligations and zero recorded deferrals**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
-The tracker closes by exhaustive classification: every §A/§B row and every relevant §6 category-A deviation must be either *merged* or formally *deferred with a named decision owner and one-line reason*. Unimplemented proposals and release-stage dependencies are **not** closed by green CI, historical prose, or an unmerged PR. The §6 reverse inventory is itself currently an unresolved ledger entry; therefore the list of 39 entries **must not be described as a complete independent §6 audit**.
+| Landed implementation | Merge reference | Remaining boundary |
+|---|---|---|
+| Timestamp, #44 | `228b66742f` | Release coordination remains distinct |
+| String functions, #47 | `f07a2628a7` | Client and historical behavior remain distinct |
+| Attachments, #53 | `9a04285a6b` | Appears in both §A and §B; uniform validator/client rollout is separate |
+| BigInt/Decimal, #49/#389/#390 | #389: `666ddb75e2` | #373 and #391 are also merged; archive scans, uniform validators and the new-genesis ceremony remain open |
+| Activation schedule, committed bounds, params format and fundPot, #373/#376 | `c42440716d` | Integrated distributed acceptance remains separate |
+| Parent-bound integration, #160/#373 | `c42440716d` | Historical and distributed release evidence remains separate |
 
-## Verified merged changes that the original §A/§B table understates
+#404, #373, #391, #392 and #402 are all in the pinned dev ancestry. The checker verifies every ledger merge reference against that source when `--verify-local-git` is supplied. #379 remains a proposer timing correction outside category A.
 
-| Status | Change | Merge commit | Scope |
-|---|---|---|---|
-| Merged | [PR #44](https://github.com/rchain-community/rchain-rust/pull/44), timestamp | `228b66742f` | Code merged; protocol compatibility still requires rollout discipline |
-| Merged | [PR #47](https://github.com/rchain-community/rchain-rust/pull/47), string functions | `f07a2628a7` | §B string-function implementation |
-| Merged | [PR #53](https://github.com/rchain-community/rchain-rust/pull/53), RCHIP #39 attachments | `9a04285a6b` | **Correction:** §A/§B “no PR” is stale; code merged, synchronized validator/client upgrade still needed |
+## Complete source inventory
 
-GitHub merge ancestry was compared to pinned `dev`, not inferred from a PR title. The ledger counts RCHIP #39 twice because it has both §A and §B rows; that is one implementation, not two separate fixes.
+[section6-gap-inventory.json](section6-gap-inventory.json) covers **all 90 current §6 rows**, with 43 conservative category-A candidates. The refresh accounts for C334, the revised Decimal activation decision, the inert height schedule, committed bounds, fundPot and C335. C334/C335 are node-local recovery changes and the shipped `(1, 0)` schedule is inert; they are recorded as non-A. Committed bounds and fundPot are A candidates. These classifications remain reviewable dispositions, not an independent safety attestation.
 
-Other already merged work whose release implications remain open includes [#49](https://github.com/rchain-community/rchain-rust/pull/49), [#389](https://github.com/rchain-community/rchain-rust/pull/389) and [#390](https://github.com/rchain-community/rchain-rust/pull/390) (BigInt/Decimal), [#376](https://github.com/rchain-community/rchain-rust/pull/376) integrated into **unmerged** [#373](https://github.com/rchain-community/rchain-rust/pull/373), and merged [#379](https://github.com/rchain-community/rchain-rust/pull/379) (a coordinated proposer timing correction, **not category A**). These are not grounds for closing their larger unreleased rows.
+The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, existing evidence, missing proof, next action and acceptance condition. Source-row hashes, line numbers and evidence URLs must agree with the pinned register. A documented deferral must agree between the matrix and the validated ledger. Neither file can invent an independent sign-off or a passed execution.
 
-## Blocking decisions for Jim and release maintainers
+## Decisions and acceptance still open
 
-**Must settle before the planned first-release fork:**
+- **Crypto-agility (#274 §14):** @jimscarver owns the track. Freeze the registry/wire, key identity, deploy hash, activation, pricing and sunset policy before implementation. The already-landed seed-length typed error is not the complete agility fork.
+- **RCHIP #43:** decide the governed blessed-contract upgrade shape, then implement its state/replay and authorization tests. The A and B rows share this obligation.
+- **Economics and other proposals:** the #371/#388 allocation track, separate RFC #372, #40, reward/rotation, unbonding, exchange limits, prepaid execution, assetStore, pool/receipt interfaces, compatibility translation and attestation scope need individually recorded dispositions. No allocation or deferral is approved here.
+- **Plan H2 and state preservation:** governance-settable rules, authenticated old-state exports, genesis hashes, validator binary hashes and the reviewed rollout remain open. #391's merged preflight checks evidence consistency; it cannot supply missing operator evidence.
+- **Integrated acceptance (#339/#399):** preserve independent N=8 finality/partition and anchored-recovery outcomes on one exact image. #399 also carries the unmerged #403 experiment, so its result cannot be represented as evidence for bare dev without identifying that additional source.
+- **Historical deviations:** the current Law 53 inventory already records the C173 inverses as shipped. Reconcile their exact ancestry and replay/rejoin evidence rather than implementing them again. Independently review all §6 category dispositions.
+- **Faucet (#247):** the recorded resolution uses an already-funded key; the live key/finalized-drip attestation remains outstanding. Do not invent another genesis allocation.
 
-- **#373** — activate block versions/committed bounds/format changes and `fundPot` on one reviewed integrated release source; keep its Draft status and review dependency visible until accepted.
-- **#274** — explicitly deliver or disposition crypto-agility shape changes: validator key IDs, algorithm negotiation/table, deploy content hashes, PQ address and fee/sunset semantics. A height schedule by itself does not make a wire/identity-shape change compatible.
-- **RCHIP #43** — implement or explicitly disposition a governed blessed-contract upgrade mechanism; a new alias/state structure after launch is class A.
-- **State preservation and transition** — authenticate historic block/deploy/native-state snapshots, audit old and new binary provenance for every validator, verify the shared new genesis block/state hash, and independently sign off the new-genesis procedure. [#391](https://github.com/rchain-community/rchain-rust/pull/391)'s evidence preflight is deliberately not authorization.
-- **#339** — integrated validator finality/write-retention acceptance must run on the intended release binary, not only an earlier devnet build.
-
-**Explicit governance decisions (no implied outcomes):**
-
-- **#371 / #388 versus RFC #372:** fixed allocation versus rank-weighted capped reserve are different proposals. The author-open comment interval on #371 extends through **at least 23 October 2026**; this ledger does not select a recipient, formula, or winner.
-- **RCHIP #40**, faucet-genesis [#247](https://github.com/rchain-community/rchain-rust/issues/247), RCHIP #30 and RSpace #53: land or record a defensible, explicitly approved design disposition.
-- **Deferred economics and protocol proposals**, including #4, #7/#8, #31, #32, #38, #46, #47 and C173: each deferral must identify one accountable person by GitHub login and give a specific one-line reason. A release name is no longer required under Jim's 2026-10-21 decision; neither a vague role nor a placeholder reason counts.
-- **§6 category-A reverse inventory:** independently reconcile every consensus-changing row in `spec/audit/passes.md` with landed code or a recorded owner-and-reason deferral. A label or one green test cannot substitute for the inventory.
-
-## Reproduce the closure refusal
+## Reproduce
 
 ```sh
 python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
-python3 tools/check-hardfork-51-closeout.py
-python3 tools/check-hardfork-51-closeout.py --assert-closeable
-# expected exit 3: TRACKER_MUST_REMAIN_OPEN
+python3 -m unittest discover -s tests -p test_section6_inventory.py -v
+python3 tools/check-section6-inventory.py
+python3 tools/check-hardfork-51-closeout.py --verify-local-git
+python3 tools/check-hardfork-51-closeout.py --verify-local-git --assert-closeable
+# expected final exit: 3, TRACKER_MUST_REMAIN_OPEN
 ```
 
-The normal command checks schema, duplicate IDs and exact 39-record membership, merged evidence metadata, outstanding owners and deferral requirements. The `--assert-closeable` mode refuses closure until there are **zero unresolved entries**, all declared deferrals have a named person and a substantive one-line reason, the §6 inventory has been signed off, and provenance has been checked. The checker **does not itself close the GitHub issue or approve a network release**. `--verify-local-git` can add ancestry checks when a sufficiently complete local repository is available; shallow clones do not prove ancestry.
-
-The tests include deliberate attempts to drop an unresolved item, invent a deferral, omit a decision owner, duplicate records and make `closure_requested: true` override real blockers. No public network or original proposal is modified by this ledger.
-
-## Requested decision
-
-@jimscarver — please identify which of the remaining class-2 shape changes **must land in the first release**, and record a named decision owner and a one-line reason for each item deliberately deferred. Then request an independently reviewed §6 reverse inventory and release provenance packet. Only after those conditions are met should a closeout reviewer change the ledger's status and close #51.
-
-## Complete source-row inventory added
-
-The companion final-gap-matrix.json enumerates every 39 tracker obligation with its missing proof, concrete next action and required acceptance. section6-gap-inventory.json covers all 85 §6 rows and conservatively flags 41 category-A candidates. Eight mutation controls detect omitted/changed rows, source drift, fabricated execution and self-awarded sign-off. This closes the enumeration gap only; independent classification and historical acceptance remain open. No release deferral is approved.
+The controls cover owner-and-reason deferrals without release names, absent/generic owners, absent/placeholder reasons, actual and escaped line breaks, malformed optional decision links, omitted or duplicated rows, mismatched matrix deferrals, stale source links/line numbers and invented sign-off. An eligibility result only requests independent closeout review; it never closes the issue or authorizes a network change.

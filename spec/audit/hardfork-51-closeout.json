@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "tracker": "https://github.com/rchain-community/rchain-rust/issues/51",
-  "source_dev_sha": "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b",
-  "observed_date": "2026-10-20",
+  "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+  "observed_date": "2026-10-21",
   "closure_requested": false,
-  "policy": "Every \u00a7A/\u00a7B and every \u00a76 consensus-changing row must be merged on dev or deferred with a named decision owner and a one-line reason. A green test run alone is not closure.",
+  "policy": "Every §A/§B and every §6 consensus-changing row must be landed on dev or deferred with a named decision owner and a one-line reason. Release execution evidence remains separately accountable; a green test run alone is not closure.",
   "items": [
     {
       "id": "A:block-timestamp",
@@ -49,7 +49,7 @@
     {
       "id": "A:bigint-decimal",
       "title": "RCHIP #51: BigInt and exact Decimal",
-      "status": "open",
+      "status": "merged",
       "decision_owner": "maintainers",
       "references": [
         "#49",
@@ -59,7 +59,11 @@
         "#373",
         "#391"
       ],
-      "blocker": "BigInt/Decimal Rust and Lean landed; release requires merged #373 new-genesis and uniform validator acceptance; #380 is open."
+      "evidence": {
+        "pr": 389,
+        "merge_commit": "666ddb75e2d2787f099e05f983e31fb9728e7ed6"
+      },
+      "notes": "BigInt #49 and Decimal #389/#390 are on the pinned dev, together with #373 and #391. This is landed code, not proof of a scanned archive or uniform live validator rollout; Release:decimal-genesis remains open."
     },
     {
       "id": "A:double-mint",
@@ -112,7 +116,7 @@
         "#373",
         "#376"
       ],
-      "blocker": "Partial committed bounds implementation in unmerged #373; wider on-chain shard config not shown completed."
+      "blocker": "#373/#376 committed bounds and restore guards are merged. Wider RCHIP #24 governance-settable shard configuration remains a separate scope decision."
     },
     {
       "id": "A:block-merge",
@@ -156,11 +160,11 @@
       "references": [
         "#51"
       ],
-      "blocker": "No verified implementation or named release deferral."
+      "blocker": "No verified implementation or recorded owner-and-reason deferral."
     },
     {
       "id": "A:phlo-exchange",
-      "title": "RCHIP #7/#8 phlogiston\u2194REV exchange and per-block limits",
+      "title": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits",
       "status": "open",
       "decision_owner": "Jim / governance",
       "references": [
@@ -187,7 +191,7 @@
       "references": [
         "#51"
       ],
-      "blocker": "No verified implementation or named release deferral."
+      "blocker": "No verified implementation or recorded owner-and-reason deferral."
     },
     {
       "id": "A:asset-store",
@@ -249,7 +253,7 @@
       "references": [
         "#51"
       ],
-      "blocker": "No verified implementation or named release deferral."
+      "blocker": "No verified implementation or recorded owner-and-reason deferral."
     },
     {
       "id": "B:breaking-release",
@@ -260,7 +264,7 @@
         "#51",
         "#391"
       ],
-      "blocker": "A guarded manifest is not a fully accepted history-preserving release runbook."
+      "blocker": "#391's release preflight is merged; real archive, validator and new-genesis attestations remain absent."
     },
     {
       "id": "B:staking-pools-interface",
@@ -275,20 +279,24 @@
     {
       "id": "Batch:activation-schedule",
       "title": "Height/version schedule, committed bounds, fundPot and startup guards",
-      "status": "open",
+      "status": "merged",
       "decision_owner": "Jim / maintainers",
       "references": [
         "#373",
         "#376",
         "#391"
       ],
-      "blocker": "#373 is Draft/unmerged; #376 implementation was integrated into its branch."
+      "evidence": {
+        "pr": 373,
+        "merge_commit": "c42440716ddb3d467fe0e16b3607ed40ff20f5b1"
+      },
+      "notes": "#373 merged with #376's committed-bound, format and restore guards. #391, #392, #402 and #404 are also on the pinned dev. Integrated acceptance and operator provenance remain separate."
     },
     {
       "id": "Batch:crypto-agility",
       "title": "RCHIP #274 signature/key/deploy ID agility fork",
       "status": "open",
-      "decision_owner": "Jim / security",
+      "decision_owner": "@jimscarver",
       "references": [
         "#274",
         "#373"
@@ -327,7 +335,7 @@
         "#247",
         "#51"
       ],
-      "blocker": "Choose remint/new genesis or document funded key reuse."
+      "blocker": "#247 records use of an already-funded faucet key. A finalized drip/key attestation remains a live acceptance obligation; no new genesis allocation is implied."
     },
     {
       "id": "Batch:attestation-format",
@@ -338,18 +346,18 @@
         "#149",
         "#51"
       ],
-      "blocker": "Still a candidate pending measurement/decision, not a named release deferral."
+      "blocker": "Lightweight/non-parent attestations remain a scope decision. #403 is a separate unmerged liveness experiment; it is not a wire-format disposition."
     },
     {
       "id": "Audit:section6-categoryA",
-      "title": "Exhaustive \u00a76 category-A reverse inventory",
+      "title": "Exhaustive §6 category-A reverse inventory",
       "status": "open",
       "decision_owner": "Jim / auditors",
       "references": [
         "spec/audit/passes.md",
         "#51"
       ],
-      "blocker": "All 85 current \u00a76 rows are now enumerated with exact source hashes and 41 conservative category-A candidates. Independent category/release sign-off and construct-specific replay evidence remain absent."
+      "blocker": "All 90 current §6 rows are enumerated with exact row hashes, including the changed Decimal decision and five additional rows. Independent classification and construct-specific historical replay remain open."
     },
     {
       "id": "Audit:law52-partition",
@@ -371,7 +379,7 @@
         "#125",
         "#51"
       ],
-      "blocker": "C173 remains conditional and cannot be auto-closed."
+      "blocker": "The current Law 53 inventory records both C173 inverses as shipped. Exact merged ancestry, historical validity and distributed rejoin evidence still need an explicit release disposition."
     },
     {
       "id": "Audit:active-set-draw",
@@ -387,13 +395,17 @@
     {
       "id": "Audit:parent-limit",
       "title": "C191 #153 parent set bound",
-      "status": "open",
+      "status": "merged",
       "decision_owner": "Jim / consensus",
       "references": [
         "#160",
         "#373"
       ],
-      "blocker": "Production code landed in #160, but committed parameter rollout through #373 remains open."
+      "evidence": {
+        "pr": 373,
+        "merge_commit": "c42440716ddb3d467fe0e16b3607ed40ff20f5b1"
+      },
+      "notes": "The #160 parent-width rule and #373's committed-bound validation/restore paths are landed. This records implementation ancestry; distributed release acceptance is not inferred."
     },
     {
       "id": "Audit:sidecar-merge",
@@ -404,7 +416,7 @@
         "#51",
         "spec/audit/passes.md"
       ],
-      "blocker": "Reported landed code; still needs complete \u00a76 release classification and historical acceptance."
+      "blocker": "Reported landed code; still needs complete §6 release classification and historical acceptance."
     },
     {
       "id": "Release:attachment-upgrade",
@@ -427,7 +439,8 @@
         "#380",
         "#391"
       ],
-      "blocker": "Must audit real persisted state/deploy history and validator hashes; #391's fail-closed gate cannot self-authorize."
+      "blocker": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required."
     }
-  ]
+  ],
+  "close_clause_evidence": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6316299117"
 }

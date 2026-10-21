@@ -29,7 +29,7 @@ class CloseoutTests(unittest.TestCase):
         self.assertEqual(out["result"], "TRACKER_MUST_REMAIN_OPEN")
         self.assertFalse(out["closure_requested"])
         self.assertGreater(out["unresolved"], 30)
-        self.assertEqual(out["merged"], 4)
+        self.assertEqual(out["merged"], 7)
 
     def test_exact_inventory_is_required(self):
         self.payload["items"].pop()

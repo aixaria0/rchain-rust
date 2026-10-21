@@ -261,6 +261,87 @@ chain completely:
 Old data dirs are small (a few MB) but not load-bearing: the genesis files and the validator keys are the
 source of truth.
 
+### Decimal and the #373 genesis: pre-restart release check
+
+The exact decimal (`d` literal, wire tag 35) is a pre-launch feature on `dev`. It is not
+height-gated on the old genesis. A validator built before #389 rejects a decimal source term,
+while a validator built after #389 executes it; mixed binaries can therefore disagree on the
+post-state hash even if no stored `Expr` carries field 35. The #373 genesis changes the committed
+PoS parameter record, so the decimal release belongs to that new chain, with all validators on
+binaries that understand tag 35. Do not treat a routine rolling restart on the old genesis as
+that migration.
+
+Before the restart/rebuild, record these checks in the release evidence:
+
+1. Pin the release commit and verify that it includes #373's new genesis format and #389/#390's
+   decimal implementation. Record the binary commit on **each** validator; the new genesis must
+   start with a uniform set that understands tag 35.
+2. For any old chain whose state will be replayed or reused, inspect the persisted block/deploy
+   history for decimal source terms and the persisted state for field-35 `Expr` values. Record the
+   data directories, inspected height range, scan method and result. A text search for `d` alone
+   is not a decimal-literal parser, and a field-35 scan alone misses deploy source terms. If
+   coverage is incomplete, do not claim historical replay compatibility.
+3. Stop all validators before replacing binaries or creating the new genesis. Retain a snapshot
+   of the old data and keys, then follow the rebuild procedure above; record the new genesis hash
+   and check that every validator joins that same chain before accepting deploys.
+
+The standalone Lean value-algebra proof remains a separately recorded follow-up; the comparator
+proof and Rust refinement/tests establish the current #380 boundary.
+
+#### Machine-checked Decimal release evidence (no automatic deployment approval)
+
+Run `tools/decimal_release_preflight.py` using the complete Git history of
+the *intended* release source, supplying an operator-collected JSON manifest:
+
+```sh
+python3 tools/decimal_release_preflight.py /path/to/manifest.json --repo /path/to/full/rchain-rust
+```
+
+The schema-1 manifest must set `activation` to
+`fresh-genesis-uniform-validator-upgrade`, provide `release_commit` (40 hex
+characters), and contain:
+
+- `new_genesis`: 64-hex `block_hash` / `state_hash`, `block_version: 1`,
+  raw `pos_params_hex` (format byte 1 followed by ten little-endian i64s),
+  `expected_min_phlo_price` and `expected_max_number_of_parents`.
+- `expected_validator_count` and a complete `validators` inventory. For
+  each entry: unique `identity`, identical `binary_sha256` in `sha256:...`
+  form, `build_commit` exactly equal to `release_commit`,
+  `supports_decimal_tag35: true`, and identical new genesis block and state
+  hashes. Git ancestry must include **#389**, **#390** and the reviewed
+  **#373 head**. A release that squashes/cherry-picks #373 without retaining
+  ancestry remains blocked pending an independently reviewed provenance update.
+- `pre_restart.old_genesis_present`. If true, checksum-bound external JSON
+  evidence under `state_scan`, `deploy_scan` and `validator_build_audit` is
+  required; full state-root and old-block coverage, zero native-state field-35
+  occurrences, zero decimal source literals, and no decimal-capable build
+  operating on the old genesis must be evidenced. If false, a checksum-bound
+  `no_existing_chain_evidence` must establish no prior genesis. **Planning to
+  discard an existing testnet is not evidence that no old genesis existed.**
+
+A file that asserts full coverage is not proof of full coverage. Keep the
+original source snapshots, state-root exports, source-language-aware literal
+scanner, schema-aware wire decoder, source/height coverage counts, scanner
+version, signed operator inventory, and old/new genesis hashes available for
+**independent** review; do not commit validator keys or credentials.
+
+**Exit status is fail-closed:** 2 means `BLOCKED` (missing, wrong or contradictory
+input); 3 means `INPUT_CONSISTENCY_ONLY_RELEASE_NOT_AUTHORIZED`. Even an
+internally consistent synthetic manifest cannot produce exit 0, so a shell
+release process must not treat it as authorization. A green CI badge proves
+the refusal tests operate, **not** that the operator has scanned history or
+that a network is ready to restart. Independent maintainer/operational
+sign-off is mandatory before any new-genesis restart.
+
+To reproduce the synthetic negative controls:
+
+```sh
+python3 -m unittest discover -s tests -p test_decimal_release_preflight.py -v
+```
+
+This gate does not establish historical rollback/replay safety or general
+consensus liveness and cannot close #380 or #391 while #373 is unmerged.
+
 ## Ports
 
 | Service | Default port | Reachable |

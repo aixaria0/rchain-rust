@@ -3,10 +3,14 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_SPEC = importlib.util.spec_from_file_location("hardfork_51_gate", ROOT / "tools/check-hardfork-51-closeout.py")
+_GATE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_GATE)
 CLASSIFICATIONS = {
     "IMPLEMENTED / VERIFIED", "IMPLEMENTED / EVIDENCE INCOMPLETE", "CODE DEFECT",
     "INTEGRATION GAP", "RELEASE BLOCKER", "REQUIRES MAINTAINER DECISION",
@@ -26,7 +30,10 @@ def source_rows(document):
     return rows
 
 def validate(document, inventory, matrix, ledger):
+    _GATE.validate(ledger)
     expected = source_rows(document)
+    ledger_rows = {row["id"]: row for row in ledger["items"]}
+    source_lines = {raw: number for number, raw in enumerate(document.splitlines(), 1)}
     rows = inventory.get("rows")
     if not isinstance(rows, list) or len(rows) != len(expected):
         raise ValueError("section 6 row coverage changed")
@@ -46,6 +53,12 @@ def validate(document, inventory, matrix, ledger):
         seen.add(row["id"])
         if row.get("existing_evidence", {}).get("source_row") != raw:
             raise ValueError("authored source evidence changed")
+        if type(row.get("source_line")) is not int or row["source_line"] != source_lines[raw]:
+            raise ValueError("source row line changed")
+        expected_url = ("https://github.com/rchain-community/rchain-rust/blob/"
+                        + ledger["source_dev_sha"] + "/spec/audit/passes.md")
+        if row.get("existing_evidence", {}).get("url") != expected_url:
+            raise ValueError("source evidence URL is not pinned to the ledger commit")
         if row.get("fork_class") not in {"A_CANDIDATE", "NON_A_RECORDED"}:
             raise ValueError("every row needs an explicit category disposition")
         if row.get("classification") != "IMPLEMENTED / EVIDENCE INCOMPLETE":
@@ -60,10 +73,19 @@ def validate(document, inventory, matrix, ledger):
     for row in entries:
         if row.get("classification") not in CLASSIFICATIONS:
             raise ValueError("unclassified tracker item")
-        if row.get("recorded_owner_reason_deferral") is not False:
-            raise ValueError("matrix cannot fabricate an approved release deferral")
-        if row["classification"] in {"IMPLEMENTED / VERIFIED", "EXPLICITLY DEFERRED"}:
-            raise ValueError("this source-only matrix cannot certify execution or deferral")
+        authored = ledger_rows[row["id"]]
+        deferred = authored["status"] == "deferred"
+        if type(row.get("recorded_owner_reason_deferral")) is not bool or row["recorded_owner_reason_deferral"] != deferred:
+            raise ValueError("matrix/ledger deferral mismatch")
+        if deferred:
+            if (row["classification"] != "EXPLICITLY DEFERRED"
+                    or row.get("decision_owner") != authored["decision_owner"]
+                    or row.get("deferral_reason") != authored["reason"]):
+                raise ValueError("matrix deferral must carry the ledger's owner and reason")
+        elif row["classification"] == "EXPLICITLY DEFERRED":
+            raise ValueError("matrix cannot fabricate a ledger deferral")
+        if row["classification"] == "IMPLEMENTED / VERIFIED":
+            raise ValueError("this source-only matrix cannot certify execution")
         for field in ("exact_file_function_or_invariant", "missing_proof",
                       "smallest_corrective_action", "required_acceptance_test", "decision_owner"):
             if not isinstance(row.get(field), str) or not row[field].strip():

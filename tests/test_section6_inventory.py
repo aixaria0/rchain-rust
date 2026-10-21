@@ -20,7 +20,7 @@ class InventoryTests(unittest.TestCase):
         return module.validate(self.source,self.inventory,self.matrix,self.ledger)
     def test_exact_inventory_never_authorizes_release(self):
         result=self.check()
-        self.assertEqual(result["section6_rows"],85)
+        self.assertEqual(result["section6_rows"],90)
         self.assertEqual(result["tracker_obligations"],39)
         self.assertFalse(result["release_authorized"])
     def test_new_source_row_is_not_silently_skipped(self):
@@ -44,5 +44,43 @@ class InventoryTests(unittest.TestCase):
     def test_fake_release_deferral_is_refused(self):
         self.matrix["items"][0]["recorded_owner_reason_deferral"]=True
         with self.assertRaisesRegex(ValueError,"deferral"): self.check()
+
+    def test_source_line_drift_is_detected(self):
+        self.inventory["rows"][0]["source_line"] += 1
+        with self.assertRaisesRegex(ValueError,"source row line"):
+            self.check()
+
+    def test_source_evidence_url_must_use_pinned_commit(self):
+        self.inventory["rows"][0]["existing_evidence"]["url"] = "https://github.com/rchain-community/rchain-rust/blob/dev/spec/audit/passes.md"
+        with self.assertRaisesRegex(ValueError,"not pinned"):
+            self.check()
+
+    def test_owner_reason_deferral_can_be_reconciled_without_release(self):
+        item=next(x for x in self.ledger["items"] if x["status"]=="open"
+                  and x["id"]!="Audit:section6-categoryA")
+        item.update(status="deferred",decision_owner="@jimscarver",
+                    reason="Retain the current rule pending an accepted governance proposal.")
+        row=next(x for x in self.matrix["items"] if x["id"]==item["id"])
+        row.update(classification="EXPLICITLY DEFERRED",recorded_owner_reason_deferral=True,
+                   decision_owner=item["decision_owner"],deferral_reason=item["reason"])
+        self.assertFalse(self.check()["release_authorized"])
+        row["deferral_reason"]="A different decision cannot replace the recorded reason."
+        with self.assertRaisesRegex(ValueError,"owner and reason"):
+            self.check()
+
+    def test_invalid_ledger_deferral_is_not_accepted_by_inventory(self):
+        item=next(x for x in self.ledger["items"] if x["status"]=="open"
+                  and x["id"]!="Audit:section6-categoryA")
+        item.update(status="deferred",decision_owner="maintainers",reason="Retain the current rule pending review.")
+        with self.assertRaisesRegex(ValueError,"GitHub user"):
+            self.check()
+
+    def test_ledger_deferral_cannot_be_hidden_by_matrix(self):
+        item=next(x for x in self.ledger["items"] if x["status"]=="open"
+                  and x["id"]!="Audit:section6-categoryA")
+        item.update(status="deferred",decision_owner="@jimscarver",
+                    reason="Retain the current rule pending an accepted governance proposal.")
+        with self.assertRaisesRegex(ValueError,"deferral mismatch"):
+            self.check()
 
 if __name__=="__main__": unittest.main()
