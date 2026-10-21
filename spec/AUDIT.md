@@ -104,7 +104,7 @@ on the rows that are not reads.
 
 **Findings  TODO 0 · IN PROGRESS 2 · DONE 368** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  163 of 369 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  164 of 370 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 369 are settled: **305 name the evidence that holds them** and **64 do not** — the
+All 370 are settled: **306 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
