@@ -473,9 +473,9 @@ mod tests {
     }
 
     /// The quorum clock is a liveness measure, not a per-sender round marker.
-    /// Three healthy validators reach heights 1/2/3; stake 100/100/50
-    /// puts the quorum-supported boundary at 2, below sender 2's height 3.
-    /// Sender 2's OLD message must not count as another round's proposal.
+    /// Stake 100/100/50 yields a quorum-supported height 2 while the
+    /// boundary contains a sender at height 3 (and another at height 4).
+    /// Those OLD messages cannot count as new-round proposals.
     #[test]
     fn quorum_clock_below_a_senders_boundary_does_not_reuse_that_message() {
         let bonds = [(0, 100), (1, 100), (2, 50)];
@@ -483,27 +483,29 @@ mod tests {
         for sender in 0..3 {
             state.insert_msg_mut(&at(sender, sender, 0, sender as i64 + 1, &bonds));
         }
-        // All three have entered the first snapshot. The quorum clock
-        // is 2 even though validator 2's snapshot has height 3.
+        // The first boundary was just sender 0, so sender 0 must
+        // advance once before all three can enter the next snapshot.
+        state.insert_msg_mut(&at(10, 0, 1, 4, &bonds));
         assert_eq!(state.round_height, BlockHeight::try_from(2).unwrap());
         assert_eq!(state.round_parents.len(), 3);
+        assert_eq!(state.round_parents.get(&0).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
         assert_eq!(state.round_parents.get(&2).unwrap().sender_seq, SeqNum::zero());
 
-        state.insert_msg_mut(&at(10, 0, 1, 4, &bonds));
-        state.insert_msg_mut(&at(11, 1, 1, 5, &bonds));
+        state.insert_msg_mut(&at(11, 0, 2, 5, &bonds));
+        state.insert_msg_mut(&at(12, 1, 1, 6, &bonds));
         assert_eq!(
             state.round_parents.get(&0).unwrap().sender_seq,
-            SeqNum::zero(),
+            SeqNum::try_from(1).unwrap(),
             "no new snapshot before validator 2 speaks again"
         );
         assert_eq!(
             state.round_height,
             BlockHeight::try_from(2).unwrap(),
-            "a validator's height 3 at the previous boundary is not fresh progress"
+            "validator 2's height 3 at the previous boundary is not fresh progress"
         );
 
-        state.insert_msg_mut(&at(12, 2, 1, 6, &bonds));
-        assert_eq!(state.round_parents.get(&0).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
+        state.insert_msg_mut(&at(13, 2, 1, 7, &bonds));
+        assert_eq!(state.round_parents.get(&0).unwrap().sender_seq, SeqNum::try_from(2).unwrap());
         assert_eq!(state.round_parents.get(&1).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
         assert_eq!(state.round_parents.get(&2).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
     }
