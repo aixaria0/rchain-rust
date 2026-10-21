@@ -104,19 +104,29 @@ where
             return;
         };
         let window = super::liveness::LIVENESS_WINDOW;
+        let heights = super::liveness::latest_heights(
+            self.latest_msgs
+                .values()
+                .map(|m| (m.sender.clone(), m.height)),
+        );
+        // One fast proposer may not age out six still-active validators.
+        // Use the same stake-backed progress clock as the finalizer.
+        let supported_tip = super::liveness::quorum_supported_height(&bonds, &heights);
         let closed = bonds.keys().all(|s| {
             match self.latest_msgs.get(s).map(|m| m.height) {
                 // Spoken and past the boundary: this sender is done for this round.
                 Some(height) if height > self.round_height => true,
                 // Spoken, but not past it: the round waits for it — unless the window has retired it.
-                Some(height) => super::liveness::heights_behind(tip, height) > window,
-                // Never spoken: the round waits, on the same clock the window runs.
-                None => i64::from(tip) - i64::from(self.round_height) > window,
+                Some(height) => super::liveness::heights_behind(supported_tip, height) > window,
+                // Never spoken: it ages out only with quorum-backed progress.
+                None => i64::from(supported_tip) - i64::from(self.round_height) > window,
             }
         });
         if closed {
             self.round_parents = self.latest_msgs.clone();
-            self.round_height = tip;
+            // Next round must be measured from collective progress, not the
+            // outlier's height (or it would wait for everyone to reach that tip).
+            self.round_height = supported_tip;
         }
     }
 
@@ -452,6 +462,50 @@ mod tests {
             fringe: BTreeSet::new(),
             seen: Arc::new([id].into_iter().collect()),
         }
+    }
+
+    #[test]
+    fn fast_proposer_cannot_retire_an_online_quorum_or_advance_round_alone() {
+        let bonds: Vec<(i32, i64)> = (0..8).map(|v| (v, 100)).collect();
+        let mut state: DagMessageState<i32, i32> = DagMessageState::empty();
+        for sender in 0..8 {
+            let msg = at(100 + sender, sender, 0, 60, &bonds);
+            state.insert_msg_mut(&msg);
+        }
+        assert_eq!(state.round_parents.len(), 8);
+        assert_eq!(state.round_height, BlockHeight::try_from(60).unwrap());
+
+        for height in 61..=106 {
+            // Explicit repeated deploys may let a single creator keep climbing.
+            // Other senders have still produced their height-60 message.
+            let msg = at(1000 + height, 0, height - 60, height, &bonds);
+            state.insert_msg_mut(&msg);
+        }
+        assert_eq!(state.round_height, BlockHeight::try_from(60).unwrap());
+        assert_eq!(state.round_parents.len(), 8);
+
+        // Six peers catch up; the seventh is partitioned. The real quorum
+        // (7/8, not a minority) moves the supported clock and retires the
+        // partitioned peer without waiting for everyone to reach height 106.
+        for sender in 1..=6 {
+            state.insert_msg_mut(&at(1200 + sender, sender, 1, 68, &bonds));
+        }
+        assert_eq!(state.round_height, BlockHeight::try_from(68).unwrap());
+        assert_eq!(state.round_parents.len(), 8);
+        let heights = super::super::liveness::latest_heights(
+            state.latest_msgs.values().map(|m| (m.sender, m.height)),
+        );
+        let bonded = state.latest_msgs.values().next().unwrap().bonds_map.clone();
+        let supported = super::super::liveness::quorum_supported_height(&bonded, &heights);
+        let live = super::super::liveness::live_weight_set(
+            &bonded,
+            &heights,
+            supported,
+            super::super::liveness::LIVENESS_WINDOW,
+        );
+        assert_eq!(supported, BlockHeight::try_from(68).unwrap());
+        assert_eq!(live.len(), 7);
+        assert!(!live.contains_key(&7));
     }
 
     /// **The round is what makes the per-deploy cost linear in the validator count** (#149).

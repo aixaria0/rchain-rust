@@ -1182,7 +1182,7 @@ where
     let live_bonds = liveness::live_weight_set(
         &pre_state_bonds,
         &seen_heights,
-        tip,
+        liveness::quorum_supported_height(&pre_state_bonds, &seen_heights),
         liveness::LIVENESS_WINDOW,
     );
     let pre_state_bonds_stake: i128 = pre_state_bonds
