@@ -19,6 +19,16 @@ use crate::protocol::comm_util::CommUtil;
 const MAX_REQUESTED_BLOCKS: usize = 10_000;
 /// Maximum waiting-list length per requested hash (H5).
 const MAX_WAITING_LIST_PER_HASH: usize = 32;
+/// Renewed child demand may retry an unresolved dependency once per default
+/// maintenance cadence, without waiting for the 240-second request-age timeout.
+const MISSING_DEPENDENCY_RETRY_MILLIS: i64 = 30_000;
+
+enum MissingDependencyAction {
+    Admit,
+    Wait,
+    Request(PeerNode),
+    Discover,
+}
 
 /// Reason a hash was admitted (port of `AdmitHashReason`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +256,60 @@ impl BlockRetriever {
             }
         }
         result
+    }
+
+    /// Request an absent parent, including one whose earlier reply was lost.
+    /// Reserve the retry under the request lock before any network await, so
+    /// concurrent children cannot each resend the same unresolved dependency.
+    pub async fn request_missing_dependency(&self, hash: &BlockHash) {
+        let now = current_millis();
+        let action = {
+            let mut requests = self.requested.lock().await;
+            match requests.get_mut(hash) {
+                None => MissingDependencyAction::Admit,
+                Some(request) => {
+                    let age = now.saturating_sub(request.timestamp);
+                    if age < MISSING_DEPENDENCY_RETRY_MILLIS {
+                        MissingDependencyAction::Wait
+                    } else {
+                        request.timestamp = now;
+                        if request.waiting_list.is_empty() {
+                            request.peers.clear();
+                            MissingDependencyAction::Discover
+                        } else {
+                            let peer = request.waiting_list.remove(0);
+                            if !request.peers.contains(&peer)
+                                && request.peers.len() < MAX_WAITING_LIST_PER_HASH
+                            {
+                                request.peers.push(peer.clone());
+                            }
+                            MissingDependencyAction::Request(peer)
+                        }
+                    }
+                }
+            }
+        };
+        match action {
+            MissingDependencyAction::Admit => {
+                self.admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
+                    .await;
+            }
+            MissingDependencyAction::Wait => {}
+            MissingDependencyAction::Request(peer) => {
+                self.log.info(
+                    self.log_source,
+                    &format!(
+                        "Retrying unresolved dependency {} from {} after renewed child demand.",
+                        hash.to_hex(),
+                        peer.endpoint.host
+                    ),
+                );
+                self.comm_util.request_for_block(&peer, hash).await;
+            }
+            MissingDependencyAction::Discover => {
+                self.comm_util.broadcast_has_block_request(hash).await;
+            }
+        }
     }
 
     /// Acknowledge that a block was received (port of `ackReceived`).
@@ -532,4 +596,91 @@ mod tests {
         let packet = rchain_comm::rp::protocol_helper::to_packet(msg).unwrap();
         assert_eq!(packet.type_id, "HasBlockRequest");
     }
+
+    #[tokio::test]
+    async fn renewed_child_demand_retries_a_lost_dependency_without_flooding() {
+        let transport = Arc::new(MockTransport::default());
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40401);
+        let retriever = retriever(transport.clone(), &local);
+        retriever
+            .admit_hash(&hash(1), Some(&remote), AdmitHashReason::HashBroadcastRecieved)
+            .await;
+
+        // No reply arrived, but repeated children inside the retry lease must
+        // not multiply the original request.
+        for _ in 0..100 {
+            retriever.request_missing_dependency(&hash(1)).await;
+        }
+        assert_eq!(transport.sends.lock().unwrap().len(), 1);
+        retriever
+            .requested
+            .lock()
+            .await
+            .get_mut(&hash(1))
+            .unwrap()
+            .timestamp = current_millis() - MISSING_DEPENDENCY_RETRY_MILLIS - 1;
+        retriever.request_missing_dependency(&hash(1)).await;
+        retriever.request_missing_dependency(&hash(1)).await;
+        {
+            let sends = transport.sends.lock().unwrap();
+            assert_eq!(sends.len(), 2);
+            assert_eq!(sends[1].0, remote);
+            let first = rchain_comm::rp::protocol_helper::to_packet(&sends[0].1).unwrap();
+            let retry = rchain_comm::rp::protocol_helper::to_packet(&sends[1].1).unwrap();
+            assert_eq!(first, retry, "retry the same missing block request");
+        }
+        assert_eq!(retriever.requested.lock().await.len(), 1);
+        retriever.ack_received(&hash(1)).await;
+        assert!(retriever.requested.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn renewed_dependency_demand_tries_the_next_known_source() {
+        let transport = Arc::new(MockTransport::default());
+        let local = peer("src", 40400);
+        let first = peer("first", 40401);
+        let second = peer("second", 40402);
+        let retriever = retriever(transport.clone(), &local);
+        for source in [&first, &second] {
+            retriever
+                .admit_hash(&hash(1), Some(source), AdmitHashReason::HashBroadcastRecieved)
+                .await;
+        }
+        for _ in 0..2 {
+            retriever
+                .requested
+                .lock()
+                .await
+                .get_mut(&hash(1))
+                .unwrap()
+                .timestamp = current_millis() - MISSING_DEPENDENCY_RETRY_MILLIS - 1;
+            retriever.request_missing_dependency(&hash(1)).await;
+        }
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 3);
+        assert_eq!(sends[1].0, first);
+        assert_eq!(sends[2].0, second);
+    }
+
+    #[tokio::test]
+    async fn renewed_dependency_demand_rediscovers_sources_with_a_retry_lease() {
+        let transport = Arc::new(MockTransport::default());
+        let local = peer("src", 40400);
+        let retriever = retriever(transport.clone(), &local);
+        retriever.request_missing_dependency(&hash(1)).await;
+        assert_eq!(transport.broadcasts.lock().unwrap().len(), 1);
+        retriever
+            .requested
+            .lock()
+            .await
+            .get_mut(&hash(1))
+            .unwrap()
+            .timestamp = current_millis() - MISSING_DEPENDENCY_RETRY_MILLIS - 1;
+        retriever.request_missing_dependency(&hash(1)).await;
+        retriever.request_missing_dependency(&hash(1)).await;
+        assert_eq!(transport.broadcasts.lock().unwrap().len(), 2);
+        assert_eq!(retriever.requested.lock().await.len(), 1);
+    }
 }
+
