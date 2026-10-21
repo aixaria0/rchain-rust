@@ -762,7 +762,11 @@ mod tests {
         retriever.retry_oldest_pending_request(&hash(1)).await;
         {
             let sends = transport.sends.lock().unwrap();
-            assert_eq!(sends.len(), 3, "one retry, then the fresh lease suppresses it");
+            assert_eq!(
+                sends.len(),
+                3,
+                "one retry, then the fresh lease suppresses it"
+            );
             let retry = rchain_comm::rp::protocol_helper::to_packet(&sends[2].1).unwrap();
             let second = rchain_comm::rp::protocol_helper::to_packet(&sends[1].1).unwrap();
             assert_eq!(retry, second, "the received older hash must be excluded");
@@ -781,12 +785,15 @@ mod tests {
         let remote = peer("peer", 40401);
         let retriever = retriever(transport, &local);
         let stale = RequestState::new(0, Some(remote));
-        retriever.requested.lock().await.insert(hash(1), stale.clone());
+        retriever
+            .requested
+            .lock()
+            .await
+            .insert(hash(1), stale.clone());
 
         // Maintenance may snapshot before the receiver acknowledges the body.
         retriever.ack_received(&hash(1)).await;
         retriever.try_rerequest(hash(1), stale).await;
         assert!(retriever.requested.lock().await.is_empty());
     }
-
 }
