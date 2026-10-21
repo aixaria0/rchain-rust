@@ -198,7 +198,9 @@ mod tests {
     }
 
     fn short_id() -> NodeIdentifier {
-        NodeIdentifier::new(vec![0x11; 20])
+        // Hex containing letters is a valid TLS DNS name; an all-numeric
+        // fixture can be rejected before a connection is attempted.
+        NodeIdentifier::new(vec![0xAB; 20])
     }
 
     /// A later peer can fail immediately while the first peer waits for TLS.
@@ -217,8 +219,14 @@ mod tests {
         let outcomes = c.broadcast(&[slow, invalid], Protocol::default()).await;
 
         assert_eq!(outcomes.len(), 2);
-        assert!(matches!(&outcomes[0], Err(CommError::TimeOut)));
-        assert!(matches!(&outcomes[1], Err(CommError::ParseError(_))));
+        assert!(
+            matches!(&outcomes[0], Err(CommError::TimeOut)),
+            "the first peer must reach the network timeout: {outcomes:?}"
+        );
+        assert!(
+            matches!(&outcomes[1], Err(CommError::ParseError(_))),
+            "the later invalid identity must retain its recipient index: {outcomes:?}"
+        );
     }
 
     /// A client with unusable PEM material fails to build rather than panicking later: the TLS
@@ -258,20 +266,19 @@ mod tests {
         );
     }
 
-    /// A connection failure is an error and is **not cached**: a second attempt retries rather than
-    /// returning a stored failure (or, worse, a stale channel). Port 1 on loopback refuses, so this
-    /// needs no server.
+    /// A cached lazy channel is not evidence of delivery. Both the initial and
+    /// repeated RPC to an unavailable peer must report a failed handoff.
     #[tokio::test]
-    async fn a_failed_connection_is_reported_and_not_cached() {
+    async fn a_failed_connection_is_reported_on_send() {
         let c = client();
         let p = peer(short_id(), "127.0.0.1", 1);
         assert!(
-            c.get_channel(&p).await.is_err(),
+            c.send(&p, Protocol::default()).await.is_err(),
             "a refused connection must be an error"
         );
         assert!(
-            c.get_channel(&p).await.is_err(),
-            "…and the second attempt must try again, not replay a cached failure"
+            c.send(&p, Protocol::default()).await.is_err(),
+            "a cached lazy channel must not turn a failed send into success"
         );
     }
 

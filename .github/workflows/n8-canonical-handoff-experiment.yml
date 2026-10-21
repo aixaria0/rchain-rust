@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: n8-canonical-handoff-${{ github.ref }}
+  group: n8-canonical-handoff-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
