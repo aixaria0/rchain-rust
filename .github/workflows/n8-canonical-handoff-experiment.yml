@@ -39,7 +39,7 @@ jobs:
           tools/devnet.sh build
           docker image inspect rnode:local > target/final-gap-image/docker-image.json
           python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
-      - name: Unmodified canonical N=8 baseline and partition/rejoin
+      - name: Canonical N=8 baseline and partition/rejoin with finalized-identity agreement
         shell: bash
         run: |
           set +e
