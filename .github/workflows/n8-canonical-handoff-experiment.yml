@@ -120,7 +120,7 @@ jobs:
                      "passed": not issues, "errors": issues, "rounds_checked": len(rounds)}
           out = Path("target/final-gap/n8-strict-finality-verdict.json")
           out.parent.mkdir(parents=True, exist_ok=True)
-          out.write_text(json.dumps(verdict, indent=2) + "\\n")
+          out.write_text(json.dumps(verdict, indent=2))
           print(json.dumps(verdict))
           if issues:
               raise SystemExit(1)
