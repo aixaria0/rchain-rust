@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded same-volume partition/rejoin under explicit supporting deploy workload."""
 import argparse
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -29,6 +30,33 @@ def durable_state_volume(container):
     return (m["Type"],m["Name"],m["Source"],m["Destination"],m["RW"])
 
 
+@contextmanager
+def record_cycle(out, rounds, record, capture_phase):
+    """Persist a failed cycle before cleanup, without replacing its primary error."""
+    rounds.append(record)
+    try:
+        yield record
+    except Exception as error:
+        record["result"] = "FAIL"
+        record["error"] = {"type": type(error).__name__, "message": str(error)}
+        # Capture the failure state before the outer cleanup reconnects the victim.
+        try:
+            capture_phase(f"partition-{record['cycle']}-{record['phase']}-failed")
+        except Exception as capture_error:
+            record["capture_error"] = str(capture_error)
+        (out/"partition-result.json").write_text(json.dumps({
+            "result": "FAIL_BOUNDED_WORKLOAD_PARTITION_REJOIN",
+            "partition_cycles_completed": sum(r.get("result") == "PASS" for r in rounds),
+            "failed_cycle": record["cycle"], "failed_phase": record["phase"],
+            "rounds": rounds,
+        }, indent=2)+"\n")
+        raise
+    else:
+        record["result"] = "PASS"
+    finally:
+        (out/"partition-observations.json").write_text(json.dumps(rounds, indent=2)+"\n")
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators",type=int,choices=[4,8],required=True)
@@ -53,45 +81,56 @@ def main():
     capture_phase("before-partition")
     try:
         for cycle in range(2):
-            before=a.finalized_identity(a.get(0,"/api/last-finalized-block"))
-            cmd("docker","network","disconnect","acceptance",victim)
-            networks=json.loads(cmd("docker","inspect","-f","{{json .NetworkSettings.Networks}}",victim))
-            if "acceptance" in networks:raise AssertionError("partition was not installed")
-            # Two 16-second escape/cadence cycles per N=8 sender plus margin:
-            # a pre-registered 300-second window, not an unbounded retry.
-            deadline=time.monotonic()+300;advanced=False;observed=[]
-            while time.monotonic()<deadline:
-                d.drive()
-                identities=[]
-                for i in range(args.validators-1):
-                    height,hash_=a.finalized_identity(a.get(i,"/api/last-finalized-block"))
-                    if not a.marker_present(a.probe(i,d.marker,hash_),d.value):
-                        raise AssertionError("online validator lost finalized marker")
-                    identities.append({"node":i,"height":height,"hash":hash_})
-                observed.append(identities)
-                (d.out/f"partition-{cycle+1}-live.json").write_text(json.dumps({
-                    "cycle":cycle+1,"before_height":before[0],"observations":observed,
-                    "remaining_seconds":max(0,deadline-time.monotonic())},indent=2)+"\n")
-                if all(x["height"]>=before[0]+3 for x in identities):
-                    advanced=True;break
-                time.sleep(2)
-            capture_phase(f"partition-{cycle+1}-before-healing")
-            cmd("docker","network","connect","acceptance",victim)
-            target=max(x["height"] for x in identities)
-            recovered=d.wait("all validators retain marker after partition healing",
-                             lambda:d.finalized_marker(target,required=True))
-            d.fixed_snapshots(original["initial_finalized"])
-            capture_phase(f"partition-{cycle+1}-healed")
-            if durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])!=volume_before:
-                raise AssertionError("rejoin replaced the durable mounts")
-            rounds.append({"cycle":cycle+1,"isolated_validator":victim,
-                "before_height":before[0],"online_observations":observed,"rejoined":recovered,
-                "same_volume":True,"original_finalized_snapshots_retained":True,
-                "partition_progress_observed":advanced})
-            if not advanced:
-                raise AssertionError("online supermajority did not advance in 300s; healed recovery was checked separately")
+            record={"cycle":cycle+1,"isolated_validator":victim,"phase":"partition-install"}
+            with record_cycle(d.out,rounds,record,capture_phase):
+                before=a.finalized_identity(a.get(0,"/api/last-finalized-block"))
+                cmd("docker","network","disconnect","acceptance",victim)
+                networks=json.loads(cmd("docker","inspect","-f","{{json .NetworkSettings.Networks}}",victim))
+                if "acceptance" in networks:raise AssertionError("partition was not installed")
+                # Two 16-second escape/cadence cycles per N=8 sender plus margin:
+                # a pre-registered 300-second window, not an unbounded retry.
+                record["phase"]="online-progress"
+                deadline=time.monotonic()+300;advanced=False;observed=[]
+                record["before_height"]=before[0]
+                record["online_observations"]=observed
+                while time.monotonic()<deadline:
+                    d.drive()
+                    identities=[]
+                    for i in range(args.validators-1):
+                        height,hash_=a.finalized_identity(a.get(i,"/api/last-finalized-block"))
+                        if not a.marker_present(a.probe(i,d.marker,hash_),d.value):
+                            raise AssertionError("online validator lost finalized marker")
+                        identities.append({"node":i,"height":height,"hash":hash_})
+                    observed.append(identities)
+                    (d.out/f"partition-{cycle+1}-live.json").write_text(json.dumps({
+                        "cycle":cycle+1,"before_height":before[0],"observations":observed,
+                        "remaining_seconds":max(0,deadline-time.monotonic())},indent=2)+"\n")
+                    if all(x["height"]>=before[0]+3 for x in identities):
+                        advanced=True;break
+                    time.sleep(2)
+                record["partition_progress_observed"]=advanced
+                capture_phase(f"partition-{cycle+1}-before-healing")
+                record["phase"]="healing"
+                cmd("docker","network","connect","acceptance",victim)
+                target=max(x["height"] for x in identities)
+                recovered=d.wait("all validators retain marker after partition healing",
+                                 lambda:d.finalized_marker(target,required=True))
+                record["rejoined"]=recovered
+                record["phase"]="retention"
+                d.fixed_snapshots(original["initial_finalized"])
+                record["original_finalized_snapshots_retained"]=True
+                capture_phase(f"partition-{cycle+1}-healed")
+                if durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])!=volume_before:
+                    raise AssertionError("rejoin replaced the durable mounts")
+                record["same_volume"]=True
+                record["phase"]="online-progress-verdict"
+                if not advanced:
+                    raise AssertionError("online supermajority did not advance in 300s; healed recovery was checked separately")
     finally:
-        subprocess.run(["docker","network","connect","acceptance",victim],capture_output=True)
+        try:
+            subprocess.run(["docker","network","connect","acceptance",victim],capture_output=True,timeout=25)
+        except (OSError,subprocess.TimeoutExpired) as cleanup_error:
+            (d.out/"partition-cleanup-error.txt").write_text(str(cleanup_error)+"\n")
         (d.out/"partition-observations.json").write_text(json.dumps(rounds,indent=2)+"\n")
     memory=cmd("docker","stats","--no-stream","--format","{{.Name}} {{.MemUsage}}")
     result={"result":"PASS_BOUNDED_WORKLOAD_PARTITION_REJOIN","source_sha":cmd("git","rev-parse","HEAD"),

@@ -131,11 +131,10 @@ jobs:
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
       - name: Install protobuf compiler
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-      - name: Verify release gate negative controls
+      - name: Verify Decimal release-preflight controls
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tests -p 'test_pr373_release_gate.py' -v
-          ! python3 tools/pr373_release_gate.py /tmp/pr373-release-evidence-not-present.json
+          python3 tests/test_decimal_release_preflight.py -v
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Test block-version and activation schedule invariants
@@ -284,31 +283,38 @@ jobs:
           components: rustfmt
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-      - name: Existing release and closeout controls
+      - name: Release and harness controls present on this source
         run: |
+          set -euo pipefail
           python3 -m unittest discover -s tests -p test_decimal_release_preflight.py -v
-          python3 -m unittest discover -s tests -p test_pr373_release_gate.py -v
-          python3 -m unittest discover -s tests -p test_hardfork_51_closeout.py -v
           python3 tests/consensus-drill-regression.py
           python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
       - name: Integrated Rust proof obligations
         run: |
+          set -euo pipefail
+          # Refuse a missing test filter instead of accepting Cargo's zero-test exit 0.
+          required_test() {
+            cargo test --locked "$@" -- --list > /tmp/required-rust-tests.txt
+            if ! grep -q ': test$' /tmp/required-rust-tests.txt; then
+              echo "No Rust tests collected for: $*"
+              exit 1
+            fi
+            cargo test --locked "$@"
+          }
           rustup component add --toolchain 1.95.0 rustfmt
           cargo fmt --all --check
-          cargo test --locked -p rchain-models block_version
-          cargo test --locked -p rchain-models --test decimal_bridge
-          cargo test --locked -p rchain-casper --lib initial_fringe
-          cargo test --locked -p rchain-casper --lib engine::node_syncing::tests
-          cargo test --locked -p rchain-casper --lib round_escape
-          cargo test --locked -p rchain-casper --lib monotonic
-          cargo test --locked -p rchain-casper --lib recent_user_work_tests
-          cargo test --locked -p rchain-casper --lib quiet_chain_tests
-          cargo test --locked -p rchain-casper --lib attestation_suppression_tests
-          cargo test --locked -p rchain-casper --test committed_bounds
-          cargo test --locked -p rchain-rholang --lib params_
-          cargo test --locked -p rchain-rholang --lib an_unknown_params_format_is_refused
-          cargo test --locked -p rchain-rholang --lib funding_the_pot
-          cargo test --locked -p rchain-rholang --lib pot_funding_overflow
+          required_test -p rchain-models block_version
+          required_test -p rchain-models --test decimal_bridge
+          required_test -p rchain-casper --lib initial_fringe
+          required_test -p rchain-casper --lib engine::node_syncing::tests
+          required_test -p rchain-casper --lib round_escape
+          required_test -p rchain-casper --lib quiet_chain_tests
+          required_test -p rchain-casper --lib attestation_suppression_tests
+          required_test -p rchain-casper --test committed_bounds
+          required_test -p rchain-rholang --lib params_
+          required_test -p rchain-rholang --lib an_unknown_params_format_is_refused
+          required_test -p rchain-rholang --lib funding_the_pot
+          required_test -p rchain-rholang --lib pot_funding_overflow
       - name: Reintroduced send-only fault must fail the reply regression
         shell: bash
         run: |
@@ -331,26 +337,6 @@ jobs:
           fi
           grep -q 'no reply is not success' target/final-gap/send-only-negative-control.log
           echo "REINTRODUCED_SEND_ONLY_FAULT_DETECTED"
-      - name: Old work-only licence must fail the fresh-user-work regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p target/final-gap
-          cp casper/src/blocks/proposer/proposer.rs /tmp/recent-work-proposer-original.rs
-          trap 'cp /tmp/recent-work-proposer-original.rs casper/src/blocks/proposer/proposer.rs' EXIT
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path("casper/src/blocks/proposer/proposer.rs");s=p.read_text()
-          old="(nothing, !nothing && (prompt || recent_user_work))"
-          assert s.count(old)==1
-          p.write_text(s.replace(old,"(nothing, prompt)"))
-          PY
-          if cargo test --locked -p rchain-casper --lib recent_user_work_tests::recent_user_work_is_not_silenced_by_an_old_unfinalized_block > target/final-gap/old-work-licence-negative-control.log 2>&1; then
-            echo "Regression failed to detect the old work-only licence"
-            exit 1
-          fi
-          grep -q 'test result: FAILED' target/final-gap/old-work-licence-negative-control.log
-          echo "OLD_WORK_ONLY_LICENCE_DETECTED"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -461,23 +447,15 @@ jobs:
       LFS_INITIAL_REPLY_LOSS: "1"
       ACCEPTANCE_ARTIFACTS: "1"
       RECOVERY_CASE: ${{ github.event.inputs.recovery_case || 'all' }}
-      RNODE_EVIDENCE_SOURCE_SHA: "d3ccb4c03ecbf09f786c420e8dff9243f1809413"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Load the already-tested source-pinned node image
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Build and record the exact recovery source
         run: |
           set -euo pipefail
+          tools/devnet.sh build
           mkdir -p target/final-gap-image
-          gh api repos/aixaria0/rchain-rust/actions/artifacts/12248994560/zip > /tmp/final-gap-image.zip
-          echo '7369aa45c8a3a41350cc0179a2947c2a2f322a164787e29af64ed438ee5ecf20  /tmp/final-gap-image.zip' | sha256sum --check
-          unzip -q /tmp/final-gap-image.zip -d target/final-gap-image
-          test "$(cat target/final-gap-image/source.txt)" = "$RNODE_EVIDENCE_SOURCE_SHA"
-          sha256sum --check target/final-gap-image/SHA256SUMS
-          git fetch origin "$RNODE_EVIDENCE_SOURCE_SHA" --depth=1
-          git diff --exit-code "$RNODE_EVIDENCE_SOURCE_SHA" HEAD -- casper comm crypto models node shared rholang rspace sdk qucalc Cargo.lock Cargo.toml rust-toolchain.toml docker/rnode/Dockerfile
-          docker load --input target/final-gap-image/rnode-image.tar.gz
+          git rev-parse HEAD > target/final-gap-image/source.txt
+          docker image inspect rnode:local > target/final-gap-image/docker-image.json
           python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
       - name: Independent bounded real-node campaigns
         shell: bash
@@ -509,8 +487,8 @@ jobs:
             tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/final-gap/n$n-start.log" 2>&1
             start_code=$?
             if [ "$start_code" -eq 0 ]; then
-              code=0
-              echo "Healthy N=$n acceptance already passed on the identical image in 39390752453"
+              python3 tools/consensus-acceptance-drill.py --validators "$n" --window 180 --out "target/final-gap/n$n" > "target/final-gap/n$n-campaign.log" 2>&1
+              code=$?
             else
               code=$start_code
             fi
@@ -538,6 +516,7 @@ jobs:
           path: |
             target/final-gap/
             target/lfs-anchor-evidence/
+            target/final-gap-image/
           if-no-files-found: error
           retention-days: 14
       - name: Teardown only disposable campaign networks
