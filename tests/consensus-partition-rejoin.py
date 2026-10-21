@@ -14,6 +14,21 @@ spec=importlib.util.spec_from_file_location("acceptance",ROOT/"tools/consensus-a
 a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
 
 class WorkloadDrill(a.Drill):
+    def __init__(self, args):
+        super().__init__(args)
+        self.rotate_partition_work = False
+        self.rotation_index = 0
+
+    def drive(self):
+        if not self.rotate_partition_work:
+            return super().drive()  # Canonical acceptance remains unchanged.
+        if time.monotonic() >= self.next_drive:
+            # Partitioned validator is index N-1; only online nodes receive work.
+            target = self.rotation_index % (self.args.validators - 1)
+            self.deploy("Nil", target_node=target)
+            self.rotation_index += 1
+            self.next_drive = time.monotonic() + 5
+
     def wait(self, description, condition, drive=True):
         # This arm explicitly supplies work; it cannot establish quiet-chain liveness.
         return super().wait(description,condition,drive=True)
@@ -60,12 +75,18 @@ def record_cycle(out, rounds, record, capture_phase):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators",type=int,choices=[4,8],required=True)
+    ap.add_argument("--workload-profile", choices=["canonical", "rotating"],
+                    default="canonical", help="rotating is diagnostic-only, never release acceptance")
     ap.add_argument("--out",required=True);args=ap.parse_args();args.window=150
     if os.environ.get("GITHUB_ACTIONS")!="true" or os.environ.get("RUNNER_ENVIRONMENT")!="github-hosted":
         raise SystemExit("disposable hosted runner only")
     if os.environ.get("DEVNET_PREFIX")!="acceptance":
         raise SystemExit("unexpected namespace")
     d=WorkloadDrill(args);d.run()
+    # Keep the bootstrap-only initial acceptance identical in both arms.
+    d.rotate_partition_work = args.workload_profile == "rotating"
+    d.record(workload_profile=args.workload_profile,
+             acceptance_boundary="rotating is diagnostic-only")
     original=json.loads((d.out/"result.json").read_text())
     victim=a.node_name(args.validators-1)
     volume_before=durable_state_volume(json.loads(cmd("docker","inspect",victim))[0])
@@ -81,7 +102,8 @@ def main():
     capture_phase("before-partition")
     try:
         for cycle in range(2):
-            record={"cycle":cycle+1,"isolated_validator":victim,"phase":"partition-install"}
+            record={"cycle":cycle+1,"isolated_validator":victim,"phase":"partition-install",
+                    "workload_profile":args.workload_profile}
             with record_cycle(d.out,rounds,record,capture_phase):
                 before=a.finalized_identity(a.get(0,"/api/last-finalized-block"))
                 cmd("docker","network","disconnect","acceptance",victim)

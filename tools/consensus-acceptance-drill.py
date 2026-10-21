@@ -93,9 +93,13 @@ class Drill:
             results.append((status, finalized))
         return results
 
-    def deploy(self, term):
-        status = get(0, "/api/v1/status")
-        node = node_name(0)
+    def deploy(self, term, target_node=0):
+        # The canonical campaign targets bootstrap; a separate diagnostic may
+        # explicitly rotate work across the online validators.
+        if not 0 <= target_node < self.args.validators:
+            raise ValueError("deploy target outside the campaign")
+        status = get(target_node, "/api/v1/status")
+        node = node_name(target_node)
         write = subprocess.run(
             ["docker", "exec", "-i", node, "sh", "-c", "cat > /tmp/acceptance.rho"],
             input=term, text=True, capture_output=True, timeout=10)
