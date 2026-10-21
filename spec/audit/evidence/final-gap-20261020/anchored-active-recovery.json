@@ -1,0 +1,219 @@
+{
+  "node_image_source": "d3ccb4c03ecbf09f786c420e8dff9243f1809413",
+  "fixture_source": "6e883ceb8d48f45c470a9a2cac74529f80f79b5d",
+  "run": "https://github.com/aixaria0/rchain-rust/actions/runs/39393626848",
+  "overall_result": "failure; independent criteria below",
+  "uniform_genesis_and_binary": [
+    {
+      "binary_sha256": "1b337afa6f2dd0eb9f787ff5ea4b1cb6843c80427c7c623fee3e19d13b4d2f96",
+      "genesis": "530b95844a4d355ba3e1126fcd11aeae1a7d0920caf455b53bcae01cf945a303",
+      "node": "devnet-bootstrap",
+      "status": {
+        "address": "48f68017efc6782fdd5bddd2a7bece17f8d0d1d8",
+        "autopropose": false,
+        "devMode": true,
+        "latestBlockNumber": 1,
+        "manualPropose": false,
+        "minPhloPrice": 1,
+        "networkId": "testnet",
+        "nodes": 0,
+        "peers": 2,
+        "proposeOnDeploy": true,
+        "shardId": "/root",
+        "version": {
+          "api": "1",
+          "node": "RChain Node 0.1.0 (d3ccb4c03ecbf09f786c420e8dff9243f1809413)"
+        }
+      }
+    },
+    {
+      "binary_sha256": "1b337afa6f2dd0eb9f787ff5ea4b1cb6843c80427c7c623fee3e19d13b4d2f96",
+      "genesis": "530b95844a4d355ba3e1126fcd11aeae1a7d0920caf455b53bcae01cf945a303",
+      "node": "devnet-validator-1",
+      "status": {
+        "address": "6b2315978e29aa8332fe2291c70a941bc3835bc4",
+        "autopropose": false,
+        "devMode": true,
+        "latestBlockNumber": 1,
+        "manualPropose": false,
+        "minPhloPrice": 1,
+        "networkId": "testnet",
+        "nodes": 1,
+        "peers": 1,
+        "proposeOnDeploy": true,
+        "shardId": "/root",
+        "version": {
+          "api": "1",
+          "node": "RChain Node 0.1.0 (d3ccb4c03ecbf09f786c420e8dff9243f1809413)"
+        }
+      }
+    },
+    {
+      "binary_sha256": "1b337afa6f2dd0eb9f787ff5ea4b1cb6843c80427c7c623fee3e19d13b4d2f96",
+      "genesis": "530b95844a4d355ba3e1126fcd11aeae1a7d0920caf455b53bcae01cf945a303",
+      "node": "devnet-validator-2",
+      "status": {
+        "address": "6385e344a162a2b1e86f90406635c234f57bbd80",
+        "autopropose": false,
+        "devMode": true,
+        "latestBlockNumber": 1,
+        "manualPropose": false,
+        "minPhloPrice": 1,
+        "networkId": "testnet",
+        "nodes": 1,
+        "peers": 1,
+        "proposeOnDeploy": true,
+        "shardId": "/root",
+        "version": {
+          "api": "1",
+          "node": "RChain Node 0.1.0 (d3ccb4c03ecbf09f786c420e8dff9243f1809413)"
+        }
+      }
+    }
+  ],
+  "reply_loss_control": {
+    "acknowledged_request_logs": [
+      "2026-10-20T08:28:48.939Z INFO  [casper.protocol.CommUtil] LFS fringe request 1/10 sent; awaiting admitted reply from rnode://48f68017efc6782fdd5bddd2a7bece17f8d0d1d8@172.18.0.2?protocol=40400&discovery=40404",
+      "2026-10-20T08:28:58.981Z INFO  [casper.protocol.CommUtil] LFS fringe request 2/10 sent; awaiting admitted reply from rnode://48f68017efc6782fdd5bddd2a7bece17f8d0d1d8@172.18.0.2?protocol=40400&discovery=40404"
+    ],
+    "blocked_seconds": 13.855024280999999,
+    "bootstrap_ip": "172.18.0.2",
+    "iptables_counters": "Chain OUTPUT (policy ACCEPT 51 packets, 6638 bytes)\n    pkts      bytes target     prot opt in     out     source               destination         \n      13      732 DROP       6    --  *      *       172.18.0.2           0.0.0.0/0            tcp dpt:40400 /* lfs-initial-reply-control */\n",
+    "restored_while_blocked": false,
+    "source_sha": "6e883ceb8d48f45c470a9a2cac74529f80f79b5d"
+  },
+  "anchor_restart": {
+    "after_restart": {
+      "anchor_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+      "anchor_height": 2,
+      "anchor_locally_finalized": true,
+      "lfb": 2,
+      "lfb_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+      "matched": 5,
+      "mismatched": {},
+      "missing": [],
+      "post_restore_proposals": [],
+      "source_lfb": 2,
+      "source_lfb_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+      "state_hashes_identical": true,
+      "total": 5
+    },
+    "ancestry_blocks": 5,
+    "before_restart": {
+      "anchor_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+      "anchor_height": 2,
+      "anchor_locally_finalized": true,
+      "lfb": 2,
+      "lfb_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+      "matched": 5,
+      "mismatched": {},
+      "missing": [],
+      "post_restore_proposals": [],
+      "source_lfb": 2,
+      "source_lfb_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+      "state_hashes_identical": true,
+      "total": 5
+    },
+    "durable_without_second_lfs": true,
+    "finality_gate_after": true,
+    "finality_gate_before": true,
+    "recovery_mode": "passive_until_validated_catchup",
+    "source_anchor_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+    "source_anchor_height": 2,
+    "source_sha": "6e883ceb8d48f45c470a9a2cac74529f80f79b5d",
+    "state_changing_ancestors": 1
+  },
+  "active_recovery": {
+    "accepted_work_marker": "acceptance:8ed56428254449e4a7fc92aa131f1527",
+    "after": {
+      "ancestry_matched": 5,
+      "joiner_lfb": 9,
+      "joiner_lfb_hash": "5cb185f06281d89e77ed8958f5e7251edf76daafb3fa11ba417973f3470be048",
+      "new_marker_finalized": true,
+      "original_anchor_finalized": true,
+      "source_lfb": 9,
+      "source_lfb_hash": "5cb185f06281d89e77ed8958f5e7251edf76daafb3fa11ba417973f3470be048",
+      "state_hashes_identical": true
+    },
+    "anchor_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+    "anchor_height": 2,
+    "bad_prestate_after_reactivation": false,
+    "equivocation_after_reactivation": false,
+    "new_lfs_after_reactivation": false,
+    "observations": [
+      {
+        "elapsed_s": 0.47,
+        "read_error": "[Errno 104] Connection reset by peer"
+      },
+      {
+        "ancestry_matched": 5,
+        "elapsed_s": 3.56,
+        "joiner_lfb": 2,
+        "joiner_lfb_hash": "a9209bd09295d8c2a4ec7b80394a98689c4416b37d472f01b6fd384beae6d086",
+        "new_marker_finalized": false,
+        "original_anchor_finalized": true,
+        "source_lfb": 3,
+        "source_lfb_hash": "911a133759356812725dc445498f171a803f46bcb42445ec33f60b4d43a15984",
+        "state_hashes_identical": true
+      },
+      {
+        "ancestry_matched": 5,
+        "elapsed_s": 6.65,
+        "joiner_lfb": 9,
+        "joiner_lfb_hash": "5cb185f06281d89e77ed8958f5e7251edf76daafb3fa11ba417973f3470be048",
+        "new_marker_finalized": true,
+        "original_anchor_finalized": true,
+        "source_lfb": 9,
+        "source_lfb_hash": "5cb185f06281d89e77ed8958f5e7251edf76daafb3fa11ba417973f3470be048",
+        "state_hashes_identical": true
+      }
+    ],
+    "proposals": [
+      {
+        "attempt": 1,
+        "exit_code": 1,
+        "reply": "Failure: another propose is in progress\n",
+        "stderr": "      size ind npageslabs_huge    nactive_huge     ndirty_huge  npageslabs_nonhuge     nactive_nonhuge      ndirty_nonhuge   nretained_nonhuge\n                     ---\n--- End jemalloc statistics ---\n"
+      },
+      {
+        "attempt": 2,
+        "exit_code": 1,
+        "reply": "Failure: Proposal failed: Must wait for more blocks from other validators (seqNum 7)\n",
+        "stderr": "      size ind npageslabs_huge    nactive_huge     ndirty_huge  npageslabs_nonhuge     nactive_nonhuge      ndirty_nonhuge   nretained_nonhuge\n                     ---\n--- End jemalloc statistics ---\n"
+      }
+    ],
+    "same_volume": true,
+    "source_sha": "6e883ceb8d48f45c470a9a2cac74529f80f79b5d",
+    "validator_key_reenabled": true
+  },
+  "observed_successful_local_proposals": [
+    {
+      "height": 6,
+      "seq": 5
+    },
+    {
+      "height": 7,
+      "seq": 6
+    },
+    {
+      "height": 8,
+      "seq": 7
+    },
+    {
+      "height": 9,
+      "seq": 8
+    },
+    {
+      "height": 10,
+      "seq": 9
+    },
+    {
+      "height": 11,
+      "seq": 10
+    },
+    {
+      "height": 12,
+      "seq": 11
+    }
+  ]
+}

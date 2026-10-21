@@ -1,0 +1,141 @@
+{
+  "result": "PASS_BOUNDED_WORKLOAD_PARTITION_REJOIN",
+  "source_sha": "6e883ceb8d48f45c470a9a2cac74529f80f79b5d",
+  "validators": 4,
+  "partition_cycles": 2,
+  "rounds": [
+    {
+      "cycle": 1,
+      "isolated_validator": "acceptance-validator-3",
+      "before_height": 27,
+      "rejoined": [
+        {
+          "node": 0,
+          "height": 44,
+          "hash": "1bc597d2691381d0a5c860af88385c72cec6a50713aeb3c2c8604357b9a091d6"
+        },
+        {
+          "node": 1,
+          "height": 44,
+          "hash": "1bc597d2691381d0a5c860af88385c72cec6a50713aeb3c2c8604357b9a091d6"
+        },
+        {
+          "node": 2,
+          "height": 44,
+          "hash": "1bc597d2691381d0a5c860af88385c72cec6a50713aeb3c2c8604357b9a091d6"
+        },
+        {
+          "node": 3,
+          "height": 40,
+          "hash": "ad9536df8cda76caad751cf5579ce25821f783b82be09855e815a02ee62a4d6e"
+        }
+      ],
+      "same_volume": true,
+      "original_finalized_snapshots_retained": true,
+      "partition_progress_observed": true,
+      "online_observation_count": 39,
+      "online_first": [
+        {
+          "node": 0,
+          "height": 28,
+          "hash": "753e3dd72a1602981823af7521633b002dec7454243f2d10ffdf13574df7188b"
+        },
+        {
+          "node": 1,
+          "height": 27,
+          "hash": "babfe82ff95a3a30f626b292b711b2beb24977070b9cfcfa53c4b93ac0ec36ff"
+        },
+        {
+          "node": 2,
+          "height": 27,
+          "hash": "babfe82ff95a3a30f626b292b711b2beb24977070b9cfcfa53c4b93ac0ec36ff"
+        }
+      ],
+      "online_last": [
+        {
+          "node": 0,
+          "height": 30,
+          "hash": "ace521219c1f2b6d6da601b390edf5ebe5fd6d129626a30e5db370e403ff2a3d"
+        },
+        {
+          "node": 1,
+          "height": 30,
+          "hash": "ace521219c1f2b6d6da601b390edf5ebe5fd6d129626a30e5db370e403ff2a3d"
+        },
+        {
+          "node": 2,
+          "height": 30,
+          "hash": "ace521219c1f2b6d6da601b390edf5ebe5fd6d129626a30e5db370e403ff2a3d"
+        }
+      ]
+    },
+    {
+      "cycle": 2,
+      "isolated_validator": "acceptance-validator-3",
+      "before_height": 44,
+      "rejoined": [
+        {
+          "node": 0,
+          "height": 50,
+          "hash": "7f3a6aa8a9b118a5954f26e7c465f9dc8f50636125a23a32702301fad3f2dbb9"
+        },
+        {
+          "node": 1,
+          "height": 50,
+          "hash": "7f3a6aa8a9b118a5954f26e7c465f9dc8f50636125a23a32702301fad3f2dbb9"
+        },
+        {
+          "node": 2,
+          "height": 50,
+          "hash": "7f3a6aa8a9b118a5954f26e7c465f9dc8f50636125a23a32702301fad3f2dbb9"
+        },
+        {
+          "node": 3,
+          "height": 48,
+          "hash": "4de09b7222af44147242632552e988f9a4db5378716350d1f9d4f58ad9b4d06d"
+        }
+      ],
+      "same_volume": true,
+      "original_finalized_snapshots_retained": true,
+      "partition_progress_observed": true,
+      "online_observation_count": 4,
+      "online_first": [
+        {
+          "node": 0,
+          "height": 44,
+          "hash": "1bc597d2691381d0a5c860af88385c72cec6a50713aeb3c2c8604357b9a091d6"
+        },
+        {
+          "node": 1,
+          "height": 44,
+          "hash": "1bc597d2691381d0a5c860af88385c72cec6a50713aeb3c2c8604357b9a091d6"
+        },
+        {
+          "node": 2,
+          "height": 44,
+          "hash": "1bc597d2691381d0a5c860af88385c72cec6a50713aeb3c2c8604357b9a091d6"
+        }
+      ],
+      "online_last": [
+        {
+          "node": 0,
+          "height": 48,
+          "hash": "4de09b7222af44147242632552e988f9a4db5378716350d1f9d4f58ad9b4d06d"
+        },
+        {
+          "node": 1,
+          "height": 48,
+          "hash": "4de09b7222af44147242632552e988f9a4db5378716350d1f9d4f58ad9b4d06d"
+        },
+        {
+          "node": 2,
+          "height": 48,
+          "hash": "4de09b7222af44147242632552e988f9a4db5378716350d1f9d4f58ad9b4d06d"
+        }
+      ]
+    }
+  ],
+  "resource_sample": "acceptance-validator-3 46.25MiB / 2GiB\nacceptance-validator-2 50.59MiB / 2GiB\nacceptance-validator-1 59.3MiB / 2GiB\nacceptance-bootstrap 57.68MiB / 2GiB",
+  "quiet_chain_liveness": "NOT_ESTABLISHED",
+  "scope": "retention and finality progression in these executions; not universal CBC safety"
+}

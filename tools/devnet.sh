@@ -434,7 +434,13 @@ seed_validator_key() {
 
 docker_opts() {
   local name="$1" grpc_host="$2" http_host="$3" admin_host="$4"
-  local ports="-p ${grpc_host}:40401 -p ${http_host}:40403"
+  # Hosted CI may reserve a validator's host gRPC port. LFS nodes talk over
+  # the internal Docker network; only the bootstrap's host gRPC is used for
+  # deploy/propose. Test-only switch: leave the joiners' host gRPC unpublished.
+  local ports="-p ${http_host}:40403"
+  if [[ "${DEVNET_SKIP_JOINER_GRPC_PUBLISH:-0}" != "1" || "$name" == "$BOOTSTRAP" ]]; then
+    ports="-p ${grpc_host}:40401 $ports"
+  fi
   if $ADMIN; then ports="$ports -p ${admin_host}:40405"; fi
   local data; data="$(data_volume "$name")"
   # See `DEVNET_NODE_MEMORY` at the top of this file: the ceiling and the no-swap pair are what keep
@@ -854,20 +860,37 @@ cmd_reset() {
 
   local genesis_dir; genesis_dir="$(mktemp -d)"
   genesis_files "$genesis_dir" "$N"
-  local id; id="$(bootstrap_id)"
+  local id; id="${DEVNET_RESET_BOOTSTRAP_ID:-$(bootstrap_id)}"
   local host_port=$((GRPC_BASE + idx * 1000))
   local http_port=$((HTTP_BASE + idx * 1000))
   local admin_port=$((ADMIN_BASE + idx * 1000))
-  echo "==> reset $name: empty store, syncing the chain from $BOOTSTRAP"
+  # Test-only alternate locator, without changing the trusted node key.
+  local reset_bootstrap_host="${DEVNET_RESET_BOOTSTRAP_HOST:-$BOOTSTRAP}"
+  local -a reset_anchor=()
+  if [[ -n "${DEVNET_RESET_SYNC_ANCHOR:-}" ]]; then
+    reset_anchor=(--sync-anchor "$DEVNET_RESET_SYNC_ANCHOR")
+  fi
+  echo "==> reset $name: empty store, syncing the chain from $reset_bootstrap_host"
   seed_validator_key "$name" "$idx"
+  # Recovery can stage a bonded validator as a passive replicator until its
+  # validated catch-up is complete. The key stays in its volume for activation.
+  local -a reset_validator_key=()
+  if [[ "${DEVNET_RESET_PASSIVE:-0}" != "1" ]]; then
+    reset_validator_key=(--validator-private-key-path /var/lib/rnode/validator.hex)
+  fi
   # shellcheck disable=SC2046
   docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
     -v "${genesis_dir}:/genesis:ro" \
     "$(node_image "$name")" $(rnode_run_common "$name") \
-      --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
+      --bootstrap "rnode://${id}@${reset_bootstrap_host}?protocol=40400&discovery=40404" \
+      "${reset_anchor[@]}" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
-      --validator-private-key-path /var/lib/rnode/validator.hex
-  echo "reset $name: back up with an empty store; it will LFS-sync the chain from $BOOTSTRAP"
+      "${reset_validator_key[@]}"
+  if [[ "${DEVNET_RESET_NETWORK_PAUSE:-0}" == "1" ]]; then
+    docker network disconnect "$NETWORK" "$name"
+    echo "reset $name: isolated from $NETWORK until the test reconnects it"
+  fi
+  echo "reset $name: back up with an empty store; it will LFS-sync the chain from $reset_bootstrap_host"
 }
 
 cmd_logs() {

@@ -33,13 +33,16 @@ Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 """
 
 import argparse
+import hashlib
 import json
+import os
 import random
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 BOOTSTRAP = "devnet-bootstrap"
 HTTP_BASE = 40403   # host HTTP port for validator 0; validator i is HTTP_BASE + 1000*i
@@ -425,6 +428,62 @@ def run_gateway(args, rng):
     print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
 
 
+def run_acceptance_campaign(trace=False):
+    """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise SystemExit("acceptance mode requires an isolated GitHub Actions runner")
+    # The existing workflow started this default devnet in this same disposable
+    # job. Stop it to free its ports; no public node or user data is reachable.
+    subprocess.run(["tools/devnet.sh", "down"], check=True)
+    env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
+           "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
+    if trace:
+        # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
+        # Full inbound traces distinguish propagation from validation rejection.
+        env["DEVNET_LOG_LEVEL"] = "debug"
+    outcomes = []
+    for validators in ((5, 8) if trace else (4, 8)):
+        out = Path("target/consensus-acceptance") / f"n{validators}"
+        out.mkdir(parents=True, exist_ok=True)
+        code = 1
+        try:
+            subprocess.run(["tools/devnet.sh", "up", "--validators", str(validators),
+                            "--fresh", "--no-autopropose", "--epoch-length", "10",
+                            "--effect-scheduler", env.get("EFFECT_SCHEDULER", "dfs")],
+                           env=env, check=True)
+            code = subprocess.run([sys.executable, "tools/consensus-acceptance-drill.py",
+                                   "--validators", str(validators), "--out", str(out)], env=env).returncode
+        except (OSError, subprocess.CalledProcessError) as error:
+            (out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
+        finally:
+            for i in range(validators):
+                node = "acceptance-bootstrap" if i == 0 else f"acceptance-validator-{i}"
+                print(f"=== n={validators} node={i} resource status ===", flush=True)
+                subprocess.run(["docker", "inspect", "--format", "{{json .State}}", node], check=False)
+                print(f"=== n={validators} node={i} log tail ===", flush=True)
+                subprocess.run(["docker", "logs", "--tail", "80", node], check=False)
+            # The existing workflow has no upload step. Put machine-readable
+            # observations in its retained log; refuse to silently truncate.
+            for path in (out / "result.json", out / "observations.jsonl"):
+                if path.exists():
+                    print(f"=== BEGIN {path} ===", flush=True)
+                    if env.get("ACCEPTANCE_ARTIFACTS") == "1" and path.name == "observations.jsonl":
+                        data = path.read_bytes()
+                        print("EVIDENCE_ARTIFACT " + json.dumps({
+                            "path": str(path), "bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest()}), flush=True)
+                    else:
+                        print(path.read_text(), flush=True)
+                    print(f"=== END {path} ===", flush=True)
+            teardown = subprocess.run(["tools/devnet.sh", "down", "-v"], env=env, check=False)
+            if teardown.returncode:
+                print(f"TEARDOWN_WARNING n={validators} exit={teardown.returncode}", flush=True)
+        outcomes.append({"validators": validators, "exit_code": code})
+    print("ACCEPTANCE_OUTCOMES " + json.dumps(outcomes), flush=True)
+    if any(x["exit_code"] for x in outcomes):
+        raise SystemExit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators", type=int, default=3, help="bonded validators (default 3)")
@@ -435,7 +494,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "lfs-identity", "lfs-adversarial", "lfs-resilience", "lfs-history", "lfs-history-controlled", "lfs-history-anchored"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -449,6 +508,61 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "lfs-history-anchored" in modes:
+        if modes != ["lfs-history-anchored"]:
+            ap.error("explicit LFS anchor is a standalone isolated acceptance arm")
+        if args.dry_run:
+            print("isolated: explicit finality anchor, full justification closure, state hashes, restart persistence")
+            return
+        subprocess.run([sys.executable, "tests/lfs-anchored-checkpoint.py"], check=True)
+        return
+
+    if "lfs-history-controlled" in modes:
+        if modes != ["lfs-history-controlled"]:
+            ap.error("controlled finalized state restoration must be standalone")
+        if args.dry_run:
+            print("isolated controlled source: manual proposals, weighted stake, frozen prefix, LFS persistence")
+            return
+        os.environ["LFS_HISTORY_MANUAL_PROPOSE"] = "1"
+        subprocess.run([sys.executable, "tests/lfs-finalized-history.py"], check=True)
+        return
+
+    if "lfs-history" in modes:
+        if modes != ["lfs-history"]:
+            ap.error("finalized-state restoration is a standalone acceptance arm")
+        if args.dry_run:
+            print("isolated: weighted-stake finalized prefix, real state transition, LFS, restart checkpoint")
+            return
+        subprocess.run([sys.executable, "tests/lfs-finalized-history.py"], check=True)
+        return
+
+    if "lfs-resilience" in modes:
+        if modes != ["lfs-resilience"]:
+            ap.error("LFS resilience requires a standalone disposable-network arm")
+        if args.dry_run:
+            print("isolated CI: 25s network partition, repeated joins, durable restart, netem delay/loss")
+            return
+        subprocess.run([sys.executable, "tests/lfs-resilience.py"], check=True)
+        return
+
+    if "lfs-adversarial" in modes:
+        if modes != ["lfs-adversarial"]:
+            ap.error("LFS adversarial test requires a standalone isolated network")
+        if args.dry_run:
+            print("isolated CI: reject wrong bootstrap certificate identity, recover, and reconnect")
+            return
+        subprocess.run([sys.executable, "tests/lfs-adversarial-bootstrap.py"], check=True)
+        return
+
+    if "lfs-identity" in modes:
+        if modes != ["lfs-identity"]:
+            ap.error("LFS identity is a standalone disposable-network arm")
+        if args.dry_run:
+            print("LFS bootstrap hostname-to-IP rejoin test on isolated CI devnet")
+            return
+        subprocess.run([sys.executable, "tests/lfs-ip-bootstrap.py"], check=True)
+        return
 
     if args.dry_run:
         # The generator half of `malformed` is checkable without a node: print what a run would send

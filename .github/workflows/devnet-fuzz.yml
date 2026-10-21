@@ -27,7 +27,10 @@ on:
         description: "effect-scheduler mode for the devnet (dfs, gate, relaxed-validated, relaxed)"
         default: "dfs"
       mode:
-        description: "fuzz modes to run (valid, malformed, scheduler, gateway, all)"
+        description: "fuzz modes (valid, malformed, scheduler, gateway, all) or pr373-proof"
+        default: "all"
+      recovery_case:
+        description: "Recovery campaign subset: all, lfs, n4, n8 (retains independent verdicts)"
         default: "all"
       iterations:
         description: "explore-deploy iterations for the valid mode"
@@ -37,11 +40,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: devnet-fuzz
+  group: devnet-fuzz-${{ github.ref }}-${{ github.event.inputs.mode }}
   cancel-in-progress: false
 
 jobs:
   fuzz:
+    if: ${{ github.event.inputs.mode != 'pr373-proof' && github.event.inputs.mode != 'pr373-proof-rust' && github.event.inputs.mode != 'final-gap' && github.event.inputs.mode != 'final-gap-rust' && github.event.inputs.mode != 'final-gap-nodes' && github.event.inputs.mode != 'final-gap-recovery' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -49,6 +53,9 @@ jobs:
       # Inputs are empty on a scheduled run, so fall back to the defaults.
       EFFECT_SCHEDULER: ${{ github.event.inputs.effect_scheduler || 'dfs' }}
       FUZZ_MODE: ${{ github.event.inputs.mode || 'all' }}
+      # Hosted runner: the LFS operator-anchor arm needs HTTP on validators,
+      # not published gRPC. Avoid conflicts with host services on 42402.
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: ${{ github.event.inputs.mode == 'lfs-history-anchored' && '1' || '0' }}
       ITERATIONS: ${{ github.event.inputs.iterations || '100' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -64,7 +71,16 @@ jobs:
         run: tools/devnet.sh build
 
       - name: Start the devnet
-        run: tools/devnet.sh up --validators 3 --effect-scheduler "$EFFECT_SCHEDULER"
+        run: |
+          if [[ "$FUZZ_MODE" == "lfs-history" ]]; then
+            tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --effect-scheduler "$EFFECT_SCHEDULER"
+          elif [[ "$FUZZ_MODE" == "lfs-history-anchored" ]]; then
+            tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose --effect-scheduler "$EFFECT_SCHEDULER"
+          elif [[ "$FUZZ_MODE" == "lfs-history-controlled" ]]; then
+            tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose --effect-scheduler "$EFFECT_SCHEDULER"
+          else
+            tools/devnet.sh up --validators 3 --effect-scheduler "$EFFECT_SCHEDULER"
+          fi
 
       - name: Fuzz
         run: |
@@ -72,6 +88,17 @@ jobs:
             --validators 3 \
             --iterations "$ITERATIONS" \
             --mode "$FUZZ_MODE"
+
+      - name: Retain state-history and checkpoint evidence
+        if: always() && (env.FUZZ_MODE == 'lfs-history' || env.FUZZ_MODE == 'lfs-history-controlled' || env.FUZZ_MODE == 'lfs-history-anchored')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lfs-history-${{ github.run_id }}
+          path: |
+            target/lfs-history-evidence/
+            target/lfs-anchor-evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Dump the devnet state on failure
         if: failure()
@@ -85,3 +112,418 @@ jobs:
       - name: Tear the devnet down
         if: always()
         run: tools/devnet.sh down -v || true
+
+  source-and-regressions:
+    if: ${{ github.event.inputs.mode == 'pr373-proof' || github.event.inputs.mode == 'pr373-proof-rust' }}
+    name: Code and release-preflight regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout integrated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt
+      - name: Install formatter for repository-pinned Rust 1.95
+        run: rustup component add --toolchain 1.95.0 rustfmt
+      - name: Reuse Rust build cache
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+      - name: Install protobuf compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - name: Verify Decimal release-preflight controls
+        run: |
+          set -euo pipefail
+          python3 tests/test_decimal_release_preflight.py -v
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Test block-version and activation schedule invariants
+        run: cargo test --locked -p rchain-models block_version -- --nocapture
+      - name: Test positional record format, legacy and unknown-format refusal
+        run: |
+          set -euo pipefail
+          for name in \
+            params_wire_slots_are_append_only \
+            params_round_trip \
+            an_unknown_params_format_is_refused \
+            a_short_params_record_reads_the_pre_change_rule_and_an_over_share_is_refused; do
+            cargo test --locked -p rchain-rholang --lib "$name" -- --nocapture
+          done
+      - name: Test committed bounds and restore rejection
+        run: cargo test --locked -p rchain-casper --test committed_bounds -- --nocapture
+      - name: Test fundPot invariants and dispatcher
+        run: |
+          set -euo pipefail
+          for name in \
+            funding_the_pot_adds_unclaimed_rev_and_bonding_does_not \
+            pot_funding_overflow_moves_neither_balance \
+            pos_fund_pot_moves_the_callers_rev_into_the_staking_vault; do
+            cargo test --locked -p rchain-rholang --lib "$name" -- --nocapture
+          done
+
+  integrated-new-genesis:
+    if: ${{ github.event.inputs.mode == 'pr373-proof' }}
+    name: Fresh-genesis uniform node admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout integrated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the real rnode image
+        run: tools/devnet.sh build
+      - name: Start isolated 3-validator fresh genesis
+        run: |
+          set -euo pipefail
+          tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose
+      - name: Verify genesis agreement and source provenance
+        run: |
+          set -euo pipefail
+          mkdir -p target/pr373-assurance
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          def get(port, path):
+              with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=6) as r:
+                  return json.load(r)
+
+          observed = []
+          for port in (40403, 41403, 42403):
+              last = None
+              for attempt in range(65):
+                  try:
+                      status = get(port, "/api/v1/status")
+                      blocks = get(port, "/api/blocks/0/0")
+                      if isinstance(blocks, list) and blocks:
+                          break
+                      raise ValueError("genesis block absent")
+                  except (OSError, ValueError) as err:
+                      last = str(err)
+                      time.sleep(2)
+              else:
+                  raise AssertionError(f"validator port {port} failed to expose genesis: {last}")
+              block = blocks[0]
+              assert isinstance(block, dict) and block.get("blockHash"), block
+              assert int(status["latestBlockNumber"]) >= 1, status
+              observed.append({
+                  "port": port,
+                  "node_id": status.get("address"),
+                  "genesis_hash": block["blockHash"],
+                  "genesis_block": block,
+                  "status": status,
+              })
+          genesis_hashes = {x["genesis_hash"] for x in observed}
+          post_state_hashes = {x["genesis_block"].get("postStateHash") for x in observed}
+          block_versions = {x["genesis_block"].get("version") for x in observed}
+          versions = {x["status"].get("version", {}).get("node") for x in observed}
+          assert len(genesis_hashes) == 1, "conflicting genesis block hashes"
+          assert len(post_state_hashes) == 1 and None not in post_state_hashes, "conflicting or missing genesis post-state"
+          assert block_versions == {1}, "unexpected genesis block-version schedule"
+          assert len(versions) == 1, "different node binary versions"
+          assert all(os.environ["GITHUB_SHA"] in version for version in versions), "wrong source provenance"
+          assert len({x["node_id"] for x in observed}) == 3, "validator node identity collision"
+          evidence = {
+              "source_sha": os.environ["GITHUB_SHA"],
+              "validator_count": len(observed),
+              "genesis_hash": next(iter(genesis_hashes)),
+              "genesis_post_state_hash": next(iter(post_state_hashes)),
+              "block_version": next(iter(block_versions)),
+              "node_version": next(iter(versions)),
+              "genesis_agreement": True,
+              "assertions": [
+                  "all three validators returned the same genesis block hash",
+                  "all three validators returned the same genesis post-state hash",
+                  "all genesis blocks were version 1 under the shipped schedule",
+                  "all three validators reported the same source-pinned node version",
+                  "all three validators exposed an active status",
+                  "node identities were distinct",
+              ],
+              "limitations": [
+                  "No on-chain raw PosParams leaf extraction in this smoke test",
+                  "No public-network historical native-state scan",
+                  "No proof of old-genesis mixed-version safety or rollback",
+              ],
+              "observations": observed,
+          }
+          out = Path("target/pr373-assurance/genesis-acceptance.json")
+          out.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print("PR373_INTEGRATED_GENESIS_PASS", evidence["genesis_hash"], evidence["source_sha"])
+          PY
+      - name: Capture node diagnostics on failure
+        if: failure()
+        run: |
+          tools/devnet.sh status || true
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs --tail 120 "$node" 2>&1 || true
+          done
+      - name: Preserve integration evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr373-integrated-genesis-${{ github.run_id }}
+          path: target/pr373-assurance
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Teardown isolated devnet
+        if: always()
+        run: tools/devnet.sh down -v || true
+
+  final-gap-regressions:
+    if: ${{ github.event.inputs.mode == 'final-gap' || github.event.inputs.mode == 'final-gap-rust' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - name: Release and harness controls present on this source
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_decimal_release_preflight.py -v
+          python3 tests/consensus-drill-regression.py
+          python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
+      - name: Integrated Rust proof obligations
+        run: |
+          set -euo pipefail
+          # Refuse a missing test filter instead of accepting Cargo's zero-test exit 0.
+          required_test() {
+            cargo test --locked "$@" -- --list > /tmp/required-rust-tests.txt
+            if ! grep -q ': test$' /tmp/required-rust-tests.txt; then
+              echo "No Rust tests collected for: $*"
+              exit 1
+            fi
+            cargo test --locked "$@"
+          }
+          rustup component add --toolchain 1.95.0 rustfmt
+          cargo fmt --all --check
+          required_test -p rchain-models block_version
+          # The historical decimal_bridge target is not present on dev; verify the
+          # merged Decimal implementation and model properties on this exact source.
+          required_test -p rchain-models --lib decimal::tests
+          required_test -p rchain-models --lib property_tests
+          required_test -p rchain-casper --lib initial_fringe
+          required_test -p rchain-casper --lib engine::node_syncing::tests
+          required_test -p rchain-casper --lib round_escape
+          required_test -p rchain-casper --lib quiet_chain_tests
+          required_test -p rchain-casper --lib attestation_suppression_tests
+          required_test -p rchain-casper --test committed_bounds
+          required_test -p rchain-rholang --lib params_
+          required_test -p rchain-rholang --lib an_unknown_params_format_is_refused
+          required_test -p rchain-rholang --lib funding_the_pot
+          required_test -p rchain-rholang --lib pot_funding_overflow
+      - name: Reintroduced send-only fault must fail the reply regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/final-gap
+          cp casper/src/protocol/comm_util.rs /tmp/fringe-comm-original.rs
+          trap 'cp /tmp/fringe-comm-original.rs casper/src/protocol/comm_util.rs' EXIT
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("casper/src/protocol/comm_util.rs")
+          s=p.read_text()
+          old="        for attempt in 1..=attempts {"
+          assert s.count(old)==1
+          s=s.replace(old,old+"\n            if self.transport.send(bootstrap, msg.clone()).await.is_ok() { return Ok(()); }")
+          p.write_text(s)
+          PY
+          if cargo test --locked -p rchain-casper --lib initial_fringe_missing_reply_is_terminal_even_when_all_sends_succeed > target/final-gap/send-only-negative-control.log 2>&1; then
+            echo "Regression failed to detect the reintroduced send-only fault"
+            exit 1
+          fi
+          grep -q 'no reply is not success' target/final-gap/send-only-negative-control.log
+          echo "REINTRODUCED_SEND_ONLY_FAULT_DETECTED"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: final-gap-regressions-${{ github.run_id }}
+          path: target/final-gap/
+          if-no-files-found: warn
+
+  final-gap-real-nodes:
+    if: ${{ github.event.inputs.mode == 'final-gap' || github.event.inputs.mode == 'final-gap-nodes' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      LFS_INITIAL_REPLY_LOSS: "1"
+      ACCEPTANCE_ARTIFACTS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build exact integrated rnode once
+        run: tools/devnet.sh build
+      - name: Preserve source-pinned compiled image
+        run: |
+          mkdir -p target/final-gap-image
+          docker image inspect rnode:local > target/final-gap-image/docker-image.json
+          git rev-parse HEAD > target/final-gap-image/source.txt
+          docker save rnode:local | gzip -1 > target/final-gap-image/rnode-image.tar.gz
+          sha256sum target/final-gap-image/rnode-image.tar.gz > target/final-gap-image/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: final-gap-node-image-${{ github.run_id }}
+          path: target/final-gap-image/
+          retention-days: 3
+      - name: Independent bounded real-node campaigns
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/final-gap
+          failed=0
+          tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose > target/final-gap/lfs-start.log 2>&1
+          start_code=$?
+          if [ "$start_code" -eq 0 ]; then
+            python3 tests/lfs-anchored-checkpoint.py > target/final-gap/lfs-campaign.log 2>&1
+            code=$?
+          else
+            code=$start_code
+          fi
+          echo "lfs=$code" | tee -a target/final-gap/exit-codes.txt
+          test "$code" -eq 0 || failed=1
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs "$node" > "target/final-gap/lfs-$node.log" 2>&1 || true
+          done
+          tools/devnet.sh down -v || true
+          for n in 4 8; do
+            export DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance
+            tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/final-gap/n$n-start.log" 2>&1
+            start_code=$?
+            if [ "$start_code" -eq 0 ]; then
+              python3 tools/consensus-acceptance-drill.py --validators "$n" --window 180 --out "target/final-gap/n$n" > "target/final-gap/n$n-campaign.log" 2>&1
+              code=$?
+            else
+              code=$start_code
+            fi
+            echo "n$n=$code" | tee -a target/final-gap/exit-codes.txt
+            test "$code" -eq 0 || failed=1
+            if [ "$start_code" -eq 0 ]; then
+              python3 tests/consensus-partition-rejoin.py --validators "$n" --out "target/final-gap/n$n-partition" > "target/final-gap/n$n-partition-campaign.log" 2>&1
+              partition_code=$?
+              echo "n$n-partition=$partition_code" | tee -a target/final-gap/exit-codes.txt
+              test "$partition_code" -eq 0 || failed=1
+            fi
+            for ((i=0;i<n;i++)); do
+              node="acceptance-validator-$i"; [ "$i" -ne 0 ] || node=acceptance-bootstrap
+              docker logs "$node" > "target/final-gap/n$n-$node.log" 2>&1 || true
+              docker inspect "$node" > "target/final-gap/n$n-$node-inspect.json" 2>/dev/null || true
+            done
+            tools/devnet.sh down -v || true
+          done
+          exit "$failed"
+      - name: Preserve all independent outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: final-gap-real-nodes-${{ github.run_id }}
+          path: |
+            target/final-gap/
+            target/lfs-anchor-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Teardown only disposable campaign networks
+        if: always()
+        run: |
+          tools/devnet.sh down -v || true
+          DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
+
+  final-gap-recovery:
+    if: ${{ github.event.inputs.mode == 'final-gap-recovery' }}
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DEVNET_SKIP_JOINER_GRPC_PUBLISH: "1"
+      DEVNET_NODE_MEMORY: "2g"
+      DEVNET_THREAD_POOL_SIZE: "2"
+      LFS_INITIAL_REPLY_LOSS: "1"
+      ACCEPTANCE_ARTIFACTS: "1"
+      RECOVERY_CASE: ${{ github.event.inputs.recovery_case || 'all' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build and record the exact recovery source
+        run: |
+          set -euo pipefail
+          tools/devnet.sh build
+          mkdir -p target/final-gap-image
+          git rev-parse HEAD > target/final-gap-image/source.txt
+          docker image inspect rnode:local > target/final-gap-image/docker-image.json
+          python3 -m unittest discover -s tests -p test_recovery_harness_controls.py -v
+      - name: Independent bounded real-node campaigns
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p target/final-gap
+          failed=0
+          case "$RECOVERY_CASE" in all|lfs|n4|n8) ;; *) echo "invalid recovery subset"; exit 2;; esac
+          if [ "$RECOVERY_CASE" = all ] || [ "$RECOVERY_CASE" = lfs ]; then
+          tools/devnet.sh up --validators 3 --stakes 1000,100,100 --epoch-length 10 --no-autopropose > target/final-gap/lfs-start.log 2>&1
+          start_code=$?
+          if [ "$start_code" -eq 0 ]; then
+            python3 tests/lfs-anchored-checkpoint.py > target/final-gap/lfs-campaign.log 2>&1
+            code=$?
+          else
+            code=$start_code
+          fi
+          echo "lfs=$code" | tee -a target/final-gap/exit-codes.txt
+          test "$code" -eq 0 || failed=1
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs "$node" > "target/final-gap/lfs-$node.log" 2>&1 || true
+          done
+          tools/devnet.sh down -v || true
+          fi
+          for n in 4 8; do
+            if [ "$RECOVERY_CASE" != all ] && [ "$RECOVERY_CASE" != "n$n" ]; then continue; fi
+            export DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance
+            tools/devnet.sh up --validators "$n" --fresh --no-autopropose --epoch-length 10 > "target/final-gap/n$n-start.log" 2>&1
+            start_code=$?
+            if [ "$start_code" -eq 0 ]; then
+              python3 tools/consensus-acceptance-drill.py --validators "$n" --window 180 --out "target/final-gap/n$n" > "target/final-gap/n$n-campaign.log" 2>&1
+              code=$?
+            else
+              code=$start_code
+            fi
+            echo "n$n=$code" | tee -a target/final-gap/exit-codes.txt
+            test "$code" -eq 0 || failed=1
+            if [ "$start_code" -eq 0 ]; then
+              python3 tests/consensus-partition-rejoin.py --validators "$n" --out "target/final-gap/n$n-partition" > "target/final-gap/n$n-partition-campaign.log" 2>&1
+              partition_code=$?
+              echo "n$n-partition=$partition_code" | tee -a target/final-gap/exit-codes.txt
+              test "$partition_code" -eq 0 || failed=1
+            fi
+            for ((i=0;i<n;i++)); do
+              node="acceptance-validator-$i"; [ "$i" -ne 0 ] || node=acceptance-bootstrap
+              docker logs "$node" > "target/final-gap/n$n-$node.log" 2>&1 || true
+              docker inspect "$node" > "target/final-gap/n$n-$node-inspect.json" 2>/dev/null || true
+            done
+            tools/devnet.sh down -v || true
+          done
+          exit "$failed"
+      - name: Preserve all independent outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: final-gap-real-nodes-${{ github.run_id }}
+          path: |
+            target/final-gap/
+            target/lfs-anchor-evidence/
+            target/final-gap-image/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Teardown only disposable campaign networks
+        if: always()
+        run: |
+          tools/devnet.sh down -v || true
+          DEVNET_PREFIX=acceptance DEVNET_NETWORK=acceptance tools/devnet.sh down -v || true
