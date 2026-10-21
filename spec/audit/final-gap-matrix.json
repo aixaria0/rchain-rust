@@ -20,7 +20,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Attachment-free and timestamped block wire/hash fixtures; cross-version replay",
       "decision_owner": "Jim / release operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:binary-attachments",
@@ -37,7 +37,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Signed attachment deploy round-trip and old/new client refusal; uniform validator/client rollout",
       "decision_owner": "Jim / release operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:binary-attachments",
@@ -54,7 +54,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Old/new deploy clients produce the declared hash and explicit refusal behavior",
       "decision_owner": "Jim / release operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:string-functions",
@@ -71,7 +71,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Non-ASCII S.length corpus and historical replay of affected deploys",
       "decision_owner": "Jim / release operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:bigint-decimal",
@@ -92,7 +92,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing decimal_bridge, lean_sort_corpus, lean_parse_corpus; #391 source/history/validator preflight",
       "decision_owner": "maintainers",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:double-mint",
@@ -106,9 +106,9 @@
       },
       "missing_proof": "Decide correction/migration scope and release.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:hardfork1-migration",
@@ -122,9 +122,9 @@
       },
       "missing_proof": "Need state/supply migration decision and reproducible export.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:vault-export",
@@ -141,7 +141,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Independently reconcile exported vaults, staking, rewards and supply at finalized checkpoint",
       "decision_owner": "Jim / operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:genesis-contract-upgrade",
@@ -156,9 +156,9 @@
       },
       "missing_proof": "Master dictionary alias/versioned upgrade path not implemented.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:shard-config",
@@ -175,7 +175,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "casper/tests/committed_bounds.rs plus three-node new-genesis/restart/LFS on integrated source",
       "decision_owner": "Jim / maintainers",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:block-merge",
@@ -192,7 +192,7 @@
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
       "required_acceptance_test": "Approve exact semantics or named-release deferral before adding a merge fixture",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:rev-economics",
@@ -208,9 +208,9 @@
       },
       "missing_proof": "Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:validator-rewards",
@@ -225,9 +225,9 @@
       },
       "missing_proof": "fundPot is a rewards rail only; policy and validator-state changes are unlanded.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:unbond-throttle",
@@ -237,13 +237,13 @@
         "#51"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; No verified implementation or named release deferral."
+        "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral."
       },
-      "missing_proof": "No verified implementation or named release deferral.",
+      "missing_proof": "No verified implementation or owner-and-reason deferral.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:phlo-exchange",
@@ -258,9 +258,9 @@
       },
       "missing_proof": "Committed minimum phlo price is partial; exchange and change-limit decisions remain.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:storage-rent",
@@ -274,9 +274,9 @@
       },
       "missing_proof": "Per-entry records, eviction semantics and release decision absent.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:prepaid-rholang",
@@ -286,13 +286,13 @@
         "#51"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; No verified implementation or named release deferral."
+        "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral."
       },
-      "missing_proof": "No verified implementation or named release deferral.",
+      "missing_proof": "No verified implementation or owner-and-reason deferral.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:asset-store",
@@ -306,9 +306,9 @@
       },
       "missing_proof": "Conditional decision whether to bless; cannot infer exclusion.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "A:decentralized-rspace",
@@ -322,9 +322,9 @@
       },
       "missing_proof": "Classify performance vs consensus effects and decide rollout.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:staking-pools",
@@ -339,9 +339,9 @@
       },
       "missing_proof": "fundPot does not replace bonding/pool interface.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:rev-receipt",
@@ -355,9 +355,9 @@
       },
       "missing_proof": "No verified implementation or deferral.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:genesis-contract-upgrade",
@@ -372,9 +372,9 @@
       },
       "missing_proof": "Shared blocker with A:genesis-contract-upgrade.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:babel",
@@ -384,13 +384,13 @@
         "#51"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; No verified implementation or named release deferral."
+        "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral."
       },
-      "missing_proof": "No verified implementation or named release deferral.",
+      "missing_proof": "No verified implementation or owner-and-reason deferral.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / language",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:breaking-release",
@@ -405,9 +405,9 @@
       },
       "missing_proof": "A guarded manifest is not a fully accepted history-preserving release runbook.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "B:staking-pools-interface",
@@ -421,9 +421,9 @@
       },
       "missing_proof": "Requires explicit interface decision independent of fundPot.",
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and named release, then exercise both allowed and refused transitions, conservation and old/new replay",
+      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Batch:activation-schedule",
@@ -441,7 +441,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Height boundary and mismatch rejection; startup/restart/replay on #373 integrated source",
       "decision_owner": "Jim / maintainers",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Batch:crypto-agility",
@@ -465,7 +465,7 @@
       "smallest_corrective_action": "Jim must approve the canonical registry/wire and governance activation policy; implement and test those frozen interfaces without enabling unapproved schemes. Do not duplicate the already-landed seed fix.",
       "required_acceptance_test": "After Jim/security freezes canonical registry/wire, activation, pricing and sunset rules, run legacy/new signature, address, deploy-hash and migration/replay vectors; preserve current V1 bytes and typed length errors.",
       "decision_owner": "Jim / security",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Batch:governance-schedule",
@@ -482,7 +482,7 @@
       "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
       "required_acceptance_test": "Approve authority/quorum/activation rules; test unauthorized update and activation/replay boundary",
       "decision_owner": "Jim / governance",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Batch:state-preservation",
@@ -500,7 +500,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Operators export authenticated finalized state/history; independently reconcile all entries and replay",
       "decision_owner": "Jim / operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Batch:faucet-genesis",
@@ -520,7 +520,7 @@
       "smallest_corrective_action": "Attach the existing #247 resolution and a finalized drip acceptance witness; have the release owner classify the funded-key configuration route without inventing a new genesis decision.",
       "required_acceptance_test": "Using the already-funded signing key, attest operator/key identity and observe a finalized faucet drip with exact balance/supply delta and truthful failure reporting; no new allocation is implied.",
       "decision_owner": "Jim / operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Batch:attestation-format",
@@ -531,13 +531,13 @@
         "#51"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Still a candidate pending measurement/decision, not a named release deferral."
+        "source": "Existing pinned #51 ledger; Still a candidate pending measurement/decision, not a owner-and-reason deferral."
       },
-      "missing_proof": "Still a candidate pending measurement/decision, not a named release deferral.",
+      "missing_proof": "Still a candidate pending measurement/decision, not a owner-and-reason deferral.",
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing signature/slash fixtures and versioned historical evidence replay",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Audit:section6-categoryA",
@@ -554,7 +554,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "check-section6-inventory.py plus independent reviewer sign-off on every A candidate",
       "decision_owner": "Jim / auditors",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Audit:law52-partition",
@@ -571,7 +571,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing containment/minimum-message falsifiers plus distributed partition/heal finality witness",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Audit:law53-estrangement",
@@ -593,7 +593,7 @@
       "smallest_corrective_action": "Reconcile #51 against the current Law 53 inventory and attach existing tests/merge provenance; no duplicate implementation.",
       "required_acceptance_test": "Pin the merged C173 implementation ancestry, run current restoration/failed-height falsifiers, then attach distributed rejoin and historical validity replay witnesses before release disposition.",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Audit:active-set-draw",
@@ -610,7 +610,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing active-set determinism vectors, epoch transition replay and validator rotation acceptance",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Audit:parent-limit",
@@ -627,7 +627,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Committed bound with opposing local config and over-limit refusal fixture",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Audit:sidecar-merge",
@@ -644,7 +644,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing sibling native-write/cost composition regressions and historical merge replay",
       "decision_owner": "Jim / consensus",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Release:attachment-upgrade",
@@ -661,7 +661,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Inventory actual validator/client binary digests; attachment-bearing deploy acceptance and old-peer refusal",
       "decision_owner": "Jim / operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     },
     {
       "id": "Release:decimal-genesis",
@@ -679,7 +679,7 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Reuse 27 preflight controls; real archive/native tag-35/source scan and complete live binary inventory",
       "decision_owner": "Jim / operators",
-      "approved_named_release_deferral": false
+      "recorded_owner_reason_deferral": false
     }
   ],
   "section6_inventory": "section6-gap-inventory.json"

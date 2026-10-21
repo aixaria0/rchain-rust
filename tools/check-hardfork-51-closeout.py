@@ -30,7 +30,8 @@ Audit:sidecar-merge Release:attachment-upgrade Release:decimal-genesis
 HEXSHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 AUDIT_SIGNOFF_ID = "Audit:section6-categoryA"
-PLACEHOLDER = re.compile(r"\b(tbd|unknown|unspecified|unnamed|someday|later|future|next release|unassigned)\b", re.I)
+PLACEHOLDER = re.compile(r"\b(tbd|unknown|unspecified|unnamed|someday|later|future|unassigned)\b", re.I)
+OWNER = re.compile(r"^@[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$")
 
 
 class LedgerError(ValueError):
@@ -118,13 +119,18 @@ def validate(raw: dict, *, verify_git: bool = False, repo: Path | None = None) -
         elif state == "deferred":
             require(ident != AUDIT_SIGNOFF_ID,
                     "§6 inventory cannot be deferred: full classification is a closure prerequisite")
-            release = good_text(item.get("named_release"), ident + ".named_release")
-            require(not PLACEHOLDER.search(release),
-                    f"{ident}: unnamed or placeholder release is not a deferral")
-            url(item.get("approval_url"), ident + ".approval_url")
-            good_text(item.get("approved_by"), ident + ".approved_by")
-            good_text(item.get("decision_owner"), ident + ".decision_owner")
-            good_text(item.get("risk_accepted"), ident + ".risk_accepted", 20)
+            owner = good_text(item.get("decision_owner"), ident + ".decision_owner")
+            require(bool(OWNER.fullmatch(owner)),
+                    f"{ident}: decision_owner must identify one accountable GitHub user (@login)")
+            reason = good_text(item.get("reason"), ident + ".reason", 10)
+            require(not re.search(r"[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]", item["reason"])
+                    and "\\n" not in reason and "\\r" not in reason and len(reason) <= 256
+                    and not PLACEHOLDER.search(reason),
+                    f"{ident}: deferral reason must be one specific, non-placeholder line")
+            # The #51 close clause requires owner + reason, not a named release.
+            # An optional decision link improves traceability but is not a prerequisite.
+            if "approval_url" in item:
+                url(item["approval_url"], ident + ".approval_url")
             deferred.append(ident)
         elif state == "verified":
             url(item.get("evidence_url"), ident + ".evidence_url")

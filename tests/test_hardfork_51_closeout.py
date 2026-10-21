@@ -65,27 +65,64 @@ class CloseoutTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.LedgerError, "decision_owner"):
             self.inspect()
 
-    def test_deferred_item_needs_named_release_and_approval(self):
+    def test_named_owner_and_reason_are_sufficient_without_release(self):
         item = next(x for x in self.payload["items"] if x["status"] == "open")
-        item["status"] = "deferred"
-        item["named_release"] = "next release"
-        item["approval_url"] = "https://github.com/rchain-community/rchain-rust/issues/51"
-        item["approved_by"] = "maintainer"
-        item["risk_accepted"] = "Deferred only after a documented release decision."
-        with self.assertRaisesRegex(gate.LedgerError, "placeholder"):
-            self.inspect()
-        item["named_release"] = "RChain protocol release 2.4"
+        item.update(status="deferred", decision_owner="@jimscarver",
+                    reason="Defer the economics rule pending an accepted governance proposal.")
         self.assertEqual(self.inspect()["deferred"], 1)
-        item["approval_url"] = "not a link"
-        with self.assertRaisesRegex(gate.LedgerError, "GitHub evidence URL"):
+        self.assertEqual(self.inspect()["result"], "TRACKER_MUST_REMAIN_OPEN")
+
+    def test_generic_role_is_not_a_named_decision_owner(self):
+        item = next(x for x in self.payload["items"] if x["status"] == "open")
+        item.update(status="deferred", decision_owner="Jim / governance",
+                    reason="Defer while the governance policy is reviewed.")
+        with self.assertRaisesRegex(gate.LedgerError, "GitHub user"):
             self.inspect()
 
-    def test_unsigned_deferral_does_not_count(self):
+    def test_missing_or_placeholder_reason_is_rejected(self):
         item = next(x for x in self.payload["items"] if x["status"] == "open")
-        item.update(status="deferred", named_release="RChain protocol release 2.4",
-                    approval_url="https://github.com/rchain-community/rchain-rust/issues/51",
-                    approved_by="", risk_accepted="Changes consensus validity at the fork boundary.")
-        with self.assertRaisesRegex(gate.LedgerError, "approved_by"):
+        item.update(status="deferred", decision_owner="@jimscarver")
+        with self.assertRaisesRegex(gate.LedgerError, "reason"):
+            self.inspect()
+        item["reason"] = "TBD"
+        with self.assertRaisesRegex(gate.LedgerError, "reason"):
+            self.inspect()
+        item["reason"] = "Defer to some future change."
+        with self.assertRaisesRegex(gate.LedgerError, "placeholder"):
+            self.inspect()
+
+    def test_multiline_reason_is_rejected(self):
+        item = next(x for x in self.payload["items"] if x["status"] == "open")
+        for separator in ("\n", "\r", "\r\n", "\u0085", "\u2028", "\u2029", r"\n", r"\r"):
+            with self.subTest(separator=repr(separator)):
+                item.update(status="deferred", decision_owner="@jimscarver",
+                            reason="Defer this release." + separator + "Another decision.")
+                with self.assertRaisesRegex(gate.LedgerError, "one specific"):
+                    self.inspect()
+
+    def test_deferral_needs_one_well_formed_account(self):
+        item = next(x for x in self.payload["items"] if x["status"] == "open")
+        item.update(status="deferred", reason="Retain the current rule pending governance review.")
+        for owner in ("@jimscarver/@aixaria0", "@team/release", "@trailing-", "@double--dash", "@" + "a" * 40):
+            with self.subTest(owner=owner):
+                item["decision_owner"] = owner
+                with self.assertRaisesRegex(gate.LedgerError, "GitHub user"):
+                    self.inspect()
+
+    def test_legacy_release_fields_cannot_replace_reason(self):
+        item = next(x for x in self.payload["items"] if x["status"] == "open")
+        item.update(status="deferred", decision_owner="@jimscarver",
+                    named_release="RChain protocol release 2.4", approved_by="Maintainer",
+                    risk_accepted="Legacy approval metadata does not supply a reason.")
+        with self.assertRaisesRegex(gate.LedgerError, "reason"):
+            self.inspect()
+
+    def test_optional_decision_link_must_be_valid_if_present(self):
+        item = next(x for x in self.payload["items"] if x["status"] == "open")
+        item.update(status="deferred", decision_owner="@jimscarver",
+                    reason="Retain the current rule until a replacement is accepted.",
+                    approval_url="not a link")
+        with self.assertRaisesRegex(gate.LedgerError, "GitHub evidence URL"):
             self.inspect()
 
     def test_fake_history_is_rejected_when_provenance_check_requested(self):
@@ -104,16 +141,16 @@ class CloseoutTests(unittest.TestCase):
         for item in self.payload["items"]:
             item.clear()
             item.update(id="placeholder",title="Placeholder",status="deferred",
-                        named_release="RChain protocol release 2.4",
-                        decision_owner="Maintainer",approved_by="Maintainer",
-                        approval_url="https://github.com/rchain-community/rchain-rust/issues/51",
-                        risk_accepted="Explicit risk acceptance for a future protocol release.")
+                        decision_owner="@jimscarver",
+                        reason="Delay until a separately approved first-release fork design.")
         # Reattach the identities; §6 classification cannot be deferred.
         for item, ident in zip(self.payload["items"], sorted(gate.REQUIRED)):
             item["id"] = ident
             if ident == gate.AUDIT_SIGNOFF_ID:
                 item["status"] = "verified"
                 item["evidence_url"] = "https://github.com/rchain-community/rchain-rust/issues/51"
+                item["approval_url"] = "https://github.com/rchain-community/rchain-rust/issues/51"
+                item["approved_by"] = "Maintainer"
                 item["evidence_sha256"] = "a" * 64
         self.payload["closure_requested"] = True
         self.assertEqual(self.inspect()["result"], "TRACKER_MUST_REMAIN_OPEN")
@@ -123,10 +160,8 @@ class CloseoutTests(unittest.TestCase):
 
     def test_cannot_defer_the_exhaustive_audit_itself(self):
         item = next(x for x in self.payload["items"] if x["id"] == gate.AUDIT_SIGNOFF_ID)
-        item.update(status="deferred", named_release="RChain protocol release 2.4",
-                    decision_owner="Maintainer", approved_by="Maintainer",
-                    approval_url="https://github.com/rchain-community/rchain-rust/issues/51",
-                    risk_accepted="Future classification is explicitly delayed to later.")
+        item.update(status="deferred", decision_owner="@jimscarver",
+                    reason="The audit inventory would be deferred without verification.")
         with self.assertRaisesRegex(gate.LedgerError, "inventory cannot be deferred"):
             self.inspect()
 

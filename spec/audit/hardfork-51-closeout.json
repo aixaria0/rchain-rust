@@ -4,7 +4,7 @@
   "source_dev_sha": "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b",
   "observed_date": "2026-10-20",
   "closure_requested": false,
-  "policy": "Every \u00a7A/\u00a7B and every \u00a76 consensus-changing row must be merged on dev or deferred to an explicitly named release with an attributable maintainer decision. A green test run alone is not closure.",
+  "policy": "Every \u00a7A/\u00a7B and every \u00a76 consensus-changing row must be merged on dev or deferred with a named decision owner and a one-line reason. A green test run alone is not closure.",
   "items": [
     {
       "id": "A:block-timestamp",
