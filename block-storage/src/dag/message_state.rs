@@ -488,8 +488,14 @@ mod tests {
         state.insert_msg_mut(&at(10, 0, 1, 4, &bonds));
         assert_eq!(state.round_height, BlockHeight::try_from(2).unwrap());
         assert_eq!(state.round_parents.len(), 3);
-        assert_eq!(state.round_parents.get(&0).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
-        assert_eq!(state.round_parents.get(&2).unwrap().sender_seq, SeqNum::zero());
+        assert_eq!(
+            state.round_parents.get(&0).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap()
+        );
+        assert_eq!(
+            state.round_parents.get(&2).unwrap().sender_seq,
+            SeqNum::zero()
+        );
 
         state.insert_msg_mut(&at(11, 0, 2, 5, &bonds));
         state.insert_msg_mut(&at(12, 1, 1, 6, &bonds));
@@ -505,9 +511,18 @@ mod tests {
         );
 
         state.insert_msg_mut(&at(13, 2, 1, 7, &bonds));
-        assert_eq!(state.round_parents.get(&0).unwrap().sender_seq, SeqNum::try_from(2).unwrap());
-        assert_eq!(state.round_parents.get(&1).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
-        assert_eq!(state.round_parents.get(&2).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
+        assert_eq!(
+            state.round_parents.get(&0).unwrap().sender_seq,
+            SeqNum::try_from(2).unwrap()
+        );
+        assert_eq!(
+            state.round_parents.get(&1).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap()
+        );
+        assert_eq!(
+            state.round_parents.get(&2).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap()
+        );
     }
 
     #[test]
