@@ -28,8 +28,24 @@ class CloseoutTests(unittest.TestCase):
         out = self.inspect()
         self.assertEqual(out["result"], "TRACKER_MUST_REMAIN_OPEN")
         self.assertFalse(out["closure_requested"])
-        self.assertGreater(out["unresolved"], 30)
+        self.assertEqual(out["unresolved"], 23)
+        self.assertEqual(out["deferred"], 12)
         self.assertEqual(out["merged"], 7)
+
+    def test_jim_20261021_deferrals_are_source_attributed(self):
+        out = self.inspect()
+        self.assertEqual(out["merged"], 7)
+        self.assertEqual(out["deferred"], 12)
+        for item in self.payload["items"]:
+            if item["status"] == "deferred":
+                self.assertIn(item["decision_owner"], ("@PatrickMockridge","@aixaria0"))
+                self.assertEqual(item["approval_url"],
+                  "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399")
+
+    def test_rchip47_deferral_does_not_decide_developer_allocation(self):
+        self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="A:rev-economics")["status"], "deferred")
+        self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="Decision:developer-allocation")["status"], "open")
+        self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="Audit:inactivity-leak")["decision_owner"], "@aixaria0")
 
     def test_exact_inventory_is_required(self):
         self.payload["items"].pop()
@@ -69,7 +85,7 @@ class CloseoutTests(unittest.TestCase):
         item = next(x for x in self.payload["items"] if x["status"] == "open")
         item.update(status="deferred", decision_owner="@jimscarver",
                     reason="Defer the economics rule pending an accepted governance proposal.")
-        self.assertEqual(self.inspect()["deferred"], 1)
+        self.assertEqual(self.inspect()["deferred"], 13)
         self.assertEqual(self.inspect()["result"], "TRACKER_MUST_REMAIN_OPEN")
 
     def test_generic_role_is_not_a_named_decision_owner(self):

@@ -4,7 +4,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 39 overlapping tracker, audit and release obligations: **7 landed implementation references, 32 open obligations and zero recorded deferrals**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 42 overlapping tracker, audit and release obligations: **7 landed implementation references, 12 decision-owner deferrals, 23 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
@@ -27,7 +27,7 @@ The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, exist
 
 - **Crypto-agility (#274 §14):** @jimscarver owns the track. Freeze the registry/wire, key identity, deploy hash, activation, pricing and sunset policy before implementation. The already-landed seed-length typed error is not the complete agility fork.
 - **RCHIP #43:** decide the governed blessed-contract upgrade shape, then implement its state/replay and authorization tests. The A and B rows share this obligation.
-- **Economics and other proposals:** the #371/#388 allocation track, separate RFC #372, #40, reward/rotation, unbonding, exchange limits, prepaid execution, assetStore, pool/receipt interfaces, compatibility translation and attestation scope need individually recorded dispositions. No allocation or deferral is approved here.
+- **Economics and other proposals:** the #371/#388 allocation track, separate RFC #372, #40, reward/rotation, unbonding, exchange limits, prepaid execution, assetStore, pool/receipt interfaces, compatibility translation and attestation scope need individually recorded dispositions. Jim's [2026-10-21 owner assignments](https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399) provide 12 ledger deferrals representing 11 distinct policy decisions (staking pools appear twice). The #371/#388 choice and #372 remain open; no allocation is approved.
 - **Plan H2 and state preservation:** governance-settable rules, authenticated old-state exports, genesis hashes, validator binary hashes and the reviewed rollout remain open. #391's merged preflight checks evidence consistency; it cannot supply missing operator evidence.
 - **Integrated acceptance (#339/#399):** preserve independent N=8 finality/partition and anchored-recovery outcomes on one exact image. #399 also carries the unmerged #403 experiment, so its result cannot be represented as evidence for bare dev without identifying that additional source.
 - **Historical deviations:** the current Law 53 inventory already records the C173 inverses as shipped. Reconcile their exact ancestry and replay/rejoin evidence rather than implementing them again. Independently review all §6 category dispositions.

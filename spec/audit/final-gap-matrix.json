@@ -100,7 +100,7 @@
     {
       "id": "A:double-mint",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #44 bonded REV double-mint correction — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #44 bonded REV double-mint correction \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -116,7 +116,7 @@
     {
       "id": "A:hardfork1-migration",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #42 Hard Fork 1 supply migration — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #42 Hard Fork 1 supply migration \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -149,7 +149,7 @@
     {
       "id": "A:genesis-contract-upgrade",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #43 governed replacement of genesis contracts — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #43 governed replacement of genesis contracts \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#373"
@@ -201,8 +201,8 @@
     },
     {
       "id": "A:rev-economics",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #47 REV stabilization/mint and vesting — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #47 REV stabilization/mint and vesting \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#371",
         "#372",
@@ -211,16 +211,17 @@
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation."
       },
-      "missing_proof": "Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns RCHIP #47 economics policy; the separate #371/#388 allocation selection remains OPEN."
     },
     {
       "id": "A:validator-rewards",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #46 rotation/longevity/open enrollment — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #46 rotation/longevity/open enrollment \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#373",
         "#51"
@@ -228,32 +229,34 @@
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; fundPot is a rewards rail only; policy and validator-state changes are unlanded."
       },
-      "missing_proof": "fundPot is a rewards rail only; policy and validator-state changes are unlanded.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns RCHIP #46 rotation and rewards policy; the #373 fundPot mechanism is already merged."
     },
     {
       "id": "A:unbond-throttle",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #4 unbonding rate throttle — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #4 unbonding rate throttle \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral."
       },
-      "missing_proof": "No verified implementation or recorded owner-and-reason deferral.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the proposed PoS unbonding state-machine change."
     },
     {
       "id": "A:phlo-exchange",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #7/#8 phlogiston\u2194REV exchange and per-block limits \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#373",
         "#51"
@@ -261,16 +264,17 @@
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Committed minimum phlo price is partial; exchange and change-limit decisions remain."
       },
-      "missing_proof": "Committed minimum phlo price is partial; exchange and change-limit decisions remain.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns RCHIP #7/#8 exchange-rate and per-block limit design; the fee floor alone has landed."
     },
     {
       "id": "A:storage-rent",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #40 data retention/rent — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #40 data retention/rent \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -285,40 +289,42 @@
     },
     {
       "id": "A:prepaid-rholang",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #38 prepaid execution — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #38 prepaid execution \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral."
       },
-      "missing_proof": "No verified implementation or recorded owner-and-reason deferral.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the proposed prepaid execution economics."
     },
     {
       "id": "A:asset-store",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #30 blessed assetStore if chosen — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #30 blessed assetStore if chosen \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Conditional decision whether to bless; cannot infer exclusion."
       },
-      "missing_proof": "Conditional decision whether to bless; cannot infer exclusion.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the decision whether to bless assetStore and alter genesis state."
     },
     {
       "id": "A:decentralized-rspace",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #53 RSpace decentralization, if consensus-affecting — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #53 RSpace decentralization, if consensus-affecting \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -333,8 +339,8 @@
     },
     {
       "id": "B:staking-pools",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #32 staking pools and REV addresses — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #32 staking pools and REV addresses \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#373"
@@ -342,32 +348,34 @@
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; fundPot does not replace bonding/pool interface."
       },
-      "missing_proof": "fundPot does not replace bonding/pool interface.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the proposed staking-pool bonding and reward-channel interface."
     },
     {
       "id": "B:rev-receipt",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #31 execute-on-REV-receipt — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #31 execute-on-REV-receipt \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; No verified implementation or deferral."
       },
-      "missing_proof": "No verified implementation or deferral.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the proposed RevVault execute-on-receipt semantics."
     },
     {
       "id": "B:genesis-contract-upgrade",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #43 client-visible blessed-contract upgrade — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #43 client-visible blessed-contract upgrade \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#373"
@@ -384,7 +392,7 @@
     {
       "id": "B:babel",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #48 Rholang compatibility translator — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #48 Rholang compatibility translator \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
@@ -400,7 +408,7 @@
     {
       "id": "B:breaking-release",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #10 coordinated breaking-release runbook — no accepted completed implementation is established by the tracker",
+      "exact_file_function_or_invariant": "RCHIP #10 coordinated breaking-release runbook \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51",
         "#391"
@@ -418,19 +426,20 @@
     },
     {
       "id": "B:staking-pools-interface",
-      "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "RCHIP #32 beneficiary/reward channel compatibility — no accepted completed implementation is established by the tracker",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "RCHIP #32 beneficiary/reward channel compatibility \u2014 no accepted completed implementation is established by the tracker",
       "related_issue_pr": [
         "#51"
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Requires explicit interface decision independent of fundPot."
       },
-      "missing_proof": "Requires explicit interface decision independent of fundPot.",
-      "smallest_corrective_action": "Obtain an attributable maintainer decision naming policy, owner and release; do not implement an unapproved economics/governance design",
-      "required_acceptance_test": "Approve the exact policy/interface and owner-and-reason deferral, then exercise both allowed and refused transitions, conservation and old/new replay",
-      "decision_owner": "Jim / governance",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Same RCHIP #32 decision: bonding, vault, and reward-channel interface."
     },
     {
       "id": "Batch:activation-schedule",
@@ -456,7 +465,7 @@
     {
       "id": "Batch:crypto-agility",
       "classification": "REQUIRES MAINTAINER DECISION",
-      "exact_file_function_or_invariant": "#274 §14 key IDs, algorithm table, deploy IDs, address version and pricing",
+      "exact_file_function_or_invariant": "#274 \u00a714 key IDs, algorithm table, deploy IDs, address version and pricing",
       "related_issue_pr": [
         "#274",
         "#373"
@@ -497,7 +506,7 @@
     {
       "id": "Batch:state-preservation",
       "classification": "RELEASE BLOCKER",
-      "exact_file_function_or_invariant": "Plan §14.3 S1/S2 complete native/RSpace state and deploy-history preservation",
+      "exact_file_function_or_invariant": "Plan \u00a714.3 S1/S2 complete native/RSpace state and deploy-history preservation",
       "related_issue_pr": [
         "#274",
         "#373",
@@ -560,7 +569,7 @@
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Register rows and late audit deviations have not all been independently linked to a merged commit or signed named-release deferral."
       },
-      "missing_proof": "All 90 current §6 rows are enumerated with exact row hashes, including the changed Decimal decision and five additional rows. Independent classification and construct-specific historical replay remain open.",
+      "missing_proof": "All 90 current \u00a76 rows are enumerated with exact row hashes, including the changed Decimal decision and five additional rows. Independent classification and construct-specific historical replay remain open.",
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "check-section6-inventory.py plus independent reviewer sign-off on every A candidate",
       "decision_owner": "Jim / auditors",
@@ -585,7 +594,7 @@
     },
     {
       "id": "Audit:law53-estrangement",
-      "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
+      "classification": "EXPLICITLY DEFERRED",
       "exact_file_function_or_invariant": "casper/src/validate.rs failed-justification height maximum; C173",
       "related_issue_pr": [
         "#125",
@@ -599,11 +608,12 @@
         ],
         "formal_boundary": "Rchain/Casper/Stranding.lean models restoration; does not establish a distributed schedule"
       },
-      "missing_proof": "The current Law 53 inventory records both C173 inverses as shipped. Exact merged ancestry, historical validity and distributed rejoin evidence still need an explicit release disposition.",
-      "smallest_corrective_action": "Reconcile #51 against the current Law 53 inventory and attach existing tests/merge provenance; no duplicate implementation.",
-      "required_acceptance_test": "Pin the merged C173 implementation ancestry, run current restoration/failed-height falsifiers, then attach distributed rejoin and historical validity replay witnesses before release disposition.",
-      "decision_owner": "Jim / consensus",
-      "recorded_owner_reason_deferral": false
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the unresolved C173/Law 53 audit decision; shipped inverses and release acceptance remain separately traceable."
     },
     {
       "id": "Audit:active-set-draw",
@@ -651,9 +661,9 @@
         "spec/audit/passes.md"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Reported landed code; still needs complete §6 release classification and historical acceptance."
+        "source": "Existing pinned #51 ledger; Reported landed code; still needs complete \u00a76 release classification and historical acceptance."
       },
-      "missing_proof": "Reported landed code; still needs complete §6 release classification and historical acceptance.",
+      "missing_proof": "Reported landed code; still needs complete \u00a76 release classification and historical acceptance.",
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Existing sibling native-write/cost composition regressions and historical merge replay",
       "decision_owner": "Jim / consensus",
@@ -694,6 +704,66 @@
       "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
       "required_acceptance_test": "Reuse 27 preflight controls; real archive/native tag-35/source scan and complete live binary inventory",
       "decision_owner": "Jim / operators",
+      "recorded_owner_reason_deferral": false
+    },
+    {
+      "id": "Audit:merge-resolution-stage4",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "#127 stage 4 merge-resolution block-format proposal",
+      "related_issue_pr": [
+        "#127",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Newly tracked decision obligation, from Jim's issue #51 comment on 2026-10-21.",
+        "decision_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399"
+      },
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@PatrickMockridge",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns #127 stage-4 merge-resolution block-format proposal and its staged decision."
+    },
+    {
+      "id": "Audit:inactivity-leak",
+      "classification": "EXPLICITLY DEFERRED",
+      "exact_file_function_or_invariant": "Activity-aware finality weight / inactivity leak",
+      "related_issue_pr": [
+        "#70",
+        "#339",
+        "#341",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Newly tracked decision obligation, from Jim's issue #51 comment on 2026-10-21.",
+        "decision_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399"
+      },
+      "missing_proof": "Implementation explicitly deferred under Jim's owner-and-reason decision; independent release acceptance remains separate.",
+      "smallest_corrective_action": "Maintain the named owner and revisit the deferred proposal before a consensus-affecting release.",
+      "required_acceptance_test": "Recorded decision https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399; implementation is not claimed.",
+      "decision_owner": "@aixaria0",
+      "recorded_owner_reason_deferral": true,
+      "deferral_reason": "Owns the activity-aware finality/liveness proposal adjacent to #339/#341 drills."
+    },
+    {
+      "id": "Decision:developer-allocation",
+      "classification": "REQUIRES MAINTAINER DECISION",
+      "exact_file_function_or_invariant": "Choose one developer allocation implementation (#371 or #388), with #372 RFC separate",
+      "related_issue_pr": [
+        "#371",
+        "#388",
+        "#372",
+        "#51"
+      ],
+      "existing_evidence": {
+        "source": "Newly tracked decision obligation, from Jim's issue #51 comment on 2026-10-21.",
+        "decision_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399"
+      },
+      "missing_proof": "Jim has not yet selected #371 or #388 as the single implementation track or disposed of RFC #372; RCHIP #47 deferral is not this decision.",
+      "smallest_corrective_action": "Record exact owner/reason deferral or a merged implementation with independent evidence.",
+      "required_acceptance_test": "Independent acceptance or explicit accountable deferral with issue #51 decision provenance.",
+      "decision_owner": "@jimscarver",
       "recorded_owner_reason_deferral": false
     }
   ],
