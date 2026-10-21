@@ -472,23 +472,28 @@ mod tests {
             let msg = at(100 + sender, sender, 0, 60, &bonds);
             state.insert_msg_mut(&msg);
         }
+        // The first inserted message establishes a one-sender boundary.
+        // Complete a real round before testing the next round's outlier.
+        for sender in 0..8 {
+            state.insert_msg_mut(&at(200 + sender, sender, 1, 61, &bonds));
+        }
         assert_eq!(state.round_parents.len(), 8);
-        assert_eq!(state.round_height, BlockHeight::try_from(60).unwrap());
+        assert_eq!(state.round_height, BlockHeight::try_from(61).unwrap());
 
-        for height in 61..=106 {
+        for height in 62..=106 {
             // Explicit repeated deploys may let a single creator keep climbing.
             // Other senders have still produced their height-60 message.
             let msg = at(1000 + height as i32, 0, height - 60, height, &bonds);
             state.insert_msg_mut(&msg);
         }
-        assert_eq!(state.round_height, BlockHeight::try_from(60).unwrap());
+        assert_eq!(state.round_height, BlockHeight::try_from(61).unwrap());
         assert_eq!(state.round_parents.len(), 8);
 
         // Six peers catch up; the seventh is partitioned. The real quorum
         // (7/8, not a minority) moves the supported clock and retires the
         // partitioned peer without waiting for everyone to reach height 106.
         for sender in 1..=6 {
-            state.insert_msg_mut(&at(1200 + sender, sender, 1, 68, &bonds));
+            state.insert_msg_mut(&at(1200 + sender, sender, 2, 68, &bonds));
         }
         assert_eq!(state.round_height, BlockHeight::try_from(68).unwrap());
         assert_eq!(state.round_parents.len(), 8);
