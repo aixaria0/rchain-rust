@@ -21,7 +21,7 @@ FORMAT = 1
 FIELDS = 10
 DECIMAL_MERGE = "666ddb75e2d2787f099e05f983e31fb9728e7ed6"
 LEAN_MERGE = "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b"
-FORK_HEAD = "e1dfcdef210d8d6fc4d757fdac5a3ff49c001d45"
+FORK_HEAD = "c42440716ddb3d467fe0e16b3607ed40ff20f5b1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -101,7 +101,7 @@ def check(data: dict, directory: Path, repo: Path, *, ancestor=git_descends) -> 
             "old-genesis binary swap is not an approved activation")
     release_commit = hex_value(data.get("release_commit"), 40, "release_commit")
     for prerequisite, name in [(DECIMAL_MERGE, "#389"), (LEAN_MERGE, "#390"),
-                               (FORK_HEAD, "#373 reviewed head")]:
+                               (FORK_HEAD, "#373 merge commit")]:
         require(ancestor(repo, prerequisite, release_commit),
                 f"release commit does not contain the {name} required source")
     genesis = object_at(data, "new_genesis")
