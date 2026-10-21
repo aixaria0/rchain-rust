@@ -33,6 +33,7 @@ Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -41,6 +42,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 BOOTSTRAP = "devnet-bootstrap"
 HTTP_BASE = 40403   # host HTTP port for validator 0; validator i is HTTP_BASE + 1000*i
