@@ -602,10 +602,13 @@
         "spec/audit/passes.md"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Consensus-visible finality rule requires explicit release acceptance/provenance."
+        "pr": 108,
+        "merge_commit": "a4dd4ede66546d1a6d798f5508090f6aa654a7c7",
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "scope": "The live partition/full bonded-stake quorum separation is landed in #108. Later derivation/containment deviations remain explicitly enumerated in §6; deployment and independent historical acceptance are separate release obligations."
       },
-      "missing_proof": "Consensus-visible finality rule requires explicit release acceptance/provenance.",
-      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "missing_proof": "Implementation and ancestry are established; source-row classification, historical compatibility and live rollout evidence remain in the separate release obligations.",
+      "smallest_corrective_action": "Reuse the merged implementation and reconcile its exact §6 invariant with the independent release inventory.",
       "required_acceptance_test": "Existing containment/minimum-message falsifiers plus distributed partition/heal finality witness",
       "decision_owner": "Jim / consensus",
       "recorded_owner_reason_deferral": false
@@ -638,16 +641,19 @@
     {
       "id": "Audit:active-set-draw",
       "classification": "IMPLEMENTED / EVIDENCE INCOMPLETE",
-      "exact_file_function_or_invariant": "PoS select_active stake-weighted draw without replacement, epoch-ahead seed",
+      "exact_file_function_or_invariant": "rholang/src/native_state.rs select_active / draw_weighted_without_replacement; epoch-ahead finalized-fringe seed",
       "related_issue_pr": [
         "#51",
         "spec/audit/passes.md"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Consensus-set change requires explicit release attribution."
+        "pr": 186,
+        "merge_commit": "37ed6f50688fba7b07f4849a8864500c2c66d6fa",
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "scope": "The original uniform draw was replaced by stake-weighted sampling without replacement in #186. The epoch-ahead seed and exact integer draw are in the pinned source; residual incentives and release acceptance are not certified by this implementation reference."
       },
-      "missing_proof": "Consensus-set change requires explicit release attribution.",
-      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "missing_proof": "Implementation and ancestry are established; source-row classification, historical compatibility and live rollout evidence remain in the separate release obligations.",
+      "smallest_corrective_action": "Reuse the merged implementation and reconcile its exact §6 invariant with the independent release inventory.",
       "required_acceptance_test": "Existing active-set determinism vectors, epoch transition replay and validator rotation acceptance",
       "decision_owner": "Jim / consensus",
       "recorded_owner_reason_deferral": false
@@ -681,10 +687,13 @@
         "spec/audit/passes.md"
       ],
       "existing_evidence": {
-        "source": "Existing pinned #51 ledger; Reported landed code; still needs complete §6 release classification and historical acceptance."
+        "pr": 209,
+        "merge_commit": "5f0763eb4d352825e779cc5bc43b2d566873e316",
+        "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+        "scope": "C207 cost-accounting composition is landed in #209. This does not resolve every concurrent native-ledger conflict or prove partition liveness."
       },
-      "missing_proof": "Reported landed code; still needs complete §6 release classification and historical acceptance.",
-      "smallest_corrective_action": "Integrate and review existing implementation; attach the specific acceptance artifact below without generalizing its scope",
+      "missing_proof": "Implementation and ancestry are established; source-row classification, historical compatibility and live rollout evidence remain in the separate release obligations.",
+      "smallest_corrective_action": "Reuse the merged implementation and reconcile its exact §6 invariant with the independent release inventory.",
       "required_acceptance_test": "Existing sibling native-write/cost composition regressions and historical merge replay",
       "decision_owner": "Jim / consensus",
       "recorded_owner_reason_deferral": false

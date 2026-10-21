@@ -388,14 +388,18 @@
     },
     {
       "id": "Audit:law52-partition",
-      "title": "Law 52 C174 finalizer partition",
-      "status": "open",
+      "title": "Law 52 / C174 live finality partition",
+      "status": "merged",
       "decision_owner": "Jim / consensus",
       "references": [
         "#51",
         "spec/audit/passes.md"
       ],
-      "blocker": "Consensus-visible finality rule requires explicit release acceptance/provenance."
+      "evidence": {
+        "pr": 108,
+        "merge_commit": "a4dd4ede66546d1a6d798f5508090f6aa654a7c7"
+      },
+      "notes": "The live partition/full bonded-stake quorum separation is landed in #108. Later derivation/containment deviations remain explicitly enumerated in §6; deployment and independent historical acceptance are separate release obligations."
     },
     {
       "id": "Audit:law53-estrangement",
@@ -413,14 +417,18 @@
     },
     {
       "id": "Audit:active-set-draw",
-      "title": "Epoch active validator set uniform draw",
-      "status": "open",
+      "title": "Epoch active validator set stake-weighted draw",
+      "status": "merged",
       "decision_owner": "Jim / consensus",
       "references": [
         "#51",
         "spec/audit/passes.md"
       ],
-      "blocker": "Consensus-set change requires explicit release attribution."
+      "evidence": {
+        "pr": 186,
+        "merge_commit": "37ed6f50688fba7b07f4849a8864500c2c66d6fa"
+      },
+      "notes": "The original uniform draw was replaced by stake-weighted sampling without replacement in #186. The epoch-ahead seed and exact integer draw are in the pinned source; residual incentives and release acceptance are not certified by this implementation reference."
     },
     {
       "id": "Audit:parent-limit",
@@ -439,14 +447,18 @@
     },
     {
       "id": "Audit:sidecar-merge",
-      "title": "C207 native sidecar cost merge composition",
-      "status": "open",
+      "title": "C207 per-accepted-deploy cost merge composition",
+      "status": "merged",
       "decision_owner": "Jim / consensus",
       "references": [
         "#51",
         "spec/audit/passes.md"
       ],
-      "blocker": "Reported landed code; still needs complete §6 release classification and historical acceptance."
+      "evidence": {
+        "pr": 209,
+        "merge_commit": "5f0763eb4d352825e779cc5bc43b2d566873e316"
+      },
+      "notes": "C207 cost-accounting composition is landed in #209. This does not resolve every concurrent native-ledger conflict or prove partition liveness."
     },
     {
       "id": "Release:attachment-upgrade",

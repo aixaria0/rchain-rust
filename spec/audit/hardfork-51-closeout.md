@@ -4,7 +4,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 42 overlapping tracker, audit and release obligations: **7 landed implementation references, 12 maintainer-recorded deferrals and 23 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 42 overlapping tracker, audit and release obligations: **10 landed implementation references, 12 maintainer-recorded deferrals and 20 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
@@ -14,6 +14,9 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 | BigInt/Decimal, #49/#389/#390 | #389: `666ddb75e2` | #373 and #391 are also merged; archive scans, uniform validators and the new-genesis ceremony remain open |
 | Activation schedule, committed bounds, params format and fundPot, #373/#376 | `c42440716d` | Integrated distributed acceptance remains separate |
 | Parent-bound integration, #160/#373 | `c42440716d` | Historical and distributed release evidence remains separate |
+| Live finality partition, #108 | `a4dd4ede66` | Full bonded-stake denominator remains required |
+| Stake-weighted active-set draw, #186 | `37ed6f5068` | Replaced the historical uniform draw; residual incentives are not certified |
+| C207 cost merge, #209 | `5f0763eb4d` | Concurrent native-ledger conflicts and partition liveness remain separate |
 
 #404, #373, #391, #392 and #402 are all in the pinned dev ancestry. The checker verifies every ledger merge reference against that source when `--verify-local-git` is supplied. #379 remains a proposer timing correction outside category A.
 
