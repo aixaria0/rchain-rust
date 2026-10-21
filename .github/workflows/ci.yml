@@ -325,3 +325,6 @@ jobs:
         # Zlib, which had been reaching the tree unlisted; that is now allowed by name, with its
         # reason, in `deny.toml`.
         run: cargo deny check
+
+      - name: emSign exception rejects unpatched root providers
+        run: python3 tools/check-emsign-dependency-policy.py
