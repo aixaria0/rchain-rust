@@ -113,13 +113,21 @@ where
         // Use the same stake-backed progress clock as the finalizer.
         let supported_tip = super::liveness::quorum_supported_height(&bonds, &heights);
         let closed = bonds.keys().all(|s| {
-            match self.latest_msgs.get(s).map(|m| m.height) {
-                // Spoken and past the boundary: this sender is done for this round.
-                Some(height) if height > self.round_height => true,
-                // Spoken, but not past it: the round waits for it — unless the window has retired it.
-                Some(height) => super::liveness::heights_behind(supported_tip, height) > window,
+            match (self.latest_msgs.get(s), self.round_parents.get(s)) {
+                // Progress is relative to THIS sender's previous boundary message.
+                // The quorum clock can be below another sender's boundary height:
+                // comparing to one scalar round_height then reuses an old message
+                // as if that sender had spoken in the new round.
+                (Some(latest), Some(boundary)) if latest.sender_seq > boundary.sender_seq => true,
+                // A sender new to the snapshot has spoken since the boundary.
+                (Some(_), None) => true,
+                // A sender which has not advanced retires only after the
+                // stake-backed liveness window, never after one fast proposer.
+                (Some(latest), Some(_)) => {
+                    super::liveness::heights_behind(supported_tip, latest.height) > window
+                }
                 // Never spoken: it ages out only with quorum-backed progress.
-                None => i64::from(supported_tip) - i64::from(self.round_height) > window,
+                (None, _) => i64::from(supported_tip) - i64::from(self.round_height) > window,
             }
         });
         if closed {
@@ -462,6 +470,42 @@ mod tests {
             fringe: BTreeSet::new(),
             seen: Arc::new([id].into_iter().collect()),
         }
+    }
+
+    /// The quorum clock is a liveness measure, not a per-sender round marker.
+    /// Three healthy validators reach heights 1/2/3; stake 100/100/50
+    /// puts the quorum-supported boundary at 2, below sender 2's height 3.
+    /// Sender 2's OLD message must not count as another round's proposal.
+    #[test]
+    fn quorum_clock_below_a_senders_boundary_does_not_reuse_that_message() {
+        let bonds = [(0, 100), (1, 100), (2, 50)];
+        let mut state: DagMessageState<i32, i32> = DagMessageState::empty();
+        for sender in 0..3 {
+            state.insert_msg_mut(&at(sender, sender, 0, sender as i64 + 1, &bonds));
+        }
+        // All three have entered the first snapshot. The quorum clock
+        // is 2 even though validator 2's snapshot has height 3.
+        assert_eq!(state.round_height, BlockHeight::try_from(2).unwrap());
+        assert_eq!(state.round_parents.len(), 3);
+        assert_eq!(state.round_parents.get(&2).unwrap().sender_seq, SeqNum::zero());
+
+        state.insert_msg_mut(&at(10, 0, 1, 4, &bonds));
+        state.insert_msg_mut(&at(11, 1, 1, 5, &bonds));
+        assert_eq!(
+            state.round_parents.get(&0).unwrap().sender_seq,
+            SeqNum::zero(),
+            "no new snapshot before validator 2 speaks again"
+        );
+        assert_eq!(
+            state.round_height,
+            BlockHeight::try_from(2).unwrap(),
+            "a validator's height 3 at the previous boundary is not fresh progress"
+        );
+
+        state.insert_msg_mut(&at(12, 2, 1, 6, &bonds));
+        assert_eq!(state.round_parents.get(&0).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
+        assert_eq!(state.round_parents.get(&1).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
+        assert_eq!(state.round_parents.get(&2).unwrap().sender_seq, SeqNum::try_from(1).unwrap());
     }
 
     #[test]
