@@ -4,9 +4,9 @@ This is the reviewable closeout packet for [Issue #51](https://github.com/rchain
 
 ## Outcome
 
-**TRACKER_MUST_REMAIN_OPEN.** The authored machine-readable record at [hardfork-51-closeout.json](hardfork-51-closeout.json) contains 39 audit entries: 4 entries with verified merged-PR references, 35 unresolved entries, and **zero approved named-release deferrals**. These entries represent evidence obligations and include deliberate cross-references; **35 does not mean 35 distinct defects.**
+**TRACKER_MUST_REMAIN_OPEN.** The authored machine-readable record at [hardfork-51-closeout.json](hardfork-51-closeout.json) contains 39 audit entries: 4 entries with verified merged-PR references, 35 unresolved entries, and **zero recorded owner-and-reason deferrals**. These entries represent evidence obligations and include deliberate cross-references; **35 does not mean 35 distinct defects.**
 
-The tracker closes by exhaustive classification: every §A/§B row and every relevant §6 category-A deviation must be either *merged* or formally *deferred to a named release*. Unimplemented proposals and release-stage dependencies are **not** closed by green CI, historical prose, or an unmerged PR. The §6 reverse inventory is itself currently an unresolved ledger entry; therefore the list of 39 entries **must not be described as a complete independent §6 audit**.
+The tracker closes by exhaustive classification: every §A/§B row and every relevant §6 category-A deviation must be either *merged* or formally *deferred with a named decision owner and one-line reason*. Unimplemented proposals and release-stage dependencies are **not** closed by green CI, historical prose, or an unmerged PR. The §6 reverse inventory is itself currently an unresolved ledger entry; therefore the list of 39 entries **must not be described as a complete independent §6 audit**.
 
 ## Verified merged changes that the original §A/§B table understates
 
@@ -34,8 +34,8 @@ Other already merged work whose release implications remain open includes [#49](
 
 - **#371 / #388 versus RFC #372:** fixed allocation versus rank-weighted capped reserve are different proposals. The author-open comment interval on #371 extends through **at least 23 October 2026**; this ledger does not select a recipient, formula, or winner.
 - **RCHIP #40**, faucet-genesis [#247](https://github.com/rchain-community/rchain-rust/issues/247), RCHIP #30 and RSpace #53: land or record a defensible, explicitly approved design disposition.
-- **Deferred economics and protocol proposals**, including #4, #7/#8, #31, #32, #38, #46, #47 and C173: each deferral must name **an actual release**, accountable decision owner, approval URL and acknowledged protocol risk. “Later”, “TBD”, and “no release named” are not a deferral.
-- **§6 category-A reverse inventory:** independently reconcile every consensus-changing row in `spec/audit/passes.md` with landed code or a named-release decision. A label or one green test cannot substitute for the inventory.
+- **Deferred economics and protocol proposals**, including #4, #7/#8, #31, #32, #38, #46, #47 and C173: each deferral must identify one accountable person by GitHub login and give a specific one-line reason. A release name is no longer required under Jim's 2026-10-21 decision; neither a vague role nor a placeholder reason counts.
+- **§6 category-A reverse inventory:** independently reconcile every consensus-changing row in `spec/audit/passes.md` with landed code or a recorded owner-and-reason deferral. A label or one green test cannot substitute for the inventory.
 
 ## Reproduce the closure refusal
 
@@ -46,7 +46,7 @@ python3 tools/check-hardfork-51-closeout.py --assert-closeable
 # expected exit 3: TRACKER_MUST_REMAIN_OPEN
 ```
 
-The normal command checks schema, duplicate IDs and exact 39-record membership, merged evidence metadata, outstanding owners and deferral requirements. The `--assert-closeable` mode refuses closure until there are **zero unresolved entries**, all declared deferrals have a named release and explicit approval, the §6 inventory has been signed off, and provenance has been checked. The checker **does not itself close the GitHub issue or approve a network release**. `--verify-local-git` can add ancestry checks when a sufficiently complete local repository is available; shallow clones do not prove ancestry.
+The normal command checks schema, duplicate IDs and exact 39-record membership, merged evidence metadata, outstanding owners and deferral requirements. The `--assert-closeable` mode refuses closure until there are **zero unresolved entries**, all declared deferrals have a named person and a substantive one-line reason, the §6 inventory has been signed off, and provenance has been checked. The checker **does not itself close the GitHub issue or approve a network release**. `--verify-local-git` can add ancestry checks when a sufficiently complete local repository is available; shallow clones do not prove ancestry.
 
 The tests include deliberate attempts to drop an unresolved item, invent a deferral, omit a decision owner, duplicate records and make `closure_requested: true` override real blockers. No public network or original proposal is modified by this ledger.
 

@@ -60,8 +60,8 @@ def validate(document, inventory, matrix, ledger):
     for row in entries:
         if row.get("classification") not in CLASSIFICATIONS:
             raise ValueError("unclassified tracker item")
-        if row.get("approved_named_release_deferral") is not False:
-            raise ValueError("matrix cannot fabricate an approved release deferral")
+        if row.get("recorded_owner_reason_deferral") is not False:
+            raise ValueError("matrix cannot fabricate a recorded owner-and-reason deferral")
         if row["classification"] in {"IMPLEMENTED / VERIFIED", "EXPLICITLY DEFERRED"}:
             raise ValueError("this source-only matrix cannot certify execution or deferral")
         for field in ("exact_file_function_or_invariant", "missing_proof",

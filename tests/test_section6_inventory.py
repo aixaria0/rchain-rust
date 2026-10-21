@@ -41,8 +41,8 @@ class InventoryTests(unittest.TestCase):
     def test_missing_tracker_item_is_detected(self):
         self.matrix["items"].pop()
         with self.assertRaisesRegex(ValueError,"coverage"): self.check()
-    def test_fake_release_deferral_is_refused(self):
-        self.matrix["items"][0]["approved_named_release_deferral"]=True
+    def test_fake_owner_reason_deferral_is_refused(self):
+        self.matrix["items"][0]["recorded_owner_reason_deferral"]=True
         with self.assertRaisesRegex(ValueError,"deferral"): self.check()
 
 if __name__=="__main__": unittest.main()
