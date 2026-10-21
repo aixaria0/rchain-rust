@@ -419,6 +419,12 @@ async fn incoming_blocks(
             continue;
         }
 
+        // Renew one overdue request even when its direct children are already
+        // stored and will not traverse dependency admission again.
+        block_retriever
+            .retry_oldest_pending_request(&block.block_hash)
+            .await;
+
         // Begin storing the block.
         let should_check = {
             let mut guard = state.lock().await;

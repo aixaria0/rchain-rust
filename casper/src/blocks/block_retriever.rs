@@ -30,6 +30,36 @@ enum MissingDependencyAction {
     Discover,
 }
 
+fn reserve_missing_dependency(
+    requests: &mut BTreeMap<BlockHash, RequestState>,
+    hash: &BlockHash,
+    now: i64,
+) -> MissingDependencyAction {
+    match requests.get_mut(hash) {
+        None => MissingDependencyAction::Admit,
+        Some(request) => {
+            let age = now.saturating_sub(request.timestamp);
+            if age < MISSING_DEPENDENCY_RETRY_MILLIS {
+                MissingDependencyAction::Wait
+            } else {
+                request.timestamp = now;
+                if request.waiting_list.is_empty() {
+                    request.peers.clear();
+                    MissingDependencyAction::Discover
+                } else {
+                    let peer = request.waiting_list.remove(0);
+                    if !request.peers.contains(&peer)
+                        && request.peers.len() < MAX_WAITING_LIST_PER_HASH
+                    {
+                        request.peers.push(peer.clone());
+                    }
+                    MissingDependencyAction::Request(peer)
+                }
+            }
+        }
+    }
+}
+
 /// Reason a hash was admitted (port of `AdmitHashReason`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmitHashReason {
@@ -265,30 +295,41 @@ impl BlockRetriever {
         let now = current_millis();
         let action = {
             let mut requests = self.requested.lock().await;
-            match requests.get_mut(hash) {
-                None => MissingDependencyAction::Admit,
-                Some(request) => {
-                    let age = now.saturating_sub(request.timestamp);
-                    if age < MISSING_DEPENDENCY_RETRY_MILLIS {
-                        MissingDependencyAction::Wait
-                    } else {
-                        request.timestamp = now;
-                        if request.waiting_list.is_empty() {
-                            request.peers.clear();
-                            MissingDependencyAction::Discover
-                        } else {
-                            let peer = request.waiting_list.remove(0);
-                            if !request.peers.contains(&peer)
-                                && request.peers.len() < MAX_WAITING_LIST_PER_HASH
-                            {
-                                request.peers.push(peer.clone());
-                            }
-                            MissingDependencyAction::Request(peer)
-                        }
-                    }
-                }
-            }
+            reserve_missing_dependency(&mut requests, hash, now)
         };
+        self.perform_missing_dependency_action(hash, action).await;
+    }
+
+    /// One overdue request per valid received block. A missing ancestor can be
+    /// hidden behind children already stored before the partition, so direct
+    /// parent demand alone is insufficient. Never retry the body just received.
+    pub async fn retry_oldest_pending_request(&self, received: &BlockHash) {
+        let now = current_millis();
+        let pending = {
+            let mut requests = self.requested.lock().await;
+            let oldest = requests
+                .iter()
+                .filter(|(hash, request)| {
+                    *hash != received
+                        && now.saturating_sub(request.timestamp) >= MISSING_DEPENDENCY_RETRY_MILLIS
+                })
+                .min_by_key(|(_, request)| request.timestamp)
+                .map(|(hash, _)| *hash);
+            oldest.map(|hash| {
+                let action = reserve_missing_dependency(&mut requests, &hash, now);
+                (hash, action)
+            })
+        };
+        if let Some((hash, action)) = pending {
+            self.perform_missing_dependency_action(&hash, action).await;
+        }
+    }
+
+    async fn perform_missing_dependency_action(
+        &self,
+        hash: &BlockHash,
+        action: MissingDependencyAction,
+    ) {
         match action {
             MissingDependencyAction::Admit => {
                 self.admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
@@ -299,7 +340,7 @@ impl BlockRetriever {
                 self.log.info(
                     self.log_source,
                     &format!(
-                        "Retrying unresolved dependency {} from {} after renewed child demand.",
+                        "Retrying unresolved dependency {} from {} after renewed block demand.",
                         hash.to_hex(),
                         peer.endpoint.host
                     ),
@@ -385,7 +426,9 @@ impl BlockRetriever {
                     waiting_list: waiting_list_tail.to_vec(),
                 };
                 let mut state = self.requested.lock().await;
-                state.insert(hash, updated);
+                if state.get(&hash) == Some(&requested) {
+                    state.insert(hash, updated);
+                }
             }
             None => {
                 self.log.warn(
@@ -403,6 +446,9 @@ impl BlockRetriever {
                 );
                 {
                     let mut state = self.requested.lock().await;
+                    if state.get(&hash) != Some(&requested) {
+                        return;
+                    }
                     state.remove(&hash);
                 }
                 self.comm_util.broadcast_has_block_request(&hash).await;
@@ -690,4 +736,57 @@ mod tests {
         assert_eq!(transport.broadcasts.lock().unwrap().len(), 2);
         assert_eq!(retriever.requested.lock().await.len(), 1);
     }
+    #[tokio::test]
+    async fn received_blocks_retry_one_oldest_request_and_exclude_the_received_hash() {
+        let transport = Arc::new(MockTransport::default());
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40401);
+        let retriever = retriever(transport.clone(), &local);
+        for id in [1, 2] {
+            retriever
+                .admit_hash(
+                    &hash(id),
+                    Some(&remote),
+                    AdmitHashReason::HashBroadcastRecieved,
+                )
+                .await;
+            retriever
+                .requested
+                .lock()
+                .await
+                .get_mut(&hash(id))
+                .unwrap()
+                .timestamp = current_millis() - (3 - i64::from(id)) * 60_000;
+        }
+        retriever.retry_oldest_pending_request(&hash(1)).await;
+        retriever.retry_oldest_pending_request(&hash(1)).await;
+        {
+            let sends = transport.sends.lock().unwrap();
+            assert_eq!(sends.len(), 3, "one retry, then the fresh lease suppresses it");
+            let retry = rchain_comm::rp::protocol_helper::to_packet(&sends[2].1).unwrap();
+            let second = rchain_comm::rp::protocol_helper::to_packet(&sends[1].1).unwrap();
+            assert_eq!(retry, second, "the received older hash must be excluded");
+        }
+        retriever.retry_oldest_pending_request(&hash(3)).await;
+        assert_eq!(transport.sends.lock().unwrap().len(), 4);
+        retriever.ack_received(&hash(1)).await;
+        retriever.ack_received(&hash(2)).await;
+        assert!(retriever.requested.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_maintenance_cannot_restore_an_acknowledged_request() {
+        let transport = Arc::new(MockTransport::default());
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40401);
+        let retriever = retriever(transport, &local);
+        let stale = RequestState::new(0, Some(remote));
+        retriever.requested.lock().await.insert(hash(1), stale.clone());
+
+        // Maintenance may snapshot before the receiver acknowledges the body.
+        retriever.ack_received(&hash(1)).await;
+        retriever.try_rerequest(hash(1), stale).await;
+        assert!(retriever.requested.lock().await.is_empty());
+    }
+
 }
