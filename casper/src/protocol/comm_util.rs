@@ -214,17 +214,90 @@ impl CommUtil {
 
     // --- CommUtil syntax extensions (port of `CommUtilOps`) --------------------------------
 
-    /// Broadcast a block hash to peers (port of `sendBlockHash`).
+    /// Advertise an accepted block hash to the current peers.
+    ///
+    /// Unlike general best-effort broadcasts, a block-hash advertisement affects
+    /// whether peers can acquire the next justification. The transport returns one
+    /// outcome per target; silently discarding those results and logging "sent"
+    /// turns a failed handoff into a false liveness signal. Retry each failed or
+    /// unreported target once, with a bounded timeout, without altering the
+    /// block, sender, network id, quorum or any finality rule.
     pub async fn send_block_hash(&self, hash: &BlockHash, block_creator: &[u8]) {
-        let msg = BlockHashMessage {
+        let block_hash = hash.to_hex();
+        let packet = BlockHashMessageSerde.mk_packet(&BlockHashMessage {
             block_hash: *hash,
             block_creator: block_creator.to_vec(),
+        });
+        let peers = {
+            let connections = self.connections.read().await;
+            random_connections(&connections, self.conf.max_num_of_connections)
         };
-        let packet = BlockHashMessageSerde.mk_packet(&msg);
-        self.send_to_peers(&packet, None).await;
+        let message = protocol_helper::packet(&self.conf.local, &self.conf.network_id, packet);
+        let outcomes = self.transport.broadcast(&peers, message.clone()).await;
+
+        if outcomes.len() != peers.len() {
+            self.log.warn(
+                self.log_source,
+                &format!(
+                    "Block hash {block_hash}: broadcast returned {} outcomes for {} peers;                      missing outcomes require retry, not inferred success",
+                    outcomes.len(),
+                    peers.len()
+                ),
+            );
+        }
+        let mut initially_accepted = 0usize;
+        let mut retry_accepted = 0usize;
+        let mut not_delivered = 0usize;
+        for (index, peer) in peers.iter().enumerate() {
+            if matches!(outcomes.get(index), Some(Ok(()))) {
+                initially_accepted += 1;
+                continue;
+            }
+            if let Some(Err(error)) = outcomes.get(index) {
+                self.log.warn(
+                    self.log_source,
+                    &format!(
+                        "Block hash {block_hash}: initial handoff to {} failed: {error}",
+                        peer.endpoint.host
+                    ),
+                );
+            }
+            // One retry only: a dead peer must never stall the block processor.
+            match tokio::time::timeout(
+                Duration::from_secs(2),
+                self.transport.send(peer, message.clone()),
+            )
+            .await
+            {
+                Ok(Ok(())) => retry_accepted += 1,
+                Ok(Err(error)) => {
+                    not_delivered += 1;
+                    self.log.warn(
+                        self.log_source,
+                        &format!(
+                            "Block hash {block_hash}: retry to {} failed: {error}",
+                            peer.endpoint.host
+                        ),
+                    );
+                }
+                Err(_) => {
+                    not_delivered += 1;
+                    self.log.warn(
+                        self.log_source,
+                        &format!(
+                            "Block hash {block_hash}: retry to {} timed out",
+                            peer.endpoint.host
+                        ),
+                    );
+                }
+            }
+        }
         self.log.info(
             self.log_source,
-            &format!("Sent hash {} to peers", hash.to_hex()),
+            &format!(
+                "Block hash {block_hash}: transport accepted {initially_accepted} initial,                  {retry_accepted} retry; {not_delivered} failed of {} peers                  (transport acceptance is not remote DAG admission)",
+                peers.len()
+            ),
         );
     }
 
@@ -378,6 +451,7 @@ mod tests {
     struct MockTransport {
         sends: std::sync::Mutex<Vec<(PeerNode, Protocol)>>,
         broadcasts: std::sync::Mutex<Vec<(Vec<PeerNode>, Protocol)>>,
+        fail_broadcast_to: std::sync::Mutex<Option<Vec<u8>>>,
         streams: std::sync::Mutex<Vec<(Vec<PeerNode>, Blob)>>,
         fail_sends: std::sync::atomic::AtomicUsize,
         reply_on_send: usize,
@@ -424,7 +498,20 @@ mod tests {
         }
         async fn broadcast(&self, peers: &[PeerNode], msg: Protocol) -> Vec<CommErr<()>> {
             self.broadcasts.lock().unwrap().push((peers.to_vec(), msg));
-            peers.iter().map(|_| Ok(())).collect()
+            let failing = self.fail_broadcast_to.lock().unwrap().clone();
+            peers
+                .iter()
+                .map(|peer| {
+                    if failing.as_deref() == Some(peer.id.key()) {
+                        Err(rchain_comm::errors::CommError::PeerUnavailable(
+                            peer.clone(),
+                            "simulated broadcast failure".to_string(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .collect()
         }
         async fn stream(&self, peers: &[PeerNode], blob: Blob) {
             self.streams.lock().unwrap().push((peers.to_vec(), blob));
@@ -830,6 +917,64 @@ mod tests {
             ],
             "each wrapper names itself on the wire"
         );
+    }
+
+    /// A failure in a multi-peer broadcast must not be logged as blanket
+    /// success. Only the failed recipient is retried, with the same signed
+    /// network envelope and hash announcement.
+    #[tokio::test]
+    async fn block_hash_broadcast_retries_only_the_failed_peer() {
+        let local = peer("local", 40400);
+        let p0 = peer("p0", 40401);
+        let p1 = peer("p1", 40402);
+        let p2 = peer("p2", 40403);
+        let transport = Arc::new(MockTransport::default());
+        *transport.fail_broadcast_to.lock().unwrap() = Some(p1.id.key().to_vec());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, None, 8),
+            vec![p0, p1.clone(), p2],
+        );
+
+        comm.send_block_hash(&hash(9), &[3u8; 65]).await;
+
+        let broadcasts = transport.broadcasts.lock().unwrap();
+        assert_eq!(broadcasts.len(), 1);
+        assert_eq!(broadcasts[0].0.len(), 3);
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "retry only the failed target");
+        assert_eq!(sends[0].0, p1);
+        let retried = BlockHashMessageSerde
+            .parse_from(&unpack(&sends[0].1))
+            .expect("same wire type");
+        assert_eq!(retried.block_hash, hash(9));
+        assert_eq!(retried.block_creator, vec![3u8; 65]);
+        assert_eq!(
+            sends[0].1.header.as_ref().expect("envelope").network_id,
+            "testnet"
+        );
+    }
+
+    /// A permanently unavailable peer receives at most one bounded retry;
+    /// no other validator is dropped from the broadcast.
+    #[tokio::test]
+    async fn block_hash_broadcast_does_not_retry_forever() {
+        let local = peer("local", 40400);
+        let failing = peer("failing", 40401);
+        let healthy = peer("healthy", 40402);
+        let transport = Arc::new(MockTransport::failing(usize::MAX));
+        *transport.fail_broadcast_to.lock().unwrap() = Some(failing.id.key().to_vec());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, None, 8),
+            vec![failing.clone(), healthy],
+        );
+
+        comm.send_block_hash(&hash(8), &[1u8; 65]).await;
+        assert_eq!(transport.broadcasts.lock().unwrap().len(), 1);
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "exactly one failed retry");
+        assert_eq!(sends[0].0, failing);
     }
 
     #[tokio::test]
