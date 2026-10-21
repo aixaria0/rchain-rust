@@ -207,7 +207,11 @@ mod tests {
     async fn broadcast_outcomes_follow_peer_order_when_a_later_peer_fails_first() {
         let c = client();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let slow = peer(short_id(), "127.0.0.1", listener.local_addr().unwrap().port());
+        let slow = peer(
+            short_id(),
+            "127.0.0.1",
+            listener.local_addr().unwrap().port(),
+        );
         let invalid = peer(NodeIdentifier::new(vec![0xAB; 200]), "127.0.0.1", 1);
 
         let outcomes = c.broadcast(&[slow, invalid], Protocol::default()).await;
