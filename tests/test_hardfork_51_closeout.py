@@ -29,7 +29,7 @@ class CloseoutTests(unittest.TestCase):
         self.assertEqual(out["result"], "TRACKER_MUST_REMAIN_OPEN")
         self.assertFalse(out["closure_requested"])
         self.assertGreater(out["unresolved"], 30)
-        self.assertEqual(out["merged"], 4)
+        self.assertEqual(out["merged"], 5)
 
     def test_exact_inventory_is_required(self):
         self.payload["items"].pop()
@@ -94,7 +94,7 @@ class CloseoutTests(unittest.TestCase):
     def test_multiline_reason_is_rejected(self):
         item = next(x for x in self.payload["items"] if x["status"] == "open")
         item.update(status="deferred", decision_owner="@jimscarver",
-                    reason="Defer this release.\\nAnother unreviewed decision.")
+                    reason="Defer this release." + chr(10) + "Another unreviewed decision.")
         with self.assertRaisesRegex(gate.LedgerError, "one specific"):
             self.inspect()
 

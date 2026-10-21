@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "tracker": "https://github.com/rchain-community/rchain-rust/issues/51",
-  "source_dev_sha": "bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b",
-  "observed_date": "2026-10-20",
+  "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
+  "observed_date": "2026-10-21",
   "closure_requested": false,
-  "policy": "Every \u00a7A/\u00a7B and every \u00a76 consensus-changing row must be merged on dev or deferred with a named decision owner and a one-line reason. A green test run alone is not closure.",
+  "policy": "Every §A/§B and every §6 consensus-changing row must be merged on dev or deferred with a named decision owner and a one-line reason. A green test run alone is not closure.",
   "items": [
     {
       "id": "A:block-timestamp",
@@ -59,7 +59,7 @@
         "#373",
         "#391"
       ],
-      "blocker": "BigInt/Decimal Rust and Lean landed; release requires merged #373 new-genesis and uniform validator acceptance; #380 is open."
+      "blocker": "#373 and #391 have merged; actual persisted-history inspection, validator binary/hash inventory, new-genesis evidence and integrated acceptance are still required."
     },
     {
       "id": "A:double-mint",
@@ -112,7 +112,7 @@
         "#373",
         "#376"
       ],
-      "blocker": "Partial committed bounds implementation in unmerged #373; wider on-chain shard config not shown completed."
+      "blocker": "#373 landed the committed bounds/restore guards; full RCHIP #24 on-chain shard configuration remains a separate decision and proof obligation."
     },
     {
       "id": "A:block-merge",
@@ -160,7 +160,7 @@
     },
     {
       "id": "A:phlo-exchange",
-      "title": "RCHIP #7/#8 phlogiston\u2194REV exchange and per-block limits",
+      "title": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits",
       "status": "open",
       "decision_owner": "Jim / governance",
       "references": [
@@ -275,14 +275,12 @@
     {
       "id": "Batch:activation-schedule",
       "title": "Height/version schedule, committed bounds, fundPot and startup guards",
-      "status": "open",
-      "decision_owner": "Jim / maintainers",
-      "references": [
-        "#373",
-        "#376",
-        "#391"
-      ],
-      "blocker": "#373 is Draft/unmerged; #376 implementation was integrated into its branch."
+      "status": "merged",
+      "evidence": {
+        "pr": 373,
+        "merge_commit": "c42440716ddb3d467fe0e16b3607ed40ff20f5b1"
+      },
+      "notes": "PR #373 merged to dev with #376 integrated. Code landing does not establish the integrated N=8 or release-history acceptance."
     },
     {
       "id": "Batch:crypto-agility",
@@ -342,14 +340,14 @@
     },
     {
       "id": "Audit:section6-categoryA",
-      "title": "Exhaustive \u00a76 category-A reverse inventory",
+      "title": "Exhaustive §6 category-A reverse inventory",
       "status": "open",
       "decision_owner": "Jim / auditors",
       "references": [
         "spec/audit/passes.md",
         "#51"
       ],
-      "blocker": "All 85 current \u00a76 rows are now enumerated with exact source hashes and 41 conservative category-A candidates. Independent category/release sign-off and construct-specific replay evidence remain absent."
+      "blocker": "All 85 current §6 rows are now enumerated with exact source hashes and 41 conservative category-A candidates. Independent category/release sign-off and construct-specific replay evidence remain absent."
     },
     {
       "id": "Audit:law52-partition",
@@ -393,7 +391,7 @@
         "#160",
         "#373"
       ],
-      "blocker": "Production code landed in #160, but committed parameter rollout through #373 remains open."
+      "blocker": "#160 and #373 landed the parent bound and committed params; independently verify historical new-genesis and integrated N=8 acceptance."
     },
     {
       "id": "Audit:sidecar-merge",
@@ -404,7 +402,7 @@
         "#51",
         "spec/audit/passes.md"
       ],
-      "blocker": "Reported landed code; still needs complete \u00a76 release classification and historical acceptance."
+      "blocker": "Reported landed code; still needs complete §6 release classification and historical acceptance."
     },
     {
       "id": "Release:attachment-upgrade",
@@ -427,7 +425,7 @@
         "#380",
         "#391"
       ],
-      "blocker": "Must audit real persisted state/deploy history and validator hashes; #391's fail-closed gate cannot self-authorize."
+      "blocker": "#373 and #391 merged; verify actual persisted state/deploy history and validator versions/hashes. Fail-closed release preflight is not deployment authorization."
     }
   ]
 }

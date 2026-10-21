@@ -123,7 +123,7 @@ def validate(raw: dict, *, verify_git: bool = False, repo: Path | None = None) -
             require(bool(OWNER.fullmatch(owner)),
                     f"{ident}: decision_owner must identify one accountable GitHub user (@login)")
             reason = good_text(item.get("reason"), ident + ".reason", 10)
-            require("\\n" not in reason and "\\r" not in reason and len(reason) <= 256
+            require(len(reason.splitlines()) == 1 and len(reason) <= 256
                     and not PLACEHOLDER.search(reason),
                     f"{ident}: deferral reason must be one specific, non-placeholder line")
             # The #51 close clause requires owner + reason, not a named release.

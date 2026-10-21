@@ -1,10 +1,10 @@
-# Release gap matrix — 2026-10-20
+# Release gap matrix — 2026-10-21
 
-Pinned upstream dev: bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b. Upstream remains unmerged for #373/#391/#392/#393/#395. #389/#390 are merged.
+Pinned upstream dev: 93dbdf364f14d728a27455b4e05282eace2e3c47. #373, #391, #392, #402 and #404 are merged. No claim is made here that #393/#395 were included.
 
 The machine-readable final-gap-matrix.json enumerates all 39 existing §A/§B/batch obligations with an exact invariant, source evidence, missing proof, smallest action and acceptance test. Overlapping rows are intentional.
 
-The section6-gap-inventory.json reverse inventory covers every 85 row of §6, not just text containing the words hard fork. 41 rows are conservatively category-A candidates. Every row retains its exact source-row digest and full authored evidence. These classifications await independent sign-off; no historical replay or universal consensus proof is inferred.
+The section6-gap-inventory.json reverse inventory covers all 90 rows of §6, not just text containing the words hard fork. 43 rows are conservatively category-A candidates. Every row retains its exact source-row digest and full authored evidence. These classifications await independent sign-off; no historical replay or universal consensus proof is inferred.
 
 No owner-and-reason deferral is recorded here. Economic/governance choices remain owned by maintainers. #51 cannot close while any required row lacks landed-and-accepted evidence or a documented owner-and-reason deferral.
 
@@ -20,7 +20,7 @@ No owner-and-reason deferral is recorded here. Economic/governance choices remai
 | A:vault-export | RELEASE BLOCKER | RCHIP #41 complete REV-vault supply/export invariant | Independently reconcile exported vaults, staking, rewards and supply at finalized checkpoint |
 | A:genesis-contract-upgrade | REQUIRES MAINTAINER DECISION | RCHIP #43 governed replacement of genesis contracts — no accepted completed implementation is established by the tracker | Approve the exact policy/interface and named accountable owner and one-line reason, then exercise both allowed and refused transitions, conservation and old/new replay |
 | A:shard-config | INTEGRATION GAP | casper/src/validate.rs committed parent-poststate bounds; node_launch restore guard | casper/tests/committed_bounds.rs plus three-node new-genesis/restart/LFS on integrated source |
-| A:block-merge | REQUIRES MAINTAINER DECISION | RCHIP #23 merge/event-log validity semantics; committed parent cap is partial | Approve exact semantics or named-release deferral before adding a merge fixture |
+| A:block-merge | REQUIRES MAINTAINER DECISION | RCHIP #23 merge/event-log validity semantics; committed parent cap is partial | Approve exact semantics or an owner-and-reason deferral before adding a merge fixture |
 | A:rev-economics | REQUIRES MAINTAINER DECISION | RCHIP #47 REV stabilization/mint and vesting — no accepted completed implementation is established by the tracker | Approve the exact policy/interface and named accountable owner and one-line reason, then exercise both allowed and refused transitions, conservation and old/new replay |
 | A:validator-rewards | REQUIRES MAINTAINER DECISION | RCHIP #46 rotation/longevity/open enrollment — no accepted completed implementation is established by the tracker | Approve the exact policy/interface and named accountable owner and one-line reason, then exercise both allowed and refused transitions, conservation and old/new replay |
 | A:unbond-throttle | REQUIRES MAINTAINER DECISION | RCHIP #4 unbonding rate throttle — no accepted completed implementation is established by the tracker | Approve the exact policy/interface and named accountable owner and one-line reason, then exercise both allowed and refused transitions, conservation and old/new replay |
@@ -66,4 +66,4 @@ The final command must still return exit 3. Independent §6 classification, arch
 
 #274 still lists a seed-length panic, but source commit 886869780974ba6824706f99d35b5fb12d1595e6 already returns a typed error. Existing oversize/V1-byte and legacy-signature regressions pass in CI 39388911701; this is partial crypto-agility evidence, not PQ support. Current Law 53 records both C173 inverses as shipped. #247 documents an already-funded faucet key and outcome reporting; it is not an unselected new allocation. These corrections avoid reopening completed code.
 
-The reverse census is pinned to upstream dev, before unmerged #402 C335 adds its node-local startup row. A future merged register must be re-inventoried, not silently treated as this snapshot.
+The reverse census is pinned to dev after #402; it includes C334, C335, the #373 shape-change rows, and the amended Decimal row. Independent category sign-off is still outstanding.

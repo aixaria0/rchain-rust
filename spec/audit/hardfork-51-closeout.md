@@ -1,10 +1,10 @@
 # Issue #51 — Hard-fork closeout ledger
 
-This is the reviewable closeout packet for [Issue #51](https://github.com/rchain-community/rchain-rust/issues/51), **not** a declaration that the issue can close. It is tied to upstream `dev@bdcc6f5871aee0a05f50d559d84dd36a6b69bb5b` as observed on 20 October 2026. This source commit is pinned so later merges cannot be silently interpreted as having been reviewed here.
+This is the reviewable closeout packet for [Issue #51](https://github.com/rchain-community/rchain-rust/issues/51), **not** a declaration that the issue can close. It is tied to upstream `dev@93dbdf364f14d728a27455b4e05282eace2e3c47` as observed on 21 October 2026. This source commit is pinned so later merges cannot be silently interpreted as having been reviewed here.
 
 ## Outcome
 
-**TRACKER_MUST_REMAIN_OPEN.** The authored machine-readable record at [hardfork-51-closeout.json](hardfork-51-closeout.json) contains 39 audit entries: 4 entries with verified merged-PR references, 35 unresolved entries, and **zero recorded owner-and-reason deferrals**. These entries represent evidence obligations and include deliberate cross-references; **35 does not mean 35 distinct defects.**
+**TRACKER_MUST_REMAIN_OPEN.** The authored machine-readable record at [hardfork-51-closeout.json](hardfork-51-closeout.json) contains 39 audit entries: 5 entries with verified merged-PR references, 34 unresolved entries, and **zero recorded owner-and-reason deferrals**. These entries represent evidence obligations and include deliberate cross-references; **34 does not mean 34 distinct defects.**
 
 The tracker closes by exhaustive classification: every §A/§B row and every relevant §6 category-A deviation must be either *merged* or formally *deferred with a named decision owner and one-line reason*. Unimplemented proposals and release-stage dependencies are **not** closed by green CI, historical prose, or an unmerged PR. The §6 reverse inventory is itself currently an unresolved ledger entry; therefore the list of 39 entries **must not be described as a complete independent §6 audit**.
 
@@ -18,13 +18,13 @@ The tracker closes by exhaustive classification: every §A/§B row and every rel
 
 GitHub merge ancestry was compared to pinned `dev`, not inferred from a PR title. The ledger counts RCHIP #39 twice because it has both §A and §B rows; that is one implementation, not two separate fixes.
 
-Other already merged work whose release implications remain open includes [#49](https://github.com/rchain-community/rchain-rust/pull/49), [#389](https://github.com/rchain-community/rchain-rust/pull/389) and [#390](https://github.com/rchain-community/rchain-rust/pull/390) (BigInt/Decimal), [#376](https://github.com/rchain-community/rchain-rust/pull/376) integrated into **unmerged** [#373](https://github.com/rchain-community/rchain-rust/pull/373), and merged [#379](https://github.com/rchain-community/rchain-rust/pull/379) (a coordinated proposer timing correction, **not category A**). These are not grounds for closing their larger unreleased rows.
+Other already merged work whose release implications remain open includes [#49](https://github.com/rchain-community/rchain-rust/pull/49), [#389](https://github.com/rchain-community/rchain-rust/pull/389) and [#390](https://github.com/rchain-community/rchain-rust/pull/390) (BigInt/Decimal), [#376](https://github.com/rchain-community/rchain-rust/pull/376) integrated into **merged** [#373](https://github.com/rchain-community/rchain-rust/pull/373), and merged [#379](https://github.com/rchain-community/rchain-rust/pull/379) (a coordinated proposer timing correction, **not category A**). These are not grounds for closing their larger unreleased rows.
 
 ## Blocking decisions for Jim and release maintainers
 
 **Must settle before the planned first-release fork:**
 
-- **#373** — activate block versions/committed bounds/format changes and `fundPot` on one reviewed integrated release source; keep its Draft status and review dependency visible until accepted.
+- **#373 (merged)** — its version schedule, committed bounds, format layout and `fundPot` are integrated on `dev`. Independently confirm the fork refusals, genesis and restart behavior on the actual release build; code merge is not network acceptance.
 - **#274** — explicitly deliver or disposition crypto-agility shape changes: validator key IDs, algorithm negotiation/table, deploy content hashes, PQ address and fee/sunset semantics. A height schedule by itself does not make a wire/identity-shape change compatible.
 - **RCHIP #43** — implement or explicitly disposition a governed blessed-contract upgrade mechanism; a new alias/state structure after launch is class A.
 - **State preservation and transition** — authenticate historic block/deploy/native-state snapshots, audit old and new binary provenance for every validator, verify the shared new genesis block/state hash, and independently sign off the new-genesis procedure. [#391](https://github.com/rchain-community/rchain-rust/pull/391)'s evidence preflight is deliberately not authorization.
@@ -52,8 +52,8 @@ The tests include deliberate attempts to drop an unresolved item, invent a defer
 
 ## Requested decision
 
-@jimscarver — please identify which of the remaining class-2 shape changes **must land in the first release**, and assign named target releases and decision owners to items deliberately deferred. Then request an independently reviewed §6 reverse inventory and release provenance packet. Only after those conditions are met should a closeout reviewer change the ledger's status and close #51.
+@jimscarver — please identify which of the remaining class-2 shape changes **must land in the first release**, and record a named individual and a one-line reason for each consciously deferred item; release names are optional. Then request an independently reviewed §6 reverse inventory and release provenance packet. Only after those conditions are met should a closeout reviewer change the ledger's status and close #51.
 
 ## Complete source-row inventory added
 
-The companion final-gap-matrix.json enumerates every 39 tracker obligation with its missing proof, concrete next action and required acceptance. section6-gap-inventory.json covers all 85 §6 rows and conservatively flags 41 category-A candidates. Eight mutation controls detect omitted/changed rows, source drift, fabricated execution and self-awarded sign-off. This closes the enumeration gap only; independent classification and historical acceptance remain open. No release deferral is approved.
+The companion final-gap-matrix.json enumerates all 39 tracker obligations with its missing proof, concrete next action and required acceptance. section6-gap-inventory.json covers all 90 §6 rows and conservatively flags 43 category-A candidates. Eight mutation controls detect omitted/changed rows, source drift, fabricated execution and self-awarded sign-off. This closes the enumeration gap only; independent classification and historical acceptance remain open. No release deferral is approved.

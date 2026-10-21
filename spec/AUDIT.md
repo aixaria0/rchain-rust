@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 1 · DONE 366** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 368** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  161 of 367 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  163 of 369 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 367 are settled: **303 name the evidence that holds them** and **64 do not** — the
+All 369 are settled: **305 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -130,7 +130,7 @@ defects this register had not recorded (C164, C165).
 |---|---|---|---|
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 
-### DONE (366)
+### DONE (368)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -414,6 +414,8 @@ defects this register had not recorded (C164, C165).
 | `C330` | **Three instruments for one row, and the two that did not hold.** W-N8-02 was closed as held on a flooding arm and CI refused it: 110 deliveries in four seconds left the honest session served, 541 got it refused with the share's own sentence. One spend followed by one ask flipped the same way -- served here three runs over, refused on CI. Both readings depend on one number, the share's one-per-second refill, so they measure the runner's speed. The instrument that holds is contention: two sessions ask with nothing between them and exactly one is served, which is the row as a property rather than as a race. A refusal arriving as a bare break record, and two sessions under one designator being a crossed hello, are the two instrument faults that died on the way. | node/tests/ocapn_listener.rs | §136 |
 | `C331` | **A deploy that can never be included, and a node that never said so.** Issue #356's deploy was accepted, held as `Pooled`, and never proposed -- and on a settled lone validator not even the empty attestation block followed, because `nothing_to_finalize=true` withholds the attestation. Two independent clauses, two fixes: admission gained the past half of its own anchor check (a deploy already expired at latest + 1 is refused by name -- a deliberate Scala deviation, section 6), and a block with nothing to include now warns with the pool split by the *same* predicate the filter drops by (`not_selectable`), which covers the case admission cannot: a future anchor, still admitted and still un-includable until something moves the chain. Not about n=1: a fresh single-validator chain produces on a deploy with no extra flags, asserted in `node/tests/deploy_lifespan.rs`. | casper/src/api/block_api_impl.rs/casper/src/blocks/proposer/proposer.rs/node/tests/deploy_lifespan.rs | §137 |
 | `C333` | **An unsupported expression became false.** The byte decoder accepted an empty or unknown-only Expr, including inside a list, as GBool(false). Refused at expr_from_proto with Malformed(expr_instance); explicit false and Nil retain their bytes. Supersedes the keep-default decision in section 17, with the acceptance-change limit recorded in section 6. | models/tests/expr_refusal.rs/models/src/wire.rs | §138 |
+| `C334` | LFS bootstrap admission compared the whole PeerNode and rejected the same authenticated key after a host or port change (#386). It now compares node ids, warns with the received/expected identity, and refuses other keys before either sync latch or retry target changes. The endpoint-change witness failed on the old gate and passes on the new one; hostname/IP, TCP, UDP, outsider replacement and missing-bootstrap cases are covered. The unreachable empty-fringe wording and vacuous importer assertion from #387 are removed. | casper/src/engine/node_syncing.rs::on_finalized_fringe_message/casper/src/engine/node_syncing.rs::a_bootstrap_endpoint_change_does_not_block_lfs_sync/casper/src/engine/node_syncing.rs::a_non_bootstrap_fringe_cannot_start_or_replace_lfs_sync/casper/src/engine/node_syncing.rs::a_fringe_without_a_configured_bootstrap_is_refused/casper/src/engine/node_syncing.rs::a_non_bootstrap_empty_fringe_is_not_a_genesis_announcement | §6 |
+| `C335` | The first LFS fringe request stopped at successful send even when its separately streamed reply was lost. Startup now routes packets while retrying the unchanged anchored request; only authenticated nonempty admission stops solicitation. Ten send/reply intervals bound the initial wait, and exhaustion returns an error without signaling restore. CBC finality, bootstrap authority and the restore-completion gate are unchanged. Six regressions and a reintroduced send-only fault cover this bounded startup obligation; broader active-validator recovery remains independent. | spec/audit/evidence/lfs-initial-fringe-retry.md/casper/src/protocol/comm_util.rs::request_initial_fringe/casper/src/engine/node_syncing.rs::initial_fringe_signal_requires_an_authorized_nonempty_target | §6 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
