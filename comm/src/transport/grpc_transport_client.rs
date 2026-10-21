@@ -257,7 +257,6 @@ mod tests {
             request: tonic::Request<rchain_models::comm::protocol::TlRequest>,
         ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status>
         {
-            use rchain_models::comm::protocol::transport_layer_server::TransportLayer;
             self.receiver.send(request).await
         }
 
@@ -266,7 +265,6 @@ mod tests {
             request: tonic::Request<tonic::Streaming<rchain_models::comm::protocol::Chunk>>,
         ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status>
         {
-            use rchain_models::comm::protocol::transport_layer_server::TransportLayer;
             let attempt = self
                 .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
