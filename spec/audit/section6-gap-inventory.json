@@ -4,7 +4,7 @@
   "observed_date": "2026-10-21",
   "section": "spec/audit/passes.md §6",
   "independent_signoff": false,
-  "boundary": "Row coverage and declared implementation are distinct from independently verified safety. A_CANDIDATE is deliberately conservative. NON_A_RECORDED requires independent classification review. No row is an approved release deferral.",
+  "boundary": "Exact source-row coverage is distinct from independently verified safety. Conservative categories remain reviewable; maintainer owner-and-reason dispositions live in the linked tracker ledger.",
   "rows": [
     {
       "invariant": "LFS bootstrap admission compares the authenticated **node id**, not the mutable endpoint",

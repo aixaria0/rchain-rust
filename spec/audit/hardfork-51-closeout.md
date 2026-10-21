@@ -4,7 +4,7 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 39 overlapping tracker, audit and release obligations: **7 landed implementation references, 32 open obligations and zero recorded deferrals**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 42 overlapping tracker, audit and release obligations: **7 landed implementation references, 12 maintainer-recorded deferrals and 23 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
@@ -23,11 +23,17 @@ This packet follows the [close-clause decision of 21 October 2026](https://githu
 
 The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, existing evidence, missing proof, next action and acceptance condition. Source-row hashes, line numbers and evidence URLs must agree with the pinned register. A documented deferral must agree between the matrix and the validated ledger. Neither file can invent an independent sign-off or a passed execution.
 
+## Maintainer-recorded deferrals
+
+The [owner decision](https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399) records 11 distinct deferred proposal rows, represented by 12 ledger entries because RCHIP #32 has an interface cross-reference. C173, #127 stage 4, RCHIPs #4, #32, #31, #47, #46, #7/#8, #38 and #30 are owned by @PatrickMockridge; the inactivity leak is owned by @aixaria0. Each entry retains the specific one-line reason, decision author and source URL. These are actual maintainer dispositions, not inferred approvals.
+
+The two newly explicit technical proposals and the separate allocation-track choice were added to the required inventory, bringing it from 39 to 42 obligations. [The integrated run evidence](evidence/hardfork-51-integrated-20261021.md) records successful scoped arms alongside the failed partition arms.
+
 ## Decisions and acceptance still open
 
 - **Crypto-agility (#274 §14):** @jimscarver owns the track. Freeze the registry/wire, key identity, deploy hash, activation, pricing and sunset policy before implementation. The already-landed seed-length typed error is not the complete agility fork.
 - **RCHIP #43:** decide the governed blessed-contract upgrade shape, then implement its state/replay and authorization tests. The A and B rows share this obligation.
-- **Economics and other proposals:** the #371/#388 allocation track, separate RFC #372, #40, reward/rotation, unbonding, exchange limits, prepaid execution, assetStore, pool/receipt interfaces, compatibility translation and attestation scope need individually recorded dispositions. No allocation or deferral is approved here.
+- **Decisions still open:** choose one #371/#388 developer-allocation track and disposition separate RFC #372; #40 storage rent remains open. Compatibility translation, attestation scope and other uncovered A/B proposals remain as listed in the matrix. The recorded deferral of RCHIP #47 does not choose an allocation PR.
 - **Plan H2 and state preservation:** governance-settable rules, authenticated old-state exports, genesis hashes, validator binary hashes and the reviewed rollout remain open. #391's merged preflight checks evidence consistency; it cannot supply missing operator evidence.
 - **Integrated acceptance (#339/#399):** preserve independent N=8 finality/partition and anchored-recovery outcomes on one exact image. #399 also carries the unmerged #403 experiment, so its result cannot be represented as evidence for bare dev without identifying that additional source.
 - **Historical deviations:** the current Law 53 inventory already records the C173 inverses as shipped. Reconcile their exact ancestry and replay/rejoin evidence rather than implementing them again. Independently review all §6 category dispositions.

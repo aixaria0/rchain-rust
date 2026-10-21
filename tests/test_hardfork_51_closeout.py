@@ -28,7 +28,7 @@ class CloseoutTests(unittest.TestCase):
         out = self.inspect()
         self.assertEqual(out["result"], "TRACKER_MUST_REMAIN_OPEN")
         self.assertFalse(out["closure_requested"])
-        self.assertGreater(out["unresolved"], 30)
+        self.assertGreater(out["unresolved"], 0)
         self.assertEqual(out["merged"], 7)
 
     def test_exact_inventory_is_required(self):
@@ -69,7 +69,7 @@ class CloseoutTests(unittest.TestCase):
         item = next(x for x in self.payload["items"] if x["status"] == "open")
         item.update(status="deferred", decision_owner="@jimscarver",
                     reason="Defer the economics rule pending an accepted governance proposal.")
-        self.assertEqual(self.inspect()["deferred"], 1)
+        self.assertEqual(self.inspect()["deferred"], sum(x["status"] == "deferred" for x in LEDGER["items"]) + 1)
         self.assertEqual(self.inspect()["result"], "TRACKER_MUST_REMAIN_OPEN")
 
     def test_generic_role_is_not_a_named_decision_owner(self):

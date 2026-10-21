@@ -132,46 +132,58 @@
     {
       "id": "A:rev-economics",
       "title": "RCHIP #47 REV stabilization/mint and vesting",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#371",
         "#372",
         "#388"
       ],
-      "blocker": "Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation."
+      "reason": "Economics decision; ties to #371/#388 and the #372 RFC.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "A:validator-rewards",
       "title": "RCHIP #46 rotation/longevity/open enrollment",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#373",
         "#51"
       ],
-      "blocker": "fundPot is a rewards rail only; policy and validator-state changes are unlanded."
+      "reason": "Economics decision; fundPot (#373) is the rail already in place.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "A:unbond-throttle",
       "title": "RCHIP #4 unbonding rate throttle",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#51"
       ],
-      "blocker": "No verified implementation or recorded owner-and-reason deferral."
+      "reason": "Change to the PoS state machine.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "A:phlo-exchange",
       "title": "RCHIP #7/#8 phlogiston↔REV exchange and per-block limits",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#373",
         "#51"
       ],
-      "blocker": "Committed minimum phlo price is partial; exchange and change-limit decisions remain."
+      "reason": "Economics decision; min-phlo-price is already committed at genesis.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "A:storage-rent",
@@ -186,22 +198,28 @@
     {
       "id": "A:prepaid-rholang",
       "title": "RCHIP #38 prepaid execution",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#51"
       ],
-      "blocker": "No verified implementation or recorded owner-and-reason deferral."
+      "reason": "Economics decision.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "A:asset-store",
       "title": "RCHIP #30 blessed assetStore if chosen",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#51"
       ],
-      "blocker": "Conditional decision whether to bless; cannot infer exclusion."
+      "reason": "Economics decision.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "A:decentralized-rspace",
@@ -216,23 +234,29 @@
     {
       "id": "B:staking-pools",
       "title": "RCHIP #32 staking pools and REV addresses",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#51",
         "#373"
       ],
-      "blocker": "fundPot does not replace bonding/pool interface."
+      "reason": "Changes how bonding and vaults behave.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "B:rev-receipt",
       "title": "RCHIP #31 execute-on-REV-receipt",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#51"
       ],
-      "blocker": "No verified implementation or deferral."
+      "reason": "Changes RevVault semantics.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "B:genesis-contract-upgrade",
@@ -269,12 +293,15 @@
     {
       "id": "B:staking-pools-interface",
       "title": "RCHIP #32 beneficiary/reward channel compatibility",
-      "status": "open",
-      "decision_owner": "Jim / governance",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#51"
       ],
-      "blocker": "Requires explicit interface decision independent of fundPot."
+      "reason": "Changes how bonding and vaults behave.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "Batch:activation-schedule",
@@ -373,13 +400,16 @@
     {
       "id": "Audit:law53-estrangement",
       "title": "Law 53 C173 estrangement decision",
-      "status": "open",
-      "decision_owner": "Jim / consensus",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
       "references": [
         "#125",
         "#51"
       ],
-      "blocker": "The current Law 53 inventory records both C173 inverses as shipped. Exact merged ancestry, historical validity and distributed rejoin evidence still need an explicit release disposition."
+      "reason": "Author of the C173 and Law 53 audit work.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
       "id": "Audit:active-set-draw",
@@ -440,7 +470,51 @@
         "#391"
       ],
       "blocker": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required."
+    },
+    {
+      "id": "Audit:merge-resolution-format",
+      "title": "#127 stage 4: blocks carry merge resolution",
+      "status": "deferred",
+      "decision_owner": "@PatrickMockridge",
+      "references": [
+        "#127",
+        "#51"
+      ],
+      "reason": "Author of #127 and its staged plan; this is a block-format change.",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
+    },
+    {
+      "id": "Audit:inactivity-leak",
+      "title": "Activity-aware finality weight / inactivity leak",
+      "status": "deferred",
+      "decision_owner": "@aixaria0",
+      "references": [
+        "#70",
+        "#339",
+        "#341",
+        "#51"
+      ],
+      "reason": "Next to the finality and liveness drills (#339/#341).",
+      "approved_by": "@jimscarver",
+      "approval_url": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399",
+      "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
+    },
+    {
+      "id": "Batch:developer-allocation-track",
+      "title": "Choose #371 or #388 as the allocation track and disposition separate RFC #372",
+      "status": "open",
+      "decision_owner": "@jimscarver",
+      "references": [
+        "#371",
+        "#388",
+        "#372",
+        "#51"
+      ],
+      "blocker": "Jim's deferral of RCHIP #47 does not settle his separately open choice of one developer-allocation PR or the #372 RFC."
     }
   ],
-  "close_clause_evidence": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6316299117"
+  "close_clause_evidence": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6316299117",
+  "deferral_decision_evidence": "https://github.com/rchain-community/rchain-rust/issues/51#issuecomment-6317072399"
 }
