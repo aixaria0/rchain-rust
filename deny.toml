@@ -11,12 +11,11 @@
 # visible and scoped to the specific RustSec advisory while the dependency is replaced.
 ignore = [
     "RUSTSEC-2021-0153",
-    # RUSTSEC-2026-0381 (the distrusted emSign root) is fixed in `webpki-roots` 1.0.10, which the lockfile
-    # holds. The advisory still matches `webpki-roots` 0.26.11 by version range, but 0.26.11 is a
-    # semver-trick shim that re-exports 1.x (its own `lib.rs` says so), so it carries the patched roots.
-    # A crate-scoped ignore does not silence a vulnerability in this cargo-deny, so the ID is ignored
-    # here and the patched floor is kept by the `[bans]` entry on `webpki-roots` below 1.0.10. Drop both
-    # when `tokio-tungstenite` depends on `webpki-roots` 1.x directly.
+    # 0.26.11 only re-exports the 1.x provider, locked at patched 1.0.10. cargo-deny 0.20.2
+    # scopes package ignores to yanked crates, so this false positive needs an ID ignore.
+    # The bans below admit only that reviewed shim and patched providers; older bundled-root
+    # versions must not bypass the advisory. Remove this exception and its bans when no shim remains.
+    # Shim source: https://github.com/rustls/webpki-roots/blob/v/0.26.11/webpki-roots/src/lib.rs
     "RUSTSEC-2026-0381",
 ]
 
@@ -58,9 +57,10 @@ allow = [
 ignore = true
 
 [bans]
-# The floor that lets `[advisories]` ignore RUSTSEC-2026-0381 by ID: the 1.x copy of `webpki-roots`
-# below 1.0.10 still ships the distrusted emSign root, so it is refused here rather than by the
-# advisory (see the ignore entry for why the advisory cannot be left on).
+# RUSTSEC-2026-0381 is ignored above only for the exact 0.26.11 re-export shim.
+# Refuse every other unpatched version, including pre-1.0 releases that bundle their own roots.
+# The 1.x provider must be >=1.0.10 even when reached through the allowed shim.
 deny = [
-    { name = "webpki-roots", version = ">=1.0.0, <1.0.10", reason = "RUSTSEC-2026-0381: 1.0.10 removes the distrusted emSign root" },
+    { name = "webpki-roots", version = "<0.26.11", reason = "RUSTSEC-2026-0381: old releases bundle distrusted roots" },
+    { name = "webpki-roots", version = ">0.26.11, <1.0.10", reason = "RUSTSEC-2026-0381: only the reviewed 0.26.11 shim or patched 1.0.10+ providers are allowed" },
 ]
