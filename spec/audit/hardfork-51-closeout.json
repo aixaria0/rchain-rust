@@ -472,7 +472,7 @@
       "blocker": "#373 and #391 are merged. Real persisted-history/native-state scanning, complete validator binary hashes and reviewed new-genesis evidence remain required."
     },
     {
-      "id": "Audit:merge-resolution-format",
+      "id": "Audit:merge-resolution-stage4",
       "title": "#127 stage 4: blocks carry merge resolution",
       "status": "deferred",
       "decision_owner": "@PatrickMockridge",
@@ -502,7 +502,7 @@
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
-      "id": "Batch:developer-allocation-track",
+      "id": "Decision:developer-allocation",
       "title": "Choose #371 or #388 as the allocation track and disposition separate RFC #372",
       "status": "open",
       "decision_owner": "@jimscarver",

@@ -727,7 +727,7 @@
       "recorded_owner_reason_deferral": false
     },
     {
-      "id": "Audit:merge-resolution-format",
+      "id": "Audit:merge-resolution-stage4",
       "classification": "EXPLICITLY DEFERRED",
       "exact_file_function_or_invariant": "#127 stage 4 block carries merge resolution",
       "related_issue_pr": [
@@ -769,7 +769,7 @@
       "deferral_reason": "Next to the finality and liveness drills (#339/#341)."
     },
     {
-      "id": "Batch:developer-allocation-track",
+      "id": "Decision:developer-allocation",
       "classification": "REQUIRES MAINTAINER DECISION",
       "exact_file_function_or_invariant": "#371/#388 genesis allocation shape; independent #372 RFC",
       "related_issue_pr": [
