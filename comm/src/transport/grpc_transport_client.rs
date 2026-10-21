@@ -244,7 +244,6 @@ mod tests {
         );
     }
 
-
     struct RefuseStreams {
         receiver: crate::transport::grpc_transport_receiver::GrpcTransportReceiver,
         attempts: Arc<std::sync::atomic::AtomicUsize>,
@@ -256,7 +255,8 @@ mod tests {
         async fn send(
             &self,
             request: tonic::Request<rchain_models::comm::protocol::TlRequest>,
-        ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status> {
+        ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status>
+        {
             use rchain_models::comm::protocol::transport_layer_server::TransportLayer;
             self.receiver.send(request).await
         }
@@ -264,11 +264,16 @@ mod tests {
         async fn stream(
             &self,
             request: tonic::Request<tonic::Streaming<rchain_models::comm::protocol::Chunk>>,
-        ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status> {
+        ) -> Result<tonic::Response<rchain_models::comm::protocol::TlResponse>, tonic::Status>
+        {
             use rchain_models::comm::protocol::transport_layer_server::TransportLayer;
-            let attempt = self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let attempt = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if attempt < self.failures {
-                return Err(tonic::Status::unavailable("injected stream response failure"));
+                return Err(tonic::Status::unavailable(
+                    "injected stream response failure",
+                ));
             }
             self.receiver.stream(request).await
         }
