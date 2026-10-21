@@ -1298,4 +1298,3 @@ mod tests {
         assert_eq!(deps_validated, BTreeSet::from(["A2".to_string()]));
     }
 }
-

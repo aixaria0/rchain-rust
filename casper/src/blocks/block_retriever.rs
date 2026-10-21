@@ -604,7 +604,11 @@ mod tests {
         let remote = peer("peer", 40401);
         let retriever = retriever(transport.clone(), &local);
         retriever
-            .admit_hash(&hash(1), Some(&remote), AdmitHashReason::HashBroadcastRecieved)
+            .admit_hash(
+                &hash(1),
+                Some(&remote),
+                AdmitHashReason::HashBroadcastRecieved,
+            )
             .await;
 
         // No reply arrived, but repeated children inside the retry lease must
@@ -644,7 +648,11 @@ mod tests {
         let retriever = retriever(transport.clone(), &local);
         for source in [&first, &second] {
             retriever
-                .admit_hash(&hash(1), Some(source), AdmitHashReason::HashBroadcastRecieved)
+                .admit_hash(
+                    &hash(1),
+                    Some(source),
+                    AdmitHashReason::HashBroadcastRecieved,
+                )
                 .await;
         }
         for _ in 0..2 {
@@ -683,4 +691,3 @@ mod tests {
         assert_eq!(retriever.requested.lock().await.len(), 1);
     }
 }
-
