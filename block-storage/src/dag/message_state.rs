@@ -478,7 +478,7 @@ mod tests {
         for height in 61..=106 {
             // Explicit repeated deploys may let a single creator keep climbing.
             // Other senders have still produced their height-60 message.
-            let msg = at(1000 + height, 0, height - 60, height, &bonds);
+            let msg = at(1000 + height as i32, 0, height - 60, height, &bonds);
             state.insert_msg_mut(&msg);
         }
         assert_eq!(state.round_height, BlockHeight::try_from(60).unwrap());
