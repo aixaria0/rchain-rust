@@ -2,6 +2,17 @@
 
 Candidate correction; distributed acceptance is pending. No release authorization.
 
+## Release-inventory boundary
+
+C336 proposes a change to the port's node-local attestation timing relative to
+the Scala oracle. It is **not landed**; consequently the canonical section-six
+register and the 90-entry reverse inventory pinned to `dev@93dbdf364` are
+preserved exactly, without forging a source-row hash, line number, or approval.
+This candidate is tracked by the in-progress finding C336 and this evidence
+record. Acceptance and independent review must precede a deliberate
+post-merge section-six inventory re-baseline; the release tracker remains open.
+
+
 ## Failure evidence
 
 The integrated source d3ccb4c03ecbf09f786c420e8dff9243f1809413 fails the N8 one-validator partition progress bound in runs [39393626848](https://github.com/aixaria0/rchain-rust/actions/runs/39393626848) and [39395723981](https://github.com/aixaria0/rchain-rust/actions/runs/39395723981). The second run's pre-healing raw DAG capture records new user-deploy blocks at every height 70–75, while surviving validators report `nothing_to_finalize=false`, `new_state_transition=false`, `quorum_reachable=false` and `cadence_due=true` at tip 66. Seven surviving validators finish the 300-second window at finalized height 29 from a height-27 start, below the required 30. The proposer timers are not halted; task-panic and self-validation-failure counters are zero. Finalizer refusal remains correct for the observed 100/800 live support.
