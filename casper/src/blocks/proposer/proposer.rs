@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
@@ -529,10 +530,9 @@ impl Proposer {
             let health = health.clone();
             let blocked_since_advance: Arc<std::sync::atomic::AtomicI64> =
                 Arc::new(std::sync::atomic::AtomicI64::new(0));
-            // **When this validator was first seen blocked**, so the wait has a clock that does not depend on
-            // the supply of attempts — see `ROUND_STALL_ESCAPE` and #213. 0 means "not currently blocked".
-            let blocked_since_ms: Arc<std::sync::atomic::AtomicI64> =
-                Arc::new(std::sync::atomic::AtomicI64::new(0));
+            // The first blocked observation is process-local monotonic time. None means the
+            // round is healthy; restarts begin a fresh observation, never import a timer.
+            let blocked_since: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
             Arc::new(move |vi: &ValidatorIdentity, source: ProposeSource| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
@@ -541,7 +541,7 @@ impl Proposer {
                 let vi = vi.clone();
                 let shard_id = shard_id.clone();
                 let blocked_since_advance = blocked_since_advance.clone();
-                let blocked_since_ms = blocked_since_ms.clone();
+                let blocked_since = blocked_since.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
                 let log = log.clone();
                 let health = health.clone();
@@ -560,7 +560,7 @@ impl Proposer {
                         epoch_length,
                         dummy_deploy_opt.as_ref(),
                         &blocked_since_advance,
-                        &blocked_since_ms,
+                        &blocked_since,
                         source,
                         &health,
                     )
@@ -810,41 +810,35 @@ async fn report_nothing_to_include(
 ///
 /// A round may remain blocked when a bonded sender is silent (#213). The round's DAG-derived clock
 /// is frozen in that state, so it cannot release the gate. The proposer records the first blocked
-/// wall-clock sighting and the existing one-shot automatic retry supplies an attempt after this
+/// monotonic sighting and the existing one-shot automatic retry supplies an attempt after this
 /// bound, including with `--no-autopropose` (C210).
 ///
 /// In the N=8 acceptance trace (#339), six attempts arrived in 316–3,388 ms and escaped the
 /// round early, bypassing the shared parent snapshot before the intended 15-second stall. Only
 /// elapsed blocked time may authorise escape; the attempt count remains diagnostic telemetry.
-pub const ROUND_STALL_ESCAPE: std::time::Duration = std::time::Duration::from_secs(15);
+pub const ROUND_STALL_ESCAPE: Duration = Duration::from_secs(15);
 
-/// Wall-clock milliseconds, or 0 if the system clock is before the epoch.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// Milliseconds since this validator was *first* seen blocked, recording the first sighting.
-///
-/// Returns 0 on the first sighting, so a stall is measured from when it began and never from process start:
-/// a node that has just booted has not been stalled.
-fn stall_ms_since(first_sighting: &std::sync::atomic::AtomicI64, now: i64) -> i64 {
-    match first_sighting.compare_exchange(
-        0,
-        now,
-        std::sync::atomic::Ordering::Relaxed,
-        std::sync::atomic::Ordering::Relaxed,
-    ) {
-        Ok(_) => 0,
-        Err(seen) => now.saturating_sub(seen),
+/// Elapsed time since this process first observed the blocked round. A host wall-clock
+/// correction cannot advance or delay this timer. The first sighting always returns zero;
+/// a clock value before the stored sighting also returns zero (defensive test case).
+fn stall_ms_since(first_sighting: &Mutex<Option<Instant>>, now: Instant) -> i64 {
+    let mut since = first_sighting.lock().unpoison();
+    match *since {
+        None => {
+            *since = Some(now);
+            0
+        }
+        Some(start) => now
+            .checked_duration_since(start)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64,
     }
 }
 
 /// Whether the round gate may be escaped: only an elapsed stall reaches the bound.
-/// The number of attempts is retained for logging, never as an independent escape licence (#339).
-fn round_escape_owed(_waited: i64, stalled_ms: i64) -> bool {
+/// Attempt counts are diagnostic telemetry, intentionally absent from this decision (#339).
+fn round_escape_owed(stalled_ms: i64) -> bool {
     stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
 }
 
@@ -862,7 +856,7 @@ async fn create_block<'a, F, Fut>(
     epoch_length: i32,
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
     blocked_since_advance: &std::sync::atomic::AtomicI64,
-    blocked_since_ms: &std::sync::atomic::AtomicI64,
+    blocked_since: &Mutex<Option<Instant>>,
     source: ProposeSource,
     health: &ShardHealth,
 ) -> Result<BlockCreatorResult, String>
@@ -911,8 +905,8 @@ where
         {
             let waited =
                 blocked_since_advance.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let stalled_ms = stall_ms_since(blocked_since_ms, now_ms());
-            if !round_escape_owed(waited, stalled_ms) {
+            let stalled_ms = stall_ms_since(blocked_since, Instant::now());
+            if !round_escape_owed(stalled_ms) {
                 return Ok(BlockCreatorResult::AlreadyProposedThisRound);
             }
             log.warn(
@@ -925,7 +919,7 @@ where
             true
         } else {
             blocked_since_advance.store(0, std::sync::atomic::Ordering::Relaxed);
-            blocked_since_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+            *blocked_since.lock().unpoison() = None;
             false
         }
     };
@@ -1180,8 +1174,28 @@ where
         .iter()
         .filter_map(|h| dag_repr.dag_message_state.msg_map.get(h).map(|m| m.height))
         .max();
+    let work_floor = work_age_floor(oldest_unfinalized, fringe_top);
+    let (nothing_to_finalize, old_work_is_prompt) = attestation_inputs(work_floor, tip);
+    // Fresh user work must not inherit an unrelated old work item's expired licence.
+    // Scan only the recent height window, and only when the old licence has expired.
+    // System deploys do not renew this licence: periodic CloseBlock work must not
+    // turn a stalled minority's attestations into an unbounded self-triggering loop.
+    let mut newest_user_work = None;
+    if !nothing_to_finalize && !old_work_is_prompt {
+        for (height, hash) in conflict_set.iter().rev() {
+            if liveness::heights_behind(tip, *height) > ATTESTATION_HORIZON {
+                break;
+            }
+            if let Some(block) = get_block(block_store, hash).await? {
+                if !block.state.deploys.is_empty() {
+                    newest_user_work = Some(*height);
+                    break;
+                }
+            }
+        }
+    }
     let (nothing_to_finalize, new_state_transition) =
-        attestation_inputs(work_age_floor(oldest_unfinalized, fringe_top), tip);
+        attestation_inputs_with_recent_user_work(work_floor, newest_user_work, tip);
     // The live weight set: the one liveness rule, shared with the finalizer through `liveness` (#70
     // increment 2). It decides who counts as *moving*; the quorum itself stays measured against the
     // whole bonded map below, so a minority cannot attest its way to a supermajority.
@@ -1302,37 +1316,53 @@ where
 mod tests {
     use super::*;
 
-    /// **The stall clock starts at the first sighting, not at process start.** A node that booted a second
-    /// ago has not been stalled, so the first look must report zero elapsed time and remember *when* it
-    /// looked.
+    /// The clock begins at the first blocked observation, and resetting the round
+    /// discards the observation. Wall time is deliberately absent from this API.
     #[test]
-    fn a_stall_is_measured_from_its_first_sighting() {
-        let since = std::sync::atomic::AtomicI64::new(0);
+    fn a_stall_uses_monotonic_elapsed_time_and_resets() {
+        let since = Mutex::new(None);
+        let first = Instant::now();
+        assert_eq!(stall_ms_since(&since, first), 0);
         assert_eq!(
-            stall_ms_since(&since, 1_000_000),
-            0,
-            "the first sighting has waited no time yet"
+            stall_ms_since(&since, first + Duration::from_millis(14_999)),
+            14_999
         );
+        assert!(!round_escape_owed(stall_ms_since(
+            &since,
+            first + Duration::from_millis(14_999)
+        )));
         assert_eq!(
-            stall_ms_since(&since, 1_003_000),
-            3_000,
-            "and afterwards the wait is measured from that first sighting"
+            stall_ms_since(&since, first + Duration::from_millis(15_000)),
+            15_000
         );
+        assert!(round_escape_owed(stall_ms_since(
+            &since,
+            first + Duration::from_millis(15_000)
+        )));
+        *since.lock().unpoison() = None;
+        assert_eq!(stall_ms_since(&since, first + Duration::from_secs(60)), 0);
     }
 
-    /// **Clearing the stall forgets it**, so a node that stops being blocked does not take the escape on the
-    /// first stumble of the next round — which is what the round-advanced branch does.
+    /// A host-clock correction must not appear in the elapsed calculation. This
+    /// regression would fail the old wall-clock implementation at a 60-second step.
     #[test]
-    fn clearing_the_stall_forgets_it() {
-        let since = std::sync::atomic::AtomicI64::new(0);
-        let _ = stall_ms_since(&since, 5_000);
-        assert_eq!(stall_ms_since(&since, 25_000), 20_000);
-        since.store(0, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            stall_ms_since(&since, 26_000),
-            0,
-            "after a clear, the next sighting is a new stall"
-        );
+    fn wall_clock_steps_cannot_license_or_delay_round_escape() {
+        let since = Mutex::new(None);
+        let first = Instant::now();
+        let _ = stall_ms_since(&since, first);
+        // The former SystemTime subtraction would license escape after a forward
+        // step, and would delay it after a backward step. Neither offset is read.
+        assert!(round_escape_owed(60_000));
+        assert!(!round_escape_owed(stall_ms_since(
+            &since,
+            first + Duration::from_secs(1)
+        )));
+        assert!(!round_escape_owed(-60_000));
+        assert!(round_escape_owed(stall_ms_since(
+            &since,
+            first + ROUND_STALL_ESCAPE
+        )));
+        assert_eq!(stall_ms_since(&since, first - Duration::from_secs(1)), 0);
     }
 
     /// **A burst of attempts is not a licence to escape before the stall bound.**
@@ -1341,40 +1371,26 @@ mod tests {
     /// already supplies another proposal after 15 seconds on a quiet network (C210).
     #[test]
     fn the_round_escape_requires_elapsed_stall_even_after_many_attempts() {
-        let window = liveness::LIVENESS_WINDOW;
+        // The predicate accepts elapsed time only; attempt bursts cannot influence it.
         let stall_ms = ROUND_STALL_ESCAPE.as_millis() as i64;
 
-        assert!(!round_escape_owed(1, 0), "first refusal starts the clock");
+        assert!(!round_escape_owed(0), "first refusal starts the clock");
+        assert!(!round_escape_owed(967), "N=8 premature escape witness");
+        assert!(!round_escape_owed(3_388), "N=8 maximum recorded escape");
         assert!(
-            !round_escape_owed(window + 1, 0),
-            "six attempts in zero time"
+            !round_escape_owed(stall_ms - 1),
+            "the interval is strictly below the 15-second bound"
         );
         assert!(
-            !round_escape_owed(window + 1, 967),
-            "N=8 premature escape witness"
-        );
-        assert!(
-            !round_escape_owed(window + 1, 3_388),
-            "N=8 maximum recorded escape"
-        );
-        assert!(
-            !round_escape_owed(i64::MAX, stall_ms - 1),
-            "even very many attempts cannot escape early"
-        );
-        assert!(
-            !round_escape_owed(0, -1),
+            !round_escape_owed(-1),
             "negative elapsed time cannot escape"
         );
         assert!(
-            round_escape_owed(1, stall_ms),
+            round_escape_owed(stall_ms),
             "the precise stall boundary licenses escape"
         );
         assert!(
-            round_escape_owed(0, stall_ms),
-            "no attempt-count threshold is necessary"
-        );
-        assert!(
-            round_escape_owed(window + 1, stall_ms + 1),
+            round_escape_owed(stall_ms + 1),
             "the gate remains open after the bound"
         );
     }
@@ -2230,6 +2246,21 @@ fn attestation_inputs(oldest_unfinalized: Option<BlockHeight>, tip: BlockHeight)
             liveness::heights_behind(tip, h) <= ATTESTATION_HORIZON,
         ),
     }
+}
+
+/// Recent user work gets the same finite attestation horizon as the original work.
+/// The oldest unfinished block still determines whether work remains. A newer
+/// system deploy is not an input; without new user work or fringe progress both
+/// licences expire. This is a local proposal policy, not a finality/quorum rule.
+fn attestation_inputs_with_recent_user_work(
+    oldest_work: Option<BlockHeight>,
+    newest_user_work: Option<BlockHeight>,
+    tip: BlockHeight,
+) -> (bool, bool) {
+    let (nothing, prompt) = attestation_inputs(oldest_work, tip);
+    let recent_user_work =
+        newest_user_work.is_some_and(|h| liveness::heights_behind(tip, h) <= ATTESTATION_HORIZON);
+    (nothing, !nothing && (prompt || recent_user_work))
 }
 
 /// **The height the unfinalised work's age is counted from**: the work's own height, or the fringe's when
@@ -3285,7 +3316,10 @@ mod active_validator_tests {
 /// What it does not model: delivery delay and reordering, and the store reads `create_block` makes.
 #[cfg(test)]
 mod quiet_chain_tests {
-    use super::{attestation_inputs, attestation_suppressed, work_age_floor, ATTESTATION_HORIZON};
+    use super::{
+        attestation_inputs, attestation_inputs_with_recent_user_work, attestation_suppressed,
+        work_age_floor, ATTESTATION_HORIZON,
+    };
     use rchain_block_storage::dag::finalizer::Message;
     use rchain_block_storage::dag::liveness;
     use rchain_block_storage::dag::message_map;
@@ -3369,6 +3403,7 @@ mod quiet_chain_tests {
         let mut next_id = 1u64;
         // Genesis carries the genesis deploys, so it is deploy-bearing to the guard, as on a node.
         let mut with_deploy: BTreeSet<u64> = BTreeSet::from([0]);
+        let mut with_user_deploy: BTreeSet<u64> = BTreeSet::new();
         let mut deploy_blocks: Vec<u64> = Vec::new();
         let mut answered: BTreeMap<(usize, u8), i64> = BTreeMap::new();
         let mut pool = vec![0usize; n_max];
@@ -3459,7 +3494,15 @@ mod quiet_chain_tests {
                         nothing_to_finalize,
                         parents.iter().any(|p| with_deploy.contains(&p.id)),
                     ),
-                    View::SeenWork | View::Seen => attestation_inputs(oldest_pending, work_tip),
+                    View::SeenWork | View::Seen => attestation_inputs_with_recent_user_work(
+                        oldest_pending,
+                        conflict
+                            .iter()
+                            .filter(|h| with_user_deploy.contains(h))
+                            .map(|h| st.msg_map[h].height)
+                            .max(),
+                        work_tip,
+                    ),
                 };
                 let live = liveness::live_weight_set(
                     &bonds,
@@ -3509,6 +3552,7 @@ mod quiet_chain_tests {
                     with_deploy.insert(id);
                 }
                 if has_deploy {
+                    with_user_deploy.insert(id);
                     deploy_blocks.extend(std::iter::repeat_n(id, pool[v]));
                     pool[v] = 0;
                 }
@@ -3821,6 +3865,69 @@ mod quiet_chain_tests {
                 for view in [View::Round, View::SeenWork, View::Seen] {
                     let o = run(&cfg(&stakes, genesis_sender, view), &script);
                     eprintln!("{name:<36} genesis by {genesis_sender:<3} {view:?}: {o:?}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod recent_user_work_tests {
+    use super::*;
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).unwrap()
+    }
+
+    #[test]
+    fn recent_user_work_is_not_silenced_by_an_old_unfinalized_block() {
+        assert_eq!(attestation_inputs(Some(h(27)), h(76)), (false, false));
+        let (nothing, prompt) =
+            attestation_inputs_with_recent_user_work(Some(h(27)), Some(h(75)), h(76));
+        assert_eq!((nothing, prompt), (false, true));
+        assert!(!attestation_suppressed(nothing, prompt, false, true, true));
+        assert!(
+            attestation_suppressed(nothing, prompt, false, false, true),
+            "minority pacing still applies"
+        );
+    }
+
+    #[test]
+    fn recent_user_licence_expires_at_the_existing_horizon() {
+        for age in [0, ATTESTATION_HORIZON, ATTESTATION_HORIZON + 1] {
+            let (nothing, prompt) =
+                attestation_inputs_with_recent_user_work(Some(h(1)), Some(h(100)), h(100 + age));
+            assert!(!nothing);
+            assert_eq!(prompt, age <= ATTESTATION_HORIZON);
+        }
+    }
+
+    #[test]
+    fn system_work_or_no_user_work_cannot_renew_an_expired_licence() {
+        assert_eq!(
+            attestation_inputs_with_recent_user_work(Some(h(1)), None, h(100)),
+            (false, false)
+        );
+        assert!(attestation_suppressed(false, false, false, true, true));
+        assert_eq!(
+            attestation_inputs_with_recent_user_work(None, Some(h(100)), h(100)),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn without_new_work_both_licences_end_on_a_fixed_height_bound() {
+        for oldest in [1, 20, 50] {
+            for newest in [oldest, oldest + 1, oldest + 20] {
+                let end = newest + ATTESTATION_HORIZON + 1;
+                for tip in [end, end + 1, end + 100] {
+                    assert_eq!(
+                        attestation_inputs_with_recent_user_work(
+                            Some(h(oldest)),
+                            Some(h(newest)),
+                            h(tip)
+                        ),
+                        (false, false)
+                    );
                 }
             }
         }
