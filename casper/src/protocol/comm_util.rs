@@ -305,9 +305,7 @@ impl CommUtil {
                     not_delivered += 1;
                     self.log.warn(
                         self.log_source,
-                        &format!(
-                            "Block hash {block_hash}: retry task failed: {error}"
-                        ),
+                        &format!("Block hash {block_hash}: retry task failed: {error}"),
                     );
                 }
             }
