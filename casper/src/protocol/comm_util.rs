@@ -248,6 +248,10 @@ impl CommUtil {
         let mut initially_accepted = 0usize;
         let mut retry_accepted = 0usize;
         let mut not_delivered = 0usize;
+        // Failed peers are independent: awaiting retries serially would turn
+        // N dead peers into N * 2 seconds of processor head-of-line blocking.
+        // A bounded JoinSet keeps the worst-case recovery delay at two seconds.
+        let mut retries = tokio::task::JoinSet::new();
         for (index, peer) in peers.iter().enumerate() {
             if matches!(outcomes.get(index), Some(Ok(()))) {
                 initially_accepted += 1;
@@ -262,15 +266,22 @@ impl CommUtil {
                     ),
                 );
             }
-            // One retry only: a dead peer must never stall the block processor.
-            match tokio::time::timeout(
-                Duration::from_secs(2),
-                self.transport.send(peer, message.clone()),
-            )
-            .await
-            {
-                Ok(Ok(())) => retry_accepted += 1,
-                Ok(Err(error)) => {
+            let transport = self.transport.clone();
+            let retry_peer = peer.clone();
+            let retry_message = message.clone();
+            retries.spawn(async move {
+                let outcome = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    transport.send(&retry_peer, retry_message),
+                )
+                .await;
+                (retry_peer, outcome)
+            });
+        }
+        while let Some(joined) = retries.join_next().await {
+            match joined {
+                Ok((_, Ok(Ok(())))) => retry_accepted += 1,
+                Ok((peer, Ok(Err(error)))) => {
                     not_delivered += 1;
                     self.log.warn(
                         self.log_source,
@@ -280,13 +291,22 @@ impl CommUtil {
                         ),
                     );
                 }
-                Err(_) => {
+                Ok((peer, Err(_))) => {
                     not_delivered += 1;
                     self.log.warn(
                         self.log_source,
                         &format!(
                             "Block hash {block_hash}: retry to {} timed out",
                             peer.endpoint.host
+                        ),
+                    );
+                }
+                Err(error) => {
+                    not_delivered += 1;
+                    self.log.warn(
+                        self.log_source,
+                        &format!(
+                            "Block hash {block_hash}: retry task failed: {error}"
                         ),
                     );
                 }
