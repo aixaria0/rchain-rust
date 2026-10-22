@@ -113,13 +113,21 @@ where
         // Use the same stake-backed progress clock as the finalizer.
         let supported_tip = super::liveness::quorum_supported_height(&bonds, &heights);
         let closed = bonds.keys().all(|s| {
-            match self.latest_msgs.get(s).map(|m| m.height) {
-                // Spoken and past the boundary: this sender is done for this round.
-                Some(height) if height > self.round_height => true,
-                // Spoken, but not past it: the round waits for it — unless the window has retired it.
-                Some(height) => super::liveness::heights_behind(supported_tip, height) > window,
+            match (self.latest_msgs.get(s), self.round_parents.get(s)) {
+                // Progress is relative to THIS sender's previous boundary message.
+                // The quorum clock can be below another sender's boundary height:
+                // comparing to one scalar round_height then reuses an old message
+                // as if that sender had spoken in the new round.
+                (Some(latest), Some(boundary)) if latest.sender_seq > boundary.sender_seq => true,
+                // A sender new to the snapshot has spoken since the boundary.
+                (Some(_), None) => true,
+                // A sender which has not advanced retires only after the
+                // stake-backed liveness window, never after one fast proposer.
+                (Some(latest), Some(_)) => {
+                    super::liveness::heights_behind(supported_tip, latest.height) > window
+                }
                 // Never spoken: it ages out only with quorum-backed progress.
-                None => i64::from(supported_tip) - i64::from(self.round_height) > window,
+                (None, _) => i64::from(supported_tip) - i64::from(self.round_height) > window,
             }
         });
         if closed {
@@ -464,6 +472,101 @@ mod tests {
         }
     }
 
+    /// The quorum clock is a liveness measure, not a per-sender round marker.
+    /// Stake 100/100/50 yields a quorum-supported height 2 while the
+    /// boundary contains a sender at height 3 (and another at height 4).
+    /// Those OLD messages cannot count as new-round proposals.
+    #[test]
+    fn quorum_clock_below_a_senders_boundary_does_not_reuse_that_message() {
+        let bonds = [(0, 100), (1, 100), (2, 50)];
+        let mut state: DagMessageState<i32, i32> = DagMessageState::empty();
+        for sender in 0..3 {
+            state.insert_msg_mut(&at(sender, sender, 0, sender as i64 + 1, &bonds));
+        }
+        // The first boundary was just sender 0, so sender 0 must
+        // advance once before all three can enter the next snapshot.
+        state.insert_msg_mut(&at(10, 0, 1, 4, &bonds));
+        assert_eq!(state.round_height, BlockHeight::try_from(2).unwrap());
+        assert_eq!(state.round_parents.len(), 3);
+        assert_eq!(
+            state.round_parents.get(&0).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap()
+        );
+        assert_eq!(
+            state.round_parents.get(&2).unwrap().sender_seq,
+            SeqNum::zero()
+        );
+
+        state.insert_msg_mut(&at(11, 0, 2, 5, &bonds));
+        state.insert_msg_mut(&at(12, 1, 1, 6, &bonds));
+        assert_eq!(
+            state.round_parents.get(&0).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap(),
+            "no new snapshot before validator 2 speaks again"
+        );
+        assert_eq!(
+            state.round_height,
+            BlockHeight::try_from(2).unwrap(),
+            "validator 2's height 3 at the previous boundary is not fresh progress"
+        );
+
+        state.insert_msg_mut(&at(13, 2, 1, 7, &bonds));
+        assert_eq!(
+            state.round_parents.get(&0).unwrap().sender_seq,
+            SeqNum::try_from(2).unwrap()
+        );
+        assert_eq!(
+            state.round_parents.get(&1).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap()
+        );
+        assert_eq!(
+            state.round_parents.get(&2).unwrap().sender_seq,
+            SeqNum::try_from(1).unwrap()
+        );
+    }
+
+    /// With fewer than strictly 2/3 of total stake represented, no
+    /// quorum-backed progress height exists. One fast proposer cannot
+    /// silently close the round; the boundary may move again once a
+    /// full-stake supermajority resumes sending messages.
+    #[test]
+    fn missing_supermajority_freezes_round_until_quorum_returns() {
+        let bonds = [(0, 100), (1, 100), (2, 100)];
+        let mut state: DagMessageState<i32, i32> = DagMessageState::empty();
+        state.insert_msg_mut(&at(0, 0, 0, 1, &bonds));
+        assert_eq!(state.round_height, BlockHeight::try_from(1).unwrap());
+
+        for height in 2..=12 {
+            state.insert_msg_mut(&at(100 + height as i32, 0, height - 1, height, &bonds));
+        }
+        let bonded = state.latest_msgs.values().next().unwrap().bonds_map.clone();
+        let latest = super::super::liveness::latest_heights(
+            state.latest_msgs.values().map(|m| (m.sender, m.height)),
+        );
+        assert_eq!(
+            super::super::liveness::quorum_supported_height(&bonded, &latest),
+            BlockHeight::zero(),
+            "one sender alone is not a quorum"
+        );
+        assert_eq!(state.round_height, BlockHeight::try_from(1).unwrap());
+        assert_eq!(state.round_parents.len(), 1);
+
+        state.insert_msg_mut(&at(201, 1, 0, 13, &bonds));
+        // Exactly 2/3 is still not the strict supermajority.
+        assert_eq!(state.round_height, BlockHeight::try_from(1).unwrap());
+        assert_eq!(state.round_parents.len(), 1);
+
+        state.insert_msg_mut(&at(202, 2, 0, 14, &bonds));
+        assert_eq!(state.round_height, BlockHeight::try_from(12).unwrap());
+        assert_eq!(state.round_parents.len(), 3);
+        for sender in 0..3 {
+            assert!(
+                !state.has_advanced_past_the_round(&sender),
+                "returning quorum must form one fresh boundary"
+            );
+        }
+    }
+
     #[test]
     fn fast_proposer_cannot_retire_an_online_quorum_or_advance_round_alone() {
         let bonds: Vec<(i32, i64)> = (0..8).map(|v| (v, 100)).collect();
@@ -477,10 +580,13 @@ mod tests {
         for sender in 0..8 {
             state.insert_msg_mut(&at(200 + sender, sender, 1, 61, &bonds));
         }
+        // Sender 0 opened this boundary before the other senders reached 61.
+        // It must speak again to complete a snapshot of their new messages.
+        state.insert_msg_mut(&at(300, 0, 2, 62, &bonds));
         assert_eq!(state.round_parents.len(), 8);
         assert_eq!(state.round_height, BlockHeight::try_from(61).unwrap());
 
-        for height in 62..=106 {
+        for height in 63..=106 {
             // Explicit repeated deploys may let a single creator keep climbing.
             // Other senders have still produced their height-60 message.
             let msg = at(1000 + height as i32, 0, height - 60, height, &bonds);

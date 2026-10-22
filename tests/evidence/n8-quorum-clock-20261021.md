@@ -66,3 +66,70 @@ supermajority denominator is **not** changed anywhere.
 
 This is a candidate explanation and implementation, **not** a safety theorem,
 a completed release gate or evidence that the defect is closed.
+
+## Review disposition: #407 at `940165cd`
+
+The original #407 head is **negative acceptance evidence**, not a passing
+standalone N=8 implementation:
+
+- [Run 39639570219](https://github.com/aixaria0/rchain-rust/actions/runs/39639570219),
+  source `b9324947f`: canonical `final-gap-recovery` **FAIL**.
+- [Run 39640491759](https://github.com/aixaria0/rchain-rust/actions/runs/39640491759),
+  source `940165cd0`: canonical `final-gap-recovery` **FAIL**,
+  partition finality 57 -> 59 against the required >= 60 in 300 seconds.
+- The review at `940165cd0` also identified two failing full-Casper tests:
+  `the_chain_the_nodes_own_proposer_builds_reaches_a_fringe` and
+  `a_second_proposal_in_a_round_keeps_its_sequence`.
+  A passing block-storage-only regression does not override these failures.
+
+The later sender-local boundary correction makes round closure depend on each
+sender's sequence relative to that sender's boundary message, not solely on a
+scalar quorum height. This corrects the old-message reuse condition. A separate
+regression pins the case in which fewer than a strict supermajority have spoken:
+the boundary stays frozen, then progresses when sufficient bonded senders return.
+These tests do not, by themselves, establish network-level finality or replay safety.
+
+## Integrated acceptance, distinct from this standalone proposal
+
+[#408](https://github.com/rchain-community/rchain-rust/pull/408) is the
+**combined N=8 integration candidate**, containing #407 plus changes to
+block-hash admission, transport retry, and missing-parent recovery. Its source
+tree `187211e43a14d06a6be2434ede93b7023008292a` was tested twice:
+
+- Source `818cbbe3818e`: [full Rust CI PASS](https://github.com/aixaria0/rchain-rust/actions/runs/39665533963);
+  [canonical N=8 PASS](https://github.com/aixaria0/rchain-rust/actions/runs/39665533457).
+  Online finality: cycle 1, 57 -> 60 in 135.31 s; cycle 2, 60 -> 81 in 42.16 s.
+- Source `55842ad76c10` (identical source tree):
+  [full Rust CI PASS](https://github.com/aixaria0/rchain-rust/actions/runs/39669077973);
+  [canonical N=8 PASS](https://github.com/aixaria0/rchain-rust/actions/runs/39669077968).
+  Online finality: cycle 1, 56 -> 59 in 106.37 s; cycle 2, 59 -> 62 in 33.02 s.
+
+In all four partition/rejoin cycles, the seven online validators advanced at
+least three finalized heights within 300 s, and all eight converged on identical
+finalized height/hash after the isolated validator rejoined. The original
+persistent volume, markers and snapshots were retained. Both strict checkers
+reported `passed=true`, `errors=[]`, `rounds_checked=2`.
+
+These are **integration results**, not evidence that standalone #407 passed.
+They establish bounded acceptance under the recorded workload, not a formal CBC
+safety proof, network-independent liveness, or production readiness.
+
+## Activation and integration boundary — blocking
+
+The quorum-supported progress and round-boundary rules alter deterministic
+consensus/replay behavior. **Do not deploy them as an ungated update against
+an existing historical chain.** The proposed rollout is the next
+**new-genesis fork**, with all validators aligned on the same rules from
+genesis; this is a release-engineering decision requiring maintainer approval.
+If existing-chain height activation is chosen instead, first implement and
+verify a deterministic activation boundary using the schedule from #373
+(including proposer, validator and restored-state/replay behavior).
+
+Until the release owner confirms a fork/activation decision and the related
+replay/state-restore compatibility is verified, this remains **Draft,
+merge-blocked, and not deployable**.
+
+Integration tracks: #407 is the quorum-clock prerequisite; **#408 is the
+canonical combined N=8 acceptance head**. #403 addresses the separate C336
+bounded proposer-attestation policy and did not itself pass canonical N=8;
+do not merge competing proposer changes without explicit compatibility review.
