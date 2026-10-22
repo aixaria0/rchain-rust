@@ -23,6 +23,53 @@ class RecoveryHarnessTests(unittest.TestCase):
             with self.assertRaises(AssertionError):m.durable_state_volume({"Mounts":mounts})
 
 
+class RejoinAgreementTests(unittest.TestCase):
+    def drill(self, identities):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        run = object.__new__(m.WorkloadDrill)
+        run.args = SimpleNamespace(validators=8, window=150)
+        run.finalized_marker = Mock(return_value=identities)
+        run.drive = Mock()
+        return run
+
+    def heads(self):
+        return [{"node":i,"height":70,"hash":"ab"*32} for i in range(8)]
+
+    def test_marker_retention_at_different_heights_is_not_agreement(self):
+        heads = self.heads()
+        heads[-1]["height"] = 60
+        self.assertIsNone(self.drill(heads).finalized_marker_agreement(60))
+
+    def test_equal_heights_with_different_hashes_are_not_agreement(self):
+        heads = self.heads()
+        heads[-1]["hash"] = "cd"*32
+        self.assertIsNone(self.drill(heads).finalized_marker_agreement(60))
+
+    def test_missing_or_duplicate_validator_cannot_prove_agreement(self):
+        heads = self.heads()
+        duplicate = self.heads()
+        duplicate[-1]["node"] = 0
+        for sample in [None, heads[:-1], duplicate]:
+            self.assertIsNone(self.drill(sample).finalized_marker_agreement(60))
+
+    def test_all_eight_matching_heads_preserve_the_marker_check(self):
+        heads = self.heads()
+        run = self.drill(heads)
+        self.assertEqual(run.finalized_marker_agreement(60), heads)
+        run.finalized_marker.assert_called_once_with(60, required=True)
+
+    def test_persistent_disagreement_fails_at_the_existing_healing_deadline(self):
+        from unittest.mock import patch
+        heads = self.heads()
+        heads[-1]["height"] = 60
+        run = self.drill(heads)
+        with patch.object(m.time,"monotonic",side_effect=[0,0,151]), \
+             patch.object(m.time,"sleep"):
+            with self.assertRaisesRegex(RuntimeError,"did not pass within 150s"):
+                run.wait("rejoined finalized identity",lambda:run.finalized_marker_agreement(60))
+
+
 class ActiveRecoveryWitnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

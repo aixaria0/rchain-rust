@@ -82,6 +82,46 @@ where
     latest
 }
 
+/// A *quorum-supported* progress height, rather than the greatest height from
+/// any single producer. A proposer can run arbitrarily far ahead of its peers
+/// (notably when all signed deploys arrive at that proposer), but this must not
+/// make an otherwise live supermajority disappear from the liveness partition.
+///
+/// Return the highest height reached by **strictly more than 2/3 of the entire
+/// bonded stake**. If no such height exists, return zero; do not infer a quorum
+/// from a minority or replace the denominator with the observed senders.
+/// This is a deterministic function of the same justifications/bonds that the
+/// block creator and validator already share, with no wall-clock input.
+pub fn quorum_supported_height<S>(
+    bonds: &BTreeMap<S, NonNegI64>,
+    latest: &BTreeMap<S, BlockHeight>,
+) -> BlockHeight
+where
+    S: Ord,
+{
+    let total: i128 = bonds
+        .values()
+        .map(|stake| i128::from(i64::from(*stake)))
+        .sum();
+    let mut at_height: Vec<(BlockHeight, i128)> = bonds
+        .iter()
+        .filter_map(|(sender, stake)| {
+            latest
+                .get(sender)
+                .map(|height| (*height, i128::from(i64::from(*stake))))
+        })
+        .collect();
+    at_height.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let mut supporting = 0i128;
+    for (height, stake) in at_height {
+        supporting += stake;
+        if rchain_sdk::consensus::is_super_majority(supporting, total) {
+            return height;
+        }
+    }
+    BlockHeight::zero()
+}
+
 /// The bonded stake whose latest message is within `window` heights of the tip.
 ///
 /// A validator with **no** message at all is not live — that is the case the rule exists for, and it is
@@ -150,13 +190,9 @@ where
     M: Ord + Clone + Eq + Hash,
     S: Ord + Clone + Eq + Hash,
 {
-    let tip = justifications
-        .iter()
-        .map(|m| m.height)
-        .max()
-        .unwrap_or_else(BlockHeight::zero);
     let latest = latest_heights(justifications.iter().map(|m| (m.sender.clone(), m.height)));
-    let live = live_weight_set(bonds, &latest, tip, LIVENESS_WINDOW);
+    let supported_tip = quorum_supported_height(bonds, &latest);
+    let live = live_weight_set(bonds, &latest, supported_tip, LIVENESS_WINDOW);
     // **The derivation ranges over the partition, and the partition is the live set.** A justification
     // from a sender the window has retired is still in this set — `latest_msgs` keeps one entry per
     // sender forever (`block-storage/src/dag/message_state.rs:90-102`), so every candidate goes on
@@ -187,6 +223,57 @@ mod tests {
             .iter()
             .map(|(v, s)| (*v, NonNegI64::try_from(*s).expect("stake")))
             .collect()
+    }
+
+    /// One deployment-heavy proposer reaching height 106 must not make six
+    /// honest online validators at height 90 stale, or allow it to claim that
+    /// only its own 100/800 stake belongs to the live partition.
+    #[test]
+    fn n8_proposer_outlier_cannot_set_the_staleness_clock() {
+        let bonds = bonds(&(0..8).map(|v| (v, 100)).collect::<Vec<_>>());
+        let latest = latest_heights((0..8).map(|v| {
+            (
+                v,
+                h(if v == 0 {
+                    106
+                } else if v == 7 {
+                    60
+                } else {
+                    90
+                }),
+            )
+        }));
+        let supported = quorum_supported_height(&bonds, &latest);
+        assert_eq!(supported, h(90));
+        let live = live_weight_set(&bonds, &latest, supported, LIVENESS_WINDOW);
+        assert_eq!(live.len(), 7);
+        assert!(!live.contains_key(&7));
+        assert!(rchain_sdk::consensus::is_super_majority(
+            live.values().map(|v| i128::from(i64::from(*v))).sum(),
+            800
+        ));
+    }
+
+    #[test]
+    fn supported_height_is_strictly_more_than_two_thirds_of_full_bonds() {
+        let bonded = bonds(&[(0, 100), (1, 100), (2, 100)]);
+        let latest = latest_heights([(0u8, h(200)), (1, h(200))]);
+        assert_eq!(quorum_supported_height(&bonded, &latest), h(0));
+        let latest = latest_heights([(0u8, h(200)), (1, h(200)), (2, h(80))]);
+        assert_eq!(quorum_supported_height(&bonded, &latest), h(80));
+        let all = latest_heights([(0u8, h(200)), (1, h(200)), (2, h(200))]);
+        assert_eq!(quorum_supported_height(&bonded, &all), h(200));
+    }
+
+    #[test]
+    fn stake_weighted_clock_does_not_count_unbonded_or_observed_only_quorum() {
+        let bonded = bonds(&[(0, 1000), (1, 100), (2, 100)]);
+        let observed = latest_heights([(0u8, h(10)), (1, h(1000)), (2, h(1000)), (99, h(9000))]);
+        assert_eq!(quorum_supported_height(&bonded, &observed), h(10));
+        assert_eq!(
+            quorum_supported_height(&bonded, &latest_heights([(1u8, h(1000)), (2, h(1000))])),
+            h(0)
+        );
     }
 
     /// **The window is a window**: a validator whose latest message is at the tip or within the window

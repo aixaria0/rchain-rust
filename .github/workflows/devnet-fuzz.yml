@@ -303,6 +303,10 @@ jobs:
           }
           rustup component add --toolchain 1.95.0 rustfmt
           cargo fmt --all --check
+          # Deterministic N=8 liveness-clock and boundary regressions on this source.
+          required_test -p rchain-block-storage --lib n8_proposer_outlier_cannot_set_the_staleness_clock
+          required_test -p rchain-block-storage --lib fast_proposer_cannot_retire_an_online_quorum_or_advance_round_alone
+          cargo test --locked -p rchain-block-storage --lib
           required_test -p rchain-models block_version
           # The historical decimal_bridge target is not present on dev; verify the
           # merged Decimal implementation and model properties on this exact source.
