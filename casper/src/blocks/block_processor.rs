@@ -9,6 +9,7 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
+use tokio::task::{JoinError, JoinSet};
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::ShardHealth;
@@ -23,6 +24,57 @@ fn max_parallel_block_validation() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+/// Bound pending hash-only announcements independently of replay validation.
+/// An unavailable peer may consume the transport timeout for every announcement;
+/// awaiting that timeout after every DAG insert serializes the whole receiver.
+const MAX_PENDING_HASH_ANNOUNCEMENTS: usize = 32;
+
+struct BlockHashAnnouncements {
+    tasks: JoinSet<()>,
+    limit: usize,
+    log: Arc<dyn Log>,
+}
+
+impl BlockHashAnnouncements {
+    fn new(log: Arc<dyn Log>) -> Self {
+        Self {
+            tasks: JoinSet::new(),
+            limit: MAX_PENDING_HASH_ANNOUNCEMENTS,
+            log,
+        }
+    }
+
+    fn report(&self, result: Result<(), JoinError>) {
+        if let Err(error) = result {
+            self.log.error(
+                LogSource::new("casper.blocks.BlockProcessor"),
+                &format!("block hash announcement task failed: {error}"),
+            );
+        }
+    }
+
+    async fn enqueue<F>(&mut self, announcement: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        while let Some(result) = self.tasks.try_join_next() {
+            self.report(result);
+        }
+        while self.tasks.len() >= self.limit {
+            if let Some(result) = self.tasks.join_next().await {
+                self.report(result);
+            }
+        }
+        self.tasks.spawn(announcement);
+    }
+
+    async fn finish(&mut self) {
+        while let Some(result) = self.tasks.join_next().await {
+            self.report(result);
+        }
+    }
 }
 
 /// Validate a block and insert it into the DAG (port of `validateAndAddToDag`).
@@ -110,6 +162,7 @@ pub async fn apply<F, Fut>(
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>> + Send + 'static,
 {
     let source = LogSource::new("casper.blocks.BlockProcessor");
+    let mut announcements = BlockHashAnnouncements::new(log.clone());
     while let Some(first) = input_blocks.recv().await {
         // Drain a batch of dependency-free blocks, bounded by the concurrency cap.
         let mut batch = vec![first];
@@ -198,8 +251,16 @@ pub async fn apply<F, Fut>(
                     // bounded on the other half of this pipeline. `let _ =` stays: a send fails only when
                     // every receiver is gone, which is shutdown, and the block is already in the DAG.
                     chan::send(&validated_tx, block.clone()).await;
-                    comm_util
-                        .send_block_hash(&block.block_hash, block.sender.as_bytes())
+                    // Keep the completion notification and DAG insertion on the
+                    // acceptance path. Network timeouts belong to a separate,
+                    // bounded set of hash-only tasks, not to the next replay.
+                    let comm = comm_util.clone();
+                    let hash = block.block_hash;
+                    let creator = block.sender.as_bytes().to_vec();
+                    announcements
+                        .enqueue(async move {
+                            comm.send_block_hash(&hash, &creator).await;
+                        })
                         .await;
                 }
                 // **The `Display` sentence, not the `Debug` variant name** (#139). `{status:?}` printed
@@ -219,11 +280,67 @@ pub async fn apply<F, Fut>(
             }
         }
     }
+    announcements.finish().await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_stalled_hash_announcement_does_not_hold_the_next_one() {
+        let mut announcements = BlockHashAnnouncements::new(Arc::new(rchain_shared::log::NopLog));
+        let (release, held) = tokio::sync::oneshot::channel();
+        announcements
+            .enqueue(async move {
+                held.await.unwrap();
+            })
+            .await;
+        let (accepted, observed) = tokio::sync::oneshot::channel();
+        announcements
+            .enqueue(async move {
+                accepted.send(()).unwrap();
+            })
+            .await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), observed)
+            .await
+            .expect("a stalled peer must not serialize later announcements")
+            .unwrap();
+        release.send(()).unwrap();
+        announcements.finish().await;
+    }
+
+    #[tokio::test]
+    async fn hash_announcement_capacity_backpressures_and_shutdown_drains() {
+        let mut announcements = BlockHashAnnouncements::new(Arc::new(rchain_shared::log::NopLog));
+        announcements.limit = 2;
+        let mut releases = Vec::new();
+        for _ in 0..2 {
+            let (release, held) = tokio::sync::oneshot::channel();
+            releases.push(release);
+            announcements
+                .enqueue(async move {
+                    held.await.unwrap();
+                })
+                .await;
+        }
+        let (accepted, observed) = tokio::sync::oneshot::channel();
+        let mut next = Box::pin(announcements.enqueue(async move {
+            accepted.send(()).unwrap();
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(next.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        releases.remove(0).send(()).unwrap();
+        next.await;
+        releases.remove(0).send(()).unwrap();
+        announcements.finish().await;
+        observed.await.unwrap();
+        assert!(announcements.tasks.is_empty());
+    }
 
     /// The concurrency cap is never zero: a zero would mean no block is ever validated concurrently —
     /// or, if it were used as a batch size, that a batch of blocks is never processed at all. The

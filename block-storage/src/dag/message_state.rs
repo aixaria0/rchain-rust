@@ -109,6 +109,9 @@ where
                 .values()
                 .map(|m| (m.sender.clone(), m.height)),
         );
+        // With no strict bonded supermajority, supported progress remains zero;
+        // absent/stale senders cannot be retired by a minority tip alone.
+        // This can leave the boundary frozen until quorum-backed progress resumes.
         // One fast proposer may not age out six still-active validators.
         // Use the same stake-backed progress clock as the finalizer.
         let supported_tip = super::liveness::quorum_supported_height(&bonds, &heights);

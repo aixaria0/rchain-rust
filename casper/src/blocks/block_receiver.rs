@@ -15,7 +15,7 @@ use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use tokio::sync::mpsc;
 
-use crate::blocks::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::blocks::block_retriever::BlockRetriever;
 use crate::engine::node_running::MAX_PENDING_BLOCKS;
 use crate::validate::{block_hash, block_signature, format_of_fields};
 
@@ -359,9 +359,7 @@ async fn request_missing_dependencies(
     block_retriever: &BlockRetriever,
 ) {
     for hash in deps {
-        block_retriever
-            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
-            .await;
+        block_retriever.request_missing_dependency(hash).await;
     }
 }
 
@@ -420,6 +418,12 @@ async fn incoming_blocks(
             );
             continue;
         }
+
+        // Renew one overdue request even when its direct children are already
+        // stored and will not traverse dependency admission again.
+        block_retriever
+            .retry_oldest_pending_request(&block.block_hash)
+            .await;
 
         // Begin storing the block.
         let should_check = {
@@ -495,7 +499,12 @@ async fn incoming_blocks(
         // **The parents not yet in the DAG are read under the state lock (#223)**, and they are the block's
         // dependencies: a parent's `finished` takes the same lock after its DAG insert, so a parent read as
         // absent here is one whose `finished` has not run yet and will release this block when it does.
-        let (pending_requests, has_all_deps) = {
+        let missing_dependencies: BTreeSet<BlockHash> = parents
+            .iter()
+            .filter(|(_, not_stored)| *not_stored)
+            .map(|(hash, _)| *hash)
+            .collect();
+        let (mut pending_requests, has_all_deps) = {
             let mut guard = state.lock().await;
             let repr = dag.get_representation().await;
             let awaiting: BTreeSet<BlockHash> = block
@@ -516,6 +525,11 @@ async fn incoming_blocks(
                 }
             }
         };
+
+        // An earlier request may have lost its reply during a partition. A new
+        // child still needs that parent even when receiver state already marks
+        // it Requested. The retriever reserves and rate-limits renewed demand.
+        pending_requests.extend(missing_dependencies);
 
         block_retriever.ack_received(&block.block_hash).await;
 

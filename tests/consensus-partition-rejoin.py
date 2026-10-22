@@ -18,6 +18,18 @@ class WorkloadDrill(a.Drill):
         # This arm explicitly supplies work; it cannot establish quiet-chain liveness.
         return super().wait(description,condition,drive=True)
 
+    def finalized_marker_agreement(self, min_height):
+        # Retaining the marker at different finalized heads is not yet rejoin
+        # agreement. Keep waiting inside the existing 150-second healing bound.
+        identities = self.finalized_marker(min_height, required=True)
+        if identities is None or len(identities) != self.args.validators:
+            return None
+        if {x["node"] for x in identities} != set(range(self.args.validators)):
+            return None
+        if len({(x["height"], x["hash"]) for x in identities}) != 1:
+            return None
+        return identities
+
 def cmd(*args):
     return subprocess.check_output(args,text=True,stderr=subprocess.STDOUT,timeout=25).strip()
 
@@ -113,8 +125,8 @@ def main():
                 record["phase"]="healing"
                 cmd("docker","network","connect","acceptance",victim)
                 target=max(x["height"] for x in identities)
-                recovered=d.wait("all validators retain marker after partition healing",
-                                 lambda:d.finalized_marker(target,required=True))
+                recovered=d.wait("all validators agree on finalized height/hash and retain marker after partition healing",
+                                 lambda:d.finalized_marker_agreement(target))
                 record["rejoined"]=recovered
                 record["phase"]="retention"
                 d.fixed_snapshots(original["initial_finalized"])

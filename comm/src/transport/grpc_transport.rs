@@ -151,6 +151,7 @@ mod tests {
         );
     }
 
+    /// Delivery recovers through the same client after an actual failed RPC.
     #[tokio::test]
     async fn send_round_trips_over_socket() {
         use std::sync::Arc;
@@ -173,11 +174,8 @@ mod tests {
 
         let (server_cert, server_key) = generate_certificate().unwrap();
         let (client_cert, client_key) = generate_certificate().unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = unavailable.local_addr().unwrap().port();
 
         // The server peer id is its cert's CN (base16 of the public address).
         let server_id = cert_node_id(&server_cert);
@@ -187,6 +185,28 @@ mod tests {
             rchain_shared::refined::Port::new(port),
             rchain_shared::refined::Port::new(port),
         );
+
+        // Reuse this client after a real failed RPC, including its cached lazy
+        // channel. A channel handle alone is not a successful transport handoff.
+        let client_id = cert_node_id(&client_cert);
+        let client_peer = PeerNode::from(
+            NodeIdentifier::from_hex(&client_id).unwrap(),
+            "127.0.0.1".to_string(),
+            rchain_shared::refined::Port::new(port),
+            rchain_shared::refined::Port::new(port),
+        );
+        let client = GrpcTransportClient::new(
+            "testnet".to_string(),
+            &client_cert,
+            &client_key,
+            16 * 1024 * 1024,
+            64 * 1024,
+            100,
+        )
+        .unwrap();
+        let heartbeat = protocol_helper::heartbeat(&client_peer, "testnet");
+        assert!(client.send(&server_peer, heartbeat.clone()).await.is_err());
+        drop(unavailable);
 
         let server = TransportLayerServer::new(
             server_peer.clone(),
@@ -200,7 +220,7 @@ mod tests {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
-        tokio::spawn(async move {
+        let serving = tokio::spawn(async move {
             let dispatch_tx = tx.clone();
             let _ = server
                 .serve(
@@ -219,39 +239,27 @@ mod tests {
                 .await;
         });
 
-        // Give the server a moment to bind before the client connects.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
         // The sender must be the identity the client's certificate proves (AUDIT C115). This test
         // used to send a heartbeat whose header named the *server* — the certificate was the
         // client's — which is exactly the assertion the check now refuses, and it passed because
         // nothing compared the two.
-        let client_id = cert_node_id(&client_cert);
-        let client_peer = PeerNode::from(
-            NodeIdentifier::from_hex(&client_id).unwrap(),
-            "127.0.0.1".to_string(),
-            rchain_shared::refined::Port::new(port),
-            rchain_shared::refined::Port::new(port),
-        );
-
-        let client = GrpcTransportClient::new(
-            "testnet".to_string(),
-            &client_cert,
-            &client_key,
-            16 * 1024 * 1024,
-            64 * 1024,
-            100,
-        )
-        .unwrap();
-
-        let heartbeat = protocol_helper::heartbeat(&client_peer, "testnet");
-        client.send(&server_peer, heartbeat.clone()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if client.send(&server_peer, heartbeat.clone()).await.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the same lazy channel must recover once the peer serves TLS");
 
         let received = tokio::time::timeout(Duration::from_secs(5), rx)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(received, heartbeat);
+        serving.abort();
     }
 }
 
