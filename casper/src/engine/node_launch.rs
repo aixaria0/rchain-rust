@@ -311,6 +311,11 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
             dev_mode,
             &spec.genesis_block_data.dev_tax_address,
         )?;
+        crate::genesis::dev_tax::refuse_a_production_genesis_with_a_zero_vesting_term(
+            dev_mode,
+            &spec.genesis_block_data.dev_tax_address,
+            spec.genesis_block_data.dev_tax_vesting_blocks,
+        )?;
         log.info(
             source,
             "Starting as genesis master, creating genesis block...",

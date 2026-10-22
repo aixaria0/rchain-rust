@@ -1359,6 +1359,17 @@ impl NativeSystemState {
         let mut total: i64 = i64::from(self.coop_balance().await?)
             .checked_add(i64::from(self.pos_vault_balance().await?))
             .ok_or_else(|| "total_value: overflow summing the named vaults".to_string())?;
+        // **The developer allocation is native value too.** It sits under `PREFIX_POS` rather than
+        // `PREFIX_VAULT` until it vests, so a total that only walks the vault prefixes drops it — and
+        // then the release looks like a mint. Count what is still unreleased; the released part is
+        // already in the recipient's vault.
+        if let Some(vesting) = self.dev_vesting().await? {
+            total = total
+                .checked_add(i64::from(vesting.unreleased))
+                .ok_or_else(|| {
+                    "total_value: overflow summing the developer allocation".to_string()
+                })?;
+        }
         for (key, value) in self.store.live_entries(PREFIX_VAULT) {
             let arr: [u8; 8] = value.as_slice().try_into().map_err(|_| {
                 format!(
@@ -3007,6 +3018,48 @@ mod tests {
             .unwrap()
             .unwrap();
         conserved!("slash");
+    }
+
+    /// **Releasing the developer allocation is a transfer, not a mint.** The allocation sits under
+    /// `PREFIX_POS` until it vests; `total_value` must count the unreleased amount, or the release
+    /// into the recipient's vault looks like new value. A zero term releases the whole allocation at
+    /// the first boundary, which is the strongest form of the case.
+    #[tokio::test]
+    async fn releasing_the_developer_allocation_conserves_the_total() {
+        let params = PosParams {
+            dev_tax_vesting_blocks: NonNegI64::zero(),
+            ..PosParams::default()
+        };
+        let native = native_with(&[validator(1)], params.clone(), &[(validator(1), 10)]).await;
+        let recipient = RevAddress::from_public_key(&PublicKey::new(vec![9u8; 65]))
+            .unwrap()
+            .to_base58();
+        let allocation = NonNegI64::try_from(1_000).unwrap();
+        native.set_dev_vesting(Some(&DevVesting {
+            address: recipient.clone(),
+            allocation,
+            unreleased: allocation,
+        }));
+
+        let total = native.total_value().await.unwrap();
+        native.release_dev_tax(1, &params).await.unwrap();
+
+        assert_eq!(
+            native.total_value().await.unwrap(),
+            total,
+            "releasing the allocation moved value — it is a transfer from the vesting account"
+        );
+        let leaf = native
+            .dev_vesting()
+            .await
+            .unwrap()
+            .expect("the vesting leaf remains after a full release");
+        assert_eq!(leaf.unreleased, NonNegI64::zero());
+        assert_eq!(
+            native.vault_balance(&recipient).await.unwrap(),
+            Some(allocation),
+            "the released amount is in the recipient's ordinary vault"
+        );
     }
 
     #[test]

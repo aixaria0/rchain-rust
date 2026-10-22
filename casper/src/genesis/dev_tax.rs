@@ -168,6 +168,31 @@ pub fn refuse_a_production_genesis_without_an_address(
     Ok(())
 }
 
+/// **The second half of the production genesis gate** (Law 79): an allocation with no schedule is
+/// not a production term.
+///
+/// `0` is a real rule — the whole allocation is released at the first epoch boundary — and it is the
+/// right default for a chain with no allocation, where the address is empty and this gate does not
+/// apply. When an address **is** set outside `--dev-mode`, a zero term makes the entire allocation
+/// spendable at once, so a production ceremony has to state the term it intends. A negative term is
+/// already refused where the config becomes a number (`proof_of_stake_from_config`).
+pub fn refuse_a_production_genesis_with_a_zero_vesting_term(
+    dev_mode: bool,
+    address: &str,
+    vesting_blocks: i64,
+) -> Result<(), String> {
+    if !dev_mode && !address.is_empty() && vesting_blocks == 0 {
+        return Err(
+            "casper.genesis-block-data.dev-tax-vesting-blocks is 0 and this node is creating a \
+             genesis block outside --dev-mode: a zero term releases the whole developer allocation at \
+             the first epoch boundary. Set the term (the shipped value is 36 months at 5 s/block), or \
+             run with --dev-mode for a network whose allocation need not vest"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +402,24 @@ mod tests {
         let err = refuse_a_production_genesis_without_an_address(false, "").unwrap_err();
         assert!(
             err.contains("dev-tax-address") && err.contains("--dev-mode"),
+            "the refusal names the key and the escape: {err}"
+        );
+    }
+
+    /// **A production allocation must state its term.** Zero is a real rule (release everything at
+    /// the first boundary) but it is not a production term; it stays legal for a devnet and for a
+    /// chain with no allocation, where the address is empty and this gate does not apply.
+    #[test]
+    fn a_production_genesis_with_a_zero_vesting_term_is_refused() {
+        let address = "any-address";
+        assert!(refuse_a_production_genesis_with_a_zero_vesting_term(false, address, 0).is_err());
+        assert!(refuse_a_production_genesis_with_a_zero_vesting_term(false, address, 1).is_ok());
+        assert!(refuse_a_production_genesis_with_a_zero_vesting_term(true, address, 0).is_ok());
+        assert!(refuse_a_production_genesis_with_a_zero_vesting_term(false, "", 0).is_ok());
+        let err =
+            refuse_a_production_genesis_with_a_zero_vesting_term(false, address, 0).unwrap_err();
+        assert!(
+            err.contains("dev-tax-vesting-blocks") && err.contains("--dev-mode"),
             "the refusal names the key and the escape: {err}"
         );
     }
