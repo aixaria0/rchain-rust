@@ -547,6 +547,7 @@ async fn restore_guard_ignores_a_fringe_state_with_different_bounds() {
             .is_err(),
         "the committed block state is (2,2), not the fringe's (1,1)"
     );
+}
 
 /// **The restored developer allocation is checked before Running, and only a local claim is
 /// enforced.**
