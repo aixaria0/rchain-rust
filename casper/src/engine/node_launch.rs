@@ -613,20 +613,20 @@ async fn restored_native_state_root(
     }
     let repr = dag.get_representation().await;
     if let Some((_, hashes)) = repr.height_map.iter().next_back() {
-        if let Some(hash) = hashes.first() {
-            if let Some(block) = block_store
-                .get(&[*hash])
-                .await?
-                .into_iter()
-                .next()
-                .flatten()
-            {
-                return Ok(block.post_state_hash);
-            }
-        }
+        let hash = hashes.first().ok_or_else(|| {
+            "restored DAG has a newest height without any block hashes".to_string()
+        })?;
+        let block = block_store
+            .get(&[*hash])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+            .ok_or_else(|| "newest restored DAG block is missing from block storage".to_string())?;
+        return Ok(block.post_state_hash);
     }
-    // A synthetic approved fringe in a guard unit test may name a state with no block behind it;
-    // keep reading the named state, which is what the test wrote.
+    // Only a synthetic, empty DAG has no block post-state to inspect.
+    // Never silently substitute a fringe root when the DAG names a missing block.
     Ok(approved.state_hash)
 }
 
