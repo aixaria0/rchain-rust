@@ -109,6 +109,9 @@ where
                 .values()
                 .map(|m| (m.sender.clone(), m.height)),
         );
+        // With no strict bonded supermajority, supported progress remains zero;
+        // absent/stale senders cannot be retired by a minority tip alone.
+        // This can leave the boundary frozen until quorum-backed progress resumes.
         // One fast proposer may not age out six still-active validators.
         // Use the same stake-backed progress clock as the finalizer.
         let supported_tip = super::liveness::quorum_supported_height(&bonds, &heights);
@@ -523,6 +526,48 @@ mod tests {
             state.round_parents.get(&2).unwrap().sender_seq,
             SeqNum::try_from(1).unwrap()
         );
+    }
+
+    /// With fewer than strictly 2/3 of total stake represented, no
+    /// quorum-backed progress height exists. One fast proposer cannot
+    /// silently close the round; the boundary may move again once a
+    /// full-stake supermajority resumes sending messages.
+    #[test]
+    fn missing_supermajority_freezes_round_until_quorum_returns() {
+        let bonds = [(0, 100), (1, 100), (2, 100)];
+        let mut state: DagMessageState<i32, i32> = DagMessageState::empty();
+        state.insert_msg_mut(&at(0, 0, 0, 1, &bonds));
+        assert_eq!(state.round_height, BlockHeight::try_from(1).unwrap());
+
+        for height in 2..=12 {
+            state.insert_msg_mut(&at(100 + height as i32, 0, height - 1, height, &bonds));
+        }
+        let bonded = state.latest_msgs.values().next().unwrap().bonds_map.clone();
+        let latest = super::super::liveness::latest_heights(
+            state.latest_msgs.values().map(|m| (m.sender, m.height)),
+        );
+        assert_eq!(
+            super::super::liveness::quorum_supported_height(&bonded, &latest),
+            BlockHeight::zero(),
+            "one sender alone is not a quorum"
+        );
+        assert_eq!(state.round_height, BlockHeight::try_from(1).unwrap());
+        assert_eq!(state.round_parents.len(), 1);
+
+        state.insert_msg_mut(&at(201, 1, 0, 13, &bonds));
+        // Exactly 2/3 is still not the strict supermajority.
+        assert_eq!(state.round_height, BlockHeight::try_from(1).unwrap());
+        assert_eq!(state.round_parents.len(), 1);
+
+        state.insert_msg_mut(&at(202, 2, 0, 14, &bonds));
+        assert_eq!(state.round_height, BlockHeight::try_from(12).unwrap());
+        assert_eq!(state.round_parents.len(), 3);
+        for sender in 0..3 {
+            assert!(
+                !state.has_advanced_past_the_round(&sender),
+                "returning quorum must form one fresh boundary"
+            );
+        }
     }
 
     #[test]

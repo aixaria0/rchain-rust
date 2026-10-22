@@ -239,7 +239,7 @@ impl CommUtil {
             self.log.warn(
                 self.log_source,
                 &format!(
-                    "Block hash {block_hash}: broadcast returned {} outcomes for {} peers;                      missing outcomes require retry, not inferred success",
+                    "Block hash {block_hash}: broadcast returned {} outcomes for {} peers; missing outcomes require retry, not inferred success",
                     outcomes.len(),
                     peers.len()
                 ),
@@ -313,7 +313,7 @@ impl CommUtil {
         self.log.info(
             self.log_source,
             &format!(
-                "Block hash {block_hash}: transport accepted {initially_accepted} initial,                  {retry_accepted} retry; {not_delivered} failed of {} peers                  (transport acceptance is not remote DAG admission)",
+                "Block hash {block_hash}: transport accepted {initially_accepted} initial, {retry_accepted} retry; {not_delivered} failed of {} peers (transport acceptance is not remote DAG admission)",
                 peers.len()
             ),
         );
