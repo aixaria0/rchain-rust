@@ -4203,7 +4203,7 @@ def laws : List Law := [
     note := "**A deliberate deviation, registered as one.** The Scala ceremony installs exactly the \
       vaults its wallets file names; this port derives one more from their total, so the row is \
       `provedModel` — there is no conformance corpus for a rule the oracle does not have — and the \
-      deviation is recorded in `spec/audit/passes.md` §138 with its own finding row. Three things the \
+      deviation is recorded in `spec/audit/passes.md` §139 with its own finding row. Three things the \
       law is *for*: the balance is installed outside the genesis block's deploys and content-addressed \
       into its post-state hash, so the arithmetic has to be one function of a file that a creator and \
       a joiner both read (AUDIT C46); only the *address* is a setting, never the amount; and the rule \
