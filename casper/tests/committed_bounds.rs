@@ -404,6 +404,25 @@ async fn restore_guard_checks_committed_zero_legacy_and_bad_records_before_runni
     );
 }
 
+// A DAG that references a block without its body must not allow the restore guard
+// to fall back to the approved fringe's native state, even when the bounds match.
+#[tokio::test]
+async fn restore_guard_refuses_missing_newest_block_body() {
+    let runtime = common::build_runtime_manager().await;
+    let (dag, store, approved) = snapshot_fixture(&runtime, Some(params(2, 2)), params(2, 2)).await;
+
+    let missing = BlockHash::new([2; 32]);
+    assert_eq!(store.delete(&[missing]).await.unwrap(), 1);
+
+    let error = check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 2, 2)
+        .await
+        .expect_err("restored DAG references a missing block; the guard must fail closed");
+    assert!(
+        error.contains("missing from block storage"),
+        "unexpected restore refusal: {error}"
+    );
+}
+
 /// **The restore guard reads the newest block's post-state, not the approved fringe's
 /// `state_hash`.**
 ///
@@ -453,24 +472,5 @@ async fn restore_guard_ignores_a_fringe_state_with_different_bounds() {
             .await
             .is_err(),
         "the committed block state is (2,2), not the fringe's (1,1)"
-    );
-}
-
-// A DAG that references a block without its body must not allow the restore guard
-// to fall back to the approved fringe's native state, even when the bounds match.
-#[tokio::test]
-async fn restore_guard_refuses_missing_newest_block_body() {
-    let runtime = common::build_runtime_manager().await;
-    let (dag, store, approved) = snapshot_fixture(&runtime, Some(params(2, 2)), params(2, 2)).await;
-
-    let missing = BlockHash::new([2; 32]);
-    assert_eq!(store.delete(&[missing]).await.unwrap(), 1);
-
-    let error = check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 2, 2)
-        .await
-        .expect_err("restored DAG references a missing block; the guard must fail closed");
-    assert!(
-        error.contains("missing from block storage"),
-        "unexpected restore refusal: {error}"
     );
 }
