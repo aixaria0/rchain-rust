@@ -548,7 +548,12 @@ pub(crate) async fn finalized_fringe_response(
                     ancestry: Vec::new(),
                 })
             }
-            None => None,
+            None => {
+                if req.anchor.is_none() {
+                    log.warn(log_source, "FinalizedFringeRequest unanswered: no latest finalized fringe and no genesis block in the DAG height map");
+                }
+                None
+            }
         }
     } else {
         // **The latest finalised block's claim, read from that block's metadata** (Law 66/68; C250's
@@ -596,11 +601,25 @@ pub(crate) async fn finalized_fringe_response(
     // that cannot be answered is a thing the joiner already has a terminal state for (AUDIT C181).
     let response = match req.anchor {
         Some(anchor) => match block_store.get(&[anchor]).await {
-            Ok(mut v) => v.pop().flatten().map(|b| FinalizedFringe {
-                hashes: vec![anchor],
-                state_hash: b.post_state_hash,
-                ancestry: Vec::new(),
-            }),
+            Ok(mut v) => match v.pop().flatten() {
+                Some(b) => Some(FinalizedFringe {
+                    hashes: vec![anchor],
+                    state_hash: b.post_state_hash,
+                    ancestry: Vec::new(),
+                }),
+                None => {
+                    // An absent requested root is a normal refusal, not a
+                    // storage error. Do not substitute the ordinary fringe.
+                    log.warn(
+                        log_source,
+                        &format!(
+                            "FinalizedFringeRequest unanswered: requested anchor {} absent from BlockStore; no alternate state root served",
+                            anchor.to_hex()
+                        ),
+                    );
+                    None
+                }
+            },
             Err(e) => {
                 log.error(
                     log_source,
@@ -1140,6 +1159,18 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 }
             }
             CasperMessage::FinalizedFringeRequest(req) => {
+                // A successful reply was logged, but a refused/missing-state
+                // request had no receipt trace. This record distinguishes a
+                // request reaching the responder from an earlier transport
+                // timeout. Do not log untrusted identifier or payload bytes.
+                self.log.info(
+                    self.log_source,
+                    &format!(
+                        "Received FinalizedFringeRequest from {peer}; anchor={}; include_fringe_metadata={}",
+                        req.anchor.map_or_else(|| "ordinary".to_string(), |h| h.to_hex()),
+                        req.include_fringe_metadata
+                    ),
+                );
                 // The response construction — the peer's own fringe, or the block a recovery sync
                 // named, with the ancestry either way — is a free function of its own so the choice
                 // has a test that does not need a whole engine (C259a).
@@ -1173,6 +1204,14 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                                 .join(" ")
                         ),
                     );
+                } else {
+                    self.log.warn(
+                        self.log_source,
+                        &format!(
+                            "FinalizedFringeResponse withheld from {peer}: no valid requested root available; anchor={}",
+                            req.anchor.map_or_else(|| "ordinary".to_string(), |h| h.to_hex())
+                        ),
+                    );
                 }
             }
             CasperMessage::StoreItemsMessageRequest(req) => {
@@ -1197,6 +1236,24 @@ impl<E: RSpaceExporter> NodeRunning<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FringeLog {
+        warnings: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Log for FringeLog {
+        fn is_trace_enabled(&self, _source: LogSource) -> bool {
+            false
+        }
+        fn trace(&self, _source: LogSource, _msg: &str) {}
+        fn debug(&self, _source: LogSource, _msg: &str) {}
+        fn info(&self, _source: LogSource, _msg: &str) {}
+        fn warn(&self, _source: LogSource, msg: &str) {
+            self.warnings.lock().unwrap().push(msg.to_string());
+        }
+        fn error(&self, _source: LogSource, _msg: &str) {}
+    }
 
     /// A block store whose every read fails, so a read error is observable as one.
     struct FailingBlockStore;
@@ -2186,11 +2243,12 @@ mod tests {
             anchor: Some(hash(0xEE)),
             ..req.clone()
         };
+        let refused_log = FringeLog::default();
         assert!(
             finalized_fringe_response(
                 dag.as_ref(),
                 &store,
-                &NopLog,
+                &refused_log,
                 LogSource::new("test"),
                 &absent
             )
@@ -2198,5 +2256,10 @@ mod tests {
             .is_none(),
             "an unknown anchor must not be answered with a root the requester did not ask for"
         );
+        let warnings = refused_log.warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1, "one refusal reason per absent anchor");
+        assert!(warnings[0].contains(&hash(0xEE).to_hex()));
+        assert!(warnings[0].contains("absent from BlockStore"));
+        assert!(warnings[0].contains("no alternate state root served"));
     }
 }
