@@ -16,14 +16,14 @@ guarantees", that is the pointer to follow.
 
 | Model | Complete | Compositional | Concurrent | Complexity | Reflection | Behavioural types | Score |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Turing machines | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | **2 / 6** |
-| Lambda calculus | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | **2 / 6** |
-| CCS | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | **3 / 6** |
-| Petri nets | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ | **3 / 6** |
-| π-calculus | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | **5 / 6** |
-| **ρ-calculus** | ✓ | ✓ | ✓ | ✓ | **✓** | ✓ | **6 / 6** |
+| Turing machines | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | **2 / 6** |
+| Lambda calculus | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | **2 / 6** |
+| CCS | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | **3 / 6** |
+| Petri nets | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | **3 / 6** |
+| π-calculus | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **5 / 6** |
+| **ρ-calculus** | ✅ | ✅ | ✅ | ✅ | **✅** | ✅ | **6 / 6** |
 
-✓ has the capability · ✗ lacks it
+✅ has the capability · ❌ lacks it
 
 ## What the six capabilities mean
 
