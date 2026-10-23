@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 
@@ -93,6 +93,52 @@ const RESUME_AUTOPROPOSE_RATE_LIMIT_PER_SEC: u64 = 1;
 /// be indistinguishable from the defect.
 const UNATTRIBUTED_PEER: &[u8] = b"unattributed-peer";
 
+/// An opt-in bound on executing HTTP requests, separate from the per-peer rate limit.
+/// One zero-delay admission attempt is made before JSON extraction; refusal is 503.
+/// No default number is guessed for a validator without resource measurements.
+const MAX_CONFIGURED_HTTP_INFLIGHT: usize = 1024;
+
+#[derive(Clone)]
+pub struct InFlightAdmission {
+    limit: usize,
+    semaphore: Arc<Semaphore>,
+}
+
+impl InFlightAdmission {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            semaphore: Arc::new(Semaphore::new(limit)),
+        }
+    }
+}
+
+fn parse_inflight_limit(
+    raw: Option<&str>,
+    name: &str,
+) -> Result<Option<InFlightAdmission>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let limit = raw.parse::<usize>().map_err(|_| {
+        format!("{name} must be an integer from 1 to {MAX_CONFIGURED_HTTP_INFLIGHT}")
+    })?;
+    if !(1..=MAX_CONFIGURED_HTTP_INFLIGHT).contains(&limit) {
+        return Err(format!(
+            "{name} must be an integer from 1 to {MAX_CONFIGURED_HTTP_INFLIGHT}"
+        ));
+    }
+    Ok(Some(InFlightAdmission::new(limit)))
+}
+
+fn inflight_from_env(name: &str) -> Result<Option<InFlightAdmission>, String> {
+    match std::env::var(name) {
+        Ok(value) => parse_inflight_limit(Some(&value), name),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err(format!("{name} is not valid Unicode")),
+    }
+}
+
 /// Comm state needed by `GET /status` (port of the `ConnectionsCell`/`NodeDiscovery`/`RPConfAsk`
 /// arguments of `StatusInfo.service`).
 #[derive(Clone)]
@@ -145,6 +191,10 @@ pub struct HttpState {
     /// policy question with no oracle behind it — the Scala's HTTP deploy routes are unlimited — so it
     /// is left where it was rather than answered by a guess.
     pub explore_rate_limiter: Arc<KeyedRateLimiter>,
+    /// Optional process-wide in-flight bounds. They do not use a memory
+    /// estimate or claim to prevent OOM; the operator must set each separately.
+    pub deploy_admission: Option<InFlightAdmission>,
+    pub explore_admission: Option<InFlightAdmission>,
     /// Rate limiter for the devnet faucet endpoint.
     pub faucet_rate_limiter: Arc<KeyedRateLimiter>,
     /// Whether the faucet routes are mounted at all — dev mode **and** a deployer key, which is the
@@ -726,6 +776,18 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/admission": {
+      "get": {
+        "summary": "Configured HTTP in-flight admission bounds",
+        "description": "Deploy and explore concurrency budget, not a memory, finality or readiness signal. Unset budgets return configured=false.",
+        "responses": {
+          "200": { "description": "HTTP concurrency-only admission state", "content": { "application/json": { "schema": { "type": "object", "properties": {
+            "deploy": { "$ref": "#/components/schemas/HttpAdmissionBudget" },
+            "explore": { "$ref": "#/components/schemas/HttpAdmissionBudget" }
+          } } } } }
+        }
+      }
+    },
     "/capabilities": {
       "get": {
         "summary": "What this node's API can do",
@@ -798,7 +860,8 @@ pub const OPENAPI_JSON: &str = r##"{
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeployRequest" } } } },
         "responses": {
           "200": { "description": "Deploy accepted", "content": { "application/json": { "schema": { "type": "string" } } } },
-          "400": { "description": "Invalid deploy" }
+          "400": { "description": "Invalid deploy" },
+          "503": { "description": "Opt-in concurrent HTTP admission budget exhausted; Retry-After: 1" }
         }
       }
     },
@@ -1204,6 +1267,16 @@ pub const OPENAPI_JSON: &str = r##"{
           { "type": "object", "properties": { "status": { "type": "string" } } }
         ]
       },
+      "HttpAdmissionBudget": {
+        "type": "object",
+        "properties": {
+          "configured": { "type": "boolean" },
+          "limit": { "type": "integer", "minimum": 1 },
+          "inFlight": { "type": "integer", "minimum": 0 },
+          "available": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["configured"]
+      },
       "NodeCapabilities": {
         "type": "object",
         "properties": {
@@ -1344,6 +1417,61 @@ async fn peer_rate_limit(
     next.run(request).await
 }
 
+/// Capacity bound independent of per-peer requests/second. The permit lives
+/// through the *whole* handler future, including exploratory Rholang execution.
+/// A busy route fails quickly without parsing the JSON body or queuing unbounded
+/// work. Other routes (status, finality, admin) do not borrow these permits.
+async fn in_flight_admission(
+    State(budget): State<Option<InFlightAdmission>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let _permit: Option<OwnedSemaphorePermit> = match budget {
+        Some(budget) => match budget.semaphore.try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                let mut response = (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json("HTTP in-flight capacity exhausted".to_string()),
+                )
+                    .into_response();
+                response.headers_mut().insert(
+                    axum::http::header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return response;
+            }
+        },
+        None => None,
+    };
+    next.run(request).await
+}
+
+fn admission_field(budget: &Option<InFlightAdmission>) -> serde_json::Value {
+    match budget {
+        Some(budget) => {
+            let available = budget.semaphore.available_permits();
+            json!({
+                "configured": true,
+                "limit": budget.limit,
+                "inFlight": budget.limit - available,
+                "available": available
+            })
+        }
+        None => json!({"configured": false}),
+    }
+}
+
+/// Describes only the HTTP concurrency bound, not memory pressure, validator
+/// health, transport responsiveness, finality progress or readiness.
+async fn api_admission_status(State(state): State<HttpState>) -> Response {
+    Json(json!({
+        "deploy": admission_field(&state.deploy_admission),
+        "explore": admission_field(&state.explore_admission),
+    }))
+    .into_response()
+}
+
 /// Build the public HTTP routes (port of `acquireHttpServer`'s route map: `/version`, `/metrics`,
 /// `/status`, the `/api` JSON routes, `/reporting` + `/api/trace`, the `/api/v1` routes, and the
 /// `/api/v1/openapi.json` OpenAPI document).
@@ -1357,6 +1485,10 @@ pub fn router(state: HttpState) -> Router {
     let deploy_routes = Router::new()
         .route("/api/deploy", post(api_deploy))
         .route("/api/v1/deploy", post(api_deploy))
+        .route_layer(middleware::from_fn_with_state(
+            state.deploy_admission.clone(),
+            in_flight_admission,
+        ))
         .route_layer(middleware::from_fn_with_state(
             (
                 state.deploy_rate_limiter.clone(),
@@ -1375,6 +1507,10 @@ pub fn router(state: HttpState) -> Router {
             "/api/v1/explore-deploy-by-block-hash",
             post(api_explore_deploy_by_block_hash),
         )
+        .route_layer(middleware::from_fn_with_state(
+            state.explore_admission.clone(),
+            in_flight_admission,
+        ))
         .route_layer(middleware::from_fn_with_state(
             (
                 state.explore_rate_limiter.clone(),
@@ -1402,6 +1538,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/metrics", get(metrics))
         .route("/status", get(status))
         .route("/api/status", get(api_status))
+        .route("/api/v1/admission", get(api_admission_status))
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/shards", get(api_shards))
         .route("/api/deploys", get(api_deploys))
@@ -1660,6 +1797,10 @@ pub async fn acquire_http_server(
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| e.to_string())?;
+    // Read configuration once at startup. An invalid explicit limit stops the
+    // listener instead of silently disabling admission control.
+    let deploy_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_DEPLOY")?;
+    let explore_admission = inflight_from_env("RNODE_HTTP_MAX_INFLIGHT_EXPLORE")?;
     let app = router(HttpState {
         reporter,
         metrics,
@@ -1677,6 +1818,8 @@ pub async fn acquire_http_server(
             DEFAULT_API_RATE_LIMIT_PER_SEC,
             MAX_TRACKED_PEERS,
         )),
+        deploy_admission,
+        explore_admission,
         faucet_rate_limiter: Arc::new(KeyedRateLimiter::new(
             FAUCET_RATE_LIMIT_PER_SEC,
             MAX_TRACKED_PEERS,
@@ -2019,10 +2162,171 @@ mod tests {
                 FAUCET_RATE_LIMIT_PER_SEC,
                 MAX_TRACKED_PEERS,
             )),
+            deploy_admission: None,
+            explore_admission: None,
             // On by default in the tests, because the router tests drive the faucet route; the
             // off case is pinned by its own test below.
             faucet_enabled: true,
         }
+    }
+
+    #[test]
+    fn http_inflight_config_is_opt_in_and_rejects_invalid_values() {
+        assert!(parse_inflight_limit(None, "TEST_LIMIT").unwrap().is_none());
+        for invalid in ["0", "1025", "-1", "nan", "8 ", ""] {
+            assert!(parse_inflight_limit(Some(invalid), "TEST_LIMIT").is_err());
+        }
+        let configured = parse_inflight_limit(Some("2"), "TEST_LIMIT")
+            .unwrap()
+            .expect("configured");
+        assert_eq!(configured.limit, 2);
+        assert_eq!(configured.semaphore.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn in_flight_admission_refuses_explore_aliases_before_body_decode() {
+        use tower::ServiceExt;
+        let mut s = state();
+        s.explore_admission = Some(InFlightAdmission::new(1));
+        s.deploy_admission = Some(InFlightAdmission::new(2));
+        let occupied = s
+            .explore_admission
+            .as_ref()
+            .unwrap()
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        for uri in [
+            "/api/explore-deploy",
+            "/api/v1/explore-deploy",
+            "/api/explore-deploy-by-block-hash",
+            "/api/v1/explore-deploy-by-block-hash",
+        ] {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{ invalid JSON"))
+                .unwrap();
+            let reply = router(s.clone()).oneshot(request).await.unwrap();
+            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            assert_eq!(
+                reply
+                    .headers()
+                    .get(axum::http::header::RETRY_AFTER)
+                    .unwrap(),
+                "1"
+            );
+        }
+        let status = router(s.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/admission")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(status.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["explore"]["inFlight"], 1);
+        assert_eq!(json["deploy"]["inFlight"], 0);
+        assert_eq!(json["deploy"]["limit"], 2);
+        drop(occupied);
+        let reply = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/admission")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let data = axum::body::to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(json["explore"]["available"], 1);
+    }
+
+    #[tokio::test]
+    async fn deploy_budget_separate_and_status_stays_accessible() {
+        use tower::ServiceExt;
+        let mut s = state();
+        s.deploy_admission = Some(InFlightAdmission::new(1));
+        s.explore_admission = Some(InFlightAdmission::new(3));
+        let held = s
+            .deploy_admission
+            .as_ref()
+            .unwrap()
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        for uri in ["/api/deploy", "/api/v1/deploy"] {
+            let reply = router(s.clone())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from("invalid json"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        let status = router(s.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/status")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        drop(held);
+        let reply = router(s)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/deploy")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("invalid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(reply.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn disabled_admission_does_not_claim_validator_health() {
+        use tower::ServiceExt;
+        let response = router(state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/admission")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["deploy"]["configured"], false);
+        assert_eq!(json["explore"]["configured"], false);
+        assert!(json.get("degraded").is_none());
     }
 
     /// **AUDIT C148**: the PoS read has a route, and the route renders what it was handed. The
