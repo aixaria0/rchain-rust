@@ -92,12 +92,12 @@ last row is the one this node is built on:
 
 | Model | Complete | Compositional | Concurrent | Complexity | Reflection | Behavioural types | Score |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Turing machines | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | 2 / 6 |
-| Lambda calculus | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | 2 / 6 |
-| CCS | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | 3 / 6 |
-| Petri nets | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ | 3 / 6 |
-| π-calculus | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | 5 / 6 |
-| **ρ-calculus** | ✓ | ✓ | ✓ | ✓ | **✓** | ✓ | **6 / 6** |
+| Turing machines | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | 2 / 6 |
+| Lambda calculus | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | 2 / 6 |
+| CCS | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | 3 / 6 |
+| Petri nets | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | 3 / 6 |
+| π-calculus | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | 5 / 6 |
+| **ρ-calculus** | ✅ | ✅ | ✅ | ✅ | **✅** | ✅ | **6 / 6** |
 
 **Concurrency**, in that column, is not "can run things at once" — every model can be scheduled. It is
 whether the model *defines when two concurrent steps commute*, so that parallelism is sound rather than
@@ -173,7 +173,7 @@ pre-testnet node leads.
 | **Machine-checked semantics** | Lean 4 + Coq — <!-- counts:laws -->79 laws<!-- counts:end -->; every registered witness resolves; zero `#[ignore]`d tests; the gate refuses `sorry`/`admit`/`opaque` | `frozen-abi` digests, which are checksums | Static bytecode verifier; **Move Prover absent from its tree and CI** | Nothing |
 | **Peer identity** | Mutual TLS — the certificate's key is **bound to the identity the peer claims in the message**, so a peer cannot speak as another. **Which keys are admitted is unconstrained**: any valid certificate is a peer. That is a recorded decision, not an oversight — block validation, not the transport, is the authorization boundary. Of the ten findings under this precondition, six are closed at the layer where the harm was real, one is refuted, and three are deliberately open with their arguments stated ([§116](spec/audit/passes.md)) | Signed shreds, but no binding to a claimed identity | P2P layer is a git dependency — uninspectable in-tree | Plaintext; the handshake signs nothing |
 | **Supermajority arithmetic** | Exact `i128` integer — no floating point | `2f64/3f64` | Integer | Proof of work |
-| **Cost model bounds attacker work** | ✓ **closed out the same day** — a per-block phlo cap, and the five operations that were charged less than their work now charge for it | ✗ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ✗ no step budget at all |
+| **Cost model bounds attacker work** | ✅ **closed out the same day** — a per-block phlo cap, and the five operations that were charged less than their work now charge for it | ❌ account copies are unbilled | Instruction tiers, 128 KiB transaction bound | ❌ no step budget at all |
 
 **The last row is the one this node did not lead, and it is the one it fixed within the day** — a defect
 class **all four nodes share**, and the close-out is not claimed to be more than it is: those charges
