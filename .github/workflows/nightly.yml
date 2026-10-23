@@ -88,6 +88,16 @@ jobs:
           echo '--- lean build tail ---'; tail -n 120 /tmp/lean-build.log || true
           echo '--- memory sampler tail ---'; tail -n 200 /tmp/lean-memory.log || true
 
+      - name: Record the formal gate memory
+        # A passing run also needs the peak and the available memory: #417's
+        # residual is the 14.2 GB isolated peak against the runner's 16 GB.
+        if: always()
+        run: |
+          echo '--- memory after the gate ---'; free -m || true
+          echo '--- peak RSS sample ---'
+          grep -E '^[[:space:]]*[0-9]+[[:space:]]+[0-9]+' /tmp/lean-memory.log 2>/dev/null | sort -k2 -nr | head -3 || true
+          echo '--- sampler tail ---'; tail -n 40 /tmp/lean-memory.log || true
+
   coverage:
     name: Coverage measurement and floor
     runs-on: ubuntu-latest
