@@ -82,8 +82,37 @@ The parser never contacts validators, submits a deploy or embeds raw kernel log 
 
 1. **Host pressure:** replay the same signed, bounded ~40-deploy workload on an isolated, disposable copy of the exact deployed binary and data/genesis class. Compare measured memory, process exits, API readiness and time to service under low versus sufficient memory. Do not run load against the fragile public testnet.
 2. **Fringe availability:** record exact request/response events on both sender and responder, matching source SHA, peer and anchor. If a reply is absent, distinguish a timed-out transport, a starved event loop, and refusal for an unavailable stored root. Preserve fail-closed behavior.
-3. **Finalized-write integrity:** for each allegedly absent Root key, record deploy ID, inclusion block hash, whether that block is finalized, the finalized post-state, and reads from at least two independently responding validators at the **same finalized state**. Only a reproducible disagreement at matching finalized state justifies a safety/loss claim.
+3. **Finalized-write integrity:** for each allegedly absent Root key, record deploy ID, inclusion block hash, whether that block is finalized, the finalized post-state, and reads from at least two independently responding validators at the **same finalized state**. A disagreement in same-pinned-state reads is a read-integrity witness. But unanimous agreement does not exclude a lost accepted write between finalized states (see K8/#280). Prove inclusion in an earlier finalized post-state, absence in a later finalized post-state, and the absence of legitimate rejection/removal before claiming accepted-finalized-write loss.
 4. **Topology:** model a whole-host failure (two of four equal-stake validators) separately from a single-node failure. Adding an observer can offload some API work but does not add voting stake or repair a missing quorum.
 5. **Deployment:** if the operator resizes hosts, collect pre- and post-change samples on the same binary and genesis before attributing improvement to memory. Any new-genesis transition or protocol upgrade needs separate maintainer approval and its own acceptance.
 
 **Exit condition:** repeatably functioning reads and finality progress under the bounded application workload, successful ordinary and anchored fringe recovery on available nodes, a validated finalized-write invariant, and no unexplained process exits. If some gates cannot be run, retain #420 as open with the exact missing evidence.
+
+
+## Root-key claim: offline discriminator (separate from host OOM)
+
+The r-cash installer reports **17 deploys from 18:00:03 to 18:03:06 UTC**, before the severe-memory window at about 18:55–19:10 UTC. The B/C host OOM kills are real; they are **not yet a causal explanation for this earlier Root observation**. A `ProcessedWithSuccess` inclusion status is not evidence that every register effect remained accepted across later multi-parent merges.
+
+The current [r-cash Root template](https://github.com/PatrickMockridge/r-cash/blob/main/contracts/build/deploy/v3/00_root.rho) inserts keys on the success path and exposes `entries.keys()`. The exact installed term/source commit remains to be pinned. Because Rholo's [multi-parent merge](https://github.com/rhovision-org/rholo/blob/71c6a513d9785e45c3fbb919125c3314c2d8bf6e/docs/src/node/block-merge.md) explicitly resolves conflicting deploy chains, `keys(A) ⊆ keys(B)` is **conditional on accepted effects**; justification ancestry alone is insufficient.
+
+| Reported pin | Full hash | `component:governor` |
+| --- | --- | --- |
+| Height 835 | `3c12c6e02aec52b44c8f0953e1a60f9dedd5a1ed5ebc40d76a0df4f4200bd6d6` | present |
+| Height 845 | `083e118904f2fdf27e87e03ee2523d7c805dd960a29c013b1d5220dbb8a51950` | absent |
+| Height 1254, reported finalized | `dfed8a269ed35d893e64b61abb6fcfbe2c1112a38ea5cb449cdfeec1fd3e79db` | compare finalized post-state |
+
+Do not use `bounds` at 830→845 as an equivalent witness: the published 830 post-state already lacks `bounds`.
+
+With operator-supplied **raw** B/C `POST /api/v1/explore-deploy-by-block-hash` responses and block headers, run the classifier entirely offline:
+
+~~~sh
+python3 tools/incident-root-evidence.py root-witness-input.json \
+  --output root-witness-classification.json
+python3 -m unittest discover -s tests -p 'test_incident_root_evidence.py'
+~~~
+
+Input is one JSON object with `pair: {ancestor, descendant}` (full 64-character lowercase block hashes), `nodes: ["B","C"]`, `key: "component:governor"`, `reads` and `blocks`. Each read records `node`, `blockHash`, `request: {blockHash, usePreStateHash:false}`, and the raw `response` including `expr`. Each block record has `blockHash` and raw `response` (the actual `blockInfo` header). Include every intermediate header to verify a transitive justification path. No network calls are made; input is bounded at 4 MiB.
+
+Output distinguishes invalid/missing reads from empty key sets; compares B/C at the same anchored state; evaluates whether the named key is present/absent; and labels ancestry as `VERIFIED`, `INCOMPLETE_HEADERS` or `NOT_IN_SUPPLIED_CLOSURE`. The output is SHA-256 bound to input. It **does not** claim finalized write loss or OOM causation. Use actual merge-rejection/acceptance provenance and finalized pre-/post-states for attribution.
+
+A same-state B/C agreement can still coexist with a **unanimous regression**; the distinct earlier [#280 witness](https://github.com/rhovision-org/rholo/blob/71c6a513d9785e45c3fbb919125c3314c2d8bf6e/spec/audit/evidence/n280-merge-loses-a-write-results.md) demonstrates why. The other suggested features (capacity preflight, load shedding, peer-degraded signaling, multi-bootstrap failover, structured fringe refusal) require separately scoped changes and isolated acceptance. Do not substitute an unrelated root for an unavailable anchored fringe, do not conflate existing rate-limiting with memory backpressure, and do not use the unreproduced historical 0.25 MiB/block estimate to size the deployed binary.
