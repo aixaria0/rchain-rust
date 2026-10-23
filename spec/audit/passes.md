@@ -1266,7 +1266,7 @@ oracle is, and the test that pins the fix.
   carries it into `EList`/`ESet`/`EMap`'s `remainder` field, and the matcher consumes it
   (`fold_match`, `handle_remainder`). Only the parser was missing the arm, which made a valid
   collection pattern unparseable for two of the three forms. Measured payoff: the rgov governance
-  contracts (`rchain-community/rgov`) destructure their message queues exactly this way — `Inbox.rho`
+  contracts (`rhovision-org/rgov`) destructure their message queues exactly this way — `Inbox.rho`
   uses it 16 times with both bindings *used* (`ret!(item) | box!(rest)`), so `Inbox.rho` is
   unparseable and everything importing it is too: `Directory.rho`, `Issue.rho`, `Group.rho`,
   `CrowdFund.rho`, `Kudos.rho`, `memberIdGovRev.rho` and `feature/MemberDirectory.rho` **all failed to
@@ -2027,7 +2027,7 @@ removing the fix and confirming the test fails.
   accepted again on evidence, which is the part worth reading. The port accepted `[1,]`, `Set(1,)`,
   `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`, `(1, 2,)`, `a.b(1,)` and `for (x <- c;) { … }` at
   eleven loops, and the grammar's `[X] ::= X | X "," [X]` derives none of them, so the checks were
-  added. **They broke real code**: `rchain-community/rgov`'s `rholang/core/CrowdFund.rho` ends each
+  added. **They broke real code**: `rhovision-org/rgov`'s `rholang/core/CrowdFund.rho` ends each
   parameter of its `contract CrowdFund(…)` head with a comma before a comment, and nine of the Scala's
   own test fixtures (`legacy/casper/src/test/resources/*Test.rho`) end list literals the same way —
   files that *ran* in the Scala suite, which is the evidence that the reference node accepts the
@@ -4461,7 +4461,7 @@ found the first symptom **one layer lower** — in the proposer's attestation gu
 the issue names — and a second defect beside it. Both were red first, each against its own mutation,
 and both are the *opposite* of what the guard's shipped comment and the docs said.
 
-[#70]: https://github.com/rchain-community/rholo/issues/70
+[#70]: https://github.com/rhovision-org/rholo/issues/70
 
 ### C170 — the guard counted a validator that had *ever* spoken, and could not suppress in the case it exists for
 
@@ -4605,7 +4605,7 @@ keep on its first run: the arithmetic first treated a second block at an existin
 a lock — the store-first order can only ever leave the index *under*-claiming, which is the answer both
 of its callers want ("not in the DAG yet"). Filed and closed as [#103].
 
-[#103]: https://github.com/rchain-community/rholo/issues/103
+[#103]: https://github.com/rhovision-org/rholo/issues/103
 
 ## 25. One attributable failure estranges a node from the chain (#105)
 
@@ -4714,7 +4714,7 @@ a genuinely valid chain, so the clearing branch is covered at the record-transit
 two-node devnet in #125's thread is the end-to-end measurement — the `restoring_rule.rs` header says so
 rather than leaving the gap to be assumed.
 
-[#105]: https://github.com/rchain-community/rholo/issues/105
+[#105]: https://github.com/rhovision-org/rholo/issues/105
 ## 26. The fringe gate asked two questions of one map: a silent validator capped finality at any stake share (#70)
 
 #70's measurement asked whether the survivors resume finality after a validator is killed. They did not —
@@ -5024,7 +5024,7 @@ C175 — the unbounded ingress queue §27 could not rule out — is not this def
 landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so
 a drained queue is not what held the memory. The profile and the census agree on which path did.
 
-[#117]: https://github.com/rchain-community/rholo/issues/117
+[#117]: https://github.com/rhovision-org/rholo/issues/117
 
 ## 29. The tracker consolidated onto the register's causes — and the rule that says which issues can close
 
@@ -9355,7 +9355,7 @@ paragraph could not explain no longer appears; the jerkiness it describes was th
 chain.*
 The gate's stall/advance cadence on a four-validator autopropose net is a **separate** measured
 property, it is the same rig that produced the pre-fix `200 of 400` reading in C268's row, and it belongs
-to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rchain-community/rholo/issues/318)**,
+to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rhovision-org/rholo/issues/318)**,
 which carries the numbers and the two questions (is a stall entered once per round expected, and is the
 ~15-height lag expected), and says why this rig cannot decide them: it was built for C270's question, and
 the unit that takes #318 on should start by building a rig that can *distinguish* a stall that costs
