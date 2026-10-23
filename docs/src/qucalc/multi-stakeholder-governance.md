@@ -208,7 +208,7 @@ This work is funded through the [Rho Vision (formerly RChain Community)](https:/
 collective on OpenCollective:
 
 - [Rholang – Rust Implementation](https://opencollective.com/rholang-rust) — the Rust rewrite
-  (`rchain-rust`).
+  (`rholo`).
 - [RhoGOV: EIES3](https://opencollective.com/eies3) — electronic information exchange /
   governance (the project behind the tactics above).
 

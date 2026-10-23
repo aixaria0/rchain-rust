@@ -676,7 +676,7 @@ async fn api_find_deploy(
 
 /// `GET /api/v1/deployer/{key}` — has this key signed a deploy in a block, i.e. is it public? `key`
 /// is the hex `blake2b256` hash of the public key (so asking does not reveal it) or the key itself.
-/// Serves the wallet's quantum key-hygiene check (rchain-rust post-quantum plan §16.1) in one
+/// Serves the wallet's quantum key-hygiene check (rholo post-quantum plan §16.1) in one
 /// lookup instead of a scan of every block.
 async fn api_find_deployer(State(state): State<HttpState>, Path(key): Path<String>) -> Response {
     json_result(state.web_api.find_deployer(&key).await)

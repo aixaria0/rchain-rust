@@ -242,7 +242,7 @@ is OOM-killed, and because every restart replays the same DAG the node loops ins
 
 Give the net headroom for the restart, not just for the run — `≥ 2 GB` for ~1k blocks, `≥ 4 GB` to be
 comfortable — and see [Running a validator: hardware requirements](validator-requirements.md) and
-[#60](https://github.com/rchain-community/rchain-rust/issues/60). A chain that produces blocks
+[#60](https://github.com/rchain-community/rholo/issues/60). A chain that produces blocks
 continuously (`--autopropose` plus the dev-mode injector) reaches that height in an afternoon, so it hits
 the limit quickly; one that grows only with real traffic stays safe far longer.
 
@@ -294,7 +294,7 @@ Run `tools/decimal_release_preflight.py` using the complete Git history of
 the *intended* release source, supplying an operator-collected JSON manifest:
 
 ```sh
-python3 tools/decimal_release_preflight.py /path/to/manifest.json --repo /path/to/full/rchain-rust
+python3 tools/decimal_release_preflight.py /path/to/manifest.json --repo /path/to/full/rholo
 ```
 
 The schema-1 manifest must set `activation` to
@@ -437,7 +437,7 @@ against the sender*. That is narrower than "the block's own fault" in one way an
 node could not replay, or replayed to a *different* state (`Divergence`), and a child refused because a
 justification failed (`Cascade`), are **not** slashed — one transient failure must not fabricate slash
 evidence against every validator above it
-([#125](https://github.com/rchain-community/rchain-rust/issues/125)) — **and neither are the three
+([#125](https://github.com/rchain-community/rholo/issues/125)) — **and neither are the three
 refusals that read a setting this node owns** rather than the block: the fee floor
 `casper.min-phlo-price`, the width `casper.max-number-of-parents`, and the compiled version set
 `SUPPORTED`. Those are `Attributable` and still refused, but not offences, because another node with a

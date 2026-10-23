@@ -1,12 +1,12 @@
 # Cross-shard invoke is a remote deploy
 
 > Issue [#33]: *Linked shards: signed same-account cross-shard invoke (`rho:shard:invoke`)*.
-> This page is the rchain-rust decision record for Layer 1. It **supersedes** the
+> This page is the rholo decision record for Layer 1. It **supersedes** the
 > "one powerbox process + a link table" framing in the issue: the primitive needs
 > **no relay, no link table, and no new consensus** — it is a normal, caller-signed
 > deploy submitted to the target shard.
 
-[#33]: https://github.com/rchain-community/rchain-rust/issues/33
+[#33]: https://github.com/rchain-community/rholo/issues/33
 
 The design companion `CapabilityTransport.md` splits cross-shard coordination into
 two layers. This page covers **Layer 1 — the linked invoke**. The delegation layer
@@ -161,7 +161,7 @@ primitive**, not a new node feature — see
 [`qucalc/examples/shard_exchange.rho`][shard_exchange] and
 [the walkthrough](#a-bilateral-escrow-walkthrough).
 
-[shard_exchange]: https://github.com/rchain-community/rchain-rust/blob/dev/qucalc/examples/shard_exchange.rho
+[shard_exchange]: https://github.com/rchain-community/rholo/blob/dev/qucalc/examples/shard_exchange.rho
 
 The security is capability security, and it is the whole proof:
 
@@ -206,7 +206,7 @@ Because only the keyholder can sign, the primitive is a **client-side** helper: 
 builds the far-shard term, signs it with the caller's key, and listens on the reply
 channel for the response. It lives at [`rchain_casper::shard_invoke`][module].
 
-[module]: https://github.com/rchain-community/rchain-rust/blob/dev/casper/src/shard_invoke.rs
+[module]: https://github.com/rchain-community/rholo/blob/dev/casper/src/shard_invoke.rs
 
 - `invoke_term(target_uri, method, args: &[Par]) -> String` — the expansion above, with
   `` `rho:rchain:deployId` `` as the reply channel.
