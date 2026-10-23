@@ -195,7 +195,8 @@ def main(argv=None):
     ap.add_argument("evidence_json", help="bounded operator-supplied raw response manifest")
     ap.add_argument("--output", help="write sanitized JSON verdict (default stdout)")
     args = ap.parse_args(argv)
-    raw = Path(args.evidence_json).read_bytes()
+    with Path(args.evidence_json).open("rb") as source:
+        raw = source.read(MAX_BYTES + 1)
     if not raw or len(raw) > MAX_BYTES:
         ap.error("input must be 1 byte to 4 MiB")
     try:
