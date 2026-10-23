@@ -526,7 +526,19 @@ pub(crate) async fn finalized_fringe_response(
         match genesis_hash {
             Some(genesis_hash) => {
                 let genesis = match block_store.get(&[genesis_hash]).await {
-                    Ok(mut v) => v.pop().flatten(),
+                    Ok(mut v) => {
+                        let block = v.pop().flatten();
+                        if block.is_none() && req.anchor.is_none() {
+                            log.warn(
+                                log_source,
+                                &format!(
+                                    "FinalizedFringeRequest unanswered: genesis {} in DAG but block body absent from BlockStore",
+                                    genesis_hash.to_hex()
+                                ),
+                            );
+                        }
+                        block
+                    }
                     Err(e) => {
                         // **A read that fails is not "there is no genesis block"** (C249's class).
                         // This branch exists so a joining validator downloads the genesis and its
@@ -570,15 +582,45 @@ pub(crate) async fn finalized_fringe_response(
         for h in &latest_fringe_hashes {
             // `lookup` is a metadata read, not a replay; a member this node cannot read is skipped
             // rather than served as a bogus state.
-            if let Ok(Some(meta)) = dag.lookup(h).await {
-                let candidate = (meta.block_num, *h, meta.fringe_state_hash);
-                let better = latest
-                    .as_ref()
-                    .is_none_or(|(height, hash, _)| (candidate.0, candidate.1) > (*height, *hash));
-                if better {
-                    latest = Some(candidate);
+            match dag.lookup(h).await {
+                Ok(Some(meta)) => {
+                    let candidate = (meta.block_num, *h, meta.fringe_state_hash);
+                    let better = latest.as_ref().is_none_or(|(height, hash, _)| {
+                        (candidate.0, candidate.1) > (*height, *hash)
+                    });
+                    if better {
+                        latest = Some(candidate);
+                    }
+                }
+                Ok(None) => {
+                    if req.anchor.is_none() {
+                        log.warn(
+                            log_source,
+                            &format!(
+                                "FinalizedFringeRequest: latest fringe member {} has no DAG metadata",
+                                h.to_hex()
+                            ),
+                        );
+                    }
+                }
+                Err(e) => {
+                    if req.anchor.is_none() {
+                        log.error(
+                            log_source,
+                            &format!(
+                                "FinalizedFringeRequest: failed to read metadata for fringe member {}: {e}",
+                                h.to_hex()
+                            ),
+                        );
+                    }
                 }
             }
+        }
+        if latest.is_none() && req.anchor.is_none() {
+            log.warn(
+                log_source,
+                "FinalizedFringeRequest unanswered: latest finalized fringe has no readable member metadata",
+            );
         }
         latest.map(|(_, _, state_hash)| FinalizedFringe {
             hashes: latest_fringe_hashes.iter().copied().collect(),
@@ -2157,6 +2199,32 @@ mod tests {
             bounded.to, MAX_BLOCK_RANGE as i64,
             "the responder bounds the window by its own limit"
         );
+    }
+
+    #[tokio::test]
+    async fn ordinary_fringe_request_with_no_genesis_logs_refusal() {
+        let dag = build_dag().await;
+        let store = block_store(vec![]).await;
+        let log = FringeLog::default();
+        let req = FinalizedFringeRequest {
+            identifier: String::new(),
+            trim_state: true,
+            include_fringe_metadata: false,
+            anchor: None,
+        };
+        assert!(finalized_fringe_response(
+            dag.as_ref(),
+            &store,
+            &log,
+            LogSource::new("test"),
+            &req
+        )
+        .await
+        .is_none());
+        let warnings = log.warnings.lock().unwrap();
+        assert!(warnings
+            .iter()
+            .any(|line| line.contains("no latest finalized fringe and no genesis block")));
     }
 
     /// **A recovery sync's root, and the ancestry that makes it replayable** (C259a).
